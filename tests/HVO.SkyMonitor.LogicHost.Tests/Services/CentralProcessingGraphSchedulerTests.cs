@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Immutable;
 using System.Text;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
@@ -332,6 +333,10 @@ public sealed class CentralProcessingGraphSchedulerTests
         Assert.AreEqual(CentralProcessingGraphExecutionStatus.Running, created.Execution.Status);
         Assert.AreEqual(1, created.Execution.Jobs.Count);
         Assert.AreEqual(now, created.Execution.Jobs.Single().ResolutionDeadlineUtc);
+        Assert.AreEqual(
+            definition.Nodes.Single().Window!.MinimumInputCount,
+            created.Execution.Jobs.Single().MinimumInputCount,
+            "the window's minimum cardinality is frozen on the node so resolution can enforce it");
         CollectionAssert.AreEqual(
             new[] { created.Execution.Jobs.Single().Id }, windowResolver.ResolvedJobIds.ToArray());
         Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Existing, existing.Outcome);
@@ -418,6 +423,196 @@ public sealed class CentralProcessingGraphSchedulerTests
             new(CentralProcessingGraphScheduleOutcome.AwaitingSources), transientRecipe));
         Assert.IsTrue(CentralDerivativeJobScheduler.SchedulesLegacyTransientRecipe(
             new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "revision-invalid"), transientRecipe));
+    }
+
+    [TestMethod]
+    public async Task ExpansionFreezesAnnotationIdentityFromAnchorSceneProvenanceAndProjectsItToConsumers()
+    {
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2026, 9, 3, 9, 0, 0, TimeSpan.Zero);
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        var definition = CreateAnnotationConsumerGraph();
+        var provenance = new SceneProvenance(
+            "scene-1", "rig-v1", "catalog", "1", new string('A', 64), "model", "1", "1", "1",
+            Objects: [new ProjectedObjectProvenance("star:1", "Vega", 10, 12, 0.03)]);
+        var annotated = AddAssignedArtifact(context, "annotated", definition, registry, now);
+        annotated.Frame!.SceneProvenanceJson = JsonSerializer.Serialize(provenance, JsonSerializerOptions.Web);
+        var unannotated = AddAssignedArtifact(context, "unannotated", definition, registry, now);
+        Assert.IsNull(unannotated.Frame!.SceneProvenanceJson);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+        var scheduler = CreateScheduler(context, telemetry, catalogTelemetry, nodeRegistry: registry);
+        var annotationOptions = definition.Nodes.Single(node => node.Id == "Annotation").EffectiveOptions;
+        var requested = BuiltInProcessingRecipes.CreateRequestedIdentity(
+            BuiltInProcessingRecipes.Annotation, annotationOptions, ProcessingInputSelector.Raw()).IdentitySha256;
+        var runtimeAnnotation = CentralDerivativeJobExecutor.CreateAnnotation(annotated.Frame.SceneProvenanceJson);
+        Assert.IsNotNull(runtimeAnnotation);
+        var actual = BuiltInProcessingRecipes.CreateExecutionIdentity(
+            BuiltInProcessingRecipes.Annotation, annotationOptions, ProcessingInputSelector.Raw(), runtimeAnnotation)
+            .IdentitySha256;
+        Assert.AreNotEqual(requested, actual, "the runtime scene annotation is part of the actual recipe identity");
+
+        var withProvenance = await scheduler.ScheduleLiveAsync(annotated.Id, now, CancellationToken.None)
+            .ConfigureAwait(false);
+        var withoutProvenance = await scheduler.ScheduleLiveAsync(unannotated.Id, now, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Created, withProvenance.Outcome);
+        Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Created, withoutProvenance.Outcome);
+        AssertProjection(withProvenance.Execution!, annotated.Frame.SceneProvenanceJson, expectedAnnotationIdentity: actual);
+        AssertProjection(withoutProvenance.Execution!, null, expectedAnnotationIdentity: requested);
+
+        void AssertProjection(
+            CentralProcessingGraphExecution execution,
+            string? sceneProvenanceJson,
+            string expectedAnnotationIdentity)
+        {
+            var annotation = execution.Jobs.Single(job => job.GraphNodeId == "Annotation");
+            var consumer = execution.Jobs.Single(job => job.GraphNodeId == "Preview");
+            Assert.AreEqual(requested, annotation.RequestedRecipeIdentitySha256);
+            Assert.AreEqual(expectedAnnotationIdentity, annotation.ExpectedRecipeIdentitySha256);
+            // The frozen expectation is exactly what the executor's bound-identity check and output binding enforce.
+            Assert.AreEqual(expectedAnnotationIdentity, CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity(
+                annotation.RecipeName, annotation.RecipeOptionsJson, annotation.InputSelectorJson,
+                annotation.RequestedRecipeIdentitySha256, annotation.ExpectedRecipeIdentitySha256, sceneProvenanceJson));
+            var expectedSelector = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(
+                ProcessingInputSelector.RecipeResult(
+                    FrameArtifactRole.AnnotatedPreview,
+                    CentralDerivativeRecipeCatalog.AnnotatedPreviewVariant,
+                    expectedAnnotationIdentity))).GetRawText();
+            Assert.AreEqual(expectedSelector, consumer.InputSelectorJson,
+                "the dependent primary selector pins the producer's frozen (annotation-adjusted) identity");
+            Assert.AreEqual(expectedSelector, consumer.InputRequirements.Single().SelectorJson);
+            var consumerOptions = definition.Nodes.Single(node => node.Id == "Preview").EffectiveOptions;
+            var consumerRequested = BuiltInProcessingRecipes.CreateRequestedIdentity(
+                BuiltInProcessingRecipes.EncodedPreview,
+                consumerOptions,
+                ProcessingInputSelector.RecipeResult(
+                    FrameArtifactRole.AnnotatedPreview,
+                    CentralDerivativeRecipeCatalog.AnnotatedPreviewVariant,
+                    expectedAnnotationIdentity)).IdentitySha256;
+            Assert.AreEqual(consumerRequested, consumer.RequestedRecipeIdentitySha256);
+            Assert.IsTrue(string.Equals(consumerRequested, consumer.ExpectedRecipeIdentitySha256, StringComparison.Ordinal),
+                "a consumer without auxiliaries or annotation keeps its requested identity as the expectation");
+        }
+    }
+
+    [TestMethod]
+    public void ExpectedRecipeIdentityFreezesAnnotationOnlyForAnnotationBearingBuiltInNodes()
+    {
+        var provenance = JsonSerializer.Serialize(new SceneProvenance(
+            "scene-1", "rig-v1", "catalog", "1", new string('A', 64), "model", "1", "1", "1",
+            Objects: [new ProjectedObjectProvenance("star:1", "Vega", 10, 12, 0.03)]), JsonSerializerOptions.Web);
+        var annotationOptions = BuiltInProcessingRecipes.NormalizeOptions(
+            BuiltInProcessingRecipes.Annotation, CaptureContractJson.SerializeToElement(new AnnotationRecipeOptions()));
+        var previewOptions = BuiltInProcessingRecipes.NormalizeOptions(
+            BuiltInProcessingRecipes.EncodedPreview, CaptureContractJson.SerializeToElement(new EncodedPreviewOptions()));
+        var selector = ProcessingInputSelector.Raw();
+        var annotationRequested = BuiltInProcessingRecipes.CreateRequestedIdentity(
+            BuiltInProcessingRecipes.Annotation, annotationOptions, selector).IdentitySha256;
+        var previewRequested = BuiltInProcessingRecipes.CreateRequestedIdentity(
+            BuiltInProcessingRecipes.EncodedPreview, previewOptions, selector).IdentitySha256;
+        var annotation = CentralDerivativeJobExecutor.CreateAnnotation(provenance);
+        var auxiliary = new ProcessingAuxiliaryInput(
+            "environment", ProcessingAuxiliaryInputKind.CanonicalJson,
+            SchemaVersion: "schema-v1", IdentitySha256: new string('B', 64));
+
+        Assert.AreEqual(
+            BuiltInProcessingRecipes.CreateExecutionIdentity(
+                BuiltInProcessingRecipes.Annotation, annotationOptions, selector, annotation).IdentitySha256,
+            CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity(
+                CentralProcessingGraphNodeHandlerKind.BuiltInRecipe, BuiltInProcessingRecipes.Annotation,
+                annotationOptions, selector, annotationRequested, [], provenance));
+        Assert.AreEqual(annotationRequested, CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity(
+            CentralProcessingGraphNodeHandlerKind.BuiltInRecipe, BuiltInProcessingRecipes.Annotation,
+            annotationOptions, selector, annotationRequested, [], null),
+            "no scene provenance at expansion leaves the requested identity as the frozen expectation");
+        Assert.AreEqual(annotationRequested, CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity(
+            CentralProcessingGraphNodeHandlerKind.BuiltInRecipe, BuiltInProcessingRecipes.Annotation,
+            annotationOptions, selector, annotationRequested, [], "{\"sceneId\":\"scene-1\"}"),
+            "provenance without objects or segments yields no runtime annotation");
+        Assert.AreEqual(previewRequested, CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity(
+            CentralProcessingGraphNodeHandlerKind.BuiltInRecipe, BuiltInProcessingRecipes.EncodedPreview,
+            previewOptions, selector, previewRequested, [], provenance),
+            "only annotation-bearing recipes take the runtime annotation input");
+        Assert.AreEqual(
+            BuiltInProcessingRecipes.CreateExecutionIdentity(
+                BuiltInProcessingRecipes.EncodedPreview, previewOptions, selector, auxiliaryInputs: [auxiliary])
+                .IdentitySha256,
+            CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity(
+                CentralProcessingGraphNodeHandlerKind.BuiltInRecipe, BuiltInProcessingRecipes.EncodedPreview,
+                previewOptions, selector, previewRequested, [auxiliary], provenance),
+            "auxiliary-bound nodes keep binding their auxiliaries exactly as before");
+        Assert.AreEqual(new string('C', 64), CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity(
+            CentralProcessingGraphNodeHandlerKind.TransientValidation, CentralTransientRuntime.RecipeName,
+            annotationOptions, selector, new string('C', 64), [auxiliary], provenance),
+            "transient validation nodes always keep the catalog's requested identity");
+    }
+
+    /// <summary>A graph in which a node consumes the output of the annotation-bearing node.</summary>
+    private static ProcessingGraphDefinition CreateAnnotationConsumerGraph()
+    {
+        _ = BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.Annotation, out var annotationDefinition);
+        _ = BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.EncodedPreview, out var previewDefinition);
+        var annotationOptions = BuiltInProcessingRecipes.NormalizeOptions(
+            BuiltInProcessingRecipes.Annotation, CaptureContractJson.SerializeToElement(new AnnotationRecipeOptions()));
+        var previewOptions = BuiltInProcessingRecipes.NormalizeOptions(
+            BuiltInProcessingRecipes.EncodedPreview, CaptureContractJson.SerializeToElement(new EncodedPreviewOptions()));
+        return new(
+            ProcessingGraphSchemaVersions.Current,
+            "annotation-consumer",
+            "1",
+            [new ProcessingGraphSourceDefinition(
+                "$raw",
+                [new ProcessingGraphProductContract(FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData)])],
+            [
+                new ProcessingGraphNodeDefinition(
+                    "Annotation",
+                    BuiltInProcessingRecipes.Annotation,
+                    CentralDerivativeRecipeCatalog.AnnotatedPreviewRecipeVersion,
+                    annotationDefinition!.OperationKind,
+                    true,
+                    ProcessingGraphNodeFailurePolicy.Required,
+                    0,
+                    annotationOptions,
+                    [new ProcessingGraphDependencyDefinition("$raw")],
+                    [new ProcessingGraphInputContract([FrameArtifactRole.Raw], [ProcessingProductKind.PixelData], [], [], [])],
+                    [new ProcessingGraphProductContract(
+                        FrameArtifactRole.AnnotatedPreview,
+                        CentralDerivativeRecipeCatalog.AnnotatedPreviewVariant,
+                        ProcessingProductKind.PixelData,
+                        annotationDefinition,
+                        MediaType: "image/jpeg")],
+                    null,
+                    ImmutableArray<string>.Empty,
+                    [ProcessingGraphHosts.LogicHost]),
+                new ProcessingGraphNodeDefinition(
+                    "Preview",
+                    BuiltInProcessingRecipes.EncodedPreview,
+                    CentralDerivativeRecipeCatalog.PreviewRecipeVersion,
+                    previewDefinition!.OperationKind,
+                    true,
+                    ProcessingGraphNodeFailurePolicy.Required,
+                    10,
+                    previewOptions,
+                    [new ProcessingGraphDependencyDefinition("Annotation")],
+                    [new ProcessingGraphInputContract(
+                        [FrameArtifactRole.AnnotatedPreview],
+                        [ProcessingProductKind.PixelData],
+                        [CentralDerivativeRecipeCatalog.AnnotatedPreviewVariant],
+                        [BuiltInProcessingRecipes.Annotation],
+                        [])],
+                    [new ProcessingGraphProductContract(
+                        FrameArtifactRole.Preview,
+                        CentralDerivativeRecipeCatalog.PreviewVariant,
+                        ProcessingProductKind.PixelData,
+                        previewDefinition,
+                        MediaType: "image/jpeg")],
+                    null,
+                    ImmutableArray<string>.Empty,
+                    [ProcessingGraphHosts.LogicHost])
+            ]);
     }
 
     private static CentralArtifact AddAssignedArtifact(
@@ -687,6 +882,52 @@ public sealed class CentralProcessingGraphSchedulerTests
         wrongObservatory.Frame!.ObservatoryId = Guid.NewGuid();
         _ = AddConfiguredArtifact("valid-unassigned");
         var awaitingSources = AddConfiguredArtifact("awaiting-sources");
+        // Same Raw role as the published source contract, but the contract pins a specific variant the artifact does
+        // not carry: the full contract, not the role alone, decides whether an artifact may be frozen as a source.
+        var variantMismatch = AddConfiguredArtifact("variant-mismatch");
+        var pinnedSource = CreatePreviewGraph().Sources[0];
+        var variantDefinition = CreatePreviewGraph() with
+        {
+            Name = "variant-mismatch",
+            Sources =
+            [
+                pinnedSource with
+                {
+                    Outputs = [pinnedSource.Outputs[0] with { Variant = "pinned-variant" }]
+                }
+            ]
+        };
+        var variantPortable = ProcessingGraphCompiler.Compile(variantDefinition).Plan!;
+        var variantCentral = ProcessingGraphCompiler.Compile(
+            variantDefinition, new(ProcessingGraphHosts.LogicHost, [])).Plan!;
+        var variantRevision = new CentralProcessingGraphRevision
+        {
+            Name = variantDefinition.Name,
+            Revision = variantDefinition.Revision,
+            DefinitionJson = Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(variantDefinition)),
+            DefinitionIdentitySha256 = variantPortable.DefinitionIdentitySha256,
+            PortablePlanIdentitySha256 = variantPortable.PlanIdentitySha256,
+            CentralPlanIdentitySha256 = variantCentral.PlanIdentitySha256,
+            CreatedAtUtc = now.AddMinutes(-2),
+            CreatedByUserId = "operator",
+            PublishedAtUtc = now.AddMinutes(-1),
+            PublishedByUserId = "operator"
+        };
+        var variantAssignment = new CentralProcessingGraphAssignment
+        {
+            Revision = variantRevision,
+            RevisionId = variantRevision.Id,
+            TargetHost = CentralProcessingGraphTargetHost.Central,
+            Scope = CentralProcessingGraphAssignmentScope.LogicalCamera,
+            ObservatoryId = variantMismatch.Frame!.ObservatoryId,
+            LogicalCameraId = variantMismatch.Frame.LogicalCameraInstallation!.LogicalCameraId,
+            EffectiveFromUtc = now.AddMinutes(-1),
+            CreatedAtUtc = now.AddMinutes(-1),
+            ActorUserId = "operator",
+            ReasonCode = "test"
+        };
+        variantRevision.Assignments.Add(variantAssignment);
+        context.AddRange(variantRevision, variantAssignment);
         var awaitingDefinition = CreatePreviewGraph() with
         {
             Sources =
@@ -745,6 +986,60 @@ public sealed class CentralProcessingGraphSchedulerTests
         Assert.AreEqual(CentralProcessingGraphScheduleOutcome.AwaitingSources,
             (await scheduler.ScheduleLiveAsync(awaitingSources.Id, now, CancellationToken.None)
                 .ConfigureAwait(false)).Outcome);
+    }
+
+    [TestMethod]
+    public void SourceContractMatchesRequiresEveryPinnedContractField()
+    {
+        var artifact = CreateArtifact();
+        var contract = new ProcessingGraphProductContract(FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData);
+        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(contract, artifact));
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { Role = FrameArtifactRole.Calibrated }, artifact));
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { Variant = "different" }, artifact));
+        artifact.Variant = "deployment-calibrated";
+        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(contract, artifact),
+            "the acquisition placeholder accepts the role's agent-configured acquisition variant");
+        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { Variant = "deployment-calibrated" }, artifact));
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { Variant = "other-pinned" }, artifact));
+        artifact.Variant = null;
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(contract, artifact),
+            "an artifact without reconstruction variant provenance never satisfies a source contract");
+        artifact.Variant = "source";
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { ProductKind = ProcessingProductKind.Metadata }, artifact));
+        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { MediaType = "APPLICATION/OCTET-STREAM" }, artifact));
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { MediaType = "image/jpeg" }, artifact));
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { SchemaVersion = "schema-v1" }, artifact), "a pinned schema needs a structured product");
+        var recipe = new ProcessingRecipeDefinition("raw", "1.0.0", "impl-v1", ProcessingOperationKind.Transform);
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { Recipe = recipe }, artifact), "a pinned recipe needs recorded recipe provenance");
+        artifact.Recipe = new CentralArtifactRecipe
+        {
+            Name = recipe.Name,
+            SemanticVersion = recipe.SemanticVersion,
+            ImplementationVersion = recipe.ImplementationVersion
+        };
+        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(contract with { Recipe = recipe }, artifact));
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { Recipe = recipe with { ImplementationVersion = "impl-v2" } }, artifact));
+        artifact.StructuredProduct = new CentralStructuredProcessingProduct
+        {
+            ProductKind = ProcessingProductKind.PixelData.ToString(),
+            ProductSchemaVersion = "schema-v1"
+        };
+        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { SchemaVersion = "schema-v1" }, artifact));
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { SchemaVersion = "schema-v2" }, artifact));
+        artifact.StructuredProduct.ProductKind = ProcessingProductKind.Metadata.ToString();
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(contract, artifact));
     }
 
     [TestMethod]
@@ -1825,6 +2120,7 @@ public sealed class CentralProcessingGraphSchedulerTests
             DevicePublicId = frame.DevicePublicId,
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Raw,
+            Variant = "source",
             RecipeVersion = "raw-v1",
             ManifestSchemaVersion = "manifest-v1",
             MediaType = "application/octet-stream",

@@ -80,7 +80,12 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
     public bool Validate(ProcessingGraphExecutionPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        if (plan.Sources.Any(static source => source.Outputs.Length != 1) ||
+        // Live central scheduling is triggered only by Raw/Calibrated artifact ingestion
+        // (CentralDerivativeJobScheduler -> ScheduleLiveAsync), so a graph sourcing any other role could never be
+        // expanded live. Reject those sources at publication/assignment validation rather than accepting an
+        // assignment that silently never executes.
+        if (plan.Sources.Any(static source => source.Outputs.Length != 1 ||
+                !IsSupportedSourceRole(source.Outputs[0].Role)) ||
             plan.Sources.Select(static source => source.Outputs[0].Role).Distinct().Count() != plan.Sources.Length)
         {
             return false;
@@ -96,14 +101,19 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
         return true;
     }
 
+    /// <summary>Source roles whose ingestion triggers live central graph scheduling.</summary>
+    internal static bool IsSupportedSourceRole(FrameArtifactRole role)
+        => role is FrameArtifactRole.Raw or FrameArtifactRole.Calibrated;
+
     private static bool ValidateNode(
         ProcessingGraphPlanNode planNode,
         CentralProcessingGraphNodeHandler handler)
     {
         var node = planNode.Definition;
         // LogicHost freezes each node's expected recipe identity at expansion from primary and auxiliary artifact
-        // bindings only. Annotation and canonical-JSON graph bindings would execute against a stale identity, so
-        // centrally executed graphs reject them at publication/assignment validation instead of accepting them.
+        // bindings plus the anchor frame's own scene provenance. Annotation and canonical-JSON graph bindings would
+        // execute against a stale identity, so centrally executed graphs reject them at publication/assignment
+        // validation instead of accepting them.
         if (!string.Equals(node.StepVersion, handler.StepVersion, StringComparison.Ordinal) ||
             node.OperationKind != handler.OperationKind ||
             planNode.InputBindings.Count(static binding =>

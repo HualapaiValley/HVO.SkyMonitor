@@ -1862,6 +1862,86 @@ public sealed class CentralDerivativeWindowIntegrationTests
             .SkipAsync(runJobId, lease.LeaseToken, "test.cleanup", CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// A frozen window minimum (graph <c>MinimumInputCount</c>) is enforced before inputs freeze for every timeout
+    /// policy: a trailing window with no required positions must not run below its minimum under <c>Run</c>, and the
+    /// other policies complete through their configured outcome with a stable reason.
+    /// </summary>
+    [TestMethod]
+    public async Task MinimumInputCount_IsEnforcedBeforeFreezingForEveryTimeoutPolicy()
+    {
+        var cases = new[]
+        {
+            (Outcome: CentralDerivativeWindowOutcome.Run, Minimum: 3, Status: CentralDerivativeJobStatus.Skipped),
+            (Outcome: CentralDerivativeWindowOutcome.Skip, Minimum: 3, Status: CentralDerivativeJobStatus.Skipped),
+            (Outcome: CentralDerivativeWindowOutcome.Fail, Minimum: 3, Status: CentralDerivativeJobStatus.TerminalFailure),
+            (Outcome: CentralDerivativeWindowOutcome.Run, Minimum: 1, Status: CentralDerivativeJobStatus.Pending)
+        };
+        var runJobId = Guid.Empty;
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var scenario = $"window-minimum-{index}-{Guid.NewGuid():N}";
+            var sourceId = await SeedAndScheduleSourceAsync(
+                scenario,
+                Guid.NewGuid(),
+                2_100 + index * 100,
+                DateTimeOffset.UtcNow.AddMinutes(-10),
+                CreatePayload(10),
+                "compatible").ConfigureAwait(false);
+            await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var job = await db.CentralDerivativeJobs
+                .Include(item => item.InputRequirements)
+                .SingleAsync(item => item.SourceCentralArtifactId == sourceId
+                    && item.RecipeName == BuiltInProcessingRecipes.RollingMean).ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            // A trailing window with an empty required-position set and a frozen minimum cardinality.
+            foreach (var requirement in job.InputRequirements)
+            {
+                requirement.IsRequired = false;
+            }
+            job.MissingInputOutcome = cases[index].Outcome;
+            job.MinimumInputCount = cases[index].Minimum;
+            job.ResolutionDeadlineUtc = now.AddTicks(-1);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            await scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+                .ResolveAsync(job.Id, now, CancellationToken.None).ConfigureAwait(false);
+
+            db.ChangeTracker.Clear();
+            var resolved = await db.CentralDerivativeJobs.AsNoTracking()
+                .Include(item => item.InputRequirements)
+                .Include(item => item.Inputs)
+                .AsSplitQuery()
+                .SingleAsync(item => item.Id == job.Id).ConfigureAwait(false);
+            resolved.Status.Should().Be(cases[index].Status, $"case {index}: {cases[index].Outcome} minimum {cases[index].Minimum}");
+            resolved.InputRequirements.Count(item => item.ResolutionState == CentralDerivativeInputResolutionState.Resolved)
+                .Should().Be(1);
+            if (cases[index].Status == CentralDerivativeJobStatus.Pending)
+            {
+                runJobId = resolved.Id;
+                resolved.StateReasonCode.Should().Be(CentralDerivativeWindowReasonCodes.OptionalInputTimeout);
+                resolved.InputSetIdentitySha256.Should().HaveLength(64);
+                resolved.Inputs.Should().ContainSingle();
+            }
+            else
+            {
+                resolved.StateReasonCode.Should().Be(CentralDerivativeWindowReasonCodes.MinimumInputCountUnmet);
+                resolved.InputSetIdentitySha256.Should().BeNull("an undersized window must never freeze");
+                resolved.CompletedAtUtc.Should().NotBeNull();
+                resolved.AvailableAtUtc.Should().BeNull();
+            }
+        }
+
+        await DisableOtherActiveJobsAsync(runJobId).ConfigureAwait(false);
+        await using var claimScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var lease = await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+            .ClaimNextAsync("window-minimum-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+            .ConfigureAwait(false);
+        lease!.JobId.Should().Be(runJobId);
+        await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+            .SkipAsync(runJobId, lease.LeaseToken, "test.cleanup", CancellationToken.None).ConfigureAwait(false);
+    }
+
     [TestMethod]
     public async Task IncompatibleRequiredPosition_FinishesWithBoundedReasonWithoutQuarantiningSource()
     {

@@ -378,18 +378,35 @@ internal sealed class CentralDerivativeJobService(
         ValidateLeaseDuration(leaseDuration);
         var now = timeProvider.GetUtcNow();
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        var attemptNumber = await dbContext.CentralDerivativeJobs.Where(job =>
+        var leased = await dbContext.CentralDerivativeJobs.Where(job =>
                 job.Id == jobId
                 && job.Status == CentralDerivativeJobStatus.Leased
                 && job.LeaseToken == leaseToken
                 && job.LeaseExpiresAtUtc > now)
-            .Select(job => (int?)job.AttemptCount)
+            .Select(job => new
+            {
+                job.AttemptCount,
+                job.CancellationRequestedAtUtc,
+                GraphStatus = job.GraphExecution != null
+                    ? (CentralProcessingGraphExecutionStatus?)job.GraphExecution.Status
+                    : null
+            })
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-        if (!attemptNumber.HasValue)
+        if (leased is null)
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
         }
+        if (leased.CancellationRequestedAtUtc is not null ||
+            leased.GraphStatus is CentralProcessingGraphExecutionStatus.CancelRequested or
+                CentralProcessingGraphExecutionStatus.Canceled)
+        {
+            // Cancellation reached a leased node. Refusing renewal bounds the active lease: the worker cancels its
+            // local execution and the lease reaches the expiry path where graph convergence records Canceled.
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            throw new CentralDerivativeLeaseCanceledException();
+        }
+        var attemptNumber = (int?)leased.AttemptCount;
         var affected = await dbContext.CentralDerivativeJobs.Where(job =>
                 job.Id == jobId
                 && job.Status == CentralDerivativeJobStatus.Leased
@@ -708,12 +725,20 @@ internal sealed class CentralDerivativeJobService(
             CentralDerivativeJobStatus.RetryableFailure,
             CentralDerivativeJobStatus.Completed
         };
-        var affectedJobIds = await dbContext.CentralDerivativeJobs.AsNoTracking()
+        var affectedJobs = await dbContext.CentralDerivativeJobs.AsNoTracking()
             .Where(candidate => (candidate.SourceCentralArtifactId == source.Id
                     || candidate.Inputs.Any(input => input.CentralArtifactId == source.Id))
                 && activeStatuses.Contains(candidate.Status))
-            .Select(candidate => candidate.Id)
+            .Select(candidate => new { candidate.Id, GraphOwned = candidate.GraphExecutionId != null })
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var affectedJobIds = affectedJobs.Select(candidate => candidate.Id).ToList();
+        // Graph-owned nodes are terminalized (or deliberately left as recorded) by InvalidateDependentsAsync with
+        // frozen identities; reopening them here as RetryableFailure would strand a live execution behind a job that
+        // can never be reclaimed, and TR_CentralDerivativeJobs_GraphIdentityImmutable rejects reopening a node of a
+        // terminal execution. Only legacy scheduler jobs take the bulk reopen below.
+        var legacyJobIds = affectedJobs.Where(candidate => !candidate.GraphOwned)
+            .Select(candidate => candidate.Id)
+            .ToList();
         source.ObjectState = quarantine
             ? CentralArtifactObjectState.Quarantined
             : CentralArtifactObjectState.Pending;
@@ -725,7 +750,7 @@ internal sealed class CentralDerivativeJobService(
         await ArtifactIngestService.InvalidateDependentsAsync(dbContext, source, graphConvergenceSignal, cancellationToken)
             .ConfigureAwait(false);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await dbContext.CentralDerivativeJobs.Where(candidate => affectedJobIds.Contains(candidate.Id))
+        await dbContext.CentralDerivativeJobs.Where(candidate => legacyJobIds.Contains(candidate.Id))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(candidate => candidate.Status, candidate =>
                     !quarantine && candidate.Status == CentralDerivativeJobStatus.Waiting
@@ -744,7 +769,7 @@ internal sealed class CentralDerivativeJobService(
                 .SetProperty(candidate => candidate.LeaseExpiresAtUtc, (DateTimeOffset?)null), cancellationToken)
             .ConfigureAwait(false);
         await dbContext.CentralDerivativeJobAttempts.Where(attempt =>
-                affectedJobIds.Contains(attempt.CentralDerivativeJobId)
+                legacyJobIds.Contains(attempt.CentralDerivativeJobId)
                 && attempt.Outcome == CentralDerivativeAttemptOutcome.Leased)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(attempt => attempt.Outcome, quarantine
@@ -1017,6 +1042,23 @@ internal sealed class CentralDerivativeJobStateException : Exception
     }
 
     public CentralDerivativeJobStateException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>Lease renewal was refused because cancellation was requested for the leased node or its graph execution.</summary>
+internal sealed class CentralDerivativeLeaseCanceledException : Exception
+{
+    public CentralDerivativeLeaseCanceledException()
+        : base("The derivative job lease cannot be renewed because cancellation was requested.")
+    {
+    }
+
+    public CentralDerivativeLeaseCanceledException(string message) : base(message)
+    {
+    }
+
+    public CentralDerivativeLeaseCanceledException(string message, Exception innerException) : base(message, innerException)
     {
     }
 }

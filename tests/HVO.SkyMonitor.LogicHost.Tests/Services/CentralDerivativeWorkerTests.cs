@@ -198,6 +198,76 @@ public sealed class CentralDerivativeWorkerTests
         jobs.LastError.Should().Be(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding);
     }
 
+    [TestMethod]
+    public async Task CanceledRenewalCancelsExecutorWithoutDatabaseFailureOrLeaseLossAsync()
+    {
+        var lease = CreateLease();
+        var jobs = new ScriptedJobService
+        {
+            Claim = (attempt, _) => Task.FromResult(attempt == 1 ? lease : null),
+            Renew = (_, _) => Task.FromException<CentralDerivativeJobLease>(
+                new CentralDerivativeLeaseCanceledException())
+        };
+        var gate = new ExecutorGate(waitAfterCancellation: false, completeAfterCancellation: true);
+        await using var harness = CreateHarness(
+            jobs,
+            _ => new GatedExecutor(gate),
+            renewalInterval: TimeSpan.FromMilliseconds(10));
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await gate.Canceled.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await jobs.SecondClaim.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        harness.Telemetry.HasRecentDependencyFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse("a cancellation-refused renewal is not a database outage");
+        harness.Telemetry.HasRecentRenewalFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse();
+        harness.Telemetry.LastSuccessUtc.Should().BeNull(
+            "results produced after cancellation reached the lease must not be accepted");
+        jobs.FailCount.Should().Be(0, "the lease authority terminalizes the canceled node through expiry");
+        gate.Disposed.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task SignaledConvergenceClassifiesGraphStateFailuresWithoutDegradingDatabaseHealthAsync()
+    {
+        var signal = new CentralProcessingGraphConvergenceSignal();
+        var scheduler = new ScriptedGraphScheduler
+        {
+            Converge = id => id == ScriptedGraphScheduler.CorruptExecutionId
+                ? Task.FromException(new CentralDerivativeJobStateException("corrupt frozen graph state"))
+                : Task.CompletedTask
+        };
+        var jobs = new ScriptedJobService();
+        signal.Signal(ScriptedGraphScheduler.CorruptExecutionId);
+        signal.Signal(Guid.NewGuid());
+        await using var harness = CreateHarness(jobs, _ => new ImmediateExecutor(), graphScheduler: scheduler, signal: signal);
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await jobs.SecondClaim.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        scheduler.ConvergedIds.Should().Contain(ScriptedGraphScheduler.CorruptExecutionId);
+        scheduler.ConvergedIds.Should().HaveCount(2, "a corrupt signaled execution must not stop draining the signal");
+        harness.Telemetry.HasRecentDependencyFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse("graph-state faults are not database dependency failures");
+
+        var databaseSignal = new CentralProcessingGraphConvergenceSignal();
+        var databaseScheduler = new ScriptedGraphScheduler
+        {
+            Converge = _ => Task.FromException(new TestDbException("database unavailable"))
+        };
+        databaseSignal.Signal(Guid.NewGuid());
+        await using var databaseHarness = CreateHarness(
+            new ScriptedJobService(), _ => new ImmediateExecutor(), graphScheduler: databaseScheduler, signal: databaseSignal);
+        await databaseHarness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await Task.Delay(TimeSpan.FromMilliseconds(200)).ConfigureAwait(false);
+        await databaseHarness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        databaseHarness.Telemetry.HasRecentDependencyFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeTrue("a real database fault during signaled convergence still degrades database health");
+    }
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2000:Dispose objects before losing scope",
@@ -205,7 +275,9 @@ public sealed class CentralDerivativeWorkerTests
     private static WorkerHarness CreateHarness(
         ScriptedJobService jobs,
         Func<IServiceProvider, ICentralDerivativeJobExecutor> executor,
-        TimeSpan? renewalInterval = null)
+        TimeSpan? renewalInterval = null,
+        ICentralProcessingGraphScheduler? graphScheduler = null,
+        CentralProcessingGraphConvergenceSignal? signal = null)
     {
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(builder =>
@@ -213,6 +285,10 @@ public sealed class CentralDerivativeWorkerTests
         services.AddScoped<ICentralDerivativeJobService>(_ => jobs);
         services.AddScoped<ICentralDerivativeWindowResolver>(_ => new NoopWindowResolver());
         services.AddScoped(executor);
+        if (graphScheduler is not null)
+        {
+            services.AddScoped(_ => graphScheduler);
+        }
         var provider = services.BuildServiceProvider();
         var telemetry = new CentralDerivativeWorkerTelemetry();
         var options = Options.Create(new CentralDerivativeWorkerOptions
@@ -227,8 +303,35 @@ public sealed class CentralDerivativeWorkerTests
             options,
             telemetry,
             TimeProvider.System,
-            NullLogger<CentralDerivativeWorker>.Instance);
+            NullLogger<CentralDerivativeWorker>.Instance,
+            signal);
         return new WorkerHarness(provider, telemetry, worker);
+    }
+
+    private sealed class ScriptedGraphScheduler : ICentralProcessingGraphScheduler
+    {
+        public static readonly Guid CorruptExecutionId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        private readonly System.Collections.Concurrent.ConcurrentBag<Guid> _converged = [];
+
+        public Func<Guid, Task> Converge { get; init; } = static _ => Task.CompletedTask;
+
+        public IReadOnlyCollection<Guid> ConvergedIds => _converged;
+
+        public Task<CentralProcessingGraphScheduleResult> ScheduleLiveAsync(
+            Guid centralArtifactId, DateTimeOffset now, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<CentralProcessingGraphScheduleResult> ScheduleReplayAsync(
+            CentralProcessingGraphReplayRequest request, DateTimeOffset now, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task ConvergeAsync(Guid executionId, DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            _converged.Add(executionId);
+            return Converge(executionId);
+        }
+
+        public Task ConvergeBatchAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private static CentralDerivativeJobLease CreateLease() => new(

@@ -38,6 +38,39 @@ public sealed class CentralArtifactRetrievalServiceTests
     }
 
     [TestMethod]
+    public void CanonicalCredentialAccess_OwnerWriteCredentialHonorsBearerOwnerWriteScope()
+    {
+        static ClaimsPrincipal Bearer(params string[] scopes) => new(new ClaimsIdentity(
+            [new Claim("sub", "owner"), new Claim("account_type", "User"), .. scopes.Select(scope => new Claim("scope", scope))],
+            CentralArtifactCredentialAccess.BearerAuthenticationType));
+        static ClaimsPrincipal ApiKey(ApiKeyAccessLevel level) => new(new ClaimsIdentity(
+            [
+                new Claim(ClaimTypes.NameIdentifier, "key-user"),
+                new Claim("account_type", "User"),
+                new Claim(ApiKeyClaims.AuthenticationType, ApiKeyAuthenticationOptions.AuthenticationScheme),
+                new Claim(ApiKeyClaims.AccessLevel, level.ToString())
+            ],
+            ApiKeyAuthenticationOptions.AuthenticationScheme));
+
+        // The write-only bearer the ApiKeyReadWrite policy authorizes for mutation endpoints.
+        var ownerWriteOnly = Bearer("api.owner.write");
+        CentralArtifactCredentialAccess.HasOwnerCredential(ownerWriteOnly).Should().BeFalse();
+        CentralArtifactCredentialAccess.HasOwnerWriteCredential(ownerWriteOnly).Should().BeTrue();
+        CentralArtifactCredentialAccess.HasOwnerWriteCredential(Bearer("api.admin")).Should().BeTrue();
+        CentralArtifactCredentialAccess.HasOwnerWriteCredential(Bearer("api.viewer")).Should().BeFalse(
+            "a read-only bearer never satisfies the write caller check");
+        CentralArtifactCredentialAccess.HasOwnerWriteCredential(ApiKey(ApiKeyAccessLevel.ReadWrite)).Should().BeTrue();
+        CentralArtifactCredentialAccess.HasOwnerWriteCredential(ApiKey(ApiKeyAccessLevel.Read)).Should().BeFalse();
+        CentralArtifactCredentialAccess.HasOwnerWriteCredential(new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, "cookie-user"), new Claim("account_type", "User")],
+            IdentityConstants.ApplicationScheme))).Should().BeTrue();
+        CentralArtifactCredentialAccess.HasOwnerWriteCredential(new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim("sub", "worker"), new Claim("account_type", "System"), new Claim("scope", "api.owner.write")],
+            CentralArtifactCredentialAccess.BearerAuthenticationType))).Should().BeFalse(
+            "system principals are never owner credentials");
+    }
+
+    [TestMethod]
     public void CanonicalCredentialAccess_RejectsAmbiguousOrWrongSchemeClaims()
     {
         var invalidPrincipals = new[]

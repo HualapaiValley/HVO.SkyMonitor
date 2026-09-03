@@ -19,7 +19,7 @@ internal sealed class ProcessingGraphExecutionsController(
         ProcessingGraphReplayApiRequest request,
         CancellationToken cancellationToken)
     {
-        if (!TryGetCaller(out var actorId, out var observatoryScope))
+        if (!TryGetCaller(out var actorId, out var observatoryScope, mutation: true))
         {
             return Forbid();
         }
@@ -91,7 +91,7 @@ internal sealed class ProcessingGraphExecutionsController(
     [Authorize(Policy = AuthorizationPolicyNames.ApiKeyReadWrite)]
     public async Task<IActionResult> CancelAsync(Guid executionId, CancellationToken cancellationToken)
     {
-        if (!TryGetCaller(out var actorId, out var observatoryScope))
+        if (!TryGetCaller(out var actorId, out var observatoryScope, mutation: true))
         {
             return Forbid();
         }
@@ -106,11 +106,18 @@ internal sealed class ProcessingGraphExecutionsController(
         };
     }
 
-    private bool TryGetCaller(out string actorId, out Guid? observatoryScope)
+    /// <summary>
+    /// Mutation actions are already authorized by <see cref="AuthorizationPolicyNames.ApiKeyReadWrite"/>, which
+    /// accepts a bearer carrying only <c>api.owner.write</c>; the caller check honors that same write credential
+    /// instead of demanding the read scopes the read-only actions require.
+    /// </summary>
+    private bool TryGetCaller(out string actorId, out Guid? observatoryScope, bool mutation = false)
     {
         actorId = CentralArtifactCredentialAccess.GetOwnerId(User) ?? string.Empty;
         observatoryScope = CentralArtifactCredentialAccess.GetObservatoryScope(User);
-        return actorId.Length > 0 && CentralArtifactCredentialAccess.HasOwnerCredential(User);
+        return actorId.Length > 0 && (mutation
+            ? CentralArtifactCredentialAccess.HasOwnerWriteCredential(User)
+            : CentralArtifactCredentialAccess.HasOwnerCredential(User));
     }
 
     internal sealed record ProcessingGraphReplayApiRequest(

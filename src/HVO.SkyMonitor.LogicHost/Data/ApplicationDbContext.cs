@@ -363,35 +363,44 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         }
     }
 
+    /// <summary>
+    /// Graph-owned <see cref="CentralDerivativeJob"/> columns whose values are frozen at expansion. This list must stay
+    /// identical to the column set compared by <c>TR_CentralDerivativeJobs_GraphIdentityImmutable</c> in
+    /// <c>Data/Migrations/BaselineTriggers.sql</c> ("Derivative graph executable identity is immutable.");
+    /// <c>CentralProcessingGraphInvariantTests</c> diffs the two.
+    /// </summary>
+    internal static readonly string[] GraphJobFrozenProperties =
+    [
+        nameof(CentralDerivativeJob.SourceCentralArtifactId),
+        nameof(CentralDerivativeJob.TargetRole),
+        nameof(CentralDerivativeJob.TargetRecipeVersion),
+        nameof(CentralDerivativeJob.TargetVariant),
+        nameof(CentralDerivativeJob.RecipeName),
+        nameof(CentralDerivativeJob.RecipeOptionsJson),
+        nameof(CentralDerivativeJob.InputSelectorJson),
+        nameof(CentralDerivativeJob.RequestedRecipeIdentitySha256),
+        nameof(CentralDerivativeJob.ExpectedRecipeIdentitySha256),
+        nameof(CentralDerivativeJob.RequestIdentitySha256),
+        nameof(CentralDerivativeJob.TraceParent),
+        nameof(CentralDerivativeJob.TraceState),
+        nameof(CentralDerivativeJob.GraphExecutionId),
+        nameof(CentralDerivativeJob.GraphNodeId),
+        nameof(CentralDerivativeJob.GraphNodeOrdinal),
+        nameof(CentralDerivativeJob.SharedNodePlanIdentitySha256),
+        nameof(CentralDerivativeJob.FrozenNodePlanJson),
+        nameof(CentralDerivativeJob.GraphFailurePolicy),
+        nameof(CentralDerivativeJob.WaitKind),
+        nameof(CentralDerivativeJob.ResolutionDeadlineUtc),
+        nameof(CentralDerivativeJob.ResolutionStartedAtUtc),
+        nameof(CentralDerivativeJob.MissingInputOutcome),
+        nameof(CentralDerivativeJob.MinimumInputCount),
+        nameof(CentralDerivativeJob.PredecessorJobId),
+        nameof(CentralDerivativeJob.CreatedAtUtc)
+    ];
+
     private void ValidateGraphJobMutation()
     {
-        string[] frozenProperties =
-        [
-            nameof(CentralDerivativeJob.SourceCentralArtifactId),
-            nameof(CentralDerivativeJob.TargetRole),
-            nameof(CentralDerivativeJob.TargetRecipeVersion),
-            nameof(CentralDerivativeJob.TargetVariant),
-            nameof(CentralDerivativeJob.RecipeName),
-            nameof(CentralDerivativeJob.RecipeOptionsJson),
-            nameof(CentralDerivativeJob.InputSelectorJson),
-            nameof(CentralDerivativeJob.RequestedRecipeIdentitySha256),
-            nameof(CentralDerivativeJob.ExpectedRecipeIdentitySha256),
-            nameof(CentralDerivativeJob.RequestIdentitySha256),
-            nameof(CentralDerivativeJob.TraceParent),
-            nameof(CentralDerivativeJob.TraceState),
-            nameof(CentralDerivativeJob.GraphExecutionId),
-            nameof(CentralDerivativeJob.GraphNodeId),
-            nameof(CentralDerivativeJob.GraphNodeOrdinal),
-            nameof(CentralDerivativeJob.SharedNodePlanIdentitySha256),
-            nameof(CentralDerivativeJob.FrozenNodePlanJson),
-            nameof(CentralDerivativeJob.GraphFailurePolicy),
-            nameof(CentralDerivativeJob.WaitKind),
-            nameof(CentralDerivativeJob.ResolutionDeadlineUtc),
-            nameof(CentralDerivativeJob.ResolutionStartedAtUtc),
-            nameof(CentralDerivativeJob.MissingInputOutcome),
-            nameof(CentralDerivativeJob.PredecessorJobId),
-            nameof(CentralDerivativeJob.CreatedAtUtc)
-        ];
+        var frozenProperties = GraphJobFrozenProperties;
         foreach (var entry in ChangeTracker.Entries<CentralDerivativeJob>())
         {
             var wasGraphOwned = entry.State == EntityState.Added

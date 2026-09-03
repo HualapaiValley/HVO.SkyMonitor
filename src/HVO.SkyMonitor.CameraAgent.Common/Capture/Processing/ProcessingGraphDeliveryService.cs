@@ -44,6 +44,11 @@ public sealed partial class ProcessingGraphDeliveryService(
             try
             {
                 await inbox.ObserveActiveRevisionAsync(stoppingToken).ConfigureAwait(false);
+                var expired = await inbox.ExpirePendingProposalsAsync(stoppingToken).ConfigureAwait(false);
+                if (expired > 0)
+                {
+                    Log.ExpiredPendingProposals(logger, expired);
+                }
                 await DeliverPendingFactsAsync(deliveryOptions, stoppingToken).ConfigureAwait(false);
                 var registry = await operations.GetRegistryAsync(stoppingToken).ConfigureAwait(false);
                 var active = registry.Revisions.Single(item => item.RevisionId == registry.ActiveRevisionId);
@@ -154,7 +159,7 @@ public sealed partial class ProcessingGraphDeliveryService(
         for (var index = 0; index < deliveryOptions.AcknowledgementBatchSize; index++)
         {
             var outcome = await DeliverOneFactAsync(deliveryOptions, cancellationToken).ConfigureAwait(false);
-            if (outcome != ProcessingGraphFactDeliveryOutcome.Acknowledged)
+            if (outcome is not (ProcessingGraphFactDeliveryOutcome.Acknowledged or ProcessingGraphFactDeliveryOutcome.Rejected))
             {
                 break;
             }
@@ -203,6 +208,14 @@ public sealed partial class ProcessingGraphDeliveryService(
             Log.FactAcknowledged(logger, fact.Kind.ToString(), fact.FactId);
             return ProcessingGraphFactDeliveryOutcome.Acknowledged;
         }
+        if (result.Disposition == ProcessingGraphDeliveryTransportDisposition.Rejected)
+        {
+            // Central durably refused this immutable fact (invalid payload, unknown or conflicting proposal). Resending
+            // can never succeed, so the fact settles as a terminal local rejection instead of growing the backlog.
+            await inbox.RejectFactAsync(fact.FactId, result.ReasonCode, cancellationToken).ConfigureAwait(false);
+            Log.FactRejected(logger, fact.Kind.ToString(), fact.FactId, result.ReasonCode);
+            return ProcessingGraphFactDeliveryOutcome.Rejected;
+        }
         var delay = BoundDelay(
             result.RetryAfter ?? TimeSpan.FromSeconds(deliveryOptions.RetryInitialDelaySeconds),
             deliveryOptions);
@@ -247,6 +260,7 @@ public sealed partial class ProcessingGraphDeliveryService(
     {
         None,
         Acknowledged,
+        Rejected,
         Deferred
     }
 
@@ -267,5 +281,13 @@ public sealed partial class ProcessingGraphDeliveryService(
         [LoggerMessage(2543, LogLevel.Error,
             "Processing graph delivery cycle failed because {ReasonCode}")]
         internal static partial void Failed(ILogger logger, string reasonCode, Exception exception);
+
+        [LoggerMessage(2545, LogLevel.Warning,
+            "Processing graph delivery expired {Count} locally pending proposal(s) past their deadline")]
+        internal static partial void ExpiredPendingProposals(ILogger logger, int count);
+
+        [LoggerMessage(2544, LogLevel.Warning,
+            "Processing graph delivery fact {Kind} rejected by central and settled terminally: FactId={FactId}, Reason={ReasonCode}")]
+        internal static partial void FactRejected(ILogger logger, string kind, Guid factId, string reasonCode);
     }
 }

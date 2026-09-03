@@ -347,6 +347,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             throw new ProcessingGraphStoreConflictException("The processing graph revision is already retired.");
         }
+        if (await IsAcceptedDeliveredRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false))
+        {
+            // Central holds a durable Accepted fact for this staged revision and will never re-propose it; retiring it
+            // locally would strand that delivery with no Rejected/Expired fact to correct central's view. Central
+            // remains free to supersede it with a newer proposal, which settles the local row as Superseded.
+            throw new ProcessingGraphStoreConflictException(
+                "A centrally delivered revision that central recorded as accepted cannot be retired locally.");
+        }
         var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
         await SetRevisionLifecycleAsync(
             connection, transaction, revisionId, ProcessingGraphRevisionLifecycle.Retired, now, cancellationToken)
@@ -408,6 +416,29 @@ internal sealed partial class SqliteCaptureProcessingStore
         var state = await ReadRegistryRowAsync(connection, null, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("The processing graph registry has not been initialized.");
         return await ReadRevisionAsync(connection, null, state.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Returns the revision ID currently occupying the unique <c>(graph_name, revision_name)</c> pair, or
+    /// <see langword="null"/> when the name is free. Used to detect a persisted revision whose immutable content was
+    /// produced by an earlier compiler contract so the caller can supersede it deterministically instead of
+    /// colliding on insert.
+    /// </summary>
+    internal async ValueTask<string?> ReadRevisionIdByNameAsync(
+        string graphName,
+        string revisionName,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT revision_id FROM processing_graph_revisions
+            WHERE graph_name = $name AND revision_name = $revision;
+            """;
+        command.Parameters.AddWithValue("$name", graphName);
+        command.Parameters.AddWithValue("$revision", revisionName);
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
     }
 
     internal async ValueTask BeginNodeAttemptAsync(
@@ -765,6 +796,33 @@ internal sealed partial class SqliteCaptureProcessingStore
                 await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7)));
         }
         return inputs;
+    }
+
+    private static async ValueTask<bool> IsAcceptedDeliveredRevisionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string revisionId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        // Retirement is blocked only while central may still hold this revision as accepted: the proposal settled
+        // Accepted locally and its Accepted fact is pending delivery or was acknowledged. Once central rejected the
+        // Accepted fact (HTTP 400/404/409), central never recorded the acceptance, so the local revision is free to
+        // retire instead of being stranded by an acceptance central does not know about.
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM processing_graph_delivery_proposals AS proposal
+            INNER JOIN processing_graph_delivery_facts AS fact
+                ON fact.proposal_id = proposal.proposal_id
+               AND fact.fact_kind = 'Accepted'
+               AND fact.delivery_state <> 'Rejected'
+            WHERE proposal.disposition = 'Accepted' AND proposal.local_revision_id = $revision;
+            """;
+        command.Parameters.AddWithValue("$revision", revisionId);
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) > 0;
     }
 
     private static async ValueTask InsertRevisionAsync(

@@ -344,8 +344,10 @@ internal sealed class CentralDerivativeJobScheduler(
             await graphScheduler.ConvergeAsync(graphExecutionId.Value, now, cancellationToken).ConfigureAwait(false);
             return;
         }
+        // Central publication validation (CentralProcessingGraphNodeRegistry.Validate) restricts graph sources to the
+        // same role set, so every source role an assigned central graph can declare reaches ScheduleLiveAsync here.
         if (graphScheduler is not null &&
-            artifact.Role is FrameArtifactRole.Raw or FrameArtifactRole.Calibrated)
+            CentralProcessingGraphNodeRegistry.IsSupportedSourceRole(artifact.Role))
         {
             var graphResult = await graphScheduler.ScheduleLiveAsync(artifact.Id, now, cancellationToken)
                 .ConfigureAwait(false);

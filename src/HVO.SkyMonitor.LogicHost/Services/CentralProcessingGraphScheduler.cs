@@ -85,7 +85,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
         CancellationToken cancellationToken)
     {
         var artifact = await LoadArtifactAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
-        if (!IsUsable(artifact) || artifact.Role is not (FrameArtifactRole.Raw or FrameArtifactRole.Calibrated) ||
+        if (!IsUsable(artifact) || !CentralProcessingGraphNodeRegistry.IsSupportedSourceRole(artifact.Role) ||
             artifact.Frame?.LogicalCameraInstallation is not { RetiredAtUtc: null } installation ||
             installation.LogicalCamera is not { DeactivatedAtUtc: null } camera ||
             camera.ObservatoryId != artifact.Frame.ObservatoryId)
@@ -103,7 +103,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
             return new(CentralProcessingGraphScheduleOutcome.NotApplicable);
         }
         var plan = CompileAndVerify(assignment.Revision);
-        if (!plan.Sources.Any(source => source.Outputs.Any(output => output.Role == artifact.Role)))
+        if (!plan.Sources.Any(source => source.Outputs.Any(output => SourceContractMatches(output, artifact))))
         {
             return new(CentralProcessingGraphScheduleOutcome.NotApplicable);
         }
@@ -171,6 +171,9 @@ internal sealed partial class CentralProcessingGraphScheduler(
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.LogicalCameraInstallation)!
                 .ThenInclude(installation => installation!.LogicalCamera)
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
+            .Include(item => item.Recipe)
+            .Include(item => item.StructuredProduct)
+            .AsSplitQuery()
             .Where(item => request.SourceCentralArtifactIds.Contains(item.Id))
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var ordered = request.SourceCentralArtifactIds.Select(id => artifacts.SingleOrDefault(item => item.Id == id))
@@ -400,16 +403,15 @@ internal sealed partial class CentralProcessingGraphScheduler(
         {
             if (dbContext.Database.IsSqlServer())
             {
-                var resource = $"processing-graph-execution:{requestIdentity}";
-                await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
-                    DECLARE @result int;
-                    EXEC @result = sys.sp_getapplock
-                        @Resource = {resource},
-                        @LockMode = 'Exclusive',
-                        @LockOwner = 'Transaction',
-                        @LockTimeout = 10000;
-                    IF @result < 0 THROW 51000, 'Could not lock processing graph expansion.', 1;
-                    """, cancellationToken).ConfigureAwait(false);
+                // Two locks, always in this order: the (class, actor, idempotency key) tuple first so concurrent
+                // requests reusing one key with different request identities serialize on the key and the second
+                // observes the explicit Conflict instead of racing the unique index; then the request identity so
+                // different keys for the same request converge on one execution.
+                await AcquireExpansionLockAsync(
+                    $"processing-graph-idempotency:{CreateIdempotencyLockIdentity(executionClass, actor, idempotencyKey)}",
+                    cancellationToken).ConfigureAwait(false);
+                await AcquireExpansionLockAsync(
+                    $"processing-graph-execution:{requestIdentity}", cancellationToken).ConfigureAwait(false);
             }
             var byKey = await dbContext.CentralProcessingGraphExecutions.AsNoTracking()
                 .SingleOrDefaultAsync(item => item.ExecutionClass == executionClass && item.ActorId == actor &&
@@ -528,14 +530,14 @@ internal sealed partial class CentralProcessingGraphScheduler(
                         ArtifactId: ResolveBindingArtifactId(binding, sourceRows, projectedArtifacts)))
                     .Concat(CreateExternalAuxiliaries(node, environmentalInputs))
                     .ToArray();
-                var expectedIdentity = auxiliaries.Length == 0 ||
-                    handler.Kind == CentralProcessingGraphNodeHandlerKind.TransientValidation
-                        ? requestedIdentity
-                        : BuiltInProcessingRecipes.CreateExecutionIdentity(
-                            node.Definition.StepAlias,
-                            node.Definition.EffectiveOptions,
-                            primarySelector,
-                            auxiliaryInputs: auxiliaries).IdentitySha256;
+                var expectedIdentity = CreateExpectedRecipeIdentity(
+                    handler.Kind,
+                    node.Definition.StepAlias,
+                    node.Definition.EffectiveOptions,
+                    primarySelector,
+                    requestedIdentity,
+                    auxiliaries,
+                    frame.SceneProvenanceJson);
                 var firstOutput = node.Definition.Outputs.FirstOrDefault();
                 var job = new CentralDerivativeJob
                 {
@@ -574,6 +576,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
                             : now.AddTicks(node.Definition.Window.TimeoutTicks),
                     ResolutionStartedAtUtc = now,
                     MissingInputOutcome = MapMissingOutcome(node.Definition.Window?.MissingInputOutcome),
+                    MinimumInputCount = node.Definition.Window?.MinimumInputCount,
                     StateReasonCode = node.Definition.Window is null
                         ? "processing.graph.waiting-dependencies"
                         : CentralDerivativeWindowReasonCodes.WaitingRequiredInput,
@@ -612,7 +615,34 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 AddExternalInputRequirements(jobs[node.Definition.Id], node, frame, now);
             }
             dbContext.CentralProcessingGraphExecutions.Add(execution);
-            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (DbUpdateException) when (dbContext.Database.IsRelational())
+            {
+                // Providers without application locks can still lose the unique (class, actor, key) or request
+                // identity race after the lookups above; translate it into the same explicit outcome contract.
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                await transaction.DisposeAsync().ConfigureAwait(false);
+                dbContext.ChangeTracker.Clear();
+                var raced = await dbContext.CentralProcessingGraphExecutions.AsNoTracking()
+                    .Where(item => item.ExecutionClass == executionClass && item.ActorId == actor &&
+                        item.IdempotencyKey == idempotencyKey || item.RequestIdentitySha256 == requestIdentity)
+                    .OrderBy(item => item.RequestIdentitySha256 == requestIdentity ? 0 : 1)
+                    .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                if (raced is null)
+                {
+                    throw;
+                }
+                CentralProcessingGraphScheduleResult racedResult = string.Equals(
+                    raced.RequestIdentitySha256, requestIdentity, StringComparison.Ordinal)
+                    ? new(CentralProcessingGraphScheduleOutcome.Existing, raced)
+                    : new(CentralProcessingGraphScheduleOutcome.Conflict, ReasonCode: "idempotency-key-conflict");
+                telemetry.RecordGraphExpansion(
+                    executionClass.ToString(), racedResult.Outcome.ToString(), timeProvider.GetElapsedTime(started), 0);
+                return racedResult;
+            }
             await CentralProcessingGraphExpansionSeal.SealAsync(
                 dbContext, execution.Id, now, cancellationToken).ConfigureAwait(false);
             dbContext.ChangeTracker.Clear();
@@ -1387,7 +1417,9 @@ internal sealed partial class CentralProcessingGraphScheduler(
         => await dbContext.CentralArtifacts
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.LogicalCameraInstallation)!
                 .ThenInclude(installation => installation!.LogicalCamera)
-            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts).ThenInclude(artifact => artifact.Recipe)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts).ThenInclude(artifact => artifact.StructuredProduct)
+            .AsSplitQuery()
             .SingleAsync(item => item.Id == id, cancellationToken).ConfigureAwait(false);
 
     private async Task<CentralProcessingGraphExecution?> LoadExecutionAsync(
@@ -1417,7 +1449,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
         var incomingUsed = false;
         foreach (var source in plan.Sources)
         {
-            var matches = frameArtifacts.Where(artifact => source.Outputs.Any(output => output.Role == artifact.Role))
+            var matches = frameArtifacts.Where(artifact => source.Outputs.Any(output => SourceContractMatches(output, artifact)))
                 .OrderByDescending(artifact => artifact.Id == incoming.Id)
                 .ThenBy(artifact => artifact.ArtifactId)
                 .ToArray();
@@ -1435,7 +1467,59 @@ internal sealed partial class CentralProcessingGraphScheduler(
         ProcessingGraphExecutionPlan plan,
         CentralArtifact[] sources)
         => plan.Sources.Length == sources.Length && plan.Sources.Select((source, index) =>
-            source.Outputs.Any(output => output.Role == sources[index].Role)).All(static matched => matched);
+            source.Outputs.Any(output => SourceContractMatches(output, sources[index]))).All(static matched => matched);
+
+    /// <summary>
+    /// The conventional variant a graph source contract uses to designate the frame's acquisition artifact of a role
+    /// (Raw artifacts are published with this variant; a CameraAgent publishes its Calibrated artifact under a
+    /// deployment-configured variant, which the canonical central graph cannot know in advance).
+    /// </summary>
+    internal const string AcquisitionSourceVariant = "source";
+
+    /// <summary>
+    /// A frame artifact satisfies a published source contract only when every field the contract pins matches: role,
+    /// product kind, variant, and (when declared) recipe, schema version, and media type. Role alone would let a
+    /// differently produced artifact of the same role be frozen as the graph source, contradicting the contract the
+    /// execution and its provenance claim to have used. A contract whose variant is the acquisition placeholder
+    /// accepts the role's acquisition artifact under its agent-configured variant; any other variant must match exactly.
+    /// </summary>
+    internal static bool SourceContractMatches(ProcessingGraphProductContract contract, CentralArtifact artifact)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        ArgumentNullException.ThrowIfNull(artifact);
+        if (contract.Role != artifact.Role || string.IsNullOrEmpty(artifact.Variant) ||
+            !string.Equals(contract.Variant, AcquisitionSourceVariant, StringComparison.Ordinal) &&
+            !string.Equals(contract.Variant, artifact.Variant, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        var productKind = artifact.StructuredProduct is { } structured
+            ? Enum.TryParse<ProcessingProductKind>(structured.ProductKind, ignoreCase: false, out var parsed)
+                ? parsed
+                : (ProcessingProductKind?)null
+            : artifact.Role == FrameArtifactRole.Metadata
+                ? ProcessingProductKind.Metadata
+                : ProcessingProductKind.PixelData;
+        if (productKind != contract.ProductKind)
+        {
+            return false;
+        }
+        if (contract.Recipe is { } recipe &&
+            (artifact.Recipe is not { } actualRecipe ||
+             !string.Equals(recipe.Name, actualRecipe.Name, StringComparison.Ordinal) ||
+             !string.Equals(recipe.SemanticVersion, actualRecipe.SemanticVersion, StringComparison.Ordinal) ||
+             !string.Equals(recipe.ImplementationVersion, actualRecipe.ImplementationVersion, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+        if (contract.SchemaVersion is { } schemaVersion &&
+            !string.Equals(schemaVersion, artifact.StructuredProduct?.ProductSchemaVersion, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        return contract.MediaType is null ||
+            string.Equals(contract.MediaType, artifact.MediaType, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static Guid ResolveBindingArtifactId(
         ProcessingGraphInputBinding binding,
@@ -1446,6 +1530,39 @@ internal sealed partial class CentralProcessingGraphScheduler(
             : projectedArtifacts.TryGetValue((binding.ProducerId, binding.OutputIndex), out var artifactId)
                 ? artifactId
                 : Guid.Empty;
+
+    /// <summary>
+    /// The recipe identity a node's runtime product must carry, frozen at expansion. Auxiliary inputs are bound
+    /// here from the frozen plan and the anchor frame's environment. An annotation-bearing node also executes with
+    /// the anchor frame's scene provenance as a runtime <see cref="ProcessingAnnotationInput"/>: that provenance is
+    /// write-once ingest state on the frame (never rewritten once present), so when it is available at expansion the
+    /// node's actual identity is known exactly and every dependent selector and projected output identity derives
+    /// from it instead of the requested identity. Without provenance the expectation stays the requested identity,
+    /// which <see cref="CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity"/> reconciles at binding.
+    /// </summary>
+    internal static string CreateExpectedRecipeIdentity(
+        CentralProcessingGraphNodeHandlerKind handlerKind,
+        string stepAlias,
+        JsonElement effectiveOptions,
+        ProcessingInputSelector primarySelector,
+        string requestedIdentity,
+        IReadOnlyList<ProcessingAuxiliaryInput> auxiliaries,
+        string? sceneProvenanceJson)
+    {
+        ArgumentNullException.ThrowIfNull(primarySelector);
+        ArgumentNullException.ThrowIfNull(auxiliaries);
+        if (handlerKind == CentralProcessingGraphNodeHandlerKind.TransientValidation)
+        {
+            return requestedIdentity;
+        }
+        var annotation = string.Equals(stepAlias, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
+            ? CentralDerivativeJobExecutor.CreateAnnotation(sceneProvenanceJson)
+            : null;
+        return annotation is null && auxiliaries.Count == 0
+            ? requestedIdentity
+            : BuiltInProcessingRecipes.CreateExecutionIdentity(
+                stepAlias, effectiveOptions, primarySelector, annotation, auxiliaries).IdentitySha256;
+    }
 
     private static ProcessingInputSelector CreateSelector(
         ProcessingGraphInputBinding binding,
@@ -1490,6 +1607,29 @@ internal sealed partial class CentralProcessingGraphScheduler(
             null => null,
             _ => throw new CentralDerivativeJobStateException("The graph missing-input outcome is invalid.")
         };
+
+    private Task<int> AcquireExpansionLockAsync(string resource, CancellationToken cancellationToken)
+        => dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+            DECLARE @result int;
+            EXEC @result = sys.sp_getapplock
+                @Resource = {resource},
+                @LockMode = 'Exclusive',
+                @LockOwner = 'Transaction',
+                @LockTimeout = 10000;
+            IF @result < 0 THROW 51000, 'Could not lock processing graph expansion.', 1;
+            """, cancellationToken);
+
+    internal static string CreateIdempotencyLockIdentity(
+        CentralProcessingGraphExecutionClass executionClass,
+        string actor,
+        string idempotencyKey)
+        => CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            schema = "hvo-processing-graph-idempotency-lock-v1",
+            executionClass = executionClass.ToString(),
+            actor,
+            idempotencyKey
+        });
 
     private static string CreateGraphRequestIdentity(
         CentralProcessingGraphExecutionClass executionClass,

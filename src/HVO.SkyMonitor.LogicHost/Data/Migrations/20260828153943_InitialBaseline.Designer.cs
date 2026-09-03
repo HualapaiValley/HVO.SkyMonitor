@@ -967,6 +967,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<int>("MaxAttempts")
                         .HasColumnType("int");
 
+                    b.Property<int?>("MinimumInputCount")
+                        .HasColumnType("int");
+
                     b.Property<string>("MissingInputOutcome")
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
@@ -1113,6 +1116,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                             t.HasCheckConstraint("CK_CentralDerivativeJobs_GraphOwnership", "([GraphExecutionId] IS NULL AND [GraphNodeId] IS NULL AND [GraphNodeOrdinal] IS NULL AND [SharedNodePlanIdentitySha256] IS NULL AND [FrozenNodePlanJson] IS NULL AND [GraphFailurePolicy] IS NULL) OR ([GraphExecutionId] IS NOT NULL AND [GraphNodeId] IS NOT NULL AND [GraphNodeOrdinal] >= 0 AND [SharedNodePlanIdentitySha256] IS NOT NULL AND [FrozenNodePlanJson] IS NOT NULL AND [GraphFailurePolicy] IS NOT NULL)");
 
                             t.HasCheckConstraint("CK_CentralDerivativeJobs_MaxAttempts", "[MaxAttempts] > 0");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobs_MinimumInputCount", "[MinimumInputCount] IS NULL OR [MinimumInputCount] >= 0");
 
                             t.HasCheckConstraint("CK_CentralDerivativeJobs_WaitKind", "[WaitKind] IS NULL OR [WaitKind] IN (N'Dependencies', N'Window')");
                         });

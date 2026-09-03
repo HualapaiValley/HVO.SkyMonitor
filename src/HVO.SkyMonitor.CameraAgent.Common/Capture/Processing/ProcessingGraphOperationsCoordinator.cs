@@ -26,6 +26,15 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private readonly ProcessingGraphExecutionOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly ProcessingReplayWakeup _replayWakeup;
+    /// <summary>
+    /// Serializes configured-basic refreshes (<see cref="EnsureConfiguredBasicAsync"/>) so a single pipeline identity
+    /// compiles and persists exactly once. Lock order (see <see cref="RawIngressLifecycleLock"/>): callers that hold
+    /// the raw-ingress lifecycle lock may acquire this gate (raw-ingress accept and recovery binding call
+    /// <see cref="PrepareLiveExecutionAsync"/> under the lifecycle lock), so this gate must never be held while
+    /// waiting for the lifecycle lock. <see cref="StageAsync"/> therefore takes only the lifecycle lock; proposal
+    /// acceptance is made atomic against configured-basic refreshes by the in-transaction active-revision recheck in
+    /// <c>SettleDeliveryProposalAsync</c>, not by this gate.
+    /// </summary>
     private readonly SemaphoreSlim _configurationGate = new(1, 1);
     private CameraModuleConfig? _baseConfiguration;
     private string? _configuredPipelineIdentity;
@@ -62,12 +71,28 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             {
                 return await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
             }
+            var revisionName = pipelineIdentity[..16];
             var revision = CreateRevisionSnapshot(
                 configuration,
                 ConfiguredGraphName,
-                pipelineIdentity[..16],
+                revisionName,
                 _timeProvider.GetUtcNow(),
                 ProcessingGraphRevisionLifecycle.Validated);
+            var occupant = await _store.ReadRevisionIdByNameAsync(ConfiguredGraphName, revisionName, cancellationToken)
+                .ConfigureAwait(false);
+            if (occupant is not null && !string.Equals(occupant, revision.State.RevisionId, StringComparison.Ordinal))
+            {
+                // The persisted configured-basic revision for this pipeline configuration was compiled by an earlier
+                // contract (for example schema-6 rows that predate output media types) and therefore has different
+                // immutable identities. Revision rows are append-only, so supersede it under a deterministic name
+                // derived from the current compiled contract instead of colliding on the unique (name, revision) pair.
+                revision = CreateRevisionSnapshot(
+                    configuration,
+                    ConfiguredGraphName,
+                    SupersededRevisionName(revisionName, revision.State),
+                    _timeProvider.GetUtcNow(),
+                    ProcessingGraphRevisionLifecycle.Validated);
+            }
             EnsureLiveEligible(revision);
             var state = await _store.UpsertConfiguredBasicRevisionAsync(revision, cancellationToken).ConfigureAwait(false);
             _configuredPipelineIdentity = pipelineIdentity;
@@ -223,6 +248,31 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             return;
         }
+        // Staging is conditioned on the local active revision. Operator activation/rollback run under the raw-ingress
+        // lifecycle lock, so staging takes the same lock to observe a stable registry while it compiles and validates
+        // the delivered revision. Configured-basic refreshes are NOT excluded here: raw-ingress accept and recovery
+        // binding hold the lifecycle lock while acquiring _configurationGate, so taking _configurationGate here (in
+        // either order relative to the lifecycle lock) would invert the lock order and deadlock. Correctness against a
+        // concurrent configured-basic refresh comes from SettleDeliveryProposalAsync, which re-reads the active
+        // revision inside the same immediate SQLite transaction that records acceptance, and every registry mutation
+        // (UpsertConfiguredBasicRevisionAsync, ActivateRevisionAsync, RollbackRevisionAsync) commits inside its own
+        // immediate transaction; a stale expectation settles as Rejected(active-revision-changed).
+        var rawGate = RawIngressLifecycleLock.ForRoot(_store.StorageRoot);
+        await rawGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await StageUnderLifecycleLocksAsync(proposal, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            rawGate.Release();
+        }
+    }
+
+    private async ValueTask StageUnderLifecycleLocksAsync(
+        ProcessingGraphDeliveryProposalV1 proposal,
+        CancellationToken cancellationToken)
+    {
         try
         {
             if (proposal.ExpiresAtUtc <= _timeProvider.GetUtcNow())
@@ -277,8 +327,12 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                     proposal.ProposalId, "proposal-expired", cancellationToken).ConfigureAwait(false);
                 return;
             }
-            await _store.AcceptDeliveryProposalAsync(proposal.ProposalId, validated, cancellationToken)
-                .ConfigureAwait(false);
+            await _store.AcceptDeliveryProposalAsync(
+                proposal.ProposalId,
+                validated,
+                cancellationToken,
+                proposal.ExpectedActiveLocalRevisionId,
+                enforceExpectedActive: true).ConfigureAwait(false);
         }
         catch (Exception exception) when (IsExpectedProposalValidationFailure(exception))
         {
@@ -301,6 +355,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         await _store.RecordDeliveredActivationAsync(registry.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
     }
 
+    public ValueTask<int> ExpirePendingProposalsAsync(CancellationToken cancellationToken)
+        => _store.ExpireStalePendingProposalsAsync(cancellationToken);
+
     public ValueTask<ProcessingGraphDeliveryFactV1?> ReadPendingFactAsync(CancellationToken cancellationToken)
         => _store.ReadPendingDeliveryFactAsync(cancellationToken);
 
@@ -316,6 +373,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string reasonCode,
         CancellationToken cancellationToken)
         => _store.RetryDeliveryFactAsync(factId, nextAttemptUtc, reasonCode, cancellationToken);
+
+    public ValueTask RejectFactAsync(Guid factId, string reasonCode, CancellationToken cancellationToken)
+        => _store.RejectDeliveryFactAsync(factId, reasonCode, cancellationToken);
 
     public ValueTask<ProcessingGraphDeliveryBacklog> ReadBacklogAsync(CancellationToken cancellationToken)
         => _store.ReadDeliveryBacklogAsync(cancellationToken);
@@ -614,6 +674,18 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         var hash = Convert.FromHexString(CaptureContractJson.ComputeCanonicalJsonSha256(value));
         return new Guid(hash.AsSpan(0, 16));
     }
+
+    internal static string SupersededRevisionName(string revisionName, ProcessingGraphRevisionState state)
+        => string.Concat(
+            revisionName,
+            "-",
+            CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                SchemaVersion = "cameraagent-processing-configured-basic-contract-v1",
+                state.DefinitionIdentitySha256,
+                state.SharedPlanIdentitySha256,
+                state.LocalPlanIdentitySha256
+            })[..16]);
 
     internal static void EnsureExplicitPipeline(CapturePipelineConfig pipeline)
     {

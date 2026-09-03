@@ -190,6 +190,55 @@ public sealed class ProcessingGraphDeliveryServiceTests
     }
 
     [TestMethod]
+    public async Task RejectedFactDispositionsSettleTerminallyWithoutRetry()
+    {
+        var rejected = CreateFact(ProcessingGraphDeliveryFactKind.Accepted);
+        var facts = new Queue<ProcessingGraphDeliveryFactV1>([rejected]);
+        var inbox = CreateInbox();
+        inbox.Setup(value => value.ReadPendingFactAsync(It.IsAny<CancellationToken>()))
+            .Returns(() => ValueTask.FromResult<ProcessingGraphDeliveryFactV1?>(
+                facts.Count == 0 ? null : facts.Dequeue()));
+        inbox.Setup(value => value.RejectFactAsync(rejected.FactId, "http-409", It.IsAny<CancellationToken>()))
+            .Returns(() => ValueTask.CompletedTask);
+        inbox.Setup(value => value.ReadBacklogAsync(It.IsAny<CancellationToken>()))
+            .Returns(() => ValueTask.FromResult(new ProcessingGraphDeliveryBacklog(0, null, 0, null, 1)));
+        var transport = new Mock<IProcessingGraphDeliveryTransport>(MockBehavior.Strict);
+        transport.Setup(value => value.SendFactAsync(rejected, It.IsAny<CancellationToken>()))
+            .Returns(() => ValueTask.FromResult(new ProcessingGraphFactTransportResult(
+                ProcessingGraphDeliveryTransportDisposition.Rejected, "http-409")));
+        transport.Setup(value => value.PullAsync(It.IsAny<ProcessingGraphProposalPollRequestV1>(), It.IsAny<CancellationToken>()))
+            .Returns(() => ValueTask.FromResult(new ProcessingGraphProposalTransportResult(
+                ProcessingGraphDeliveryTransportDisposition.Acknowledged,
+                "current",
+                new ProcessingGraphProposalPollResponseV1(
+                    ProcessingGraphDeliverySchemaVersions.Current,
+                    ProcessingGraphProposalPollDisposition.Current,
+                    "current",
+                    Now))));
+        var state = new ProcessingGraphDeliveryState();
+        using var telemetry = new ProcessingGraphDeliveryTelemetry(state, new FixedTimeProvider(Now));
+        using var service = CreateService(
+            transport.Object,
+            inbox.Object,
+            CreateOperations().Object,
+            CreateConfigurationAccessor(),
+            state,
+            telemetry,
+            EnabledOptions(),
+            new FixedTimeProvider(Now));
+
+        await RunUntilAsync(
+            service,
+            () => state.Snapshot.Availability == ProcessingGraphDeliveryAvailability.Healthy).ConfigureAwait(false);
+
+        inbox.Verify(value => value.RejectFactAsync(rejected.FactId, "http-409", It.IsAny<CancellationToken>()), Times.Once);
+        inbox.Verify(value => value.RetryFactAsync(
+            It.IsAny<Guid>(), It.IsAny<DateTimeOffset>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        transport.Verify(value => value.SendFactAsync(rejected, It.IsAny<CancellationToken>()), Times.Once);
+        Assert.AreEqual(0, state.Snapshot.PendingFactCount);
+    }
+
+    [TestMethod]
     public async Task InvalidPollContractsAndDurableFailuresReportBoundedHealthStates()
     {
         var proposal = CreateProposal();
@@ -288,6 +337,8 @@ public sealed class ProcessingGraphDeliveryServiceTests
             .Returns(ProcessingGraphAgentCapabilities.Create(["RawCapturePersistence"]));
         inbox.Setup(value => value.ObserveActiveRevisionAsync(It.IsAny<CancellationToken>()))
             .Returns(() => ValueTask.CompletedTask);
+        inbox.Setup(value => value.ExpirePendingProposalsAsync(It.IsAny<CancellationToken>()))
+            .Returns(() => ValueTask.FromResult(0));
         return inbox;
     }
 

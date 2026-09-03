@@ -239,6 +239,10 @@ internal sealed partial class CentralDerivativeWindowResolver(
             var unresolvedOptional = job.InputRequirements.Any(item => !item.IsRequired
                 && item.ResolutionState == CentralDerivativeInputResolutionState.Waiting);
             var deadlineExpired = job.ResolutionDeadlineUtc <= now;
+            // Graph windows freeze a minimum cardinality in addition to their required positions. A trailing window
+            // whose required-position set is empty must still not execute below its declared minimum under the Run
+            // timeout policy, and no policy may freeze a window that can no longer reach the minimum.
+            var belowMinimum = IsBelowMinimumInputCount(job);
             var inputsPersisted = await PersistResolvedInputsAsync(
                 job, candidates, holdTargets, now, cancellationToken)
                 .ConfigureAwait(false);
@@ -267,7 +271,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
                             : CentralDerivativeWindowReasonCodes.OptionalInputTimeout;
                         requirement.ResolvedAtUtc = now;
                     }
-                    if (job.MissingInputOutcome == CentralDerivativeWindowOutcome.Run && candidates.Count > 0)
+                    if (job.MissingInputOutcome == CentralDerivativeWindowOutcome.Run && candidates.Count > 0 &&
+                        !belowMinimum)
                     {
                         await FreezeInputsAsync(
                             job, candidates, holdTargets, now, cancellationToken).ConfigureAwait(false);
@@ -277,16 +282,15 @@ internal sealed partial class CentralDerivativeWindowResolver(
                     }
                     else
                     {
-                        ApplyDeadlineOutcome(job, now, missingRequired);
+                        var reason = belowMinimum && !missingRequired
+                            ? CentralDerivativeWindowReasonCodes.MinimumInputCountUnmet
+                            : missingRequired
+                                ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
+                                : CentralDerivativeWindowReasonCodes.OptionalInputTimeout;
+                        CompleteWithoutExecution(job, now, reason);
                         await FinalizeTransientSlotsAsync(job, cancellationToken).ConfigureAwait(false);
                         await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
-                            dbContext,
-                            job,
-                            missingRequired
-                                ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
-                                : CentralDerivativeWindowReasonCodes.OptionalInputTimeout,
-                            now,
-                            cancellationToken).ConfigureAwait(false);
+                            dbContext, job, reason, now, cancellationToken).ConfigureAwait(false);
                     }
                     telemetry.RecordWindowDeadline(
                         job.RecipeName, job.Status.ToString().ToLowerInvariant());
@@ -307,6 +311,17 @@ internal sealed partial class CentralDerivativeWindowResolver(
                         job.UpdatedAtUtc = now;
                     }
                 }
+            }
+            else if (belowMinimum)
+            {
+                // Every position is settled (resolved, incompatible, or missing) yet fewer artifacts than the frozen
+                // minimum resolved; the window can never satisfy its published contract, so it completes through the
+                // node's missing-input policy instead of freezing an undersized input set.
+                CompleteWithoutExecution(job, now, CentralDerivativeWindowReasonCodes.MinimumInputCountUnmet);
+                await FinalizeTransientSlotsAsync(job, cancellationToken).ConfigureAwait(false);
+                await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                    dbContext, job, CentralDerivativeWindowReasonCodes.MinimumInputCountUnmet, now, cancellationToken)
+                    .ConfigureAwait(false);
             }
             else
             {
@@ -640,13 +655,16 @@ internal sealed partial class CentralDerivativeWindowResolver(
         }
     }
 
-    private static void ApplyDeadlineOutcome(CentralDerivativeJob job, DateTimeOffset now, bool missingRequired)
-    {
-        var reason = missingRequired
-            ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
-            : CentralDerivativeWindowReasonCodes.OptionalInputTimeout;
-        CompleteWithoutExecution(job, now, reason);
-    }
+    /// <summary>
+    /// Resolved artifact positions versus the frozen minimum. <c>Run</c> only exempts positions that are not
+    /// required; it never lowers the cardinality the graph contract published, so the minimum applies to every
+    /// missing-input policy identically.
+    /// </summary>
+    internal static bool IsBelowMinimumInputCount(CentralDerivativeJob job)
+        => job.MinimumInputCount is { } minimum &&
+            job.InputRequirements.Count(requirement =>
+                requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact &&
+                requirement.ResolutionState == CentralDerivativeInputResolutionState.Resolved) < minimum;
 
     private static void CompleteWithoutExecution(CentralDerivativeJob job, DateTimeOffset now, string reasonCode)
     {
@@ -772,6 +790,7 @@ internal static class CentralDerivativeWindowReasonCodes
     public const string ResolutionConflict = "window.resolution-conflict";
     public const string EnvironmentUnavailable = "window.environment-unavailable";
     public const string AmbiguousInput = "window.ambiguous-input";
+    public const string MinimumInputCountUnmet = "window.minimum-input-count-unmet";
 }
 
 internal sealed class CentralDerivativeWindowAmbiguousInputException : Exception

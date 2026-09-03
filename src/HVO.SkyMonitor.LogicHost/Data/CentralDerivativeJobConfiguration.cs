@@ -24,6 +24,9 @@ internal sealed class CentralDerivativeJobConfiguration : IEntityTypeConfigurati
             table.HasCheckConstraint(
                 "CK_CentralDerivativeJobs_WaitKind",
                 "[WaitKind] IS NULL OR [WaitKind] IN (N'Dependencies', N'Window')");
+            table.HasCheckConstraint(
+                "CK_CentralDerivativeJobs_MinimumInputCount",
+                "[MinimumInputCount] IS NULL OR [MinimumInputCount] >= 0");
             table.HasTrigger("TR_CentralDerivativeJobs_GraphIdentityImmutable");
         });
         builder.HasKey(job => job.Id);

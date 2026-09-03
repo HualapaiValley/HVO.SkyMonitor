@@ -757,6 +757,159 @@ public sealed class ProcessingGraphCatalogAndDeliveryServiceTests
         Assert.IsTrue(exact.Proposal!.Definition.Nodes.Any(node => !node.Enabled && node.StepAlias == "not-installed"));
     }
 
+    [TestMethod]
+    public async Task SeededRevisionLifecycleIsImmutableThroughCatalogTransitions()
+    {
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2026, 9, 3, 8, 0, 0, TimeSpan.Zero);
+        var clock = new TestTimeProvider(now);
+        using var telemetry = new ProcessingGraphCatalogTelemetry(clock);
+        var service = CreateCatalog(context, clock, telemetry);
+        var definition = DatabaseSeeder.CreateBasicCentralProcessingGraph();
+        var portable = ProcessingGraphCompiler.Compile(definition).Plan!;
+        var central = ProcessingGraphCompiler.Compile(
+            definition, new(ProcessingGraphHosts.LogicHost, ImmutableArray<string>.Empty)).Plan!;
+        context.CentralProcessingGraphRevisions.Add(new CentralProcessingGraphRevision
+        {
+            Id = DatabaseSeeder.BasicCentralProcessingGraphRevisionId,
+            Name = definition.Name,
+            Revision = definition.Revision,
+            DefinitionJson = Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(definition)),
+            DefinitionIdentitySha256 = portable.DefinitionIdentitySha256,
+            PortablePlanIdentitySha256 = portable.PlanIdentitySha256,
+            CentralPlanIdentitySha256 = central.PlanIdentitySha256,
+            CreatedAtUtc = DateTimeOffset.UnixEpoch,
+            CreatedByUserId = "database-seed",
+            PublishedAtUtc = DateTimeOffset.UnixEpoch,
+            PublishedByUserId = "database-seed"
+        });
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        context.ChangeTracker.Clear();
+
+        Assert.IsTrue(ProcessingGraphCatalogService.IsSeededRevision(DatabaseSeeder.BasicCentralProcessingGraphRevisionId));
+        Assert.IsFalse(ProcessingGraphCatalogService.IsSeededRevision(Guid.NewGuid()));
+        var retired = await service.RetireRevisionAsync(
+            DatabaseSeeder.BasicCentralProcessingGraphRevisionId, "editor", "operator-mistake", true,
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralProcessingGraphMutationOutcome.Conflict, retired.Outcome);
+        Assert.AreEqual(ProcessingGraphCatalogService.SeededRevisionReasonCode, retired.ReasonCode);
+        var republished = await service.PublishRevisionAsync(
+            DatabaseSeeder.BasicCentralProcessingGraphRevisionId, "editor", true, CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(CentralProcessingGraphMutationOutcome.Unchanged, republished.Outcome);
+
+        context.ChangeTracker.Clear();
+        var seed = await context.CentralProcessingGraphRevisions.AsNoTracking()
+            .SingleAsync(item => item.Id == DatabaseSeeder.BasicCentralProcessingGraphRevisionId).ConfigureAwait(false);
+        Assert.IsNull(seed.RetiredAtUtc);
+        Assert.IsNull(seed.RetiredByUserId);
+        Assert.IsNull(seed.RetirementReasonCode);
+        Assert.AreEqual(DateTimeOffset.UnixEpoch, seed.PublishedAtUtc);
+        Assert.AreEqual(CentralProcessingGraphLifecycle.Published, seed.Lifecycle);
+    }
+
+    [TestMethod]
+    public async Task CentralValidationRejectsSourceRolesThatNeverTriggerLiveScheduling()
+    {
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        Assert.IsTrue(CentralProcessingGraphNodeRegistry.IsSupportedSourceRole(FrameArtifactRole.Raw));
+        Assert.IsTrue(CentralProcessingGraphNodeRegistry.IsSupportedSourceRole(FrameArtifactRole.Calibrated));
+        foreach (var role in Enum.GetValues<FrameArtifactRole>()
+                     .Where(static role => role is not (FrameArtifactRole.Raw or FrameArtifactRole.Calibrated)))
+        {
+            Assert.IsFalse(CentralProcessingGraphNodeRegistry.IsSupportedSourceRole(role), role.ToString());
+        }
+
+        var rawOnly = ProcessingGraphCompiler.Compile(
+            CreateDefinition("raw-source", "1"),
+            new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
+        Assert.IsTrue(rawOnly.IsValid);
+        Assert.IsTrue(registry.Validate(rawOnly.Plan!));
+
+        // A graph sourcing Preview (or any non-Raw/Calibrated role) is structurally valid but no ingest path would
+        // ever invoke live scheduling for it, so central validation must reject it.
+        var previewSource = CreateDefinition("preview-source", "1", sourceRole: FrameArtifactRole.Preview);
+        var previewCompiled = ProcessingGraphCompiler.Compile(
+            previewSource, new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
+        Assert.IsTrue(previewCompiled.IsValid, string.Join(Environment.NewLine, previewCompiled.Diagnostics));
+        Assert.IsFalse(registry.Validate(previewCompiled.Plan!));
+
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2026, 9, 3, 8, 0, 0, TimeSpan.Zero);
+        var clock = new TestTimeProvider(now);
+        using var telemetry = new ProcessingGraphCatalogTelemetry(clock);
+        var service = CreateCatalog(context, clock, telemetry);
+        var created = await service.CreateRevisionAsync(previewSource, "editor", true, CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(CentralProcessingGraphMutationOutcome.Invalid, created.Outcome);
+        Assert.AreEqual("host-incompatible", created.ReasonCode);
+        Assert.IsEmpty(await service.ListRevisionsAsync(100, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow(2601, true, false)]
+    [DataRow(2627, true, false)]
+    [DataRow(51000, false, true)]
+    [DataRow(1205, false, false)]
+    [DataRow(-2, false, false)]
+    [DataRow(547, false, false)]
+    public void CatalogDbUpdateTranslationIsLimitedToUniqueViolationsAndLifecycleTrigger(
+        int sqlErrorNumber,
+        bool expectUniqueViolation,
+        bool expectLifecycleTrigger)
+    {
+        var exception = new DbUpdateException("save failed", CreateSqlException(sqlErrorNumber));
+
+        Assert.AreEqual(expectUniqueViolation, ProcessingGraphCatalogService.IsUniqueViolation(exception));
+        Assert.AreEqual(expectLifecycleTrigger, ProcessingGraphCatalogService.IsLifecycleTriggerViolation(exception));
+    }
+
+    [TestMethod]
+    public void CatalogDbUpdateTranslationIgnoresNonSqlServerFailures()
+    {
+        var withoutInner = new DbUpdateException("save failed");
+        var withOtherInner = new DbUpdateException("save failed", new TimeoutException("timed out"));
+        var nested = new DbUpdateException(
+            "save failed", new InvalidOperationException("wrapped", CreateSqlException(2627)));
+
+        Assert.IsFalse(ProcessingGraphCatalogService.IsUniqueViolation(withoutInner));
+        Assert.IsFalse(ProcessingGraphCatalogService.IsLifecycleTriggerViolation(withoutInner));
+        Assert.IsFalse(ProcessingGraphCatalogService.IsUniqueViolation(withOtherInner));
+        Assert.IsFalse(ProcessingGraphCatalogService.IsLifecycleTriggerViolation(withOtherInner));
+        Assert.IsTrue(ProcessingGraphCatalogService.IsUniqueViolation(nested), "nested SqlException is still classified");
+    }
+
+    /// <summary>
+    /// <see cref="Microsoft.Data.SqlClient.SqlException"/> has no public constructor; build one with the requested
+    /// error number through SqlClient's internal factory so the classifier can be tested without SQL Server.
+    /// </summary>
+    private static Microsoft.Data.SqlClient.SqlException CreateSqlException(int number)
+    {
+        const System.Reflection.BindingFlags nonPublic =
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public;
+        var errorType = typeof(Microsoft.Data.SqlClient.SqlError);
+        var errorConstructor = errorType.GetConstructors(nonPublic)
+            .Where(candidate => candidate.GetParameters().Length > 0 &&
+                candidate.GetParameters()[0].ParameterType == typeof(int))
+            .OrderByDescending(candidate => candidate.GetParameters().Length)
+            .First();
+        var arguments = errorConstructor.GetParameters().Select((parameter, index) => index == 0
+            ? number
+            : parameter.ParameterType == typeof(string)
+                ? "test"
+                : parameter.ParameterType.IsValueType
+                    ? Activator.CreateInstance(parameter.ParameterType)
+                    : null).ToArray();
+        var error = errorConstructor.Invoke(arguments);
+        var collectionType = typeof(Microsoft.Data.SqlClient.SqlErrorCollection);
+        var collection = Activator.CreateInstance(collectionType, nonPublic, null, null, null)!;
+        collectionType.GetMethod("Add", nonPublic, [errorType])!.Invoke(collection, [error]);
+        var factory = typeof(Microsoft.Data.SqlClient.SqlException).GetMethod(
+            "CreateException", nonPublic, [collectionType, typeof(string)])!;
+        return (Microsoft.Data.SqlClient.SqlException)factory.Invoke(null, [collection, "16.0"])!;
+    }
+
     private static ProcessingGraphCatalogService CreateCatalog(
         ApplicationDbContext context,
         TimeProvider clock,
@@ -874,7 +1027,8 @@ public sealed class ProcessingGraphCatalogAndDeliveryServiceTests
         string revision,
         string nodeId = "Preview",
         JsonElement? options = null,
-        ImmutableArray<string> hostApplicability = default)
+        ImmutableArray<string> hostApplicability = default,
+        FrameArtifactRole sourceRole = FrameArtifactRole.Raw)
     {
         _ = BuiltInProcessingRecipes.TryGetDefinition(
             BuiltInProcessingRecipes.EncodedPreview, out var recipeDefinition);
@@ -888,7 +1042,7 @@ public sealed class ProcessingGraphCatalogAndDeliveryServiceTests
             [new ProcessingGraphSourceDefinition(
                 "$raw",
                 [new ProcessingGraphProductContract(
-                    FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData)])],
+                    sourceRole, "source", ProcessingProductKind.PixelData)])],
             [new ProcessingGraphNodeDefinition(
                 nodeId,
                 BuiltInProcessingRecipes.EncodedPreview,
@@ -900,7 +1054,7 @@ public sealed class ProcessingGraphCatalogAndDeliveryServiceTests
                 normalized,
                 [new ProcessingGraphDependencyDefinition("$raw")],
                 [new ProcessingGraphInputContract(
-                    [FrameArtifactRole.Raw],
+                    [sourceRole],
                     [ProcessingProductKind.PixelData],
                     [],
                     [],

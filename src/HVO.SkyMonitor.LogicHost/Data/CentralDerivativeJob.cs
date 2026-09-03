@@ -59,6 +59,12 @@ internal sealed class CentralDerivativeJob
 
     public CentralDerivativeWindowOutcome? MissingInputOutcome { get; set; }
 
+    /// <summary>
+    /// Frozen minimum window cardinality for graph window nodes (<c>ProcessingGraphWindowRequirement.MinimumInputCount</c>).
+    /// Resolution never freezes fewer resolved artifact inputs than this, regardless of the timeout policy.
+    /// </summary>
+    public int? MinimumInputCount { get; set; }
+
     public string? StateReasonCode { get; set; }
 
     public string? InputSetIdentitySha256 { get; set; }

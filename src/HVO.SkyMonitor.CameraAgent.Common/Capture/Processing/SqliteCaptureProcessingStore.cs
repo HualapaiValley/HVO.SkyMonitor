@@ -3222,7 +3222,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             shared_plan_identity_sha256 TEXT NULL CHECK(shared_plan_identity_sha256 IS NULL OR length(shared_plan_identity_sha256) = 64),
             local_plan_identity_sha256 TEXT NULL CHECK(local_plan_identity_sha256 IS NULL OR length(local_plan_identity_sha256) = 64),
             reason_code TEXT NULL CHECK(reason_code IS NULL OR length(reason_code) BETWEEN 1 AND 128),
-            delivery_state TEXT NOT NULL CHECK(delivery_state IN ('Pending', 'Acknowledged')),
+            delivery_state TEXT NOT NULL CHECK(delivery_state IN ('Pending', 'Acknowledged', 'Rejected')),
             attempt_count INTEGER NOT NULL CHECK(attempt_count >= 0),
             next_attempt_unix_ms INTEGER NOT NULL,
             acknowledged_unix_ms INTEGER NULL,

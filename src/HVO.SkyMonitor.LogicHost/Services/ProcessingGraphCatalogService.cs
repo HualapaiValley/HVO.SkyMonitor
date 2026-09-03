@@ -190,7 +190,40 @@ internal sealed partial class ProcessingGraphCatalogService(
             CreatedByUserId = actorUserId
         };
         dbContext.CentralProcessingGraphRevisions.Add(entity);
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DbUpdateException exception) when (dbContext.Database.IsRelational() && IsUniqueViolation(exception))
+        {
+            // A concurrent POST for the same (name, revision) or definition identity won the unique-index race after our
+            // existence check. Report the committed row through the same Unchanged/Conflict contract as the check above.
+            // Any other persistence fault (connection loss, timeout, unrelated constraint) propagates unchanged.
+            dbContext.ChangeTracker.Clear();
+            var committed = await dbContext.CentralProcessingGraphRevisions.AsNoTracking()
+                .Where(item => item.Name == definition.Name && item.Revision == definition.Revision ||
+                    item.DefinitionIdentitySha256 == portablePlan.DefinitionIdentitySha256)
+                .OrderBy(item => item.Name == definition.Name && item.Revision == definition.Revision ? 0 : 1)
+                .ThenBy(item => item.Id)
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (committed is null)
+            {
+                throw;
+            }
+            var sameName = committed.Name == definition.Name && committed.Revision == definition.Revision;
+            var sameIdentity = string.Equals(
+                committed.DefinitionIdentitySha256, portablePlan.DefinitionIdentitySha256, StringComparison.Ordinal);
+            if (sameName && sameIdentity)
+            {
+                telemetry.Record("catalog", "unchanged", timeProvider.GetElapsedTime(started));
+                return new(CentralProcessingGraphMutationOutcome.Unchanged, ToView(committed));
+            }
+            telemetry.Record("catalog", "conflict", timeProvider.GetElapsedTime(started));
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "revision-name-conflict");
+            return new(
+                CentralProcessingGraphMutationOutcome.Conflict,
+                ReasonCode: sameName ? "revision-name-conflict" : "definition-identity-conflict");
+        }
         telemetry.Record("catalog", "created", timeProvider.GetElapsedTime(started));
         activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
         Log.CatalogMutation(logger, "create", "applied", entity.Id);
@@ -459,6 +492,18 @@ internal sealed partial class ProcessingGraphCatalogService(
         {
             return Complete(new(CentralProcessingGraphMutationOutcome.Invalid, ReasonCode: "invalid-reason"));
         }
+        // Serialize concurrent transitions for the same revision: the row lock makes a second publish/retire observe
+        // the first one's committed lifecycle and return Unchanged instead of tripping the append-only SQL trigger.
+        var isRelational = dbContext.Database.IsRelational();
+        await using var transaction = isRelational
+            ? await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                .ConfigureAwait(false)
+            : null;
+        if (dbContext.Database.IsSqlServer())
+        {
+            _ = await CentralProcessingGraphAssignmentLock.AcquireRevisionAsync(
+                dbContext, revisionId, cancellationToken).ConfigureAwait(false);
+        }
         var entity = await dbContext.CentralProcessingGraphRevisions.SingleOrDefaultAsync(
             item => item.Id == revisionId, cancellationToken).ConfigureAwait(false);
         if (entity is null)
@@ -480,6 +525,10 @@ internal sealed partial class ProcessingGraphCatalogService(
             {
                 return Complete(new(CentralProcessingGraphMutationOutcome.Conflict, ReasonCode: "revision-not-assignable"));
             }
+            if (IsSeededRevision(entity.Id))
+            {
+                return Complete(new(CentralProcessingGraphMutationOutcome.Conflict, ReasonCode: SeededRevisionReasonCode));
+            }
             entity.PublishedAtUtc = now;
             entity.PublishedByUserId = actorUserId;
         }
@@ -493,11 +542,42 @@ internal sealed partial class ProcessingGraphCatalogService(
             {
                 return Complete(new(CentralProcessingGraphMutationOutcome.Unchanged, ToView(entity)));
             }
+            if (IsSeededRevision(entity.Id))
+            {
+                // The canonical seed revision backs the global default central assignment; startup seeding and the
+                // catalog health check both require it to remain published, so its lifecycle is immutable.
+                return Complete(new(CentralProcessingGraphMutationOutcome.Conflict, ReasonCode: SeededRevisionReasonCode));
+            }
             entity.RetiredAtUtc = now;
             entity.RetiredByUserId = actorUserId;
             entity.RetirementReasonCode = reason;
         }
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DbUpdateException exception) when (isRelational && IsLifecycleTriggerViolation(exception))
+        {
+            // A racing transition on a provider without row locks (or one that bypassed them) already committed the
+            // same lifecycle step and the append-only trigger rejected ours; report the durable state as Unchanged.
+            // Any other persistence fault propagates unchanged.
+            dbContext.ChangeTracker.Clear();
+            var committed = await dbContext.CentralProcessingGraphRevisions.AsNoTracking()
+                .SingleOrDefaultAsync(item => item.Id == revisionId, cancellationToken).ConfigureAwait(false);
+            if (committed is null || (publish ? committed.PublishedAtUtc is null : committed.RetiredAtUtc is null))
+            {
+                throw;
+            }
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            return Complete(new(CentralProcessingGraphMutationOutcome.Unchanged, ToView(committed)));
+        }
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
         Log.CatalogMutation(logger, operation, "applied", entity.Id);
         return Complete(new(CentralProcessingGraphMutationOutcome.Applied, ToView(entity)));
 
@@ -513,6 +593,36 @@ internal sealed partial class ProcessingGraphCatalogService(
             return result;
         }
     }
+
+    internal const string SeededRevisionReasonCode = "seeded-revision-immutable";
+
+    /// <summary>SQL Server unique index (2601) or unique/primary key constraint (2627) violation.</summary>
+    internal static bool IsUniqueViolation(DbUpdateException exception)
+        => FindSqlErrorNumber(exception) is 2601 or 2627;
+
+    /// <summary>
+    /// The <c>THROW 51000</c> raised by <c>TR_CentralProcessingGraphRevisions_Transitions</c> when a lifecycle
+    /// transition is replayed or rewound (see <c>Data/Migrations/BaselineTriggers.sql</c>).
+    /// </summary>
+    internal static bool IsLifecycleTriggerViolation(DbUpdateException exception)
+        => FindSqlErrorNumber(exception) == LifecycleTriggerErrorNumber;
+
+    internal const int LifecycleTriggerErrorNumber = 51000;
+
+    private static int? FindSqlErrorNumber(Exception exception)
+    {
+        for (var current = exception.InnerException; current is not null; current = current.InnerException)
+        {
+            if (current is Microsoft.Data.SqlClient.SqlException sqlException)
+            {
+                return sqlException.Number;
+            }
+        }
+        return null;
+    }
+
+    internal static bool IsSeededRevision(Guid revisionId)
+        => revisionId == DatabaseSeeder.BasicCentralProcessingGraphRevisionId;
 
     private static bool ContainsSecretMaterial(ProcessingGraphDefinition definition)
     {

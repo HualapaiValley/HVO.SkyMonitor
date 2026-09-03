@@ -468,6 +468,27 @@ internal static class CentralArtifactCredentialAccess
             || HasScope(principal, "api.admin");
     }
 
+    /// <summary>
+    /// An owner credential that may mutate owner-scoped resources: everything <see cref="HasOwnerCredential"/>
+    /// accepts plus a bearer carrying only the documented <c>api.owner.write</c> scope, which the
+    /// <c>ApiKeyReadWrite</c> policy already authorizes for mutation endpoints. Read-only API keys are excluded.
+    /// </summary>
+    public static bool HasOwnerWriteCredential(ClaimsPrincipal principal)
+    {
+        var identity = GetSingleCredentialIdentity(principal);
+        if (identity is null || IsSystem(principal))
+        {
+            return false;
+        }
+        if (IsApiKey(identity))
+        {
+            return CanonicalCredentialClaims.GetApiKeyAccessLevel(principal) == nameof(ApiKeyAccessLevel.ReadWrite);
+        }
+        return CanonicalCredentialClaims.IsCookie(identity)
+            || CanonicalCredentialClaims.IsBearer(identity)
+                && (HasScope(principal, "api.owner.write") || HasScope(principal, "api.admin"));
+    }
+
     public static string? GetOwnerId(ClaimsPrincipal principal)
         => CanonicalCredentialClaims.GetOwnerId(principal);
 

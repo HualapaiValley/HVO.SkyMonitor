@@ -422,6 +422,7 @@ BEGIN
                OR ISNULL(i.[ResolutionStartedAtUtc], CONVERT(datetimeoffset, '0001-01-01T00:00:00+00:00')) <>
                   ISNULL(d.[ResolutionStartedAtUtc], CONVERT(datetimeoffset, '0001-01-01T00:00:00+00:00'))
                 OR ISNULL(i.[MissingInputOutcome], N'') <> ISNULL(d.[MissingInputOutcome], N'')
+                OR ISNULL(i.[MinimumInputCount], -1) <> ISNULL(d.[MinimumInputCount], -1)
                 OR ISNULL(i.[PredecessorJobId], '00000000-0000-0000-0000-000000000000') <>
                    ISNULL(d.[PredecessorJobId], '00000000-0000-0000-0000-000000000000')
                 OR i.[CreatedAtUtc] <> d.[CreatedAtUtc]))

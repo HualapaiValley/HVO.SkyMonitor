@@ -81,9 +81,14 @@ public sealed record ProcessingGraphInputContract(
 /// <c>mediaType</c> stay readable, and a <c>null</c> media type is omitted from the canonical form so their
 /// definition identities remain stable.
 /// </summary>
+/// <remarks>
+/// The JSON constructor binds only the required members. Optional members bind through their <c>init</c>
+/// setters so that <c>algorithms</c> stays optional under <c>RespectRequiredConstructorParameters</c> without
+/// declaring a <c>default</c> struct parameter, which <see cref="System.Text.Json.Schema.JsonSchemaExporter"/>
+/// cannot serialize as a schema default and which would fail OpenAPI document generation.
+/// </remarks>
 public sealed record ProcessingGraphProductContract
 {
-    [JsonConstructor]
     public ProcessingGraphProductContract(
         FrameArtifactRole Role,
         string Variant,
@@ -98,8 +103,14 @@ public sealed record ProcessingGraphProductContract
         this.ProductKind = ProductKind;
         this.Recipe = Recipe;
         this.SchemaVersion = SchemaVersion;
-        this.Algorithms = Algorithms.IsDefault ? [] : Algorithms;
+        this.Algorithms = Algorithms;
         this.MediaType = MediaType;
+    }
+
+    [JsonConstructor]
+    private ProcessingGraphProductContract(FrameArtifactRole Role, string Variant, ProcessingProductKind ProductKind)
+        : this(Role, Variant, ProductKind, null, null, default, null)
+    {
     }
 
     public FrameArtifactRole Role { get; init; }
@@ -112,7 +123,15 @@ public sealed record ProcessingGraphProductContract
 
     public string? SchemaVersion { get; init; }
 
-    public ImmutableArray<ProcessingAlgorithmIdentity> Algorithms { get; init; }
+    /// <summary>
+    /// Algorithm identities contributing to the product. Never a default (uninitialized) array: a default value
+    /// supplied through the constructor, <c>with</c>, or JSON lacking <c>algorithms</c> normalizes to empty.
+    /// </summary>
+    public ImmutableArray<ProcessingAlgorithmIdentity> Algorithms
+    {
+        get;
+        init => field = value.IsDefault ? [] : value;
+    }
 
     public string? MediaType { get; init; }
 

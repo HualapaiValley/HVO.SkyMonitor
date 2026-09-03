@@ -904,6 +904,243 @@ public sealed class CentralProcessingGraphMigrationTests
         }
     }
 
+    /// <summary>
+    /// A leased graph node that reports its own input unavailable is terminalized by the graph-aware invalidation and
+    /// must not be reopened as RetryableFailure by the legacy bulk reopen that follows it; only legacy jobs reopen.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerMarkInputUnavailableFromLeasedLiveGraphNodeTerminalizesNodeAndReopensOnlyLegacyJobs()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphInputUnavailableLive_{Guid.NewGuid():N}"
+        };
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (_, raw, _, graphScheduler, workerTelemetry) =
+                await ScheduleSingleNodePreviewGraphAsync(context, now, "input-unavailable-live").ConfigureAwait(false);
+            using var telemetry = workerTelemetry;
+            var execution = await context.CentralProcessingGraphExecutions.AsNoTracking()
+                .Include(item => item.Jobs)
+                .SingleAsync().ConfigureAwait(false);
+            var legacy = CreateLegacyCompletedImageQualityJob(raw, now);
+            context.Add(legacy);
+            await context.SaveChangesAsync().ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+
+            var service = new CentralDerivativeJobService(context, TimeProvider.System);
+            var lease = await service.ClaimNextAsync("input-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.GraphExecutionId.Should().Be(execution.Id);
+            var source = await context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == raw.Id)
+                .ConfigureAwait(false);
+            await service.MarkInputUnavailableAsync(
+                lease.JobId,
+                lease.LeaseToken,
+                source.Id,
+                source.RowVersion,
+                "object.missing",
+                quarantine: false,
+                CancellationToken.None).ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+
+            var node = await context.CentralDerivativeJobs.AsNoTracking()
+                .Include(job => job.Attempts)
+                .SingleAsync(job => job.Id == lease.JobId).ConfigureAwait(false);
+            node.Status.Should().Be(CentralDerivativeJobStatus.TerminalFailure,
+                "the legacy bulk reopen must not reset a graph-owned node to RetryableFailure");
+            node.StateReasonCode.Should().Be(ArtifactIngestService.GraphSourceInvalidatedReason);
+            node.LeaseToken.Should().BeNull();
+            node.Attempts.Should().ContainSingle().Which.Outcome.Should().Be(CentralDerivativeAttemptOutcome.TerminalFailure);
+            var legacyAfter = await context.CentralDerivativeJobs.AsNoTracking()
+                .SingleAsync(job => job.Id == legacy.Id).ConfigureAwait(false);
+            legacyAfter.Status.Should().Be(CentralDerivativeJobStatus.RetryableFailure);
+
+            await graphScheduler.ConvergeAsync(execution.Id, now.AddSeconds(2), CancellationToken.None)
+                .ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking().SingleAsync().ConfigureAwait(false))
+                .Status.Should().Be(CentralProcessingGraphExecutionStatus.Failed);
+            (await service.ClaimNextAsync("input-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false)).Should().BeNull("neither the terminal node nor the unavailable-input legacy job is claimable");
+        }
+        finally
+        {
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// A legacy lease that reports a shared input unavailable must not reopen the Completed node of a terminal graph
+    /// execution: the graph trigger rejects that reopen and would roll back the entire input-unavailable transaction.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerMarkInputUnavailableFromLegacyLeaseLeavesTerminalGraphNodeUntouched()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphInputUnavailableTerminal_{Guid.NewGuid():N}"
+        };
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (_, raw, definition, graphScheduler, workerTelemetry) =
+                await ScheduleSingleNodePreviewGraphAsync(context, now, "input-unavailable-terminal").ConfigureAwait(false);
+            using var telemetry = workerTelemetry;
+            var execution = await context.CentralProcessingGraphExecutions.AsNoTracking()
+                .Include(item => item.Jobs)
+                .SingleAsync().ConfigureAwait(false);
+            var service = new CentralDerivativeJobService(context, TimeProvider.System);
+            var graphLease = await service.ClaimNextAsync("input-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false);
+            graphLease!.GraphExecutionId.Should().Be(execution.Id);
+            var services = AssemblyHooks.Fixture.Factory.Services;
+            await using (var writerContext = new ApplicationDbContext(options))
+            {
+                var writer = new CentralDerivativeOutputWriter(
+                    writerContext,
+                    services.GetRequiredService<IObjectStore>(),
+                    services.GetRequiredService<ICentralArtifactObjectReader>(),
+                    telemetry,
+                    TimeProvider.System,
+                    NullLogger<CentralDerivativeOutputWriter>.Instance,
+                    services.GetRequiredService<CentralObjectStorageNames>());
+                await writer.PersistSetAsync(
+                    graphLease,
+                    definition.Nodes.Single().Outputs.Select(contract => CreateProduct(contract, graphLease, 21)).ToArray(),
+                    1,
+                    TimeSpan.Zero,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            context.ChangeTracker.Clear();
+            await graphScheduler.ConvergeAsync(execution.Id, now.AddSeconds(2), CancellationToken.None)
+                .ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+            var completedNode = await context.CentralDerivativeJobs.AsNoTracking()
+                .SingleAsync(job => job.Id == graphLease.JobId).ConfigureAwait(false);
+            completedNode.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+            (await context.CentralProcessingGraphExecutions.AsNoTracking().SingleAsync().ConfigureAwait(false))
+                .Status.Should().Be(CentralProcessingGraphExecutionStatus.Completed);
+
+            var legacy = CreateLegacyCompletedImageQualityJob(raw, now);
+            legacy.Status = CentralDerivativeJobStatus.Pending;
+            legacy.AttemptCount = 0;
+            legacy.CompletedAtUtc = null;
+            legacy.AvailableAtUtc = now.AddMinutes(-1);
+            context.Add(legacy);
+            await context.SaveChangesAsync().ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+            var legacyLease = await service.ClaimNextAsync("legacy-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false);
+            legacyLease.Should().NotBeNull();
+            legacyLease!.JobId.Should().Be(legacy.Id);
+            var source = await context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == raw.Id)
+                .ConfigureAwait(false);
+            await FluentActions.Awaiting(() => service.MarkInputUnavailableAsync(
+                    legacyLease.JobId,
+                    legacyLease.LeaseToken,
+                    source.Id,
+                    source.RowVersion,
+                    "object.missing",
+                    quarantine: false,
+                    CancellationToken.None))
+                .Should().NotThrowAsync("graph-owned nodes of a terminal execution are excluded from the legacy reopen")
+                .ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+
+            var nodeAfter = await context.CentralDerivativeJobs.AsNoTracking()
+                .SingleAsync(job => job.Id == graphLease.JobId).ConfigureAwait(false);
+            nodeAfter.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+            nodeAfter.UpdatedAtUtc.Should().Be(completedNode.UpdatedAtUtc);
+            var legacyAfter = await context.CentralDerivativeJobs.AsNoTracking()
+                .SingleAsync(job => job.Id == legacy.Id).ConfigureAwait(false);
+            legacyAfter.Status.Should().Be(CentralDerivativeJobStatus.RetryableFailure);
+            legacyAfter.LeaseToken.Should().BeNull();
+            (await context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == raw.Id).ConfigureAwait(false))
+                .ObjectState.Should().Be(CentralArtifactObjectState.Pending, "the input-unavailable transaction committed");
+        }
+        finally
+        {
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static CentralDerivativeJob CreateLegacyCompletedImageQualityJob(CentralArtifact source, DateTimeOffset now)
+    {
+        var recipe = new CentralDerivativeRecipeCatalog().GetRequiredRecipes(FrameArtifactRole.Raw)
+            .Single(item => string.Equals(item.RecipeName, BuiltInProcessingRecipes.ImageQuality, StringComparison.Ordinal));
+        var job = new CentralDerivativeJob
+        {
+            SourceCentralArtifactId = source.Id,
+            TargetRole = recipe.TargetRole,
+            TargetRecipeVersion = recipe.RecipeVersion,
+            TargetVariant = recipe.TargetVariant,
+            RecipeName = recipe.RecipeName,
+            RecipeOptionsJson = CaptureContractJson.Canonicalize(recipe.Options).GetRawText(),
+            InputSelectorJson = CaptureContractJson.Canonicalize(
+                CaptureContractJson.SerializeToElement(recipe.InputSelector)).GetRawText(),
+            RequestedRecipeIdentitySha256 = recipe.RequestedRecipeIdentitySha256,
+            ExpectedRecipeIdentitySha256 = recipe.RequestedRecipeIdentitySha256,
+            RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateRequestIdentity(
+                source.DevicePublicId, source.ArtifactId, recipe),
+            Status = CentralDerivativeJobStatus.Completed,
+            ResolutionCompletedAtUtc = now,
+            AttemptCount = 1,
+            MaxAttempts = 3,
+            CompletedAtUtc = now,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+        var requirement = new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Ordinal = 0,
+            BindingName = "input",
+            SourceKind = CentralDerivativeInputSourceKind.Artifact,
+            SequenceOffset = 0,
+            IsRequired = true,
+            SelectorJson = job.InputSelectorJson,
+            CompatibilityMode = CentralDerivativeCompatibilityMode.None,
+            ExpectedAgentId = source.Frame?.AgentId ?? string.Empty,
+            ExpectedRigId = source.Frame?.RigId,
+            ExpectedCaptureSequence = source.Frame?.CaptureSequence,
+            ResolutionState = CentralDerivativeInputResolutionState.Resolved,
+            ResolvedAtUtc = now
+        };
+        job.InputRequirements.Add(requirement);
+        job.Inputs.Add(new CentralDerivativeJobInput
+        {
+            Job = job,
+            CentralDerivativeJobId = job.Id,
+            Requirement = requirement,
+            CentralDerivativeJobInputRequirementId = requirement.Id,
+            Ordinal = 0,
+            CentralArtifactId = source.Id,
+            CaptureSequence = source.Frame?.CaptureSequence,
+            CompatibilityJson = "{}",
+            CompatibilitySha256 = new string('0', 64),
+            ByteLength = source.ByteLength,
+            SelectedAtUtc = now
+        });
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        return job;
+    }
+
     /// <summary>Seeds a camera, one Raw source, and a Preview-only graph assignment, then ingests the Raw (graph Created).</summary>
     private static async Task<(SeededCamera Camera, CentralArtifact Raw, ProcessingGraphDefinition Definition,
         CentralProcessingGraphScheduler GraphScheduler, CentralDerivativeWorkerTelemetry Telemetry)>
@@ -1173,6 +1410,20 @@ public sealed class CentralProcessingGraphMigrationTests
             cancelOutcome.Should().Be(CentralProcessingGraphCancellationOutcome.Applied);
             context.ChangeTracker.Clear();
 
+            // Cancellation bounds the active lease: the lease authority refuses the next renewal so the worker cancels
+            // its local execution and the lease runs out instead of being renewed forever.
+            var leaseBeforeRenewal = await context.CentralDerivativeJobs.AsNoTracking()
+                .SingleAsync(job => job.Id == lease!.JobId).ConfigureAwait(false);
+            await FluentActions.Awaiting(() => new CentralDerivativeJobService(context, clock)
+                    .RenewLeaseAsync(lease!.JobId, lease.LeaseToken, TimeSpan.FromMinutes(1), CancellationToken.None))
+                .Should().ThrowExactlyAsync<CentralDerivativeLeaseCanceledException>().ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+            var leaseAfterRenewal = await context.CentralDerivativeJobs.AsNoTracking()
+                .SingleAsync(job => job.Id == lease!.JobId).ConfigureAwait(false);
+            leaseAfterRenewal.LeaseExpiresAtUtc.Should().Be(leaseBeforeRenewal.LeaseExpiresAtUtc,
+                "a refused renewal must not extend the lease");
+            leaseAfterRenewal.Status.Should().Be(CentralDerivativeJobStatus.Leased);
+            leaseAfterRenewal.CancellationRequestedAtUtc.Should().NotBeNull();
             // Simulate a host restart after the worker's lease expired: fresh contexts, no in-memory state.
             clock.UtcNow = now.AddMinutes(5);
             await using (var restartedContext = new ApplicationDbContext(options))
@@ -1216,6 +1467,204 @@ public sealed class CentralProcessingGraphMigrationTests
                     .ClaimNextAsync("worker-after-recovery", TimeSpan.FromMinutes(1), CancellationToken.None)
                     .ConfigureAwait(false)).Should().BeNull();
             }
+        }
+        finally
+        {
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Concurrent replay requests that reuse one actor/Idempotency-Key tuple with different request identities must
+    /// serialize on the tuple and surface the explicit Conflict outcome, never a unique-index database exception.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerConcurrentReplaysSharingAnIdempotencyKeyConvergeOnOneExecutionAndOneConflict()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphIdempotencyRace_{Guid.NewGuid():N}"
+        };
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var clock = new MutableTimeProvider(DateTimeOffset.UtcNow);
+            var now = clock.GetUtcNow();
+            var camera = await SeedCameraAsync(context, now, "idempotency-race").ConfigureAwait(false);
+            var raw = CreateSourceArtifact(camera, FrameArtifactRole.Raw, 'C', now.AddMinutes(-1));
+            var definition = CreatePreviewGraph();
+            var portable = ProcessingGraphCompiler.Compile(definition).Plan!;
+            var central = ProcessingGraphCompiler.Compile(
+                definition, new(ProcessingGraphHosts.LogicHost, [])).Plan!;
+            var revision = new CentralProcessingGraphRevision
+            {
+                Name = definition.Name,
+                Revision = definition.Revision,
+                DefinitionJson = Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(definition)),
+                DefinitionIdentitySha256 = portable.DefinitionIdentitySha256,
+                PortablePlanIdentitySha256 = portable.PlanIdentitySha256,
+                CentralPlanIdentitySha256 = central.PlanIdentitySha256,
+                CreatedAtUtc = now.AddMinutes(-1),
+                CreatedByUserId = camera.Owner.Id,
+                PublishedAtUtc = now.AddSeconds(-1),
+                PublishedByUserId = camera.Owner.Id
+            };
+            context.AddRange(raw, revision);
+            await context.SaveChangesAsync().ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+            using var workerTelemetry = new CentralDerivativeWorkerTelemetry();
+            using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(clock);
+            var registry = new MultiOutputNodeRegistry(new CentralDerivativeRecipeCatalog());
+
+            const int Attempts = 6;
+            var contexts = Enumerable.Range(0, Attempts).Select(_ => new ApplicationDbContext(options)).ToArray();
+            try
+            {
+                var schedulers = contexts.Select(candidate => new CentralProcessingGraphScheduler(
+                    candidate,
+                    new ProcessingGraphCatalogService(
+                        candidate, registry, clock, catalogTelemetry, NullLogger<ProcessingGraphCatalogService>.Instance),
+                    registry, new NoopWindowResolver(), new UnusedObjectReader(), workerTelemetry, clock)).ToArray();
+                var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var tasks = schedulers.Select(async (scheduler, index) =>
+                {
+                    await gate.Task.ConfigureAwait(false);
+                    // Same actor and Idempotency-Key, different reason: distinct request identities.
+                    return await scheduler.ScheduleReplayAsync(
+                        new(revision.Id, [raw.Id], camera.Owner.Id, "shared-key", $"reason-{index}"),
+                        now,
+                        CancellationToken.None).ConfigureAwait(false);
+                }).ToArray();
+                gate.SetResult();
+                var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+
+                results.Count(result => result.Outcome == CentralProcessingGraphScheduleOutcome.Created).Should().Be(1);
+                results.Count(result => result.Outcome == CentralProcessingGraphScheduleOutcome.Conflict)
+                    .Should().Be(Attempts - 1);
+                results.Where(result => result.Outcome == CentralProcessingGraphScheduleOutcome.Conflict)
+                    .Should().OnlyContain(result => result.ReasonCode == "idempotency-key-conflict");
+            }
+            finally
+            {
+                foreach (var candidate in contexts)
+                {
+                    await candidate.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking().CountAsync().ConfigureAwait(false))
+                .Should().Be(1);
+            Assert.AreNotEqual(
+                CentralProcessingGraphScheduler.CreateIdempotencyLockIdentity(
+                    CentralProcessingGraphExecutionClass.Replay, camera.Owner.Id, "shared-key"),
+                CentralProcessingGraphScheduler.CreateIdempotencyLockIdentity(
+                    CentralProcessingGraphExecutionClass.Replay, camera.Owner.Id, "other-key"));
+        }
+        finally
+        {
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Concurrent catalog mutations resolve through the advertised outcome contract instead of unique-index or
+    /// append-only-trigger database errors: identical creates converge on one row (Applied/Unchanged), conflicting
+    /// creates for the same name yield Conflict, and concurrent publish/retire transitions yield one Applied plus Unchanged.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerConcurrentCatalogMutationsResolveThroughOutcomeContract()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphCatalogRace_{Guid.NewGuid():N}"
+        };
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var clock = new MutableTimeProvider(DateTimeOffset.UtcNow);
+            using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(clock);
+            var registry = new MultiOutputNodeRegistry(new CentralDerivativeRecipeCatalog());
+            const int Attempts = 6;
+
+            async Task<CentralProcessingGraphMutationResult<CentralProcessingGraphRevisionView>[]> RunAsync(
+                Func<ProcessingGraphCatalogService, int, Task<CentralProcessingGraphMutationResult<CentralProcessingGraphRevisionView>>> action)
+            {
+                var contexts = Enumerable.Range(0, Attempts).Select(_ => new ApplicationDbContext(options)).ToArray();
+                try
+                {
+                    var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var tasks = contexts.Select(async (candidate, index) =>
+                    {
+                        var service = new ProcessingGraphCatalogService(
+                            candidate, registry, clock, catalogTelemetry, NullLogger<ProcessingGraphCatalogService>.Instance);
+                        await gate.Task.ConfigureAwait(false);
+                        return await action(service, index).ConfigureAwait(false);
+                    }).ToArray();
+                    gate.SetResult();
+                    return await Task.WhenAll(tasks).ConfigureAwait(false);
+                }
+                finally
+                {
+                    foreach (var candidate in contexts)
+                    {
+                        await candidate.DisposeAsync().ConfigureAwait(false);
+                    }
+                }
+            }
+
+            var definition = CreatePreviewGraph() with { Name = "catalog-race" };
+            var identicalCreates = await RunAsync((service, _) =>
+                service.CreateRevisionAsync(definition, "editor", true, CancellationToken.None)).ConfigureAwait(false);
+            identicalCreates.Count(result => result.Outcome == CentralProcessingGraphMutationOutcome.Applied).Should().Be(1);
+            identicalCreates.Should().OnlyContain(result =>
+                result.Outcome == CentralProcessingGraphMutationOutcome.Applied ||
+                result.Outcome == CentralProcessingGraphMutationOutcome.Unchanged);
+            var revisionId = identicalCreates.Select(result => result.Value!.Id).Distinct().Should().ContainSingle().Subject;
+
+            var conflictingBase = CreatePreviewGraph() with { Name = "catalog-race-conflict" };
+            var conflictingCreates = await RunAsync((service, index) =>
+            {
+                var node = conflictingBase.Nodes.Single();
+                var renamed = new ProcessingGraphNodeDefinition(
+                    $"Preview{index}", node.StepAlias, node.StepVersion, node.OperationKind, node.Enabled,
+                    node.FailurePolicy, node.Order, node.EffectiveOptions, node.Dependencies, node.Inputs,
+                    node.Outputs, node.Window, node.CapabilityLabels, node.HostApplicability);
+                return service.CreateRevisionAsync(
+                    conflictingBase with { Nodes = [renamed] }, "editor", true, CancellationToken.None);
+            }).ConfigureAwait(false);
+            conflictingCreates.Count(result => result.Outcome == CentralProcessingGraphMutationOutcome.Applied).Should().Be(1);
+            conflictingCreates.Count(result => result.Outcome == CentralProcessingGraphMutationOutcome.Conflict)
+                .Should().Be(Attempts - 1);
+
+            var publishes = await RunAsync((service, _) =>
+                service.PublishRevisionAsync(revisionId, "editor", true, CancellationToken.None)).ConfigureAwait(false);
+            publishes.Count(result => result.Outcome == CentralProcessingGraphMutationOutcome.Applied).Should().Be(1);
+            publishes.Count(result => result.Outcome == CentralProcessingGraphMutationOutcome.Unchanged)
+                .Should().Be(Attempts - 1);
+
+            var retirements = await RunAsync((service, _) =>
+                service.RetireRevisionAsync(revisionId, "editor", "race-test", true, CancellationToken.None))
+                .ConfigureAwait(false);
+            retirements.Count(result => result.Outcome == CentralProcessingGraphMutationOutcome.Applied).Should().Be(1);
+            retirements.Count(result => result.Outcome == CentralProcessingGraphMutationOutcome.Unchanged)
+                .Should().Be(Attempts - 1);
+
+            context.ChangeTracker.Clear();
+            var persisted = await context.CentralProcessingGraphRevisions.AsNoTracking()
+                .SingleAsync(item => item.Id == revisionId).ConfigureAwait(false);
+            persisted.Lifecycle.Should().Be(CentralProcessingGraphLifecycle.Retired);
+            (await context.CentralProcessingGraphRevisions.AsNoTracking()
+                .CountAsync(item => item.Name == "catalog-race-conflict").ConfigureAwait(false)).Should().Be(1);
         }
         finally
         {

@@ -88,17 +88,27 @@ internal sealed partial class SqliteCaptureProcessingStore
         return Enum.Parse<ProcessingGraphLocalProposalDisposition>(reader.GetString(12));
     }
 
+    /// <summary>
+    /// Accepts a staged proposal. When <paramref name="expectedActiveRevisionId"/> is supplied, the registry's active
+    /// revision is re-read inside the settlement transaction and a mismatch settles the proposal as Rejected
+    /// (<c>active-revision-changed</c>) instead, so Accepted evidence is never recorded against stale local state.
+    /// </summary>
     internal ValueTask AcceptDeliveryProposalAsync(
         Guid proposalId,
         ProcessingGraphRevisionState revision,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? expectedActiveRevisionId = null,
+        bool enforceExpectedActive = false)
         => SettleDeliveryProposalAsync(
             proposalId,
             ProcessingGraphLocalProposalDisposition.Accepted,
             ProcessingGraphDeliveryFactKind.Accepted,
             null,
             revision,
-            cancellationToken);
+            cancellationToken,
+            enforceExpectedActive ? new ExpectedActiveRevision(expectedActiveRevisionId) : null);
+
+    private sealed record ExpectedActiveRevision(string? RevisionId);
 
     internal ValueTask RejectDeliveryProposalAsync(
         Guid proposalId,
@@ -123,6 +133,36 @@ internal sealed partial class SqliteCaptureProcessingStore
             reasonCode,
             null,
             cancellationToken);
+
+    internal async ValueTask<int> ExpireStalePendingProposalsAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        List<Guid> stale;
+        using (var connection = await OpenAsync(cancellationToken).ConfigureAwait(false))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT proposal_id FROM processing_graph_delivery_proposals
+                WHERE disposition = 'Pending' AND expires_unix_ms <= $now
+                ORDER BY expires_unix_ms, proposal_id
+                LIMIT $maximum;
+                """;
+            command.Parameters.AddWithValue("$now", now);
+            command.Parameters.AddWithValue("$maximum", RevisionFactBatchSize);
+            stale = [];
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                stale.Add(Guid.ParseExact(reader.GetString(0), "N"));
+            }
+        }
+        foreach (var proposalId in stale)
+        {
+            await ExpireDeliveryProposalAsync(proposalId, "proposal-expired", cancellationToken).ConfigureAwait(false);
+        }
+        return stale.Count;
+    }
 
     internal async ValueTask RecordDeliveredActivationAsync(
         string localRevisionId,
@@ -283,6 +323,30 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
     }
 
+    internal async ValueTask RejectDeliveryFactAsync(
+        Guid factId,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        reasonCode = BoundReason(reasonCode);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE processing_graph_delivery_facts
+            SET delivery_state = 'Rejected', attempt_count = attempt_count + 1,
+                acknowledged_unix_ms = $now, last_reason_code = $reason
+            WHERE fact_id = $fact AND delivery_state = 'Pending';
+            """;
+        command.Parameters.AddWithValue("$fact", factId.ToString("N"));
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$reason", reasonCode);
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+        {
+            throw new ProcessingGraphStoreConflictException("The processing graph delivery fact is not pending.");
+        }
+    }
+
     internal async ValueTask<ProcessingGraphDeliveryBacklog> ReadDeliveryBacklogAsync(
         CancellationToken cancellationToken)
     {
@@ -294,7 +358,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                 (SELECT COUNT(*) FROM processing_graph_delivery_proposals WHERE disposition = 'Pending'),
                 (SELECT MIN(received_unix_ms) FROM processing_graph_delivery_proposals WHERE disposition = 'Pending'),
                 (SELECT COUNT(*) FROM processing_graph_delivery_facts WHERE delivery_state = 'Pending'),
-                (SELECT MIN(occurred_unix_ms) FROM processing_graph_delivery_facts WHERE delivery_state = 'Pending');
+                (SELECT MIN(occurred_unix_ms) FROM processing_graph_delivery_facts WHERE delivery_state = 'Pending'),
+                (SELECT COUNT(*) FROM processing_graph_delivery_facts WHERE delivery_state = 'Rejected');
             """;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -309,7 +374,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             reader.GetInt64(2),
             await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false)
                 ? null
-                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)));
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+            reader.GetInt64(4));
     }
 
     private async ValueTask SettleDeliveryProposalAsync(
@@ -318,7 +384,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         ProcessingGraphDeliveryFactKind factKind,
         string? reasonCode,
         ProcessingGraphRevisionState? revision,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ExpectedActiveRevision? expectedActive = null)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         if (reasonCode is not null)
@@ -331,6 +398,17 @@ internal sealed partial class SqliteCaptureProcessingStore
 #pragma warning restore CA1849
         var observedAt = _timeProvider.GetUtcNow();
         DateTimeOffset settledAt;
+        if (expectedActive is not null && factKind == ProcessingGraphDeliveryFactKind.Accepted)
+        {
+            var registry = await ReadRegistryRowAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(registry?.ActiveRevisionId, expectedActive.RevisionId, StringComparison.Ordinal))
+            {
+                disposition = ProcessingGraphLocalProposalDisposition.Rejected;
+                factKind = ProcessingGraphDeliveryFactKind.Rejected;
+                reasonCode = "active-revision-changed";
+                revision = null;
+            }
+        }
         using (var proposal = connection.CreateCommand())
         {
             proposal.Transaction = transaction;

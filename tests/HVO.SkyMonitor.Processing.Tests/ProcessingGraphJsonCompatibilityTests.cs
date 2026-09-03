@@ -1,6 +1,10 @@
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Schema;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 
@@ -31,6 +35,8 @@ public sealed class ProcessingGraphJsonCompatibilityTests
         "\"stepAlias\":\"encoded-preview\",\"stepVersion\":\"cameraagent-v2\",\"window\":null}],\"revision\":\"1\"," +
         "\"schemaVersion\":\"hvo-processing-graph-v1\",\"sources\":[{\"id\":\"$raw\",\"outputs\":[{\"algorithms\":[]," +
         "\"productKind\":\"PixelData\",\"recipe\":null,\"role\":\"Raw\",\"schemaVersion\":null,\"variant\":\"source\"}]}]}";
+
+    private static readonly string[] RequiredOutputContractMembers = ["role", "variant", "productKind"];
 
     private const string LegacyTransformDefinitionIdentity =
         "F1DE628CCF5C237BA024EDE1DB4E78E7A3323010F1FCB17C977D7C17E2C85EEE";
@@ -117,6 +123,83 @@ public sealed class ProcessingGraphJsonCompatibilityTests
         Assert.AreEqual(
             ProcessingGraphJson.ComputeDefinitionIdentity(extended),
             ProcessingGraphJson.ComputeDefinitionIdentity(reparsed.Definition));
+    }
+
+    [TestMethod]
+    public void OutputContractNormalizesDefaultAlgorithmsToEmpty()
+    {
+        var constructed = new ProcessingGraphProductContract(
+            FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData, Algorithms: default);
+        Assert.IsFalse(constructed.Algorithms.IsDefault);
+        Assert.IsTrue(constructed.Algorithms.IsEmpty);
+
+        var mutated = constructed with { Algorithms = default };
+        Assert.IsFalse(mutated.Algorithms.IsDefault);
+        Assert.IsTrue(mutated.Algorithms.IsEmpty);
+        Assert.AreEqual(constructed, mutated);
+
+        var options = CreateWebOptions();
+        var parsed = JsonSerializer.Deserialize<ProcessingGraphProductContract>(
+            "{\"role\":\"Raw\",\"variant\":\"source\",\"productKind\":\"PixelData\"}", options);
+        Assert.IsNotNull(parsed);
+        Assert.IsFalse(parsed.Algorithms.IsDefault);
+        Assert.IsTrue(parsed.Algorithms.IsEmpty);
+        Assert.AreEqual(constructed, parsed);
+    }
+
+    [TestMethod]
+    public void OutputContractRoundTripsAlgorithmsThroughSystemTextJsonAndExportsSchema()
+    {
+        var options = CreateWebOptions();
+        var contract = new ProcessingGraphProductContract(
+            FrameArtifactRole.Preview,
+            "preview",
+            ProcessingProductKind.PixelData,
+            Algorithms: [new ProcessingAlgorithmIdentity("stretch", "1.0.0")],
+            MediaType: "image/jpeg");
+
+        var json = JsonSerializer.Serialize(contract, options);
+        Assert.Contains("\"algorithms\":[{", json, StringComparison.Ordinal);
+        var roundTripped = JsonSerializer.Deserialize<ProcessingGraphProductContract>(json, options);
+        Assert.IsNotNull(roundTripped);
+        CollectionAssert.AreEqual(contract.Algorithms, roundTripped.Algorithms);
+        Assert.AreEqual(contract with { Algorithms = [] }, roundTripped with { Algorithms = [] });
+
+        var missingRequiredMember = Assert.ThrowsExactly<JsonException>(() =>
+            JsonSerializer.Deserialize<ProcessingGraphProductContract>("{\"role\":\"Raw\",\"variant\":\"source\"}", options));
+        Assert.Contains("productKind", missingRequiredMember.Message, StringComparison.OrdinalIgnoreCase);
+
+        // ASP.NET Core OpenAPI builds component schemas through JsonSchemaExporter, which serializes every
+        // constructor parameter default; a default struct parameter fails there with HTTP 500.
+        var schema = options.GetJsonSchemaAsNode(typeof(ProcessingGraphProductContract)).AsObject();
+        var properties = schema["properties"]!.AsObject();
+        Assert.IsTrue(properties.ContainsKey("algorithms"));
+        Assert.IsFalse(properties["algorithms"]!.AsObject().ContainsKey("default"));
+        CollectionAssert.AreEquivalent(
+            RequiredOutputContractMembers,
+            schema["required"]!.AsArray().Select(static node => node!.GetValue<string>()).ToArray());
+
+        var definitionSchema = ProcessingGraphJsonOptions().GetJsonSchemaAsNode(typeof(ProcessingGraphDefinition));
+        Assert.IsNotNull(definitionSchema);
+    }
+
+    private static JsonSerializerOptions CreateWebOptions()
+    {
+        // Schema export requires an explicit resolver; the hosts use the reflection resolver as well.
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            RespectRequiredConstructorParameters = true,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+        };
+        options.Converters.Add(new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false));
+        return options;
+    }
+
+    private static JsonSerializerOptions ProcessingGraphJsonOptions()
+    {
+        var options = CreateWebOptions();
+        options.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
+        return options;
     }
 
     private static ProcessingGraphDefinition CreateLegacyTransformDefinition()

@@ -28,7 +28,8 @@ public sealed record ProcessingGraphDeliveryBacklog(
     long PendingProposalCount,
     DateTimeOffset? OldestPendingProposalUtc,
     long PendingFactCount,
-    DateTimeOffset? OldestPendingFactUtc);
+    DateTimeOffset? OldestPendingFactUtc,
+    long RejectedFactCount = 0);
 
 public interface IProcessingGraphDeliveryTransport
 {
@@ -49,6 +50,12 @@ public interface IProcessingGraphDeliveryInbox
 
     ValueTask ObserveActiveRevisionAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Settles locally pending proposals whose expiry has passed (for example after a crash between durable receipt
+    /// and staging) as <c>Expired</c> with a durable fact, so stale rows never linger in the pending backlog.
+    /// </summary>
+    ValueTask<int> ExpirePendingProposalsAsync(CancellationToken cancellationToken);
+
     ValueTask<ProcessingGraphDeliveryFactV1?> ReadPendingFactAsync(CancellationToken cancellationToken);
 
     ValueTask AcknowledgeFactAsync(Guid factId, CancellationToken cancellationToken);
@@ -60,6 +67,12 @@ public interface IProcessingGraphDeliveryInbox
         DateTimeOffset nextAttemptUtc,
         string reasonCode,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Records a durable terminal rejection for a fact central refused (HTTP 400/404/409). Fact payloads and proposal
+    /// identities are immutable, so a rejected fact is never resent; it leaves the pending backlog with its reason.
+    /// </summary>
+    ValueTask RejectFactAsync(Guid factId, string reasonCode, CancellationToken cancellationToken);
 
     ValueTask<ProcessingGraphDeliveryBacklog> ReadBacklogAsync(CancellationToken cancellationToken);
 }

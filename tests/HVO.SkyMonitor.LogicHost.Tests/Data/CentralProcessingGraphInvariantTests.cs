@@ -25,6 +25,88 @@ public sealed class CentralProcessingGraphInvariantTests
     }
 
     [TestMethod]
+    [DataRow(nameof(CentralDerivativeJob.MinimumInputCount))]
+    [DataRow(nameof(CentralDerivativeJob.MissingInputOutcome))]
+    [DataRow(nameof(CentralDerivativeJob.GraphNodeOrdinal))]
+    [DataRow(nameof(CentralDerivativeJob.PredecessorJobId))]
+    public async Task SaveChangesRejectsFrozenGraphJobPropertyMutation(string propertyName)
+    {
+        await using var context = CreateContext();
+        var execution = CreateExecution(expectedNodeCount: 1);
+        var job = CreateJob(execution);
+        job.MinimumInputCount = 2;
+        job.MissingInputOutcome = CentralDerivativeWindowOutcome.Skip;
+        context.AddRange(execution, job);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+
+        switch (propertyName)
+        {
+            case nameof(CentralDerivativeJob.MinimumInputCount):
+                job.MinimumInputCount = 3;
+                break;
+            case nameof(CentralDerivativeJob.MissingInputOutcome):
+                job.MissingInputOutcome = CentralDerivativeWindowOutcome.Fail;
+                break;
+            case nameof(CentralDerivativeJob.GraphNodeOrdinal):
+                job.GraphNodeOrdinal = 7;
+                break;
+            case nameof(CentralDerivativeJob.PredecessorJobId):
+                job.PredecessorJobId = Guid.NewGuid();
+                break;
+            default:
+                Assert.Fail($"Unhandled property '{propertyName}'.");
+                break;
+        }
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => context.SaveChangesAsync()).ConfigureAwait(false);
+        StringAssert.Contains(exception.Message, "executable identity is immutable", StringComparison.Ordinal);
+        CollectionAssert.Contains(ApplicationDbContext.GraphJobFrozenProperties, propertyName);
+    }
+
+    [TestMethod]
+    public void GraphJobFrozenPropertiesMatchBaselineTriggerColumns()
+    {
+        const string resourceName = "HVO.SkyMonitor.LogicHost.Data.Migrations.BaselineTriggers.sql";
+        using var stream = typeof(ApplicationDbContext).Assembly.GetManifestResourceStream(resourceName);
+        Assert.IsNotNull(stream, $"Embedded resource '{resourceName}' must exist.");
+        using var reader = new StreamReader(stream);
+        var sql = reader.ReadToEnd();
+
+        // Isolate the immutable-identity predicate of TR_CentralDerivativeJobs_GraphIdentityImmutable: from the
+        // "d.[GraphExecutionId] IS NOT NULL OR i.[GraphExecutionId] IS NOT NULL" guard to its THROW.
+        var triggerStart = sql.IndexOf(
+            "CREATE TRIGGER [TR_CentralDerivativeJobs_GraphIdentityImmutable]", StringComparison.Ordinal);
+        Assert.IsGreaterThan(-1, triggerStart);
+        var predicateStart = sql.IndexOf(
+            "WHERE (d.[GraphExecutionId] IS NOT NULL OR i.[GraphExecutionId] IS NOT NULL)",
+            triggerStart,
+            StringComparison.Ordinal);
+        Assert.IsGreaterThan(-1, predicateStart);
+        var predicateEnd = sql.IndexOf(
+            "THROW 51000, 'Derivative graph executable identity is immutable.', 1;",
+            predicateStart,
+            StringComparison.Ordinal);
+        Assert.IsGreaterThan(-1, predicateEnd);
+        var predicate = sql[predicateStart..predicateEnd];
+        var triggerColumns = System.Text.RegularExpressions.Regex.Matches(predicate, @"i\.\[(\w+)\]")
+            .Select(match => match.Groups[1].Value)
+            .Where(column => column != "Id")
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var guardProperties = ApplicationDbContext.GraphJobFrozenProperties
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        CollectionAssert.AreEqual(
+            triggerColumns,
+            guardProperties,
+            $"EF guard vs trigger mismatch. Only in trigger: [{string.Join(", ", triggerColumns.Except(guardProperties))}]. " +
+            $"Only in EF guard: [{string.Join(", ", guardProperties.Except(triggerColumns))}].");
+    }
+
+    [TestMethod]
     public async Task SaveChangesRejectsGraphWindowRequirementRewriteWithoutDependency()
     {
         await using var context = CreateContext();

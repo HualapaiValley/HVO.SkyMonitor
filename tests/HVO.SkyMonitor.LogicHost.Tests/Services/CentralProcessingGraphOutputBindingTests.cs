@@ -648,6 +648,339 @@ public sealed class CentralProcessingGraphOutputBindingTests
         Assert.IsFalse(CentralProcessingGraphOutputBinding.SequenceEqual([algorithm], []));
     }
 
+    [TestMethod]
+    public async Task BindAsyncAcceptsAnnotationEvidenceWhoseRecipeIdentityIncludesTheRuntimeSceneAnnotation()
+    {
+        await using var context = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options);
+        var now = DateTimeOffset.UtcNow;
+        var deviceId = Guid.NewGuid();
+        var provenance = new SceneProvenance(
+            "scene-1", "rig-v1", "catalog", "1", new string('A', 64), "model", "1", "1", "1",
+            Objects: [new ProjectedObjectProvenance("star:1", "Vega", 10, 12, 0.03)]);
+        var frame = new CentralFrame
+        {
+            RegistrationId = Guid.NewGuid(),
+            DevicePublicId = deviceId,
+            ObservatoryId = Guid.NewGuid(),
+            AgentId = "agent",
+            FrameId = Guid.NewGuid(),
+            CapturedAtUtc = now,
+            FirstReceivedAtUtc = now,
+            SceneProvenanceJson = JsonSerializer.Serialize(provenance, JsonSerializerOptions.Web)
+        };
+        var anchor = CreateArtifact(frame.Id, deviceId, FrameArtifactRole.Raw, "raw", "raw-v1");
+        anchor.Frame = frame;
+        var result = CreateArtifact(frame.Id, deviceId, FrameArtifactRole.AnnotatedPreview,
+            CentralDerivativeRecipeCatalog.AnnotatedPreviewVariant, CentralDerivativeRecipeCatalog.AnnotatedPreviewRecipeVersion);
+        result.Frame = frame;
+        result.MediaType = "image/jpeg";
+        var execution = CreateExecution(anchor, now);
+        var job = CreateJob(execution, anchor, now);
+        var options = BuiltInProcessingRecipes.NormalizeOptions(
+            BuiltInProcessingRecipes.Annotation,
+            CaptureContractJson.SerializeToElement(new AnnotationRecipeOptions()));
+        var selector = ProcessingInputSelector.Raw();
+        var requested = BuiltInProcessingRecipes.CreateRequestedIdentity(
+            BuiltInProcessingRecipes.Annotation, options, selector);
+        job.RecipeName = BuiltInProcessingRecipes.Annotation;
+        job.TargetRole = result.Role;
+        job.TargetVariant = result.Variant!;
+        job.TargetRecipeVersion = result.RecipeVersion;
+        job.RecipeOptionsJson = CaptureContractJson.Canonicalize(options).GetRawText();
+        job.InputSelectorJson = CaptureContractJson.Canonicalize(
+            CaptureContractJson.SerializeToElement(selector)).GetRawText();
+        job.RequestedRecipeIdentitySha256 = requested.IdentitySha256;
+        job.ExpectedRecipeIdentitySha256 = requested.IdentitySha256;
+        _ = BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.Annotation, out var recipeDefinition);
+        var contract = new ProcessingGraphProductContract(
+            result.Role, result.Variant!, ProcessingProductKind.PixelData, recipeDefinition, null, [], "image/jpeg");
+        var output = CentralDerivativeJobOutput.CreateFromFrozenPlan(job, 0, contract);
+        job.Outputs.Add(output);
+        execution.Jobs.Add(job);
+        var annotation = CentralDerivativeJobExecutor.CreateAnnotation(frame.SceneProvenanceJson);
+        Assert.IsNotNull(annotation);
+        var actual = BuiltInProcessingRecipes.CreateExecutionIdentity(
+            BuiltInProcessingRecipes.Annotation, options, selector, annotation);
+        Assert.AreNotEqual(requested.IdentitySha256, actual.IdentitySha256,
+            "the runtime scene annotation is part of the actual recipe identity");
+        Assert.AreEqual(actual.IdentitySha256, CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity(
+            job.RecipeName, job.RecipeOptionsJson, job.InputSelectorJson, job.RequestedRecipeIdentitySha256,
+            job.ExpectedRecipeIdentitySha256, frame.SceneProvenanceJson));
+        Assert.AreEqual(requested.IdentitySha256, CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity(
+            job.RecipeName, job.RecipeOptionsJson, job.InputSelectorJson, job.RequestedRecipeIdentitySha256,
+            job.ExpectedRecipeIdentitySha256, null), "no scene provenance leaves the frozen expectation untouched");
+        var bound = new string('7', 64);
+        Assert.AreEqual(bound, CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity(
+            job.RecipeName, job.RecipeOptionsJson, job.InputSelectorJson, job.RequestedRecipeIdentitySha256,
+            bound, frame.SceneProvenanceJson), "an identity bound at expansion stays authoritative");
+        Assert.AreEqual(requested.IdentitySha256, CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity(
+            BuiltInProcessingRecipes.EncodedPreview, job.RecipeOptionsJson, job.InputSelectorJson,
+            job.RequestedRecipeIdentitySha256, job.ExpectedRecipeIdentitySha256, frame.SceneProvenanceJson),
+            "only annotation-bearing recipes take the runtime annotation input");
+        result.Recipe = new CentralArtifactRecipe
+        {
+            Name = actual.Descriptor.Name,
+            SemanticVersion = actual.Descriptor.SemanticVersion,
+            ImplementationVersion = actual.Descriptor.ImplementationVersion,
+            OptionsJson = "{}",
+            OptionsSha256 = actual.Descriptor.OptionsSha256
+        };
+        var outputIdentity = ProcessingIdentity.CreateOutputIdentity(
+            result.Role, result.Variant!, actual.IdentitySha256, [anchor.ArtifactId]);
+        var evidence = new CentralArtifactProcessingEvidence
+        {
+            Artifact = result,
+            CentralArtifactId = result.Id,
+            DevicePublicId = deviceId,
+            OutputIdentitySha256 = outputIdentity,
+            RequestedRecipeIdentitySha256 = requested.IdentitySha256,
+            RecipeIdentitySha256 = actual.IdentitySha256,
+            RecipeOperationKind = actual.OperationKind,
+            GraphProductContractIdentitySha256 = output.ContractIdentitySha256,
+            ProductKind = ProcessingProductKind.PixelData,
+            ProductMediaType = "image/jpeg",
+            AlgorithmsJson = "[]",
+            CompatibilityJson = "{}",
+            CentralDerivativeJobId = job.Id,
+            Job = job,
+            CreatedAtUtc = now
+        };
+        context.AddRange(frame, anchor, result, execution, evidence);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        execution.ExpandedAtUtc = now;
+        await context.SaveChangesAsync().ConfigureAwait(false);
+
+        await CentralProcessingGraphOutputBinding.BindAsync(
+            context, job.Id, result.Id, null, now, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(result.Id, output.ResultCentralArtifactId);
+        Assert.AreEqual(outputIdentity, output.ResultOutputIdentitySha256);
+
+        // Evidence carrying the bare requested identity does not describe an annotated execution of this frame.
+        output.ResultCentralArtifactId = null;
+        output.ResultOutputIdentitySha256 = null;
+        output.BoundAtUtc = null;
+        evidence.RecipeIdentitySha256 = requested.IdentitySha256;
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<CentralDerivativeJobStateException>(() =>
+            CentralProcessingGraphOutputBinding.BindAsync(
+                context, job.Id, result.Id, null, now, CancellationToken.None)).ConfigureAwait(false);
+        Assert.IsNull(output.ResultCentralArtifactId);
+    }
+
+    [TestMethod]
+    public void ContractMatchesAdoptsLegacyEvidenceOnlyThroughDurableValidation()
+    {
+        var definition = new ProcessingRecipeDefinition(
+            "preview", "1.0.0", "implementation-v1", ProcessingOperationKind.Transform);
+        var algorithms = ImmutableArray.Create(new ProcessingAlgorithmIdentity("resize", "1"));
+        var contract = new ProcessingGraphProductContract(
+            FrameArtifactRole.Preview,
+            "graph",
+            ProcessingProductKind.PixelData,
+            definition,
+            "product-v1",
+            algorithms,
+            "application/octet-stream");
+        var job = new CentralDerivativeJob { GraphExecutionId = Guid.NewGuid() };
+        var slot = CentralDerivativeJobOutput.CreateFromFrozenPlan(job, 0, contract);
+        var artifact = CreateArtifact(
+            Guid.NewGuid(), Guid.NewGuid(), contract.Role, contract.Variant, "recipe-v1");
+        artifact.Recipe = new CentralArtifactRecipe
+        {
+            Name = definition.Name,
+            SemanticVersion = definition.SemanticVersion,
+            ImplementationVersion = definition.ImplementationVersion,
+            OptionsJson = "{}",
+            OptionsSha256 = new string('A', 64)
+        };
+        // Legacy-scheduler evidence: durable product facts recorded, no graph contract identity.
+        var evidence = new CentralArtifactProcessingEvidence
+        {
+            Artifact = artifact,
+            GraphProductContractIdentitySha256 = null,
+            ProductKind = contract.ProductKind,
+            ProductSchemaVersion = contract.SchemaVersion,
+            ProductMediaType = contract.MediaType,
+            RecipeOperationKind = definition.OperationKind,
+            AlgorithmsJson = JsonSerializer.Serialize(algorithms)
+        };
+        var descriptor = RecipeIdentityDescriptor.Create(
+            definition.Name, definition.SemanticVersion, definition.ImplementationVersion,
+            JsonSerializer.SerializeToElement(new { }));
+        var product = new ProcessingProduct(
+            contract.Role,
+            contract.Variant,
+            new string('B', 64),
+            contract.MediaType!,
+            null,
+            new byte[] { 1 },
+            new string('C', 64),
+            new ProcessingRecipeIdentity(descriptor, new string('D', 64)) { OperationKind = definition.OperationKind },
+            algorithms,
+            [],
+            TimeSpan.Zero,
+            new ProcessingCompatibilityIdentity(
+                "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile"))
+        {
+            SchemaVersion = contract.SchemaVersion
+        };
+
+        Assert.IsTrue(CentralProcessingGraphOutputBinding.ContractMatches(slot, artifact, evidence, null));
+        Assert.IsTrue(CentralProcessingGraphOutputBinding.ContractMatches(slot, artifact, evidence, product));
+
+        void Reject(Action mutate, Action restore)
+        {
+            mutate();
+            Assert.IsFalse(CentralProcessingGraphOutputBinding.ContractMatches(slot, artifact, evidence, null));
+            Assert.IsFalse(CentralProcessingGraphOutputBinding.ContractMatches(slot, artifact, evidence, product));
+            restore();
+        }
+
+        Reject(() => evidence.RecipeOperationKind = ProcessingOperationKind.Analyzer,
+            () => evidence.RecipeOperationKind = definition.OperationKind);
+        Reject(() => evidence.ProductSchemaVersion = "different", () => evidence.ProductSchemaVersion = contract.SchemaVersion);
+        Reject(() => evidence.ProductMediaType = "application/json", () => evidence.ProductMediaType = contract.MediaType);
+        Reject(() => evidence.ProductKind = ProcessingProductKind.Metadata, () => evidence.ProductKind = contract.ProductKind);
+        Reject(() => artifact.Recipe!.ImplementationVersion = "different",
+            () => artifact.Recipe!.ImplementationVersion = definition.ImplementationVersion);
+        Reject(() => evidence.AlgorithmsJson = "[]", () => evidence.AlgorithmsJson = JsonSerializer.Serialize(algorithms));
+
+        // Graph-tagged evidence for a different contract is never adopted, even when the durable facts line up.
+        evidence.GraphProductContractIdentitySha256 = new string('0', 64);
+        Assert.IsFalse(CentralProcessingGraphOutputBinding.ContractMatches(slot, artifact, evidence, null));
+        Assert.IsFalse(CentralProcessingGraphOutputBinding.ContractMatches(slot, artifact, evidence, product));
+    }
+
+    [TestMethod]
+    public void ValidateExistingAdoptsLegacyEvidenceForGraphSlotsAndRejectsForeignGraphContracts()
+    {
+        var frameId = Guid.NewGuid();
+        var deviceId = Guid.NewGuid();
+        var anchor = CreateArtifact(frameId, deviceId, FrameArtifactRole.Raw, "raw", "raw-v1");
+        var result = CreateArtifact(frameId, deviceId, FrameArtifactRole.Preview, "graph", "recipe-v1");
+        var definition = new ProcessingRecipeDefinition(
+            "preview", "1.0.0", "implementation-v1", ProcessingOperationKind.Transform);
+        var descriptor = RecipeIdentityDescriptor.Create(
+            definition.Name, definition.SemanticVersion, definition.ImplementationVersion,
+            JsonSerializer.SerializeToElement(new { }));
+        var payload = new byte[] { 1, 2, 3 };
+        var recipeIdentity = new ProcessingRecipeIdentity(descriptor, new string('D', 64))
+        {
+            OperationKind = definition.OperationKind
+        };
+        var product = new ProcessingProduct(
+            result.Role,
+            result.Variant!,
+            new string('B', 64),
+            result.MediaType,
+            null,
+            payload,
+            ProcessingIdentity.ComputePayloadSha256(payload),
+            recipeIdentity,
+            [],
+            [anchor.ArtifactId],
+            TimeSpan.Zero,
+            new ProcessingCompatibilityIdentity(
+                "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile"));
+        result.ByteLength = payload.Length;
+        result.ChecksumSha256 = product.ChecksumSha256;
+        result.Sources.Add(new CentralArtifactSource
+        {
+            Ordinal = 0,
+            SourceArtifactId = anchor.ArtifactId,
+            ResolvedCentralArtifactId = anchor.Id
+        });
+        const string bucket = "skymonitor-artifacts";
+        var objectKey = result.StorageReference[$"s3://{bucket}/".Length..];
+        var inputSet = new string('1', 64);
+        var legacyJob = new CentralDerivativeJob { InputSetIdentitySha256 = inputSet };
+        var evidence = new CentralArtifactProcessingEvidence
+        {
+            Artifact = result,
+            DevicePublicId = deviceId,
+            OutputIdentitySha256 = product.OutputIdentitySha256,
+            RequestedRecipeIdentitySha256 = new string('E', 64),
+            RecipeIdentitySha256 = recipeIdentity.IdentitySha256,
+            RecipeOperationKind = definition.OperationKind,
+            GraphProductContractIdentitySha256 = null,
+            ProductKind = product.Kind,
+            ProductSchemaVersion = product.SchemaVersion,
+            ProductMediaType = product.MediaType,
+            AlgorithmsJson = "[]",
+            CentralDerivativeJobId = legacyJob.Id,
+            Job = legacyJob
+        };
+        var lease = new CentralDerivativeJobLease(
+            JobId: Guid.NewGuid(),
+            LeaseToken: Guid.NewGuid(),
+            WorkerId: "worker",
+            LeaseExpiresAtUtc: DateTimeOffset.UtcNow.AddMinutes(1),
+            SourceDevicePublicId: deviceId,
+            SourceArtifactId: anchor.ArtifactId,
+            SourceRole: anchor.Role,
+            SourceRecipeVersion: anchor.RecipeVersion,
+            SourceContentUri: anchor.StorageReference,
+            SourceChecksumSha256: anchor.ChecksumSha256,
+            SourceMediaType: anchor.MediaType,
+            FrameId: Guid.NewGuid(),
+            AgentId: "agent",
+            CapturedAtUtc: DateTimeOffset.UtcNow,
+            RigProfileVersion: null,
+            SceneProvenanceJson: null,
+            TargetRole: result.Role,
+            TargetRecipeVersion: result.RecipeVersion,
+            TargetVariant: result.Variant!,
+            RecipeName: definition.Name,
+            RecipeOptionsJson: "{}",
+            InputSelectorJson: "{}",
+            RequestedRecipeIdentitySha256: evidence.RequestedRecipeIdentitySha256,
+            RequestIdentitySha256: new string('F', 64),
+            TraceParent: null,
+            TraceState: null,
+            AttemptCount: 1,
+            MaxAttempts: 3,
+            Inputs:
+            [
+                new CentralDerivativeJobLeaseInput(
+                    0, anchor.Id, deviceId, anchor.ArtifactId, anchor.Role, anchor.RecipeVersion,
+                    anchor.ChecksumSha256, anchor.MediaType, anchor.ByteLength, Guid.NewGuid(), "agent", null,
+                    DateTimeOffset.UtcNow, new string('0', 64))
+            ],
+            ExpectedRecipeIdentitySha256: evidence.RequestedRecipeIdentitySha256,
+            InputSetIdentitySha256: inputSet,
+            GraphExecutionId: Guid.NewGuid());
+        var graphContractIdentity = new string('9', 64);
+
+        // Legacy evidence with matching frozen input set, recipe, kind, media type, role, variant and checksum binds.
+        CentralDerivativeOutputWriter.ValidateExisting(
+            evidence, lease, product, result.ArtifactId, objectKey, bucket, graphContractIdentity);
+
+        legacyJob.InputSetIdentitySha256 = new string('2', 64);
+        Assert.ThrowsExactly<CentralDerivativeJobStateException>(() => CentralDerivativeOutputWriter.ValidateExisting(
+            evidence, lease, product, result.ArtifactId, objectKey, bucket, graphContractIdentity));
+        legacyJob.InputSetIdentitySha256 = inputSet;
+
+        evidence.RecipeIdentitySha256 = new string('5', 64);
+        Assert.ThrowsExactly<CentralDerivativeJobStateException>(() => CentralDerivativeOutputWriter.ValidateExisting(
+            evidence, lease, product, result.ArtifactId, objectKey, bucket, graphContractIdentity));
+        evidence.RecipeIdentitySha256 = recipeIdentity.IdentitySha256;
+
+        evidence.ProductMediaType = "application/json";
+        Assert.ThrowsExactly<CentralDerivativeJobStateException>(() => CentralDerivativeOutputWriter.ValidateExisting(
+            evidence, lease, product, result.ArtifactId, objectKey, bucket, graphContractIdentity));
+        evidence.ProductMediaType = product.MediaType;
+
+        // Evidence tagged with another graph contract stays rejected.
+        evidence.GraphProductContractIdentitySha256 = new string('0', 64);
+        Assert.ThrowsExactly<CentralDerivativeJobStateException>(() => CentralDerivativeOutputWriter.ValidateExisting(
+            evidence, lease, product, result.ArtifactId, objectKey, bucket, graphContractIdentity));
+        evidence.GraphProductContractIdentitySha256 = graphContractIdentity;
+        CentralDerivativeOutputWriter.ValidateExisting(
+            evidence, lease, product, result.ArtifactId, objectKey, bucket, graphContractIdentity);
+    }
+
     private static CentralArtifact CreateArtifact(
         Guid frameId,
         Guid deviceId,

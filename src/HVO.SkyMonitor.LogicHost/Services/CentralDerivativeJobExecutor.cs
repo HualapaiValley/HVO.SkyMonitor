@@ -347,7 +347,7 @@ internal sealed class CentralDerivativeJobExecutor(
                 requestedIdentity,
                 StringComparison.OrdinalIgnoreCase);
 
-    private static ProcessingAnnotationInput? CreateAnnotation(string? sceneProvenanceJson)
+    internal static ProcessingAnnotationInput? CreateAnnotation(string? sceneProvenanceJson)
     {
         if (string.IsNullOrWhiteSpace(sceneProvenanceJson))
         {

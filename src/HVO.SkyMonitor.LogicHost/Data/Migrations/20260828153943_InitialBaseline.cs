@@ -2293,6 +2293,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     ResolutionStartedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
                     ResolutionCompletedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
                     MissingInputOutcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true),
+                    MinimumInputCount = table.Column<int>(type: "int", nullable: true),
                     StateReasonCode = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
                     InputSetIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: true),
                     AttemptCount = table.Column<int>(type: "int", nullable: false),
@@ -2322,6 +2323,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     table.CheckConstraint("CK_CentralDerivativeJobs_GraphFailurePolicy", "[GraphFailurePolicy] IS NULL OR [GraphFailurePolicy] IN (N'Required', N'Optional')");
                     table.CheckConstraint("CK_CentralDerivativeJobs_GraphOwnership", "([GraphExecutionId] IS NULL AND [GraphNodeId] IS NULL AND [GraphNodeOrdinal] IS NULL AND [SharedNodePlanIdentitySha256] IS NULL AND [FrozenNodePlanJson] IS NULL AND [GraphFailurePolicy] IS NULL) OR ([GraphExecutionId] IS NOT NULL AND [GraphNodeId] IS NOT NULL AND [GraphNodeOrdinal] >= 0 AND [SharedNodePlanIdentitySha256] IS NOT NULL AND [FrozenNodePlanJson] IS NOT NULL AND [GraphFailurePolicy] IS NOT NULL)");
                     table.CheckConstraint("CK_CentralDerivativeJobs_MaxAttempts", "[MaxAttempts] > 0");
+                    table.CheckConstraint("CK_CentralDerivativeJobs_MinimumInputCount", "[MinimumInputCount] IS NULL OR [MinimumInputCount] >= 0");
                     table.CheckConstraint("CK_CentralDerivativeJobs_WaitKind", "[WaitKind] IS NULL OR [WaitKind] IN (N'Dependencies', N'Window')");
                     table.ForeignKey(
                         name: "FK_CentralDerivativeJobs_CentralArtifacts_ResultCentralArtifactId",
