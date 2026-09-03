@@ -1134,7 +1134,7 @@ internal static class CentralProcessingGraphOutputBinding
             string.Equals(evidence.ProductMediaType ?? artifact.MediaType, artifact.MediaType,
                 StringComparison.OrdinalIgnoreCase) &&
             RecipeMatches(contract.Recipe, artifact.Recipe, evidence.RecipeOperationKind) &&
-            SequenceEqual(contract.Algorithms, algorithms);
+            AlgorithmsMatch(contract.Algorithms, algorithms);
     }
 
     internal static bool TryReadContract(
@@ -1169,7 +1169,7 @@ internal static class CentralProcessingGraphOutputBinding
             (contract.MediaType is null || string.Equals(
                 product.MediaType, contract.MediaType, StringComparison.OrdinalIgnoreCase)) &&
             RecipeMatches(contract.Recipe, product.Recipe) &&
-            SequenceEqual(contract.Algorithms, product.Algorithms);
+            AlgorithmsMatch(contract.Algorithms, product.Algorithms);
 
     internal static bool RecipeMatches(ProcessingRecipeDefinition? expected, ProcessingRecipeIdentity? actual)
         => expected is null || actual is not null && expected.Name == actual.Descriptor.Name &&
@@ -1185,6 +1185,16 @@ internal static class CentralProcessingGraphOutputBinding
             expected.SemanticVersion == actual.SemanticVersion &&
             expected.ImplementationVersion == actual.ImplementationVersion &&
             expected.OperationKind == actualOperationKind;
+
+    /// <summary>
+    /// A contract that omits or pins an empty <c>algorithms</c> set leaves the product's algorithms unconstrained;
+    /// a non-empty pinned set requires exact ordered equality. Mirrors the <c>$.algorithms</c> predicate in
+    /// <c>TR_CentralDerivativeJobOutputs_BindOnce</c> and <c>TR_CentralArtifactProcessingEvidence_GraphContractImmutable</c>.
+    /// </summary>
+    internal static bool AlgorithmsMatch(
+        System.Collections.Immutable.ImmutableArray<ProcessingAlgorithmIdentity> expected,
+        IReadOnlyList<ProcessingAlgorithmIdentity> actual)
+        => expected.IsDefaultOrEmpty || SequenceEqual(expected, actual);
 
     internal static bool SequenceEqual(
         System.Collections.Immutable.ImmutableArray<ProcessingAlgorithmIdentity> expected,

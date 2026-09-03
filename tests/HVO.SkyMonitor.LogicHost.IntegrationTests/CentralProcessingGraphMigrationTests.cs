@@ -1484,6 +1484,113 @@ public sealed class CentralProcessingGraphMigrationTests
     }
 
     /// <summary>
+    /// A frozen output contract that omits <c>algorithms</c> leaves the product's algorithm set unconstrained:
+    /// evidence carrying a non-empty algorithm set passes the evidence contract trigger, the C# binder, and
+    /// <c>TR_CentralDerivativeJobOutputs_BindOnce</c>, and the slot binds.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerEvidenceWithAlgorithmsBindsToSlotWhoseContractOmitsAlgorithms()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphOpenAlgorithms_{Guid.NewGuid():N}"
+        };
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (_, _, definition, graphScheduler, workerTelemetry) =
+                await ScheduleSingleNodePreviewGraphAsync(context, now, "open-algorithms").ConfigureAwait(false);
+            using var _ = workerTelemetry;
+
+            // Rewrite the frozen slot so its contract omits the algorithms property entirely. Slot contracts are
+            // immutable once expansion is sealed, so this test-only setup bypasses the binding trigger.
+            var frozenSlot = await context.CentralDerivativeJobOutputs.AsNoTracking().SingleAsync().ConfigureAwait(false);
+            frozenSlot.ContractJson.Should().Contain("\"algorithms\":[]");
+            var openContractJson = frozenSlot.ContractJson.Replace("\"algorithms\":[],", string.Empty, StringComparison.Ordinal);
+            openContractJson.Should().NotContain("algorithms");
+            var openContractIdentity = CentralDerivativeJobOutput.ComputeContractIdentitySha256(openContractJson);
+            await context.Database.ExecuteSqlInterpolatedAsync($"""
+                DISABLE TRIGGER [TR_CentralDerivativeJobOutputs_BindOnce] ON [CentralDerivativeJobOutputs];
+                UPDATE [CentralDerivativeJobOutputs]
+                SET [ContractJson] = {openContractJson}, [ContractIdentitySha256] = {openContractIdentity}
+                WHERE [Id] = {frozenSlot.Id};
+                ENABLE TRIGGER [TR_CentralDerivativeJobOutputs_BindOnce] ON [CentralDerivativeJobOutputs];
+                """).ConfigureAwait(false);
+            (await context.Database.SqlQuery<string?>($"""
+                SELECT JSON_QUERY([ContractJson], '$.algorithms') AS [Value]
+                FROM [CentralDerivativeJobOutputs]
+                WHERE [Id] = {frozenSlot.Id}
+                """).SingleAsync().ConfigureAwait(false)).Should().BeNull();
+
+            var lease = await new CentralDerivativeJobService(context, TimeProvider.System)
+                .ClaimNextAsync("open-algorithms-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.GraphExecutionId.Should().NotBeNull();
+            var contract = definition.Nodes.Single().Outputs.Single();
+            var product = CreateProduct(contract, lease, 9) with
+            {
+                Algorithms =
+                [
+                    new ProcessingAlgorithmIdentity("stretch", "2"),
+                    new ProcessingAlgorithmIdentity("encode", "3")
+                ]
+            };
+            var services = AssemblyHooks.Fixture.Factory.Services;
+            var storageNames = services.GetRequiredService<CentralObjectStorageNames>();
+
+            await using (var writerContext = new ApplicationDbContext(options))
+            {
+                var writer = new CentralDerivativeOutputWriter(
+                    writerContext,
+                    services.GetRequiredService<IObjectStore>(),
+                    services.GetRequiredService<ICentralArtifactObjectReader>(),
+                    workerTelemetry,
+                    TimeProvider.System,
+                    NullLogger<CentralDerivativeOutputWriter>.Instance,
+                    storageNames);
+                var written = await writer.PersistSetAsync(lease, [product], 1, TimeSpan.Zero, CancellationToken.None)
+                    .ConfigureAwait(false);
+                written.Should().ContainSingle();
+            }
+            context.ChangeTracker.Clear();
+
+            var graphJob = await context.CentralDerivativeJobs.AsNoTracking()
+                .Include(item => item.Outputs)
+                .SingleAsync(item => item.Id == lease.JobId).ConfigureAwait(false);
+            graphJob.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+            var slot = graphJob.Outputs.Single();
+            slot.ContractIdentitySha256.Should().Be(openContractIdentity);
+            slot.ResultCentralArtifactId.Should().Be(graphJob.ResultCentralArtifactId);
+            slot.ResultOutputIdentitySha256.Should().Be(product.OutputIdentitySha256);
+            slot.BoundAtUtc.Should().NotBeNull();
+            var evidence = await context.CentralArtifactProcessingEvidence.AsNoTracking()
+                .SingleAsync(item => item.CentralArtifactId == slot.ResultCentralArtifactId).ConfigureAwait(false);
+            evidence.GraphProductContractIdentitySha256.Should().Be(openContractIdentity);
+            evidence.AlgorithmsJson.Should().Be(CaptureContractJson.Canonicalize(
+                CaptureContractJson.SerializeToElement(product.Algorithms)).GetRawText());
+            evidence.AlgorithmsJson.Should().NotBe("[]", "the bound evidence carries a non-empty algorithm set");
+
+            await graphScheduler.ConvergeAsync(lease.GraphExecutionId!.Value, now.AddSeconds(2), CancellationToken.None)
+                .ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking()
+                .SingleAsync(item => item.Id == lease.GraphExecutionId).ConfigureAwait(false)).Status
+                .Should().Be(CentralProcessingGraphExecutionStatus.Completed);
+        }
+        finally
+        {
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// The annotation decision is frozen at expansion. A frame without scene provenance at expansion freezes "no
     /// annotation": provenance enriched before the lease is withheld from the executor and evidence carrying the
     /// frozen (requested) identity binds through the SQL triggers. A frame annotated at expansion freezes the

@@ -62,7 +62,9 @@ BEGIN
                           OR JSON_VALUE(output.[ContractJson], '$.mediaType') = i.[ProductMediaType])
                      AND ISNULL(JSON_VALUE(output.[ContractJson], '$.schemaVersion'), N'') =
                          ISNULL(i.[ProductSchemaVersion], N'')
-                     AND JSON_QUERY(output.[ContractJson], '$.algorithms') = i.[AlgorithmsJson])))
+                     -- An omitted or empty contract algorithm set leaves the evidence algorithms unconstrained.
+                     AND (ISNULL(JSON_QUERY(output.[ContractJson], '$.algorithms'), N'[]') = N'[]'
+                          OR JSON_QUERY(output.[ContractJson], '$.algorithms') = i.[AlgorithmsJson]))))
         THROW 51000, 'Derivative graph product-contract evidence is inconsistent.', 1;
 END
 GO
@@ -376,7 +378,9 @@ BEGIN
                         AND result_recipe.[SemanticVersion] = JSON_VALUE(i.[ContractJson], '$.recipe.semanticVersion')
                         AND result_recipe.[ImplementationVersion] =
                             JSON_VALUE(i.[ContractJson], '$.recipe.implementationVersion'))
-                AND JSON_QUERY(i.[ContractJson], '$.algorithms') = evidence.[AlgorithmsJson]))
+                -- An omitted or empty contract algorithm set leaves the evidence algorithms unconstrained.
+                AND (ISNULL(JSON_QUERY(i.[ContractJson], '$.algorithms'), N'[]') = N'[]'
+                     OR JSON_QUERY(i.[ContractJson], '$.algorithms') = evidence.[AlgorithmsJson])))
         THROW 51000, 'Derivative graph output binding evidence is inconsistent.', 1;
 END
 GO

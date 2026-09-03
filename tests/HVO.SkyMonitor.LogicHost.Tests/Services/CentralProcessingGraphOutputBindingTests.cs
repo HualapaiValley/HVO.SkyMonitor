@@ -648,6 +648,112 @@ public sealed class CentralProcessingGraphOutputBindingTests
         Assert.IsFalse(CentralProcessingGraphOutputBinding.SequenceEqual([algorithm], []));
     }
 
+    /// <summary>
+    /// A contract that omits (or pins an empty) <c>algorithms</c> set leaves the product's algorithms unconstrained
+    /// for identity resolution, product matching, and durable evidence matching; a non-empty pinned set still
+    /// requires exact equality.
+    /// </summary>
+    [TestMethod]
+    public void EmptyContractAlgorithmsLeaveProductAlgorithmsUnconstrained()
+    {
+        var definition = new ProcessingRecipeDefinition(
+            "preview", "1.0.0", "implementation-v1", ProcessingOperationKind.Transform);
+        var pinned = ImmutableArray.Create(new ProcessingAlgorithmIdentity("resize", "1"));
+        var produced = ImmutableArray.Create(
+            new ProcessingAlgorithmIdentity("stretch", "2"),
+            new ProcessingAlgorithmIdentity("encode", "3"));
+        var openContract = new ProcessingGraphProductContract(
+            FrameArtifactRole.Preview,
+            "graph",
+            ProcessingProductKind.PixelData,
+            definition,
+            "product-v1",
+            default,
+            "application/octet-stream");
+        var pinnedContract = openContract with { Algorithms = pinned };
+        var descriptor = RecipeIdentityDescriptor.Create(
+            definition.Name,
+            definition.SemanticVersion,
+            definition.ImplementationVersion,
+            JsonSerializer.SerializeToElement(new { }));
+        var product = new ProcessingProduct(
+            openContract.Role,
+            openContract.Variant,
+            new string('B', 64),
+            openContract.MediaType!,
+            null,
+            new byte[] { 1 },
+            new string('C', 64),
+            new ProcessingRecipeIdentity(descriptor, new string('D', 64))
+            {
+                OperationKind = definition.OperationKind
+            },
+            produced,
+            [],
+            TimeSpan.Zero,
+            new ProcessingCompatibilityIdentity(
+                "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile"))
+        {
+            SchemaVersion = openContract.SchemaVersion
+        };
+
+        Assert.IsTrue(CentralProcessingGraphOutputBinding.AlgorithmsMatch(default, produced));
+        Assert.IsTrue(CentralProcessingGraphOutputBinding.AlgorithmsMatch([], produced));
+        Assert.IsTrue(CentralProcessingGraphOutputBinding.AlgorithmsMatch(pinned, pinned));
+        Assert.IsFalse(CentralProcessingGraphOutputBinding.AlgorithmsMatch(pinned, produced));
+        Assert.IsFalse(CentralProcessingGraphOutputBinding.AlgorithmsMatch(pinned, []));
+
+        Assert.IsTrue(CentralProcessingGraphOutputBinding.ProductMatches(openContract, product));
+        Assert.IsTrue(CentralProcessingGraphOutputBinding.ProductMatches(openContract, product with { Algorithms = [] }));
+        Assert.IsFalse(CentralProcessingGraphOutputBinding.ProductMatches(pinnedContract, product));
+        Assert.IsTrue(CentralProcessingGraphOutputBinding.ProductMatches(pinnedContract, product with { Algorithms = pinned }));
+
+        // Contract JSON that omits the algorithms property entirely resolves the same way as an empty array.
+        var job = new CentralDerivativeJob { GraphExecutionId = Guid.NewGuid() };
+        var slot = CentralDerivativeJobOutput.CreateFromFrozenPlan(job, 0, openContract);
+        StringAssert.Contains(slot.ContractJson, "\"algorithms\":[]");
+        slot.ContractJson = slot.ContractJson.Replace("\"algorithms\":[],", string.Empty, StringComparison.Ordinal);
+        Assert.IsFalse(slot.ContractJson.Contains("algorithms", StringComparison.Ordinal));
+        slot.ContractIdentitySha256 = CentralDerivativeJobOutput.ComputeContractIdentitySha256(slot.ContractJson);
+        job.Outputs.Add(slot);
+        Assert.AreEqual(
+            slot.ContractIdentitySha256,
+            CentralProcessingGraphOutputBinding.ResolveContractIdentity(job, product));
+
+        var pinnedJob = new CentralDerivativeJob { GraphExecutionId = Guid.NewGuid() };
+        pinnedJob.Outputs.Add(CentralDerivativeJobOutput.CreateFromFrozenPlan(pinnedJob, 0, pinnedContract));
+        Assert.ThrowsExactly<CentralDerivativeJobStateException>(() =>
+            CentralProcessingGraphOutputBinding.ResolveContractIdentity(pinnedJob, product));
+
+        // Durable evidence carrying non-empty algorithms binds to the open slot and is rejected by the pinned slot.
+        var artifact = CreateArtifact(
+            Guid.NewGuid(), Guid.NewGuid(), openContract.Role, openContract.Variant, "recipe-v1");
+        artifact.Recipe = new CentralArtifactRecipe
+        {
+            Name = definition.Name,
+            SemanticVersion = definition.SemanticVersion,
+            ImplementationVersion = definition.ImplementationVersion,
+            OptionsJson = "{}",
+            OptionsSha256 = new string('A', 64)
+        };
+        var evidence = new CentralArtifactProcessingEvidence
+        {
+            Artifact = artifact,
+            GraphProductContractIdentitySha256 = slot.ContractIdentitySha256,
+            ProductKind = openContract.ProductKind,
+            ProductSchemaVersion = openContract.SchemaVersion,
+            ProductMediaType = openContract.MediaType,
+            RecipeOperationKind = definition.OperationKind,
+            AlgorithmsJson = JsonSerializer.Serialize(produced)
+        };
+        Assert.IsTrue(CentralProcessingGraphOutputBinding.ContractMatches(slot, artifact, evidence, null));
+        Assert.IsTrue(CentralProcessingGraphOutputBinding.ContractMatches(slot, artifact, evidence, product));
+        var pinnedSlot = pinnedJob.Outputs.Single();
+        evidence.GraphProductContractIdentitySha256 = pinnedSlot.ContractIdentitySha256;
+        Assert.IsFalse(CentralProcessingGraphOutputBinding.ContractMatches(pinnedSlot, artifact, evidence, null));
+        Assert.IsFalse(CentralProcessingGraphOutputBinding.ContractMatches(pinnedSlot, artifact, evidence, product));
+    }
+
     [TestMethod]
     public async Task BindAsyncBindsAnnotationEvidenceAgainstTheFrozenExpectedIdentityOnly()
     {
