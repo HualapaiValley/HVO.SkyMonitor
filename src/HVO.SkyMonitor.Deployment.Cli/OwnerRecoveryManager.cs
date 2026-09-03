@@ -81,7 +81,7 @@ internal static class OwnerRecoveryManager
         CancellationToken cancellationToken)
     {
         request.Validate();
-        if (uid == 0 || gid == 0)
+        if (uid == 0)
         {
             throw new InstallerException("Run owner recovery as the CameraAgent deployment runtime user, not as root.");
         }

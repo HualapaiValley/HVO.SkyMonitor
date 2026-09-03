@@ -245,7 +245,7 @@ public sealed class OwnerRecoveryManagerTests
             fixture.Request(),
             _ => new FakeRecoveryClient(),
             fixture.Uid,
-            0,
+            fixture.Gid + 1,
             CancellationToken.None)).ConfigureAwait(false);
     }
 

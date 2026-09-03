@@ -282,7 +282,7 @@ public sealed class InstallerFlowTests
         public Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken)
             => Task.FromResult(CurrentInstallationState);
 
-        public Task VerifyInstallationAsync(
+        public Task<string> VerifyInstallationAsync(
             string verificationToken,
             InstallationVerificationExpectation expectation,
             CancellationToken cancellationToken)
@@ -295,7 +295,7 @@ public sealed class InstallerFlowTests
                 expectation.OwnerBootstrapState,
                 CurrentInstallationState,
                 expectation.AllowCompletedPasswordReplacement));
-            return Task.CompletedTask;
+            return Task.FromResult(CurrentInstallationState);
         }
     }
 
@@ -417,11 +417,11 @@ public sealed class InstallerFlowTests
         public Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken)
             => Task.FromResult("owner-password-change-required");
 
-        public Task VerifyInstallationAsync(
+        public Task<string> VerifyInstallationAsync(
             string verificationToken,
             InstallationVerificationExpectation expectation,
             CancellationToken cancellationToken)
-            => Task.CompletedTask;
+            => Task.FromResult("owner-password-change-required");
     }
 
 }

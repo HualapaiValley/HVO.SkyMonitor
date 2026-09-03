@@ -10,7 +10,7 @@ internal interface IOwnerBootstrapClient
     Task WaitForHealthAsync(CancellationToken cancellationToken, TimeSpan? timeout = null);
     Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken);
     Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken);
-    Task VerifyInstallationAsync(
+    Task<string> VerifyInstallationAsync(
         string verificationToken,
         InstallationVerificationExpectation expectation,
         CancellationToken cancellationToken);
@@ -98,7 +98,7 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
             ?? throw new InstallerException("Owner bootstrap status omitted its state.");
     }
 
-    public async Task VerifyInstallationAsync(
+    public async Task<string> VerifyInstallationAsync(
         string verificationToken,
         InstallationVerificationExpectation expectation,
         CancellationToken cancellationToken)
@@ -121,6 +121,7 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
         response.EnsureSuccessStatusCode();
         using var json = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
         var value = json.RootElement;
+        var ownerBootstrapState = value.GetProperty("ownerBootstrapState").GetString();
         var replayProfileMatches = value.TryGetProperty("replayProfile", out var replayProfile)
             ? replayProfile.GetString() == expectation.ReplayProfile.ToString()
             : expectation.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess;
@@ -128,7 +129,7 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
                       value.GetProperty("ownerEmail").GetString() == expectation.OwnerEmail &&
                       IsAllowedOwnerBootstrapState(
                           expectation.OwnerBootstrapState,
-                          value.GetProperty("ownerBootstrapState").GetString(),
+                          ownerBootstrapState,
                           expectation.AllowCompletedPasswordReplacement) &&
                       Lower(value, "configurationSha256") == expectation.ConfigurationSha256 &&
                       Lower(value, "rigProfileSha256") == expectation.RigProfileSha256 &&
@@ -149,6 +150,7 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
         {
             throw new InstallerException("CameraAgent reported installation identities that differ from the installer manifest.");
         }
+        return ownerBootstrapState!;
     }
 
     public async Task<string> ReadInstallationStateAsync(
