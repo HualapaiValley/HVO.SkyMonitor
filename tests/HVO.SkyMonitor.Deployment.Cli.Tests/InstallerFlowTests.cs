@@ -11,6 +11,21 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class InstallerFlowTests
 {
     [TestMethod]
+    public void IsAllowedOwnerBootstrapState_AllowsOnlyInstalledStateOrCompletedReplacement()
+    {
+        Assert.IsTrue(OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
+            "owner-password-change-required", "owner-password-change-required", allowCompletedPasswordReplacement: false));
+        Assert.IsTrue(OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
+            "owner-password-change-required", "owner-ready", allowCompletedPasswordReplacement: true));
+        Assert.IsFalse(OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
+            "owner-password-change-required", "owner-ready", allowCompletedPasswordReplacement: false));
+        Assert.IsFalse(OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
+            "owner-password-change-required", "owner-temporary-password", allowCompletedPasswordReplacement: true));
+        Assert.IsFalse(OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
+            "owner-ready", "owner-password-change-required", allowCompletedPasswordReplacement: true));
+    }
+
+    [TestMethod]
     public async Task InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity()
     {
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
@@ -44,6 +59,7 @@ public sealed class InstallerFlowTests
                 1000,
                 1000,
                 CancellationToken.None);
+            owner.CurrentInstallationState = "owner-ready";
             var passwordSha256 = await SafeFileSystem.ComputeSha256Async(first.PasswordFile, CancellationToken.None);
             var manifestPath = Path.Combine(first.InstanceRoot, "instance-manifest.json");
             var resultPath = Path.Combine(first.InstanceRoot, "state", "deployment", "installation-result.json");
@@ -245,6 +261,7 @@ public sealed class InstallerFlowTests
     private sealed class InstallerOwnerClient : IOwnerBootstrapClient
     {
         private int stateReadCount;
+        public string CurrentInstallationState { get; set; } = "owner-password-change-required";
 
         public Task WaitForHealthAsync(CancellationToken cancellationToken, TimeSpan? timeout = null)
         {
@@ -262,6 +279,9 @@ public sealed class InstallerFlowTests
                 : "owner-password-change-required");
         }
 
+        public Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken)
+            => Task.FromResult(CurrentInstallationState);
+
         public Task VerifyInstallationAsync(
             string verificationToken,
             InstallationVerificationExpectation expectation,
@@ -271,6 +291,10 @@ public sealed class InstallerFlowTests
             Assert.AreEqual("hyg-v42-production", expectation.Catalog.CatalogId);
             Assert.AreEqual(64, expectation.ConfigurationSha256.Length);
             Assert.AreEqual(HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, expectation.ReplayProfile);
+            Assert.IsTrue(OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
+                expectation.OwnerBootstrapState,
+                CurrentInstallationState,
+                expectation.AllowCompletedPasswordReplacement));
             return Task.CompletedTask;
         }
     }
@@ -389,6 +413,9 @@ public sealed class InstallerFlowTests
             }
             return Task.FromResult(stateCount == 2 ? "owner-temporary-password" : "owner-password-change-required");
         }
+
+        public Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken)
+            => Task.FromResult("owner-password-change-required");
 
         public Task VerifyInstallationAsync(
             string verificationToken,

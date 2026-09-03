@@ -359,7 +359,8 @@ internal static class CatalogLifecycleManager
                 manifest.ConfigurationSha256, manifest.RigProfileSha256, manifest.ScheduleSha256,
                 manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
                 manifest.ReplayProfile,
-                catalog), cancellationToken).ConfigureAwait(false);
+                catalog,
+                AllowCompletedPasswordReplacement: true), cancellationToken).ConfigureAwait(false);
         await docker.VerifyContainerAsync(compose, paths, manifest.Image, manifest.RuntimeUid, manifest.RuntimeGid, cancellationToken)
             .ConfigureAwait(false);
     }

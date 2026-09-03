@@ -53,6 +53,19 @@ namespace HVO.SkyMonitor.CameraAgent;
 
 public class Program
 {
+    private static readonly HashSet<string> RetiredOwnerRecoveryPaths = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "/Account/ForgotPassword",
+        "/Account/ForgotPasswordConfirmation",
+        "/Account/ResetPassword",
+        "/Account/ResetPasswordConfirmation",
+        "/Account/ResendEmailConfirmation",
+        "/Account/ConfirmEmail",
+        "/Account/ConfirmEmailChange",
+        "/Account/InvalidPasswordReset",
+        "/Account/Manage/SetPassword"
+    };
+
     public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
@@ -131,6 +144,8 @@ public class Program
         var localIdentitySettings = localIdentitySection.Get<LocalIdentityOptions>() ?? new LocalIdentityOptions();
         var identityDbPath = ResolveIdentityDatabasePath(localIdentitySettings.DatabasePath, builder.Environment.ContentRootPath);
         DeviceStateFilePermissions.RestrictDirectory(Path.GetDirectoryName(identityDbPath)!);
+        using var ownerRecoveryTransport = OwnerRecoveryTransport.Configure(builder, identityDbPath, localIdentitySettings);
+        builder.Services.AddSingleton(ownerRecoveryTransport);
         var identityConnectionString = $"Data Source={identityDbPath}";
 
         var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "DataProtection-Keys");
@@ -318,6 +333,17 @@ public class Program
 
         app.UseHttpLogging();
 
+        app.Use(async (context, next) =>
+        {
+            if (RequiresCanonicalOwnerRecoveryRedirect(context.Request))
+            {
+                context.Response.Redirect("/Account/Recovery#");
+                return;
+            }
+
+            await next(context).ConfigureAwait(false);
+        });
+
         app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), appBuilder =>
             {
                 appBuilder.UseStatusCodePagesWithReExecute("/not-found", "?statusCode={0}");
@@ -448,6 +474,8 @@ public class Program
             }
         }, CancellationToken.None).ConfigureAwait(false);
 
+        using var ownerRecoverySocketRegistration = app.Lifetime.ApplicationStarted.Register(
+            ownerRecoveryTransport.RestrictSocket);
         await app.RunAsync().ConfigureAwait(false);
     }
 
@@ -542,6 +570,23 @@ public class Program
             throw new InvalidOperationException("LocalIdentity:AdminPasswordFile is empty.");
         }
         configuration["LocalIdentity:AdminPassword"] = password;
+    }
+
+    private static bool RequiresCanonicalOwnerRecoveryRedirect(HttpRequest request)
+    {
+        if (!HttpMethods.IsGet(request.Method) && !HttpMethods.IsHead(request.Method))
+        {
+            return false;
+        }
+
+        var path = request.Path.Value;
+        if (string.Equals(path, "/Account/Recovery", StringComparison.Ordinal))
+        {
+            return request.QueryString.HasValue;
+        }
+
+        return string.Equals(path, "/Account/Recovery", StringComparison.OrdinalIgnoreCase) ||
+               path is not null && RetiredOwnerRecoveryPaths.Contains(path);
     }
 
     private static string ResolveIdentityDatabasePath(string? configuredPath, string contentRoot)

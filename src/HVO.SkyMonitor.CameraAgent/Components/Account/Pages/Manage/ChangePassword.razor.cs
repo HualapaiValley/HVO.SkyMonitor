@@ -47,7 +47,7 @@ public sealed partial class ChangePassword
         hasPassword = await UserManager.HasPasswordAsync(user);
         if (!hasPassword)
         {
-            RedirectManager.RedirectTo("Account/Manage/SetPassword");
+            RedirectManager.RedirectTo("Account/Recovery");
         }
     }
 

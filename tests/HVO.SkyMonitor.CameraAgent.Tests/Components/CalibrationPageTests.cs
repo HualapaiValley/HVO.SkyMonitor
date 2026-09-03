@@ -1,4 +1,5 @@
 using Bunit;
+using Bunit.JSInterop;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
@@ -76,8 +77,13 @@ public sealed class CalibrationPageTests
         cut.WaitForElement("#start-calibration-acquisition").Click();
         cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm").Click();
 
-        var cancel = cut.WaitForElement("button.btn-outline-warning");
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.FindAll("button").Any(button =>
+            button.TextContent.Trim() == "Cancel acquisition")));
+        var cancel = cut.FindAll("button").Single(button =>
+            button.TextContent.Trim() == "Cancel acquisition");
         Assert.IsFalse(service.AcquisitionToken.CanBeCanceled);
+        Assert.IsTrue(cut.FindAll("button").Single(button =>
+            button.TextContent.Trim() == "Review activate").HasAttribute("disabled"));
         cancel.Click();
 
         cut.WaitForAssertion(() => Assert.AreEqual(1, service.CancelCount));
@@ -148,9 +154,72 @@ public sealed class CalibrationPageTests
             cut.Markup, "Calibration state changed before activation.", StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public async Task ActivationCancel_WhileCommandIsPending_KeepsConfirmationOpenAsync()
+    {
+        var service = new DelayedActivationCalibrationUiService(Status());
+        using var context = CreateContext(service);
+        var cut = context.Render<CalibrationPage>();
+        await cut.WaitForElement("button.btn-outline-warning").ClickAsync().ConfigureAwait(false);
+        var dialog = cut.Find("dialog");
+
+        var command = cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm")
+            .TriggerEventAsync("onclick", EventArgs.Empty);
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.Find("dialog .btn-primary").HasAttribute("disabled")));
+
+        await dialog.TriggerEventAsync("oncancel", EventArgs.Empty).ConfigureAwait(false);
+
+        Assert.HasCount(1, cut.FindAll("dialog"));
+        service.Complete();
+        await command.ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog")));
+    }
+
+    [TestMethod]
+    public async Task AcquisitionCompletion_DoesNotRestoreTriggerFocusTwiceAsync()
+    {
+        var service = new DelayedCalibrationUiService(Status());
+        using var context = CreateContext(service);
+        var cut = context.Render<CalibrationPage>();
+        await cut.WaitForElement("#start-calibration-acquisition").ClickAsync().ConfigureAwait(false);
+        await cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm")
+            .ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual(
+            1,
+            context.JSInterop.Invocations.Count(static invocation => invocation.Identifier == "focusById")));
+        Assert.IsTrue(cut.FindAll("button").Any(button => button.TextContent.Trim() == "Cancel acquisition"));
+
+        service.CompleteSuccess();
+
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Markup, "Calibration acquisition published durably.", StringComparison.Ordinal));
+        Assert.AreEqual(
+            1,
+            context.JSInterop.Invocations.Count(static invocation => invocation.Identifier == "focusById"));
+    }
+
+    [TestMethod]
+    public void SynchronousAcquisitionCompletion_RestoresTriggerFocusOnce()
+    {
+        using var context = CreateContext(new SynchronousCalibrationUiService(Status()));
+        var cut = context.Render<CalibrationPage>();
+        cut.WaitForElement("#start-calibration-acquisition").Click();
+
+        cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm").Click();
+
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Markup, "Calibration acquisition published durably.", StringComparison.Ordinal));
+        Assert.AreEqual(
+            1,
+            context.JSInterop.Invocations.Count(static invocation => invocation.Identifier == "focusById"));
+    }
+
     private static BunitContext CreateContext(ICameraAgentCalibrationUiService service)
     {
         var context = new BunitContext();
+        var module = context.JSInterop.SetupModule("./Components/Pages/CalibrationPage.razor.js");
+        module.SetupVoid("showModal", _ => true).SetVoidResult();
+        module.SetupVoid("focusById", _ => true).SetVoidResult();
         context.Services.AddSingleton(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(
             new DateTimeOffset(2026, 1, 15, 8, 0, 0, TimeSpan.Zero)));
@@ -213,6 +282,24 @@ public sealed class CalibrationPageTests
             DateTimeOffset.UnixEpoch);
     }
 
+    private static CalibrationUiBundlePage BundlePage()
+    {
+        var layout = new FrameLayoutDescriptor(
+            2, 2, 4, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian,
+            16, 16, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None,
+            0, ushort.MaxValue, 8);
+        var applicability = new CalibrationApplicabilityV1(
+            "agent", "rig", new string('A', 64), new string('B', 64), layout, layout,
+            82, 82, 1, 1, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5), -10, -10,
+            DateTimeOffset.UnixEpoch, null);
+        return new CalibrationUiBundlePage(
+            [new CalibrationUiBundleSummary(
+                "bundle-conflict", new string('C', 64), "virtual-acquisition-v1", "published",
+                null, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, new string('D', 64),
+                new string('E', 64), applicability, 12, 4)],
+            null);
+    }
+
     private class CalibrationUiService(CalibrationUiStatus? status) : ICameraAgentCalibrationUiService
     {
         protected CalibrationUiStatus? CurrentStatus { get; set; } = status;
@@ -263,6 +350,18 @@ public sealed class CalibrationPageTests
         internal CancellationToken AcquisitionToken { get; private set; }
 
         internal int CancelCount { get; private set; }
+
+        public override ValueTask<OperatorUiResult<CalibrationUiBundlePage>> GetBundlesAsync(
+            int pageSize,
+            string? cursor,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<CalibrationUiBundlePage>.Success(BundlePage()));
+
+        internal void CompleteSuccess()
+        {
+            CurrentStatus = CurrentStatus! with { PendingAcquisition = null };
+            _completion.TrySetResult(OperatorUiResult<CalibrationUiAcquisition>.Success(null!));
+        }
 
         public override async ValueTask<OperatorUiResult<CalibrationUiAcquisition>> AcquireAsync(
             CalibrationUiAcquisitionRequest request,
@@ -347,29 +446,13 @@ public sealed class CalibrationPageTests
         }
     }
 
-    private sealed class ConflictingCalibrationUiService(CalibrationUiStatus status) : CalibrationUiService(status)
+    private class ConflictingCalibrationUiService(CalibrationUiStatus status) : CalibrationUiService(status)
     {
         public override ValueTask<OperatorUiResult<CalibrationUiBundlePage>> GetBundlesAsync(
             int pageSize,
             string? cursor,
             CancellationToken cancellationToken)
-        {
-            var layout = new FrameLayoutDescriptor(
-                2, 2, 4, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian,
-                16, 16, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None,
-                0, ushort.MaxValue, 8);
-            var applicability = new CalibrationApplicabilityV1(
-                "agent", "rig", new string('A', 64), new string('B', 64), layout, layout,
-                82, 82, 1, 1, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5), -10, -10,
-                DateTimeOffset.UnixEpoch, null);
-            return ValueTask.FromResult(OperatorUiResult<CalibrationUiBundlePage>.Success(
-                new CalibrationUiBundlePage(
-                    [new CalibrationUiBundleSummary(
-                        "bundle-conflict", new string('C', 64), "virtual-acquisition-v1", "published",
-                        null, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, new string('D', 64),
-                        new string('E', 64), applicability, 12, 4)],
-                    null)));
-        }
+            => ValueTask.FromResult(OperatorUiResult<CalibrationUiBundlePage>.Success(BundlePage()));
 
         public override ValueTask<OperatorUiResult<CalibrationUiStatus>> ActivateAsync(
             string bundleId,
@@ -379,6 +462,36 @@ public sealed class CalibrationPageTests
             CancellationToken cancellationToken)
             => ValueTask.FromResult(OperatorUiResult<CalibrationUiStatus>.Failure(
                 OperatorUiResultKind.Conflict, "Calibration state changed before activation."));
+    }
+
+    private sealed class DelayedActivationCalibrationUiService(CalibrationUiStatus status)
+        : ConflictingCalibrationUiService(status)
+    {
+        private readonly TaskCompletionSource<OperatorUiResult<CalibrationUiStatus>> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal void Complete() => _completion.TrySetResult(
+            OperatorUiResult<CalibrationUiStatus>.Failure(
+                OperatorUiResultKind.Invalid,
+                "Synthetic activation result."));
+
+        public override async ValueTask<OperatorUiResult<CalibrationUiStatus>> ActivateAsync(
+            string bundleId,
+            long expectedVersion,
+            string idempotencyKey,
+            string? reason,
+            CancellationToken cancellationToken)
+            => await _completion.Task.ConfigureAwait(false);
+    }
+
+    private sealed class SynchronousCalibrationUiService(CalibrationUiStatus status) : CalibrationUiService(status)
+    {
+        public override ValueTask<OperatorUiResult<CalibrationUiAcquisition>> AcquireAsync(
+            CalibrationUiAcquisitionRequest request,
+            long expectedVersion,
+            string idempotencyKey,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<CalibrationUiAcquisition>.Success(null!));
     }
 
     private sealed class RetryingCalibrationUiService(CalibrationUiStatus status) : CalibrationUiService(status)

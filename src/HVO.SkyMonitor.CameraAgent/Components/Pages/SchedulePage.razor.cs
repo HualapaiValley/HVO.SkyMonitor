@@ -38,7 +38,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     private CaptureScheduleOverride? _pendingOverride;
     private long _overrideExpectedVersion;
     private IJSObjectReference? _module;
-    private ElementReference _confirmationPanel;
+    private ElementReference _confirmationDialog;
     private string? _activationTriggerId;
     private bool _confirmRollback;
     private bool _focusConfirmation;
@@ -58,7 +58,9 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         if (_focusConfirmation)
         {
             _focusConfirmation = false;
-            await _confirmationPanel.FocusAsync().ConfigureAwait(false);
+            _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
+                "import", "./Components/Pages/SchedulePage.razor.js").ConfigureAwait(false);
+            await _module.InvokeVoidAsync("showModal", _confirmationDialog).ConfigureAwait(false);
         }
         else if (_restoreActivationFocus)
         {
@@ -250,6 +252,10 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     private void CancelActivation()
     {
+        if (_busy)
+        {
+            return;
+        }
         _confirmRevisionId = null;
         _restoreActivationFocus = true;
     }
@@ -285,11 +291,15 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         if (result.Kind != OperatorUiResultKind.Unavailable)
         {
             _confirmRevisionId = null;
-            _restoreActivationFocus = true;
             _activationKey = null;
             _activationRevisionId = null;
         }
         await CompleteMutationAsync(result, "Revision applied at the capture boundary.").ConfigureAwait(false);
+        if (result.Kind != OperatorUiResultKind.Unavailable &&
+            result.Kind != OperatorUiResultKind.Unauthorized)
+        {
+            _restoreActivationFocus = true;
+        }
     }
 
     private async Task AddOverrideAsync()

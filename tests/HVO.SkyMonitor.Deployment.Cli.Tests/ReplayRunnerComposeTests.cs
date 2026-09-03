@@ -21,6 +21,7 @@ public sealed class ReplayRunnerComposeTests
             Assert.IsFalse(text.Contains("\n  replay-runner:", StringComparison.Ordinal));
             Assert.IsFalse(text.Contains("/run/hvo-replay", StringComparison.Ordinal));
             Assert.IsFalse(File.Exists(Path.Combine(paths.ConfigRoot, "secrets", "replay-runner-auth-key")));
+            Assert.IsFalse(File.Exists(Path.Combine(paths.ConfigRoot, "secrets", "OwnerRecovery__Enabled")));
             Assert.IsNull(compose.ReplayRunnerContainerName);
             Assert.AreEqual("cameraagent-compose-v2", ComposeDeployment.TemplateVersionFor(request.ReplayProfile));
         }

@@ -9,6 +9,7 @@ internal interface IOwnerBootstrapClient
 {
     Task WaitForHealthAsync(CancellationToken cancellationToken, TimeSpan? timeout = null);
     Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken);
+    Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken);
     Task VerifyInstallationAsync(
         string verificationToken,
         InstallationVerificationExpectation expectation,
@@ -26,7 +27,8 @@ internal sealed record InstallationVerificationExpectation(
     long DeploymentLocationVersion,
     string DeploymentLocationSha256,
     HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile ReplayProfile,
-    HVO.SkyMonitor.Deployment.Contracts.CatalogInstallationIdentity Catalog);
+    HVO.SkyMonitor.Deployment.Contracts.CatalogInstallationIdentity Catalog,
+    bool AllowCompletedPasswordReplacement = false);
 
 internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapClient
 {
@@ -37,7 +39,17 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
 
     public async Task WaitForHealthAsync(CancellationToken cancellationToken, TimeSpan? timeout = null)
     {
-        using var client = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(5) };
+        using var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            UseProxy = false,
+            CheckCertificateRevocationList = true
+        };
+        using var client = new HttpClient(handler, disposeHandler: false)
+        {
+            BaseAddress = baseAddress,
+            Timeout = TimeSpan.FromSeconds(5)
+        };
         var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromMinutes(3));
         string? latest = null;
         while (DateTimeOffset.UtcNow < deadline)
@@ -91,7 +103,17 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
         InstallationVerificationExpectation expectation,
         CancellationToken cancellationToken)
     {
-        using var client = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(15) };
+        using var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            UseProxy = false,
+            CheckCertificateRevocationList = true
+        };
+        using var client = new HttpClient(handler, disposeHandler: false)
+        {
+            BaseAddress = baseAddress,
+            Timeout = TimeSpan.FromSeconds(15)
+        };
         client.DefaultRequestHeaders.Add("X-HVO-Installation-Token", verificationToken);
         using var response = await client.GetAsync(
             new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative), cancellationToken)
@@ -104,7 +126,10 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
             : expectation.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess;
         var matches = value.GetProperty("agentId").GetString() == expectation.AgentId &&
                       value.GetProperty("ownerEmail").GetString() == expectation.OwnerEmail &&
-                      value.GetProperty("ownerBootstrapState").GetString() == expectation.OwnerBootstrapState &&
+                      IsAllowedOwnerBootstrapState(
+                          expectation.OwnerBootstrapState,
+                          value.GetProperty("ownerBootstrapState").GetString(),
+                          expectation.AllowCompletedPasswordReplacement) &&
                       Lower(value, "configurationSha256") == expectation.ConfigurationSha256 &&
                       Lower(value, "rigProfileSha256") == expectation.RigProfileSha256 &&
                       Lower(value, "scheduleSha256") == expectation.ScheduleSha256 &&
@@ -126,6 +151,31 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
         }
     }
 
+    public async Task<string> ReadInstallationStateAsync(
+        string verificationToken,
+        CancellationToken cancellationToken)
+    {
+        using var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            UseProxy = false,
+            CheckCertificateRevocationList = true
+        };
+        using var client = new HttpClient(handler, disposeHandler: false)
+        {
+            BaseAddress = baseAddress,
+            Timeout = TimeSpan.FromSeconds(15)
+        };
+        client.DefaultRequestHeaders.Add("X-HVO-Installation-Token", verificationToken);
+        using var response = await client.GetAsync(
+            new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative), cancellationToken)
+            .ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        using var json = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
+        return json.RootElement.GetProperty("ownerBootstrapState").GetString()
+            ?? throw new InstallerException("CameraAgent installation verification omitted its owner bootstrap state.");
+    }
+
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned HttpClient owns the handler and the caller disposes the client.")]
     private async Task<HttpClient> LoginAsync(
         string ownerEmail,
@@ -134,7 +184,8 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
     {
         var client = new HttpClient(new HttpClientHandler
         {
-            AllowAutoRedirect = true,
+            AllowAutoRedirect = false,
+            UseProxy = false,
             CookieContainer = new CookieContainer(),
             CheckCertificateRevocationList = true
         })
@@ -165,7 +216,11 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
             });
             using var login = await client.PostAsync(new Uri("/Account/Login", UriKind.Relative), form, cancellationToken)
                 .ConfigureAwait(false);
-            login.EnsureSuccessStatusCode();
+            if (login.StatusCode is not (HttpStatusCode.Found or HttpStatusCode.SeeOther) ||
+                !IsLocalRedirect(login.Headers.Location))
+            {
+                throw new InstallerException("The CameraAgent login response was invalid.");
+            }
             succeeded = true;
             return client;
         }
@@ -177,6 +232,30 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
             }
         }
     }
+
+    private bool IsLocalRedirect(Uri? location)
+    {
+        if (location is null)
+        {
+            return false;
+        }
+        if (!location.IsAbsoluteUri)
+        {
+            return !location.OriginalString.StartsWith("//", StringComparison.Ordinal) &&
+                   !location.OriginalString.StartsWith("\\\\", StringComparison.Ordinal);
+        }
+        return location.Scheme == baseAddress.Scheme &&
+               location.Host == baseAddress.Host &&
+               location.Port == baseAddress.Port;
+    }
+
+    internal static bool IsAllowedOwnerBootstrapState(
+        string installedState,
+        string? currentState,
+        bool allowCompletedPasswordReplacement)
+        => currentState == installedState ||
+           (allowCompletedPasswordReplacement &&
+            installedState == "owner-password-change-required" && currentState == "owner-ready");
 
     private static string? Lower(JsonElement value, string property)
     {

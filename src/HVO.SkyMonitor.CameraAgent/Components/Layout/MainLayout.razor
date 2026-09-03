@@ -1,12 +1,14 @@
 ﻿@inherits LayoutComponentBase
 
-<a class="skip-link" href="#mainContent">Skip to main content</a>
+<a class="skip-link" href="#mainContent" @onclick="FocusMainContentAsync" @onclick:preventDefault>
+    Skip to main content
+</a>
 
-<div class="app-frame">
+<div class="app-frame" data-interactive="@(_interactive ? "true" : "false")">
     <MainLayoutNavigation />
 
-    <main id="mainContent" class="app-main">
-        <div class="container-xl content-container">
+    <main id="mainContent" class="app-main" tabindex="-1" @ref="_mainContent">
+        <div class="content-container">
             @Body
         </div>
     </main>
@@ -17,5 +19,5 @@
 <div id="blazor-error-ui" data-nosnippet>
     An unhandled error has occurred.
     <a href="." class="reload">Reload</a>
-    <span class="dismiss">🗙</span>
+    <span class="dismiss">x</span>
 </div>

@@ -198,7 +198,8 @@ public sealed record LifecycleOperationState(
     string? FailureCode = null,
     string? FailureMessage = null,
     LifecycleContinuityBoundary? PreMutationContinuity = null,
-    LifecycleContinuityBoundary? PostMutationContinuity = null);
+    LifecycleContinuityBoundary? PostMutationContinuity = null,
+    string? OriginalOwnerBootstrapState = null);
 
 public sealed record LifecycleContinuityBoundary(
     string CaptureState,

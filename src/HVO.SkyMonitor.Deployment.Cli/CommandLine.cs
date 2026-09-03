@@ -12,6 +12,10 @@ internal static class CommandLine
         {
             return new InstallDeploymentCommand(Parse(args));
         }
+        if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "recover-owner")
+        {
+            return ParseOwnerRecovery(args);
+        }
         return ParseLifecycle(args);
     }
 
@@ -30,7 +34,7 @@ internal static class CommandLine
             var option = args[index];
             if (!option.StartsWith("--", StringComparison.Ordinal))
             {
-                throw new InstallUsageException($"Unexpected argument '{option}'.");
+                throw new InstallUsageException("Unexpected positional argument.");
             }
 
             if (option is "--dry-run" or "--resume" or "--json" or "--generate-password" or "--acknowledge-plaintext-http" or "--no-download")
@@ -194,7 +198,7 @@ internal static class CommandLine
             ["catalog", "rollback", ..] => (LifecycleOperationKind.CatalogRollback, 2),
             ["catalog", "gc", ..] => (LifecycleOperationKind.CatalogGarbageCollect, 2),
             _ => throw new InstallUsageException(
-                "Usage: hvo-skymonitor status|cameraagent <install|upgrade|rollback|reinstall|uninstall|purge>|catalog <install|select|rollback|gc> [options]")
+                "Usage: hvo-skymonitor status|cameraagent <install|recover-owner|upgrade|rollback|reinstall|uninstall|purge>|catalog <install|select|rollback|gc> [options]")
         };
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         var flags = new HashSet<string>(StringComparer.Ordinal);
@@ -203,7 +207,7 @@ internal static class CommandLine
             var option = args[index];
             if (!option.StartsWith("--", StringComparison.Ordinal))
             {
-                throw new InstallUsageException($"Unexpected argument '{option}'.");
+                throw new InstallUsageException("Unexpected positional argument.");
             }
             if (option is "--dry-run" or "--resume" or "--json" or "--no-download" or "--migration-backward-compatible")
             {
@@ -249,6 +253,55 @@ internal static class CommandLine
         {
             throw new InstallUsageException("catalog select requires --catalog-version.");
         }
+        request.Validate();
+        return request;
+    }
+
+    private static OwnerRecoveryRequest ParseOwnerRecovery(string[] args)
+    {
+        var values = new Dictionary<string, string?>(StringComparer.Ordinal);
+        var flags = new HashSet<string>(StringComparer.Ordinal);
+        for (var index = 2; index < args.Length; index++)
+        {
+            var option = args[index];
+            if (!option.StartsWith("--", StringComparison.Ordinal))
+            {
+                throw new InstallUsageException("Unexpected positional argument.");
+            }
+
+            if (option is "--generate-password" or "--resume" or "--json")
+            {
+                if (!flags.Add(option))
+                {
+                    throw new InstallUsageException($"Duplicate option '{option}'.");
+                }
+                continue;
+            }
+
+            if (index + 1 >= args.Length || args[index + 1].StartsWith("--", StringComparison.Ordinal) ||
+                !values.TryAdd(option, args[++index]))
+            {
+                throw new InstallUsageException($"Option '{option}' requires one non-duplicate value.");
+            }
+        }
+
+        var known = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "--instance-id", "--product-root", "--password-file"
+        };
+        var unknown = values.Keys.FirstOrDefault(option => !known.Contains(option));
+        if (unknown is not null)
+        {
+            throw new InstallUsageException($"Unknown option '{unknown}'.");
+        }
+
+        var request = new OwnerRecoveryRequest(
+            ParseGuid(Get(values, "--instance-id"), "--instance-id"),
+            Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
+            Get(values, "--password-file"),
+            flags.Contains("--generate-password"),
+            flags.Contains("--resume"),
+            flags.Contains("--json"));
         request.Validate();
         return request;
     }

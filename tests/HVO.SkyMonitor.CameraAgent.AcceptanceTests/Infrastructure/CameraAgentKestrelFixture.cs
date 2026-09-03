@@ -17,6 +17,8 @@ using System.Text.RegularExpressions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Authorization;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 
@@ -24,6 +26,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
 {
     internal const string AgentId = "cameraagent-browser-acceptance";
     internal const string InstallationVerificationToken = "cameraagent-browser-verification-token";
+    internal const string LifecycleControlToken = "cameraagent-browser-lifecycle-token";
     internal const string OwnerEmail = "owner@cameraagent.browser";
     internal const string OwnerPassword = "BrowserOwner!106";
     internal const string NonOwnerEmail = "viewer@cameraagent.browser";
@@ -53,13 +56,19 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
 
     internal string Root => _root;
 
+    internal string RecoverySocketPath => Path.Combine(
+        _root,
+        "identity",
+        OwnerRecoveryTransport.SocketFileName);
+
     internal IServiceProvider Services => (_factory
         ?? throw new InvalidOperationException("The Kestrel fixture is not running.")).Services;
 
     internal static async Task<CameraAgentKestrelFixture> CreateAsync(
         Action<IServiceCollection>? configureServices = null,
         bool useCalibrationLibrary = false,
-        bool requireOwnerPasswordReplacement = false)
+        bool requireOwnerPasswordReplacement = false,
+        bool enableCentralIntegration = false)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
@@ -111,6 +120,19 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             configured = document.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
         }
         await File.WriteAllTextAsync(configPath, configured).ConfigureAwait(false);
+        var provisioningRoot = Path.Combine(root, "provisioning");
+        if (enableCentralIntegration)
+        {
+            Directory.CreateDirectory(provisioningRoot);
+            await File.WriteAllTextAsync(
+                Path.Combine(provisioningRoot, "device-identity.json"),
+                JsonSerializer.Serialize(new
+                {
+                    deviceId = AgentId,
+                    verificationCode = "BROWSER106",
+                    createdUtc = DateTimeOffset.UnixEpoch
+                })).ConfigureAwait(false);
+        }
 
         var overrides = new Dictionary<string, string?>
         {
@@ -121,6 +143,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["LocalIdentity:DatabasePath"] = Path.Combine(root, "identity", "cameraagent_identity.db"),
             ["LocalIdentity:CookieName"] = "CameraAgent.Browser106.Auth",
             ["InstallationVerification:Token"] = InstallationVerificationToken,
+            ["LifecycleControl:Token"] = LifecycleControlToken,
             ["Catalog:Root"] = catalog.Root,
             ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
             ["Catalog:RequiredPackageKind"] = "Fixture",
@@ -129,9 +152,9 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["CameraAgent:RawIngressReserveBytes"] = "0",
             ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
             ["CameraAgent:EnvironmentalDelivery:Enabled"] = "false",
-            ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
+            ["CameraAgent:CentralIntegration:Mode"] = enableCentralIntegration ? "Enabled" : "Disabled",
             ["CameraAgent:TransientDetection:Mode"] = "Off",
-            ["DeviceProvisioning:StateDirectory"] = Path.Combine(root, "provisioning"),
+            ["DeviceProvisioning:StateDirectory"] = provisioningRoot,
             ["CentralIdentity:ServiceUrl"] = "http://127.0.0.1:1/",
             ["SkyMonitor:BaseUrl"] = "http://127.0.0.1:1",
             ["Logging:LogLevel:Default"] = "Warning",
@@ -175,7 +198,11 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     private async Task StartHostAsync()
     {
         var factory = new BrowserWebApplicationFactory(_root, _overrides, _configureServices);
-        factory.UseKestrel(0);
+        factory.UseKestrel(options =>
+        {
+            options.Listen(IPAddress.Loopback, 0);
+            options.ListenUnixSocket(RecoverySocketPath, listen => listen.Protocols = HttpProtocols.Http1);
+        });
         _factory = factory;
         try
         {
@@ -184,7 +211,8 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
                 AllowAutoRedirect = false
             });
             var server = factory.Services.GetRequiredService<IServer>();
-            var address = server.Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault()
+            var address = server.Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault(candidate =>
+                Uri.TryCreate(candidate, UriKind.Absolute, out var uri) && uri.Host == IPAddress.Loopback.ToString())
                 ?? throw new InvalidOperationException("Kestrel did not publish its loopback address.");
             client.BaseAddress = new Uri(address, UriKind.Absolute);
             _lifetimeClient = client;
@@ -404,7 +432,8 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             builder.UseEnvironment("Development");
             // Program captures local Identity settings before WebApplicationFactory app overrides are applied.
             foreach (var setting in overrides.Where(static setting =>
-                         setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal)))
+                         setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal) ||
+                         string.Equals(setting.Key, "LifecycleControl:Token", StringComparison.Ordinal)))
             {
                 builder.UseSetting(setting.Key, setting.Value);
             }

@@ -18,12 +18,12 @@ internal static class CredentialFile
 
         if (suppliedPath is not null)
         {
-            SafeFileSystem.ValidateOwnerFile(suppliedPath, allowReadOnly: true);
-            if (new FileInfo(suppliedPath).Length is < 16 or > 4096)
+            await using var source = SafeFileSystem.OpenOwnerFileRead(suppliedPath, allowReadOnly: true);
+            if (source.Length is < 16 or > 256)
             {
                 throw new InstallerException("The supplied password file length is invalid.");
             }
-            _ = await SafeFileSystem.CopyPrivateFileAsync(suppliedPath, generatedPath, cancellationToken)
+            _ = await SafeFileSystem.CopyPrivateFileAsync(source, generatedPath, cancellationToken)
                 .ConfigureAwait(false);
             return generatedPath;
         }

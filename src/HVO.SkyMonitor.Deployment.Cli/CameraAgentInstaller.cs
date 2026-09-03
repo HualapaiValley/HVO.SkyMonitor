@@ -365,7 +365,8 @@ internal sealed class CameraAgentInstaller
                     manifest.DeploymentLocationVersion,
                     manifest.DeploymentLocationSha256,
                     (ContractReplayProfile)request.ReplayProfile,
-                    catalog),
+                    catalog,
+                    AllowCompletedPasswordReplacement: retainedCompletedResult is not null),
                 cancellationToken).ConfigureAwait(false);
 
             manifest = manifest with { ComposeModelSha256 = composeModelSha256 };

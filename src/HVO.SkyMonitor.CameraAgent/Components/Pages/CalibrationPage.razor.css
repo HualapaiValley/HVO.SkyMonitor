@@ -15,7 +15,9 @@
 .calibration-card dt { color: var(--hvo-text-muted, #8fa0b3); font-size: .78rem; }
 .calibration-card dd { margin: .2rem 0 0; overflow-wrap: anywhere; }
 .state-chip { display: inline-block; border: 1px solid #427765; border-radius: 999px; padding: .2rem .55rem; color: #8fd4be; font-size: .75rem; }
-.confirmation-panel { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.2rem; border: 1px solid #e9c986; background: #292617; }
+.confirmation-panel { width: min(42rem, calc(100% - 2rem)); color: var(--hvo-body-color); padding: 1rem 1.2rem; border: 1px solid #e9c986; background: #292617; }
+.confirmation-panel[open] { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.confirmation-panel::backdrop { background: rgba(1, 4, 9, .78); }
 .confirmation-panel h2 { margin: 0; }.confirmation-actions, .bundle-actions, .pager { display: flex; gap: .6rem; flex-wrap: wrap; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 .8rem; }
 .calibration-card label { display: grid; gap: .3rem; margin: .65rem 0; color: var(--hvo-text-muted, #aeb9c8); }

@@ -58,30 +58,7 @@ public sealed partial class Login : ComponentBase
             return;
         }
 
-        if (result.RequiresTwoFactor)
-        {
-            Logger.LogWarning("Two-factor login requested for {Email}, but two-factor authentication is disabled.", Input.Email);
-            errorMessage = "Error: Two-factor authentication is not available.";
-            return;
-        }
-
-        if (result.IsLockedOut)
-        {
-            Logger.LogWarning("User account locked out.");
-            RedirectManager.RedirectTo("Account/Lockout");
-            return;
-        }
-
-        if (result.IsNotAllowed)
-        {
-            if (Logger.IsEnabled(LogLevel.Information))
-            {
-                Logger.LogInformation("Login blocked for unconfirmed account {Email}", Input.Email);
-            }
-            errorMessage = "Error: Please confirm your email before signing in. Use the link in your inbox or request another confirmation email.";
-            return;
-        }
-
+        Logger.LogInformation("Local login attempt rejected.");
         errorMessage = "Error: Invalid login attempt.";
     }
 

@@ -37,7 +37,7 @@ internal sealed class IdentityRevalidatingAuthenticationStateProvider(
         }
         else if (!userManager.SupportsUserSecurityStamp)
         {
-            return true;
+            return false;
         }
         else
         {

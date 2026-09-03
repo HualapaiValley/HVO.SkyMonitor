@@ -11,7 +11,7 @@
     <header class="calibration-header">
         <div>
             <p class="eyebrow">Immutable local references</p>
-            <h1 id="calibration-heading" tabindex="-1" @ref="_heading">Calibration library</h1>
+            <h1 id="calibration-heading" tabindex="-1">Calibration library</h1>
             <p>Acquire deterministic software references, inspect exact lineage, and activate only at a safe capture boundary.</p>
         </div>
         <button class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
@@ -81,26 +81,26 @@
                 <p>@FormatUtc(_status.LastReconciliationUtc)</p>
                 @if (RollbackTarget is { } rollbackTarget)
                 {
-                    <button class="btn btn-outline-light" disabled="@_busy"
-                            @onclick="() => BeginActivation(rollbackTarget, rollback: true)">Review rollback</button>
+                    <button id="@RollbackTriggerId" class="btn btn-outline-light" disabled="@(_busy || AcquisitionInProgress)"
+                            @onclick="() => BeginActivation(rollbackTarget, RollbackTriggerId, rollback: true)">Review rollback</button>
                 }
             </article>
         </section>
 
         @if (_confirmation is not null)
         {
-            <section class="confirmation-panel" role="alertdialog" aria-labelledby="confirmation-heading"
-                     aria-describedby="confirmation-description" tabindex="-1" @ref="_confirmationPanel">
+            <dialog class="confirmation-panel" aria-labelledby="confirmation-heading"
+                    aria-describedby="confirmation-description" @oncancel="CancelConfirmation" @ref="_confirmationDialog">
                 <div>
                     <p class="eyebrow">Capture-boundary confirmation</p>
                     <h2 id="confirmation-heading">@ConfirmationHeading</h2>
                     <p id="confirmation-description">@ConfirmationDescription</p>
                 </div>
                 <div class="confirmation-actions">
-                    <button class="btn btn-primary" disabled="@_busy" @onclick="ConfirmAsync">Confirm</button>
-                    <button class="btn btn-outline-light" disabled="@_busy" @onclick="CancelConfirmation">Cancel</button>
+                    <button type="button" class="btn btn-primary" disabled="@_busy" @onclick="ConfirmAsync">Confirm</button>
+                    <button type="button" class="btn btn-outline-light" disabled="@_busy" autofocus @onclick="CancelConfirmation">Cancel</button>
                 </div>
-            </section>
+            </dialog>
         }
 
         <section class="workspace-grid">
@@ -150,7 +150,7 @@
                                     <button class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => ShowDetailAsync(bundle.BundleId)">Inspect</button>
                                     @if (bundle.PublicationState == "published" && bundle.BundleId != _status.ActiveBundle?.BundleId)
                                     {
-                                        <button class="btn btn-sm btn-outline-warning" disabled="@_busy" @onclick="() => BeginActivation(bundle.BundleId, rollback: false)">Review activate</button>
+                                        <button id="@ActivationTriggerId(bundle.BundleId)" class="btn btn-sm btn-outline-warning" disabled="@(_busy || AcquisitionInProgress)" @onclick="() => BeginActivation(bundle.BundleId, ActivationTriggerId(bundle.BundleId), rollback: false)">Review activate</button>
                                     }
                                 </div>
                             </li>

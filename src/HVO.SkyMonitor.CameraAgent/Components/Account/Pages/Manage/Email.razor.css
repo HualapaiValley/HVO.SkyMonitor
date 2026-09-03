@@ -1,0 +1,19 @@
+.owner-email-card {
+    display: grid;
+    gap: 0.65rem;
+    width: min(100%, 38rem);
+    padding: 1.25rem;
+    border: 1px solid var(--hvo-border-muted);
+    border-radius: 0.7rem;
+    background: var(--hvo-surface-elevated);
+}
+
+.owner-email-card label {
+    font-weight: 700;
+}
+
+.owner-email-card p {
+    margin: 0;
+    color: var(--hvo-muted);
+    line-height: 1.55;
+}

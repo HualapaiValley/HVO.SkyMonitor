@@ -33,11 +33,12 @@ public sealed class CameraAgentAuthorizationTests
     {
         var userManager = CreateUserManager();
         userManager
-            .Setup(manager => manager.GetUserAsync(It.IsAny<ClaimsPrincipal>()))
+            .Setup(manager => manager.FindByIdAsync(It.IsAny<string>()))
             .ReturnsAsync(new ApplicationUser
             {
                 IsSiteOwner = isSiteOwner,
-                NormalizedEmail = ConfiguredEmail.ToUpperInvariant()
+                NormalizedEmail = ConfiguredEmail.ToUpperInvariant(),
+                SecurityStamp = "durable-stamp"
             });
 
         var services = new ServiceCollection();
@@ -70,11 +71,12 @@ public sealed class CameraAgentAuthorizationTests
         ArgumentNullException.ThrowIfNull(storedEmail);
         var configuredEmail = useStoredEmailAsConfiguration ? storedEmail : "replacement-owner@cameraagent.test";
         var userManager = CreateUserManager();
-        userManager.Setup(manager => manager.GetUserAsync(It.IsAny<ClaimsPrincipal>()))
+        userManager.Setup(manager => manager.FindByIdAsync(It.IsAny<string>()))
             .ReturnsAsync(new ApplicationUser
             {
                 IsSiteOwner = isSiteOwner,
-                NormalizedEmail = storedEmail.ToUpperInvariant()
+                NormalizedEmail = storedEmail.ToUpperInvariant(),
+                SecurityStamp = "durable-stamp"
             });
         var services = new ServiceCollection();
         services.AddLogging();
@@ -97,12 +99,13 @@ public sealed class CameraAgentAuthorizationTests
     public async Task OperationsPolicies_DenyOwnerUntilTemporaryPasswordIsReplaced()
     {
         var userManager = CreateUserManager();
-        userManager.Setup(manager => manager.GetUserAsync(It.IsAny<ClaimsPrincipal>()))
+        userManager.Setup(manager => manager.FindByIdAsync(It.IsAny<string>()))
             .ReturnsAsync(new ApplicationUser
             {
                 IsSiteOwner = true,
                 PasswordChangeRequired = true,
-                NormalizedEmail = ConfiguredEmail.ToUpperInvariant()
+                NormalizedEmail = ConfiguredEmail.ToUpperInvariant(),
+                SecurityStamp = "durable-stamp"
             });
         var services = new ServiceCollection();
         services.AddLogging();
@@ -124,12 +127,13 @@ public sealed class CameraAgentAuthorizationTests
     public async Task BootstrapStatusPolicy_AllowsConfiguredOwnerBeforePasswordReplacement()
     {
         var userManager = CreateUserManager();
-        userManager.Setup(manager => manager.GetUserAsync(It.IsAny<ClaimsPrincipal>()))
+        userManager.Setup(manager => manager.FindByIdAsync(It.IsAny<string>()))
             .ReturnsAsync(new ApplicationUser
             {
                 IsSiteOwner = true,
                 PasswordChangeRequired = true,
-                NormalizedEmail = ConfiguredEmail.ToUpperInvariant()
+                NormalizedEmail = ConfiguredEmail.ToUpperInvariant(),
+                SecurityStamp = "durable-stamp"
             });
         var services = new ServiceCollection();
         services.AddLogging();
@@ -188,12 +192,70 @@ public sealed class CameraAgentAuthorizationTests
             Assert.IsFalse(result.Succeeded);
         }
 
-        userManager.Verify(manager => manager.GetUserAsync(It.IsAny<ClaimsPrincipal>()), Times.Never);
+        userManager.Verify(manager => manager.FindByIdAsync(It.IsAny<string>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task SiteOwnerPolicy_RejectsAStaleSecurityStamp()
+    {
+        var user = new ApplicationUser
+        {
+            IsSiteOwner = true,
+            NormalizedEmail = ConfiguredEmail.ToUpperInvariant(),
+            SecurityStamp = "durable-stamp"
+        };
+        var userManager = CreateUserManager();
+        userManager.SetupGet(manager => manager.SupportsUserSecurityStamp).Returns(true);
+        userManager.Setup(manager => manager.FindByIdAsync(It.IsAny<string>())).ReturnsAsync(user);
+        userManager.Setup(manager => manager.GetSecurityStampAsync(user)).ReturnsAsync(user.SecurityStamp);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(userManager.Object);
+        services.AddSingleton<ILookupNormalizer, UpperInvariantLookupNormalizer>();
+        services.AddSingleton(Options.Create(new LocalIdentityOptions { AdminEmail = ConfiguredEmail }));
+        services.AddCameraAgentAuthorization();
+        using var provider = services.BuildServiceProvider();
+        var identity = CanonicalIdentity("owner");
+        identity.RemoveClaim(identity.FindFirst(new IdentityOptions().ClaimsIdentity.SecurityStampClaimType)!);
+        identity.AddClaim(new Claim(new IdentityOptions().ClaimsIdentity.SecurityStampClaimType, "stale-stamp"));
+
+        var result = await provider.GetRequiredService<IAuthorizationService>().AuthorizeAsync(
+            new ClaimsPrincipal(identity),
+            CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false);
+
+        Assert.IsFalse(result.Succeeded);
+    }
+
+    [TestMethod]
+    public async Task SiteOwnerPolicy_RejectsAStoreWithoutSecurityStampSupport()
+    {
+        var user = new ApplicationUser
+        {
+            IsSiteOwner = true,
+            NormalizedEmail = ConfiguredEmail.ToUpperInvariant(),
+            SecurityStamp = "durable-stamp"
+        };
+        var userManager = CreateUserManager();
+        userManager.SetupGet(manager => manager.SupportsUserSecurityStamp).Returns(false);
+        userManager.Setup(manager => manager.FindByIdAsync(It.IsAny<string>())).ReturnsAsync(user);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(userManager.Object);
+        services.AddSingleton<ILookupNormalizer, UpperInvariantLookupNormalizer>();
+        services.AddSingleton(Options.Create(new LocalIdentityOptions { AdminEmail = ConfiguredEmail }));
+        services.AddCameraAgentAuthorization();
+        using var provider = services.BuildServiceProvider();
+
+        var result = await provider.GetRequiredService<IAuthorizationService>().AuthorizeAsync(
+            new ClaimsPrincipal(CanonicalIdentity("owner")),
+            CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false);
+
+        Assert.IsFalse(result.Succeeded);
     }
 
     private static Mock<UserManager<ApplicationUser>> CreateUserManager()
     {
-        return new Mock<UserManager<ApplicationUser>>(
+        var manager = new Mock<UserManager<ApplicationUser>>(
             Mock.Of<IUserStore<ApplicationUser>>(),
             Options.Create(new IdentityOptions()),
             new PasswordHasher<ApplicationUser>(),
@@ -203,13 +265,18 @@ public sealed class CameraAgentAuthorizationTests
             new IdentityErrorDescriber(),
             Mock.Of<IServiceProvider>(),
             NullLogger<UserManager<ApplicationUser>>.Instance);
+        manager.SetupGet(candidate => candidate.SupportsUserSecurityStamp).Returns(true);
+        manager.Setup(candidate => candidate.GetSecurityStampAsync(It.IsAny<ApplicationUser>()))
+            .ReturnsAsync((ApplicationUser user) => user.SecurityStamp!);
+        return manager;
     }
 
     private static ClaimsIdentity CanonicalIdentity(string ownerId)
         => new(
             [
                 new Claim(ClaimTypes.NameIdentifier, ownerId),
-                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType),
+                new Claim(new IdentityOptions().ClaimsIdentity.SecurityStampClaimType, "durable-stamp")
             ],
             IdentityConstants.ApplicationScheme);
 }
