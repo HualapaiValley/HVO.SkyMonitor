@@ -43,6 +43,9 @@ internal sealed record CentralProcessingGraphReplayRequest(
     string IdempotencyKey,
     string ReasonCode);
 
+/// <summary>Durable operation kind and canonical algorithm list of a graph source artifact's producing recipe.</summary>
+internal sealed record CentralSourceProvenance(ProcessingOperationKind? OperationKind, string AlgorithmsJson);
+
 internal interface ICentralProcessingGraphScheduler
 {
     Task<CentralProcessingGraphScheduleResult> ScheduleLiveAsync(
@@ -78,6 +81,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
     private static readonly EnvironmentalObservationQuality[] EnvironmentalQualities =
         Enum.GetValues<EnvironmentalObservationQuality>();
     private static readonly JsonSerializerOptions CycleEvidenceSerializerOptions = CreateCycleEvidenceSerializerOptions();
+    private static readonly JsonSerializerOptions SourceProvenanceSerializerOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<CentralProcessingGraphScheduleResult> ScheduleLiveAsync(
         Guid centralArtifactId,
@@ -103,12 +107,15 @@ internal sealed partial class CentralProcessingGraphScheduler(
             return new(CentralProcessingGraphScheduleOutcome.NotApplicable);
         }
         var plan = CompileAndVerify(assignment.Revision);
-        if (!plan.Sources.Any(source => source.Outputs.Any(output => SourceContractMatches(output, artifact))))
+        var provenance = await LoadSourceProvenanceAsync(
+            artifact.Frame.Artifacts.Select(static item => item.Id), cancellationToken).ConfigureAwait(false);
+        if (!plan.Sources.Any(source => source.Outputs.Any(output =>
+                SourceContractMatches(output, artifact, ResolveSourceProvenance(artifact, provenance)))))
         {
             return new(CentralProcessingGraphScheduleOutcome.NotApplicable);
         }
         var coversTransientValidation = ContainsTransientValidationNode(plan);
-        var sources = SelectLiveSources(plan, artifact);
+        var sources = SelectLiveSources(plan, artifact, provenance);
         if (sources is null)
         {
             return new(CentralProcessingGraphScheduleOutcome.AwaitingSources,
@@ -178,10 +185,12 @@ internal sealed partial class CentralProcessingGraphScheduler(
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var ordered = request.SourceCentralArtifactIds.Select(id => artifacts.SingleOrDefault(item => item.Id == id))
             .ToArray();
+        var provenance = await LoadSourceProvenanceAsync(
+            request.SourceCentralArtifactIds, cancellationToken).ConfigureAwait(false);
         if (ordered.Any(static item => item is null) || ordered.Any(item => !IsUsable(item!)) ||
             ordered.Select(item => item!.Frame!.ObservatoryId).Distinct().Count() != 1 ||
             ordered.Select(item => item!.Frame!.LogicalCameraInstallationId).Distinct().Count() != 1 ||
-            !SourcesMatch(plan, ordered.Select(static item => item!).ToArray()))
+            !SourcesMatch(plan, ordered.Select(static item => item!).ToArray(), provenance))
         {
             return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "invalid-replay-sources");
         }
@@ -399,6 +408,10 @@ internal sealed partial class CentralProcessingGraphScheduler(
         }
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        // Exactly one handler rolls the expansion transaction back: the uniqueness-race handler below rolls back
+        // before its reconciliation query, and the outer failure handler must then leave the completed transaction
+        // alone so a second rollback cannot replace the original persistence failure.
+        var rolledBack = false;
         try
         {
             if (dbContext.Database.IsSqlServer())
@@ -623,8 +636,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
             {
                 // Providers without application locks can still lose the unique (class, actor, key) or request
                 // identity race after the lookups above; translate it into the same explicit outcome contract.
+                rolledBack = true;
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                await transaction.DisposeAsync().ConfigureAwait(false);
                 dbContext.ChangeTracker.Clear();
                 var raced = await dbContext.CentralProcessingGraphExecutions.AsNoTracking()
                     .Where(item => item.ExecutionClass == executionClass && item.ActorId == actor &&
@@ -667,7 +680,10 @@ internal sealed partial class CentralProcessingGraphScheduler(
         }
         catch
         {
-            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            if (!rolledBack)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
             telemetry.RecordGraphExpansion(
                 executionClass.ToString(), "failed", timeProvider.GetElapsedTime(started), 0);
             throw;
@@ -1440,16 +1456,55 @@ internal sealed partial class CentralProcessingGraphScheduler(
             .AsSplitQuery()
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken).ConfigureAwait(false);
 
+    private async Task<IReadOnlyDictionary<Guid, CentralSourceProvenance>> LoadSourceProvenanceAsync(
+        IEnumerable<Guid> centralArtifactIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = centralArtifactIds.Distinct().ToArray();
+        var rows = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
+            .Where(evidence => ids.Contains(evidence.CentralArtifactId))
+            .Select(evidence => new { evidence.CentralArtifactId, evidence.RecipeOperationKind, evidence.AlgorithmsJson })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        return rows.ToDictionary(
+            static row => row.CentralArtifactId,
+            static row => new CentralSourceProvenance(row.RecipeOperationKind, row.AlgorithmsJson));
+    }
+
+    /// <summary>
+    /// The durable processing provenance a source artifact carries for the contract fields that live outside the
+    /// artifact row: central processing evidence records the operation kind and algorithms exactly; an
+    /// agent-published artifact derives its operation kind from the built-in recipe its recorded descriptor names and
+    /// its algorithms from the structured product manifest (none recorded means an empty algorithm list). Evidence
+    /// that recorded no operation kind falls back to the built-in derivation for that field only.
+    /// </summary>
+    internal static CentralSourceProvenance ResolveSourceProvenance(
+        CentralArtifact artifact,
+        IReadOnlyDictionary<Guid, CentralSourceProvenance>? evidence)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        var derived = artifact.Recipe is { } recipe &&
+            BuiltInProcessingRecipes.TryGetDefinition(recipe.Name, out var definition) && definition is not null
+                ? definition.OperationKind
+                : (ProcessingOperationKind?)null;
+        if (evidence is not null && evidence.TryGetValue(artifact.Id, out var recorded))
+        {
+            return recorded.OperationKind is null ? recorded with { OperationKind = derived } : recorded;
+        }
+        return new(derived, artifact.StructuredProduct?.AlgorithmsJson ?? "[]");
+    }
+
     private static List<CentralArtifact>? SelectLiveSources(
         ProcessingGraphExecutionPlan plan,
-        CentralArtifact incoming)
+        CentralArtifact incoming,
+        IReadOnlyDictionary<Guid, CentralSourceProvenance> provenance)
     {
         var frameArtifacts = incoming.Frame!.Artifacts.Where(IsUsable).ToArray();
         var selected = new List<CentralArtifact>(plan.Sources.Length);
         var incomingUsed = false;
         foreach (var source in plan.Sources)
         {
-            var matches = frameArtifacts.Where(artifact => source.Outputs.Any(output => SourceContractMatches(output, artifact)))
+            var matches = frameArtifacts.Where(artifact => source.Outputs.Any(output =>
+                    SourceContractMatches(output, artifact, ResolveSourceProvenance(artifact, provenance))))
                 .OrderByDescending(artifact => artifact.Id == incoming.Id)
                 .ThenBy(artifact => artifact.ArtifactId)
                 .ToArray();
@@ -1465,9 +1520,11 @@ internal sealed partial class CentralProcessingGraphScheduler(
 
     private static bool SourcesMatch(
         ProcessingGraphExecutionPlan plan,
-        CentralArtifact[] sources)
+        CentralArtifact[] sources,
+        IReadOnlyDictionary<Guid, CentralSourceProvenance> provenance)
         => plan.Sources.Length == sources.Length && plan.Sources.Select((source, index) =>
-            source.Outputs.Any(output => SourceContractMatches(output, sources[index]))).All(static matched => matched);
+            source.Outputs.Any(output => SourceContractMatches(
+                output, sources[index], ResolveSourceProvenance(sources[index], provenance)))).All(static matched => matched);
 
     /// <summary>
     /// The conventional variant a graph source contract uses to designate the frame's acquisition artifact of a role
@@ -1478,15 +1535,25 @@ internal sealed partial class CentralProcessingGraphScheduler(
 
     /// <summary>
     /// A frame artifact satisfies a published source contract only when every field the contract pins matches: role,
-    /// product kind, variant, and (when declared) recipe, schema version, and media type. Role alone would let a
-    /// differently produced artifact of the same role be frozen as the graph source, contradicting the contract the
-    /// execution and its provenance claim to have used. A contract whose variant is the acquisition placeholder
-    /// accepts the role's acquisition artifact under its agent-configured variant; any other variant must match exactly.
+    /// product kind, variant, and (when declared) recipe including its operation kind, schema version, media type,
+    /// and algorithms. Role alone would let a differently produced artifact of the same role be frozen as the graph
+    /// source, contradicting the contract the execution and its provenance claim to have used. A contract whose
+    /// variant is the acquisition placeholder accepts the role's acquisition artifact under its agent-configured
+    /// variant; any other variant must match exactly. Operation kind and algorithms are read from the artifact's
+    /// durable processing provenance (<see cref="ResolveSourceProvenance"/>); a pinned recipe whose operation kind
+    /// cannot be established durably never matches.
     /// </summary>
     internal static bool SourceContractMatches(ProcessingGraphProductContract contract, CentralArtifact artifact)
+        => SourceContractMatches(contract, artifact, ResolveSourceProvenance(artifact, null));
+
+    internal static bool SourceContractMatches(
+        ProcessingGraphProductContract contract,
+        CentralArtifact artifact,
+        CentralSourceProvenance provenance)
     {
         ArgumentNullException.ThrowIfNull(contract);
         ArgumentNullException.ThrowIfNull(artifact);
+        ArgumentNullException.ThrowIfNull(provenance);
         if (contract.Role != artifact.Role || string.IsNullOrEmpty(artifact.Variant) ||
             !string.Equals(contract.Variant, AcquisitionSourceVariant, StringComparison.Ordinal) &&
             !string.Equals(contract.Variant, artifact.Variant, StringComparison.Ordinal))
@@ -1508,9 +1575,27 @@ internal sealed partial class CentralProcessingGraphScheduler(
             (artifact.Recipe is not { } actualRecipe ||
              !string.Equals(recipe.Name, actualRecipe.Name, StringComparison.Ordinal) ||
              !string.Equals(recipe.SemanticVersion, actualRecipe.SemanticVersion, StringComparison.Ordinal) ||
-             !string.Equals(recipe.ImplementationVersion, actualRecipe.ImplementationVersion, StringComparison.Ordinal)))
+             !string.Equals(recipe.ImplementationVersion, actualRecipe.ImplementationVersion, StringComparison.Ordinal) ||
+             provenance.OperationKind != recipe.OperationKind))
         {
             return false;
+        }
+        if (!contract.Algorithms.IsDefaultOrEmpty)
+        {
+            ProcessingAlgorithmIdentity[]? algorithms;
+            try
+            {
+                algorithms = JsonSerializer.Deserialize<ProcessingAlgorithmIdentity[]>(
+                    provenance.AlgorithmsJson, SourceProvenanceSerializerOptions);
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+            if (algorithms is null || !CentralProcessingGraphOutputBinding.SequenceEqual(contract.Algorithms, algorithms))
+            {
+                return false;
+            }
         }
         if (contract.SchemaVersion is { } schemaVersion &&
             !string.Equals(schemaVersion, artifact.StructuredProduct?.ProductSchemaVersion, StringComparison.Ordinal))
@@ -1538,7 +1623,10 @@ internal sealed partial class CentralProcessingGraphScheduler(
     /// write-once ingest state on the frame (never rewritten once present), so when it is available at expansion the
     /// node's actual identity is known exactly and every dependent selector and projected output identity derives
     /// from it instead of the requested identity. Without provenance the expectation stays the requested identity,
-    /// which <see cref="CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity"/> reconciles at binding.
+    /// which durably freezes "no annotation" for the execution: <see
+    /// cref="CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance"/> withholds provenance the frame acquires
+    /// afterwards so the node executes (and skips) exactly as frozen, and output binding compares evidence against
+    /// this frozen identity only.
     /// </summary>
     internal static string CreateExpectedRecipeIdentity(
         CentralProcessingGraphNodeHandlerKind handlerKind,

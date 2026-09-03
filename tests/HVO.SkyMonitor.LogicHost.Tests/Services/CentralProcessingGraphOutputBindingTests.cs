@@ -649,7 +649,7 @@ public sealed class CentralProcessingGraphOutputBindingTests
     }
 
     [TestMethod]
-    public async Task BindAsyncAcceptsAnnotationEvidenceWhoseRecipeIdentityIncludesTheRuntimeSceneAnnotation()
+    public async Task BindAsyncBindsAnnotationEvidenceAgainstTheFrozenExpectedIdentityOnly()
     {
         await using var context = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
@@ -668,6 +668,7 @@ public sealed class CentralProcessingGraphOutputBindingTests
             FrameId = Guid.NewGuid(),
             CapturedAtUtc = now,
             FirstReceivedAtUtc = now,
+            // Enriched after expansion: the execution froze "no annotation" (expected == requested below).
             SceneProvenanceJson = JsonSerializer.Serialize(provenance, JsonSerializerOptions.Web)
         };
         var anchor = CreateArtifact(frame.Id, deviceId, FrameArtifactRole.Raw, "raw", "raw-v1");
@@ -701,34 +702,34 @@ public sealed class CentralProcessingGraphOutputBindingTests
         execution.Jobs.Add(job);
         var annotation = CentralDerivativeJobExecutor.CreateAnnotation(frame.SceneProvenanceJson);
         Assert.IsNotNull(annotation);
-        var actual = BuiltInProcessingRecipes.CreateExecutionIdentity(
+        var annotated = BuiltInProcessingRecipes.CreateExecutionIdentity(
             BuiltInProcessingRecipes.Annotation, options, selector, annotation);
-        Assert.AreNotEqual(requested.IdentitySha256, actual.IdentitySha256,
+        Assert.AreNotEqual(requested.IdentitySha256, annotated.IdentitySha256,
             "the runtime scene annotation is part of the actual recipe identity");
-        Assert.AreEqual(actual.IdentitySha256, CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity(
-            job.RecipeName, job.RecipeOptionsJson, job.InputSelectorJson, job.RequestedRecipeIdentitySha256,
-            job.ExpectedRecipeIdentitySha256, frame.SceneProvenanceJson));
-        Assert.AreEqual(requested.IdentitySha256, CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity(
-            job.RecipeName, job.RecipeOptionsJson, job.InputSelectorJson, job.RequestedRecipeIdentitySha256,
-            job.ExpectedRecipeIdentitySha256, null), "no scene provenance leaves the frozen expectation untouched");
-        var bound = new string('7', 64);
-        Assert.AreEqual(bound, CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity(
-            job.RecipeName, job.RecipeOptionsJson, job.InputSelectorJson, job.RequestedRecipeIdentitySha256,
-            bound, frame.SceneProvenanceJson), "an identity bound at expansion stays authoritative");
-        Assert.AreEqual(requested.IdentitySha256, CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity(
-            BuiltInProcessingRecipes.EncodedPreview, job.RecipeOptionsJson, job.InputSelectorJson,
-            job.RequestedRecipeIdentitySha256, job.ExpectedRecipeIdentitySha256, frame.SceneProvenanceJson),
-            "only annotation-bearing recipes take the runtime annotation input");
+        // The lease withholds provenance the execution never froze, so the executor cannot produce annotated evidence.
+        Assert.IsNull(CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance(
+            execution.Id, job.RecipeName, job.RequestedRecipeIdentitySha256, job.ExpectedRecipeIdentitySha256,
+            frame.SceneProvenanceJson));
+        Assert.AreEqual(frame.SceneProvenanceJson, CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance(
+            execution.Id, job.RecipeName, job.RequestedRecipeIdentitySha256, annotated.IdentitySha256,
+            frame.SceneProvenanceJson), "a frozen annotated identity came from the frame's write-once provenance");
+        Assert.AreEqual(frame.SceneProvenanceJson, CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance(
+            null, job.RecipeName, job.RequestedRecipeIdentitySha256, job.ExpectedRecipeIdentitySha256,
+            frame.SceneProvenanceJson), "legacy jobs keep the live frame provenance");
+        Assert.AreEqual(frame.SceneProvenanceJson, CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance(
+            execution.Id, BuiltInProcessingRecipes.EncodedPreview, job.RequestedRecipeIdentitySha256,
+            job.RequestedRecipeIdentitySha256, frame.SceneProvenanceJson),
+            "only annotation-bearing recipes freeze the annotation decision");
         result.Recipe = new CentralArtifactRecipe
         {
-            Name = actual.Descriptor.Name,
-            SemanticVersion = actual.Descriptor.SemanticVersion,
-            ImplementationVersion = actual.Descriptor.ImplementationVersion,
+            Name = requested.Descriptor.Name,
+            SemanticVersion = requested.Descriptor.SemanticVersion,
+            ImplementationVersion = requested.Descriptor.ImplementationVersion,
             OptionsJson = "{}",
-            OptionsSha256 = actual.Descriptor.OptionsSha256
+            OptionsSha256 = requested.Descriptor.OptionsSha256
         };
         var outputIdentity = ProcessingIdentity.CreateOutputIdentity(
-            result.Role, result.Variant!, actual.IdentitySha256, [anchor.ArtifactId]);
+            result.Role, result.Variant!, requested.IdentitySha256, [anchor.ArtifactId]);
         var evidence = new CentralArtifactProcessingEvidence
         {
             Artifact = result,
@@ -736,8 +737,8 @@ public sealed class CentralProcessingGraphOutputBindingTests
             DevicePublicId = deviceId,
             OutputIdentitySha256 = outputIdentity,
             RequestedRecipeIdentitySha256 = requested.IdentitySha256,
-            RecipeIdentitySha256 = actual.IdentitySha256,
-            RecipeOperationKind = actual.OperationKind,
+            RecipeIdentitySha256 = requested.IdentitySha256,
+            RecipeOperationKind = requested.OperationKind,
             GraphProductContractIdentitySha256 = output.ContractIdentitySha256,
             ProductKind = ProcessingProductKind.PixelData,
             ProductMediaType = "image/jpeg",
@@ -752,16 +753,17 @@ public sealed class CentralProcessingGraphOutputBindingTests
         execution.ExpandedAtUtc = now;
         await context.SaveChangesAsync().ConfigureAwait(false);
 
+        // Evidence carrying the frozen (unannotated) identity binds even though the frame is now enriched.
         await CentralProcessingGraphOutputBinding.BindAsync(
             context, job.Id, result.Id, null, now, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(result.Id, output.ResultCentralArtifactId);
         Assert.AreEqual(outputIdentity, output.ResultOutputIdentitySha256);
 
-        // Evidence carrying the bare requested identity does not describe an annotated execution of this frame.
+        // Annotated evidence contradicts the frozen decision (and the SQL binding trigger) and is rejected.
         output.ResultCentralArtifactId = null;
         output.ResultOutputIdentitySha256 = null;
         output.BoundAtUtc = null;
-        evidence.RecipeIdentitySha256 = requested.IdentitySha256;
+        evidence.RecipeIdentitySha256 = annotated.IdentitySha256;
         await context.SaveChangesAsync().ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<CentralDerivativeJobStateException>(() =>
             CentralProcessingGraphOutputBinding.BindAsync(
@@ -795,10 +797,13 @@ public sealed class CentralProcessingGraphOutputBindingTests
             OptionsJson = "{}",
             OptionsSha256 = new string('A', 64)
         };
-        // Legacy-scheduler evidence: durable product facts recorded, no graph contract identity.
+        // Legacy-scheduler evidence: durable product facts recorded, no graph contract identity, non-graph job.
+        var legacyJob = new CentralDerivativeJob();
         var evidence = new CentralArtifactProcessingEvidence
         {
             Artifact = artifact,
+            Job = legacyJob,
+            CentralDerivativeJobId = legacyJob.Id,
             GraphProductContractIdentitySha256 = null,
             ProductKind = contract.ProductKind,
             ProductSchemaVersion = contract.SchemaVersion,
@@ -846,6 +851,9 @@ public sealed class CentralProcessingGraphOutputBindingTests
         Reject(() => artifact.Recipe!.ImplementationVersion = "different",
             () => artifact.Recipe!.ImplementationVersion = definition.ImplementationVersion);
         Reject(() => evidence.AlgorithmsJson = "[]", () => evidence.AlgorithmsJson = JsonSerializer.Serialize(algorithms));
+        // Untagged evidence of a graph-owned job is inconsistent, not legacy (mirrors the SQL adoption predicate).
+        Reject(() => legacyJob.GraphExecutionId = Guid.NewGuid(), () => legacyJob.GraphExecutionId = null);
+        Reject(() => evidence.Job = null, () => evidence.Job = legacyJob);
 
         // Graph-tagged evidence for a different contract is never adopted, even when the durable facts line up.
         evidence.GraphProductContractIdentitySha256 = new string('0', 64);
@@ -971,6 +979,13 @@ public sealed class CentralProcessingGraphOutputBindingTests
         Assert.ThrowsExactly<CentralDerivativeJobStateException>(() => CentralDerivativeOutputWriter.ValidateExisting(
             evidence, lease, product, result.ArtifactId, objectKey, bucket, graphContractIdentity));
         evidence.ProductMediaType = product.MediaType;
+
+        // Untagged evidence of a graph-owned job is inconsistent rather than adoptable legacy evidence.
+        legacyJob.GraphExecutionId = Guid.NewGuid();
+        Assert.ThrowsExactly<CentralDerivativeJobStateException>(() => CentralDerivativeOutputWriter.ValidateExisting(
+            evidence, lease, product, result.ArtifactId, objectKey, bucket, graphContractIdentity));
+        legacyJob.GraphExecutionId = null;
+        Assert.IsTrue(CentralDerivativeOutputWriter.IsLegacyEvidence(evidence));
 
         // Evidence tagged with another graph contract stays rejected.
         evidence.GraphProductContractIdentitySha256 = new string('0', 64);

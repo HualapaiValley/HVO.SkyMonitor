@@ -96,6 +96,45 @@ public sealed class CentralProcessingGraphSchedulerTests
     }
 
     [TestMethod]
+    public void CentralRegistryRejectsAuxiliaryArtifactBindingsOnAnnotationNodes()
+    {
+        // ResolveLeaseSceneProvenance treats Expected == Requested as "no annotation frozen"; that marker is only
+        // unambiguous while annotation nodes carry a primary binding alone, and the recipe ignores auxiliaries anyway.
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        var baseline = CreateAnnotationConsumerGraph();
+        var calibratedSource = new ProcessingGraphSourceDefinition(
+            "$calibrated",
+            [new ProcessingGraphProductContract(FrameArtifactRole.Calibrated, "source", ProcessingProductKind.PixelData)]);
+        var auxiliary = new ProcessingGraphInputContract(
+            [FrameArtifactRole.Calibrated], [ProcessingProductKind.PixelData], [], [], [],
+            BindingName: "reference", BindingKind: ProcessingGraphInputBindingKind.AuxiliaryArtifact);
+        ProcessingGraphDefinition WithAuxiliaryOn(string nodeId) => baseline with
+        {
+            Sources = [.. baseline.Sources, calibratedSource],
+            Nodes = [.. baseline.Nodes.Select(node => node.Id != nodeId
+                ? node
+                : new ProcessingGraphNodeDefinition(
+                    node.Id, node.StepAlias, node.StepVersion, node.OperationKind, node.Enabled,
+                    node.FailurePolicy, node.Order, node.EffectiveOptions,
+                    [.. node.Dependencies, new ProcessingGraphDependencyDefinition("$calibrated")],
+                    [.. node.Inputs, auxiliary],
+                    node.Outputs, node.Window, node.CapabilityLabels, node.HostApplicability))]
+        };
+
+        Assert.IsTrue(registry.Validate(ProcessingGraphCompiler.Compile(
+            baseline, new(ProcessingGraphHosts.LogicHost, registry.Capabilities)).Plan!));
+        var previewAuxiliary = ProcessingGraphCompiler.Compile(
+            WithAuxiliaryOn("Preview"), new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
+        Assert.IsTrue(previewAuxiliary.IsValid, string.Join(Environment.NewLine, previewAuxiliary.Diagnostics));
+        Assert.IsTrue(registry.Validate(previewAuxiliary.Plan!),
+            "auxiliary artifact bindings remain host-compatible on non-annotation nodes");
+        var annotationAuxiliary = ProcessingGraphCompiler.Compile(
+            WithAuxiliaryOn("Annotation"), new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
+        Assert.IsTrue(annotationAuxiliary.IsValid, string.Join(Environment.NewLine, annotationAuxiliary.Diagnostics));
+        Assert.IsFalse(registry.Validate(annotationAuxiliary.Plan!));
+    }
+
+    [TestMethod]
     public async Task CatalogRejectsCentralPublicationOfCanonicalJsonBoundGraphs()
     {
         await using var context = CreateContext();
@@ -472,10 +511,11 @@ public sealed class CentralProcessingGraphSchedulerTests
             var consumer = execution.Jobs.Single(job => job.GraphNodeId == "Preview");
             Assert.AreEqual(requested, annotation.RequestedRecipeIdentitySha256);
             Assert.AreEqual(expectedAnnotationIdentity, annotation.ExpectedRecipeIdentitySha256);
-            // The frozen expectation is exactly what the executor's bound-identity check and output binding enforce.
-            Assert.AreEqual(expectedAnnotationIdentity, CentralProcessingGraphOutputBinding.ResolveExpectedRecipeIdentity(
-                annotation.RecipeName, annotation.RecipeOptionsJson, annotation.InputSelectorJson,
-                annotation.RequestedRecipeIdentitySha256, annotation.ExpectedRecipeIdentitySha256, sceneProvenanceJson));
+            // The frozen decision is authoritative for the lease: provenance frozen at expansion reaches the executor,
+            // provenance the frame acquires afterwards does not (the node then skips exactly as frozen).
+            Assert.AreEqual(sceneProvenanceJson, CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance(
+                execution.Id, annotation.RecipeName, annotation.RequestedRecipeIdentitySha256,
+                annotation.ExpectedRecipeIdentitySha256, annotated.Frame!.SceneProvenanceJson));
             var expectedSelector = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(
                 ProcessingInputSelector.RecipeResult(
                     FrameArtifactRole.AnnotatedPreview,
@@ -989,6 +1029,69 @@ public sealed class CentralProcessingGraphSchedulerTests
     }
 
     [TestMethod]
+    public void MinimumInputCountCountsDistinctResolvedPositionsAcrossBindings()
+    {
+        // A window node with a primary and an auxiliary binding expands two requirements per sequence offset.
+        var job = new CentralDerivativeJob { MinimumInputCount = 3 };
+        foreach (var offset in new[] { -2, -1, 0 })
+        {
+            foreach (var binding in new[] { "input", "auxiliary" })
+            {
+                job.InputRequirements.Add(new CentralDerivativeJobInputRequirement
+                {
+                    Job = job,
+                    BindingName = binding,
+                    SourceKind = CentralDerivativeInputSourceKind.Artifact,
+                    SequenceOffset = offset,
+                    ResolutionState = offset == 0
+                        ? CentralDerivativeInputResolutionState.Missing
+                        : CentralDerivativeInputResolutionState.Resolved
+                });
+            }
+        }
+        // Four resolved requirements, but only two resolved positions: the minimum of three is not met.
+        Assert.AreEqual(4, job.InputRequirements.Count(item =>
+            item.ResolutionState == CentralDerivativeInputResolutionState.Resolved));
+        Assert.AreEqual(2, CentralDerivativeWindowResolver.CountResolvedPositions(job));
+        Assert.IsTrue(CentralDerivativeWindowResolver.IsBelowMinimumInputCount(job));
+
+        // A position counts only when every binding at that offset resolved.
+        var partial = job.InputRequirements.Single(item => item.SequenceOffset == 0 && item.BindingName == "input");
+        partial.ResolutionState = CentralDerivativeInputResolutionState.Resolved;
+        Assert.AreEqual(2, CentralDerivativeWindowResolver.CountResolvedPositions(job));
+        Assert.IsTrue(CentralDerivativeWindowResolver.IsBelowMinimumInputCount(job));
+        job.InputRequirements.Single(item => item.SequenceOffset == 0 && item.BindingName == "auxiliary")
+            .ResolutionState = CentralDerivativeInputResolutionState.Resolved;
+        Assert.AreEqual(3, CentralDerivativeWindowResolver.CountResolvedPositions(job));
+        Assert.IsFalse(CentralDerivativeWindowResolver.IsBelowMinimumInputCount(job));
+
+        // Canonical (non-artifact) requirements never count toward the window cardinality.
+        job.InputRequirements.Add(new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            BindingName = "environment",
+            SourceKind = CentralDerivativeInputSourceKind.EnvironmentalObservation,
+            SequenceOffset = 1,
+            ResolutionState = CentralDerivativeInputResolutionState.Resolved
+        });
+        Assert.AreEqual(3, CentralDerivativeWindowResolver.CountResolvedPositions(job));
+        // Artifact requirements without a sequence offset are not temporal positions and never count.
+        job.InputRequirements.Add(new CentralDerivativeJobInputRequirement
+        {
+            Job = job,
+            BindingName = "reference",
+            SourceKind = CentralDerivativeInputSourceKind.Artifact,
+            SequenceOffset = null,
+            ResolutionState = CentralDerivativeInputResolutionState.Resolved
+        });
+        Assert.AreEqual(3, CentralDerivativeWindowResolver.CountResolvedPositions(job));
+        job.MinimumInputCount = 4;
+        Assert.IsTrue(CentralDerivativeWindowResolver.IsBelowMinimumInputCount(job));
+        job.MinimumInputCount = null;
+        Assert.IsFalse(CentralDerivativeWindowResolver.IsBelowMinimumInputCount(job), "no frozen minimum imposes none");
+    }
+
+    [TestMethod]
     public void SourceContractMatchesRequiresEveryPinnedContractField()
     {
         var artifact = CreateArtifact();
@@ -1026,9 +1129,54 @@ public sealed class CentralProcessingGraphSchedulerTests
             SemanticVersion = recipe.SemanticVersion,
             ImplementationVersion = recipe.ImplementationVersion
         };
-        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(contract with { Recipe = recipe }, artifact));
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(contract with { Recipe = recipe }, artifact),
+            "a pinned recipe whose operation kind has no durable provenance never matches");
+        var transform = new CentralSourceProvenance(ProcessingOperationKind.Transform, "[]");
+        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { Recipe = recipe }, artifact, transform));
         Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
-            contract with { Recipe = recipe with { ImplementationVersion = "impl-v2" } }, artifact));
+            contract with { Recipe = recipe }, artifact, transform with { OperationKind = ProcessingOperationKind.Analyzer }),
+            "the pinned recipe's operation kind must match the durable operation kind");
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract with { Recipe = recipe with { ImplementationVersion = "impl-v2" } }, artifact, transform));
+        artifact.Recipe.Name = BuiltInProcessingRecipes.EncodedPreview;
+        _ = BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.EncodedPreview, out var builtIn);
+        Assert.AreEqual(builtIn!.OperationKind, CentralProcessingGraphScheduler.ResolveSourceProvenance(artifact, null).OperationKind,
+            "an agent-published artifact derives its operation kind from the built-in recipe it names");
+        Assert.AreEqual("[]", CentralProcessingGraphScheduler.ResolveSourceProvenance(artifact, null).AlgorithmsJson);
+        var recorded = new Dictionary<Guid, CentralSourceProvenance>
+        {
+            [artifact.Id] = new(ProcessingOperationKind.Window, "[{\"name\":\"stack\",\"version\":\"2\"}]")
+        };
+        Assert.AreEqual(recorded[artifact.Id], CentralProcessingGraphScheduler.ResolveSourceProvenance(artifact, recorded),
+            "central processing evidence is authoritative when present");
+        artifact.Recipe.Name = BuiltInProcessingRecipes.EncodedPreview;
+        recorded[artifact.Id] = new(null, "[{\"name\":\"stack\",\"version\":\"2\"}]");
+        var fallback = CentralProcessingGraphScheduler.ResolveSourceProvenance(artifact, recorded);
+        Assert.AreEqual(builtIn.OperationKind, fallback.OperationKind,
+            "evidence without an operation kind falls back to the built-in recipe's operation kind");
+        Assert.AreEqual(recorded[artifact.Id].AlgorithmsJson, fallback.AlgorithmsJson,
+            "the recorded algorithms remain authoritative on fallback");
+        artifact.Recipe.Name = "unknown-recipe";
+        Assert.IsNull(CentralProcessingGraphScheduler.ResolveSourceProvenance(artifact, recorded).OperationKind,
+            "no built-in definition leaves the operation kind unestablished");
+        artifact.Recipe.Name = recipe.Name;
+        var algorithm = new ProcessingAlgorithmIdentity("stack", "2");
+        var pinnedAlgorithms = contract with { Algorithms = [algorithm] };
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(pinnedAlgorithms, artifact, transform),
+            "pinned algorithms need matching durable algorithms");
+        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(
+            pinnedAlgorithms, artifact, transform with { AlgorithmsJson = "[{\"name\":\"stack\",\"version\":\"2\"}]" }));
+        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(
+            pinnedAlgorithms, artifact, transform with { AlgorithmsJson = "[{\"Name\":\"stack\",\"Version\":\"2\"}]" }),
+            "structured-product algorithm JSON casing is accepted");
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            pinnedAlgorithms, artifact, transform with { AlgorithmsJson = "[{\"name\":\"stack\",\"version\":\"3\"}]" }));
+        Assert.IsFalse(CentralProcessingGraphScheduler.SourceContractMatches(
+            pinnedAlgorithms, artifact, transform with { AlgorithmsJson = "not-json" }));
+        Assert.IsTrue(CentralProcessingGraphScheduler.SourceContractMatches(
+            contract, artifact, transform with { AlgorithmsJson = "[{\"name\":\"stack\",\"version\":\"2\"}]" }),
+            "a contract that pins no algorithms accepts any durable algorithm list");
         artifact.StructuredProduct = new CentralStructuredProcessingProduct
         {
             ProductKind = ProcessingProductKind.PixelData.ToString(),

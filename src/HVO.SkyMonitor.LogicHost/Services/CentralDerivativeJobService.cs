@@ -378,28 +378,13 @@ internal sealed class CentralDerivativeJobService(
         ValidateLeaseDuration(leaseDuration);
         var now = timeProvider.GetUtcNow();
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        var leased = await dbContext.CentralDerivativeJobs.Where(job =>
-                job.Id == jobId
-                && job.Status == CentralDerivativeJobStatus.Leased
-                && job.LeaseToken == leaseToken
-                && job.LeaseExpiresAtUtc > now)
-            .Select(job => new
-            {
-                job.AttemptCount,
-                job.CancellationRequestedAtUtc,
-                GraphStatus = job.GraphExecution != null
-                    ? (CentralProcessingGraphExecutionStatus?)job.GraphExecution.Status
-                    : null
-            })
-            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var leased = await ReadRenewalStateAsync(jobId, leaseToken, now, cancellationToken).ConfigureAwait(false);
         if (leased is null)
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
         }
-        if (leased.CancellationRequestedAtUtc is not null ||
-            leased.GraphStatus is CentralProcessingGraphExecutionStatus.CancelRequested or
-                CentralProcessingGraphExecutionStatus.Canceled)
+        if (leased.IsCanceled)
         {
             // Cancellation reached a leased node. Refusing renewal bounds the active lease: the worker cancels its
             // local execution and the lease reaches the expiry path where graph convergence records Canceled.
@@ -407,11 +392,17 @@ internal sealed class CentralDerivativeJobService(
             throw new CentralDerivativeLeaseCanceledException();
         }
         var attemptNumber = (int?)leased.AttemptCount;
+        // The cancellation guard is part of the authoritative update predicate: a cancellation committed between the
+        // read above and this statement must not extend the lease (the read only classifies the failure afterwards).
         var affected = await dbContext.CentralDerivativeJobs.Where(job =>
                 job.Id == jobId
                 && job.Status == CentralDerivativeJobStatus.Leased
                 && job.LeaseToken == leaseToken
                 && job.LeaseExpiresAtUtc > now
+                && job.CancellationRequestedAtUtc == null
+                && (job.GraphExecution == null
+                    || job.GraphExecution.Status != CentralProcessingGraphExecutionStatus.CancelRequested
+                        && job.GraphExecution.Status != CentralProcessingGraphExecutionStatus.Canceled)
                 && job.InputSetIdentitySha256 != null
                 && job.Inputs.Any()
                 && !job.InputRequirements.Any(requirement => requirement.IsRequired
@@ -429,8 +420,11 @@ internal sealed class CentralDerivativeJobService(
                 .SetProperty(job => job.UpdatedAtUtc, now), cancellationToken).ConfigureAwait(false);
         if (affected != 1)
         {
+            var raced = await ReadRenewalStateAsync(jobId, leaseToken, now, cancellationToken).ConfigureAwait(false);
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-            throw new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
+            throw raced is { IsCanceled: true }
+                ? new CentralDerivativeLeaseCanceledException()
+                : new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
         }
         var attemptAffected = await dbContext.CentralDerivativeJobAttempts.Where(attempt =>
                 attempt.CentralDerivativeJobId == jobId
@@ -448,6 +442,26 @@ internal sealed class CentralDerivativeJobService(
         dbContext.ChangeTracker.Clear();
         return CreateLease(await LoadJobAsync(jobId, cancellationToken).ConfigureAwait(false));
     }
+
+    private sealed record RenewalState(int AttemptCount, bool IsCanceled);
+
+    private async Task<RenewalState?> ReadRenewalStateAsync(
+        Guid jobId,
+        Guid leaseToken,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+        => await dbContext.CentralDerivativeJobs.Where(job =>
+                job.Id == jobId
+                && job.Status == CentralDerivativeJobStatus.Leased
+                && job.LeaseToken == leaseToken
+                && job.LeaseExpiresAtUtc > now)
+            .Select(job => new RenewalState(
+                job.AttemptCount,
+                job.CancellationRequestedAtUtc != null
+                || job.GraphExecution != null
+                    && (job.GraphExecution.Status == CentralProcessingGraphExecutionStatus.CancelRequested
+                        || job.GraphExecution.Status == CentralProcessingGraphExecutionStatus.Canceled)))
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
 
     public async Task CompleteAsync(
         Guid jobId,
@@ -931,7 +945,10 @@ internal sealed class CentralDerivativeJobService(
             frame.DevicePublicId, source.ArtifactId, source.Role, source.RecipeVersion,
             $"/api/v1.0/devices/{frame.DevicePublicId:D}/artifacts/{source.ArtifactId:D}/content",
             source.ChecksumSha256, source.MediaType, frame.FrameId, frame.AgentId,
-            frame.CapturedAtUtc, frame.RigProfileVersion, frame.SceneProvenanceJson,
+            frame.CapturedAtUtc, frame.RigProfileVersion,
+            CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance(
+                job.GraphExecutionId, job.RecipeName, job.RequestedRecipeIdentitySha256,
+                job.ExpectedRecipeIdentitySha256, frame.SceneProvenanceJson),
             job.TargetRole, job.TargetRecipeVersion, job.TargetVariant,
             job.RecipeName, job.RecipeOptionsJson, job.InputSelectorJson,
             job.RequestedRecipeIdentitySha256, job.RequestIdentitySha256,

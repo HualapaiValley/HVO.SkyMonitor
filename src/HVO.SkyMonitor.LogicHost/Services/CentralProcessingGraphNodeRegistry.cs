@@ -113,7 +113,10 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
         // LogicHost freezes each node's expected recipe identity at expansion from primary and auxiliary artifact
         // bindings plus the anchor frame's own scene provenance. Annotation and canonical-JSON graph bindings would
         // execute against a stale identity, so centrally executed graphs reject them at publication/assignment
-        // validation instead of accepting them.
+        // validation instead of accepting them. The built-in annotation recipe ignores artifact auxiliaries, and
+        // CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance relies on an annotation node's expected identity
+        // being derived from its primary binding alone, so auxiliary artifact bindings on that node are
+        // host-incompatible as well.
         if (!string.Equals(node.StepVersion, handler.StepVersion, StringComparison.Ordinal) ||
             node.OperationKind != handler.OperationKind ||
             planNode.InputBindings.Count(static binding =>
@@ -121,6 +124,9 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
             planNode.InputBindings.Any(static binding =>
                 binding.BindingKind is ProcessingGraphInputBindingKind.Annotation or
                     ProcessingGraphInputBindingKind.CanonicalJson) ||
+            string.Equals(node.StepAlias, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal) &&
+                planNode.InputBindings.Any(static binding =>
+                    binding.BindingKind == ProcessingGraphInputBindingKind.AuxiliaryArtifact) ||
             node.Dependencies.Any(static dependency =>
                 dependency.Kind is ProcessingGraphDependencyKind.Annotation or
                     ProcessingGraphDependencyKind.CanonicalJson))

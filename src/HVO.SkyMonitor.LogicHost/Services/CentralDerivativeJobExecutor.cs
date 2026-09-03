@@ -347,6 +347,29 @@ internal sealed class CentralDerivativeJobExecutor(
                 requestedIdentity,
                 StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// The scene provenance a lease carries to the executor. A graph annotation node executes against the annotation
+    /// decision frozen at expansion (<see cref="CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity"/>): an
+    /// expected identity left at the requested identity durably records that no annotation was frozen, so provenance
+    /// the frame acquires between expansion and lease is withheld and the node runs (and skips) exactly as frozen
+    /// instead of producing evidence whose recipe identity the frozen expectation and the evidence trigger reject.
+    /// The marker is unambiguous because <see cref="CentralProcessingGraphNodeRegistry"/> admits annotation nodes with
+    /// only a primary binding, so nothing but a frozen annotation can move the expected identity off the requested
+    /// one. A bound expected identity was derived from the frame's write-once provenance, which is therefore the
+    /// frozen value itself. Legacy jobs keep the live frame provenance.
+    /// </summary>
+    internal static string? ResolveLeaseSceneProvenance(
+        Guid? graphExecutionId,
+        string recipeName,
+        string requestedRecipeIdentitySha256,
+        string? expectedRecipeIdentitySha256,
+        string? frameSceneProvenanceJson)
+        => graphExecutionId is not null
+            && string.Equals(recipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
+            && !RequiresBoundExpectedIdentity(requestedRecipeIdentitySha256, expectedRecipeIdentitySha256)
+                ? null
+                : frameSceneProvenanceJson;
+
     internal static ProcessingAnnotationInput? CreateAnnotation(string? sceneProvenanceJson)
     {
         if (string.IsNullOrWhiteSpace(sceneProvenanceJson))

@@ -352,7 +352,13 @@ BEGIN
                 AND evidence.[RequestedRecipeIdentitySha256] = job.[RequestedRecipeIdentitySha256]
                 AND evidence.[RecipeIdentitySha256] = job.[ExpectedRecipeIdentitySha256]
                 AND evidence.[OutputIdentitySha256] = i.[ResultOutputIdentitySha256]
-                 AND evidence.[GraphProductContractIdentitySha256] = i.[ContractIdentitySha256]
+                -- Graph-tagged evidence must name this exact slot. Deterministic evidence produced by a legacy
+                -- (non-graph) job carries no contract identity and is adopted only through the durable fields
+                -- required alongside: frozen input set, requested/expected recipe identities, output identity,
+                -- operation kind, product kind, schema, media type, recipe descriptor, and algorithms.
+                AND (evidence.[GraphProductContractIdentitySha256] = i.[ContractIdentitySha256]
+                     OR evidence.[GraphProductContractIdentitySha256] IS NULL
+                        AND evidence_job.[GraphExecutionId] IS NULL)
                 AND (JSON_VALUE(i.[ContractJson], '$.recipe.operationKind') IS NULL
                      OR evidence.[RecipeOperationKind] = JSON_VALUE(i.[ContractJson], '$.recipe.operationKind'))
                 AND evidence.[ProductKind] = i.[ProductKind]

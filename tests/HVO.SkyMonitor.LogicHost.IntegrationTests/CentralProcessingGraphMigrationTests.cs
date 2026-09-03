@@ -1080,9 +1080,12 @@ public sealed class CentralProcessingGraphMigrationTests
     }
 
     private static CentralDerivativeJob CreateLegacyCompletedImageQualityJob(CentralArtifact source, DateTimeOffset now)
+        => CreateLegacyCompletedJob(source, now, BuiltInProcessingRecipes.ImageQuality);
+
+    private static CentralDerivativeJob CreateLegacyCompletedJob(CentralArtifact source, DateTimeOffset now, string recipeName)
     {
         var recipe = new CentralDerivativeRecipeCatalog().GetRequiredRecipes(FrameArtifactRole.Raw)
-            .Single(item => string.Equals(item.RecipeName, BuiltInProcessingRecipes.ImageQuality, StringComparison.Ordinal));
+            .Single(item => string.Equals(item.RecipeName, recipeName, StringComparison.Ordinal));
         var job = new CentralDerivativeJob
         {
             SourceCentralArtifactId = source.Id,
@@ -1142,18 +1145,37 @@ public sealed class CentralProcessingGraphMigrationTests
     }
 
     /// <summary>Seeds a camera, one Raw source, and a Preview-only graph assignment, then ingests the Raw (graph Created).</summary>
-    private static async Task<(SeededCamera Camera, CentralArtifact Raw, ProcessingGraphDefinition Definition,
+    private static Task<(SeededCamera Camera, CentralArtifact Raw, ProcessingGraphDefinition Definition,
         CentralProcessingGraphScheduler GraphScheduler, CentralDerivativeWorkerTelemetry Telemetry)>
         ScheduleSingleNodePreviewGraphAsync(ApplicationDbContext context, DateTimeOffset now, string slug)
+        => ScheduleSingleNodeGraphAsync(context, now, slug, "Preview", sceneProvenanceJson: null);
+
+    /// <summary>
+    /// Seeds a camera (optionally with frame scene provenance), one Raw source, and a single-node graph assignment
+    /// taken from the canonical basic graph, then ingests the Raw (graph Created).
+    /// </summary>
+    private static async Task<(SeededCamera Camera, CentralArtifact Raw, ProcessingGraphDefinition Definition,
+        CentralProcessingGraphScheduler GraphScheduler, CentralDerivativeWorkerTelemetry Telemetry)>
+        ScheduleSingleNodeGraphAsync(
+            ApplicationDbContext context,
+            DateTimeOffset now,
+            string slug,
+            string nodeId,
+            string? sceneProvenanceJson)
     {
         var camera = await SeedCameraAsync(context, now, slug).ConfigureAwait(false);
+        if (sceneProvenanceJson is not null)
+        {
+            camera.Frame.SceneProvenanceJson = sceneProvenanceJson;
+            await context.SaveChangesAsync().ConfigureAwait(false);
+        }
         var recipeCatalog = new CentralDerivativeRecipeCatalog();
         var registry = new CentralProcessingGraphNodeRegistry(recipeCatalog);
         var basic = DatabaseSeeder.CreateBasicCentralProcessingGraph(recipeCatalog);
         var definition = basic with
         {
-            Name = $"sql-preview-{slug}",
-            Nodes = [.. basic.Nodes.Where(node => node.Id == "Preview")]
+            Name = $"sql-{nodeId}-{slug}",
+            Nodes = [.. basic.Nodes.Where(node => node.Id == nodeId)]
         };
         var raw = CreateSourceArtifact(camera, FrameArtifactRole.Raw, 'A', now.AddMinutes(-1));
         context.AddRange(raw, CreateAssignment(definition, registry, camera, now));
@@ -1290,6 +1312,428 @@ public sealed class CentralProcessingGraphMigrationTests
             consumer.StateReasonCode.Should().Be("processing.graph.required-predecessor-failed");
             consumer.CompletedAtUtc.Should().Be(converged);
             workerTelemetry.HasRecentDependencyFailure(converged, TimeSpan.FromMinutes(1)).Should().BeFalse();
+        }
+        finally
+        {
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// A deterministic output already produced by the legacy (non-graph) scheduler carries no graph contract
+    /// identity. A graph job whose frozen slot the durable evidence satisfies adopts it end to end: the C#
+    /// validation admits it, <c>TR_CentralDerivativeJobOutputs_BindOnce</c> binds the slot, and the execution
+    /// completes without a second artifact for the same output identity.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerGraphJobAdoptsLegacyDeterministicEvidenceThroughBindingTrigger()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphLegacyAdoption_{Guid.NewGuid():N}"
+        };
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (camera, raw, definition, graphScheduler, workerTelemetry) =
+                await ScheduleSingleNodePreviewGraphAsync(context, now, "legacy-adoption").ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            var lease = await new CentralDerivativeJobService(context, TimeProvider.System)
+                .ClaimNextAsync("adoption-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.GraphExecutionId.Should().NotBeNull();
+            lease.InputSetIdentitySha256.Should().HaveLength(64);
+            var contract = definition.Nodes.Single().Outputs.Single();
+            var product = CreateProduct(contract, lease, 5);
+            var services = AssemblyHooks.Fixture.Factory.Services;
+            var storageNames = services.GetRequiredService<CentralObjectStorageNames>();
+
+            // The legacy scheduler already produced exactly this deterministic output for the same frozen input set.
+            var source = await context.CentralArtifacts.Include(item => item.Frame)
+                .SingleAsync(item => item.Id == raw.Id).ConfigureAwait(false);
+            var legacyJob = CreateLegacyCompletedJob(source, now.AddMinutes(-1), BuiltInProcessingRecipes.EncodedPreview);
+            legacyJob.Inputs.Single().CompatibilitySha256 = lease.Inputs!.Single().CompatibilitySha256;
+            legacyJob.Inputs.Single().CaptureSequence = lease.Inputs!.Single().CaptureSequence;
+            legacyJob.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(legacyJob.Inputs);
+            legacyJob.InputSetIdentitySha256.Should().Be(lease.InputSetIdentitySha256,
+                "the legacy job froze the same single-input set the graph node froze");
+            legacyJob.RequestedRecipeIdentitySha256.Should().Be(lease.RequestedRecipeIdentitySha256);
+            var legacyArtifact = new CentralArtifact
+            {
+                CentralFrameId = source.CentralFrameId,
+                DevicePublicId = source.DevicePublicId,
+                ArtifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256),
+                Role = product.Role,
+                Variant = product.Variant,
+                RecipeVersion = lease.TargetRecipeVersion,
+                ManifestSchemaVersion = "central-v1",
+                MediaType = product.MediaType,
+                ByteLength = product.Payload.Length,
+                ChecksumSha256 = product.ChecksumSha256,
+                StorageReference = CentralDerivativeOutputWriter.CreateStorageReference(
+                    lease, product, storageNames.ArtifactBucket),
+                ReceivedAtUtc = now.AddMinutes(-1),
+                IdempotencyKey = CentralDerivativeOutputWriter.CreateArtifactIdempotencyKey(
+                    source.DevicePublicId, product.OutputIdentitySha256),
+                SourceId = "central-derivative-worker",
+                CreatedUtc = now.AddMinutes(-1),
+                ObjectState = CentralArtifactObjectState.Available,
+                ReconstructionState = CentralReconstructionState.Complete,
+                Recipe = new CentralArtifactRecipe
+                {
+                    Name = product.Recipe.Descriptor.Name,
+                    SemanticVersion = product.Recipe.Descriptor.SemanticVersion,
+                    ImplementationVersion = product.Recipe.Descriptor.ImplementationVersion,
+                    OptionsJson = CaptureContractJson.Canonicalize(product.Recipe.Descriptor.Options).GetRawText(),
+                    OptionsSha256 = product.Recipe.Descriptor.OptionsSha256
+                }
+            };
+            legacyArtifact.Sources.Add(new CentralArtifactSource
+            {
+                Ordinal = 0,
+                SourceArtifactId = source.ArtifactId,
+                ResolvedCentralArtifactId = source.Id
+            });
+            legacyJob.ResultCentralArtifactId = legacyArtifact.Id;
+            var legacyEvidence = new CentralArtifactProcessingEvidence
+            {
+                CentralArtifactId = legacyArtifact.Id,
+                Artifact = legacyArtifact,
+                DevicePublicId = source.DevicePublicId,
+                OutputIdentitySha256 = product.OutputIdentitySha256,
+                RequestedRecipeIdentitySha256 = legacyJob.RequestedRecipeIdentitySha256,
+                RecipeIdentitySha256 = product.Recipe.IdentitySha256,
+                RecipeOperationKind = product.Recipe.OperationKind,
+                GraphProductContractIdentitySha256 = null,
+                ProductKind = product.Kind,
+                ProductSchemaVersion = product.SchemaVersion,
+                ProductMediaType = product.MediaType,
+                AlgorithmsJson = CaptureContractJson.Canonicalize(
+                    CaptureContractJson.SerializeToElement(product.Algorithms)).GetRawText(),
+                CompatibilityJson = CaptureContractJson.Canonicalize(
+                    CaptureContractJson.SerializeToElement(product.Compatibility)).GetRawText(),
+                TotalIntegrationTicks = 0,
+                CentralDerivativeJobId = legacyJob.Id,
+                Job = legacyJob,
+                AttemptNumber = 1,
+                CreatedAtUtc = now.AddMinutes(-1)
+            };
+            context.AddRange(legacyJob, legacyArtifact, legacyEvidence);
+            await context.SaveChangesAsync().ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+
+            await using (var writerContext = new ApplicationDbContext(options))
+            {
+                var writer = new CentralDerivativeOutputWriter(
+                    writerContext,
+                    services.GetRequiredService<IObjectStore>(),
+                    services.GetRequiredService<ICentralArtifactObjectReader>(),
+                    workerTelemetry,
+                    TimeProvider.System,
+                    NullLogger<CentralDerivativeOutputWriter>.Instance,
+                    storageNames);
+                var adopted = await writer.PersistSetAsync(lease, [product], 1, TimeSpan.Zero, CancellationToken.None)
+                    .ConfigureAwait(false);
+                adopted.Should().Equal(legacyArtifact.ArtifactId);
+            }
+            context.ChangeTracker.Clear();
+            var graphJob = await context.CentralDerivativeJobs.AsNoTracking()
+                .Include(item => item.Outputs)
+                .SingleAsync(item => item.Id == lease.JobId).ConfigureAwait(false);
+            graphJob.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+            graphJob.ResultCentralArtifactId.Should().Be(legacyArtifact.Id);
+            var slot = graphJob.Outputs.Single();
+            slot.ResultCentralArtifactId.Should().Be(legacyArtifact.Id, "the slot binds the adopted legacy artifact");
+            slot.ResultOutputIdentitySha256.Should().Be(product.OutputIdentitySha256);
+            slot.BoundAtUtc.Should().NotBeNull();
+            (await context.CentralArtifacts.AsNoTracking().CountAsync(item =>
+                item.DevicePublicId == source.DevicePublicId && item.ArtifactId == legacyArtifact.ArtifactId)
+                .ConfigureAwait(false)).Should().Be(1, "adoption never duplicates the deterministic output");
+            var evidence = await context.CentralArtifactProcessingEvidence.AsNoTracking()
+                .SingleAsync(item => item.CentralArtifactId == legacyArtifact.Id).ConfigureAwait(false);
+            evidence.GraphProductContractIdentitySha256.Should().BeNull("legacy evidence is immutable and stays untagged");
+            evidence.CentralDerivativeJobId.Should().Be(legacyJob.Id);
+            (await context.CentralDerivativeJobs.AsNoTracking().SingleAsync(item => item.Id == legacyJob.Id)
+                .ConfigureAwait(false)).Status.Should().Be(CentralDerivativeJobStatus.Completed);
+
+            await graphScheduler.ConvergeAsync(lease.GraphExecutionId!.Value, now.AddSeconds(2), CancellationToken.None)
+                .ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking()
+                .SingleAsync(item => item.Id == lease.GraphExecutionId).ConfigureAwait(false)).Status
+                .Should().Be(CentralProcessingGraphExecutionStatus.Completed);
+
+            // Trigger parity: untagged evidence binds only when its job is a legacy (non-graph) job.
+            var outputTrigger = await context.Database.SqlQuery<string>($"""
+                SELECT OBJECT_DEFINITION(OBJECT_ID(N'TR_CentralDerivativeJobOutputs_BindOnce')) AS [Value]
+                """).SingleAsync().ConfigureAwait(false);
+            outputTrigger.Should().Contain("evidence.[GraphProductContractIdentitySha256] IS NULL");
+            outputTrigger.Should().Contain("evidence_job.[GraphExecutionId] IS NULL");
+        }
+        finally
+        {
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The annotation decision is frozen at expansion. A frame without scene provenance at expansion freezes "no
+    /// annotation": provenance enriched before the lease is withheld from the executor and evidence carrying the
+    /// frozen (requested) identity binds through the SQL triggers. A frame annotated at expansion freezes the
+    /// annotated identity, the lease carries the provenance, and annotated evidence binds.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerAnnotationNodeExecutesAgainstFrozenSceneProvenanceDecision()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphFrozenAnnotation_{Guid.NewGuid():N}"
+        };
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var provenanceJson = JsonSerializer.Serialize(
+                new SceneProvenance(
+                    "scene-1", "rig-v1", "catalog", "1", new string('A', 64), "model", "1", "1", "1",
+                    Objects: [new ProjectedObjectProvenance("star:1", "Vega", 10, 12, 0.03)]),
+                JsonSerializerOptions.Web);
+            var services = AssemblyHooks.Fixture.Factory.Services;
+            var jobService = new CentralDerivativeJobService(context, TimeProvider.System);
+
+            // Absent at expansion, enriched before the lease.
+            var (absentCamera, _, definition, graphScheduler, workerTelemetry) = await ScheduleSingleNodeGraphAsync(
+                context, now, "annotation-absent", "Annotation", sceneProvenanceJson: null).ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            var absentJob = await context.CentralDerivativeJobs.AsNoTracking()
+                .SingleAsync(item => item.SourceArtifact!.CentralFrameId == absentCamera.Frame.Id).ConfigureAwait(false);
+            absentJob.ExpectedRecipeIdentitySha256.Should().Be(absentJob.RequestedRecipeIdentitySha256,
+                "no provenance at expansion freezes the requested identity");
+            await context.CentralFrames.Where(frame => frame.Id == absentCamera.Frame.Id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(frame => frame.SceneProvenanceJson, provenanceJson))
+                .ConfigureAwait(false);
+            var absentLease = await jobService.ClaimNextAsync("annotation-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false);
+            absentLease.Should().NotBeNull();
+            absentLease!.JobId.Should().Be(absentJob.Id);
+            absentLease.SceneProvenanceJson.Should().BeNull("the lease carries the frozen absence, not the live frame");
+            CentralDerivativeJobExecutor.CreateAnnotation(absentLease.SceneProvenanceJson).Should().BeNull(
+                "the executor runs the frozen decision and skips with the missing-annotation reason");
+            var contract = definition.Nodes.Single().Outputs.Single();
+            var unannotated = CreateProduct(contract, absentLease, 3);
+            unannotated.Recipe.IdentitySha256.Should().Be(absentLease.RequestedRecipeIdentitySha256);
+            await using (var writerContext = new ApplicationDbContext(options))
+            {
+                var writer = new CentralDerivativeOutputWriter(
+                    writerContext,
+                    services.GetRequiredService<IObjectStore>(),
+                    services.GetRequiredService<ICentralArtifactObjectReader>(),
+                    workerTelemetry,
+                    TimeProvider.System,
+                    NullLogger<CentralDerivativeOutputWriter>.Instance,
+                    services.GetRequiredService<CentralObjectStorageNames>());
+                await writer.PersistSetAsync(absentLease, [unannotated], 1, TimeSpan.Zero, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            context.ChangeTracker.Clear();
+            var absentCompleted = await context.CentralDerivativeJobs.AsNoTracking()
+                .Include(item => item.Outputs)
+                .SingleAsync(item => item.Id == absentJob.Id).ConfigureAwait(false);
+            absentCompleted.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+            absentCompleted.Outputs.Single().ResultOutputIdentitySha256.Should().Be(unannotated.OutputIdentitySha256);
+            await graphScheduler.ConvergeAsync(absentJob.GraphExecutionId!.Value, now.AddSeconds(2), CancellationToken.None)
+                .ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking()
+                .SingleAsync(item => item.Id == absentJob.GraphExecutionId).ConfigureAwait(false)).Status
+                .Should().Be(CentralProcessingGraphExecutionStatus.Completed);
+
+            // Present at expansion: the frozen identity includes the annotation and the lease carries the provenance.
+            var (presentCamera, _, presentDefinition, presentScheduler, presentTelemetry) = await ScheduleSingleNodeGraphAsync(
+                context, now, "annotation-present", "Annotation", provenanceJson).ConfigureAwait(false);
+            using var __ = presentTelemetry;
+            var presentJob = await context.CentralDerivativeJobs.AsNoTracking()
+                .SingleAsync(item => item.SourceArtifact!.CentralFrameId == presentCamera.Frame.Id).ConfigureAwait(false);
+            var annotationNode = presentDefinition.Nodes.Single();
+            var annotatedIdentity = BuiltInProcessingRecipes.CreateExecutionIdentity(
+                BuiltInProcessingRecipes.Annotation,
+                annotationNode.EffectiveOptions,
+                ProcessingInputSelector.Raw(),
+                CentralDerivativeJobExecutor.CreateAnnotation(provenanceJson)).IdentitySha256;
+            presentJob.ExpectedRecipeIdentitySha256.Should().Be(annotatedIdentity);
+            presentJob.ExpectedRecipeIdentitySha256.Should().NotBe(presentJob.RequestedRecipeIdentitySha256);
+            var presentLease = await jobService.ClaimNextAsync("annotation-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false);
+            presentLease.Should().NotBeNull();
+            presentLease!.JobId.Should().Be(presentJob.Id);
+            presentLease.SceneProvenanceJson.Should().Be(provenanceJson);
+            var annotated = CreateProduct(annotationNode.Outputs.Single(), presentLease, 4);
+            annotated.Recipe.IdentitySha256.Should().Be(annotatedIdentity);
+            await using (var writerContext = new ApplicationDbContext(options))
+            {
+                var writer = new CentralDerivativeOutputWriter(
+                    writerContext,
+                    services.GetRequiredService<IObjectStore>(),
+                    services.GetRequiredService<ICentralArtifactObjectReader>(),
+                    presentTelemetry,
+                    TimeProvider.System,
+                    NullLogger<CentralDerivativeOutputWriter>.Instance,
+                    services.GetRequiredService<CentralObjectStorageNames>());
+                await writer.PersistSetAsync(presentLease, [annotated], 1, TimeSpan.Zero, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            context.ChangeTracker.Clear();
+            var presentCompleted = await context.CentralDerivativeJobs.AsNoTracking()
+                .Include(item => item.Outputs)
+                .SingleAsync(item => item.Id == presentJob.Id).ConfigureAwait(false);
+            presentCompleted.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+            presentCompleted.Outputs.Single().ResultOutputIdentitySha256.Should().Be(annotated.OutputIdentitySha256);
+            await presentScheduler.ConvergeAsync(presentJob.GraphExecutionId!.Value, now.AddSeconds(2), CancellationToken.None)
+                .ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking()
+                .SingleAsync(item => item.Id == presentJob.GraphExecutionId).ConfigureAwait(false)).Status
+                .Should().Be(CentralProcessingGraphExecutionStatus.Completed);
+        }
+        finally
+        {
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// A cancellation committed after the renewal pre-read but before the authoritative lease update must not extend
+    /// the lease: the update predicate itself carries the cancellation guard and the renewal fails as canceled.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerLeaseRenewalRejectsCancellationCommittedAfterPreRead()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphRenewalRace_{Guid.NewGuid():N}"
+        };
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (_, _, _, _, workerTelemetry) =
+                await ScheduleSingleNodePreviewGraphAsync(context, now, "renewal-race").ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            var lease = await new CentralDerivativeJobService(context, TimeProvider.System)
+                .ClaimNextAsync("renewal-worker", TimeSpan.FromMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            var expiresBefore = lease!.LeaseExpiresAtUtc;
+
+            var interceptor = new CancelBeforeLeaseUpdateInterceptor(builder.ConnectionString, lease.JobId);
+            var racedOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseSqlServer(builder.ConnectionString)
+                .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+                .AddInterceptors(interceptor)
+                .Options;
+            await using (var racedContext = new ApplicationDbContext(racedOptions))
+            {
+                var renew = async () => await new CentralDerivativeJobService(racedContext, TimeProvider.System)
+                    .RenewLeaseAsync(lease.JobId, lease.LeaseToken, TimeSpan.FromMinutes(5), CancellationToken.None)
+                    .ConfigureAwait(false);
+                await renew.Should().ThrowExactlyAsync<CentralDerivativeLeaseCanceledException>().ConfigureAwait(false);
+            }
+            interceptor.Triggered.Should().BeTrue("the cancellation was committed between the pre-read and the update");
+            context.ChangeTracker.Clear();
+            var job = await context.CentralDerivativeJobs.AsNoTracking()
+                .SingleAsync(item => item.Id == lease.JobId).ConfigureAwait(false);
+            job.CancellationRequestedAtUtc.Should().NotBeNull();
+            job.Status.Should().Be(CentralDerivativeJobStatus.Leased);
+            job.LeaseExpiresAtUtc.Should().Be(expiresBefore, "a raced cancellation never extends the lease");
+            (await context.CentralDerivativeJobAttempts.AsNoTracking()
+                .SingleAsync(item => item.CentralDerivativeJobId == lease.JobId && item.AttemptNumber == lease.AttemptCount)
+                .ConfigureAwait(false)).LeaseExpiresAtUtc.Should().Be(expiresBefore);
+        }
+        finally
+        {
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// A relational persistence failure during expansion that is not the anticipated uniqueness race surfaces as the
+    /// original failure: the race handler owns the rollback and the outer failure handler must not roll back the
+    /// completed transaction a second time.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerExpansionPersistenceFailureSurfacesWithoutDoubleRollback()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphExpansionFailure_{Guid.NewGuid():N}"
+        };
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var camera = await SeedCameraAsync(context, now, "expansion-failure").ConfigureAwait(false);
+            var recipeCatalog = new CentralDerivativeRecipeCatalog();
+            var registry = new CentralProcessingGraphNodeRegistry(recipeCatalog);
+            var basic = DatabaseSeeder.CreateBasicCentralProcessingGraph(recipeCatalog);
+            var definition = basic with
+            {
+                Name = "sql-expansion-failure",
+                Nodes = [.. basic.Nodes.Where(node => node.Id == "Preview")]
+            };
+            var raw = CreateSourceArtifact(camera, FrameArtifactRole.Raw, 'A', now.AddMinutes(-1));
+            var assignment = CreateAssignment(definition, registry, camera, now);
+            context.AddRange(raw, assignment);
+            await context.SaveChangesAsync().ConfigureAwait(false);
+            context.ChangeTracker.Clear();
+
+            var failingOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseSqlServer(builder.ConnectionString)
+                .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+                .AddInterceptors(new ThrowOnSaveChangesInterceptor())
+                .Options;
+            using var workerTelemetry = new CentralDerivativeWorkerTelemetry();
+            using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+            await using (var failingContext = new ApplicationDbContext(failingOptions))
+            {
+                var catalog = new ProcessingGraphCatalogService(
+                    failingContext, registry, TimeProvider.System, catalogTelemetry,
+                    NullLogger<ProcessingGraphCatalogService>.Instance);
+                var scheduler = new CentralProcessingGraphScheduler(
+                    failingContext, catalog, registry, new NoopWindowResolver(), new UnusedObjectReader(),
+                    workerTelemetry, TimeProvider.System);
+                var replay = async () => await scheduler.ScheduleReplayAsync(
+                    new(assignment.RevisionId, [raw.Id], camera.Owner.Id, "sql-expansion-failure", "sql-test"),
+                    now,
+                    CancellationToken.None).ConfigureAwait(false);
+                await replay.Should().ThrowExactlyAsync<DbUpdateException>()
+                    .WithMessage("Injected expansion persistence failure.").ConfigureAwait(false);
+            }
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking().CountAsync().ConfigureAwait(false))
+                .Should().Be(0, "the failed expansion left no execution behind");
+            (await context.CentralDerivativeJobs.AsNoTracking().CountAsync().ConfigureAwait(false)).Should().Be(0);
         }
         finally
         {
@@ -2498,6 +2942,46 @@ public sealed class CentralProcessingGraphMigrationTests
             => stepAlias == handler.StepAlias ? handler : throw new InvalidOperationException("Unexpected step alias.");
 
         public bool Validate(ProcessingGraphExecutionPlan plan) => plan.Nodes.Length == 1;
+    }
+
+    private sealed class ThrowOnSaveChangesInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+            => throw new DbUpdateException("Injected expansion persistence failure.");
+    }
+
+    /// <summary>Commits a job cancellation on a side connection just before the renewal's lease UPDATE executes.</summary>
+    private sealed class CancelBeforeLeaseUpdateInterceptor(string connectionString, Guid jobId) : DbCommandInterceptor
+    {
+        public bool Triggered { get; private set; }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (!Triggered && command.CommandText.Contains("UPDATE [c]", StringComparison.Ordinal) &&
+                command.CommandText.Contains("[LeaseExpiresAtUtc] =", StringComparison.Ordinal) &&
+                command.CommandText.Contains("[CentralDerivativeJobs]", StringComparison.Ordinal))
+            {
+                Triggered = true;
+                await using var connection = new SqlConnection(connectionString);
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await using var cancel = connection.CreateCommand();
+                cancel.CommandText = """
+                    UPDATE [CentralDerivativeJobs]
+                    SET [CancellationRequestedAtUtc] = SYSDATETIMEOFFSET(), [UpdatedAtUtc] = SYSDATETIMEOFFSET()
+                    WHERE [Id] = @id;
+                    """;
+                cancel.Parameters.AddWithValue("@id", jobId);
+                (await cancel.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false)).Should().Be(1);
+            }
+            return result;
+        }
     }
 
     private sealed class ThrowOnCommitInterceptor(int commitNumber) : DbTransactionInterceptor

@@ -878,9 +878,10 @@ internal sealed partial class CentralDerivativeOutputWriter(
         // and actual recipe identities, operation kind, product kind, schema, media type, role, variant, sources and
         // checksum (all verified below). Evidence that was graph-tagged must name this exact contract.
         var contractMismatch = graphContractIdentity is not null &&
-            evidence.GraphProductContractIdentitySha256 is not null &&
-            !string.Equals(evidence.GraphProductContractIdentitySha256, graphContractIdentity,
-                StringComparison.OrdinalIgnoreCase);
+            (evidence.GraphProductContractIdentitySha256 is not null
+                ? !string.Equals(evidence.GraphProductContractIdentitySha256, graphContractIdentity,
+                    StringComparison.OrdinalIgnoreCase)
+                : !IsLegacyEvidence(evidence));
         if ((graphContractIdentity is null
                 ? evidence.CentralDerivativeJobId != lease.JobId
                 : contractMismatch || !HasExpectedFrozenInputSet(evidence, lease))
@@ -926,6 +927,14 @@ internal sealed partial class CentralDerivativeOutputWriter(
             .SequenceEqual(expected);
     }
 
+    /// <summary>
+    /// Evidence a legacy (non-graph) job produced without a graph contract identity. Graph-owned jobs always tag
+    /// their evidence, so untagged evidence of a graph job is inconsistent rather than adoptable; this mirrors the
+    /// <c>TR_CentralDerivativeJobOutputs_BindOnce</c> adoption predicate.
+    /// </summary>
+    internal static bool IsLegacyEvidence(CentralArtifactProcessingEvidence evidence)
+        => evidence.GraphProductContractIdentitySha256 is null && evidence.Job is { GraphExecutionId: null };
+
     private static bool HasExpectedFrozenInputSet(
         CentralArtifactProcessingEvidence evidence,
         CentralDerivativeJobLease lease)
@@ -955,7 +964,6 @@ internal sealed partial class CentralDerivativeOutputWriter(
 internal static class CentralProcessingGraphOutputBinding
 {
     private static readonly JsonSerializerOptions ContractSerializerOptions = CreateContractSerializerOptions();
-    private static readonly JsonSerializerOptions SelectorSerializerOptions = CreateSelectorSerializerOptions();
 
     internal static async Task BindAsync(
         ApplicationDbContext dbContext,
@@ -974,9 +982,6 @@ internal static class CentralProcessingGraphOutputBinding
                 item.TargetRole,
                 item.TargetRecipeVersion,
                 item.TargetVariant,
-                item.RecipeName,
-                item.RecipeOptionsJson,
-                item.InputSelectorJson,
                 item.RequestedRecipeIdentitySha256,
                 item.ExpectedRecipeIdentitySha256,
                 item.InputSetIdentitySha256,
@@ -1009,18 +1014,6 @@ internal static class CentralProcessingGraphOutputBinding
             .Include(item => item.Job)
             .SingleOrDefaultAsync(item => item.CentralArtifactId == centralArtifactId, cancellationToken)
             .ConfigureAwait(false);
-        var expectedRecipeIdentity = ResolveExpectedRecipeIdentity(
-            job.RecipeName,
-            job.RecipeOptionsJson,
-            job.InputSelectorJson,
-            job.RequestedRecipeIdentitySha256,
-            job.ExpectedRecipeIdentitySha256,
-            RequiresSceneProvenance(job.RecipeName, job.RequestedRecipeIdentitySha256, job.ExpectedRecipeIdentitySha256)
-                ? await dbContext.CentralFrames.AsNoTracking()
-                    .Where(frame => frame.Id == execution.AnchorFrameId)
-                    .Select(frame => frame.SceneProvenanceJson)
-                    .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
-                : null);
         if (evidence is null || artifact.CentralFrameId != execution.AnchorFrameId ||
             job.SourceFrameId != execution.AnchorFrameId || artifact.DevicePublicId != execution.AnchorDevicePublicId ||
             artifact.RecipeVersion != job.TargetRecipeVersion ||
@@ -1029,9 +1022,11 @@ internal static class CentralProcessingGraphOutputBinding
                 StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(evidence.RequestedRecipeIdentitySha256, job.RequestedRecipeIdentitySha256,
                 StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(evidence.RecipeIdentitySha256, expectedRecipeIdentity,
+            !string.Equals(evidence.RecipeIdentitySha256, job.ExpectedRecipeIdentitySha256,
                 StringComparison.OrdinalIgnoreCase))
         {
+            // The frozen expected identity is authoritative (mirrors TR_CentralDerivativeJobOutputs_BindOnce); an
+            // annotation node whose execution froze "no annotation" never binds annotated evidence.
             throw new CentralDerivativeJobStateException(
                 "The derivative graph output does not match its execution and processing evidence.");
         }
@@ -1057,47 +1052,6 @@ internal static class CentralProcessingGraphOutputBinding
         matching[0].ResultCentralArtifactId = artifact.Id;
         matching[0].ResultOutputIdentitySha256 = evidence.OutputIdentitySha256;
         matching[0].BoundAtUtc = boundAtUtc;
-    }
-
-    /// <summary>
-    /// The recipe identity a graph node's evidence must carry. Nodes whose expected identity was bound at expansion
-    /// (auxiliary inputs, or an annotation-bearing node whose anchor frame carried scene provenance when
-    /// <see cref="CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity"/> froze it) keep that frozen
-    /// identity. An annotation-bearing node expanded without scene provenance still executes with whatever provenance
-    /// the anchor frame carries at lease time as a runtime <see cref="ProcessingAnnotationInput"/>, which is part of
-    /// the actual recipe identity; recompute it from the same durable provenance so the frozen expectation accounts
-    /// for the annotation instead of rejecting valid evidence.
-    /// </summary>
-    internal static bool RequiresSceneProvenance(
-        string recipeName,
-        string requestedRecipeIdentitySha256,
-        string? expectedRecipeIdentitySha256)
-        => string.Equals(recipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal) &&
-            !CentralDerivativeJobExecutor.RequiresBoundExpectedIdentity(
-                requestedRecipeIdentitySha256, expectedRecipeIdentitySha256);
-
-    internal static string? ResolveExpectedRecipeIdentity(
-        string recipeName,
-        string recipeOptionsJson,
-        string inputSelectorJson,
-        string requestedRecipeIdentitySha256,
-        string? expectedRecipeIdentitySha256,
-        string? sceneProvenanceJson)
-    {
-        if (!RequiresSceneProvenance(recipeName, requestedRecipeIdentitySha256, expectedRecipeIdentitySha256))
-        {
-            return expectedRecipeIdentitySha256;
-        }
-        var annotation = CentralDerivativeJobExecutor.CreateAnnotation(sceneProvenanceJson);
-        if (annotation is null)
-        {
-            return expectedRecipeIdentitySha256;
-        }
-        using var options = JsonDocument.Parse(recipeOptionsJson);
-        var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(inputSelectorJson, SelectorSerializerOptions)
-            ?? throw new CentralDerivativeJobStateException("The derivative input selector is invalid.");
-        return BuiltInProcessingRecipes.CreateExecutionIdentity(
-            recipeName, options.RootElement, selector, annotation).IdentitySha256;
     }
 
     internal static string? ResolveContractIdentity(CentralDerivativeJob job, ProcessingProduct product)
@@ -1136,9 +1090,10 @@ internal static class CentralProcessingGraphOutputBinding
         // validation below (or the live product when one is present). Graph-tagged evidence must name this slot.
         if (contract is null || contract.Role != slot.Role || contract.Variant != slot.Variant ||
             contract.ProductKind != slot.ProductKind ||
-            evidence.GraphProductContractIdentitySha256 is not null &&
-            !string.Equals(evidence.GraphProductContractIdentitySha256, slot.ContractIdentitySha256,
-                StringComparison.OrdinalIgnoreCase) ||
+            (evidence.GraphProductContractIdentitySha256 is not null
+                ? !string.Equals(evidence.GraphProductContractIdentitySha256, slot.ContractIdentitySha256,
+                    StringComparison.OrdinalIgnoreCase)
+                : !CentralDerivativeOutputWriter.IsLegacyEvidence(evidence)) ||
             contract.MediaType is not null && !string.Equals(
                 contract.MediaType, artifact.MediaType, StringComparison.OrdinalIgnoreCase))
         {
@@ -1235,13 +1190,6 @@ internal static class CentralProcessingGraphOutputBinding
         System.Collections.Immutable.ImmutableArray<ProcessingAlgorithmIdentity> expected,
         IReadOnlyList<ProcessingAlgorithmIdentity> actual)
         => (expected.IsDefault ? [] : expected).SequenceEqual(actual);
-
-    private static JsonSerializerOptions CreateSelectorSerializerOptions()
-    {
-        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-        options.Converters.Add(new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false));
-        return options;
-    }
 
     private static JsonSerializerOptions CreateContractSerializerOptions()
     {

@@ -656,15 +656,23 @@ internal sealed partial class CentralDerivativeWindowResolver(
     }
 
     /// <summary>
-    /// Resolved artifact positions versus the frozen minimum. <c>Run</c> only exempts positions that are not
+    /// Resolved temporal positions versus the frozen minimum. <c>Run</c> only exempts positions that are not
     /// required; it never lowers the cardinality the graph contract published, so the minimum applies to every
-    /// missing-input policy identically.
+    /// missing-input policy identically. A window node with several artifact bindings expands one requirement per
+    /// binding at every sequence offset; a position counts once, and only when every artifact binding at that offset
+    /// resolved, so bindings never inflate the count toward <c>MaximumInputCount</c> positions. Artifact requirements
+    /// without a sequence offset are not temporal positions and never count.
     /// </summary>
     internal static bool IsBelowMinimumInputCount(CentralDerivativeJob job)
-        => job.MinimumInputCount is { } minimum &&
-            job.InputRequirements.Count(requirement =>
-                requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact &&
-                requirement.ResolutionState == CentralDerivativeInputResolutionState.Resolved) < minimum;
+        => job.MinimumInputCount is { } minimum && CountResolvedPositions(job) < minimum;
+
+    internal static int CountResolvedPositions(CentralDerivativeJob job)
+        => job.InputRequirements
+            .Where(static requirement => requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact &&
+                requirement.SequenceOffset is not null)
+            .GroupBy(static requirement => requirement.SequenceOffset)
+            .Count(static position => position.All(static requirement =>
+                requirement.ResolutionState == CentralDerivativeInputResolutionState.Resolved));
 
     private static void CompleteWithoutExecution(CentralDerivativeJob job, DateTimeOffset now, string reasonCode)
     {
