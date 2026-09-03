@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);COMBINED_INTEGRATION_TESTS</DefineConstants>
+    <NoWarn>$(NoWarn);CA1515;CA1707;CA2000;CA2007;CA1812;CA2025</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="MSTest" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <Using Include="HVO.SkyMonitor.LogicHost.TestInfrastructure" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent\HVO.SkyMonitor.CameraAgent.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.LogicHost\HVO.SkyMonitor.LogicHost.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.LogicHost.TestInfrastructure\HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.IntegrationTests\VirtualSkyPipelineTests.cs" Link="VirtualSkyPipelineTests.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.IntegrationTests\Infrastructure\IntegrationUserAuthenticationHandler.cs" Link="Infrastructure\IntegrationUserAuthenticationHandler.cs" />
+    <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\Issue170AllocationSampler.cs" Link="Infrastructure\Issue170AllocationSampler.cs" />
+    <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\Issue170PerformanceEvidence.cs" Link="Infrastructure\Issue170PerformanceEvidence.cs" />
+    <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\Infrastructure\Issue246RetentionEvidenceCollector.cs" Link="Infrastructure\Issue246RetentionEvidenceCollector.cs" />
+    <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\ObjectStoreTestClient.cs" Link="Infrastructure\ObjectStoreTestClient.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\fixtures\catalog\hyg-v42-bright-stars.sqlite" Link="Fixtures\hyg-v42-bright-stars.sqlite">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\fixtures\cameraagent.integration.json" Link="Fixtures\cameraagent.integration.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+</Project>

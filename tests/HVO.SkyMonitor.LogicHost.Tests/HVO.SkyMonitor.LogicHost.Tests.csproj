@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="bunit" />
+    <PackageReference Include="coverlet.collector">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+    <PackageReference Include="MSTest" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.LogicHost\HVO.SkyMonitor.LogicHost.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
+    <Compile Include="..\TestSettings\MSTestSettings.cs" Link="MSTestSettings.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\LogicHostProcessingConformanceTests.cs" Link="Services\LogicHostProcessingConformanceTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\docs\validation\central-transient-fault-matrix.json" Link="Validation\central-transient-fault-matrix.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\validation\central-transient-runtime-signals.json" Link="Validation\central-transient-runtime-signals.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\validation\transient-review-runtime-signals.json" Link="Validation\transient-review-runtime-signals.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\validation\logichost-ui-runtime-signals.json" Link="Validation\logichost-ui-runtime-signals.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);CA1515;CA1707;CA2007;CA1861;CA1307;CA1859</NoWarn>
+  </PropertyGroup>
+</Project>

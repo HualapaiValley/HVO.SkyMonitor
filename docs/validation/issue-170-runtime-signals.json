@@ -56,8 +56,8 @@
     "boundedValues": ["operation", "outcome", "reason code", "source kind", "status", "version relation", "entity kind"]
   },
   "validation": {
-    "unit": "dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj --filter FullyQualifiedName~DeploymentLocationTelemetryTests",
+    "unit": "dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --filter FullyQualifiedName~DeploymentLocationTelemetryTests",
     "edge": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --filter FullyQualifiedName~DeploymentLocationReconciliationWorkerTests",
-    "integration": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --filter FullyQualifiedName~ArtifactIngestTests.ObservatoryChange_PreservesHistoricalCaptureAndCompletedAnnotation"
+    "integration": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --filter FullyQualifiedName~ArtifactIngestTests.ObservatoryChange_PreservesHistoricalCaptureAndCompletedAnnotation"
   }
 }

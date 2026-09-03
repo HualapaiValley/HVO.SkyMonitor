@@ -3,6 +3,7 @@ using HVO.SkyMonitor.Astronomy;
 namespace HVO.SkyMonitor.Astronomy.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class InMemoryCelestialCatalogTests
 {
     private static readonly string[] ExpectedBrightestIds = ["alpha", "beta", "zeta"];

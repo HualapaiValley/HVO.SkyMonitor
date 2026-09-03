@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);COMBINED_TESTS</DefineConstants>
+    <NoWarn>$(NoWarn);CA1515;CA1707;CA2007;CA1861;CA1307;CA1859</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="MSTest" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.LogicHost\HVO.SkyMonitor.LogicHost.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
+    <Compile Include="..\TestSettings\MSTestSettings.cs" Link="MSTestSettings.cs" />
+  </ItemGroup>
+</Project>

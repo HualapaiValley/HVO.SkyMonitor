@@ -133,7 +133,8 @@ defines independent `environmental-acquisition` health and privacy fields.
 dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "FullyQualifiedName~Environmental"
 dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~EnvironmentalHistoryAndOwnerSurfaceRecoverWithoutAnyCentralServiceAsync"
 dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~OwnerAuthorizationTests"
-dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~DeviceEnvironmentalObservationApiTests"
+dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~DeviceEnvironmentalObservationApiTests"
+dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~DeviceEnvironmentalObservationApiTests"
 dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "FullyQualifiedName=HVO.SkyMonitor.CameraAgent.Tests.Environmental.EnvironmentalAcquisitionPerformanceTests.Issue209_A1ToA6_RecordsReproducibleEvidence"
 ```
 

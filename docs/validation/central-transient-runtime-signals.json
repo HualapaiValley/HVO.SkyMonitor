@@ -69,11 +69,11 @@
     "identifiers": "JobId and attempt are operational opaque identifiers; candidate/event identifiers are retained only in durable SQL evidence, not metric labels."
   },
   "collection": {
-    "testCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralDerivativeWindowIntegrationTests",
+    "testCommand": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~CentralDerivativeWindowIntegrationTests",
     "cameraAgentIsolationCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~VirtualSkyPipelineTests.CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance",
-    "hybridSubmissionCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~HybridTransientSubmissionIntegrationTests",
-    "cameraAgentHybridCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~HybridTransientSubmissionTests",
-    "performanceCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~CentralDerivativeWindowPerformanceTests.Issue116CentralTransientW2W3MW4_RecordsAcceptanceEvidence",
+    "hybridSubmissionCommand": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~HybridTransientSubmissionIntegrationTests",
+    "cameraAgentHybridCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~HybridTransientSubmissionTests",
+    "performanceCommand": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~CentralDerivativeWindowPerformanceTests.Issue116CentralTransientW2W3MW4_RecordsAcceptanceEvidence",
     "detectorPerformanceCommand": "dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~TransientCandidateExtractionPerformanceTests.Issue116W2CandidateExtractionRecordsAcceptanceEvidence",
     "retainedArtifactPath": "TestResults/issue-116/<revision>/",
     "uiBoundary": "N/A: issue 116 does not add a UI boundary."

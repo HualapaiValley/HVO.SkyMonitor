@@ -53,7 +53,8 @@
   "collection": {
     "focusedCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter FullyQualifiedName~Environmental",
     "ownerCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~OwnerAuthorizationTests",
-    "centralCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeviceEnvironmentalObservationApiTests",
+    "centralCommand": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeviceEnvironmentalObservationApiTests",
+    "combinedCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~DeviceEnvironmentalObservationApiTests",
     "performanceCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter FullyQualifiedName=HVO.SkyMonitor.CameraAgent.Tests.Environmental.EnvironmentalAcquisitionPerformanceTests.Issue209_A1ToA6_RecordsReproducibleEvidence",
     "retainedArtifactPath": "TestResults/issue-209/<revision>/environmental-acquisition-performance.json",
     "uiBoundary": "Owner-authenticated /environmental page and /api/v1/operations/environmental routes."

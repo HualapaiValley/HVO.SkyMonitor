@@ -6,9 +6,11 @@
     "dependencyType": "Transitive",
     "projects": [
       "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
-      "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj",
-      "tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj",
-      "tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj"
+      "tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj",
+      "tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj",
+      "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj",
+      "tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj",
+      "tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj"
     ],
     "deprecationReasons": ["Legacy"],
     "alternativePackage": "Microsoft.Extensions.Http.Resilience|>= 0.0.0",

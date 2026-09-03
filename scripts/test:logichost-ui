@@ -7,10 +7,10 @@ umask 077
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"
+readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"
 readonly PROCESSING_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
 readonly CONFIGURATION="Release"
-readonly OUTPUT="$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/$CONFIGURATION/net10.0"
+readonly OUTPUT="$REPO_ROOT/tests/HVO.SkyMonitor.LogicHost.IntegrationTests/bin/$CONFIGURATION/net10.0"
 readonly MANIFEST="$REPO_ROOT/docs/validation/logichost-ui-runtime-signals.json"
 readonly baseline_root="${HVO_LOGICHOST_UI_BASELINE_ROOT:-$REPO_ROOT/TestResults/issue-107/baseline-ed7f975}"
 install_browser=false
@@ -40,8 +40,8 @@ dotnet build "$PROCESSING_PROJECT" --configuration "$CONFIGURATION" -warnaserror
 
 if [[ "$install_browser" == true ]]; then
     PLAYWRIGHT_DRIVER_SEARCH_PATH="$OUTPUT" dotnet exec \
-        --runtimeconfig "$OUTPUT/HVO.SkyMonitor.IntegrationTests.runtimeconfig.json" \
-        --depsfile "$OUTPUT/HVO.SkyMonitor.IntegrationTests.deps.json" \
+        --runtimeconfig "$OUTPUT/HVO.SkyMonitor.LogicHost.IntegrationTests.runtimeconfig.json" \
+        --depsfile "$OUTPUT/HVO.SkyMonitor.LogicHost.IntegrationTests.deps.json" \
         "$OUTPUT/Microsoft.Playwright.dll" install chromium
 fi
 

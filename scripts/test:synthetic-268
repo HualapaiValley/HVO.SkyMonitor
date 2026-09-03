@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
-readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"
+readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj"
 readonly FILTER='FullyQualifiedName~CentralTransientPayloadReleaseIssue250PerformanceTests'
 readonly AGGREGATOR="$REPO_ROOT/scripts/issue-268-synthetic-aggregate.jq"
 readonly BASELINE_SOURCE_REVISION='2d8c99f1c745386587482f82628672a304557d90'

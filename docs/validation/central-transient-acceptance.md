@@ -15,7 +15,7 @@ row remains present and executable evidence is named:
 
 ```bash
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
-dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj \
+dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj \
   --no-build --configuration Release \
   --filter "FullyQualifiedName~CentralTransientAcceptanceManifestTests"
 ```
@@ -34,13 +34,17 @@ version/starvation behavior.
 Run the Docker-backed implementation rows with:
 
 ```bash
-dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj \
+dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj \
   --no-build --configuration Release \
   --filter "FullyQualifiedName~CentralDerivativeWindowIntegrationTests|FullyQualifiedName~CentralTransientEventPersistenceIntegrationTests|FullyQualifiedName~DerivativeJobIntegrationTests|FullyQualifiedName~ArtifactRetrievalTests"
 
 dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj \
   --no-build --configuration Release \
-  --filter "FullyQualifiedName~VirtualSkyPipelineTests.CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance|FullyQualifiedName~HybridTransientSubmissionTests"
+  --filter "FullyQualifiedName~VirtualSkyPipelineTests.CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance"
+
+dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj \
+  --no-build --configuration Release \
+  --filter "FullyQualifiedName~HybridTransientSubmissionTests"
 ```
 
 ## Hybrid Boundary
@@ -106,7 +110,7 @@ boundary. It does not infer or backfill the attempt counter.
 Run the Central component only when this worktree has exclusive Docker capacity:
 
 ```bash
-dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj \
+dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj \
   --configuration Release --arch x64 \
   --filter "FullyQualifiedName~CentralDerivativeWindowPerformanceTests.Issue116CentralTransientW2W3MW4_RecordsAcceptanceEvidence"
 ```

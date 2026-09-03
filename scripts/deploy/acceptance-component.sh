@@ -41,7 +41,7 @@ deploy_acceptance_component_validate_source() {
         .Claimability == "clean-source-attributed-review-required" and
         (.Branch | type == "string" and length <= 255 and (test("[[:cntrl:]]") | not)) and
         (.RunId | type == "string" and test("^run-[0-9]{8}T[0-9]{9}-[0-9]+-[0-9a-f]{32}$")) and
-        ([.Assemblies[].Name] == ["HVO.SkyMonitor.IntegrationTests","HVO.SkyMonitor.LogicHost","HVO.SkyMonitor.TestSupport"]) and
+        ([.Assemblies[].Name] == ["HVO.SkyMonitor.LogicHost.IntegrationTests","HVO.SkyMonitor.LogicHost","HVO.SkyMonitor.TestSupport"]) and
         all(.Assemblies[];
           (keys | sort) == (["Name","Sha256","ModuleVersionId","Configuration","InformationalVersion","SourceSha256",
             "AssemblyWrittenUtc","LatestSourceWriteUtc"] | sort) and
@@ -97,7 +97,7 @@ deploy_acceptance_component_execute_test() {
     local evidence_dir="$1" trx_dir="$2" revision="$3"
     (exec 201>&-; env -u HVO_ISSUE_107_DEPENDENCY -u HVO_EVIDENCE_TRIAL HVO_EVIDENCE_REVISION="$revision" HVO_EVIDENCE_REPOSITORY_ROOT="$REPO_ROOT" \
       HVO_ISSUE_107_EVIDENCE_ROOT="$evidence_dir" \
-      timeout --signal=TERM --kill-after=30s 600s dotnet test "$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj" \
+      timeout --signal=TERM --kill-after=30s 600s dotnet test "$REPO_ROOT/tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj" \
         --configuration Release --artifacts-path "$evidence_dir/../build" \
         --filter "TestCategory=Manual&FullyQualifiedName=$ACCEPTANCE_COMPONENT_TEST" \
         --results-directory "$trx_dir" --logger 'trx;LogFileName=component.trx')

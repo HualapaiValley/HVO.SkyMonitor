@@ -104,7 +104,7 @@ dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Test
   --configuration Release \
   --filter "FullyQualifiedName~TransientTemporalBackgroundTests.OffDoesNotConstructTemporalWindow"
 
-dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj \
+dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj \
   --configuration Release \
   --filter "FullyQualifiedName~LogicHostProcessingConformanceTests.EdgeAndCentralAdaptersProduceEquivalentCenteredTransientBackground"
 
