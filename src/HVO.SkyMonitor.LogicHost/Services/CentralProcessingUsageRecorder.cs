@@ -72,19 +72,21 @@ internal static class CentralProcessingUsageRecorder
             .ConfigureAwait(false);
     }
 
-    /// <summary>Runs the record batch on the caller's connection and transaction and returns the number of usage rows written.</summary>
+    /// <summary>
+    /// Runs the record batch (ledger insert plus rollup merge) on the caller's connection and transaction and returns
+    /// the number of usage rows written. Without a caller transaction (the SaveChanges interceptor after its own
+    /// save, the periodic sweep) it opens one of its own, so the ledger row and its rollup delta are always committed
+    /// or rolled back together; a ledger row without its delta would otherwise be skipped by every later retry.
+    /// </summary>
     private static async Task<int> ExecuteRecordAsync(
         ApplicationDbContext dbContext, string sql, SqlParameter[] parameters, CancellationToken cancellationToken)
     {
-        var connection = dbContext.Database.GetDbConnection();
-        var opened = false;
-        if (connection.State != System.Data.ConnectionState.Open)
+        var ownTransaction = dbContext.Database.CurrentTransaction is null
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        await using (ownTransaction)
         {
-            await dbContext.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-            opened = true;
-        }
-        try
-        {
+            var connection = dbContext.Database.GetDbConnection();
             await using var command = connection.CreateCommand();
 #pragma warning disable CA2100 // The text is a constant template; every runtime value is a SqlParameter.
             command.CommandText = sql;
@@ -96,14 +98,12 @@ internal static class CentralProcessingUsageRecorder
                 command.Parameters.Add(parameter);
             }
             var result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            return result is int count ? count : 0;
-        }
-        finally
-        {
-            if (opened)
+            var recorded = result is int count ? count : 0;
+            if (ownTransaction is not null)
             {
-                await dbContext.Database.CloseConnectionAsync().ConfigureAwait(false);
+                await ownTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
+            return recorded;
         }
     }
 
