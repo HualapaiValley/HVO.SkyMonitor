@@ -492,9 +492,11 @@ internal sealed partial class CentralDerivativeWorker(
     }
 
     /// <summary>
-    /// Feeds the completion and byte counters from committed usage rows exactly once: rows are taken by marking them
-    /// signaled in the same statement, so replicas never replay each other's rows. The safety-net sweep first records
-    /// any terminal attempt of the last <see cref="UsageSweepWindow"/> that still lacks a usage row.
+    /// Feeds the completion and byte counters from committed usage rows: rows are taken by marking them signaled in
+    /// the same statement (so replicas never replay each other's rows) inside a transaction that commits only after
+    /// the counters were emitted, so a process that stops in between leaves the rows unsignaled for the next pass
+    /// (at-least-once emission; the usage table stays the durable source of truth). The safety-net sweep first
+    /// records any terminal attempt of the last <see cref="UsageSweepWindow"/> that still lacks a usage row.
     /// </summary>
     private async Task SampleCommittedUsageAsync(
         ApplicationDbContext dbContext,
@@ -507,6 +509,7 @@ internal sealed partial class CentralDerivativeWorker(
         }
         await CentralProcessingUsageRecorder.RecordMissingAsync(dbContext, entitlements, UsageSweepLimit, UsageSweepWindow, cancellationToken)
             .ConfigureAwait(false);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var signals = await CentralProcessingUsageRecorder.TakeUnsignaledAsync(dbContext, UsageSignalLimit, cancellationToken)
             .ConfigureAwait(false);
         foreach (var usage in signals.GroupBy(signal => (signal.ObservatoryId, signal.ResourceClass, signal.Outcome)))
@@ -515,6 +518,7 @@ internal sealed partial class CentralDerivativeWorker(
                 usage.Key.ObservatoryId, usage.Key.ResourceClass, usage.Key.Outcome.ToLowerInvariant(),
                 usage.Count(), usage.Sum(signal => signal.InputBytes), usage.Sum(signal => signal.OutputBytes));
         }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     internal const int UsageSweepLimit = 500;

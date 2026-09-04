@@ -54,6 +54,20 @@ internal sealed class CentralProcessingEntitlementHealthCheck(
             .GroupBy(pair => settings.ResolveResourceClass(pair.Key))
             .ToDictionary(group => group.Key, group => group.Sum(pair => pair.Value));
         var threshold = settings.BacklogDegradedAfter;
+        // Byte budgets throttle a pending job whenever it does not fit the remaining capacity (the claim rejects
+        // `active + candidate > budget`), so byte saturation is judged per old pending job, not only at a full budget.
+        var oldPendingBefore = now - threshold;
+        var oldPendingByObservatoryClass = (await dbContext.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => pendingStatuses.Contains(job.Status) && job.AvailableAtUtc != null && job.AvailableAtUtc < oldPendingBefore)
+                .Select(job => new
+                {
+                    job.SourceArtifact!.Frame!.ObservatoryId,
+                    job.RecipeName,
+                    Bytes = job.Inputs.Sum(input => input.ByteLength)
+                })
+                .ToListAsync(cancellationToken).ConfigureAwait(false))
+            .GroupBy(job => (job.ObservatoryId, Class: settings.ResolveResourceClass(job.RecipeName)))
+            .ToDictionary(group => group.Key, group => group.Min(job => job.Bytes));
         bool OldBacklog(DateTimeOffset? oldest) => oldest is { } value && now - value > threshold;
         var byObservatory = groups.GroupBy(item => item.ObservatoryId).ToList();
         var byClass = groups.GroupBy(item => settings.ResolveResourceClass(item.RecipeName))
@@ -98,7 +112,8 @@ internal sealed class CentralProcessingEntitlementHealthCheck(
                 dimensions.Add("class");
             }
             if (perClass.Any(item => settings.ResourceClasses.TryGetValue(item.Class, out var budget) && budget.ActiveInputBytes > 0
-                    && leasedBytesByClass.TryGetValue(item.Class, out var classBytes) && classBytes >= budget.ActiveInputBytes && item.OldBacklog))
+                    && oldPendingByObservatoryClass.TryGetValue((id, item.Class), out var smallestOldPendingBytes)
+                    && (leasedBytesByClass.TryGetValue(item.Class, out var classBytes) ? classBytes : 0) + smallestOldPendingBytes > budget.ActiveInputBytes))
             {
                 dimensions.Add("class-bytes");
             }

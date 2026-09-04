@@ -221,9 +221,11 @@ public sealed class ProcessingEntitlementIntegrationTests
                 .Select(artifact => artifact.ByteLength)
                 .FirstAsync().ConfigureAwait(false);
         }
-        // Every class budget equals one single-input job, so the first lease of any class fills that class's budget.
+        // Every class budget is one and a half single-input jobs: the first lease of any class leaves capacity below
+        // the budget, yet the next old pending job of that class no longer fits (the claim rejects active + candidate
+        // > budget), which is what the health check must report.
         using var factory = CreateFactory(CentralProcessingEntitlementOptions.KnownClasses
-            .Select(cls => ($"ProcessingEntitlements:ResourceClasses:{cls}:ActiveInputBytes", singleInputBytes.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            .Select(cls => ($"ProcessingEntitlements:ResourceClasses:{cls}:ActiveInputBytes", (singleInputBytes * 3 / 2).ToString(System.Globalization.CultureInfo.InvariantCulture)))
             .Append(("ProcessingEntitlements:BacklogDegradedAfter", "00:01:00"))
             .ToArray());
         var lease = await ClaimAsync(factory, "class-bytes-health").ConfigureAwait(false);
@@ -236,7 +238,7 @@ public sealed class ProcessingEntitlementIntegrationTests
 
         var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None).ConfigureAwait(false);
 
-        result.Status.Should().Be(HealthStatus.Degraded, "the image class is at its byte budget with 20-minute-old backlog");
+        result.Status.Should().Be(HealthStatus.Degraded, "an old pending job no longer fits the remaining class byte budget");
         ((string)result.Data["saturatedDimensions"]).Should().Contain("class-bytes");
     }
 

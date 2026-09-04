@@ -76,8 +76,9 @@ internal static class CentralProcessingUsageRecorder
 
     /// <summary>
     /// Takes up to <paramref name="limit"/> usage rows that no replica has signaled yet, marking them signaled in the
-    /// same statement, so every committed usage row feeds the completion and byte metrics exactly once across any
-    /// number of LogicHost replicas (READPAST lets concurrent replicas take disjoint rows without blocking).
+    /// same statement, so committed usage rows feed the completion and byte metrics once across any number of
+    /// LogicHost replicas (READPAST lets concurrent replicas take disjoint rows without blocking). Callers run it in
+    /// a transaction they commit only after emitting the metrics, so an interrupted pass leaves the rows for the next.
     /// </summary>
     public static async Task<IReadOnlyList<CentralProcessingUsageSignal>> TakeUnsignaledAsync(
         ApplicationDbContext dbContext,

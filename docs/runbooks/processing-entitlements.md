@@ -101,8 +101,10 @@ quarantine), and the worker's queue sampling sweeps any terminal attempt of
 the last hour that still lacks a row (an `EndedAtUtc` index bounds the
 sweep). The completion and byte metrics are derived from committed rows:
 each sampling pass marks rows `SignaledAtUtc` in the same statement that
-reads them, so every row is counted exactly once across any number of
-LogicHost replicas. Aggregate by
+reads them, inside a transaction committed only after the counters are
+emitted, so rows are counted once across any number of LogicHost replicas
+and a pass interrupted before commit leaves them for the next pass (the
+table, not the counters, is the durable record). Aggregate by
 observatory or camera for billing-ready reporting; no payment provider is
 involved.
 
@@ -115,9 +117,10 @@ saturation, throttled claims, completions, and usage bytes
 refused and derivative scheduling continues under overload; the
 `processing-entitlements` health check degrades when an observatory's pending
 work exceeds `AdmissionPendingLimit` or when an observatory saturated on any
-enforced dimension (observatory, camera, class jobs, class bytes,
-observatory-class; reported as `saturatedDimensions`) carries backlog older
-than `BacklogDegradedAfter`. That is the admission behavior:
+enforced dimension (observatory, camera, class jobs, class bytes when an
+old pending job no longer fits the remaining budget, observatory-class;
+reported as `saturatedDimensions`) carries backlog older than
+`BacklogDegradedAfter`. That is the admission behavior:
 bounded by entitlements, visible, never lossy.
 
 ## Capacity guidance
