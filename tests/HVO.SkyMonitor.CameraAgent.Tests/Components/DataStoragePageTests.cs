@@ -31,6 +31,9 @@ public sealed class DataStoragePageTests
         Assert.IsNotNull(cut.Find(".lane--critical"));
         Assert.IsNotNull(cut.Find(".storage-item--pressure"));
         Assert.IsFalse(cut.Markup.Contains("/var/", StringComparison.Ordinal));
+        // Freshness badges carry the durable freshness value, not the binding expression.
+        Assert.IsFalse(cut.Markup.Contains("_view.Summary", StringComparison.Ordinal));
+        Assert.IsTrue(cut.FindAll(".freshness").Count >= 6);
         Assert.IsNotNull(cut.Find("a[href='/operations/quarantine']"));
     }
 

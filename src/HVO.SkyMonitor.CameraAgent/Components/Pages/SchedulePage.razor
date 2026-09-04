@@ -105,7 +105,7 @@
 
         <section class="editor-layout">
             <article class="schedule-card editor-card" aria-labelledby="schedule-editor-heading">
-                <header><div><p class="eyebrow">Validated profile editor</p><h2 id="schedule-editor-heading">Schedule draft</h2></div><span>Basis revision @(_state.PendingRevision ?? _state.ActiveRevision).RevisionNumber</span></header>
+                <header><div><p class="eyebrow">Validated profile editor</p><h2 id="schedule-editor-heading">Schedule draft</h2></div><span>Basis revision @((_state.PendingRevision ?? _state.ActiveRevision).RevisionNumber)</span></header>
                 @if (_model is not null)
                 {
                     <p class="editor-note">Typed fields rewrite only what they show. @_model.ProcessingStepCount processing step@(_model.ProcessingStepCount == 1 ? "" : "s"), @_model.DateExceptionCount date exception@(_model.DateExceptionCount == 1 ? "" : "s"), module options, and every other field carry over from the basis revision unchanged.</p>
@@ -113,7 +113,7 @@
                     <fieldset class="editor-group" disabled="@_busy">
                         <legend>Setpoint profiles</legend>
                         <div class="editor-table" role="table" aria-label="Setpoint profiles">
-                            <div class="editor-row editor-row--head" role="row"><span role="columnheader">Identifier</span><span role="columnheader">Exposure ms</span><span role="columnheader">Gain</span><span role="columnheader">Interval s</span><span role="columnheader">Cadence</span><span role="columnheader">Target FPS</span><span role="columnheader"><span class="visually-hidden">Actions</span></span></div>
+                            <div class="editor-row editor-row--head" role="row"><span role="columnheader">Identifier</span><span role="columnheader">Exposure ms</span><span role="columnheader">Gain</span><span role="columnheader">Interval s</span><span role="columnheader">Cadence</span><span role="columnheader">Target FPS</span><span role="columnheader" aria-label="Actions"></span></div>
                             @foreach (var row in _model.Setpoints)
                             {
                                 <div class="editor-row" role="row" @key="row">

@@ -146,12 +146,15 @@
         z-index: 1040;
         width: min(20rem, 85vw);
         overflow-y: auto;
+        visibility: hidden;
         transform: translateX(-105%);
-        transition: transform .2s ease;
+        transition: transform .2s ease, visibility 0s linear .2s;
     }
 
     .operations-sidebar--open {
+        visibility: visible;
         transform: translateX(0);
+        transition: transform .2s ease, visibility 0s;
     }
 
     .operations-sidebar__close {

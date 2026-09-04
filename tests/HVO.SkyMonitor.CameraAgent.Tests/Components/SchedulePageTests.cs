@@ -28,6 +28,7 @@ public sealed class SchedulePageTests
             Assert.IsTrue(cut.Markup.Contains("Capture schedule", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Revision 2", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Schedule draft", StringComparison.Ordinal));
+            Assert.IsTrue(cut.Markup.Contains("Basis revision 2<", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Advanced canonical JSON", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Setpoint profiles", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Weekly windows", StringComparison.Ordinal));

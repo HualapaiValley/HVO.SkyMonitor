@@ -49,7 +49,7 @@
 .editor-note { margin: .4rem 0 .8rem; color: #aeb9c8; font-size: .85rem; }
 .editor-group { margin: 0 0 1rem; padding: .75rem .9rem; border: 1px solid #354253; min-inline-size: 0; }
 .editor-group legend { float: none; width: auto; padding: 0 .4rem; color: #8fd4be; font: 700 .72rem/1.2 ui-monospace, monospace; letter-spacing: .14em; text-transform: uppercase; }
-.editor-table { display: grid; gap: .35rem; margin-bottom: .6rem; overflow-x: auto; }
+.editor-table { position: relative; display: grid; gap: .35rem; margin-bottom: .6rem; overflow-x: auto; }
 .editor-row { display: grid; grid-template-columns: 1.2fr 1fr .7fr .8fr 1.3fr .8fr auto; gap: .4rem; align-items: center; min-width: 46rem; }
 .editor-row--head span { color: #8fa0b3; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; }
 .editor-group .form-control, .editor-group .form-select { min-height: 40px; padding: .3rem .5rem; border-color: #415268; background: #091017; color: #dce6f2; font-size: .85rem; }
@@ -64,5 +64,4 @@
 .editor-advanced { margin-top: .4rem; border-top: 1px solid #354253; padding-top: .6rem; }
 .editor-advanced summary { cursor: pointer; color: #aeb9c8; }
 .editor-advanced textarea { min-height: 20rem; }
-.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (max-width: 900px) { .window-item__head, .boundary-grid, .blackout-list li { grid-template-columns: 1fr; } .boundary-fields { grid-template-columns: 1fr 1fr; } }

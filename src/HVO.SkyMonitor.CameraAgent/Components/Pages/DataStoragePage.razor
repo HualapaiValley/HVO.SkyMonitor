@@ -38,31 +38,31 @@
 
         <section class="data-grid" aria-label="Durable queue facts">
             <article class="data-card">
-                <header><div><p class="eyebrow">Durable boundary</p><h2>Raw ingress</h2></div><FreshnessBadge Value="_view.Summary.RawIngress.Freshness" /></header>
+                <header><div><p class="eyebrow">Durable boundary</p><h2>Raw ingress</h2></div><FreshnessBadge Value="@_view.Summary.RawIngress.Freshness" /></header>
                 <OperationsQueueFacts Queue="_view.Summary.RawIngress.Value" />
             </article>
             <article class="data-card">
-                <header><div><p class="eyebrow">Capture-derived work</p><h2>Processing</h2></div><FreshnessBadge Value="_view.Summary.CaptureProcessing.Freshness" /></header>
+                <header><div><p class="eyebrow">Capture-derived work</p><h2>Processing</h2></div><FreshnessBadge Value="@_view.Summary.CaptureProcessing.Freshness" /></header>
                 <OperationsQueueFacts Queue="_view.Summary.CaptureProcessing.Value" />
             </article>
             <article class="data-card">
-                <header><div><p class="eyebrow">Central delivery</p><h2>Artifact outbox</h2></div><FreshnessBadge Value="_view.Summary.ArtifactOutbox.Freshness" /></header>
+                <header><div><p class="eyebrow">Central delivery</p><h2>Artifact outbox</h2></div><FreshnessBadge Value="@_view.Summary.ArtifactOutbox.Freshness" /></header>
                 <OperationsQueueFacts Queue="_view.Summary.ArtifactOutbox.Value" />
             </article>
             <article class="data-card data-card--wide">
-                <header><div><p class="eyebrow">Per-lane durable backlog</p><h2>Capture lanes</h2></div><FreshnessBadge Value="_view.Summary.CaptureLanes.Freshness" /></header>
+                <header><div><p class="eyebrow">Per-lane durable backlog</p><h2>Capture lanes</h2></div><FreshnessBadge Value="@_view.Summary.CaptureLanes.Freshness" /></header>
                 <CaptureLaneFacts Lanes="_view.Summary.CaptureLanes.Value" />
             </article>
             <article class="data-card data-card--wide">
-                <header><div><p class="eyebrow">Container-visible filesystems</p><h2>Storage</h2></div><FreshnessBadge Value="_view.Summary.Storage.Freshness" /></header>
+                <header><div><p class="eyebrow">Container-visible filesystems</p><h2>Storage</h2></div><FreshnessBadge Value="@_view.Summary.Storage.Freshness" /></header>
                 <StorageFacts Storage="_view.Summary.Storage.Value" />
             </article>
             <article class="data-card">
-                <header><div><p class="eyebrow">LogicHost connectivity</p><h2>Heartbeat delivery</h2></div><FreshnessBadge Value="_view.Summary.Heartbeat.Freshness" /></header>
+                <header><div><p class="eyebrow">LogicHost connectivity</p><h2>Heartbeat delivery</h2></div><FreshnessBadge Value="@_view.Summary.Heartbeat.Freshness" /></header>
                 <dl class="fact-grid"><div><dt>Availability</dt><dd>@OperationsPage.SplitWords(_view.Summary.Heartbeat.Value.Availability)</dd></div><div><dt>Last acknowledged</dt><dd>@OperationsPage.FormatTime(_view.Summary.Heartbeat.Value.LastAcknowledgedUtc)</dd></div><div><dt>Pending</dt><dd>@_view.Summary.Heartbeat.Value.PendingCount</dd></div><div><dt>Blocked</dt><dd>@_view.Summary.Heartbeat.Value.BlockedCount</dd></div><div><dt>Retry</dt><dd>@_view.Summary.Heartbeat.Value.RetryCount</dd></div><div><dt>Quarantine</dt><dd>@_view.Summary.Heartbeat.Value.QuarantineCount</dd></div></dl>
             </article>
             <article class="data-card">
-                <header><div><p class="eyebrow">Observation delivery</p><h2>Environmental outbox</h2></div><FreshnessBadge Value="_view.Summary.EnvironmentalDelivery.Freshness" /></header>
+                <header><div><p class="eyebrow">Observation delivery</p><h2>Environmental outbox</h2></div><FreshnessBadge Value="@_view.Summary.EnvironmentalDelivery.Freshness" /></header>
                 <dl class="fact-grid"><div><dt>Availability</dt><dd>@OperationsPage.SplitWords(_view.Summary.EnvironmentalDelivery.Value.Availability)</dd></div><div><dt>Stored</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.StoredCount</dd></div><div><dt>Stored size</dt><dd>@OperationsPage.FormatBytes(_view.Summary.EnvironmentalDelivery.Value.StoredBytes)</dd></div><div><dt>Pending</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.PendingCount</dd></div><div><dt>Retry</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.RetryCount</dd></div><div><dt>Terminal</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.TerminalCount</dd></div></dl>
             </article>
             <article class="data-card">

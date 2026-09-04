@@ -1,6 +1,7 @@
 .pipeline-revision { padding: 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-card-bg); box-shadow: var(--hvo-panel-shadow); }
 .pipeline-revision > header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; }
 .pipeline-revision h2 { margin: 0; font-size: 1.1rem; }
+.pipeline-revision code { color: #e9c986; }
 .pipeline-revision header dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, max-content)); gap: .5rem 1.25rem; margin: 0; }
 .pipeline-revision dt { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
 .pipeline-revision dd { margin: .1rem 0 0; overflow-wrap: anywhere; }

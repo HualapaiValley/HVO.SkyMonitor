@@ -1537,15 +1537,14 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(image).ConfigureAwait(false);
         Assert.IsTrue(await image.EvaluateAsync<bool>(
             "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0").ConfigureAwait(false));
+        // The selector re-renders while the first captures settle, so assert the settled shape in one evaluation.
         await page.WaitForFunctionAsync(
             """
             () => document.querySelectorAll('.stage-selector button').length === 4 &&
-                document.querySelectorAll('.stage-selector button[aria-pressed=true]').length === 1
+                document.querySelectorAll('.stage-selector button[aria-pressed=true]').length === 1 &&
+                document.querySelectorAll('.stage-selector button:disabled').length > 0
             """)
             .ConfigureAwait(false);
-        Assert.AreEqual(4, await page.Locator(".stage-selector button").CountAsync().ConfigureAwait(false));
-        Assert.AreEqual(1, await page.Locator(".stage-selector button[aria-pressed='true']").CountAsync().ConfigureAwait(false));
-        Assert.IsGreaterThan(0, await page.Locator(".stage-selector button:disabled").CountAsync().ConfigureAwait(false));
         await VisibleAsync(page.GetByRole(AriaRole.Link, new() { Name = "Open capture details" })).ConfigureAwait(false);
 
         var trigger = page.Locator("#current-sky-view-large");
@@ -1735,9 +1734,22 @@ public sealed class CameraAgentBrowserAcceptanceTests
             {
                 await page.GotoAsync(route).ConfigureAwait(false);
                 await VisibleAsync(page.Locator("main#mainContent h1").First).ConfigureAwait(false);
-                Assert.IsTrue(await page.EvaluateAsync<bool>(
-                    "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1")
-                    .ConfigureAwait(false), $"Horizontal overflow at {viewport.Width}x{viewport.Height} on {route}.");
+                var overflowing = await page.EvaluateAsync<string>("""
+                    () => {
+                      const limit = document.documentElement.clientWidth + 1;
+                      if (document.documentElement.scrollWidth <= limit) { return ''; }
+                      return [...document.querySelectorAll('body *')]
+                        .filter(element => element.getBoundingClientRect().right > limit)
+                        .slice(0, 6)
+                        .map(element => {
+                          const describe = node => `${node.tagName.toLowerCase()}${node.id ? '#' + node.id : ''}${node.className && typeof node.className === 'string' && node.className.trim() ? '.' + node.className.trim().split(/\s+/).join('.') : ''}`;
+                          const parents = [element.parentElement, element.parentElement?.parentElement].filter(Boolean).map(describe).join(' < ');
+                          return `${describe(element)} "${(element.textContent || '').trim().slice(0, 40)}" in ${parents} right=${Math.round(element.getBoundingClientRect().right)}`;
+                        })
+                        .join(' | ') || `scrollWidth=${document.documentElement.scrollWidth}`;
+                    }
+                    """).ConfigureAwait(false);
+                Assert.AreEqual(string.Empty, overflowing, $"Horizontal overflow at {viewport.Width}x{viewport.Height} on {route}: {overflowing}");
                 await AssertPageStructureAsync(page, route)
                     .ConfigureAwait(false);
                 await AssertComputedContrastAsync(page, route, viewport).ConfigureAwait(false);
@@ -1751,6 +1763,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static async Task AssertOperationsWorkspaceAsync(IPage page)
     {
+        var originalViewport = page.ViewportSize;
         // Desktop: the grouped section sidebar is visible, marks the current section, and the drawer toggle is hidden.
         var sidebarNavigation = page.GetByRole(AriaRole.Navigation, new() { Name = "Operations navigation" });
         await VisibleAsync(sidebarNavigation).ConfigureAwait(false);
@@ -1761,21 +1774,23 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.IsFalse(await page.Locator("button.operations-nav-toggle").IsVisibleAsync().ConfigureAwait(false));
         foreach (var group in new[] { "Setup", "Capture", "Processing", "Data", "System" })
         {
-            await VisibleAsync(sidebarNavigation.GetByText(group, new() { Exact = true })).ConfigureAwait(false);
+            await VisibleAsync(sidebarNavigation.Locator($"#operations-group-{group}")).ConfigureAwait(false);
         }
 
         // Narrow: the sidebar collapses behind a toggle that opens the drawer, and Escape returns focus to the toggle.
         await page.SetViewportSizeAsync(390, 844).ConfigureAwait(false);
         var toggle = page.Locator("button.operations-nav-toggle");
         await VisibleAsync(toggle).ConfigureAwait(false);
-        Assert.IsFalse(await sidebarNavigation.IsVisibleAsync().ConfigureAwait(false));
+        await sidebarNavigation.WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
         await toggle.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(sidebarNavigation).ConfigureAwait(false);
         Assert.AreEqual("true", await toggle.GetAttributeAsync("aria-expanded").ConfigureAwait(false));
         await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
-        await page.WaitForFunctionAsync("() => document.activeElement?.classList.contains('operations-nav-toggle') === true").ConfigureAwait(false);
-        Assert.AreEqual("false", await toggle.GetAttributeAsync("aria-expanded").ConfigureAwait(false));
-        await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "() => document.querySelector('button.operations-nav-toggle')?.getAttribute('aria-expanded') === 'false' && document.activeElement?.classList.contains('operations-nav-toggle') === true")
+            .ConfigureAwait(false);
+        await sidebarNavigation.WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        await page.SetViewportSizeAsync(originalViewport?.Width ?? 1440, originalViewport?.Height ?? 900).ConfigureAwait(false);
     }
 
     private static async Task AssertCurrentSkyResponsiveAsync(IPage page, ViewportSize viewport)

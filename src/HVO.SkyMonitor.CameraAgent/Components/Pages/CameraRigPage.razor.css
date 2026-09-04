@@ -4,7 +4,7 @@
 .camera-revisions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }
 .camera-card { min-width: 0; padding: 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-card-bg); box-shadow: var(--hvo-panel-shadow); }
 .camera-card h2 { margin: .2rem 0 .4rem; font-size: 1.1rem; overflow-wrap: anywhere; }
-.camera-card code { color: var(--hvo-warning-fg); }
+.camera-card code { color: #e9c986; }
 .camera-card p { margin: .4rem 0 0; color: var(--hvo-muted-strong); font-size: .85rem; }
 .camera-card a { color: var(--hvo-info-fg); }
 .camera-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; margin: .6rem 0 0; }
