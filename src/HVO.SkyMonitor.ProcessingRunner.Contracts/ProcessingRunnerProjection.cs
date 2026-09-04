@@ -196,15 +196,9 @@ public static class ProcessingRunnerProjection
     {
         ArgumentNullException.ThrowIfNull(metadata);
         VerifyPayload(payload.Span, metadata.PayloadLength, metadata.PayloadSha256, $"product {metadata.OutputIdentitySha256}");
-        var derivedRecipe = ProcessingIdentity.CreateRecipeIdentity(metadata.Recipe.Descriptor);
-        if (!ProcessingRunnerProtocol.ChecksumEquals(derivedRecipe.IdentitySha256, metadata.Recipe.IdentitySha256))
-        {
-            throw new ProcessingRunnerProtocolException(
-                ProcessingRunnerReasonCodes.RecipeIdentityMismatch,
-                "The product recipe identity does not match its recipe descriptor.");
-        }
+        var recipe = DeriveRecipeIdentity(metadata.Recipe);
         var derivedOutput = ProcessingIdentity.CreateOutputIdentity(
-            metadata.Role, metadata.Variant, metadata.Recipe.IdentitySha256, metadata.SourceArtifactIds);
+            metadata.Role, metadata.Variant, recipe.IdentitySha256, metadata.SourceArtifactIds);
         if (!ProcessingRunnerProtocol.ChecksumEquals(derivedOutput, metadata.OutputIdentitySha256))
         {
             throw new ProcessingRunnerProtocolException(
@@ -219,7 +213,7 @@ public static class ProcessingRunnerProjection
             metadata.Layout,
             payload,
             metadata.ChecksumSha256,
-            metadata.Recipe,
+            recipe,
             metadata.Algorithms,
             metadata.SourceArtifactIds,
             metadata.TotalIntegration,
@@ -229,6 +223,35 @@ public static class ProcessingRunnerProjection
             SchemaVersion = metadata.SchemaVersion,
             ContentIdentitySha256 = metadata.ContentIdentitySha256
         };
+    }
+
+    /// <summary>
+    /// Rebuilds the recipe identity from the built-in definition and the declared options so every durable recipe
+    /// field (versions, canonical options, options hash, identity, operation kind) comes from LogicHost's own
+    /// definition rather than runner-supplied values. Runners execute only built-in recipes.
+    /// </summary>
+    public static ProcessingRecipeIdentity DeriveRecipeIdentity(ProcessingRecipeIdentity supplied)
+    {
+        ArgumentNullException.ThrowIfNull(supplied);
+        var descriptor = supplied.Descriptor;
+        if (!BuiltInProcessingRecipes.TryGetDefinition(descriptor.Name, out var definition) || definition is null)
+        {
+            throw new ProcessingRunnerProtocolException(
+                ProcessingRunnerReasonCodes.RecipeIdentityMismatch,
+                $"Recipe '{descriptor.Name}' is not a built-in recipe.");
+        }
+        var expected = ProcessingIdentity.CreateRecipeIdentity(definition, descriptor.Options);
+        if (!string.Equals(descriptor.SemanticVersion, definition.SemanticVersion, StringComparison.Ordinal)
+            || !string.Equals(descriptor.ImplementationVersion, definition.ImplementationVersion, StringComparison.Ordinal)
+            || !ProcessingRunnerProtocol.ChecksumEquals(descriptor.OptionsSha256, expected.Descriptor.OptionsSha256)
+            || !ProcessingRunnerProtocol.ChecksumEquals(supplied.IdentitySha256, expected.IdentitySha256)
+            || (supplied.OperationKind is { } kind && kind != expected.OperationKind))
+        {
+            throw new ProcessingRunnerProtocolException(
+                ProcessingRunnerReasonCodes.RecipeIdentityMismatch,
+                "The product recipe identity does not match the built-in definition and declared options.");
+        }
+        return expected;
     }
 
     /// <summary>Projects an outcome to a completion request plus the ordered payload parts it references.</summary>

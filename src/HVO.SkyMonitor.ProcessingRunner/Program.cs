@@ -62,10 +62,15 @@ internal static class Program
                     log.Error("probe", $"Liveness file {options.LivenessFile} is missing; the runner loop has not heartbeated.");
                     return 1;
                 }
-                var age = DateTimeOffset.UtcNow - File.GetLastWriteTimeUtc(options.LivenessFile);
-                if (age > options.ProbeMaxAge)
+                var content = await File.ReadAllTextAsync(options.LivenessFile, cancellation.Token).ConfigureAwait(false);
+                var heartbeatUtc = RunnerLiveness.TryParse(content, out var stamped, out var interval)
+                    ? stamped
+                    : File.GetLastWriteTimeUtc(options.LivenessFile);
+                var age = DateTimeOffset.UtcNow - heartbeatUtc;
+                var maxAge = RunnerLiveness.ResolveMaxAge(options.ProbeMaxAge, interval);
+                if (age > maxAge)
                 {
-                    log.Error("probe", $"Liveness file is {age.TotalSeconds:0}s old (limit {options.ProbeMaxAge.TotalSeconds:0}s); the runner loop is stalled.");
+                    log.Error("probe", $"Liveness file is {age.TotalSeconds:0}s old (limit {maxAge.TotalSeconds:0}s from the negotiated heartbeat interval); the runner loop is stalled.");
                     return 1;
                 }
                 var status = await client.GetStatusAsync(cancellation.Token).ConfigureAwait(false);

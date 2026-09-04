@@ -430,6 +430,70 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
     }
 
     [TestMethod]
+    public async Task Runner_AnnotationWithoutProvenanceIsSkippedAndShrunkEligibilityStillCompletes()
+    {
+        using var factory = AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("ProcessingRunners:Enabled", "true");
+            builder.UseSetting($"ProcessingRunners:Placement:{BuiltInProcessingRecipes.Annotation}", "Runner");
+            builder.UseSetting($"ProcessingRunners:Placement:{BuiltInProcessingRecipes.EncodedPreview}", "Runner");
+        });
+        await DisableClaimableJobsAsync(factory).ConfigureAwait(false);
+        await SeedPreviewJobAsync("runner-annotation").ConfigureAwait(false);
+        using var http = factory.CreateClient();
+        using var client = CreateRunnerClient(http, "runner-annotation-01");
+        var registration = CreateRegistration("runner-annotation-01");
+        await client.RegisterAsync(registration with
+        {
+            Capabilities = registration.Capabilities with { MaxConcurrency = 2 }
+        }, CancellationToken.None).ConfigureAwait(false);
+
+        var claims = new List<ProcessingRunnerClaim>();
+        while (await client.ClaimAsync(new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0), CancellationToken.None)
+                   .ConfigureAwait(false) is { } claim)
+        {
+            claims.Add(claim);
+        }
+        var annotation = claims.Single(claim => claim.RecipeName == BuiltInProcessingRecipes.Annotation);
+        annotation.Annotation.Should().BeNull();
+        var preview = claims.Single(claim => claim.RecipeName == BuiltInProcessingRecipes.EncodedPreview);
+
+        // The kernel fails a null annotation terminally; LogicHost skips it authoritatively after the inputs were fetched.
+        var annotationRun = await RunnerJobExecution.ExecuteAsync(
+            client, new ProcessingRecipeExecutor(), annotation, ProcessingRunnerProtocol.MaximumTransferBytes,
+            TimeProvider.System, CancellationToken.None).ConfigureAwait(false);
+        annotationRun.Outcome!.Status.Should().Be(ProcessingOutcomeStatus.TerminalFailure);
+        var (annotationRequest, annotationPayloads) = ProcessingRunnerProjection.ProjectOutcome(
+            annotation.LeaseToken, annotationRun.Outcome, annotationRun.InputBytes, annotationRun.Duration);
+        var annotationCompletion = await client.CompleteAsync(annotation.JobId, annotationRequest, annotationPayloads, CancellationToken.None)
+            .ConfigureAwait(false);
+        annotationCompletion.Status.Should().Be(ProcessingOutcomeStatus.Skipped);
+        annotationCompletion.ReasonCode.Should().Be(ProcessingReasonCodes.MissingAnnotation);
+
+        // Eligibility shrinks while the preview lease is active; the lease, not current eligibility, authorizes completion.
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await db.CentralProcessingRunners.Where(runner => runner.RunnerId == "runner-annotation-01")
+                .ExecuteUpdateAsync(setters => setters.SetProperty(runner => runner.EligibleRecipesJson, "[]"))
+                .ConfigureAwait(false);
+        }
+        var previewRun = await RunnerJobExecution.ExecuteAsync(
+            client, new ProcessingRecipeExecutor(), preview, ProcessingRunnerProtocol.MaximumTransferBytes,
+            TimeProvider.System, CancellationToken.None).ConfigureAwait(false);
+        var (previewRequest, previewPayloads) = ProcessingRunnerProjection.ProjectOutcome(
+            preview.LeaseToken, previewRun.Outcome!, previewRun.InputBytes, previewRun.Duration);
+        (await client.CompleteAsync(preview.JobId, previewRequest, previewPayloads, CancellationToken.None).ConfigureAwait(false))
+            .Status.Should().Be(ProcessingOutcomeStatus.Produced);
+
+        await using var verify = factory.Services.CreateAsyncScope();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var annotationJob = await verifyDb.CentralDerivativeJobs.AsNoTracking().SingleAsync(item => item.Id == annotation.JobId).ConfigureAwait(false);
+        annotationJob.Status.Should().Be(CentralDerivativeJobStatus.Skipped);
+        annotationJob.LastError.Should().Be(ProcessingReasonCodes.MissingAnnotation);
+    }
+
+    [TestMethod]
     public async Task Health_DegradesWhenRecipesArePlacedOnRunnersButNoneIsActive()
     {
         using var factory = CreateFactory();

@@ -211,6 +211,13 @@ internal sealed class CentralDerivativeJobExecutor(
     {
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(outcome);
+        if (string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
+            && CreateAnnotation(lease.SceneProvenanceJson) is null)
+        {
+            // Authoritative on both paths: an annotation job without frozen provenance is skipped, whatever the
+            // kernel reported (the kernel fails a null annotation terminally). Inputs were already read or fetched.
+            outcome = ProcessingOutcome.Skipped(ProcessingReasonCodes.MissingAnnotation);
+        }
         switch (outcome.Status)
         {
             case ProcessingOutcomeStatus.Produced:

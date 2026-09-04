@@ -139,8 +139,8 @@ public sealed class ProcessingRunnerContractsTests
         Assert.AreEqual(artifact.CaptureId, rebuilt.CaptureId);
         CollectionAssert.AreEqual(payload, rebuilt.Payload.ToArray());
 
-        var recipe = ProcessingIdentity.CreateRecipeIdentity(
-            RecipeIdentityDescriptor.Create("encoded-preview", "1.0.0", "impl", JsonSerializer.SerializeToElement(new { })));
+        Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.EncodedPreview, out var previewDefinition));
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(previewDefinition!, JsonSerializer.SerializeToElement(new { }));
         var product = new ProcessingProduct(
             FrameArtifactRole.Preview, "native",
             ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Preview, "native", recipe.IdentitySha256, [artifact.ArtifactId]),
@@ -175,8 +175,8 @@ public sealed class ProcessingRunnerContractsTests
     {
         var payload = new byte[] { 5, 6, 7 };
         var source = Guid.NewGuid();
-        var recipe = ProcessingIdentity.CreateRecipeIdentity(
-            RecipeIdentityDescriptor.Create("encoded-preview", "1.0.0", "impl", JsonSerializer.SerializeToElement(new { })));
+        Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.EncodedPreview, out var previewDefinition));
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(previewDefinition!, JsonSerializer.SerializeToElement(new { }));
         var metadata = new ProcessingRunnerProductMetadata(
             FrameArtifactRole.Preview, "native",
             ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Preview, "native", recipe.IdentitySha256, [source]),
@@ -201,6 +201,28 @@ public sealed class ProcessingRunnerContractsTests
             ProcessingRunnerReasonCodes.RecipeIdentityMismatch,
             Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() =>
                 ProcessingRunnerProjection.ReconstructProduct(forgedRecipe, payload)).ReasonCode);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void RecipeFieldsOutsideTheIdentityHashAreRebuiltFromTheBuiltInDefinition()
+    {
+        var options = JsonSerializer.SerializeToElement(new { });
+        Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.EncodedPreview, out var definition));
+        var expected = ProcessingIdentity.CreateRecipeIdentity(definition!, options);
+
+        var derived = ProcessingRunnerProjection.DeriveRecipeIdentity(expected with { OperationKind = null });
+        Assert.AreEqual(expected.OperationKind, derived.OperationKind);
+        Assert.AreEqual(expected.Descriptor.OptionsSha256, derived.Descriptor.OptionsSha256);
+
+        var wrongOptionsHash = expected with { Descriptor = expected.Descriptor with { OptionsSha256 = new string('9', 64) } };
+        Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() => ProcessingRunnerProjection.DeriveRecipeIdentity(wrongOptionsHash));
+        var wrongKind = expected with { OperationKind = ProcessingOperationKind.Window };
+        Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() => ProcessingRunnerProjection.DeriveRecipeIdentity(wrongKind));
+        var wrongVersion = expected with { Descriptor = expected.Descriptor with { ImplementationVersion = "fork" } };
+        Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() => ProcessingRunnerProjection.DeriveRecipeIdentity(wrongVersion));
+        var unknown = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create("not-a-recipe", "1.0.0", "x", options));
+        Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() => ProcessingRunnerProjection.DeriveRecipeIdentity(unknown));
     }
 
     [TestMethod]

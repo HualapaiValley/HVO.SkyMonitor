@@ -54,7 +54,9 @@ document (exit 1 when warm-up fails); `--probe` is the container health check
 and never heartbeats: it requires the liveness file the runner loop rewrites on
 every successful heartbeat (`HVO_RUNNER_LIVENESS_FILE`, default
 `/tmp/hvo-processing-runner.alive`) to be younger than
-`HVO_RUNNER_PROBE_MAX_AGE_SECONDS` (default 90) and LogicHost's non-mutating
+the larger of `HVO_RUNNER_PROBE_MAX_AGE_SECONDS` (default 90) and three
+negotiated heartbeat intervals (the file records the interval and is written at
+registration, before the first heartbeat), and LogicHost's non-mutating
 status to report `Active`, so a hung runner loop fails the probe instead of
 being revived by it. On SIGTERM the runner stops claiming, keeps heartbeating
 and renewing while in-flight jobs finish within `HVO_RUNNER_SHUTDOWN_GRACE_SECONDS`,

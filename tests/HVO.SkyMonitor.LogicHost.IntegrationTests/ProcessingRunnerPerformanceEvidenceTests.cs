@@ -259,6 +259,12 @@ public sealed class ProcessingRunnerPerformanceEvidenceTests
                 .SetProperty(job => job.LeaseToken, (Guid?)null)
                 .SetProperty(job => job.LeaseExpiresAtUtc, (DateTimeOffset?)null))
             .ConfigureAwait(false);
+        await db.CentralProcessingRunners.Where(runner => runner.Status != CentralProcessingRunnerStatus.Retired)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(runner => runner.Status, CentralProcessingRunnerStatus.Retired)
+                .SetProperty(runner => runner.RetiredAtUtc, DateTimeOffset.UtcNow)
+                .SetProperty(runner => runner.UpdatedAtUtc, DateTimeOffset.UtcNow))
+            .ConfigureAwait(false);
     }
 
     private static string FindRepositoryRoot()

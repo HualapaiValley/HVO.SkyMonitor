@@ -58,8 +58,9 @@ members rejected, 4 MiB metadata limit. Every failure body is
 | Call | Purpose | Notable responses |
 | --- | --- | --- |
 | `PUT api/v1.0/processing-runners/{runnerId}` | Register or re-register capabilities. Returns heartbeat/lease/renewal/backoff intervals and the recipes LogicHost resolved as eligible. | 400 invalid id/capabilities, 403 not owned, 503 runners disabled |
-| `POST .../heartbeat` | Warm state, free slots, active job ids. Returns job ids whose cancellation was requested and job ids whose lease is no longer held. | 404 not registered, 410 retired |
-| `POST .../claims` | Claim the next eligible `central-recipe` job. Returns the claim or 204. | 403 job class not claimable, 410 retired |
+| `GET api/v1.0/processing-runners/{runnerId}` | Non-mutating status (effective status by heartbeat age, warm state, eligible recipes, active leases). Used by liveness probes; never refreshes the heartbeat. | 404 not registered |
+| `POST .../heartbeat` | Warm state, free slots, active job ids. Returns job ids whose cancellation was requested, job ids whose lease is no longer held, and the eligible recipes re-resolved from current placement. | 404 not registered, 410 retired |
+| `POST .../claims` | Claim the next eligible `central-recipe` job. Returns the claim or 204. Refused (410 `runner.registration-stale`) when the heartbeat is older than `StaleAfter`; returns 204 when the runner already holds `maxConcurrency` active leases; jobs whose inputs exceed the runner transfer limit are excluded before leasing. | 403 job class not claimable, 410 retired or stale |
 | `POST .../jobs/{jobId}/lease` | Renew the lease. | 409 stale, 410 canceled |
 | `POST .../jobs/{jobId}/completion` | Multipart: `outcome` JSON part plus `payload-{n}` binary parts. Publishes through the shared pipeline. | 400 invalid, 409 stale, 413 too large |
 | `POST .../jobs/{jobId}/failure` | Retryable or terminal failure; `object.*` reasons with an artifact id mark that input unavailable. | 409 stale |
@@ -78,6 +79,17 @@ built-in definitions and whose configured requirement (resource class, latency
 class, GPU, process architecture, labels) the runner satisfies. A version
 mismatch is never matched.
 
+## Capacity and staleness
+
+LogicHost enforces the advertised concurrency: claims for one runner id are
+serialized under a per-runner lock and refused once the runner holds
+`maxConcurrency` unexpired leases, so two processes sharing an id or a client
+issuing overlapping claims cannot hold unbounded work. Heartbeat loss past
+`StaleAfter` is enforced on the claim path itself (not only when health is
+polled); the runner recovers by heartbeating. Eligibility is re-resolved on
+every heartbeat, so a placement change reaches a registered runner without
+re-registration, while leases already granted stay valid to completion.
+
 ## Claim
 
 A claim carries the lease credential (`jobId`, `leaseToken`,
@@ -91,6 +103,18 @@ fetches every input under the lease, verifies length and SHA-256, rebuilds the
 identical `ProcessingExecutionRequest`, executes it, and uploads products with
 their payload SHA-256, content checksum, output identity, recipe identity,
 algorithms, ordered source artifact ids, layout, kind, and schema version.
+
+LogicHost rebuilds the recipe identity from its own built-in definition and the
+declared options (versions, canonical options, options hash, identity,
+operation kind) and re-derives the output identity from role, variant, recipe
+identity, and ordered sources before anything durable is keyed by them;
+mismatches and non-built-in recipes are rejected
+(`runner.recipe-identity-mismatch`, `runner.output-identity-mismatch`).
+Completion is authorized by the lease alone: eligibility may shrink through a
+placement change while a lease granted under the previous placement is still
+executing, and that work still publishes. An annotation job whose frozen
+provenance yields no annotation is skipped authoritatively by LogicHost on both
+paths once its inputs were read or fetched.
 
 ## Recovery
 

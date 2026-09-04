@@ -168,11 +168,8 @@ internal sealed partial class CentralProcessingRunnerJobService(
         var started = timeProvider.GetTimestamp();
         var lease = await leaseService.GetLeaseAsync(jobId, request.LeaseToken, runner.Runner.RunnerId, cancellationToken)
             .ConfigureAwait(false);
-        if (!runner.EligibleRecipes.Contains(lease.RecipeName, StringComparer.Ordinal))
-        {
-            throw CentralProcessingRunnerRejectedException.Create(
-                ProcessingRunnerReasonCodes.CapabilityMismatch, "The runner is not eligible for the job recipe.");
-        }
+        // The lease itself is the authority for completion: eligibility can shrink through a placement change while
+        // a lease granted under the previous placement is still executing, and that work must still publish.
         long productBytes = 0;
         foreach (var payload in payloads)
         {

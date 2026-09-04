@@ -40,6 +40,7 @@ internal sealed class RunnerHost(
         {
             return 0;
         }
+        TouchLiveness();
         // External cancellation (SIGTERM) only stops claiming. Heartbeats, renewals, and in-flight executions keep
         // the runner lifetime token until the grace period has drained active jobs, so a deployment restart does not
         // abandon work that could still complete.
@@ -397,28 +398,50 @@ internal sealed class RunnerHost(
         if (!slotsTask.IsCompleted)
         {
             log.Info("draining", $"Claiming stopped; waiting up to {options.ShutdownGrace.TotalSeconds:0}s for {_activeJobs.Count} active job(s) to complete.");
-            try
+            if (await WaitForSlotsAsync(slotsTask, options.ShutdownGrace).ConfigureAwait(false))
             {
-                await slotsTask.WaitAsync(options.ShutdownGrace, _timeProvider).ConfigureAwait(false);
+                return;
             }
-            catch (TimeoutException)
+            log.Warning("drain-timeout", $"{_activeJobs.Count} job(s) still active after the grace period; canceling.");
+            foreach (var cancellation in _activeJobs.Values)
             {
-                log.Warning("drain-timeout", $"{_activeJobs.Count} job(s) still active after the grace period; canceling.");
-                foreach (var cancellation in _activeJobs.Values)
-                {
-                    await cancellation.CancelAsync().ConfigureAwait(false);
-                }
+                await cancellation.CancelAsync().ConfigureAwait(false);
             }
-            catch (Exception)
+            // Cancellation must propagate through executors and any completion or failure upload; bound each stage
+            // so the configured grace period stays effective even against an executor that ignores cancellation.
+            var bound = TimeSpan.FromTicks(Math.Clamp(options.ShutdownGrace.Ticks / 2, TimeSpan.FromSeconds(1).Ticks, TimeSpan.FromSeconds(15).Ticks));
+            if (await WaitForSlotsAsync(slotsTask, bound).ConfigureAwait(false))
             {
+                return;
             }
+            await _lifetime.CancelAsync().ConfigureAwait(false);
+            if (!await WaitForSlotsAsync(slotsTask, bound).ConfigureAwait(false))
+            {
+                log.Error("drain-abandoned", $"{_activeJobs.Count} job(s) did not stop after cancellation; exiting without them. LogicHost will expire their leases.");
+            }
+            return;
         }
+        await WaitForSlotsAsync(slotsTask, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "Slot failures were already reported by the slots; the wait only sequences shutdown.")]
+    private async Task<bool> WaitForSlotsAsync(Task slotsTask, TimeSpan timeout)
+    {
         try
         {
-            await slotsTask.ConfigureAwait(false);
+            await slotsTask.WaitAsync(timeout, _timeProvider).ConfigureAwait(false);
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            return false;
         }
         catch (Exception)
         {
+            return true;
         }
     }
 
@@ -434,7 +457,7 @@ internal sealed class RunnerHost(
         }
         try
         {
-            File.WriteAllText(options.LivenessFile, _timeProvider.GetUtcNow().ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+            File.WriteAllText(options.LivenessFile, RunnerLiveness.Format(_timeProvider.GetUtcNow(), _registration?.HeartbeatInterval ?? TimeSpan.Zero));
         }
         catch (Exception exception)
         {
@@ -480,6 +503,40 @@ internal sealed class RunnerHost(
 
     private static string Truncate(string value)
         => value.Length <= 512 ? value : value[..512];
+}
+
+/// <summary>The liveness file the runner loop rewrites at registration and on every accepted heartbeat.</summary>
+internal static class RunnerLiveness
+{
+    public static string Format(DateTimeOffset heartbeatUtc, TimeSpan heartbeatInterval)
+        => string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{heartbeatUtc:O}|{heartbeatInterval.TotalSeconds:0.###}");
+
+    public static bool TryParse(string? content, out DateTimeOffset heartbeatUtc, out TimeSpan heartbeatInterval)
+    {
+        heartbeatUtc = default;
+        heartbeatInterval = TimeSpan.Zero;
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return false;
+        }
+        var separator = content.IndexOf('|', StringComparison.Ordinal);
+        var stamp = separator < 0 ? content.Trim() : content[..separator].Trim();
+        if (!DateTimeOffset.TryParse(stamp, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out heartbeatUtc))
+        {
+            return false;
+        }
+        if (separator >= 0 && double.TryParse(content[(separator + 1)..].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds) && seconds > 0)
+        {
+            heartbeatInterval = TimeSpan.FromSeconds(seconds);
+        }
+        return true;
+    }
+
+    /// <summary>The probe tolerates the larger of the configured window and three negotiated heartbeat intervals.</summary>
+    public static TimeSpan ResolveMaxAge(TimeSpan configured, TimeSpan heartbeatInterval)
+        => heartbeatInterval > TimeSpan.Zero && heartbeatInterval * 3 > configured ? heartbeatInterval * 3 : configured;
 }
 
 internal sealed record RunnerHostOptions(
