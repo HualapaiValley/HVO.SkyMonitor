@@ -11,6 +11,13 @@ public sealed class CameraAgentLifecycleClientTests
 {
     private static readonly Uri BaseAddress = new("http://127.0.0.1:5130");
 
+    // Polling tests use short budgets so they exercise the real loop without
+    // sleeping through production intervals.
+    private static readonly LifecycleBudgets FastBudgets = new(
+        ReadTimeout: TimeSpan.FromMilliseconds(500),
+        DrainDeadline: TimeSpan.FromSeconds(5),
+        DrainPollInterval: TimeSpan.FromMilliseconds(10));
+
     [TestMethod]
     public async Task PauseAndDrain_PostsStateTargetedCommandAndWaitsForTheDurableBoundary()
     {
@@ -21,7 +28,7 @@ public sealed class CameraAgentLifecycleClientTests
             2 => State("PauseRequested", 3, rawLeased: 1),
             _ => State("Paused", 4, captureSequence: 9)
         });
-        var client = new CameraAgentLifecycleClient(BaseAddress, handler);
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
 
         var continuity = await client.PauseAndDrainAsync(operationId, "lifecycle-token", CancellationToken.None);
 
@@ -69,7 +76,7 @@ public sealed class CameraAgentLifecycleClientTests
             2 => State("Unavailable", 0, initialized: false),
             _ => State("Paused", 2)
         }));
-        var client = new CameraAgentLifecycleClient(BaseAddress, handler);
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
 
         var continuity = await client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None);
 
@@ -86,7 +93,7 @@ public sealed class CameraAgentLifecycleClientTests
             2 => Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)),
             _ => Task.FromResult(State("Paused", 2))
         });
-        var client = new CameraAgentLifecycleClient(BaseAddress, handler);
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
 
         var continuity = await client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None);
 
@@ -155,6 +162,163 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "did not accept the lifecycle resume command", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ConfirmDrained_KeepsWaitingForAnUninitializedPausedBoundary()
+    {
+        using var handler = new ScriptedHandler((_, sequence, _) => Task.FromResult(sequence switch
+        {
+            1 => State("Paused", 2, initialized: false),
+            _ => State("Paused", 2)
+        }));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        var continuity = await client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None);
+
+        Assert.IsTrue(continuity.CaptureInitialized);
+        Assert.AreEqual(2, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task ConfirmDrained_FailsFastWhenTheStateReadIsRejected()
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "rejected the lifecycle state read with status 404", StringComparison.Ordinal);
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task ConfirmDrained_FailsFastWhenTheStatePayloadCannotBeParsed()
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{ "captureControl": { "value": { "state": 7 } } }""", Encoding.UTF8, "application/json")
+        }));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "could not be parsed", StringComparison.Ordinal);
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task ConfirmDrained_ReportsTheLastObservedStateWhenTheDeadlineExpires()
+    {
+        using var handler = new ScriptedHandler((_, sequence, _) => sequence switch
+        {
+            1 => Task.FromResult(State("Unavailable", 0, rawLeased: 3, initialized: false)),
+            _ => throw new HttpRequestException("connection refused")
+        });
+        // The deadline leaves room for a cold first read before the retries begin.
+        var budgets = FastBudgets with { DrainDeadline = TimeSpan.FromSeconds(1) };
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, budgets);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "before the lifecycle deadline", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "last observed capture control 'Unavailable' (initialized: False, leased raw/lane/processing/outbox 3/0/0/0)", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "the last state read failed: CameraAgent lifecycle state could not be read", StringComparison.Ordinal);
+        Assert.IsTrue(handler.RequestCount > 1, $"expected retries before the deadline, saw {handler.RequestCount} requests");
+    }
+
+    [TestMethod]
+    public async Task PauseAndDrain_SharesOneDrainBudgetBetweenTheCommandAndTheBoundary()
+    {
+        var operationId = Guid.NewGuid();
+        var budgets = new LifecycleBudgets(
+            ReadTimeout: TimeSpan.FromMilliseconds(100),
+            DrainDeadline: TimeSpan.FromSeconds(2),
+            DrainPollInterval: TimeSpan.FromMilliseconds(10));
+        using var handler = new ScriptedHandler(async (request, sequence, cancellationToken) =>
+        {
+            if (sequence == 1)
+            {
+                // The pause consumes most of the shared drain budget.
+                await Task.Delay(TimeSpan.FromMilliseconds(1500), cancellationToken);
+                return await CommandAsync(request, "pause", operationId, cancellationToken);
+            }
+            return State("Initializing", 0, initialized: false);
+        });
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, budgets);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.PauseAndDrainAsync(operationId, "lifecycle-token", CancellationToken.None));
+
+        stopwatch.Stop();
+        StringAssert.Contains(exception.Message, "last observed capture control 'Initializing'", StringComparison.Ordinal);
+        // A stacked budget would poll for a further full drain deadline (about 3.5 s in total).
+        Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromSeconds(3), $"the boundary poll did not share the drain budget: {stopwatch.Elapsed}");
+    }
+
+    [TestMethod]
+    public async Task PauseAndDrain_KeepsAReadBudgetForTheBoundaryAfterASlowPause()
+    {
+        var operationId = Guid.NewGuid();
+        var budgets = new LifecycleBudgets(
+            ReadTimeout: TimeSpan.FromSeconds(3),
+            DrainDeadline: TimeSpan.FromSeconds(2),
+            DrainPollInterval: TimeSpan.FromMilliseconds(10));
+        using var handler = new ScriptedHandler(async (request, sequence, cancellationToken) =>
+        {
+            if (sequence == 1)
+            {
+                // The pause leaves less of the shared budget than the confirming read needs.
+                await Task.Delay(TimeSpan.FromMilliseconds(1600), cancellationToken);
+                return await CommandAsync(request, "pause", operationId, cancellationToken);
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(600), cancellationToken);
+            return State("Paused", 4, captureSequence: 11);
+        });
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, budgets);
+
+        var continuity = await client.PauseAndDrainAsync(operationId, "lifecycle-token", CancellationToken.None);
+
+        Assert.AreEqual(11, continuity.CaptureSequence);
+        Assert.AreEqual(2, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task Resume_WaitsThroughStartupInitializationForTheAcknowledgement()
+    {
+        var operationId = Guid.NewGuid();
+        var budgets = FastBudgets with { DrainDeadline = TimeSpan.FromSeconds(2) };
+        using var handler = new ScriptedHandler(async (request, _, cancellationToken) =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+            return await CommandAsync(request, "resume", operationId, cancellationToken);
+        });
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, budgets);
+
+        await client.ResumeAsync(operationId, "lifecycle-token", CancellationToken.None);
+
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task Resume_ReportsAnUnacknowledgedCommandAsAnInstallerFailure()
+    {
+        var budgets = FastBudgets with { DrainDeadline = TimeSpan.FromMilliseconds(100) };
+        using var handler = new ScriptedHandler(async (_, _, cancellationToken) =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, budgets);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "did not acknowledge the lifecycle resume command within its budget", StringComparison.Ordinal);
     }
 
     private static async Task<HttpResponseMessage> CommandAsync(
