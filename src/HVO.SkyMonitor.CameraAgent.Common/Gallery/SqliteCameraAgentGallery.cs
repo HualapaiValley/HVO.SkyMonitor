@@ -1006,6 +1006,19 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         }
     }
 
+    private static string? Canonicalize(string value, HashSet<string> canonicalValues)
+    {
+        var trimmed = value.Trim();
+        foreach (var canonical in canonicalValues)
+        {
+            if (string.Equals(canonical, trimmed, StringComparison.OrdinalIgnoreCase))
+            {
+                return canonical;
+            }
+        }
+        return null;
+    }
+
     private static NormalizedProductQuery NormalizeProducts(CameraAgentProductQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -1020,15 +1033,17 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             throw new CameraAgentGalleryQueryException("The time range is invalid.");
         }
-        var productKind = string.IsNullOrWhiteSpace(query.ProductKind) ? null : query.ProductKind.Trim();
-        if (productKind is not null && !ProductKinds.Contains(productKind))
+        // Filters match their canonical values case-insensitively, like the raw state filter,
+        // and the canonical spelling is what reaches SQL and the filter hash.
+        var productKind = string.IsNullOrWhiteSpace(query.ProductKind) ? null : Canonicalize(query.ProductKind, ProductKinds);
+        if (!string.IsNullOrWhiteSpace(query.ProductKind) && productKind is null)
         {
             throw new CameraAgentGalleryQueryException("The product kind filter is invalid.");
         }
         // Retained available products are the default view; missing and quarantined
         // outputs are an explicit filter over the small set retention has not yet expired.
-        var availability = string.IsNullOrWhiteSpace(query.Availability) ? "Available" : query.Availability.Trim();
-        if (!ProductAvailabilities.Contains(availability))
+        var availability = string.IsNullOrWhiteSpace(query.Availability) ? "Available" : Canonicalize(query.Availability, ProductAvailabilities);
+        if (availability is null)
         {
             throw new CameraAgentGalleryQueryException("The availability filter is invalid.");
         }

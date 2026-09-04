@@ -1,4 +1,4 @@
-<section class="@CssClass" role="@Role" aria-live="@(Kind == PageStateKind.Error ? "assertive" : "polite")">
+<section class="@CssClass" role="@Role" aria-live="@(Role == "alert" ? "assertive" : "polite")">
     @if (Kind == PageStateKind.Loading) { <span class="spinner-border spinner-border-sm" aria-hidden="true"></span> }
     <div>
         <strong>@Title</strong>

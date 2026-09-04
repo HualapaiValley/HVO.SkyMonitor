@@ -1195,6 +1195,15 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.AreEqual("Missing", missingOnly.Items[0].Availability);
         Assert.AreEqual("test-disposition", missingOnly.Items[0].AvailabilityReason);
         Assert.AreEqual(0, quarantined.Items.Count);
+        // Filter values match canonical spellings case-insensitively and share the canonical cursor filter hash.
+        var lowercase = await archive.GetProductPageAsync(new CameraAgentProductQuery(Availability: " missing "), CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEqual(new[] { missing.Artifact.ArtifactId }, lowercase.Items.Select(static item => item.ArtifactId).ToArray());
+        Assert.AreEqual("Missing", lowercase.Items[0].Availability);
+        // These fixture outputs record no product kind, so a canonicalised kind filter is accepted and simply matches nothing.
+        var lowercaseKind = await archive.GetProductPageAsync(new CameraAgentProductQuery(ProductKind: " pixeldata "), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(0, lowercaseKind.Items.Count);
+        await Assert.ThrowsExactlyAsync<CameraAgentGalleryQueryException>(async () => await archive.GetProductPageAsync(
+            new CameraAgentProductQuery(Availability: "gone"), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
         // The detail lookup still resolves an unavailable product.
         Assert.IsNotNull(await archive.GetProductAsync(missing.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false));
     }

@@ -138,6 +138,7 @@ public sealed class ArchivePagesTests
         failed.WaitForAssertion(() =>
         {
             StringAssert.Contains(failed.Find("[role='alert']").TextContent, "calendar read failed", StringComparison.Ordinal);
+            Assert.AreEqual("assertive", failed.Find("[role='alert']").GetAttribute("aria-live"));
             Assert.IsNotNull(failed.Find("[role='alert'] button"));
         });
     }
