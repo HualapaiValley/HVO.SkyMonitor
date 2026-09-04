@@ -115,6 +115,7 @@ public sealed class UpgradePreflightTests
 
         var upgrade = Evaluate(fixture, legacy);
         Assert.IsFalse(upgrade.Compatible);
+        Assert.AreEqual(1, upgrade.Findings.Count, CameraAgentStatePreflight.Render(upgrade));
         var blocking = upgrade.Findings.Single(static finding => finding.Blocking);
         Assert.AreEqual("candidate-state-contract-unsupported", blocking.Code);
         Assert.AreEqual(CameraAgentStateContract.LegacyUnbounded, blocking.Observed);
@@ -240,6 +241,65 @@ public sealed class UpgradePreflightTests
         var advisory = report.Findings.Single();
         Assert.AreEqual("candidate-boundaries-undeclared", advisory.Code);
         Assert.IsFalse(advisory.Blocking);
+    }
+
+    [TestMethod]
+    public void Evaluate_IdentityDatabaseWithoutItsHistoryTable_IsAnInterruptedFreshStart()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteUnmigratedIdentityDatabase(createIdentityTable: false);
+        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.CreateBindSources();
+
+        // The runtime materializes the file on its first connection and creates the history table only during
+        // MigrateAsync, so a table-less database is an interrupted fresh start, not an unreadable lineage.
+        var report = Evaluate(fixture);
+
+        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
+        Assert.AreEqual(0, report.Findings.Count);
+    }
+
+    [TestMethod]
+    public void Evaluate_IdentitySchemaWithoutAnyRecordedMigration_IsAnIncompatibleLineage()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteUnmigratedIdentityDatabase(createIdentityTable: true);
+        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.CreateBindSources();
+
+        var report = Evaluate(fixture);
+
+        Assert.IsFalse(report.Compatible);
+        var finding = report.Findings.Single();
+        Assert.AreEqual("identity-migration-lineage", finding.Code);
+        Assert.AreEqual("no recorded migration", finding.Observed);
+    }
+
+    [TestMethod]
+    public void Evaluate_PartiallyDeclaredCandidate_NamesOnlyTheOmittedBoundaries()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.CreateBindSources();
+        var partial = new CameraAgentStateRequirements(
+            CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 12, null);
+
+        var report = Evaluate(fixture, partial);
+
+        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
+        var advisory = report.Findings.Single();
+        Assert.AreEqual("candidate-boundaries-undeclared", advisory.Code);
+        StringAssert.Contains(advisory.Path, "catalog-manifest-version", StringComparison.Ordinal);
+        foreach (var declared in new[] { "minimum-compatible-revision", "identity-migration", "raw-ingress-schema" })
+        {
+            Assert.IsFalse(
+                advisory.Path.Contains(declared, StringComparison.Ordinal),
+                $"a declared boundary must not be reported as omitted: {declared}");
+        }
     }
 
     [TestMethod]
@@ -516,6 +576,22 @@ public sealed class UpgradePreflightTests
             using var command = connection.CreateCommand();
             command.CommandText =
                 "CREATE TABLE __EFMigrationsHistory (MigrationId TEXT NOT NULL PRIMARY KEY, ProductVersion TEXT NOT NULL);";
+            command.ExecuteNonQuery();
+        }
+
+        /// <summary>A database EF materialized but never migrated, optionally already carrying Identity tables.</summary>
+        public void WriteUnmigratedIdentityDatabase(bool createIdentityTable)
+        {
+            var path = CameraAgentStateLayout.IdentityDatabasePath(Paths.StateRoot);
+            SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(path)!);
+            using var connection = new SqliteConnection($"Data Source={path}");
+            connection.Open();
+            if (!createIdentityTable)
+            {
+                return;
+            }
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE AspNetUsers (Id TEXT NOT NULL PRIMARY KEY);";
             command.ExecuteNonQuery();
         }
 

@@ -207,8 +207,8 @@ internal static class CameraAgentStatePreflight
         // A candidate that omits a boundary label leaves that boundary unverifiable. Name exactly which ones
         // instead of implying a comparison ran; an image predating the correction declares none of them.
         var undeclared = new List<string>();
-        if (requirements.MinimumCompatibleRevision is null) undeclared.Add("minimum-compatible-revision");
-        if (requirements.IdentityMigration is null) undeclared.Add("identity-migration");
+        if (requirements.MinimumCompatibleRevision is not { Length: > 0 }) undeclared.Add("minimum-compatible-revision");
+        if (requirements.IdentityMigration is not { Length: > 0 }) undeclared.Add("identity-migration");
         if (requirements.RawIngressSchema is null) undeclared.Add("raw-ingress-schema");
         if (requirements.CatalogManifestVersion is null) undeclared.Add("catalog-manifest-version");
         if (undeclared.Count > 0)
@@ -220,7 +220,7 @@ internal static class CameraAgentStatePreflight
                 string.Join(", ", undeclared.Select(static label => $"io.hvo.skymonitor.{label}")),
                 "none",
                 "a declared boundary for each label",
-                "This image declares no value for those boundaries, so the persisted state cannot be compared against them. Confirm the instance has not crossed a state boundary since it was installed."));
+                "This image declares no value for those boundaries, so no comparison against its own values ran for them. Confirm the instance has not crossed a state boundary since it was installed."));
         }
 
         // The superseded label carried no boundary, so an installation that declares it is admitted only when the

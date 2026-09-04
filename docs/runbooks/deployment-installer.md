@@ -301,10 +301,11 @@ already installed image stays inspectable; it is never accepted as an upgrade ca
 
 Deployment preflight compares the declared boundaries against the persisted state before Compose starts the
 container, so an incompatible instance fails once with the complete boundary list instead of through container
-restart loops. Install, upgrade, and rollback all run it before any backup, drain, stop, or `docker compose` invocation and
-before the container starts. The candidate image is inspected first because its labels are the expected values
-being compared, and on install the catalog bundle and Compose files are written first because the preflight
-reads the selected catalog and the bind sources they establish. Install and upgrade retain the report at `state/deployment/state-preflight.json`. Run
+restart loops. Install, upgrade, and rollback all run it before any backup, drain, stop, or `docker compose`
+invocation and before the container starts. The candidate image is inspected first because its
+labels are the expected values being compared, and on install the catalog bundle and Compose files
+are written first because the preflight reads the selected catalog and the bind sources they
+establish. Install and upgrade retain the report at `state/deployment/state-preflight.json`. Run
 it on demand without starting, loading, pulling, or mutating anything:
 
 ```bash
@@ -320,14 +321,14 @@ value, expected value, and remediation. The checked boundaries are the selected 
 catalog identity, the Identity migration lineage recorded in `__EFMigrationsHistory`, the raw-ingress
 `PRAGMA user_version`, and the ownership and mode of every writable Compose bind source.
 
-An in-place upgrade always requires a candidate that declares `cameraagent-state-v2`, so every boundary is
-compared. Installing an image, and rolling back to one, are not state migrations and therefore also accept the
-superseded declaration; an image that predates the correction declares no boundary, so those boundaries are
-skipped rather than compared, and the report records an advisory `candidate-boundaries-undeclared` finding
-naming exactly what could not be verified. The catalog manifest version is still compared against the version
-the runtime resolver enforces even when the image declares none. Rolling a state boundary backwards is not
-supported: if an instance has run a newer state contract, restore it through the reset procedure below rather
-than by rolling back to a pre-`70ecdd3` image.
+An in-place upgrade requires a candidate that declares `cameraagent-state-v2`. Installing an image, and
+rolling back to one, are not state migrations and therefore also accept the superseded declaration. Any
+boundary label a candidate omits, whichever contract it declares, is skipped rather than assumed met, and the
+report records an advisory `candidate-boundaries-undeclared` finding naming exactly which labels were
+omitted; an image predating the correction declares none of them. The catalog manifest version is still
+compared against the version the runtime resolver enforces even when the image declares none. Rolling a state
+boundary backwards is not supported: if an instance has run a newer state contract, restore it through the
+reset procedure below rather than by rolling back to a pre-`70ecdd3` image.
 
 The installer and every lifecycle mutation pre-create all writable bind sources
 (`state/identity`, `state/data-protection`, `state/provisioning`, `state/raw`, `state/archive`, and
