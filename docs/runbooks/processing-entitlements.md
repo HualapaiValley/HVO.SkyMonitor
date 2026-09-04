@@ -50,14 +50,23 @@ no plan, license server, or metering service.
 
 ## Enforcement
 
-The claim query filters and orders under the policy, then takes a
-transaction-scoped application lock per observatory and re-checks the counts
-before leasing, so concurrent claims from any number of workers or runners
-cannot exceed an entitlement (log event 2220 and metric
-`skymonitor.central.fairness.throttled` by reason `observatory`, `camera`,
-`class`, `class-bytes`, or `observatory-class`). Lease expiry, failure,
-completion, and cancellation release capacity through the existing lease
-engine.
+The claim query computes the active-lease counts once, filters and orders
+under the policy without taking row locks (rows another claimer is updating
+are skipped), and returns a short ranked batch of candidates. The claimer
+locks the best candidate that is still claimable, takes a transaction-scoped
+application lock per observatory (and per resource class when that class has
+a budget), re-checks the counts, and only then leases, so concurrent claims
+from any number of workers or runners cannot exceed an entitlement (log event
+2220 and metric `skymonitor.central.fairness.throttled` by reason
+`observatory`, `camera`, `class`, `class-bytes`, or `observatory-class`). An
+application-lock wait that exceeds ten seconds is retried like any other
+claim collision. A claim that needs more than eight iterations logs warning
+event 2221 with the iteration count, elapsed time, and retry reasons
+(`batch-exhausted`, `lease-update`, `expired-attempt`, `adopted-outcome`,
+`terminal-update`, lock timeouts, throttled observatories); sustained 2221
+warnings mean the database host is oversubscribed or claimers far outnumber
+claimable work. Lease expiry, failure, completion, and cancellation release
+capacity through the existing lease engine.
 
 ## Usage records
 

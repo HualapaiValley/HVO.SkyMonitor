@@ -38,10 +38,15 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
         {
             await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
             var observatories = new List<Guid>(cameras);
+            var observatoryByDevice = new Dictionary<Guid, Guid>();
+            var availableByDevice = new Dictionary<Guid, DateTimeOffset>();
             var seedStarted = Stopwatch.GetTimestamp();
             for (var camera = 0; camera < cameras; camera++)
             {
-                observatories.Add(await SeedObservatoryAsync($"fair-{cameras}-{camera}", JobsPerCamera).ConfigureAwait(false));
+                var (observatoryId, deviceId) = await SeedObservatoryAsync($"fair-{cameras}-{camera}", JobsPerCamera).ConfigureAwait(false);
+                observatories.Add(observatoryId);
+                observatoryByDevice[deviceId] = observatoryId;
+                availableByDevice[deviceId] = DateTimeOffset.UtcNow;
             }
             var seedElapsed = Stopwatch.GetElapsedTime(seedStarted);
             // One observatory arrives with a far older backlog: fairness must still serve the rest.
@@ -89,15 +94,18 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                     }
                     empties = 0;
                     var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                    var (observatory, availableAt) = await db.CentralDerivativeJobs.AsNoTracking()
-                        .Where(job => job.Id == lease.JobId)
-                        .Select(job => new ValueTuple<Guid, DateTimeOffset>(job.SourceArtifact!.Frame!.ObservatoryId, job.LeaseAcquiredAtUtc ?? job.CreatedAtUtc))
+                    // Bookkeeping reads stay lock-free so the harness never participates in claim lock cycles.
+                    var observatory = observatoryByDevice[lease.SourceDevicePublicId];
+                    var active = await db.Database.SqlQueryRaw<int>("""
+                            SELECT COUNT(*) AS [Value]
+                            FROM [CentralDerivativeJobs] AS job WITH (NOLOCK)
+                            INNER JOIN [CentralArtifacts] AS source WITH (NOLOCK) ON source.[Id] = job.[SourceCentralArtifactId]
+                            INNER JOIN [CentralFrames] AS frame WITH (NOLOCK) ON frame.[Id] = source.[CentralFrameId]
+                            WHERE job.[Status] = N'Leased' AND job.[LeaseExpiresAtUtc] > SYSDATETIMEOFFSET() AND frame.[ObservatoryId] = @observatory
+                            """, new Microsoft.Data.SqlClient.SqlParameter("@observatory", observatory))
                         .SingleAsync().ConfigureAwait(false);
-                    var active = await db.CentralDerivativeJobs.AsNoTracking().CountAsync(job =>
-                        job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc > DateTimeOffset.UtcNow
-                        && job.SourceArtifact!.Frame!.ObservatoryId == observatory).ConfigureAwait(false);
                     InterlockedMax(ref maxActivePerObservatory, active);
-                    latencies.Add(Math.Max(0, (DateTimeOffset.UtcNow - availableAt).TotalMilliseconds));
+                    latencies.Add(Math.Max(0, (DateTimeOffset.UtcNow - availableByDevice[lease.SourceDevicePublicId]).TotalMilliseconds));
                     // Simulate recipe work, then either finish or (every 11th job) lose the lease to exercise recovery.
                     await Task.Delay(5).ConfigureAwait(false);
                     if (lease.AttemptCount == 1 && lease.JobId.GetHashCode() % 11 == 0)
@@ -110,7 +118,7 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                         Interlocked.Increment(ref expiredAndReclaimed);
                         continue;
                     }
-                    await jobs.SkipAsync(lease.JobId, lease.LeaseToken, "fairness.evidence", CancellationToken.None).ConfigureAwait(false);
+                    await RetryDeadlockAsync(() => jobs.SkipAsync(lease.JobId, lease.LeaseToken, "fairness.evidence", CancellationToken.None)).ConfigureAwait(false);
                     completions.AddOrUpdate(observatory, 1, static (_, count) => count + 1);
                     Interlocked.Increment(ref completed);
                 }
@@ -170,6 +178,22 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
         Console.WriteLine($"Processing fairness evidence written to {path}");
     }
 
+    private static async Task RetryDeadlockAsync(Func<Task> operation)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await operation().ConfigureAwait(false);
+                return;
+            }
+            catch (Microsoft.Data.SqlClient.SqlException exception) when (exception.Number == 1205 && attempt < 10)
+            {
+                await Task.Delay(10 * (attempt + 1)).ConfigureAwait(false);
+            }
+        }
+    }
+
     private static void InterlockedMax(ref int target, int value)
     {
         int current;
@@ -210,7 +234,7 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
             && observatories.Contains(job.SourceArtifact!.Frame!.ObservatoryId)).ConfigureAwait(false);
     }
 
-    private static async Task<Guid> SeedObservatoryAsync(string scenario, int sources)
+    private static async Task<(Guid ObservatoryId, Guid DeviceId)> SeedObservatoryAsync(string scenario, int sources)
     {
         var name = $"{scenario}-{Guid.NewGuid():N}"[..Math.Min(40, scenario.Length + 33)];
         var device = Guid.NewGuid();
@@ -222,8 +246,9 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
         }
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        return await db.CentralArtifacts.AsNoTracking().Where(artifact => artifact.Id == sourceId)
+        var observatory = await db.CentralArtifacts.AsNoTracking().Where(artifact => artifact.Id == sourceId)
             .Select(artifact => artifact.Frame!.ObservatoryId).SingleAsync().ConfigureAwait(false);
+        return (observatory, device);
     }
 
     private static async Task DisableClaimableJobsAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory)

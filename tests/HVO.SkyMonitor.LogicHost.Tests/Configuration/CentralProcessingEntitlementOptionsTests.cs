@@ -119,6 +119,11 @@ public sealed class CentralProcessingEntitlementOptionsTests
         Assert.IsTrue(fair.Contains("@starvationBefore", StringComparison.Ordinal));
         Assert.IsTrue(fair.Contains("/ COALESCE(ent.[w], @defaultWeight)", StringComparison.Ordinal));
         Assert.IsTrue(fair.Contains("@poolMode = 2 AND ent.[pool] = @pool", StringComparison.Ordinal));
+        Assert.IsTrue(fair.TrimStart().StartsWith("WITH active AS", StringComparison.Ordinal), "fairness aggregates are computed once per query");
+        Assert.IsFalse(plain.Contains("WITH active AS", StringComparison.Ordinal));
+        Assert.IsTrue(CentralDerivativeJobService.CreateCandidateSql(true, idOnly: true)
+            .Contains($"SELECT TOP({CentralDerivativeJobService.FairCandidateBatchSize}) job.[Id] AS [Value]", StringComparison.Ordinal));
+        Assert.IsTrue(fair.Contains("SELECT TOP(1) job.*", StringComparison.Ordinal));
         foreach (var sql in new[] { plain, fair })
         {
             Assert.IsTrue(sql.Contains("STRING_SPLIT(@includeRecipes, ',')", StringComparison.Ordinal));

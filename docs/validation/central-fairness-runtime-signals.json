@@ -5,7 +5,8 @@
   "meter": "HVO.SkyMonitor.LogicHost.ProcessingFairness",
   "activitySource": "HVO.SkyMonitor.LogicHost.DerivativeWorker",
   "logs": [
-    { "eventId": 2220, "level": "Information", "fields": ["Worker", "JobId", "Observatory", "Reason", "Active", "Limit"] }
+    { "eventId": 2220, "level": "Information", "fields": ["Worker", "JobId", "Observatory", "Reason", "Active", "Limit"] },
+    { "eventId": 2221, "level": "Warning", "fields": ["Worker", "Iteration", "ElapsedMilliseconds", "LockTimeouts", "ThrottledObservatories", "SkippedJobs", "Retries"] }
   ],
   "metrics": [
     { "name": "skymonitor.central.fairness.queue", "unit": "{job}", "labels": { "observatory": ["<observatory id>"], "status": ["pending", "leased", "waiting"] } },

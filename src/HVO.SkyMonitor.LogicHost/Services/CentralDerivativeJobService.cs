@@ -4,6 +4,7 @@ using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 
@@ -207,51 +208,80 @@ internal sealed partial class CentralDerivativeJobService(
         var pool = scope?.Pool ?? string.Empty;
         var excludedObservatories = new List<Guid>();
         var excludedJobs = new List<Guid>();
+        var lockTimeouts = 0;
+        var retryReasons = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        void Retry(string reason) => retryReasons[reason] = retryReasons.GetValueOrDefault(reason) + 1;
+        var claimStarted = timeProvider.GetTimestamp();
         for (var collision = 0; collision < 100; collision++)
         {
+            if (collision == ContentionLogThreshold && logger is not null)
+            {
+                Log.ClaimContention(logger, workerId, collision, lockTimeouts, excludedObservatories.Count, excludedJobs.Count,
+                    string.Join(',', retryReasons.Select(pair => $"{pair.Key}={pair.Value}")),
+                    timeProvider.GetElapsedTime(claimStarted).TotalMilliseconds);
+            }
             var now = timeProvider.GetUtcNow();
             await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            // Text parameters are declared nvarchar(max) so that changing JSON/list lengths reuse one cached plan
+            // instead of compiling a plan per distinct length.
             SqlParameter[] CreateParameters() =>
             [
                     new SqlParameter("@now", now),
-                    new SqlParameter("@includeRecipes", includeRecipes),
-                    new SqlParameter("@excludeRecipes", excludeRecipes),
+                    Text("@includeRecipes", includeRecipes),
+                    Text("@excludeRecipes", excludeRecipes),
                     new SqlParameter("@maximumInputBytes", maximumInputBytes),
-                    new SqlParameter("@entitlements", entitlements?.CreateObservatoryEntitlementsJson() ?? "[]"),
-                    new SqlParameter("@classes", entitlements?.CreateRecipeClassesJson() ?? "[]"),
-                    new SqlParameter("@classLimits", entitlements?.CreateObservatoryClassLimitsJson() ?? "[]"),
+                    Text("@entitlements", entitlements?.CreateObservatoryEntitlementsJson() ?? "[]"),
+                    Text("@classes", entitlements?.CreateRecipeClassesJson() ?? "[]"),
+                    Text("@classLimits", entitlements?.CreateObservatoryClassLimitsJson() ?? "[]"),
                     new SqlParameter("@defaultActive", entitlements?.DefaultActiveJobs ?? 0),
                     new SqlParameter("@defaultCamera", entitlements?.DefaultActiveJobsPerCamera ?? 0),
                     new SqlParameter("@defaultWeight", entitlements?.DefaultWeight ?? 1.0),
                     new SqlParameter("@defaultPriority", entitlements?.DefaultPriority ?? 0),
                     new SqlParameter("@starvationBefore", now - (entitlements?.StarvationAge ?? TimeSpan.FromMinutes(10))),
-                    new SqlParameter("@pool", pool),
+                    Text("@pool", pool),
                     new SqlParameter("@poolMode", (int)poolMode),
-                    new SqlParameter("@excluded", JsonSerializer.Serialize(excludedObservatories)),
-                    new SqlParameter("@excludedJobs", JsonSerializer.Serialize(excludedJobs))
+                    Text("@excluded", JsonSerializer.Serialize(excludedObservatories)),
+                    Text("@excludedJobs", JsonSerializer.Serialize(excludedJobs))
             ];
+            static SqlParameter Text(string name, string value) =>
+                new(name, System.Data.SqlDbType.NVarChar, -1) { Value = value };
             CentralDerivativeJob? candidate;
             if (fairness)
             {
                 // Fair ordering sorts every qualifying row, and a sort under UPDLOCK would hold update locks on all of
                 // them until commit, starving concurrent claimers through READPAST. Pick the candidate without lock
                 // hints, then lock and re-validate that single row; a row another claimer took meanwhile is skipped.
-                var candidateId = await dbContext.Database
-                    .SqlQueryRaw<Guid>(CreateCandidateSql(fairness: true, idOnly: true), CreateParameters())
-                    .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-                candidate = candidateId == Guid.Empty
-                    ? null
-                    : await dbContext.CentralDerivativeJobs
-                        .FromSqlRaw(
-                            "SELECT TOP(1) job.* FROM [CentralDerivativeJobs] AS job WITH (UPDLOCK, READPAST, READCOMMITTEDLOCK, ROWLOCK) WHERE job.[Id] = @candidateId",
-                            new SqlParameter("@candidateId", candidateId))
+                // Every claimer ranks the queue identically, so concurrent claimers would all target the same top row
+                // and collide. Fetch a small ordered batch and lock the best row that is still claimable; a row another
+                // claimer holds is skipped by READPAST, a row another claimer already leased fails the status
+                // predicate, and in both cases the next-ranked row is tried in order.
+                var candidateIds = await SelectCandidateIdsAsync(CreateCandidateSql(fairness: true, idOnly: true), CreateParameters(), cancellationToken)
+                    .ConfigureAwait(false);
+                candidate = null;
+                foreach (var candidateId in candidateIds)
+                {
+                    candidate = await dbContext.CentralDerivativeJobs
+                        .FromSqlRaw("""
+                            SELECT TOP(1) job.* FROM [CentralDerivativeJobs] AS job WITH (UPDLOCK, READPAST, READCOMMITTEDLOCK, ROWLOCK)
+                            WHERE job.[Id] = @candidateId
+                              AND ((job.[Status] IN (N'Pending', N'RetryableFailure') AND job.[AvailableAtUtc] <= @now)
+                                   OR (job.[Status] = N'Leased' AND job.[LeaseExpiresAtUtc] <= @now))
+                            """,
+                            new SqlParameter("@candidateId", candidateId),
+                            new SqlParameter("@now", now))
                         .AsNoTracking()
                         .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-                if (candidateId != Guid.Empty && candidate is null)
+                    if (candidate is not null)
+                    {
+                        break;
+                    }
+                    excludedJobs.Add(candidateId);
+                }
+                if (candidateIds.Count > 0 && candidate is null)
                 {
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                     dbContext.ChangeTracker.Clear();
-                    excludedJobs.Add(candidateId);
+                    Retry("batch-exhausted");
                     continue;
                 }
             }
@@ -275,6 +305,15 @@ internal sealed partial class CentralDerivativeJobService(
                 // exceed an entitlement. A rejected observatory is excluded for the rest of this claim call.
                 var rejection = await RecheckEntitlementAsync(candidate, entitlements!, now, cancellationToken)
                     .ConfigureAwait(false);
+                if (rejection is { Reason: "lock-timeout" })
+                {
+                    lockTimeouts++;
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    dbContext.ChangeTracker.Clear();
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(250, 10 * (collision + 1))), cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
                 if (rejection is { } throttled)
                 {
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -352,6 +391,7 @@ internal sealed partial class CentralDerivativeJobService(
                     }
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                     dbContext.ChangeTracker.Clear();
+                    Retry("adopted-outcome");
                     continue;
                 }
                 var expiredAttempt = await dbContext.CentralDerivativeJobAttempts.Where(attempt =>
@@ -405,6 +445,7 @@ internal sealed partial class CentralDerivativeJobService(
                     }
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                     dbContext.ChangeTracker.Clear();
+                    Retry("expired-attempt");
                     continue;
                 }
                 if (candidate.AttemptCount >= candidate.MaxAttempts)
@@ -435,6 +476,7 @@ internal sealed partial class CentralDerivativeJobService(
                     {
                         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                         dbContext.ChangeTracker.Clear();
+                        Retry("terminal-update");
                         continue;
                     }
                     await QuarantineAbandonedOutputAsync(candidate.Id, now, cancellationToken).ConfigureAwait(false);
@@ -493,6 +535,7 @@ internal sealed partial class CentralDerivativeJobService(
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 dbContext.ChangeTracker.Clear();
+                Retry("lease-update");
                 continue;
             }
             dbContext.CentralDerivativeJobAttempts.Add(new CentralDerivativeJobAttempt
@@ -505,8 +548,9 @@ internal sealed partial class CentralDerivativeJobService(
                 Outcome = CentralDerivativeAttemptOutcome.Leased
             });
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            var claimed = await LoadJobAsync(candidate.Id, cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            // The lease is ours after commit; loading it outside the transaction keeps the observatory lock short.
+            var claimed = await LoadJobAsync(candidate.Id, cancellationToken).ConfigureAwait(false);
             return CreateLease(claimed);
         }
         throw new CentralDerivativeJobStateException("Unable to claim a derivative job because of sustained concurrency.");
@@ -1003,7 +1047,8 @@ internal sealed partial class CentralDerivativeJobService(
 
     /// <summary>
     /// Writes the auditable usage row for a terminal attempt in the caller's transaction (idempotent per attempt) and
-    /// records the per-observatory completion signal.
+    /// records the per-observatory completion signal. A lease that another claimer expired can carry an end time
+    /// taken before this claim waited on locks, so the usage end is clamped to the lease acquisition.
     /// </summary>
     private async Task RecordUsageAsync(Guid jobId, int attemptNumber, CancellationToken cancellationToken)
     {
@@ -1016,7 +1061,10 @@ internal sealed partial class CentralDerivativeJobService(
                 OUTPUT inserted.[ObservatoryId], inserted.[ResourceClass], inserted.[Outcome], inserted.[InputBytes], inserted.[OutputBytes]
                 SELECT NEWID(), frame.[ObservatoryId], frame.[DevicePublicId], attempt.[CentralDerivativeJobId], attempt.[AttemptNumber],
                        job.[RecipeName], COALESCE(rc.[cls], N'image'), attempt.[WorkerId], attempt.[Outcome], attempt.[ReasonCode],
-                       attempt.[LeaseAcquiredAtUtc], COALESCE(attempt.[EndedAtUtc], SYSDATETIMEOFFSET()),
+                       attempt.[LeaseAcquiredAtUtc],
+                       CASE WHEN COALESCE(attempt.[EndedAtUtc], SYSDATETIMEOFFSET()) < attempt.[LeaseAcquiredAtUtc]
+                            THEN attempt.[LeaseAcquiredAtUtc]
+                            ELSE COALESCE(attempt.[EndedAtUtc], SYSDATETIMEOFFSET()) END,
                        attempt.[InputBytes], attempt.[OutputBytes], attempt.[RecipeDurationTicks], SYSDATETIMEOFFSET()
                 FROM [CentralDerivativeJobAttempts] AS attempt
                 INNER JOIN [CentralDerivativeJobs] AS job ON job.[Id] = attempt.[CentralDerivativeJobId]
@@ -1059,6 +1107,47 @@ internal sealed partial class CentralDerivativeJobService(
         int ObservatoryClassActive,
         long CandidateBytes);
 
+    /// <summary>
+    /// Runs the fairness candidate query as a raw command inside the current transaction. The query starts with a
+    /// common table expression, which EF Core cannot compose over, so it bypasses the query pipeline.
+    /// </summary>
+    private async Task<List<Guid>> SelectCandidateIdsAsync(string sql, SqlParameter[] parameters, CancellationToken cancellationToken)
+    {
+        var connection = dbContext.Database.GetDbConnection();
+        await using var command = connection.CreateCommand();
+#pragma warning disable CA2100 // The text is the constant CreateCandidateSql template; every runtime value is a SqlParameter.
+        command.CommandText = sql;
+#pragma warning restore CA2100
+        command.Transaction = dbContext.Database.CurrentTransaction?.GetDbTransaction();
+        command.CommandTimeout = dbContext.Database.GetCommandTimeout() ?? command.CommandTimeout;
+        foreach (var parameter in parameters)
+        {
+            command.Parameters.Add(parameter);
+        }
+        var ids = new List<Guid>(FairCandidateBatchSize);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            ids.Add(reader.GetGuid(0));
+        }
+        return ids;
+    }
+
+    /// <summary>
+    /// Number of fair-ordered candidates fetched per claim attempt. Bounds how many concurrent claimers can be
+    /// absorbed without a collision round trip; a claimer that exhausts the batch re-queries with them excluded.
+    /// </summary>
+    internal const int FairCandidateBatchSize = 16;
+
+    private async Task<bool> TryAcquireEntitlementLockAsync(string resource, CancellationToken cancellationToken)
+    {
+        var result = new SqlParameter("@result", System.Data.SqlDbType.Int) { Direction = System.Data.ParameterDirection.Output };
+        await dbContext.Database.ExecuteSqlRawAsync("""
+                EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 10000;
+                """, [new SqlParameter("@resource", resource), result], cancellationToken).ConfigureAwait(false);
+        return result.Value is int value && value >= 0;
+    }
+
     private async Task<EntitlementRejection?> RecheckEntitlementAsync(
         CentralDerivativeJob candidate,
         CentralProcessingEntitlementOptions entitlements,
@@ -1073,31 +1162,41 @@ internal sealed partial class CentralDerivativeJobService(
                 WHERE source.[Id] = @sourceId
                 """, new SqlParameter("@sourceId", candidate.SourceCentralArtifactId))
             .SingleAsync(cancellationToken).ConfigureAwait(false);
-        var resource = $"hvo-entitlement:{identity.ObservatoryId:N}";
-        await dbContext.Database.ExecuteSqlRawAsync("""
-                DECLARE @result int;
-                EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 10000;
-                IF @result < 0 THROW 51000, 'The entitlement lock could not be acquired.', 1;
-                """, [new SqlParameter("@resource", resource)], cancellationToken).ConfigureAwait(false);
+        // Claims are serialized per observatory (observatory and camera counts) and, when the recipe's class carries
+        // a budget, per class (class-wide counts). Locks are always taken observatory first, then class, so claimers
+        // never wait on each other in a cycle. The counts below skip rows locked by in-flight transactions: every
+        // committed lease that matters to this decision is visible because its claimer held the same locks.
+        if (!await TryAcquireEntitlementLockAsync($"hvo-entitlement:{identity.ObservatoryId:N}", cancellationToken).ConfigureAwait(false))
+        {
+            // Treated like a claim collision by the caller: roll back and try again rather than failing the claim.
+            return new EntitlementRejection(identity.ObservatoryId, "lock-timeout", 0, 0);
+        }
+        var resourceClass = entitlements.ResolveResourceClass(candidate.RecipeName);
+        if (entitlements.ResourceClasses.TryGetValue(resourceClass, out var classBudget)
+            && (classBudget.ActiveJobs > 0 || classBudget.ActiveInputBytes > 0)
+            && !await TryAcquireEntitlementLockAsync($"hvo-entitlement:class:{resourceClass}", cancellationToken).ConfigureAwait(false))
+        {
+            return new EntitlementRejection(identity.ObservatoryId, "lock-timeout", 0, 0);
+        }
         var counts = await dbContext.Database.SqlQueryRaw<EntitlementCheckRow>("""
                 SELECT @observatoryId AS [ObservatoryId], @deviceId AS [DevicePublicId], COALESCE(rc.[cls], N'image') AS [ResourceClass],
-                    (SELECT COUNT(*) FROM [CentralDerivativeJobs] AS a
+                    (SELECT COUNT(*) FROM [CentralDerivativeJobs] AS a WITH (READPAST)
                      INNER JOIN [CentralArtifacts] AS sa ON sa.[Id] = a.[SourceCentralArtifactId]
                      INNER JOIN [CentralFrames] AS fa ON fa.[Id] = sa.[CentralFrameId]
                      WHERE a.[Status] = N'Leased' AND a.[LeaseExpiresAtUtc] > @now AND fa.[ObservatoryId] = @observatoryId) AS [ObservatoryActive],
-                    (SELECT COUNT(*) FROM [CentralDerivativeJobs] AS a
+                    (SELECT COUNT(*) FROM [CentralDerivativeJobs] AS a WITH (READPAST)
                      INNER JOIN [CentralArtifacts] AS sa ON sa.[Id] = a.[SourceCentralArtifactId]
                      INNER JOIN [CentralFrames] AS fa ON fa.[Id] = sa.[CentralFrameId]
                      WHERE a.[Status] = N'Leased' AND a.[LeaseExpiresAtUtc] > @now AND fa.[DevicePublicId] = @deviceId) AS [CameraActive],
-                    (SELECT COUNT(*) FROM [CentralDerivativeJobs] AS a
+                    (SELECT COUNT(*) FROM [CentralDerivativeJobs] AS a WITH (READPAST)
                      INNER JOIN OPENJSON(@classes) WITH ([r] nvarchar(128) '$.r', [cls] nvarchar(64) '$.cls') AS rc2 ON rc2.[r] = a.[RecipeName]
                      WHERE a.[Status] = N'Leased' AND a.[LeaseExpiresAtUtc] > @now AND rc2.[cls] = COALESCE(rc.[cls], N'image')) AS [ClassActive],
-                    (SELECT COALESCE(SUM(sz.[ByteLength]), 0) FROM [CentralDerivativeJobs] AS a
+                    (SELECT COALESCE(SUM(sz.[ByteLength]), 0) FROM [CentralDerivativeJobs] AS a WITH (READPAST)
                      INNER JOIN OPENJSON(@classes) WITH ([r] nvarchar(128) '$.r', [cls] nvarchar(64) '$.cls') AS rc3 ON rc3.[r] = a.[RecipeName]
                      INNER JOIN [CentralDerivativeJobInputs] AS i ON i.[CentralDerivativeJobId] = a.[Id]
                      INNER JOIN [CentralArtifacts] AS sz ON sz.[Id] = i.[CentralArtifactId]
                      WHERE a.[Status] = N'Leased' AND a.[LeaseExpiresAtUtc] > @now AND rc3.[cls] = COALESCE(rc.[cls], N'image')) AS [ClassActiveBytes],
-                    (SELECT COUNT(*) FROM [CentralDerivativeJobs] AS a
+                    (SELECT COUNT(*) FROM [CentralDerivativeJobs] AS a WITH (READPAST)
                      INNER JOIN [CentralArtifacts] AS sa ON sa.[Id] = a.[SourceCentralArtifactId]
                      INNER JOIN [CentralFrames] AS fa ON fa.[Id] = sa.[CentralFrameId]
                      INNER JOIN OPENJSON(@classes) WITH ([r] nvarchar(128) '$.r', [cls] nvarchar(64) '$.cls') AS rc4 ON rc4.[r] = a.[RecipeName]
@@ -1149,12 +1248,20 @@ internal sealed partial class CentralDerivativeJobService(
 
     private sealed record EntitlementIdentityRow(Guid ObservatoryId, Guid DevicePublicId);
 
+    /// <summary>Claim iterations after which a single claim call reports contention (event 2221).</summary>
+    internal const int ContentionLogThreshold = 8;
+
     private static partial class Log
     {
         [LoggerMessage(2220, LogLevel.Information,
             "Central derivative claim throttled: Worker={Worker}, JobId={JobId}, Observatory={Observatory}, Reason={Reason}, Active={Active}, Limit={Limit}")]
         public static partial void Throttled(
             ILogger logger, string worker, Guid jobId, Guid observatory, string reason, long active, long limit);
+
+        [LoggerMessage(2221, LogLevel.Warning,
+            "Central derivative claim contention: Worker={Worker} is on claim iteration {Iteration} after {ElapsedMilliseconds:F0} ms (LockTimeouts={LockTimeouts}, ThrottledObservatories={ThrottledObservatories}, SkippedJobs={SkippedJobs}, Retries={Retries})")]
+        public static partial void ClaimContention(
+            ILogger logger, string worker, int iteration, int lockTimeouts, int throttledObservatories, int skippedJobs, string retries, double elapsedMilliseconds);
     }
 
     private Task<int> QuarantineAbandonedOutputAsync(
@@ -1192,12 +1299,26 @@ internal sealed partial class CentralDerivativeJobService(
     /// </summary>
     internal static string CreateCandidateSql(bool fairness, bool idOnly = false)
     {
-        const string activeLeases = """
-            SELECT COUNT(*) FROM [CentralDerivativeJobs] AS a
-            INNER JOIN [CentralArtifacts] AS sa ON sa.[Id] = a.[SourceCentralArtifactId]
-            INNER JOIN [CentralFrames] AS fa ON fa.[Id] = sa.[CentralFrameId]
-            WHERE a.[Status] = N'Leased' AND a.[LeaseExpiresAtUtc] > @now
-            """;
+        // Active-lease aggregates are computed once per query (not once per candidate row) so the fairness cost is
+        // linear in candidates plus active leases. The CTE requires the id-only form to run as a raw command.
+        var fairPrefix = fairness
+            ? """
+              WITH active AS (
+                  SELECT a.[Id], fa.[ObservatoryId] AS [o], fa.[DevicePublicId] AS [d], COALESCE(rc.[cls], N'image') AS [cls],
+                      (SELECT COALESCE(SUM(sz.[ByteLength]), 0) FROM [CentralDerivativeJobInputs] AS i
+                       INNER JOIN [CentralArtifacts] AS sz ON sz.[Id] = i.[CentralArtifactId]
+                       WHERE i.[CentralDerivativeJobId] = a.[Id]) AS [bytes]
+                  FROM [CentralDerivativeJobs] AS a WITH (READPAST)
+                  INNER JOIN [CentralArtifacts] AS sa ON sa.[Id] = a.[SourceCentralArtifactId]
+                  INNER JOIN [CentralFrames] AS fa ON fa.[Id] = sa.[CentralFrameId]
+                  LEFT JOIN OPENJSON(@classes) WITH ([r] nvarchar(128) '$.r', [cls] nvarchar(64) '$.cls') AS rc ON rc.[r] = a.[RecipeName]
+                  WHERE a.[Status] = N'Leased' AND a.[LeaseExpiresAtUtc] > @now),
+              byObservatory AS (SELECT [o], COUNT(*) AS [n] FROM active GROUP BY [o]),
+              byCamera AS (SELECT [o], [d], COUNT(*) AS [n] FROM active GROUP BY [o], [d]),
+              byClass AS (SELECT [cls], COUNT(*) AS [n], SUM([bytes]) AS [b] FROM active GROUP BY [cls]),
+              byObservatoryClass AS (SELECT [o], [cls], COUNT(*) AS [n] FROM active GROUP BY [o], [cls])
+              """
+            : string.Empty;
         var fairJoins = fairness
             ? """
               INNER JOIN [CentralArtifacts] AS sourceArtifact ON sourceArtifact.[Id] = job.[SourceCentralArtifactId]
@@ -1206,26 +1327,22 @@ internal sealed partial class CentralDerivativeJobService(
                   ON ent.[o] = sourceFrame.[ObservatoryId]
               LEFT JOIN OPENJSON(@classes) WITH ([r] nvarchar(128) '$.r', [cls] nvarchar(64) '$.cls', [a] int '$.a', [b] bigint '$.b') AS rc
                   ON rc.[r] = job.[RecipeName]
+              LEFT JOIN byObservatory AS bo ON bo.[o] = sourceFrame.[ObservatoryId]
+              LEFT JOIN byCamera AS bc ON bc.[o] = sourceFrame.[ObservatoryId] AND bc.[d] = sourceFrame.[DevicePublicId]
+              LEFT JOIN byClass AS bcl ON bcl.[cls] = COALESCE(rc.[cls], N'image')
+              LEFT JOIN byObservatoryClass AS boc ON boc.[o] = sourceFrame.[ObservatoryId] AND boc.[cls] = COALESCE(rc.[cls], N'image')
               CROSS APPLY (SELECT
-                  (__ACTIVE__ AND fa.[ObservatoryId] = sourceFrame.[ObservatoryId]) AS [ObservatoryActive],
-                  (__ACTIVE__ AND fa.[DevicePublicId] = sourceFrame.[DevicePublicId]) AS [CameraActive],
-                  (SELECT COUNT(*) FROM [CentralDerivativeJobs] AS a
-                   INNER JOIN OPENJSON(@classes) WITH ([r] nvarchar(128) '$.r', [cls] nvarchar(64) '$.cls') AS rc2 ON rc2.[r] = a.[RecipeName]
-                   WHERE a.[Status] = N'Leased' AND a.[LeaseExpiresAtUtc] > @now AND rc2.[cls] = COALESCE(rc.[cls], N'image')) AS [ClassActive],
-                  (SELECT COALESCE(SUM(sz.[ByteLength]), 0) FROM [CentralDerivativeJobs] AS a
-                   INNER JOIN OPENJSON(@classes) WITH ([r] nvarchar(128) '$.r', [cls] nvarchar(64) '$.cls') AS rc3 ON rc3.[r] = a.[RecipeName]
-                   INNER JOIN [CentralDerivativeJobInputs] AS i ON i.[CentralDerivativeJobId] = a.[Id]
-                   INNER JOIN [CentralArtifacts] AS sz ON sz.[Id] = i.[CentralArtifactId]
-                   WHERE a.[Status] = N'Leased' AND a.[LeaseExpiresAtUtc] > @now AND rc3.[cls] = COALESCE(rc.[cls], N'image')) AS [ClassActiveBytes],
-                  (__ACTIVE__
-                   AND fa.[ObservatoryId] = sourceFrame.[ObservatoryId]
-                   AND a.[RecipeName] IN (SELECT rc4.[r] FROM OPENJSON(@classes) WITH ([r] nvarchar(128) '$.r', [cls] nvarchar(64) '$.cls') AS rc4 WHERE rc4.[cls] = COALESCE(rc.[cls], N'image'))) AS [ObservatoryClassActive],
+                  COALESCE(bo.[n], 0) AS [ObservatoryActive],
+                  COALESCE(bc.[n], 0) AS [CameraActive],
+                  COALESCE(bcl.[n], 0) AS [ClassActive],
+                  COALESCE(bcl.[b], 0) AS [ClassActiveBytes],
+                  COALESCE(boc.[n], 0) AS [ObservatoryClassActive],
                   (SELECT TOP(1) ocl.[a] FROM OPENJSON(@classLimits) WITH ([o] uniqueidentifier '$.o', [cls] nvarchar(64) '$.cls', [a] int '$.a') AS ocl
                    WHERE ocl.[o] = sourceFrame.[ObservatoryId] AND ocl.[cls] = COALESCE(rc.[cls], N'image')) AS [ObservatoryClassLimit],
                   (SELECT COALESCE(SUM(cb.[ByteLength]), 0) FROM [CentralDerivativeJobInputs] AS ci
                    INNER JOIN [CentralArtifacts] AS cb ON cb.[Id] = ci.[CentralArtifactId]
                    WHERE ci.[CentralDerivativeJobId] = job.[Id]) AS [CandidateBytes]) AS fair
-              """.Replace("__ACTIVE__", activeLeases, StringComparison.Ordinal)
+              """
             : string.Empty;
         var fairWhere = fairness
             ? """
@@ -1250,9 +1367,17 @@ internal sealed partial class CentralDerivativeJobService(
               """
             : string.Empty;
         var selectList = idOnly ? "job.[Id] AS [Value]" : "job.*";
-        var lockHints = idOnly ? string.Empty : "WITH (UPDLOCK, READPAST, READCOMMITTEDLOCK, ROWLOCK)";
+        var top = idOnly ? FairCandidateBatchSize.ToString(System.Globalization.CultureInfo.InvariantCulture) : "1";
+        // Ranking a few hundred rows does not benefit from a parallel plan, and many concurrent claimers each taking
+        // every scheduler thread oversubscribe the database host; the locked forms are composed by EF Core and
+        // cannot carry a query hint.
+        var queryHint = idOnly ? "OPTION (MAXDOP 1)" : string.Empty;
+        // The id-only form ranks candidates without taking locks and skips rows another claimer is updating; the locked
+        // form re-validates the single chosen row. Both avoid waiting behind in-flight lease transactions.
+        var lockHints = idOnly ? "WITH (READPAST)" : "WITH (UPDLOCK, READPAST, READCOMMITTEDLOCK, ROWLOCK)";
         return $"""
-            SELECT TOP(1) {selectList}
+            {fairPrefix}
+            SELECT TOP({top}) {selectList}
             FROM [CentralDerivativeJobs] AS job {lockHints}
             {fairJoins}
             WHERE
@@ -1309,6 +1434,7 @@ internal sealed partial class CentralDerivativeJobService(
                 CASE WHEN job.[Status] = N'Leased' THEN job.[LeaseExpiresAtUtc] ELSE job.[AvailableAtUtc] END,
                 job.[CreatedAtUtc],
                 job.[Id]
+            {queryHint}
             """;
     }
 
