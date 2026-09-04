@@ -22,3 +22,7 @@
 .editor-preview { padding: 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-card-bg); box-shadow: var(--hvo-panel-shadow); display: grid; gap: .8rem; }
 .editor-preview h2 { margin: 0; font-size: 1.08rem; }
 @media (max-width: 900px) { .node-row__head { grid-template-columns: 1fr 1fr; } }
+.identity-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, max-content)); gap: .3rem 1.5rem; margin: .6rem 0 0; }
+.identity-facts dt { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
+.identity-facts dd { margin: .1rem 0 0; }
+.check--stale { color: var(--hvo-warning-fg); }

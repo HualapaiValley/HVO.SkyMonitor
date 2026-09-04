@@ -138,7 +138,9 @@ public sealed partial class ReplaySubmitPage : ComponentBase, IAsyncDisposable
 
     private void BeginSubmit()
     {
-        if (_revisionId is null)
+        // Once a request has been accepted or returned, the page shows that outcome; a second
+        // submission needs a fresh freeze summary, never a second key against the same capture.
+        if (_revisionId is null || _submittedExecutionId is not null)
         {
             return;
         }
@@ -213,13 +215,21 @@ public sealed partial class ReplaySubmitPage : ComponentBase, IAsyncDisposable
             _submittedExecutionId = null;
             _message = result.Message ?? "The replay request could not be submitted.";
             _messageIsError = true;
+            if (result.Kind == OperatorUiResultKind.Conflict)
+            {
+                // The registry or capture state moved; re-read the freeze summary before any retry.
+                var conflictMessage = _message;
+                await LoadAsync().ConfigureAwait(false);
+                _message = conflictMessage;
+                _messageIsError = true;
+            }
         }
     }
 
     private async Task InvokeModuleAsync(string identifier, params object?[] arguments)
     {
         _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
-            "import", "./Components/Pages/ReplaySubmitPage.razor.js").ConfigureAwait(false);
+            "import", "./Components/Pages/SchedulePage.razor.js").ConfigureAwait(false);
         await _module.InvokeVoidAsync(identifier, arguments).ConfigureAwait(false);
     }
 

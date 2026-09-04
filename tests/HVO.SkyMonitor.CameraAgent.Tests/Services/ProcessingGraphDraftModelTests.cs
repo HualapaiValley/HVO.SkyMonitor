@@ -79,4 +79,45 @@ public sealed class ProcessingGraphDraftModelTests
         CollectionAssert.Contains(errors.ToArray(), "Node identifier 'preview' is used more than once.");
         CollectionAssert.Contains(errors.ToArray(), "Node 'preview' depends on 'telemetry', which is not the raw input or a node above it.");
     }
+
+    [TestMethod]
+    public void Move_DropsInputsThatAreNoLongerAboveAndKeepsStaleSelectionsRenderable()
+    {
+        var model = ProcessingGraphDraftModel.Empty();
+        model.Name = "night";
+        model.Revision = "1";
+        model.AddNode("preview");
+        model.AddNode("telemetry");
+        model.Nodes[1].ToggleDependency("preview", selected: true);
+
+        model.Move(model.Nodes[1], -1);
+
+        Assert.AreEqual("telemetry", model.Nodes[0].Id);
+        Assert.IsFalse(model.Nodes[0].DependsOn.Contains("preview"), "an input that moved below must not remain selected");
+        Assert.IsTrue(model.TryBuild(out _, out _));
+
+        // A renamed predecessor leaves a stale selection that stays visible so it can be cleared.
+        model.Nodes[1].ToggleDependency("telemetry", selected: true);
+        model.Nodes[0].Id = "telemetry-2";
+        CollectionAssert.Contains(model.RenderableDependencies(model.Nodes[1]).ToArray(), "telemetry");
+        Assert.IsFalse(model.TryBuild(out _, out var errors));
+        CollectionAssert.Contains(errors.ToArray(), "Node 'preview' depends on 'telemetry', which is not the raw input or a node above it.");
+    }
+
+    [TestMethod]
+    public void FromPipeline_CarriesSchemaAndDependencyPolicyIntoTheBuiltDraft()
+    {
+        var legacy = new CapturePipelineConfig(
+            [new CaptureProcessingStepConfig("Preview", "preview", 10, null, ["$raw"])],
+            CapturePipelineSchemaVersions.LegacyV1,
+            CapturePipelineDependencyPolicy.LegacyInference);
+
+        var model = ProcessingGraphDraftModel.FromPipeline(legacy, "rev-legacy", "legacy", "1");
+        Assert.IsTrue(model.TryBuild(out var built, out var errors), string.Join(" ", errors));
+
+        Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, model.SchemaVersion);
+        Assert.AreEqual(CapturePipelineDependencyPolicy.LegacyInference, built.DependencyPolicy);
+        Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, built.SchemaVersion);
+        Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, ProcessingGraphDraftModel.Empty().SchemaVersion);
+    }
 }

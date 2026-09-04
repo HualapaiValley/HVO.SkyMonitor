@@ -36,6 +36,11 @@
                     <label>Graph name<input class="form-control" @bind="_model.Name" @bind:after="FormChanged" /></label>
                     <label>Revision label<input class="form-control" @bind="_model.Revision" @bind:after="FormChanged" /></label>
                 </div>
+                <dl class="identity-facts">
+                    <div><dt>Pipeline schema</dt><dd>@_model.SchemaVersion</dd></div>
+                    <div><dt>Dependency policy</dt><dd>@_model.DependencyPolicy</dd></div>
+                </dl>
+                <p class="editor-note">Schema and dependency policy are carried from the source revision and are not editable here.</p>
             </fieldset>
 
             <fieldset class="editor-group" disabled="@_busy">
@@ -63,10 +68,12 @@
                             </div>
                             <fieldset class="node-row__dependencies">
                                 <legend>Inputs of @node.Id</legend>
-                                @foreach (var candidate in _model.EligibleDependencies(node))
+                                @{ var eligible = _model.EligibleDependencies(node); }
+                                @foreach (var candidate in _model.RenderableDependencies(node))
                                 {
                                     var selected = node.DependsOn.Contains(candidate);
-                                    <label class="check"><input type="checkbox" checked="@selected" @onchange="args => ToggleDependency(node, candidate, args.Value is true)" /> @(candidate == ProcessingGraphDraftModel.RawInput ? "raw capture" : candidate)</label>
+                                    var stale = selected && !eligible.Contains(candidate, StringComparer.Ordinal);
+                                    <label class="@(stale ? "check check--stale" : "check")"><input type="checkbox" checked="@selected" @onchange="args => ToggleDependency(node, candidate, args.Value is true)" /> @(candidate == ProcessingGraphDraftModel.RawInput ? "raw capture" : candidate)@(stale ? " (no longer above this node; clear it)" : "")</label>
                                 }
                             </fieldset>
                             @if (node.HasOptions) { <p class="editor-note">Carries opaque options from the source revision.</p> }

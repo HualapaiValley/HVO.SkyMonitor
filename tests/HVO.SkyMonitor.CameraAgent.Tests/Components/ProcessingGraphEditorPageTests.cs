@@ -51,7 +51,7 @@ public sealed class ProcessingGraphEditorPageTests
 
         cut.Find("form").Submit();
 
-        cut.WaitForAssertion(() => Assert.IsNotNull(cut.Find("svg[role='img']")));
+        cut.WaitForAssertion(() => Assert.IsNotNull(cut.Find("svg[role='group']")));
         Assert.HasCount(2, previewed!.Steps);
         Assert.AreEqual("preview", previewed.Steps[0].Id);
         CollectionAssert.AreEqual(RawOnly, previewed.Steps[1].DependsOn!.ToArray());
@@ -141,7 +141,8 @@ public sealed class ProcessingGraphEditorPageTests
             .Add(static diagram => diagram.NodeSelected, EventCallback.Factory.Create<string>(this, id => selected = id)));
 
         var svg = cut.Find("svg");
-        Assert.AreEqual("img", svg.GetAttribute("role"));
+        // A group keeps the focusable node buttons in the accessibility tree; an img role would prune them.
+        Assert.AreEqual("group", svg.GetAttribute("role"));
         StringAssert.Contains(cut.Find("svg desc").TextContent, "telemetry depends on preview.", StringComparison.Ordinal);
         Assert.HasCount(1, cut.FindAll("path.diagram-edge"));
         Assert.IsNotNull(cut.Find("g.diagram-node--disabled"));

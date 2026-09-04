@@ -8,7 +8,7 @@
 else
 {
     <div class="diagram-wrap">
-        <svg class="diagram" role="img" aria-labelledby="@TitleId @DescriptionId" viewBox="0 0 @Width @Height" focusable="false">
+        <svg class="diagram" role="group" aria-labelledby="@TitleId @DescriptionId" viewBox="0 0 @Width @Height" focusable="false">
             <title id="@TitleId">Dependency diagram of @_layout.Count node@(_layout.Count == 1 ? "" : "s")</title>
             <desc id="@DescriptionId">@Description</desc>
             @foreach (var edge in _edges)

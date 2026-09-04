@@ -18,12 +18,24 @@ internal sealed class ProcessingGraphDraftModel
     public List<NodeRow> Nodes { get; } = [];
     public string? SourceRevisionId { get; private set; }
 
+    /// <summary>Carried from the source revision and shown read-only; a new draft uses the current explicit schema.</summary>
+    public string SchemaVersion { get; private set; } = CapturePipelineSchemaVersions.ExplicitV2;
+
+    public CapturePipelineDependencyPolicy DependencyPolicy { get; private set; } = CapturePipelineDependencyPolicy.RejectEnabledDependent;
+
     public static ProcessingGraphDraftModel Empty() => new();
 
     public static ProcessingGraphDraftModel FromPipeline(CapturePipelineConfig pipeline, string? sourceRevisionId, string name, string revision)
     {
         ArgumentNullException.ThrowIfNull(pipeline);
-        var model = new ProcessingGraphDraftModel { Name = name, Revision = revision, SourceRevisionId = sourceRevisionId };
+        var model = new ProcessingGraphDraftModel
+        {
+            Name = name,
+            Revision = revision,
+            SourceRevisionId = sourceRevisionId,
+            SchemaVersion = pipeline.SchemaVersion,
+            DependencyPolicy = pipeline.DependencyPolicy
+        };
         foreach (var step in pipeline.Steps)
         {
             model.Nodes.Add(new NodeRow
@@ -72,6 +84,16 @@ internal sealed class ProcessingGraphDraftModel
         }
         Nodes.RemoveAt(index);
         Nodes.Insert(target, node);
+        // A node that moved above one of its inputs can no longer name it; drop the edge visibly.
+        node.DependsOn.IntersectWith(EligibleDependencies(node));
+    }
+
+    /// <summary>Inputs to render for a node: everything eligible plus any stale selection so it can be cleared.</summary>
+    public IReadOnlyList<string> RenderableDependencies(NodeRow node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        var eligible = EligibleDependencies(node);
+        return [.. eligible, .. node.DependsOn.Where(dependency => !eligible.Contains(dependency, StringComparer.Ordinal)).OrderBy(static dependency => dependency, StringComparer.Ordinal)];
     }
 
     /// <summary>Identifiers a node may depend on: the raw input and every node above it in the list.</summary>
@@ -137,7 +159,7 @@ internal sealed class ProcessingGraphDraftModel
             node.Required,
             node.Enabled ? null : false,
             node.Publication)).ToArray();
-        pipeline = new CapturePipelineConfig(steps, CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent);
+        pipeline = new CapturePipelineConfig(steps, SchemaVersion, DependencyPolicy);
         return true;
     }
 

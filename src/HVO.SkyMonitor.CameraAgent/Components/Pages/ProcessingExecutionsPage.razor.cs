@@ -123,6 +123,9 @@ public sealed partial class ProcessingExecutionsPage : ComponentBase, IAsyncDisp
             {
             }
         }
+        // Wait for any in-flight refresh to release the gate before disposing it.
+        await _gate.WaitAsync().ConfigureAwait(false);
+        _gate.Release();
         _lifetime?.Dispose();
         _gate.Dispose();
     }

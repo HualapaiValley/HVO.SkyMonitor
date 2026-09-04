@@ -137,7 +137,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         {
             return;
         }
-        var signature = string.Join('\n', _model.Name, _model.Revision, _previewedPipeline.GetHashCode().ToString(CultureInfo.InvariantCulture), _plan?.DesiredSha256);
+        var signature = string.Join('\n', _model.Name, _model.Revision, _model.SourceRevisionId, _plan?.DesiredSha256, _plan?.EffectiveSha256);
         if (!string.Equals(_savePayload, signature, StringComparison.Ordinal))
         {
             _savePayload = signature;

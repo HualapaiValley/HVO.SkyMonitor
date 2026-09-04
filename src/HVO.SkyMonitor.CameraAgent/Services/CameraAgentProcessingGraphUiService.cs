@@ -155,7 +155,7 @@ internal static class CameraAgentProcessingExecutionProjection
             execution.GraphRevisionId,
             execution.GraphDefinitionIdentitySha256,
             execution.TriggerKind,
-            execution.TriggerReference,
+            CameraAgentReplayUiService.Sanitize(execution.TriggerReference),
             execution.Priority,
             execution.AcceptedUtc,
             execution.AvailableUtc,
@@ -163,7 +163,7 @@ internal static class CameraAgentProcessingExecutionProjection
             execution.MaximumAgeUtc,
             execution.StartedUtc,
             execution.CompletedUtc,
-            execution.FailureReason,
+            CameraAgentReplayUiService.Sanitize(execution.FailureReason),
             execution.CancellationRequested,
             execution.AttemptCount);
     }
@@ -181,7 +181,7 @@ internal static class CameraAgentProcessingExecutionProjection
                 node.Required,
                 node.PlanSha256,
                 node.Status,
-                node.Reason,
+                CameraAgentReplayUiService.Sanitize(node.Reason),
                 node.AttemptCount,
                 node.StartedUtc,
                 node.CompletedUtc,
@@ -193,9 +193,9 @@ internal static class CameraAgentProcessingExecutionProjection
                     attempt.CompletedUtc,
                     attempt.Status,
                     attempt.Outcome?.ToString(),
-                    attempt.Reason,
+                    CameraAgentReplayUiService.Sanitize(attempt.Reason),
                     attempt.Duration)).ToArray(),
-                node.Outputs)).ToArray());
+                node.Outputs.Select(static output => output with { AvailabilityReason = CameraAgentReplayUiService.Sanitize(output.AvailabilityReason) }).ToArray())).ToArray());
     }
 }
 

@@ -179,6 +179,40 @@ public sealed class ReplaySubmitPageTests
         Assert.AreNotEqual(service.Submissions[0].Key, service.Submissions[1].Key);
     }
 
+    [TestMethod]
+    public void Submit_WhenDurableStateConflicts_RereadsTheFreezeSummaryBeforeAnotherAttempt()
+    {
+        using var context = Configure(
+            new ReplayUiService
+            {
+                SubmitResult = OperatorUiResult<ReplaySubmissionView>.Failure(
+                    OperatorUiResultKind.Conflict, CameraAgentReplayUiService.ConflictMessage)
+            },
+            out var service);
+        var cut = Render(context);
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.CandidateReads));
+
+        ConfirmSubmit(cut);
+
+        cut.WaitForAssertion(() => Assert.AreEqual(2, service.CandidateReads));
+        Assert.IsTrue(cut.Markup.Contains(CameraAgentReplayUiService.ConflictMessage, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void Submit_AfterAnAcceptedOutcome_DoesNotAllowASecondRequestForTheSameSummary()
+    {
+        using var context = Configure(new ReplayUiService(), out var service);
+        var cut = Render(context);
+        ConfirmSubmit(cut);
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.Markup.Contains("Replay request accepted", StringComparison.Ordinal)));
+
+        Assert.IsTrue(cut.Find("#replay-submit-trigger").HasAttribute("disabled"));
+        cut.Find("#replay-submit-trigger").Click();
+
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        Assert.HasCount(1, service.Submissions);
+    }
+
     private static void ConfirmSubmit(IRenderedComponent<ReplaySubmitPage> cut)
     {
         cut.WaitForAssertion(() => Assert.HasCount(1, cut.FindAll("#replay-submit-trigger")));
@@ -210,6 +244,8 @@ public sealed class ReplaySubmitPageTests
     {
         internal List<(string Key, string RevisionId)> Submissions { get; } = [];
 
+        internal int CandidateReads { get; private set; }
+
         internal OperatorUiResult<ReplayCandidateView>? CandidateResult { get; init; }
 
         internal OperatorUiResult<ReplaySubmissionView>? SubmitResult { get; init; }
@@ -219,8 +255,11 @@ public sealed class ReplaySubmitPageTests
         public ValueTask<OperatorUiResult<ReplayCandidateView>> GetReplayCandidateAsync(
             Guid captureId,
             CancellationToken cancellationToken)
-            => ValueTask.FromResult(CandidateResult
+        {
+            CandidateReads++;
+            return ValueTask.FromResult(CandidateResult
                 ?? OperatorUiResult<ReplayCandidateView>.Success(ReplayUiTestData.Candidate(captureId)));
+        }
 
         public ValueTask<OperatorUiResult<ReplaySubmissionView>> SubmitReplayAsync(
             Guid captureId,

@@ -20,9 +20,10 @@
     }
     else if (_execution is null)
     {
-        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error"
-                         Title="Replay execution unavailable"
+        <PageStateNotice Kind="@(_notFound ? PageStateNotice.PageStateKind.Info : PageStateNotice.PageStateKind.Error)"
+                         Title="@(_notFound ? "Replay execution not found" : "Replay execution unavailable")"
                          Message="@(_message ?? "The requested replay execution was not found.")">
+            @if (!_notFound) { <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Try again</button> }
             <a class="btn btn-outline-light" href="/gallery">Return to archive</a>
         </PageStateNotice>
     }
@@ -145,7 +146,7 @@
                                                 <span>@OperationsPage.SplitWords(output.AvailabilityState)@(output.AvailabilityReason is null ? string.Empty : $" / {output.AvailabilityReason}")</span>
                                                 <code>@output.OutputIdentitySha256</code>
                                             </div>
-                                            @if (string.Equals(output.AvailabilityState, "Available", StringComparison.OrdinalIgnoreCase))
+                                            @if (string.Equals(output.AvailabilityState, "Available", StringComparison.Ordinal))
                                             {
                                                 <a href="@OutputContentUrl(output.ArtifactId)" aria-label="Inspect replay output @output.ArtifactId">Inspect output content</a>
                                             }

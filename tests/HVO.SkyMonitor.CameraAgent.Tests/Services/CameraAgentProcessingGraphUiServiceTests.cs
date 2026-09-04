@@ -46,9 +46,9 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         var execution = ProcessingExecutionPagesTests.Execution(executionId, ProcessingGraphExecutionClass.Replay, ProcessingGraphExecutionStatus.Completed);
         var detail = new ProcessingGraphExecutionDetail(execution,
         [
-            new ProcessingGraphExecutionNodeState("preview", true, new string('P', 64), "Completed", null, 1, Now, Now,
+            new ProcessingGraphExecutionNodeState("preview", true, new string('P', 64), "Completed", "/var/lib/secret failed", 1, Now, Now,
                 [], [new ProcessingGraphNodeAttemptState(1, "runner-host-secret-7", Now, Now, "Completed", HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(1))],
-                [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Available", null)])
+                [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Missing", "/var/lib/secret failed")])
         ]);
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
         operations.Setup(value => value.ReadExecutionDetailAsync(executionId, It.IsAny<CancellationToken>())).ReturnsAsync(detail);
@@ -61,6 +61,9 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         Assert.IsTrue(found.IsSuccess);
         var serialized = JsonSerializer.Serialize(found.Value);
         Assert.IsFalse(serialized.Contains("runner-host-secret-7", StringComparison.Ordinal));
+        Assert.IsFalse(serialized.Contains("/var/lib/", StringComparison.Ordinal), "path-like reasons are withheld on the graph path too");
+        Assert.AreEqual(CameraAgentReplayUiService.Sanitize("/var/lib/secret failed"), found.Value!.Nodes[0].Reason);
+        Assert.AreEqual(CameraAgentReplayUiService.Sanitize("/var/lib/secret failed"), found.Value.Nodes[0].Outputs[0].AvailabilityReason);
         Assert.IsFalse(serialized.Contains("LeaseOwner", StringComparison.Ordinal));
         Assert.AreEqual("Produced", found.Value!.Nodes[0].Attempts[0].Outcome);
         Assert.AreEqual(OperatorUiResultKind.NotFound, missing.Kind);

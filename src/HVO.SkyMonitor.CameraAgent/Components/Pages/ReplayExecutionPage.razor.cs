@@ -16,9 +16,12 @@ public sealed partial class ReplayExecutionPage : ComponentBase, IAsyncDisposabl
     /// <summary>Replay progress polling never runs faster than this; live acquisition keeps priority.</summary>
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly CancellationTokenSource _lifetime = new();
     private ReplayExecutionView? _execution;
     private ReplayRunnerFactsView _runnerFacts = default!;
     private CancellationTokenSource? _pollCancellation;
+    private bool _notFound;
     private Task? _pollTask;
     private IJSObjectReference? _module;
     private ElementReference _confirmationDialog;
@@ -39,6 +42,8 @@ public sealed partial class ReplayExecutionPage : ComponentBase, IAsyncDisposabl
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
 
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
+
+    [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
 
     [Parameter] public Guid ExecutionId { get; set; }
 
@@ -87,6 +92,8 @@ public sealed partial class ReplayExecutionPage : ComponentBase, IAsyncDisposabl
         _busy = true;
         try
         {
+            // An explicit refresh supersedes the poller so an older read cannot land after it.
+            await StopPollingAsync().ConfigureAwait(false);
             await LoadAsync(reportFailure: true).ConfigureAwait(false);
         }
         finally
@@ -98,29 +105,44 @@ public sealed partial class ReplayExecutionPage : ComponentBase, IAsyncDisposabl
 
     private async Task LoadAsync(bool reportFailure)
     {
-        var result = await ReplayService.GetReplayExecutionAsync(ExecutionId, CancellationToken.None)
-            .ConfigureAwait(false);
-        if (result.Kind == OperatorUiResultKind.Unauthorized)
+        await _gate.WaitAsync(_lifetime.Token).ConfigureAwait(false);
+        try
         {
-            _execution = null;
-            NavigationManager.NavigateTo("/Account/AccessDenied");
-            return;
-        }
-        if (result.IsSuccess && result.Value is { } execution)
-        {
-            _execution = execution;
+            var result = await ReplayService.GetReplayExecutionAsync(ExecutionId, _lifetime.Token)
+                .ConfigureAwait(false);
+            if (result.Kind == OperatorUiResultKind.Unauthorized)
+            {
+                _execution = null;
+                NavigationManager.NavigateTo("/Account/AccessDenied");
+                return;
+            }
+            _notFound = result.Kind == OperatorUiResultKind.NotFound;
+            if (result.IsSuccess && result.Value is { } execution)
+            {
+                _execution = execution;
+                if (reportFailure)
+                {
+                    _message = null;
+                    _messageIsError = false;
+                }
+                return;
+            }
             if (reportFailure)
             {
-                _message = null;
-                _messageIsError = false;
+                _execution = null;
+                _message = result.Message ?? "Replay execution progress is unavailable.";
+                _messageIsError = true;
             }
-            return;
         }
-        if (reportFailure)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
-            _execution = null;
-            _message = result.Message ?? "Replay execution progress is unavailable.";
-            _messageIsError = true;
+        }
+        finally
+        {
+            if (!_lifetime.IsCancellationRequested)
+            {
+                _gate.Release();
+            }
         }
     }
 
@@ -138,25 +160,33 @@ public sealed partial class ReplayExecutionPage : ComponentBase, IAsyncDisposabl
 
     private async Task PollAsync(CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(PollInterval);
+        using var timer = new PeriodicTimer(PollInterval, TimeProvider);
         try
         {
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
-                var result = await ReplayService.GetReplayExecutionAsync(ExecutionId, cancellationToken)
-                    .ConfigureAwait(false);
-                if (cancellationToken.IsCancellationRequested)
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
                 {
-                    return;
-                }
-                if (result.IsSuccess && result.Value is { } execution)
-                {
-                    _execution = execution;
-                    await InvokeAsync(StateHasChanged).ConfigureAwait(false);
-                    if (execution.IsTerminal)
+                    var result = await ReplayService.GetReplayExecutionAsync(ExecutionId, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (cancellationToken.IsCancellationRequested)
                     {
                         return;
                     }
+                    if (result.IsSuccess && result.Value is { } execution)
+                    {
+                        _execution = execution;
+                        await InvokeAsync(StateHasChanged).ConfigureAwait(false);
+                        if (execution.IsTerminal)
+                        {
+                            return;
+                        }
+                    }
+                }
+                finally
+                {
+                    _gate.Release();
                 }
             }
         }
@@ -223,7 +253,7 @@ public sealed partial class ReplayExecutionPage : ComponentBase, IAsyncDisposabl
                 _execution.ExecutionId,
                 _cancelKey,
                 "operator cancellation",
-                CancellationToken.None).ConfigureAwait(false);
+                _lifetime.Token).ConfigureAwait(false);
         }
         finally
         {
@@ -256,12 +286,13 @@ public sealed partial class ReplayExecutionPage : ComponentBase, IAsyncDisposabl
     private async Task InvokeModuleAsync(string identifier, params object?[] arguments)
     {
         _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
-            "import", "./Components/Pages/ReplayExecutionPage.razor.js").ConfigureAwait(false);
+            "import", "./Components/Pages/SchedulePage.razor.js").ConfigureAwait(false);
         await _module.InvokeVoidAsync(identifier, arguments).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
     {
+        await _lifetime.CancelAsync().ConfigureAwait(false);
         var cancellation = Interlocked.Exchange(ref _pollCancellation, null);
         var poll = Interlocked.Exchange(ref _pollTask, null);
         if (cancellation is not null)
@@ -289,5 +320,7 @@ public sealed partial class ReplayExecutionPage : ComponentBase, IAsyncDisposabl
             {
             }
         }
+        _lifetime.Dispose();
+        _gate.Dispose();
     }
 }

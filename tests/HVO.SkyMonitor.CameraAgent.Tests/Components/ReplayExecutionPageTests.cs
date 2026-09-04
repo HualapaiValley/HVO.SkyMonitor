@@ -107,7 +107,9 @@ public sealed class ReplayExecutionPageTests
         var cut = Render(context);
 
         cut.WaitForAssertion(() => Assert.IsTrue(
-            cut.Markup.Contains("Replay execution unavailable", StringComparison.Ordinal)));
+            cut.Markup.Contains("Replay execution not found", StringComparison.Ordinal)));
+        Assert.IsEmpty(cut.FindAll("[role='alert']"));
+        Assert.IsFalse(cut.FindAll("button").Any(static button => button.TextContent.Contains("Try again", StringComparison.Ordinal)));
     }
 
     [TestMethod]
@@ -195,6 +197,7 @@ public sealed class ReplayExecutionPageTests
         var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         context.Services.AddSingleton<ICameraAgentReplayUiService>(service);
+        context.Services.AddSingleton(TimeProvider.System);
         context.Services.AddSingleton(new CameraAgentReplayRunnerFactsProjection(
             Options.Create(new CameraAgentHostOptions())));
         configured = service;

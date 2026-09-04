@@ -12,7 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class OperationsLayoutTests
 {
     private static readonly RenderFragment Body = builder => builder.AddMarkupContent(0, "<h1>Section body</h1>");
-    private static readonly string[] ExpectedSlugs = ["overview", "camera", "sky-map", "registration", "schedule", "calibration", "environment", "pipeline", "automations", "data", "quarantine", "system"];
+    private static readonly string[] ExpectedSlugs = ["overview", "camera", "sky-map", "registration", "schedule", "calibration", "environment", "executions", "graphs", "pipeline", "automations", "data", "quarantine", "system"];
     private static readonly string[] ExpectedGroups = ["Setup", "Capture", "Processing", "Data", "System"];
 
     [TestMethod]
@@ -75,6 +75,11 @@ public sealed class OperationsLayoutTests
             ("/operations/system", "System"),
             ("/operations/quarantine?kind=Artifact", "Quarantine & recovery"),
             ("/operations/pipeline", "Pipeline summary"),
+            ("/operations/pipeline/executions", "Processing executions"),
+            ("/operations/pipeline/executions/00000000-0000-0000-0000-000000000000", "Processing executions"),
+            ("/operations/pipeline/replays/new", "Processing executions"),
+            ("/operations/pipeline/graphs", "Named graphs"),
+            ("/operations/pipeline/graphs/new", "Named graphs"),
             ("/operations/automations", "Automations"),
             ("/operations/data", "Data & storage"),
             ("/operations/camera", "Camera & rig"),

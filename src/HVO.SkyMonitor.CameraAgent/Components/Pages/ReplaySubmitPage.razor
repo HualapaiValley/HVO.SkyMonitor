@@ -132,7 +132,7 @@
                     <textarea id="replay-reason" class="form-control" rows="2" maxlength="240" disabled="@_busy" @bind="_reason" @bind:after="ReasonChanged"></textarea>
                 </div>
                 <div class="form-actions">
-                    <button type="button" id="replay-submit-trigger" class="btn btn-primary" disabled="@(_busy || _revisionId is null)" @onclick="BeginSubmit">Submit replay request</button>
+                    <button type="button" id="replay-submit-trigger" class="btn btn-primary" disabled="@(_busy || _revisionId is null || _submittedExecutionId is not null)" @onclick="BeginSubmit">Submit replay request</button>
                     <a class="btn btn-outline-light" href="@SourceCaptureUrl">Return to source capture</a>
                 </div>
             }
