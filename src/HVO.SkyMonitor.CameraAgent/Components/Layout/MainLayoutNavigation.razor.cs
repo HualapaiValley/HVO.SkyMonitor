@@ -17,15 +17,12 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
         new NavigationLink("/operations", "Operations", NavLinkMatch.Prefix)
     ];
 
-    private static readonly string[] AdditionalOperationsRoutes =
-    [
-        "/schedule",
-        "/calibration",
-        "/system",
-        "/environmental",
-        "/transients",
-        "/devices"
-    ];
+    // Routes that belong to a primary destination without sharing its path.
+    private static readonly Dictionary<string, string[]> GroupedRoutes = new(StringComparer.Ordinal)
+    {
+        ["/gallery"] = ["/archive", "/transients"],
+        ["/operations"] = ["/schedule", "/calibration", "/system", "/environmental", "/devices"]
+    };
 
     [Inject]
     public NavigationManager NavigationManager { get; set; } = default!;
@@ -82,9 +79,9 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
         => IsPathOrChild(_currentPath, link.Href) || IsAdditionalOperationsRoute(link);
 
     private bool IsAdditionalOperationsRoute(NavigationLink link)
-        => string.Equals(link.Href, "/operations", StringComparison.Ordinal) &&
-           !IsPathOrChild(_currentPath, "/operations") &&
-           AdditionalOperationsRoutes.Any(path => IsPathOrChild(_currentPath, path));
+        => GroupedRoutes.TryGetValue(link.Href, out var grouped) &&
+           !IsPathOrChild(_currentPath, link.Href) &&
+           grouped.Any(path => IsPathOrChild(_currentPath, path));
 
     private static bool IsPathOrChild(string path, string candidate)
         => string.Equals(path, candidate, StringComparison.OrdinalIgnoreCase) ||

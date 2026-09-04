@@ -13,6 +13,8 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private PeriodicTimer? _timer;
     private Task? _pollTask;
     private CameraAgentCurrentImagePresentation? _presentation;
+    private CameraAgentCurrentSkyFacts? _facts;
+    private string? _factsUnavailableReason;
     private CameraAgentPresentationStage? _selectedStage;
     private string? _errorMessage;
     private bool _initialLoading = true;
@@ -71,7 +73,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         await InvokeAsync(() => _refreshing = true);
         try
         {
-            var result = await OperatorService.GetCurrentImagePresentationAsync(timeout.Token).ConfigureAwait(false);
+            var result = await OperatorService.GetCurrentSkyViewAsync(timeout.Token).ConfigureAwait(false);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 await InvokeAsync(() => NavigationManager.NavigateTo("/Account/AccessDenied")).ConfigureAwait(false);
@@ -81,8 +83,10 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             {
                 if (result.IsSuccess && result.Value is not null)
                 {
-                    _presentation = result.Value;
-                    _selectedStage = ResolveSelection(result.Value, _selectedStage);
+                    _presentation = result.Value.Presentation;
+                    _facts = result.Value.Facts;
+                    _factsUnavailableReason = result.Value.FactsUnavailableReason;
+                    _selectedStage = ResolveSelection(result.Value.Presentation, _selectedStage);
                     if (_selectedStage is null)
                     {
                         _viewerOpen = false;
@@ -225,6 +229,31 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             return current;
         }
         return presentation.SelectedStage;
+    }
+
+    private string ObservingNightLabel => _facts is { } facts
+        ? facts.ObservingDay.TimeZoneFallback
+            ? $"{facts.ObservingDay.Date:yyyy-MM-dd} (UTC day; no deployment time zone)"
+            : $"{facts.ObservingDay.Date:yyyy-MM-dd} ({facts.ObservingDay.TimeZoneId})"
+        : "Unavailable";
+
+    private static string FormatExposure(double? milliseconds) => milliseconds switch
+    {
+        null => "Unavailable",
+        >= 1000 => FormattableString.Invariant($"{milliseconds.Value / 1000d:0.###} s"),
+        _ => FormattableString.Invariant($"{milliseconds.Value:0.#} ms")
+    };
+
+    private static string FormatCloud(CameraAgentCurrentSkyCloudFacts cloud)
+    {
+        if (cloud.Status is null)
+        {
+            return cloud.Availability == "Unavailable" ? "Not assessed" : cloud.Availability;
+        }
+        var coverage = cloud.CoverageMillionths is { } millionths
+            ? FormattableString.Invariant($", {millionths / 10000d:0.#}% cover")
+            : string.Empty;
+        return $"{cloud.Status}{coverage}";
     }
 
     private static string FormatDuration(long seconds)

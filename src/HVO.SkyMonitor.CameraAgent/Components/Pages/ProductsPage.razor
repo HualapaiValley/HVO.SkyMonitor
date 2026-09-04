@@ -1,0 +1,66 @@
+@page "/archive/products"
+@using HVO.SkyMonitor.AgentCore
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Gallery
+@using HVO.SkyMonitor.CameraAgent.Components.Shared
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Products</PageTitle>
+
+<div class="products-page">
+    <PageHeader Eyebrow="Retained outputs" Title="Products" Lead="Every retained output CameraAgent can still serve, newest first. Missing and quarantined outputs are a separate filter; unsupported product types are absent rather than simulated.">
+        @if (_page is not null) { <span class="result-count">@_page.Items.Count result@(_page.Items.Count == 1 ? string.Empty : "s")</span> }
+        <a class="btn btn-outline-light" href="/archive/calendar">Calendar</a>
+    </PageHeader>
+
+    <form class="product-filters" @onsubmit="ApplyFilters" @onsubmit:preventDefault aria-label="Product filters">
+        <div><label for="product-role">Role</label><select id="product-role" class="form-select" @bind="_draftRole"><option value="">Any role</option>@foreach (var role in Enum.GetValues<FrameArtifactRole>().Where(static role => role != FrameArtifactRole.Raw)) { <option value="@role">@OperationsPage.SplitWords(role.ToString())</option> }</select></div>
+        <div><label for="product-kind">Kind</label><select id="product-kind" class="form-select" @bind="_draftKind"><option value="">Any kind</option><option value="PixelData">Pixel data</option><option value="Metadata">Metadata</option></select></div>
+        <div><label for="product-availability">Availability</label><select id="product-availability" class="form-select" @bind="_draftAvailability"><option value="">Available</option><option value="Missing">Missing</option><option value="Quarantined">Quarantined</option></select></div>
+        <div class="filter-actions"><button type="submit" class="btn btn-primary">Apply</button><button type="button" class="btn btn-outline-light" @onclick="ClearFilters">Clear</button></div>
+    </form>
+
+    @if (_isLoading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading products" Message="Reading bounded durable output records." />
+    }
+    else if (_errorMessage is not null)
+    {
+        <PageStateNotice Kind="@(_errorKind)" Title="Products unavailable" Message="@_errorMessage">
+            <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button>
+        </PageStateNotice>
+    }
+    else if (_page is null || (_page.Items.Count == 0 && _page.SkippedCount == 0))
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No retained products match" Message="Change or clear the filters. Product types CameraAgent does not generate never appear here." />
+    }
+    else
+    {
+        @if (_page.NextCursor is not null) { <p class="bounded-state" role="status">This bounded page omits older products.</p> }
+        @if (_page.SkippedCount > 0) { <p class="bounded-state" role="status">@_page.SkippedCount product record@(_page.SkippedCount == 1 ? string.Empty : "s") on this page could not be read and @(_page.SkippedCount == 1 ? "is" : "are") omitted.</p> }
+        <div class="table-wrap">
+            <table class="product-table">
+                <thead><tr><th scope="col">Committed</th><th scope="col">Product</th><th scope="col">Capture</th><th scope="col">Recipe</th><th scope="col">Availability</th><th scope="col">Origin</th></tr></thead>
+                <tbody>
+                @foreach (var product in _page.Items)
+                {
+                    <tr>
+                        <td><time datetime="@product.CommittedUtc.ToString("O")">@TransientPage.FormatTime(product.CommittedUtc)</time></td>
+                        <td><a href="@DetailUrl(product.ArtifactId)">@OperationsPage.SplitWords(product.Role.ToString())@(product.Variant is null ? string.Empty : $" · {product.Variant}")</a>@if (product.IsMaterialization) { <span class="badge-soft">Saved layer stack</span> }@if (product.EncodedWidth is { } width && product.EncodedHeight is { } height) { <span class="dim">@width × @height</span> }</td>
+                        <td><a href="/gallery/@product.CaptureId.ToString("D")">#@product.CaptureSequence</a></td>
+                        <td>@product.Recipe.Name <span class="dim">@product.Recipe.SemanticVersion</span></td>
+                        <td><span class="@AvailabilityClass(product.Availability)">@product.Availability</span></td>
+                        <td>@product.ExecutionClass</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+        <nav class="cursor-nav" aria-label="Product pages">
+            @if (!string.IsNullOrWhiteSpace(Cursor)) { <button type="button" class="btn btn-outline-light" @onclick="ShowNewest">Newest products</button> }
+            @if (_page.NextCursor is not null) { <button type="button" class="btn btn-primary" @onclick="ShowOlder">Older products</button> }
+        </nav>
+    }
+</div>

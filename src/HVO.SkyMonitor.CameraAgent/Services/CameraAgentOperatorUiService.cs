@@ -193,6 +193,13 @@ internal sealed record CameraAgentCaptureDetailView(
     CameraAgentGalleryCapture Capture,
     CameraAgentCapturePresentation Presentation);
 
+// Current Sky reads the presentation and the durable facts of the displayed
+// capture together; facts may be unavailable while the image still shows.
+internal sealed record CameraAgentCurrentSkyView(
+    CameraAgentCurrentImagePresentation Presentation,
+    CameraAgentCurrentSkyFacts? Facts,
+    string? FactsUnavailableReason);
+
 internal interface ICameraAgentOperatorUiService
 {
     ValueTask<OperatorUiResult<CameraAgentOperationsView>> GetOperationsAsync(CancellationToken cancellationToken);
@@ -228,6 +235,25 @@ internal interface ICameraAgentOperatorUiService
         IReadOnlyList<string> enabledLayerIdentitySha256,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>> GetArchiveCalendarAsync(
+        CameraAgentGalleryCalendarQuery query,
+        CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentGalleryNeighbours>> GetGalleryNeighboursAsync(
+        Guid captureId,
+        CameraAgentGalleryQuery filters,
+        CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentProductPage>> GetProductPageAsync(
+        CameraAgentProductQuery query,
+        CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentProductDetail>> GetProductDetailAsync(
+        Guid artifactId,
+        CancellationToken cancellationToken);
+
     ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken);
 
     Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(
@@ -257,6 +283,8 @@ internal sealed class CameraAgentOperatorUiService(
     IAuthorizationService authorizationService,
     CameraAgentOperationsSummaryProvider operationsProvider,
     ICameraAgentGallery gallery,
+    ICameraAgentArchive archive,
+    IObservingDayCalendarProvider observingDays,
     ICameraAgentCapturePresentationProjector capturePresentation,
     ICameraAgentCurrentImagePresentationService currentImagePresentation,
     ICameraAgentLayeredPresentationService layeredPresentations,
@@ -627,6 +655,169 @@ internal sealed class CameraAgentOperatorUiService(
         {
             logger.LogWarning(exception, "CameraAgent capture presentation UI read failed.");
             return Unavailable<CameraAgentCaptureDetailView>("The capture detail is temporarily unavailable.");
+        }
+    }
+
+    private static readonly TimeSpan FactsCacheLifetime = TimeSpan.FromSeconds(60);
+    private (CameraAgentCurrentSkyFacts Facts, Guid? CombinedArtifactId, DateTimeOffset ReadUtc)? _cachedFacts;
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
+    {
+        var presentation = await GetCurrentImagePresentationAsync(cancellationToken).ConfigureAwait(false);
+        if (!presentation.IsSuccess || presentation.Value is null)
+        {
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "The current sky image is temporarily unavailable.");
+        }
+        var displayed = presentation.Value.DisplayCapture ?? presentation.Value.LatestCapture;
+        if (displayed is null)
+        {
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null));
+        }
+        var combinedArtifactId = presentation.Value.Stages
+            .FirstOrDefault(static slot => slot.Stage == CameraAgentPresentationStage.Combined)?.ArtifactId;
+        // Facts are immutable once a capture is committed, so a circuit that
+        // polls every few seconds re-reads them only when the capture changes.
+        // Availability and cloud facts can still change for a displayed capture, so the memo expires.
+        if (_cachedFacts is { } cached && cached.Facts.CaptureId == displayed.CaptureId && cached.CombinedArtifactId == combinedArtifactId &&
+            timeProvider.GetUtcNow() - cached.ReadUtc < FactsCacheLifetime)
+        {
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, cached.Facts, null));
+        }
+        try
+        {
+            var capture = await gallery.GetCaptureAsync(displayed.CaptureId, cancellationToken).ConfigureAwait(false);
+            if (capture is null)
+            {
+                return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "The displayed capture is no longer retained."));
+            }
+            var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, observingDays.Current, combinedArtifactId);
+            _cachedFacts = (facts, combinedArtifactId, timeProvider.GetUtcNow());
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, facts, null));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent current sky facts read failed.");
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "Capture facts are temporarily unavailable."));
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>> GetArchiveCalendarAsync(
+        CameraAgentGalleryCalendarQuery query,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentGalleryCalendar>();
+        }
+        try
+        {
+            return OperatorUiResult<CameraAgentGalleryCalendar>.Success(await archive.GetCalendarAsync(query, cancellationToken).ConfigureAwait(false));
+        }
+        catch (CameraAgentGalleryQueryException exception)
+        {
+            return OperatorUiResult<CameraAgentGalleryCalendar>.Failure(OperatorUiResultKind.Invalid, exception.Message);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent archive calendar read failed.");
+            return Unavailable<CameraAgentGalleryCalendar>("The archive calendar is temporarily unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentGalleryNeighbours>> GetGalleryNeighboursAsync(
+        Guid captureId,
+        CameraAgentGalleryQuery filters,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentGalleryNeighbours>();
+        }
+        try
+        {
+            var neighbours = await archive.GetNeighboursAsync(captureId, filters, cancellationToken).ConfigureAwait(false);
+            return neighbours is null
+                ? NotFound<CameraAgentGalleryNeighbours>("The requested capture was not found.")
+                : OperatorUiResult<CameraAgentGalleryNeighbours>.Success(neighbours);
+        }
+        catch (CameraAgentGalleryQueryException exception)
+        {
+            return OperatorUiResult<CameraAgentGalleryNeighbours>.Failure(OperatorUiResultKind.Invalid, exception.Message);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent capture neighbour read failed.");
+            return Unavailable<CameraAgentGalleryNeighbours>("Capture navigation is temporarily unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentProductPage>> GetProductPageAsync(
+        CameraAgentProductQuery query,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentProductPage>();
+        }
+        try
+        {
+            return OperatorUiResult<CameraAgentProductPage>.Success(await archive.GetProductPageAsync(query, cancellationToken).ConfigureAwait(false));
+        }
+        catch (CameraAgentGalleryQueryException exception)
+        {
+            return OperatorUiResult<CameraAgentProductPage>.Failure(OperatorUiResultKind.Invalid, exception.Message);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent product page read failed.");
+            return Unavailable<CameraAgentProductPage>("The product list is temporarily unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentProductDetail>> GetProductDetailAsync(
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentProductDetail>();
+        }
+        try
+        {
+            var detail = await archive.GetProductAsync(artifactId, cancellationToken).ConfigureAwait(false);
+            return detail is null
+                ? NotFound<CameraAgentProductDetail>("The requested product was not found.")
+                : OperatorUiResult<CameraAgentProductDetail>.Success(detail);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent product detail read failed.");
+            return Unavailable<CameraAgentProductDetail>("The product detail is temporarily unavailable.");
         }
     }
 

@@ -1,0 +1,9 @@
+.page-state { display: flex; justify-content: space-between; align-items: center; gap: 1rem; min-height: 5rem; margin: 0 0 1rem; padding: 1rem 1.2rem; border: 1px solid var(--hvo-border-muted); border-radius: .75rem; background: var(--hvo-surface-elevated); }
+.page-state strong, .page-state p { margin: 0; }
+.page-state p { color: var(--hvo-muted); }
+.page-state--error { border-color: var(--hvo-danger-strong); background: var(--hvo-danger-bg); }
+.page-state--warning { border-color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
+.page-state--info { border-left: 3px solid var(--hvo-info-strong); background: var(--hvo-info-bg); }
+.page-state__actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.page-state__actions ::deep :is(a, button) { min-height: 44px; }
+@media (max-width: 680px) { .page-state { flex-direction: column; align-items: flex-start; } }

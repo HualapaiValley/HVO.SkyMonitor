@@ -21,6 +21,23 @@
         <header class="detail-heading"><div><p class="eyebrow">@TransientPage.FormatTime(_detail.Candidate.CreatedUtc)</p><h1>@_detail.Candidate.CandidateId</h1><p>Sanitized local candidate, event, and stage evidence.</p></div><span>@TransientPage.SplitWords(_detail.Candidate.EventState)</span></header>
         <section class="identity-card"><dl><div><dt>Candidate ID</dt><dd><code>@_detail.Candidate.CandidateId</code></dd></div><div><dt>Event ID</dt><dd><code>@_detail.Candidate.EventId</code></dd></div><div><dt>Candidate state</dt><dd>@TransientPage.SplitWords(_detail.Candidate.CandidateState)</dd></div><div><dt>Event state</dt><dd>@TransientPage.SplitWords(_detail.Candidate.EventState)</dd></div><div><dt>Workflow phase</dt><dd>@TransientPage.SplitWords(_detail.Candidate.WorkflowPhase)</dd></div><div><dt>Updated</dt><dd>@TransientPage.FormatTime(_detail.Candidate.UpdatedUtc)</dd></div></dl></section>
 
+        <section class="source-card" aria-label="Source captures">
+            <h2>Source captures</h2>
+            @if (_detail.Sources is null || _detail.Sources.Count == 0)
+            {
+                <p class="stage-absence">No retained source captures are linked to this candidate.</p>
+            }
+            else
+            {
+                <ol class="source-list">
+                    @foreach (var source in _detail.Sources)
+                    {
+                        <li><a href="/gallery/@source.CaptureId.ToString("D")">Capture #@source.CaptureSequence</a> <span class="source-meta">@(source.Role?.ToString() ?? "Unknown role") · observed @TransientPage.FormatTime(source.ObservationStartedUtc) to @source.ObservationEndedUtc.ToLocalTime().ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)</span></li>
+                    }
+                </ol>
+            }
+        </section>
+
         <section class="stage-grid" aria-label="Transient evidence stages">
             <article><header><p class="eyebrow">Detection</p><h2>Candidate evidence</h2><span>@_detail.CandidateEvidence.State</span></header><dl><div><dt>Created</dt><dd>@FormatTime(_detail.CandidateEvidence.CreatedUtc)</dd></div><div><dt>Centered source</dt><dd>@FormatGuid(_detail.CandidateEvidence.CenterEvidenceId)</dd></div><div><dt>Context sources</dt><dd>@_detail.CandidateEvidence.ContextSourceCount</dd></div><div><dt>Reason codes</dt><dd>@FormatList(_detail.CandidateEvidence.ReasonCodes)</dd></div></dl>
                 @if (_detail.CandidateEvidence.Geometry is { } geometry) { <h3>Geometry</h3><dl><div><dt>Coordinates</dt><dd>@geometry.CoordinateWidth x @geometry.CoordinateHeight</dd></div><div><dt>Bounds</dt><dd>@FormatBounds(geometry)</dd></div><div><dt>Polyline points</dt><dd>@geometry.PolylinePointCount</dd></div></dl> } else { <p class="stage-absence">Geometry is absent.</p> }

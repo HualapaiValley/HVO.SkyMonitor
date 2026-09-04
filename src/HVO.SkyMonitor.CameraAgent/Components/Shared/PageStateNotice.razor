@@ -1,0 +1,27 @@
+<section class="@CssClass" role="@Role" aria-live="@(Role == "alert" ? "assertive" : "polite")">
+    @if (Kind == PageStateKind.Loading) { <span class="spinner-border spinner-border-sm" aria-hidden="true"></span> }
+    <div>
+        <strong>@Title</strong>
+        @if (Message is not null) { <p>@Message</p> }
+    </div>
+    @if (ChildContent is not null) { <div class="page-state__actions">@ChildContent</div> }
+</section>
+
+@code {
+    public enum PageStateKind { Loading, Empty, Stale, Offline, Error, Unauthorized, Info }
+
+    [Parameter, EditorRequired] public PageStateKind Kind { get; set; }
+    [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private string Role => Kind is PageStateKind.Error or PageStateKind.Unauthorized ? "alert" : "status";
+
+    private string CssClass => Kind switch
+    {
+        PageStateKind.Error or PageStateKind.Unauthorized => "page-state page-state--error",
+        PageStateKind.Stale or PageStateKind.Offline => "page-state page-state--warning",
+        PageStateKind.Info => "page-state page-state--info",
+        _ => "page-state"
+    };
+}

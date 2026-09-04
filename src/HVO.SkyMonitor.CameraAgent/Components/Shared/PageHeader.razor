@@ -1,0 +1,16 @@
+<header class="page-header">
+    <div>
+        @if (Eyebrow is not null) { <p class="eyebrow">@Eyebrow</p> }
+        <h1 id="@HeadingId" tabindex="-1">@Title</h1>
+        @if (Lead is not null) { <p class="lead-copy">@Lead</p> }
+    </div>
+    @if (ChildContent is not null) { <div class="page-header__aside">@ChildContent</div> }
+</header>
+
+@code {
+    [Parameter] public string? Eyebrow { get; set; }
+    [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
+    [Parameter] public string? Lead { get; set; }
+    [Parameter] public string HeadingId { get; set; } = "page-heading";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

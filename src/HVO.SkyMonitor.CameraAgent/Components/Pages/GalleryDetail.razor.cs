@@ -232,7 +232,10 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         {
             return;
         }
-        var result = await OperatorService.GetGalleryPageAsync(query, cancellationToken);
+        // Neighbours follow the originating archive filters through bounded
+        // keyset reads rather than re-scanning a loaded page.
+        var result = await OperatorService.GetGalleryNeighboursAsync(
+            CaptureId, query with { Cursor = null, PageSize = null }, cancellationToken);
         if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
             NavigationManager.NavigateTo("/Account/AccessDenied");
@@ -242,13 +245,8 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         {
             return;
         }
-        var index = result.Value.Items.ToList().FindIndex(capture => capture.CaptureId == CaptureId);
-        if (index < 0)
-        {
-            return;
-        }
-        _nextCaptureId = index > 0 ? result.Value.Items[index - 1].CaptureId : null;
-        _previousCaptureId = index + 1 < result.Value.Items.Count ? result.Value.Items[index + 1].CaptureId : null;
+        _nextCaptureId = result.Value.NewerCaptureId;
+        _previousCaptureId = result.Value.OlderCaptureId;
     }
 
     private static bool TryBuildArchiveQuery(string returnUrl, [NotNullWhen(true)] out CameraAgentGalleryQuery? query)

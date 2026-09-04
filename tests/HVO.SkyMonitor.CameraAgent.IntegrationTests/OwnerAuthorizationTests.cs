@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
 using System.Net;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using System.Net.Http.Json;
 using System.Text.Json;
 
@@ -217,6 +218,12 @@ public sealed class OwnerAuthorizationTests
             new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}/materializations", UriKind.Relative),
             new { enabledLayerIdentitySha256 = Array.Empty<string>() }).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousMaterialization.StatusCode);
+        using var anonymousCalendar = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/calendar?from=2026-09-01&to=2026-09-03", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousCalendar.StatusCode);
+        using var anonymousProducts = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/products", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousProducts.StatusCode);
 
         using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
@@ -234,6 +241,12 @@ public sealed class OwnerAuthorizationTests
             new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}/materializations", UriKind.Relative),
             new { enabledLayerIdentitySha256 = Array.Empty<string>() }).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerMaterialization.StatusCode);
+        using var nonOwnerCalendar = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/calendar?from=2026-09-01&to=2026-09-03", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerCalendar.StatusCode);
+        using var nonOwnerProduct = await nonOwnerClient.GetAsync(
+            new Uri($"/api/v1/operations/gallery/products/{Guid.NewGuid():D}", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerProduct.StatusCode);
 
         using var ownerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         ownerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
@@ -249,6 +262,26 @@ public sealed class OwnerAuthorizationTests
         using var missingDetail = await ownerClient.GetAsync(
             new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.NotFound, missingDetail.StatusCode);
+        using var ownerCalendar = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/calendar?from=2026-09-01&to=2026-09-03", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerCalendar.StatusCode);
+        var calendar = await ownerCalendar.Content.ReadFromJsonAsync<CameraAgentGalleryCalendar>().ConfigureAwait(false);
+        Assert.AreEqual(3, calendar?.Days.Count);
+        using var unboundedCalendar = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/calendar?from=2026-01-01&to=2026-12-31", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, unboundedCalendar.StatusCode);
+        using var undatedCalendar = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/calendar", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, undatedCalendar.StatusCode);
+        using var ownerProducts = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/products?pageSize=5", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerProducts.StatusCode);
+        using var invalidProducts = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/products?kind=Timelapse", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, invalidProducts.StatusCode);
+        using var missingProduct = await ownerClient.GetAsync(
+            new Uri($"/api/v1/operations/gallery/products/{Guid.NewGuid():D}", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, missingProduct.StatusCode);
         var missingCaptureId = Guid.NewGuid();
         using var missingPresentation = await ownerClient.GetAsync(
             new Uri($"/api/v1/operations/gallery/{missingCaptureId:D}/presentation", UriKind.Relative))

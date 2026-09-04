@@ -1,0 +1,98 @@
+@page "/archive/products/{ArtifactId:guid}"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Gallery
+@using HVO.SkyMonitor.CameraAgent.Components.Shared
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Product detail</PageTitle>
+
+<div class="product-detail">
+    <nav class="breadcrumb" aria-label="Breadcrumb"><a href="@BackUrl">Products</a><span>/</span><span aria-current="page">Product detail</span></nav>
+    @if (_isLoading || _redirecting)
+    {
+        <PageHeader Eyebrow="Retained output" Title="Product" />
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading product" Message="Reading the durable output record and its lineage." />
+    }
+    else if (_errorMessage is not null || _detail is null)
+    {
+        <PageHeader Eyebrow="Retained output" Title="Product" />
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Product unavailable" Message="@(_errorMessage ?? "The requested product was not found.")">
+            <a class="btn btn-outline-light" href="@BackUrl">Return to products</a>
+        </PageStateNotice>
+    }
+    else
+    {
+        var product = _detail.Product;
+        <PageHeader Eyebrow="@(product.IsMaterialization ? "Saved layer stack" : "Retained output")" Title="@($"{OperationsPage.SplitWords(product.Role.ToString())}{(product.Variant is null ? string.Empty : $" · {product.Variant}")}")" Lead="@($"Committed {TransientPage.FormatTime(product.CommittedUtc)} for capture #{product.CaptureSequence}.")">
+            <a class="btn btn-outline-light" href="/gallery/@product.CaptureId.ToString("D")">Open capture</a>
+            @if (product.Availability == "Available") { <a class="btn btn-outline-light" href="/api/v1/operations/artifacts/@product.ArtifactId.ToString("D")/content">Download content</a> }
+        </PageHeader>
+
+        <section class="facts" aria-label="Product identity">
+            <dl>
+                <div><dt>Availability</dt><dd>@product.Availability@(product.AvailabilityReason is null ? string.Empty : $" ({product.AvailabilityReason})")</dd></div>
+                <div><dt>Execution</dt><dd>@product.ExecutionClass</dd></div>
+                <div><dt>Observing night</dt><dd>@_detail.ObservingDay.Date.ToString("yyyy-MM-dd")@(_detail.ObservingDay.TimeZoneFallback ? " (UTC day)" : $" ({_detail.ObservingDay.TimeZoneId})")</dd></div>
+                <div><dt>Rig</dt><dd>@(_detail.RigId ?? "Unavailable")</dd></div>
+                <div><dt>Exposure started</dt><dd>@TransientPage.FormatTime(_detail.CaptureExposureStartedUtc)</dd></div>
+                <div><dt>Media</dt><dd>@(product.MediaType ?? "Unavailable")@(product.ByteLength is { } bytes ? $", {bytes:N0} bytes" : string.Empty)</dd></div>
+                @if (product.EncodedWidth is { } width && product.EncodedHeight is { } height) { <div><dt>Encoded size</dt><dd>@width × @height</dd></div> }
+                <div><dt>Total integration</dt><dd>@FormatIntegration(product.TotalIntegration)</dd></div>
+                <div><dt>Recipe</dt><dd>@product.Recipe.Name @product.Recipe.SemanticVersion (@product.Recipe.ImplementationVersion)</dd></div>
+                <div><dt>Algorithms</dt><dd>@(product.Algorithms.Count == 0 ? "None recorded" : string.Join(", ", product.Algorithms.Select(static algorithm => $"{algorithm.Name} {algorithm.Version}")))</dd></div>
+                @if (product.ProductKind is not null) { <div><dt>Product kind</dt><dd>@product.ProductKind @product.ProductSchemaVersion</dd></div> }
+                <div class="wide"><dt>Artifact ID</dt><dd><code>@product.ArtifactId</code></dd></div>
+                <div class="wide"><dt>Checksum SHA-256</dt><dd><code>@product.ChecksumSha256</code></dd></div>
+                <div class="wide"><dt>Output identity</dt><dd><code>@product.OutputIdentitySha256</code></dd></div>
+                @if (product.ContentIdentitySha256 is not null) { <div class="wide"><dt>Content identity</dt><dd><code>@product.ContentIdentitySha256</code></dd></div> }
+                <div class="wide"><dt>Recipe identity</dt><dd><code>@product.Recipe.IdentitySha256</code></dd></div>
+            </dl>
+        </section>
+
+        <section class="lineage" aria-label="Source lineage">
+            <h2>Sources</h2>
+            @if (_detail.Sources.Count == 0)
+            {
+                <p class="muted">No recorded source artifacts.</p>
+            }
+            else
+            {
+                <ol class="source-list">
+                    @foreach (var source in _detail.Sources)
+                    {
+                        <li>
+                            <span class="ordinal">@source.Ordinal</span>
+                            @if (source.CaptureId is { } captureId) { <a href="/gallery/@captureId.ToString("D")">Capture #@source.CaptureSequence</a> } else { <span>Unretained artifact</span> }
+                            <span class="dim">@(source.Role?.ToString() ?? "Unknown role") · <code>@source.ArtifactId</code></span>
+                        </li>
+                    }
+                </ol>
+                @if (_detail.SourcesTruncated) { <p class="muted">The source list is bounded; further sources are not shown.</p> }
+            }
+        </section>
+
+        <section class="lineage" aria-label="Generation history">
+            <h2>Generation</h2>
+            @if (_detail.Node is { } node)
+            {
+                <dl><div><dt>Node</dt><dd>@node.NodeId</dd></div><div><dt>Status</dt><dd>@node.Status@(node.Outcome is null ? string.Empty : $" ({node.Outcome})")</dd></div><div><dt>Attempt</dt><dd>@node.Attempt</dd></div><div><dt>Completed</dt><dd>@TransientPage.FormatTime(node.CompletedUtc)</dd></div>@if (node.DurationMilliseconds is { } duration) { <div><dt>Duration</dt><dd>@duration ms</dd></div> }</dl>
+            }
+            else
+            {
+                <p class="muted">The producing node record is not retained.</p>
+            }
+            @if (_detail.Predecessors.Count > 0)
+            {
+                <h3>Retained predecessors</h3>
+                <ul class="source-list">
+                    @foreach (var predecessor in _detail.Predecessors)
+                    {
+                        <li><a href="/archive/products/@predecessor.ArtifactId.ToString("D")">@TransientPage.FormatTime(predecessor.CommittedUtc)</a> <span class="dim">@predecessor.Availability · <code>@predecessor.OutputIdentitySha256</code></span></li>
+                    }
+                </ul>
+            }
+        </section>
+    }
+</div>

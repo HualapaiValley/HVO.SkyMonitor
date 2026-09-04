@@ -1,0 +1,18 @@
+.product-detail { width: min(100%, 80rem); margin: 0 auto; padding: clamp(1rem, 3vw, 2.25rem); overflow-x: clip; }
+.breadcrumb { display: flex; gap: .5rem; margin-bottom: .75rem; color: var(--hvo-muted); font-size: .85rem; }
+.breadcrumb a { color: var(--hvo-info-fg); }
+.facts, .lineage { margin-bottom: 1rem; padding: 1rem; border: 1px solid var(--hvo-border-muted); border-radius: .9rem; background: var(--hvo-card-bg); }
+.facts dl, .lineage dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem 1rem; margin: 0; }
+.facts dl > div.wide { grid-column: 1 / -1; }
+.facts dt, .lineage dt { color: var(--hvo-muted-weak); font-size: .66rem; letter-spacing: .09em; text-transform: uppercase; }
+.facts dd, .lineage dd { margin: 0; overflow-wrap: anywhere; }
+.lineage h2 { margin: 0 0 .6rem; font-family: Georgia, Cambria, "Times New Roman", serif; font-size: 1.4rem; font-weight: 500; }
+.lineage h3 { margin: 1rem 0 .4rem; font-size: .9rem; }
+.source-list { display: grid; gap: .4rem; margin: 0; padding-left: 1.2rem; }
+.source-list a { color: var(--hvo-info-fg); }
+.ordinal { display: inline-block; min-width: 1.6rem; color: var(--hvo-muted-weak); font-variant-numeric: tabular-nums; }
+.dim, .muted { color: var(--hvo-muted-weak); font-size: .8rem; }
+.muted { margin: 0; }
+code { overflow-wrap: anywhere; }
+:is(a, button):focus-visible { outline: 3px solid var(--hvo-info-strong); outline-offset: 3px; }
+@media (max-width: 680px) { .product-detail { padding: 1rem .75rem 2rem; } .facts dl, .lineage dl { grid-template-columns: 1fr; } }

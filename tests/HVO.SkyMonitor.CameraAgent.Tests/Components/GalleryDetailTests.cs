@@ -63,10 +63,11 @@ public sealed class GalleryDetailTests
         var service = new TestOperatorUiService
         {
             DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(current)),
-            GalleryHandler = (query, _) =>
+            NeighboursHandler = (captureId, filters, _) =>
             {
-                observedQuery = query;
-                return ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryPage>.Success(new([newer, current, older], null)));
+                observedQuery = filters;
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryNeighbours>.Success(
+                    new(captureId, newer.CaptureId, older.CaptureId)));
             }
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
@@ -81,15 +82,15 @@ public sealed class GalleryDetailTests
 
         cut.WaitForAssertion(() => Assert.HasCount(2, cut.FindAll(".capture-navigation__control[href]")));
         Assert.AreEqual(GalleryEvidenceOrigin.Simulated, observedQuery?.EvidenceOrigin);
-        Assert.AreEqual(3, observedQuery?.PageSize);
-        Assert.AreEqual("bounded-cursor", observedQuery?.Cursor);
+        Assert.IsNull(observedQuery?.PageSize);
+        Assert.IsNull(observedQuery?.Cursor);
         var links = cut.FindAll(".capture-navigation__control[href]");
         StringAssert.Contains(links[0].GetAttribute("href"), older.CaptureId.ToString(), StringComparison.Ordinal);
         StringAssert.Contains(links[1].GetAttribute("href"), newer.CaptureId.ToString(), StringComparison.Ordinal);
         Assert.IsTrue(links.All(link => link.GetAttribute("href")?.Contains("returnUrl=", StringComparison.Ordinal) == true));
 
-        service.GalleryHandler = (_, _) => ValueTask.FromResult(
-            OperatorUiResult<CameraAgentGalleryPage>.Success(new([current, older], "older-page")));
+        service.NeighboursHandler = (captureId, _, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryNeighbours>.Success(new(captureId, null, older.CaptureId)));
         var boundary = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, current.CaptureId));
         boundary.WaitForAssertion(() => Assert.HasCount(1, boundary.FindAll(".capture-navigation__control[href]")));
         Assert.HasCount(1, boundary.FindAll(".capture-navigation__control--disabled"));
