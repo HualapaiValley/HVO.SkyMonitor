@@ -1,0 +1,111 @@
+@page "/operations/pipeline/executions/{ExecutionId:guid}"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Execution detail</PageTitle>
+
+<div class="execution-page">
+    <PageHeader Eyebrow="Immutable execution identity" Title="@(_view is null ? "Execution" : $"{_view.Execution.ExecutionClass} execution {ProcessingExecutionsPage.Short(_view.Execution.ExecutionId)}")" Lead="Graph and stage navigation over one durable execution: node dependencies and status, timing, attempts, exact inputs and outputs with checksums, and lineage back to the source capture.">
+        <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="RefreshAsync">Refresh</button>
+    </PageHeader>
+
+    <nav class="execution-links" aria-label="Execution navigation">
+        <a href="/operations/pipeline/executions">All executions</a>
+        @if (_view is not null)
+        {
+            <a href="/gallery/@_view.Execution.CaptureId">Source capture</a>
+            <a href="/operations/pipeline/graphs">Named graphs</a>
+        }
+    </nav>
+
+    @if (_loading && _view is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading execution" Message="Reading the durable execution journal." />
+    }
+    else if (_view is null)
+    {
+        <PageStateNotice Kind="@(_notFound ? PageStateNotice.PageStateKind.Info : PageStateNotice.PageStateKind.Error)" Title="@(_notFound ? "Execution not found" : "Execution unavailable")" Message="@_message">
+            @if (!_notFound) { <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="RefreshAsync">Try again</button> }
+        </PageStateNotice>
+    }
+    else
+    {
+        var execution = _view.Execution;
+        <section class="execution-summary" aria-label="Execution summary">
+            <div class="execution-status"><span class="state-chip @ProcessingExecutionsPage.StatusClass(execution.Status)">@execution.Status</span>@if (execution.CancellationRequested && !execution.IsTerminal) { <span class="muted">Cancellation requested</span> }</div>
+            <dl class="fact-grid">
+                <div><dt>Execution ID</dt><dd><code>@execution.ExecutionId</code></dd></div>
+                <div><dt>Class</dt><dd>@execution.ExecutionClass</dd></div>
+                <div><dt>Graph revision</dt><dd><code>@execution.GraphRevisionId</code></dd></div>
+                <div><dt>Graph definition SHA-256</dt><dd><code>@execution.GraphDefinitionIdentitySha256</code></dd></div>
+                <div><dt>Shared plan SHA-256</dt><dd><code>@_view.SharedPlanIdentitySha256</code></dd></div>
+                <div><dt>Local plan SHA-256</dt><dd><code>@_view.LocalPlanIdentitySha256</code></dd></div>
+                <div><dt>Source capture</dt><dd><a href="/gallery/@execution.CaptureId"><code>@execution.CaptureId</code></a></dd></div>
+                <div><dt>Primary artifact</dt><dd><code>@execution.PrimaryArtifactId</code></dd></div>
+                <div><dt>Trigger</dt><dd>@execution.TriggerKind@(execution.TriggerReference is null ? "" : $" / {execution.TriggerReference}")</dd></div>
+                <div><dt>Priority</dt><dd>@execution.Priority</dd></div>
+                <div><dt>Accepted</dt><dd>@execution.AcceptedUtc.ToString("u")</dd></div>
+                <div><dt>Available</dt><dd>@execution.AvailableUtc.ToString("u")</dd></div>
+                <div><dt>Deadline</dt><dd>@execution.DeadlineUtc.ToString("u")</dd></div>
+                <div><dt>Maximum age</dt><dd>@execution.MaximumAgeUtc.ToString("u")</dd></div>
+                <div><dt>Started</dt><dd>@(execution.StartedUtc?.ToString("u") ?? "Not started")</dd></div>
+                <div><dt>Completed</dt><dd>@(execution.CompletedUtc?.ToString("u") ?? "Not completed")</dd></div>
+                <div><dt>Duration</dt><dd>@ProcessingExecutionsPage.FormatDuration(execution.Duration)</dd></div>
+                <div><dt>Attempts</dt><dd>@execution.AttemptCount</dd></div>
+            </dl>
+            @if (execution.FailureReason is not null)
+            {
+                <p class="failure-reason" role="note"><strong>Failure reason:</strong> @execution.FailureReason</p>
+            }
+        </section>
+
+        <section class="execution-nodes" aria-labelledby="execution-nodes-heading">
+            <h2 id="execution-nodes-heading">Nodes in execution order</h2>
+            <ol class="node-list">
+                @foreach (var node in _view.Nodes)
+                {
+                    <li class="node" id="node-@node.NodeId">
+                        <details open="@(node.Status is not "Completed")">
+                            <summary><span class="state-chip @NodeStatusClass(node.Status)">@node.Status</span><strong>@node.NodeId</strong><span class="muted">@(node.Required ? "required" : "optional") / @node.AttemptCount attempt@(node.AttemptCount == 1 ? "" : "s") / @ProcessingExecutionsPage.FormatDuration(node.StartedUtc is { } s && node.CompletedUtc is { } c ? c - s : null)</span></summary>
+                            <dl class="fact-grid">
+                                <div><dt>Plan SHA-256</dt><dd><code>@node.PlanSha256</code></dd></div>
+                                <div><dt>Started</dt><dd>@(node.StartedUtc?.ToString("u") ?? "Not started")</dd></div>
+                                <div><dt>Completed</dt><dd>@(node.CompletedUtc?.ToString("u") ?? "Not completed")</dd></div>
+                                @if (node.Reason is not null) { <div><dt>Reason</dt><dd>@node.Reason</dd></div> }
+                            </dl>
+                            <h3>Inputs</h3>
+                            @if (node.Inputs.Count == 0) { <p class="muted">No recorded inputs.</p> }
+                            else
+                            {
+                                <table class="node-table"><caption class="visually-hidden">Inputs of @node.NodeId</caption><thead><tr><th scope="col">Position</th><th scope="col">Kind</th><th scope="col">Capture</th><th scope="col">Artifact</th><th scope="col">Descriptor SHA-256</th><th scope="col">Payload SHA-256</th></tr></thead><tbody>
+                                @foreach (var input in node.Inputs) { <tr><td>@input.WindowPosition</td><td>@input.Kind</td><td><a href="/gallery/@input.CaptureId"><code>@ProcessingExecutionsPage.Short(input.CaptureId)</code></a></td><td><code>@ProcessingExecutionsPage.Short(input.ArtifactId)</code></td><td><code>@(input.DescriptorSha256 ?? input.OutputIdentitySha256 ?? "-")</code></td><td><code>@(input.PayloadSha256 ?? "-")</code></td></tr> }
+                                </tbody></table>
+                            }
+                            <h3>Attempts</h3>
+                            @if (node.Attempts.Count == 0) { <p class="muted">No attempts recorded.</p> }
+                            else
+                            {
+                                <table class="node-table"><caption class="visually-hidden">Attempts of @node.NodeId</caption><thead><tr><th scope="col">Attempt</th><th scope="col">Status</th><th scope="col">Outcome</th><th scope="col">Started</th><th scope="col">Duration</th><th scope="col">Reason</th></tr></thead><tbody>
+                                @foreach (var attempt in node.Attempts) { <tr><td>@attempt.AttemptNumber</td><td>@attempt.Status</td><td>@(attempt.Outcome ?? "-")</td><td>@attempt.StartedUtc.ToString("u")</td><td>@ProcessingExecutionsPage.FormatDuration(attempt.Duration)</td><td>@(attempt.Reason ?? "-")</td></tr> }
+                                </tbody></table>
+                            }
+                            <h3>Outputs</h3>
+                            @if (node.Outputs.Count == 0) { <p class="muted">No outputs recorded.</p> }
+                            else
+                            {
+                                <table class="node-table"><caption class="visually-hidden">Outputs of @node.NodeId</caption><thead><tr><th scope="col">Ordinal</th><th scope="col">Role / variant</th><th scope="col">Artifact</th><th scope="col">Output identity SHA-256</th><th scope="col">Availability</th></tr></thead><tbody>
+                                @foreach (var output in node.Outputs) { <tr><td>@output.Ordinal</td><td>@output.Role / @output.Variant</td><td>@if (execution.ExecutionClass == ProcessingGraphExecutionClass.Replay && output.AvailabilityState == "Available") { <a href="/api/v1/operations/processing-graphs/executions/@execution.ExecutionId/outputs/@output.ArtifactId/content"><code>@ProcessingExecutionsPage.Short(output.ArtifactId)</code></a> } else { <code>@ProcessingExecutionsPage.Short(output.ArtifactId)</code> }</td><td><code>@output.OutputIdentitySha256</code></td><td>@output.AvailabilityState@(output.AvailabilityReason is null ? "" : $" ({output.AvailabilityReason})")</td></tr> }
+                                </tbody></table>
+                            }
+                        </details>
+                    </li>
+                }
+            </ol>
+        </section>
+    }
+</div>

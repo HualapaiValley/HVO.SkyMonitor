@@ -39,6 +39,8 @@ public sealed class OperatorRouteTests
             typeof(CameraRigPage),
             typeof(DataStoragePage),
             typeof(SkyMapPage),
+            typeof(ProcessingExecutionsPage),
+            typeof(ProcessingExecutionDetailPage),
             typeof(DeviceBootstrap),
             typeof(FramesController)
         })
@@ -97,7 +99,8 @@ public sealed class OperatorRouteTests
             ("/operations/schedule", "Operations"),
             ("/operations/camera", "Operations"),
             ("/operations/data", "Operations"),
-            ("/operations/sky-map", "Operations")
+            ("/operations/sky-map", "Operations"),
+            ("/operations/pipeline/executions", "Operations")
         })
         {
             navigation.NavigateTo(path);
@@ -128,6 +131,8 @@ public sealed class OperatorRouteTests
             (typeof(CameraRigPage), ["/operations/camera"]),
             (typeof(DataStoragePage), ["/operations/data"]),
             (typeof(SkyMapPage), ["/operations/sky-map"]),
+            (typeof(ProcessingExecutionsPage), ["/operations/pipeline/executions"]),
+            (typeof(ProcessingExecutionDetailPage), ["/operations/pipeline/executions/{ExecutionId:guid}"]),
             (typeof(DeviceBootstrap), ["/devices/bootstrap"])
         })
         {
