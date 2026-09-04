@@ -200,3 +200,44 @@ public sealed class CameraAgentGalleryQueryException : Exception
     {
     }
 }
+
+// Archive read models added for the Current Sky and Archive workflows. They
+// are separate from ICameraAgentGallery so existing gallery consumers and
+// test doubles keep their narrow surface.
+public sealed record CameraAgentGalleryCalendarQuery(
+    DateOnly FromDate,
+    DateOnly ToDate,
+    CameraAgentGalleryQuery? Filters = null);
+
+public sealed record CameraAgentGalleryCalendar(
+    string TimeZoneId,
+    bool TimeZoneFallback,
+    IReadOnlyList<CameraAgentGalleryCalendarDay> Days);
+
+public sealed record CameraAgentGalleryCalendarDay(
+    ObservingDay Day,
+    long CaptureCount,
+    long CandidateCount,
+    DateTimeOffset? FirstExposureUtc,
+    DateTimeOffset? LastExposureUtc);
+
+// Neighbours follow the gallery order under the same filters: the newer
+// capture precedes and the older capture follows the current one.
+public sealed record CameraAgentGalleryNeighbours(
+    Guid CaptureId,
+    Guid? NewerCaptureId,
+    Guid? OlderCaptureId);
+
+public interface ICameraAgentArchive
+{
+    ObservingDayCalendar ObservingDays { get; }
+
+    ValueTask<CameraAgentGalleryCalendar> GetCalendarAsync(
+        CameraAgentGalleryCalendarQuery query,
+        CancellationToken cancellationToken);
+
+    ValueTask<CameraAgentGalleryNeighbours?> GetNeighboursAsync(
+        Guid captureId,
+        CameraAgentGalleryQuery filters,
+        CancellationToken cancellationToken);
+}

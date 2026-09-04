@@ -1019,6 +1019,116 @@ public sealed class SqliteCameraAgentGalleryTests
             [new ProcessingAlgorithmIdentity("cloud", "v1")]);
     }
 
+    [TestMethod]
+    public async Task GetCalendarAsync_CountsCapturesPerObservingDayUnderTheDeploymentTimeZone()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        // Phoenix (UTC-7): 19:00Z on 3 September is local noon, the start of observing day 2026-09-03.
+        var lateNight = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 2, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        var beforeNoon = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 18, 30, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        var afterNoon = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 19, 30, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        var archive = fixture.OpenArchive(ObservingDayCalendar.Create("America/Phoenix"));
+
+        var calendar = await archive.GetCalendarAsync(
+            new CameraAgentGalleryCalendarQuery(new DateOnly(2026, 9, 2), new DateOnly(2026, 9, 4)), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("America/Phoenix", calendar.TimeZoneId);
+        Assert.IsFalse(calendar.TimeZoneFallback);
+        Assert.AreEqual(3, calendar.Days.Count);
+        Assert.AreEqual(0, calendar.Days[0].CaptureCount);
+        Assert.IsNull(calendar.Days[0].FirstExposureUtc);
+        Assert.AreEqual(new DateOnly(2026, 9, 3), calendar.Days[1].Day.Date);
+        Assert.AreEqual(2, calendar.Days[1].CaptureCount);
+        Assert.AreEqual(lateNight.Descriptor.Timing.ExposureStartedUtc, calendar.Days[1].FirstExposureUtc);
+        Assert.AreEqual(beforeNoon.Descriptor.Timing.ExposureStartedUtc, calendar.Days[1].LastExposureUtc);
+        Assert.AreEqual(1, calendar.Days[2].CaptureCount);
+        Assert.AreEqual(afterNoon.Descriptor.Timing.ExposureStartedUtc, calendar.Days[2].FirstExposureUtc);
+        Assert.IsTrue(calendar.Days.All(static day => day.CandidateCount == 0));
+
+        var totals = await Task.WhenAll(calendar.Days.Select(async day =>
+        {
+            var page = await fixture.Gallery.GetPageAsync(
+                new CameraAgentGalleryQuery(FromUtc: day.Day.StartUtc, ToUtc: day.Day.EndUtc.AddMilliseconds(-1)), CancellationToken.None).ConfigureAwait(false);
+            return (long)page.Items.Count;
+        })).ConfigureAwait(false);
+        CollectionAssert.AreEqual(calendar.Days.Select(static day => day.CaptureCount).ToArray(), totals);
+    }
+
+    [TestMethod]
+    public async Task GetCalendarAsync_AppliesFiltersWithinEachDayAndBoundsTheRange()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var kept = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 2, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        var quarantined = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 3, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        await fixture.SetRawStateAsync(quarantined.Descriptor.Capture.CaptureId, "quarantined").ConfigureAwait(false);
+        var archive = fixture.OpenArchive(ObservingDayCalendar.Create("America/Phoenix"));
+
+        var filtered = await archive.GetCalendarAsync(
+            new CameraAgentGalleryCalendarQuery(
+                new DateOnly(2026, 9, 3),
+                new DateOnly(2026, 9, 3),
+                new CameraAgentGalleryQuery(RawState: "quarantined", FromUtc: DateTimeOffset.UnixEpoch, ToUtc: DateTimeOffset.UnixEpoch)),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(1, filtered.Days.Count);
+        Assert.AreEqual(1, filtered.Days[0].CaptureCount);
+        Assert.AreEqual(quarantined.Descriptor.Timing.ExposureStartedUtc, filtered.Days[0].FirstExposureUtc);
+        Assert.AreNotEqual(kept.Descriptor.Timing.ExposureStartedUtc, filtered.Days[0].FirstExposureUtc);
+        await Assert.ThrowsExactlyAsync<CameraAgentGalleryQueryException>(async () => await archive.GetCalendarAsync(
+            new CameraAgentGalleryCalendarQuery(new DateOnly(2026, 1, 1), new DateOnly(2026, 1, 1).AddDays(ObservingDayCalendar.MaximumRangeDays)),
+            CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<CameraAgentGalleryQueryException>(async () => await archive.GetCalendarAsync(
+            new CameraAgentGalleryCalendarQuery(new DateOnly(2026, 1, 2), new DateOnly(2026, 1, 1)),
+            CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task GetCalendarAsync_ReportsTheUtcFallbackWhenNoTimeZoneIsConfigured()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 2, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+
+        var calendar = await ((ICameraAgentArchive)fixture.Gallery).GetCalendarAsync(
+            new CameraAgentGalleryCalendarQuery(new DateOnly(2026, 9, 3), new DateOnly(2026, 9, 4)), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(calendar.TimeZoneFallback);
+        Assert.AreEqual(TimeZoneInfo.Utc.Id, calendar.TimeZoneId);
+        // 02:00Z on 4 September precedes UTC noon, so it belongs to observing day 2026-09-03.
+        Assert.AreEqual(1, calendar.Days[0].CaptureCount);
+        Assert.AreEqual(0, calendar.Days[1].CaptureCount);
+    }
+
+    [TestMethod]
+    public async Task GetNeighboursAsync_FollowsTheGalleryOrderUnderTheSameFilters()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var timestamp = Utc(1);
+        var first = await fixture.AddRawAsync(timestamp, "Physical", null).ConfigureAwait(false);
+        var second = await fixture.AddRawAsync(timestamp.AddMinutes(1), "Physical", null).ConfigureAwait(false);
+        var third = await fixture.AddRawAsync(timestamp.AddMinutes(2), "Physical", null).ConfigureAwait(false);
+        var archive = fixture.Gallery;
+        var unfiltered = new CameraAgentGalleryQuery();
+
+        var middle = await archive.GetNeighboursAsync(second.Descriptor.Capture.CaptureId, unfiltered, CancellationToken.None).ConfigureAwait(false);
+        var newest = await archive.GetNeighboursAsync(third.Descriptor.Capture.CaptureId, unfiltered, CancellationToken.None).ConfigureAwait(false);
+        var oldest = await archive.GetNeighboursAsync(first.Descriptor.Capture.CaptureId, unfiltered, CancellationToken.None).ConfigureAwait(false);
+        var bounded = await archive.GetNeighboursAsync(
+            second.Descriptor.Capture.CaptureId,
+            new CameraAgentGalleryQuery(MaximumSequence: second.Descriptor.Capture.CaptureSequence),
+            CancellationToken.None).ConfigureAwait(false);
+        var missing = await archive.GetNeighboursAsync(Guid.NewGuid(), unfiltered, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(third.Descriptor.Capture.CaptureId, middle?.NewerCaptureId);
+        Assert.AreEqual(first.Descriptor.Capture.CaptureId, middle?.OlderCaptureId);
+        Assert.IsNull(newest?.NewerCaptureId);
+        Assert.AreEqual(second.Descriptor.Capture.CaptureId, newest?.OlderCaptureId);
+        Assert.AreEqual(second.Descriptor.Capture.CaptureId, oldest?.NewerCaptureId);
+        Assert.IsNull(oldest?.OlderCaptureId);
+        Assert.IsNull(bounded?.NewerCaptureId);
+        Assert.AreEqual(first.Descriptor.Capture.CaptureId, bounded?.OlderCaptureId);
+        Assert.IsNull(missing);
+    }
+
     private sealed class GalleryFixture : IDisposable
     {
         private readonly SqliteRawCaptureJournal _journal;
@@ -1071,6 +1181,9 @@ public sealed class SqliteCameraAgentGalleryTests
                 SecondaryRoot = secondaryRoot
             };
         }
+
+        internal SqliteCameraAgentGallery OpenArchive(ObservingDayCalendar calendar)
+            => new(CreateOptions(Root), _processingStore, null, new FixedObservingDayCalendarProvider(calendar));
 
         internal RestartedGallery OpenRestartedGallery()
         {

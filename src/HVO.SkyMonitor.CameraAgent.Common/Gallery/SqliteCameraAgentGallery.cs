@@ -15,7 +15,7 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
-internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
+internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAgentArchive
 {
     internal const int DefaultPageSize = 24;
     internal const int MaximumPageSize = 100;
@@ -41,15 +41,18 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
     private readonly bool _centralIntegrationDisabled;
     private readonly SqliteCaptureProcessingStore _processingStore;
     private readonly ICameraAgentStorageResolver? _storageResolver;
+    private readonly IObservingDayCalendarProvider _observingDays;
 
     public SqliteCameraAgentGallery(
         IOptions<CameraAgentHostOptions> options,
         SqliteCaptureProcessingStore processingStore,
-        ICameraAgentStorageResolver? storageResolver = null)
+        ICameraAgentStorageResolver? storageResolver = null,
+        IObservingDayCalendarProvider? observingDays = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
         _storageResolver = storageResolver;
+        _observingDays = observingDays ?? new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create(null));
         _root = Path.GetFullPath(options.Value.RawIngressRoot);
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
         _busyTimeoutSeconds = options.Value.RawIngressSqliteBusyTimeoutSeconds;
@@ -407,6 +410,35 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
     {
         using var command = connection.CreateCommand();
         var sql = new StringBuilder(RawSelectSql).AppendLine().AppendLine("WHERE 1 = 1");
+        AppendFilterClauses(sql, command, query);
+        if (cursor is not null)
+        {
+            sql.AppendLine("""
+                AND (
+                    raw.capture_sequence < $cursor_sequence
+                    OR (raw.capture_sequence = $cursor_sequence AND raw.raw_capture_row_id < $cursor_row)
+                )
+                """);
+            command.Parameters.AddWithValue("$cursor_sequence", cursor.CaptureSequence);
+            command.Parameters.AddWithValue("$cursor_row", cursor.RawRowId);
+        }
+        sql.AppendLine("ORDER BY raw.capture_sequence DESC, raw.raw_capture_row_id DESC");
+        sql.AppendLine("LIMIT $limit;");
+        command.Parameters.AddWithValue("$limit", query.PageSize + 1);
+        command.CommandText = sql.ToString();
+
+        var rows = new List<RawGalleryRow>(query.PageSize + 1);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            rows.Add(await ReadRawRowAsync(reader, cancellationToken).ConfigureAwait(false));
+        }
+        return rows;
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "All appended SQL clauses are fixed statements selected by normalized filters; values remain parameterized.")]
+    private static void AppendFilterClauses(StringBuilder sql, SqliteCommand command, NormalizedQuery query)
+    {
         if (query.FromUnixMilliseconds is { } from)
         {
             sql.AppendLine("AND raw.exposure_started_unix_ms >= $from");
@@ -474,29 +506,128 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
             sql.AppendLine("AND EXISTS (SELECT 1 FROM processing_nodes node WHERE node.capture_id = raw.capture_id AND node.status = $processing_status)");
             command.Parameters.AddWithValue("$processing_status", query.ProcessingStatus);
         }
-        if (cursor is not null)
-        {
-            sql.AppendLine("""
-                AND (
-                    raw.capture_sequence < $cursor_sequence
-                    OR (raw.capture_sequence = $cursor_sequence AND raw.raw_capture_row_id < $cursor_row)
-                )
-                """);
-            command.Parameters.AddWithValue("$cursor_sequence", cursor.CaptureSequence);
-            command.Parameters.AddWithValue("$cursor_row", cursor.RawRowId);
-        }
-        sql.AppendLine("ORDER BY raw.capture_sequence DESC, raw.raw_capture_row_id DESC");
-        sql.AppendLine("LIMIT $limit;");
-        command.Parameters.AddWithValue("$limit", query.PageSize + 1);
-        command.CommandText = sql.ToString();
+    }
 
-        var rows = new List<RawGalleryRow>(query.PageSize + 1);
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+    public ObservingDayCalendar ObservingDays => _observingDays.Current;
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The per-day count statement is fixed apart from normalized filter clauses; values remain parameterized.")]
+    public async ValueTask<CameraAgentGalleryCalendar> GetCalendarAsync(
+        CameraAgentGalleryCalendarQuery query,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        var calendar = _observingDays.Current;
+        IReadOnlyList<ObservingDay> days;
+        try
         {
-            rows.Add(await ReadRawRowAsync(reader, cancellationToken).ConfigureAwait(false));
+            days = calendar.Range(query.FromDate, query.ToDate);
         }
-        return rows;
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new CameraAgentGalleryQueryException(exception.Message);
+        }
+        // The calendar owns the time range; other filters apply within each day.
+        var filters = (query.Filters ?? new CameraAgentGalleryQuery()) with { FromUtc = null, ToUtc = null, Cursor = null, PageSize = null };
+        var normalized = Normalize(filters);
+        await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        var result = new CameraAgentGalleryCalendarDay[days.Count];
+        for (var index = 0; index < days.Count; index++)
+        {
+            var day = days[index];
+            var start = day.StartUtc.ToUnixTimeMilliseconds();
+            var end = day.EndUtc.ToUnixTimeMilliseconds();
+            long captures;
+            DateTimeOffset? first = null;
+            DateTimeOffset? last = null;
+            using (var command = connection.CreateCommand())
+            {
+                var sql = new StringBuilder("SELECT COUNT(*), MIN(raw.exposure_started_unix_ms), MAX(raw.exposure_started_unix_ms)")
+                    .AppendLine()
+                    .AppendLine("FROM raw_captures raw")
+                    .AppendLine("WHERE raw.exposure_started_unix_ms >= $day_start AND raw.exposure_started_unix_ms < $day_end");
+                command.Parameters.AddWithValue("$day_start", start);
+                command.Parameters.AddWithValue("$day_end", end);
+                AppendFilterClauses(sql, command, normalized);
+                command.CommandText = sql.ToString();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                captures = reader.GetInt64(0);
+                if (captures > 0)
+                {
+                    first = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1));
+                    last = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2));
+                }
+            }
+            long candidates;
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "SELECT COUNT(*) FROM transient_candidates WHERE created_unix_ms >= $day_start AND created_unix_ms < $day_end;";
+                command.Parameters.AddWithValue("$day_start", start);
+                command.Parameters.AddWithValue("$day_end", end);
+                candidates = (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 0L);
+            }
+            result[index] = new CameraAgentGalleryCalendarDay(day, captures, candidates, first, last);
+        }
+        return new CameraAgentGalleryCalendar(calendar.TimeZoneId, calendar.TimeZoneFallback, result);
+    }
+
+    public async ValueTask<CameraAgentGalleryNeighbours?> GetNeighboursAsync(
+        Guid captureId,
+        CameraAgentGalleryQuery filters,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(filters);
+        if (captureId == Guid.Empty)
+        {
+            return null;
+        }
+        var normalized = Normalize(filters with { Cursor = null, PageSize = null });
+        await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        long sequence;
+        long rowId;
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT capture_sequence, raw_capture_row_id FROM raw_captures WHERE capture_id = $capture_id LIMIT 1;";
+            command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return null;
+            }
+            sequence = reader.GetInt64(0);
+            rowId = reader.GetInt64(1);
+        }
+        var newer = await ReadNeighbourAsync(connection, normalized, sequence, rowId, newer: true, cancellationToken).ConfigureAwait(false);
+        var older = await ReadNeighbourAsync(connection, normalized, sequence, rowId, newer: false, cancellationToken).ConfigureAwait(false);
+        return new CameraAgentGalleryNeighbours(captureId, newer, older);
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The direction clauses are fixed statements; values remain parameterized.")]
+    private static async Task<Guid?> ReadNeighbourAsync(
+        SqliteConnection connection,
+        NormalizedQuery query,
+        long sequence,
+        long rowId,
+        bool newer,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        var sql = new StringBuilder("SELECT raw.capture_id FROM raw_captures raw").AppendLine().AppendLine("WHERE 1 = 1");
+        AppendFilterClauses(sql, command, query);
+        sql.AppendLine(newer
+            ? "AND (raw.capture_sequence > $sequence OR (raw.capture_sequence = $sequence AND raw.raw_capture_row_id > $row))"
+            : "AND (raw.capture_sequence < $sequence OR (raw.capture_sequence = $sequence AND raw.raw_capture_row_id < $row))");
+        sql.AppendLine(newer
+            ? "ORDER BY raw.capture_sequence ASC, raw.raw_capture_row_id ASC"
+            : "ORDER BY raw.capture_sequence DESC, raw.raw_capture_row_id DESC");
+        sql.AppendLine("LIMIT 1;");
+        command.Parameters.AddWithValue("$sequence", sequence);
+        command.Parameters.AddWithValue("$row", rowId);
+        command.CommandText = sql.ToString();
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is string text ? Guid.ParseExact(text, "N") : null;
     }
 
     private async Task<IReadOnlyList<CameraAgentGalleryCapture>> ProjectAsync(
