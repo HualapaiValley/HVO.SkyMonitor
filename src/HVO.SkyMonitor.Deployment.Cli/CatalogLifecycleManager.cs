@@ -355,7 +355,7 @@ internal static class CatalogLifecycleManager
         await owner.VerifyInstallationAsync(
             token,
             new InstallationVerificationExpectation(
-                manifest.InstanceId.ToString("D"), manifest.OwnerEmail, result.OwnerBootstrapState,
+                manifest.ApplicationIdentity.ToString("D"), manifest.OwnerEmail, result.OwnerBootstrapState,
                 manifest.ConfigurationSha256, manifest.RigProfileSha256, manifest.ScheduleSha256,
                 manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
                 manifest.ReplayProfile,
