@@ -1195,10 +1195,19 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.AreEqual("Missing", missingOnly.Items[0].Availability);
         Assert.AreEqual("test-disposition", missingOnly.Items[0].AvailabilityReason);
         Assert.AreEqual(0, quarantined.Items.Count);
-        // Filter values match canonical spellings case-insensitively and share the canonical cursor filter hash.
+        // Filter values match canonical spellings case-insensitively.
         var lowercase = await archive.GetProductPageAsync(new CameraAgentProductQuery(Availability: " missing "), CancellationToken.None).ConfigureAwait(false);
         CollectionAssert.AreEqual(new[] { missing.Artifact.ArtifactId }, lowercase.Items.Select(static item => item.ArtifactId).ToArray());
         Assert.AreEqual("Missing", lowercase.Items[0].Availability);
+        // A cursor issued under one spelling continues under another because the hash covers the canonical value.
+        var alsoMissing = await fixture.AddProcessingOutputAsync(raw, "Aligned", DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
+        await fixture.SetOutputAvailabilityAsync(alsoMissing.Artifact.ArtifactId, "Missing").ConfigureAwait(false);
+        var firstMissingPage = await archive.GetProductPageAsync(new CameraAgentProductQuery(Availability: "Missing", PageSize: 1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(firstMissingPage.NextCursor);
+        var secondMissingPage = await archive.GetProductPageAsync(new CameraAgentProductQuery(Availability: "MISSING", PageSize: 1, Cursor: firstMissingPage.NextCursor), CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, secondMissingPage.Items);
+        Assert.AreNotEqual(firstMissingPage.Items[0].ArtifactId, secondMissingPage.Items[0].ArtifactId);
+        Assert.IsNull(secondMissingPage.NextCursor);
         // These fixture outputs record no product kind, so a canonicalised kind filter is accepted and simply matches nothing.
         var lowercaseKind = await archive.GetProductPageAsync(new CameraAgentProductQuery(ProductKind: " pixeldata "), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(0, lowercaseKind.Items.Count);

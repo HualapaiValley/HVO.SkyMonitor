@@ -3,6 +3,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Components.Shared;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
@@ -141,6 +142,25 @@ public sealed class ArchivePagesTests
             Assert.AreEqual("assertive", failed.Find("[role='alert']").GetAttribute("aria-live"));
             Assert.IsNotNull(failed.Find("[role='alert'] button"));
         });
+    }
+
+    [TestMethod]
+    public void PageStateNotice_AnnouncesAlertsAssertivelyAndStatusPolitely()
+    {
+        using var context = new BunitContext();
+        var unauthorized = context.Render<PageStateNotice>(parameters => parameters
+            .Add(static notice => notice.Kind, PageStateNotice.PageStateKind.Unauthorized)
+            .Add(static notice => notice.Title, "Owner sign-in required"));
+        var stale = context.Render<PageStateNotice>(parameters => parameters
+            .Add(static notice => notice.Kind, PageStateNotice.PageStateKind.Stale)
+            .Add(static notice => notice.Title, "Stale"));
+
+        var alert = unauthorized.Find("section");
+        Assert.AreEqual("alert", alert.GetAttribute("role"));
+        Assert.AreEqual("assertive", alert.GetAttribute("aria-live"));
+        var status = stale.Find("section");
+        Assert.AreEqual("status", status.GetAttribute("role"));
+        Assert.AreEqual("polite", status.GetAttribute("aria-live"));
     }
 
     [TestMethod]
