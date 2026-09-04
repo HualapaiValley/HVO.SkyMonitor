@@ -132,6 +132,10 @@ public sealed partial class Program
                     && options.BacklogDegradedAfter > TimeSpan.Zero,
                 "CentralDerivativeWorker timing values are invalid.")
             .ValidateOnStart();
+        builder.Services.AddOptions<CentralProcessingEntitlementOptions>()
+            .Bind(builder.Configuration.GetSection(CentralProcessingEntitlementOptions.SectionName))
+            .Validate(options => options.Validate(out _), "ProcessingEntitlements configuration is invalid.")
+            .ValidateOnStart();
         builder.Services.AddOptions<CentralProcessingRunnerOptions>()
             .Bind(builder.Configuration.GetSection(CentralProcessingRunnerOptions.SectionName))
             .Validate(options => options.Validate(out _), "ProcessingRunners configuration is invalid.")
@@ -199,6 +203,7 @@ public sealed partial class Program
             .AddCheck<CentralArtifactRetentionHealthCheck>("artifact-retention", tags: ["worker"])
             .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"])
             .AddCheck<CentralProcessingRunnerHealthCheck>("processing-runners", tags: ["worker"])
+            .AddCheck<CentralProcessingEntitlementHealthCheck>("processing-entitlements", tags: ["worker"])
             .AddCheck<ProcessingGraphCatalogHealthCheck>("processing-graph-catalog", tags: ["consistency"])
             .AddCheck<CentralTransientLifecycleHealthCheck>("central-transient-lifecycle", tags: ["worker"])
             .AddCheck<FleetStatusHealthCheck>("fleet-status", tags: ["worker"])
@@ -256,6 +261,7 @@ public sealed partial class Program
                 metrics.AddMeter(CentralArtifactRetentionTelemetry.MeterName);
                 metrics.AddMeter(CentralDerivativeWorkerTelemetry.MeterName);
                 metrics.AddMeter(CentralProcessingRunnerTelemetry.MeterName);
+                metrics.AddMeter(CentralProcessingFairnessTelemetry.MeterName);
                 metrics.AddMeter(CentralTransientLifecycleTelemetry.MeterName);
                 metrics.AddMeter(FleetStatusTelemetry.MeterName);
                 metrics.AddMeter(EnvironmentalObservationTelemetry.MeterName);
@@ -466,8 +472,10 @@ public sealed partial class Program
             builder.Environment,
             connectionPurpose);
 
-        builder.Services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseSqlServer(sqlProfile.ConnectionString));
+        builder.Services.AddSingleton<CentralProcessingUsageInterceptor>();
+        builder.Services.AddDbContext<ApplicationDbContext>((services, options) =>
+            options.UseSqlServer(sqlProfile.ConnectionString)
+                .AddInterceptors(services.GetRequiredService<CentralProcessingUsageInterceptor>()));
         builder.Services.AddScoped<DatabaseInitializer>();
         builder.Services.AddScoped<DatabaseRuntimeValidator>();
 
@@ -878,6 +886,7 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralDerivativeExecutionPipeline>(
             provider => provider.GetRequiredService<CentralDerivativeJobExecutor>());
         builder.Services.AddSingleton<CentralProcessingRunnerTelemetry>();
+        builder.Services.AddSingleton<CentralProcessingFairnessTelemetry>();
         builder.Services.AddScoped<ICentralProcessingRunnerRegistry, CentralProcessingRunnerRegistry>();
         builder.Services.AddScoped<ICentralProcessingRunnerJobService, CentralProcessingRunnerJobService>();
         builder.Services.AddScoped<ICentralDerivativeJobOperationsService, CentralDerivativeJobOperationsService>();

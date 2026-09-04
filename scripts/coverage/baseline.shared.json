@@ -1,0 +1,94 @@
+{
+  "aggregate": {
+    "line": 0.8524,
+    "branch": 0.6842,
+    "tolerancePercentagePoints": 0.01
+  },
+  "files": {
+    "HVO.SkyMonitor.AgentCore/ArtifactManifestV2.cs": {
+      "line": 0.95,
+      "branch": 0.85,
+      "belowAggregateReason": "no single component lane reaches the aggregate floor for this file: branch 0.8684 is below the 0.9 aggregate floor. The aggregate rollup still enforces it for the complete solution plan."
+    },
+    "HVO.SkyMonitor.AgentCore/CameraControlPolicyExtensions.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.AgentCore/CaptureContractJson.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.AgentCore/CaptureContractValidation.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.AgentCore/FrameReconstructor.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.AgentCore/ReconstructionDescriptors.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Astronomy/CameraGeometry.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Astronomy/Projection.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Astronomy/VisibleScene.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Imaging/ImageLayout.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Imaging/BayerRggb16Demosaicer.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Imaging/ImageStatisticsCalculator.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Imaging/JpegImageCodec.cs": {
+      "line": 0.95,
+      "branch": 0.85
+    },
+    "HVO.SkyMonitor.Imaging/Linear16ArithmeticMean.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Imaging/SceneRenderers.cs": {
+      "line": 0.95,
+      "branch": 0.86
+    },
+    "HVO.SkyMonitor.Processing/BuiltInProcessingRecipes.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Processing/EnvironmentalObservationFactJson.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Processing/EnvironmentalObservationJson.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Processing/ProcessingIdentity.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Processing/ProcessingRecipeExecutor.cs": {
+      "line": 0.95,
+      "branch": 0.9
+    },
+    "HVO.SkyMonitor.Catalog.Sqlite/SqliteCelestialCatalog.cs": {
+      "line": 0.95,
+      "branch": 0.85
+    }
+  }
+}

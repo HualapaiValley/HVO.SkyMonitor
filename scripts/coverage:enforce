@@ -1,12 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+baseline="$repo_root/scripts/coverage/baseline.json"
+
+if [[ "${1:-}" == "--baseline" ]]; then
+  if [[ "$#" -lt 2 ]]; then
+    echo "--baseline requires a coverage baseline file." >&2
+    exit 2
+  fi
+  baseline="$2"
+  shift 2
+fi
+
 if [[ "$#" -eq 0 ]]; then
   echo "Pass every expected Cobertura report, or use --merged with one canonical ReportGenerator report." >&2
+  echo "Prefix either form with --baseline <file> to enforce a component baseline." >&2
   exit 2
 fi
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ ! -f "$baseline" ]]; then
+  printf 'Coverage baseline is missing: %s\n' "$baseline" >&2
+  exit 2
+fi
+
 if [[ "$1" == "--merged" ]]; then
   if [[ "$#" -ne 2 ]]; then
     echo "--merged requires exactly one canonical Cobertura report." >&2
@@ -26,4 +43,4 @@ else
 fi
 
 dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" -- \
-  "$repo_root/scripts/coverage/baseline.json" "$merged_report"
+  "$baseline" "$merged_report"
