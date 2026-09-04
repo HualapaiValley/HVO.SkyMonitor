@@ -72,6 +72,12 @@ internal sealed class ExecutionEvidenceConformanceSink : IExecutionEvidenceTrans
 
     internal int LargestRequestBytes { get; private set; }
 
+    /// <summary>
+    /// Emits the per-unit facts in reverse order and repeats one already-terminal fact from an earlier submission.
+    /// A conformant producer settles by sequence, never by position, so neither may change the outcome.
+    /// </summary>
+    internal bool ReorderAndRepeatFacts { get; set; }
+
     private int _inFlight;
 
     /// <summary>Silently discards the named sequences so the next feedback reports a gap the producer must close.</summary>
@@ -93,8 +99,9 @@ internal sealed class ExecutionEvidenceConformanceSink : IExecutionEvidenceTrans
     {
         ArgumentNullException.ThrowIfNull(request);
         NegotiationCount++;
-        if (Mode is ConformanceSinkMode.Deny or ConformanceSinkMode.Timeout)
+        if (Mode == ConformanceSinkMode.Deny)
         {
+            // A full outage refuses negotiation too, so the producer never starts sending during it.
             return ValueTask.FromResult(new ExecutionEvidenceNegotiationTransportResult(
                 ExecutionEvidenceTransportDisposition.Retry, "http-503"));
         }
@@ -210,6 +217,27 @@ internal sealed class ExecutionEvidenceConformanceSink : IExecutionEvidenceTrans
                     }
                     settledCount++;
                 }
+            }
+
+            if (ReorderAndRepeatFacts)
+            {
+                var reordered = facts.ToImmutable().Reverse().ToList();
+                if (_accepted.Count > 0 && origin.ContainsKey(_accepted[0]))
+                {
+                    var stale = _accepted[0];
+                    reordered.Insert(
+                        0,
+                        new(
+                            ExecutionEvidenceFactV1.CurrentSchemaVersion,
+                            ExecutionEvidenceFactKind.Acknowledged,
+                            Guid.NewGuid(),
+                            stale,
+                            origin[stale],
+                            now,
+                            Duplicate: true));
+                }
+                facts.Clear();
+                facts.AddRange(reordered);
             }
 
             var contiguous = 0L;

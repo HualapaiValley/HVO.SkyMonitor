@@ -177,6 +177,58 @@ public sealed class ExecutionEvidenceExportServiceTests
     }
 
     [TestMethod]
+    public async Task ReorderedAndStaleFeedbackFactsSettleEachUnitExactlyOnce()
+    {
+        using var harness = new Harness();
+        harness.Seed(3);
+
+        await harness.RunCycleAsync().ConfigureAwait(false);
+        await harness.RunCycleAsync().ConfigureAwait(false);
+        harness.Sink.ReorderAndRepeatFacts = true;
+        harness.Source.Add(ExecutionEvidenceTestFactory.CreateDetail(4));
+        for (var cycle = 0; cycle < 6; cycle++)
+        {
+            harness.Clock.Advance(TimeSpan.FromMinutes(10));
+            await harness.RunCycleAsync().ConfigureAwait(false);
+        }
+
+        var accepted = harness.Sink.AcceptedSequences.ToArray();
+        CollectionAssert.AreEqual(
+            accepted.Order().ToArray(), accepted.Distinct().Order().ToArray(),
+            "A repeated terminal fact must never accept a sequence twice.");
+        CollectionAssert.AreEqual(
+            Enumerable.Range(1, accepted.Length).Select(static value => (long)value).ToArray(),
+            accepted.Order().ToArray());
+        Assert.AreEqual(0, harness.State.Snapshot.Backlog.PendingCount + harness.State.Snapshot.Backlog.RetryCount);
+        Assert.AreEqual(0, harness.State.Snapshot.Backlog.QuarantinedCount);
+    }
+
+    [TestMethod]
+    public async Task ARequestTimeoutDefersEveryUnitAndTheBacklogConvergesOnRecovery()
+    {
+        using var harness = new Harness();
+        harness.Seed(2);
+        harness.Sink.Mode = ConformanceSinkMode.Timeout;
+
+        await harness.RunCycleAsync().ConfigureAwait(false);
+        await harness.RunCycleAsync().ConfigureAwait(false);
+        var timedOut = harness.State.Snapshot;
+        Assert.AreEqual(0, harness.Sink.AcceptedSequences.Count);
+        Assert.IsGreaterThan(0, timedOut.Backlog.RetryCount);
+        Assert.AreEqual(0, timedOut.Backlog.QuarantinedCount, "A timeout is recoverable, not terminal.");
+
+        harness.Sink.Mode = ConformanceSinkMode.Accept;
+        for (var cycle = 0; cycle < 8 && harness.State.Snapshot.Backlog.PendingCount +
+            harness.State.Snapshot.Backlog.RetryCount > 0; cycle++)
+        {
+            harness.Clock.Advance(TimeSpan.FromMinutes(10));
+            await harness.RunCycleAsync().ConfigureAwait(false);
+        }
+        CollectionAssert.AreEqual(
+            new long[] { 1, 2, 3, 4, 5 }, harness.Sink.AcceptedSequences.Order().ToArray());
+    }
+
+    [TestMethod]
     public async Task AReceiverGapDrivesABoundedResynchronizationThatClosesIt()
     {
         using var harness = new Harness();
