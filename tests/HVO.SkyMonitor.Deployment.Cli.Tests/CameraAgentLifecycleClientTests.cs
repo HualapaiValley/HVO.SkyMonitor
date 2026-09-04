@@ -194,6 +194,23 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
+    public async Task ConfirmDrained_KeepsTheObservedProgressWhenAReadIsRejected()
+    {
+        using var handler = new ScriptedHandler((_, sequence, _) => Task.FromResult(sequence switch
+        {
+            1 => State("PauseRequested", 3, rawLeased: 2),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+        }));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "rejected the lifecycle state read with status 404; last observed capture control 'PauseRequested' (initialized: True, leased raw/lane/processing/outbox 2/0/0/0).", StringComparison.Ordinal);
+        Assert.AreEqual(2, handler.RequestCount);
+    }
+
+    [TestMethod]
     public async Task ConfirmDrained_FailsFastWhenTheStatePayloadCannotBeParsed()
     {
         using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
@@ -217,8 +234,8 @@ public sealed class CameraAgentLifecycleClientTests
             1 => Task.FromResult(State("Unavailable", 0, rawLeased: 3, initialized: false)),
             _ => throw new HttpRequestException("connection refused")
         });
-        // The deadline leaves room for a cold first read before the retries begin.
-        var budgets = FastBudgets with { DrainDeadline = TimeSpan.FromSeconds(1) };
+        // The deadline and read budget leave room for a cold first read before the retries begin.
+        var budgets = FastBudgets with { DrainDeadline = TimeSpan.FromSeconds(1), ReadTimeout = TimeSpan.FromSeconds(1) };
         var client = new CameraAgentLifecycleClient(BaseAddress, handler, budgets);
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
@@ -314,11 +331,15 @@ public sealed class CameraAgentLifecycleClientTests
             return new HttpResponseMessage(HttpStatusCode.OK);
         });
         var client = new CameraAgentLifecycleClient(BaseAddress, handler, budgets);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
             () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None));
 
+        stopwatch.Stop();
         StringAssert.Contains(exception.Message, "did not acknowledge the lifecycle resume command within its budget", StringComparison.Ordinal);
+        // A resume must honour the configured drain budget rather than a fixed longer one.
+        Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromSeconds(5), $"the resume did not honour its budget: {stopwatch.Elapsed}");
     }
 
     private static async Task<HttpResponseMessage> CommandAsync(

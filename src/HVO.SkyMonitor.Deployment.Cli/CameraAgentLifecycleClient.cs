@@ -145,17 +145,31 @@ internal sealed class CameraAgentLifecycleClient(
             {
                 throw new InstallerException(DeadlineMessage(lastState, lastReadFailure));
             }
+            var budget = remaining < _budgets.ReadTimeout ? remaining : _budgets.ReadTimeout;
             LifecycleContinuity? state = null;
             try
             {
-                state = await ReadStateAsync(client, remaining < _budgets.ReadTimeout ? remaining : _budgets.ReadTimeout, cancellationToken)
-                    .ConfigureAwait(false);
+                state = await ReadStateAsync(client, budget, cancellationToken).ConfigureAwait(false);
                 lastState = state;
                 lastReadFailure = null;
+            }
+            catch (BudgetExceededException)
+            {
+                // A read truncated by the approaching deadline says nothing new;
+                // a read that exhausted a full read budget does.
+                if (budget >= _budgets.ReadTimeout)
+                {
+                    lastReadFailure = "CameraAgent did not report its lifecycle state within its budget.";
+                }
             }
             catch (TransientReadException exception)
             {
                 lastReadFailure = exception.Message;
+            }
+            catch (InstallerException exception) when (lastState is not null)
+            {
+                // A terminal rejection keeps the drain progress observed before it.
+                throw new InstallerException($"{exception.Message.TrimEnd('.')}; {Describe(lastState)}.", exception);
             }
             if (state is not null)
             {
@@ -184,8 +198,7 @@ internal sealed class CameraAgentLifecycleClient(
         var message = "CameraAgent did not reach a durable drained boundary before the lifecycle deadline";
         if (lastState is not null)
         {
-            message += $"; last observed capture control '{lastState.CaptureState}' (initialized: {lastState.CaptureInitialized}, " +
-                $"leased raw/lane/processing/outbox {lastState.RawLeased}/{lastState.LaneLeased}/{lastState.ProcessingLeased}/{lastState.OutboxLeased})";
+            message += $"; {Describe(lastState)}";
         }
         if (lastReadFailure is not null)
         {
@@ -193,6 +206,10 @@ internal sealed class CameraAgentLifecycleClient(
         }
         return message + ".";
     }
+
+    private static string Describe(LifecycleContinuity state)
+        => $"last observed capture control '{state.CaptureState}' (initialized: {state.CaptureInitialized}, " +
+            $"leased raw/lane/processing/outbox {state.RawLeased}/{state.LaneLeased}/{state.ProcessingLeased}/{state.OutboxLeased})";
 
     private static async Task<T> WithBudgetAsync<T>(
         TimeSpan budget,
@@ -230,9 +247,10 @@ internal sealed class CameraAgentLifecycleClient(
         return client;
     }
 
-    // A transport fault, a read budget, or a server-side status that a restart
-    // explains (5xx, 408, 429) is transient; any other rejection, and a payload
-    // this client cannot parse, cannot become success by waiting.
+    // A transport fault or a server-side status that a restart explains (5xx,
+    // 408, 429) is transient; any other rejection, and a payload this client
+    // cannot parse, cannot become success by waiting. An exhausted read budget
+    // propagates so the boundary loop can weigh it against the deadline.
     private static async Task<LifecycleContinuity> ReadStateAsync(HttpClient client, TimeSpan budget, CancellationToken cancellationToken)
     {
         try
@@ -254,10 +272,6 @@ internal sealed class CameraAgentLifecycleClient(
                     return Parse(document.RootElement);
                 },
                 cancellationToken).ConfigureAwait(false);
-        }
-        catch (BudgetExceededException)
-        {
-            throw new TransientReadException("CameraAgent did not report its lifecycle state within its budget.");
         }
         catch (HttpRequestException exception)
         {
