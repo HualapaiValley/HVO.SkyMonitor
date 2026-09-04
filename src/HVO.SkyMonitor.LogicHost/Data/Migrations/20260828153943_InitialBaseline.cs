@@ -5516,7 +5516,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
                     WorkerId = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
                     Outcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
+                    ReasonCode = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
                     LeaseAcquiredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
                     EndedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
                     InputBytes = table.Column<long>(type: "bigint", nullable: false),
@@ -5546,6 +5546,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "IX_CentralProcessingUsageRecords_ObservatoryId_EndedAtUtc",
                 table: "CentralProcessingUsageRecords",
                 columns: new[] { "ObservatoryId", "EndedAtUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingUsageRecords_RecordedAtUtc",
+                table: "CentralProcessingUsageRecords",
+                column: "RecordedAtUtc");
 
             BaselineTriggerSql.CreateAll(migrationBuilder);
         }

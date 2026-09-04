@@ -38,12 +38,19 @@ internal sealed class CentralProcessingFairnessTelemetry : IDisposable
             new KeyValuePair<string, object?>("observatory", observatoryId.ToString("D")),
             new KeyValuePair<string, object?>("reason", reason));
 
-    public void RecordCompletion(Guid observatoryId, string resourceClass, string outcome, long inputBytes, long outputBytes)
+    /// <summary>
+    /// Adds committed usage rows to the completion and byte counters. Called by the worker's sampling with the rows
+    /// recorded since its previous sample, so the counters only ever reflect durable, committed attempts.
+    /// </summary>
+    public void RecordCommittedUsage(Guid observatoryId, string resourceClass, string outcome, long attempts, long inputBytes, long outputBytes)
     {
         var observatory = new KeyValuePair<string, object?>("observatory", observatoryId.ToString("D"));
-        _completions.Add(1, observatory,
-            new KeyValuePair<string, object?>("class", resourceClass),
-            new KeyValuePair<string, object?>("outcome", outcome));
+        if (attempts > 0)
+        {
+            _completions.Add(attempts, observatory,
+                new KeyValuePair<string, object?>("class", resourceClass),
+                new KeyValuePair<string, object?>("outcome", outcome));
+        }
         if (inputBytes > 0)
         {
             _usageBytes.Add(inputBytes, observatory, new KeyValuePair<string, object?>("direction", "input"));

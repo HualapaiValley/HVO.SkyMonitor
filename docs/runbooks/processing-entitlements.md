@@ -16,6 +16,7 @@ no plan, license server, or metering service.
     "DefaultWeight": 1.0,
     "DefaultPriority": 0,
     "StarvationAge": "00:10:00",
+    "FairShareWindow": "00:10:00",
     "AdmissionPendingLimit": 500,
     "BacklogDegradedAfter": "00:10:00",
     "Observatories": {
@@ -36,7 +37,15 @@ no plan, license server, or metering service.
   these quotas; their pinned bytes stay in the window metrics.
 - `Weight` and `Priority` order claimable work: starving jobs (older than
   `StarvationAge`) first, then priority (lower first), then weighted fair
-  share `(active + 1) / weight`, then availability order.
+  share `(active + served + 1) / weight` where `active` is the observatory's
+  unexpired leases and `served` its attempts recorded within
+  `FairShareWindow`, then availability order. Counting recent service keeps
+  the order fair when leases do not overlap (short recipes, or many
+  observatories sharing few workers); without it every observatory would
+  tie at zero active leases and the queue would drain in age order. Within
+  equal keys the ranked batch is breadth-first (one job per observatory
+  before a second job of any observatory) so concurrent claimers spread
+  across observatories.
 - Resource classes follow the layered-product contract: `structured-analysis`
   (quality, cloud assessment, analyzers, transient runtime), `presentation`
   (annotation, projected scene, weather overlay), `composition` (rolling mean,
@@ -55,15 +64,26 @@ under the policy without taking row locks (rows another claimer is updating
 are skipped), and returns a short ranked batch of candidates. The claimer
 locks the best candidate that is still claimable, takes a transaction-scoped
 application lock per observatory (and per resource class when that class has
-a budget), re-checks the counts, and only then leases, so concurrent claims
+a budget), re-checks the counts without waiting on row locks (lease renewal
+takes the same observatory lock, so a renewing lease is never in flight
+during a re-check), and only then leases, so concurrent claims
 from any number of workers or runners cannot exceed an entitlement (log event
 2220 and metric `skymonitor.central.fairness.throttled` by reason
-`observatory`, `camera`, `class`, `class-bytes`, or `observatory-class`). An
-application-lock wait that exceeds ten seconds is retried like any other
-claim collision. A claim that needs more than eight iterations logs warning
-event 2221 with the iteration count, elapsed time, and retry reasons
-(`batch-exhausted`, `lease-update`, `expired-attempt`, `adopted-outcome`,
-`terminal-update`, lock timeouts, throttled observatories); sustained 2221
+`observatory`, `camera`, `class`, `class-bytes`, or `observatory-class`). A
+rejection excludes only the saturated dimension for the rest of that claim
+call (the observatory, the camera, the resource class, or the
+observatory-class pair), so compatible work stays eligible. An expired lease
+whose attempts are exhausted is terminal cleanup, not new work: it is exempt
+from every entitlement and pool predicate so it can never be stranded behind
+a saturated quota. The entitlement lock is taken without waiting: when
+another claimer is deciding the same observatory (or class) at that instant,
+the claimer moves on to its next-ranked candidate instead of queueing behind
+a rank it computed earlier, and re-ranks after a short pause if every
+candidate in its batch was busy. A claim that needs more than eight
+iterations logs warning event 2221 with the iteration count, elapsed time,
+and retry reasons (`lock-busy`, `batch-exhausted`, `lease-update`,
+`expired-attempt`, `adopted-outcome`, `terminal-update`, busy locks,
+throttled dimensions); sustained 2221
 warnings mean the database host is oversubscribed or claimers far outnumber
 claimable work. Lease expiry, failure, completion, and cancellation release
 capacity through the existing lease engine.
@@ -73,8 +93,15 @@ capacity through the existing lease engine.
 Every terminal attempt writes one `CentralProcessingUsageRecords` row
 (observatory, camera, job, attempt, recipe, resource class, worker, outcome,
 lease start, end, input/output bytes, recipe duration) in the same transaction
-as the attempt's terminal update. Aggregate by observatory or camera for
-billing-ready reporting; no payment provider is involved.
+as the attempt's terminal update: the job service, the output writer
+(completion and quarantine), and operator cancellation call the recorder
+directly, a `SaveChanges` interceptor records attempts terminalized through
+tracked entities (graph cancellation, source invalidation, location
+quarantine), and the worker's queue sampling sweeps any terminal attempt that
+still lacks a row. The completion and byte metrics are derived from committed
+rows by that sampling, never from an open transaction. Aggregate by
+observatory or camera for billing-ready reporting; no payment provider is
+involved.
 
 ## Signals and backpressure
 

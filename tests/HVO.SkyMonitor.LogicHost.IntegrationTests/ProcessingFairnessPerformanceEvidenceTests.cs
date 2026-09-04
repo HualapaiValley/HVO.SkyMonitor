@@ -23,7 +23,8 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
     private static readonly byte[] SourcePayload = [1, 0, 2, 0, 3, 0, 4, 0];
     private static readonly JsonSerializerOptions EvidenceSerializerOptions = new() { WriteIndented = true };
     private static readonly int[] CameraCounts = [5, 10, 100];
-    private const int JobsPerCamera = 4;
+    private const int CapturesPerCamera = 4;
+    private static readonly double[] FairnessCheckpoints = [0.25, 0.5, 0.75, 1.0];
     private const int Workers = 8;
 
     [TestCleanup]
@@ -43,7 +44,7 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
             var seedStarted = Stopwatch.GetTimestamp();
             for (var camera = 0; camera < cameras; camera++)
             {
-                var (observatoryId, deviceId) = await SeedObservatoryAsync($"fair-{cameras}-{camera}", JobsPerCamera).ConfigureAwait(false);
+                var (observatoryId, deviceId) = await SeedObservatoryAsync($"fair-{cameras}-{camera}", CapturesPerCamera).ConfigureAwait(false);
                 observatories.Add(observatoryId);
                 observatoryByDevice[deviceId] = observatoryId;
                 availableByDevice[deviceId] = DateTimeOffset.UtcNow;
@@ -57,6 +58,8 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                 var old = DateTimeOffset.UtcNow.AddMinutes(-20);
                 await db.CentralDerivativeJobs.Where(job => job.SourceArtifact!.Frame!.ObservatoryId == backlogged && job.AvailableAtUtc != null)
                     .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.AvailableAtUtc, old)).ConfigureAwait(false);
+                // Queue latency is measured from the availability the scheduler actually sees, including the backdate.
+                availableByDevice[observatoryByDevice.Single(pair => pair.Value == backlogged).Key] = old;
             }
             using var factory = AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
             {
@@ -65,6 +68,9 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                 builder.UseSetting("ProcessingEntitlements:StarvationAge", "1.00:00:00");
             });
             var completions = new System.Collections.Concurrent.ConcurrentDictionary<Guid, int>();
+            var completionOrder = new System.Collections.Concurrent.ConcurrentQueue<Guid>();
+            var claimOrder = new System.Collections.Concurrent.ConcurrentQueue<Guid>();
+            var claimOrdinal = 0;
             var latencies = new System.Collections.Concurrent.ConcurrentBag<double>();
             var claimDurations = new System.Collections.Concurrent.ConcurrentBag<double>();
             var expiredAndReclaimed = 0;
@@ -75,6 +81,24 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
             var allocationsBefore = GC.GetTotalAllocatedBytes(true);
             var drainStarted = Stopwatch.GetTimestamp();
             var expectedJobs = await CountClaimableAsync(factory, observatories).ConfigureAwait(false);
+            string readiness;
+            await using (var scope = factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var rows = await db.CentralDerivativeJobs.AsNoTracking()
+                    .Where(job => observatories.Contains(job.SourceArtifact!.Frame!.ObservatoryId))
+                    .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
+                    .Select(group => new
+                    {
+                        Observatory = group.Key,
+                        Pending = group.Count(job => job.Status == CentralDerivativeJobStatus.Pending),
+                        Ready = group.Count(job => job.Status == CentralDerivativeJobStatus.Pending && job.InputSetIdentitySha256 != null && job.AvailableAtUtc <= DateTimeOffset.UtcNow),
+                        Waiting = group.Count(job => job.Status == CentralDerivativeJobStatus.Waiting),
+                        Other = group.Count(job => job.Status != CentralDerivativeJobStatus.Pending && job.Status != CentralDerivativeJobStatus.Waiting)
+                    })
+                    .ToListAsync().ConfigureAwait(false);
+                readiness = string.Join(' ', rows.Select(row => $"{observatories.IndexOf(row.Observatory)}:p{row.Pending}/r{row.Ready}/w{row.Waiting}/o{row.Other}"));
+            }
             var completed = 0;
             var workers = Enumerable.Range(0, Workers).Select(async worker =>
             {
@@ -96,6 +120,7 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                     var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                     // Bookkeeping reads stay lock-free so the harness never participates in claim lock cycles.
                     var observatory = observatoryByDevice[lease.SourceDevicePublicId];
+                    claimOrder.Enqueue(observatory);
                     var active = await db.Database.SqlQueryRaw<int>("""
                             SELECT COUNT(*) AS [Value]
                             FROM [CentralDerivativeJobs] AS job WITH (NOLOCK)
@@ -106,9 +131,10 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                         .SingleAsync().ConfigureAwait(false);
                     InterlockedMax(ref maxActivePerObservatory, active);
                     latencies.Add(Math.Max(0, (DateTimeOffset.UtcNow - availableByDevice[lease.SourceDevicePublicId]).TotalMilliseconds));
-                    // Simulate recipe work, then either finish or (every 11th job) lose the lease to exercise recovery.
+                    // Simulate recipe work, then either finish or (every 11th successful claim of a first attempt) lose
+                    // the lease to exercise recovery deterministically.
                     await Task.Delay(5).ConfigureAwait(false);
-                    if (lease.AttemptCount == 1 && lease.JobId.GetHashCode() % 11 == 0)
+                    if (lease.AttemptCount == 1 && Interlocked.Increment(ref claimOrdinal) % 11 == 0)
                     {
                         var expired = DateTimeOffset.UtcNow.AddMinutes(-1);
                         await db.CentralDerivativeJobs.Where(job => job.Id == lease.JobId)
@@ -120,6 +146,7 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                     }
                     await RetryDeadlockAsync(() => jobs.SkipAsync(lease.JobId, lease.LeaseToken, "fairness.evidence", CancellationToken.None)).ConfigureAwait(false);
                     completions.AddOrUpdate(observatory, 1, static (_, count) => count + 1);
+                    completionOrder.Enqueue(observatory);
                     Interlocked.Increment(ref completed);
                 }
             }).ToArray();
@@ -129,14 +156,26 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
             var cpu = process.TotalProcessorTime - cpuBefore;
             var allocations = GC.GetTotalAllocatedBytes(true) - allocationsBefore;
             var perObservatory = observatories.Select(id => completions.TryGetValue(id, out var count) ? count : 0).ToArray();
-            var jain = perObservatory.Sum() == 0 ? 0 : Math.Pow(perObservatory.Sum(), 2) / (perObservatory.Length * perObservatory.Sum(count => (double)count * count));
+            // Fairness is judged on completion order, not only on the drained totals (which are equal by
+            // construction): Jain's index over the first quarter, half, and three quarters of completions detects a
+            // scheduler that drains one observatory before touching another.
+            var order = completionOrder.ToArray();
+            var jainByQuartile = FairnessCheckpoints
+                .Select(fraction => JainIndex(order.Take((int)Math.Ceiling(order.Length * fraction)), observatories))
+                .ToArray();
+            var jain = jainByQuartile.Min();
             completed.Should().Be(expectedJobs);
             maxActivePerObservatory.Should().BeLessThanOrEqualTo(2, "the observatory entitlement is enforced under concurrent claims");
-            jain.Should().BeGreaterThan(0.9, "every observatory completes the same share of its work");
+            var firstQuarter = order.Take((int)Math.Ceiling(order.Length * 0.25)).GroupBy(id => id)
+                .Select(group => $"{observatories.IndexOf(group.Key)}:{group.Count()}");
+            jain.Should().BeGreaterThan(0.7,
+                $"every observatory progresses at the same share throughout the drain, not only at the end (quartiles {string.Join('/', jainByQuartile.Select(value => value.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}, first quarter by observatory index {string.Join(' ', firstQuarter)}, readiness at start {readiness}, claim order {string.Join("", claimOrder.Take(40).Select(id => observatories.IndexOf(id).ToString(System.Globalization.CultureInfo.InvariantCulture)))})");
+            expiredAndReclaimed.Should().BeGreaterThan(0, "lease loss and reclaim is part of the measured workload");
             streams.Add(new
             {
                 cameras,
-                jobsPerCamera = JobsPerCamera,
+                capturesPerCamera = CapturesPerCamera,
+                jobsPerCamera = expectedJobs / cameras,
                 expectedJobs,
                 workers = Workers,
                 entitlementActiveJobs = 2,
@@ -144,6 +183,7 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                 drainMilliseconds = drainElapsed.TotalMilliseconds,
                 jobsPerSecond = drainElapsed.TotalSeconds <= 0 ? 0 : completed / drainElapsed.TotalSeconds,
                 fairnessJainIndex = jain,
+                fairnessJainIndexByQuartile = jainByQuartile,
                 completionsPerObservatoryMin = perObservatory.Min(),
                 completionsPerObservatoryMax = perObservatory.Max(),
                 maxActivePerObservatory,
@@ -167,7 +207,7 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                 framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                 processors = Environment.ProcessorCount
             },
-            method = "Deterministic arrival streams (one raw capture per sequence, every required recipe scheduled), one observatory per camera with a 20-minute-old backlog on the first, 8 concurrent in-process claim loops with a 5 ms simulated recipe and every 11th first attempt losing its lease; per-observatory entitlement 2, starvation age 1 day.",
+            method = "Deterministic arrival streams (one raw capture per sequence, every required recipe scheduled, so jobsPerCamera is the scheduled job count per camera), one observatory per camera with a 20-minute-old backlog on the first, 8 concurrent in-process claim loops with a 5 ms simulated recipe and every 11th successful first-attempt claim losing its lease; per-observatory entitlement 2, starvation age 1 day. fairnessJainIndex is the minimum of Jain's index over the first 25%, 50%, 75%, and 100% of completions in completion order.",
             streams,
             capacityGuidance = "Capacity follows the measured mix: claim latency and jobs/s at entitlement 2 scale with the number of claimable jobs, not the camera count; size runner concurrency from the sum of observatory entitlements you intend to honor concurrently and from the measured recipe durations of the placed mix."
         };
@@ -187,11 +227,20 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                 await operation().ConfigureAwait(false);
                 return;
             }
-            catch (Microsoft.Data.SqlClient.SqlException exception) when (exception.Number == 1205 && attempt < 10)
+            catch (Exception exception) when (attempt < 10
+                && exception.GetBaseException() is Microsoft.Data.SqlClient.SqlException { Number: 1205 })
             {
                 await Task.Delay(10 * (attempt + 1)).ConfigureAwait(false);
             }
         }
+    }
+
+    private static double JainIndex(IEnumerable<Guid> completions, IReadOnlyCollection<Guid> observatories)
+    {
+        var counts = completions.GroupBy(id => id).ToDictionary(group => group.Key, group => group.Count());
+        var shares = observatories.Select(id => counts.TryGetValue(id, out var count) ? (double)count : 0).ToArray();
+        var sum = shares.Sum();
+        return sum == 0 ? 0 : sum * sum / (shares.Length * shares.Sum(share => share * share));
     }
 
     private static void InterlockedMax(ref int target, int value)

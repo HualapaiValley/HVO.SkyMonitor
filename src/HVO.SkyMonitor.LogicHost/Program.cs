@@ -472,8 +472,10 @@ public sealed partial class Program
             builder.Environment,
             connectionPurpose);
 
-        builder.Services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseSqlServer(sqlProfile.ConnectionString));
+        builder.Services.AddSingleton<CentralProcessingUsageInterceptor>();
+        builder.Services.AddDbContext<ApplicationDbContext>((services, options) =>
+            options.UseSqlServer(sqlProfile.ConnectionString)
+                .AddInterceptors(services.GetRequiredService<CentralProcessingUsageInterceptor>()));
         builder.Services.AddScoped<DatabaseInitializer>();
         builder.Services.AddScoped<DatabaseRuntimeValidator>();
 

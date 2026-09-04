@@ -528,10 +528,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("GraphProductContractIdentitySha256")
-                        .IsFixedLength()
                         .HasMaxLength(64)
                         .IsUnicode(false)
-                        .HasColumnType("char(64)");
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
 
                     b.Property<string>("OutputIdentitySha256")
                         .IsRequired()
@@ -2555,8 +2555,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("bigint");
 
                     b.Property<string>("ReasonCode")
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<long>("RecipeDurationTicks")
                         .HasColumnType("bigint");
@@ -2580,6 +2580,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("nvarchar(256)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("RecordedAtUtc");
 
                     b.HasIndex("CentralDerivativeJobId", "AttemptNumber")
                         .IsUnique();

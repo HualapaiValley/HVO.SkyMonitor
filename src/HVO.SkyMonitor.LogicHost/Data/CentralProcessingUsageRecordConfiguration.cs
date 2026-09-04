@@ -22,8 +22,9 @@ internal sealed class CentralProcessingUsageRecordConfiguration : IEntityTypeCon
         builder.Property(record => record.ResourceClass).HasMaxLength(64).IsRequired();
         builder.Property(record => record.WorkerId).HasMaxLength(256).IsRequired();
         builder.Property(record => record.Outcome).HasConversion<string>().HasMaxLength(32).IsRequired();
-        builder.Property(record => record.ReasonCode).HasMaxLength(128);
+        builder.Property(record => record.ReasonCode).HasMaxLength(256);
         builder.HasIndex(record => new { record.CentralDerivativeJobId, record.AttemptNumber }).IsUnique();
+        builder.HasIndex(record => record.RecordedAtUtc);
         builder.HasIndex(record => new { record.ObservatoryId, record.EndedAtUtc });
         builder.HasIndex(record => new { record.DevicePublicId, record.EndedAtUtc });
     }

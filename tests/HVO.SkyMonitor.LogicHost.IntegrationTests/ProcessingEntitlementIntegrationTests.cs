@@ -165,6 +165,95 @@ public sealed class ProcessingEntitlementIntegrationTests
         records.Should().Contain(record => record.CentralDerivativeJobId == expiring.JobId && record.AttemptNumber == 1 && record.Outcome == CentralDerivativeAttemptOutcome.LeaseExpired);
         records.Should().OnlyContain(record => record.ResourceClass.Length > 0 && record.EndedAtUtc >= record.LeaseAcquiredAtUtc);
         records.Select(record => (record.CentralDerivativeJobId, record.AttemptNumber)).Should().OnlyHaveUniqueItems();
+
+        // Operator cancellation terminalizes the attempt with a bulk update and records usage in that transaction.
+        var canceled = (await jobs.ClaimNextAsync("usage-5", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false))!;
+        await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobOperationsService>()
+            .CancelAsync(canceled.JobId, "usage-test", CancellationToken.None).ConfigureAwait(false);
+        (await db.CentralProcessingUsageRecords.AsNoTracking().SingleOrDefaultAsync(record =>
+            record.CentralDerivativeJobId == canceled.JobId && record.AttemptNumber == canceled.AttemptCount).ConfigureAwait(false))!
+            .Outcome.Should().Be(CentralDerivativeAttemptOutcome.Canceled);
+
+        // An attempt terminalized through a tracked entity is recorded by the SaveChanges interceptor.
+        var tracked = (await jobs.ClaimNextAsync("usage-6", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false))!;
+        db.ChangeTracker.Clear();
+        var attempt = await db.CentralDerivativeJobAttempts.SingleAsync(item =>
+            item.CentralDerivativeJobId == tracked.JobId && item.AttemptNumber == tracked.AttemptCount).ConfigureAwait(false);
+        attempt.Outcome = CentralDerivativeAttemptOutcome.Quarantined;
+        attempt.ReasonCode = new string('r', 256);
+        attempt.EndedAtUtc = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var interceptorRecord = await db.CentralProcessingUsageRecords.AsNoTracking().SingleOrDefaultAsync(record =>
+            record.CentralDerivativeJobId == tracked.JobId && record.AttemptNumber == tracked.AttemptCount).ConfigureAwait(false);
+        interceptorRecord.Should().NotBeNull();
+        interceptorRecord!.Outcome.Should().Be(CentralDerivativeAttemptOutcome.Quarantined);
+        interceptorRecord.ReasonCode.Should().HaveLength(256, "reason codes keep the attempt column's full length");
+
+        // The periodic sweep restores a row that is missing for any reason.
+        await db.CentralProcessingUsageRecords.Where(record => record.CentralDerivativeJobId == tracked.JobId)
+            .ExecuteDeleteAsync().ConfigureAwait(false);
+        (await CentralProcessingUsageRecorder.RecordMissingAsync(db, null, 100, CancellationToken.None).ConfigureAwait(false))
+            .Should().BeGreaterThanOrEqualTo(1);
+        (await db.CentralProcessingUsageRecords.AsNoTracking().CountAsync(record => record.CentralDerivativeJobId == tracked.JobId).ConfigureAwait(false))
+            .Should().Be(1);
+        (await CentralProcessingUsageRecorder.RecordMissingAsync(db, null, 100, CancellationToken.None).ConfigureAwait(false))
+            .Should().Be(0, "the sweep is idempotent");
+    }
+
+    [TestMethod]
+    public async Task ExhaustedExpiredLeasesAreTerminalizedEvenWhenTheObservatoryIsSaturated()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        await SeedObservatoryAsync("cleanup", sources: 2).ConfigureAwait(false);
+        using var factory = CreateFactory(("ProcessingEntitlements:DefaultActiveJobs", "1"));
+        await using var scope = factory.Services.CreateAsyncScope();
+        var jobs = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        // One lease fills the entitlement; a second job is left as an expired lease with its attempts exhausted.
+        var exhausted = (await jobs.ClaimNextAsync("cleanup-1", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false))!;
+        var expired = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var maxAttempts = await db.CentralDerivativeJobs.AsNoTracking().Where(job => job.Id == exhausted.JobId)
+            .Select(job => job.MaxAttempts).SingleAsync().ConfigureAwait(false);
+        await db.CentralDerivativeJobs.Where(job => job.Id == exhausted.JobId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.LeaseExpiresAtUtc, expired)
+                .SetProperty(job => job.AttemptCount, maxAttempts)).ConfigureAwait(false);
+        await db.CentralDerivativeJobAttempts.Where(attempt => attempt.CentralDerivativeJobId == exhausted.JobId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(attempt => attempt.LeaseExpiresAtUtc, expired)
+                .SetProperty(attempt => attempt.AttemptNumber, maxAttempts)).ConfigureAwait(false);
+        var active = (await jobs.ClaimNextAsync("cleanup-2", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false))!;
+        active.JobId.Should().NotBe(exhausted.JobId);
+
+        // The observatory is at its entitlement, yet the next claim still terminalizes the exhausted lease.
+        (await jobs.ClaimNextAsync("cleanup-3", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false)).Should().BeNull();
+        var cleaned = await db.CentralDerivativeJobs.AsNoTracking().SingleAsync(job => job.Id == exhausted.JobId).ConfigureAwait(false);
+        cleaned.Status.Should().Be(CentralDerivativeJobStatus.TerminalFailure);
+        cleaned.LeaseToken.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task HealthReportsCameraSaturationWithoutAnObservatoryEntitlement()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        var observatory = await SeedObservatoryAsync("camera-health", sources: 2, availableOffset: TimeSpan.FromMinutes(-20)).ConfigureAwait(false);
+        using var factory = CreateFactory(
+            ("ProcessingEntitlements:DefaultActiveJobs", "0"),
+            ("ProcessingEntitlements:DefaultActiveJobsPerCamera", "1"),
+            ("ProcessingEntitlements:BacklogDegradedAfter", "00:01:00"));
+        (await ClaimAsync(factory, "camera-health").ConfigureAwait(false)).Should().NotBeNull();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var check = new CentralProcessingEntitlementHealthCheck(
+            scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+            scope.ServiceProvider.GetRequiredService<IOptions<CentralProcessingEntitlementOptions>>(),
+            TimeProvider.System);
+
+        var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None).ConfigureAwait(false);
+
+        result.Status.Should().Be(HealthStatus.Degraded, "the single camera is at its entitlement with 20-minute-old backlog");
+        ((string)result.Data["saturatedDimensions"]).Should().Contain("camera");
+        _ = observatory;
     }
 
     [TestMethod]

@@ -2558,8 +2558,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("bigint");
 
                     b.Property<string>("ReasonCode")
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<long>("RecipeDurationTicks")
                         .HasColumnType("bigint");
@@ -2590,6 +2590,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasIndex("DevicePublicId", "EndedAtUtc");
 
                     b.HasIndex("ObservatoryId", "EndedAtUtc");
+
+                    b.HasIndex("RecordedAtUtc");
 
                     b.ToTable("CentralProcessingUsageRecords", null, t =>
                         {

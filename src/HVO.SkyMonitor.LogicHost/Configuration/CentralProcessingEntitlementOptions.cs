@@ -67,6 +67,13 @@ internal sealed class CentralProcessingEntitlementOptions
     /// <summary>Work older than this is served before priority and share ordering (starvation prevention).</summary>
     public TimeSpan StarvationAge { get; init; } = TimeSpan.FromMinutes(10);
 
+    /// <summary>
+    /// Window over which an observatory's recently served attempts count toward its share. Share ordering ranks by
+    /// <c>(active + served within the window + 1) / weight</c>, so observatories that were just served yield to
+    /// those that were not even when no lease of theirs is active at the instant of the claim.
+    /// </summary>
+    public TimeSpan FairShareWindow { get; init; } = TimeSpan.FromMinutes(10);
+
     /// <summary>Pending jobs per observatory above which the health check reports admission backpressure; 0 disables.</summary>
     public int AdmissionPendingLimit { get; init; }
 
@@ -107,11 +114,45 @@ internal sealed class CentralProcessingEntitlementOptions
             ? configured
             : DefaultRecipeClasses.TryGetValue(recipeName, out var known) ? known : ImageClass;
 
+    private Dictionary<Guid, ObservatoryEntitlementOptions>? _byObservatoryId;
+
+    /// <summary>
+    /// Looks an observatory up by its parsed id, so every accepted key spelling (braces, digits only, upper case)
+    /// resolves to the same entry the candidate query receives.
+    /// </summary>
     public ObservatoryEntitlementOptions? Find(Guid observatoryId)
-        => Observatories.TryGetValue(observatoryId.ToString("D"), out var entitlement) ? entitlement : null;
+        => ByObservatoryId().TryGetValue(observatoryId, out var entitlement) ? entitlement : null;
+
+    private Dictionary<Guid, ObservatoryEntitlementOptions> ByObservatoryId()
+    {
+        var cached = _byObservatoryId;
+        if (cached is not null && cached.Count == Observatories.Count)
+        {
+            return cached;
+        }
+        var parsed = new Dictionary<Guid, ObservatoryEntitlementOptions>();
+        foreach (var (key, entitlement) in Observatories)
+        {
+            if (Guid.TryParse(key, out var id) && id != Guid.Empty)
+            {
+                parsed[id] = entitlement;
+            }
+        }
+        _byObservatoryId = parsed;
+        return parsed;
+    }
 
     private IEnumerable<(Guid ObservatoryId, ObservatoryEntitlementOptions Entitlement)> ParsedObservatories()
-        => Observatories.Select(pair => (Guid.TryParse(pair.Key, out var id) ? id : Guid.Empty, pair.Value));
+        => ByObservatoryId().Select(pair => (pair.Key, pair.Value));
+
+    /// <summary>Longest starvation age accepted by validation; the claim clamps the computed threshold regardless.</summary>
+    public static readonly TimeSpan MaximumStarvationAge = TimeSpan.FromDays(3650);
+
+    /// <summary>The instant before which an available job counts as starved, clamped so it can never underflow.</summary>
+    public static DateTimeOffset StarvationThreshold(DateTimeOffset now, TimeSpan starvationAge)
+        => starvationAge <= TimeSpan.Zero
+            ? now
+            : starvationAge >= now - DateTimeOffset.MinValue ? DateTimeOffset.MinValue : now - starvationAge;
 
     public int ResolveActiveJobs(Guid observatoryId) => Find(observatoryId)?.ActiveJobs ?? DefaultActiveJobs;
 
@@ -163,7 +204,8 @@ internal sealed class CentralProcessingEntitlementOptions
     {
         error = null;
         if (DefaultActiveJobs < 0 || DefaultActiveJobsPerCamera < 0 || DefaultWeight <= 0 || !double.IsFinite(DefaultWeight)
-            || StarvationAge <= TimeSpan.Zero || AdmissionPendingLimit < 0 || BacklogDegradedAfter <= TimeSpan.Zero)
+            || StarvationAge <= TimeSpan.Zero || StarvationAge > MaximumStarvationAge || AdmissionPendingLimit < 0
+            || BacklogDegradedAfter <= TimeSpan.Zero || FairShareWindow <= TimeSpan.Zero || FairShareWindow > MaximumStarvationAge)
         {
             error = "ProcessingEntitlements defaults are invalid.";
             return false;

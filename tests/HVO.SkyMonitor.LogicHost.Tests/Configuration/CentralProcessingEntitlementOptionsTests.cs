@@ -117,17 +117,61 @@ public sealed class CentralProcessingEntitlementOptionsTests
         Assert.IsFalse(plain.Contains("@starvationBefore", StringComparison.Ordinal));
         Assert.IsTrue(fair.Contains("OPENJSON(@entitlements)", StringComparison.Ordinal));
         Assert.IsTrue(fair.Contains("@starvationBefore", StringComparison.Ordinal));
-        Assert.IsTrue(fair.Contains("/ COALESCE(ent.[w], @defaultWeight)", StringComparison.Ordinal));
+        Assert.IsTrue(fair.Contains("(fair.[ObservatoryActive] + fair.[ObservatoryServed] + 1.0) / COALESCE(ent.[w], @defaultWeight)", StringComparison.Ordinal));
+        Assert.IsTrue(fair.Contains("[RecordedAtUtc] > @servedSince", StringComparison.Ordinal), "recent service within the fair-share window counts toward share");
+        Assert.IsFalse(plain.Contains("@servedSince", StringComparison.Ordinal));
         Assert.IsTrue(fair.Contains("@poolMode = 2 AND ent.[pool] = @pool", StringComparison.Ordinal));
         Assert.IsTrue(fair.TrimStart().StartsWith("WITH active AS", StringComparison.Ordinal), "fairness aggregates are computed once per query");
         Assert.IsFalse(plain.Contains("WITH active AS", StringComparison.Ordinal));
-        Assert.IsTrue(CentralDerivativeJobService.CreateCandidateSql(true, idOnly: true)
-            .Contains($"SELECT TOP({CentralDerivativeJobService.FairCandidateBatchSize}) job.[Id] AS [Value]", StringComparison.Ordinal));
+        var batch = CentralDerivativeJobService.CreateCandidateSql(true, idOnly: true);
+        Assert.IsTrue(batch.Contains($"SELECT TOP({CentralDerivativeJobService.FairCandidateBatchSize}) ranked.[Value]", StringComparison.Ordinal));
+        Assert.IsTrue(batch.Contains("ROW_NUMBER() OVER (PARTITION BY sourceFrame.[ObservatoryId]", StringComparison.Ordinal), "batches are breadth-first across observatories");
+        Assert.IsTrue(batch.Contains("ORDER BY ranked.[k0], ranked.[k1], ranked.[k2], ranked.[k3], ranked.[rn], ranked.[a0]", StringComparison.Ordinal));
         Assert.IsTrue(fair.Contains("SELECT TOP(1) job.*", StringComparison.Ordinal));
+        foreach (var scoped in new[] { "@excludedCameras", "@excludedClasses", "@excludedObservatoryClasses" })
+        {
+            Assert.IsTrue(fair.Contains(scoped, StringComparison.Ordinal), $"rejections exclude only their dimension ({scoped})");
+        }
+        Assert.IsTrue(fair.Contains("OR ((COALESCE(ent.[a], @defaultActive) = 0", StringComparison.Ordinal),
+            "exhausted expired leases are exempt from the fairness predicates");
         foreach (var sql in new[] { plain, fair })
         {
             Assert.IsTrue(sql.Contains("STRING_SPLIT(@includeRecipes, ',')", StringComparison.Ordinal));
             Assert.IsTrue(sql.Contains("job.[AttemptCount] >= job.[MaxAttempts]", StringComparison.Ordinal));
         }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void ObservatoryKeysResolveByParsedGuidInEverySpelling()
+    {
+        var id = Guid.NewGuid();
+        foreach (var spelling in new[] { id.ToString("N"), id.ToString("B").ToUpperInvariant(), id.ToString("D") })
+        {
+            var options = new CentralProcessingEntitlementOptions
+            {
+                Enabled = true,
+                Observatories = { [spelling] = new ObservatoryEntitlementOptions { ActiveJobs = 1, Weight = 2 } }
+            };
+            Assert.IsTrue(options.Validate(out _), spelling);
+            Assert.AreEqual(1, options.ResolveActiveJobs(id), spelling);
+            Assert.AreEqual(2.0, options.ResolveWeight(id), spelling);
+            Assert.IsTrue(options.CreateObservatoryEntitlementsJson().Contains(id.ToString("D"), StringComparison.OrdinalIgnoreCase), spelling);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void StarvationAgeIsBoundedAndTheThresholdNeverUnderflows()
+    {
+        var options = new CentralProcessingEntitlementOptions { Enabled = true, StarvationAge = TimeSpan.MaxValue };
+        Assert.IsFalse(options.Validate(out var error));
+        Assert.IsNotNull(error);
+        Assert.IsFalse(new CentralProcessingEntitlementOptions { Enabled = true, FairShareWindow = TimeSpan.Zero }.Validate(out _));
+        Assert.IsTrue(new CentralProcessingEntitlementOptions { Enabled = true, StarvationAge = CentralProcessingEntitlementOptions.MaximumStarvationAge }.Validate(out _));
+        var now = new DateTimeOffset(2026, 9, 4, 0, 0, 0, TimeSpan.Zero);
+        Assert.AreEqual(now.AddMinutes(-10), CentralProcessingEntitlementOptions.StarvationThreshold(now, TimeSpan.FromMinutes(10)));
+        Assert.AreEqual(DateTimeOffset.MinValue, CentralProcessingEntitlementOptions.StarvationThreshold(now, TimeSpan.MaxValue));
+        Assert.AreEqual(now, CentralProcessingEntitlementOptions.StarvationThreshold(now, TimeSpan.Zero));
     }
 }

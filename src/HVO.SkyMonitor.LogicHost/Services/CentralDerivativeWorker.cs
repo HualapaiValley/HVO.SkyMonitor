@@ -491,6 +491,56 @@ internal sealed partial class CentralDerivativeWorker(
         }
     }
 
+    /// <summary>
+    /// Usage rows recorded since the previous sample feed the completion and byte counters, so the signals derive
+    /// from committed rows only. The safety-net sweep first records any terminal attempt that still lacks a usage
+    /// row; the small lag keeps rows committed late by a long transaction from being skipped by the watermark.
+    /// </summary>
+    private async Task SampleCommittedUsageAsync(
+        ApplicationDbContext dbContext,
+        CentralProcessingEntitlementOptions? entitlements,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (fairnessTelemetry is null)
+        {
+            return;
+        }
+        await CentralProcessingUsageRecorder.RecordMissingAsync(dbContext, entitlements, UsageSweepLimit, cancellationToken)
+            .ConfigureAwait(false);
+        var upTo = now - UsageWatermarkLag;
+        var since = _usageWatermarkUtc ?? upTo;
+        if (upTo <= since)
+        {
+            _usageWatermarkUtc ??= since;
+            return;
+        }
+        var committed = await dbContext.CentralProcessingUsageRecords.AsNoTracking()
+            .Where(record => record.RecordedAtUtc > since && record.RecordedAtUtc <= upTo)
+            .GroupBy(record => new { record.ObservatoryId, record.ResourceClass, record.Outcome })
+            .Select(group => new
+            {
+                group.Key.ObservatoryId,
+                group.Key.ResourceClass,
+                group.Key.Outcome,
+                Attempts = group.LongCount(),
+                InputBytes = group.Sum(record => record.InputBytes),
+                OutputBytes = group.Sum(record => record.OutputBytes)
+            })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var usage in committed)
+        {
+            fairnessTelemetry.RecordCommittedUsage(
+                usage.ObservatoryId, usage.ResourceClass, usage.Outcome.ToString().ToLowerInvariant(),
+                usage.Attempts, usage.InputBytes, usage.OutputBytes);
+        }
+        _usageWatermarkUtc = upTo;
+    }
+
+    internal const int UsageSweepLimit = 500;
+    internal static readonly TimeSpan UsageWatermarkLag = TimeSpan.FromSeconds(5);
+    private DateTimeOffset? _usageWatermarkUtc;
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Design",
         "CA1031:Do not catch general exception types",
@@ -534,7 +584,7 @@ internal sealed partial class CentralDerivativeWorker(
                         Leased = group.LongCount(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc > now),
                         Waiting = group.LongCount(job => job.Status == CentralDerivativeJobStatus.Waiting),
                         OldestPending = group.Where(job => pendingStatuses.Contains(job.Status))
-                            .Min(job => job.AvailableAtUtc ?? job.CreatedAtUtc)
+                            .Min(job => (DateTimeOffset?)(job.AvailableAtUtc ?? job.CreatedAtUtc))
                     })
                     .ToListAsync(cancellationToken).ConfigureAwait(false);
                 var entitlements = entitlementOptions?.Value;
@@ -545,6 +595,7 @@ internal sealed partial class CentralDerivativeWorker(
                     item.Waiting,
                     item.OldestPending is { } oldestPending ? (long)Math.Max(0, (now - oldestPending).TotalSeconds) : 0,
                     entitlements is { Enabled: true } ? entitlements.ResolveActiveJobs(item.ObservatoryId) : 0)).ToArray());
+                await SampleCommittedUsageAsync(dbContext, entitlements, now, cancellationToken).ConfigureAwait(false);
             }
             telemetry.UpdateQueueSnapshot(
                 snapshot.Select(item => new CentralDerivativeQueueMeasurement(

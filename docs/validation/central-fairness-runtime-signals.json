@@ -6,7 +6,7 @@
   "activitySource": "HVO.SkyMonitor.LogicHost.DerivativeWorker",
   "logs": [
     { "eventId": 2220, "level": "Information", "fields": ["Worker", "JobId", "Observatory", "Reason", "Active", "Limit"] },
-    { "eventId": 2221, "level": "Warning", "fields": ["Worker", "Iteration", "ElapsedMilliseconds", "LockTimeouts", "ThrottledObservatories", "SkippedJobs", "Retries"] }
+    { "eventId": 2221, "level": "Warning", "fields": ["Worker", "Iteration", "ElapsedMilliseconds", "LockBusy", "ThrottledDimensions", "SkippedJobs", "Retries"] }
   ],
   "metrics": [
     { "name": "skymonitor.central.fairness.queue", "unit": "{job}", "labels": { "observatory": ["<observatory id>"], "status": ["pending", "leased", "waiting"] } },
@@ -25,6 +25,10 @@
     "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --filter \"FullyQualifiedName~ProcessingEntitlementIntegrationTests\"",
     "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --filter \"FullyQualifiedName~ProcessingFairnessPerformanceEvidenceTests\""
   ],
-  "privacy": ["Observatory ids are the only identifiers; no owner, credential, or payload data is emitted."],
+  "privacy": [
+    "Metrics carry observatory ids only.",
+    "Log events 2220 and 2221 carry the claiming worker id (an operator-assigned host or runner name) and, for 2220, the job id; both are operational identifiers already present in the derivative job tables and lease telemetry, and neither is an owner, credential, or payload value.",
+    "CentralProcessingUsageRecords rows store observatory id, device public id, job id, worker id, recipe, class, outcome, reason code, timestamps, and byte counts; no owner, credential, or payload data is stored."
+  ],
   "evidence": ["TestResults/processing-fairness/<revision>/processing-fairness-evidence.json"]
 }

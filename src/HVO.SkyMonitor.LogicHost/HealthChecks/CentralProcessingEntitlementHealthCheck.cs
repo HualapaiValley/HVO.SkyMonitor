@@ -29,41 +29,81 @@ internal sealed class CentralProcessingEntitlementHealthCheck(
         }
         var now = timeProvider.GetUtcNow();
         var pendingStatuses = new[] { CentralDerivativeJobStatus.Pending, CentralDerivativeJobStatus.RetryableFailure };
-        var observatories = await dbContext.CentralDerivativeJobs.AsNoTracking()
+        // Grouped by observatory, camera, and recipe so every enforced dimension (observatory, camera, class, and
+        // observatory-class) can be evaluated from one query; the recipe maps to its resource class in memory.
+        var groups = await dbContext.CentralDerivativeJobs.AsNoTracking()
             .Where(job => pendingStatuses.Contains(job.Status) || job.Status == CentralDerivativeJobStatus.Leased)
-            .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
+            .GroupBy(job => new { job.SourceArtifact!.Frame!.ObservatoryId, job.SourceArtifact.Frame.DevicePublicId, job.RecipeName })
             .Select(group => new
             {
-                ObservatoryId = group.Key,
+                group.Key.ObservatoryId,
+                group.Key.DevicePublicId,
+                group.Key.RecipeName,
                 Pending = group.LongCount(job => pendingStatuses.Contains(job.Status)),
                 Leased = group.LongCount(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc > now),
                 Oldest = group.Where(job => pendingStatuses.Contains(job.Status) && job.AvailableAtUtc != null)
                     .Min(job => job.AvailableAtUtc)
             })
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var threshold = settings.BacklogDegradedAfter;
+        bool OldBacklog(DateTimeOffset? oldest) => oldest is { } value && now - value > threshold;
+        var byObservatory = groups.GroupBy(item => item.ObservatoryId).ToList();
+        var byClass = groups.GroupBy(item => settings.ResolveResourceClass(item.RecipeName))
+            .ToDictionary(group => group.Key, group => (Leased: group.Sum(item => item.Leased), OldBacklog: group.Any(item => OldBacklog(item.Oldest))));
         var overAdmission = new List<string>();
         var saturated = new List<string>();
-        foreach (var observatory in observatories)
+        var saturatedDimensions = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var observatory in byObservatory)
         {
-            var entitlement = settings.ResolveActiveJobs(observatory.ObservatoryId);
-            var oldestAge = observatory.Oldest is { } oldest ? Math.Max(0, (now - oldest).TotalSeconds) : 0;
-            if (settings.AdmissionPendingLimit > 0 && observatory.Pending > settings.AdmissionPendingLimit)
+            var id = observatory.Key;
+            var pending = observatory.Sum(item => item.Pending);
+            var leased = observatory.Sum(item => item.Leased);
+            var oldBacklog = observatory.Any(item => OldBacklog(item.Oldest));
+            if (settings.AdmissionPendingLimit > 0 && pending > settings.AdmissionPendingLimit)
             {
-                overAdmission.Add(observatory.ObservatoryId.ToString("D"));
+                overAdmission.Add(id.ToString("D"));
             }
-            if (entitlement > 0 && observatory.Leased >= entitlement && oldestAge > settings.BacklogDegradedAfter.TotalSeconds)
+            var dimensions = new List<string>();
+            var entitlement = settings.ResolveActiveJobs(id);
+            if (entitlement > 0 && leased >= entitlement && oldBacklog)
             {
-                saturated.Add(observatory.ObservatoryId.ToString("D"));
+                dimensions.Add("observatory");
+            }
+            var cameraLimit = settings.ResolveActiveJobsPerCamera(id);
+            if (cameraLimit > 0 && observatory.GroupBy(item => item.DevicePublicId)
+                    .Any(camera => camera.Sum(item => item.Leased) >= cameraLimit && camera.Any(item => OldBacklog(item.Oldest))))
+            {
+                dimensions.Add("camera");
+            }
+            var perClass = observatory.GroupBy(item => settings.ResolveResourceClass(item.RecipeName))
+                .Select(group => (Class: group.Key, Leased: group.Sum(item => item.Leased), OldBacklog: group.Any(item => OldBacklog(item.Oldest))))
+                .ToList();
+            var observatoryClassLimits = settings.Find(id)?.ResourceClassActiveJobs;
+            if (perClass.Any(item => observatoryClassLimits is not null
+                    && observatoryClassLimits.TryGetValue(item.Class, out var limit) && limit > 0 && item.Leased >= limit && item.OldBacklog))
+            {
+                dimensions.Add("observatory-class");
+            }
+            if (perClass.Any(item => settings.ResourceClasses.TryGetValue(item.Class, out var budget) && budget.ActiveJobs > 0
+                    && byClass.TryGetValue(item.Class, out var classTotals) && classTotals.Leased >= budget.ActiveJobs && item.OldBacklog))
+            {
+                dimensions.Add("class");
+            }
+            if (dimensions.Count != 0)
+            {
+                saturated.Add(id.ToString("D"));
+                saturatedDimensions.UnionWith(dimensions);
             }
         }
         var data = new Dictionary<string, object>
         {
             ["enabled"] = true,
-            ["observatoriesWithWork"] = observatories.Count,
-            ["pendingJobs"] = observatories.Sum(item => item.Pending),
-            ["activeLeases"] = observatories.Sum(item => item.Leased),
+            ["observatoriesWithWork"] = byObservatory.Count,
+            ["pendingJobs"] = groups.Sum(item => item.Pending),
+            ["activeLeases"] = groups.Sum(item => item.Leased),
             ["overAdmissionLimit"] = overAdmission.Count,
-            ["saturatedWithOldBacklog"] = saturated.Count
+            ["saturatedWithOldBacklog"] = saturated.Count,
+            ["saturatedDimensions"] = string.Join(',', saturatedDimensions)
         };
         if (overAdmission.Count != 0)
         {
@@ -73,7 +113,7 @@ internal sealed class CentralProcessingEntitlementHealthCheck(
         if (saturated.Count != 0)
         {
             return HealthCheckResult.Degraded(
-                $"{saturated.Count} observatory(ies) are saturated at their entitlement with backlog older than the threshold.", data: data);
+                $"{saturated.Count} observatory(ies) are saturated at an entitlement ({string.Join(", ", saturatedDimensions)}) with backlog older than the threshold.", data: data);
         }
         return HealthCheckResult.Healthy("Processing entitlements are within limits.", data);
     }
