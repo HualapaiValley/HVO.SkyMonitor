@@ -1,0 +1,75 @@
+@page "/operations/data"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Operations
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Data &amp; storage</PageTitle>
+
+<div class="data-page">
+    <PageHeader Eyebrow="Durable local queues" Title="Data &amp; storage" Lead="Raw ingress, capture lanes, processing, delivery outboxes, and container-visible storage as recorded by the durable stores. Storage paths are never disclosed.">
+        <button class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
+    </PageHeader>
+
+    @if (_loading && _view is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading durable queue facts" Message="Reading the durable and runtime sources." />
+    }
+    else if (_view is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Data and storage facts unavailable" Message="@_message">
+            <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button>
+        </PageStateNotice>
+    }
+    else
+    {
+        @if (_message is not null)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Showing last valid data" Message="@_message" />
+        }
+        @if (HasPressure)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Storage or lane pressure detected" Message="Review the pressure-marked facts below before retention expires." />
+        }
+        <p class="data-note">Snapshot captured <time datetime="@_view.Summary.CapturedUtc.ToString("O")">@_view.Summary.CapturedUtc.ToString("u")</time>. Quarantined items are reviewed under <a href="/operations/quarantine">Quarantine &amp; recovery</a>.</p>
+
+        <section class="data-grid" aria-label="Durable queue facts">
+            <article class="data-card">
+                <header><div><p class="eyebrow">Durable boundary</p><h2>Raw ingress</h2></div><FreshnessBadge Value="_view.Summary.RawIngress.Freshness" /></header>
+                <OperationsQueueFacts Queue="_view.Summary.RawIngress.Value" />
+            </article>
+            <article class="data-card">
+                <header><div><p class="eyebrow">Capture-derived work</p><h2>Processing</h2></div><FreshnessBadge Value="_view.Summary.CaptureProcessing.Freshness" /></header>
+                <OperationsQueueFacts Queue="_view.Summary.CaptureProcessing.Value" />
+            </article>
+            <article class="data-card">
+                <header><div><p class="eyebrow">Central delivery</p><h2>Artifact outbox</h2></div><FreshnessBadge Value="_view.Summary.ArtifactOutbox.Freshness" /></header>
+                <OperationsQueueFacts Queue="_view.Summary.ArtifactOutbox.Value" />
+            </article>
+            <article class="data-card data-card--wide">
+                <header><div><p class="eyebrow">Per-lane durable backlog</p><h2>Capture lanes</h2></div><FreshnessBadge Value="_view.Summary.CaptureLanes.Freshness" /></header>
+                <CaptureLaneFacts Lanes="_view.Summary.CaptureLanes.Value" />
+            </article>
+            <article class="data-card data-card--wide">
+                <header><div><p class="eyebrow">Container-visible filesystems</p><h2>Storage</h2></div><FreshnessBadge Value="_view.Summary.Storage.Freshness" /></header>
+                <StorageFacts Storage="_view.Summary.Storage.Value" />
+            </article>
+            <article class="data-card">
+                <header><div><p class="eyebrow">LogicHost connectivity</p><h2>Heartbeat delivery</h2></div><FreshnessBadge Value="_view.Summary.Heartbeat.Freshness" /></header>
+                <dl class="fact-grid"><div><dt>Availability</dt><dd>@OperationsPage.SplitWords(_view.Summary.Heartbeat.Value.Availability)</dd></div><div><dt>Last acknowledged</dt><dd>@OperationsPage.FormatTime(_view.Summary.Heartbeat.Value.LastAcknowledgedUtc)</dd></div><div><dt>Pending</dt><dd>@_view.Summary.Heartbeat.Value.PendingCount</dd></div><div><dt>Blocked</dt><dd>@_view.Summary.Heartbeat.Value.BlockedCount</dd></div><div><dt>Retry</dt><dd>@_view.Summary.Heartbeat.Value.RetryCount</dd></div><div><dt>Quarantine</dt><dd>@_view.Summary.Heartbeat.Value.QuarantineCount</dd></div></dl>
+            </article>
+            <article class="data-card">
+                <header><div><p class="eyebrow">Observation delivery</p><h2>Environmental outbox</h2></div><FreshnessBadge Value="_view.Summary.EnvironmentalDelivery.Freshness" /></header>
+                <dl class="fact-grid"><div><dt>Availability</dt><dd>@OperationsPage.SplitWords(_view.Summary.EnvironmentalDelivery.Value.Availability)</dd></div><div><dt>Stored</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.StoredCount</dd></div><div><dt>Stored size</dt><dd>@OperationsPage.FormatBytes(_view.Summary.EnvironmentalDelivery.Value.StoredBytes)</dd></div><div><dt>Pending</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.PendingCount</dd></div><div><dt>Retry</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.RetryCount</dd></div><div><dt>Terminal</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.TerminalCount</dd></div></dl>
+            </article>
+            <article class="data-card">
+                <header><div><p class="eyebrow">Quarantine summary</p><h2>Held items</h2></div></header>
+                <dl class="fact-grid"><div><dt>Artifact</dt><dd>@_view.ArtifactQuarantine.Count in the bounded page</dd></div><div><dt>Environmental</dt><dd>@_view.EnvironmentalQuarantine.Count in the bounded page</dd></div><div><dt>Lanes</dt><dd>@_view.Summary.CaptureLanes.Value.QuarantineCount</dd></div><div><dt>Raw ingress</dt><dd>@_view.Summary.RawIngress.Value.QuarantineCount</dd></div></dl>
+                <a class="inline-link" href="/operations/quarantine">Browse and recover quarantined items</a>
+            </article>
+        </section>
+    }
+</div>

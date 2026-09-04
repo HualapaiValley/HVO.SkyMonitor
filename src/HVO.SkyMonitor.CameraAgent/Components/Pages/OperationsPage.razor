@@ -108,23 +108,7 @@
 
             <article class="instrument-card instrument-card--wide">
                 <header><div><p class="eyebrow">Per-lane durable backlog</p><h2>Capture lanes</h2></div><FreshnessBadge Value="_view.Summary.CaptureLanes.Freshness" /></header>
-                @if (_view.Summary.CaptureLanes.Value.Lanes.Count == 0)
-                {
-                    <p class="empty-copy">No capture lanes have reported state.</p>
-                }
-                else
-                {
-                    <div class="lane-grid">
-                        @foreach (var lane in _view.Summary.CaptureLanes.Value.Lanes)
-                        {
-                            <section class="lane @PressureClass(lane.PressureLevel)" aria-label="@lane.Name lane">
-                                <header><h3>@SplitWords(lane.Name)</h3><span>@(lane.Required ? "Required" : "Optional")</span></header>
-                                <dl><div><dt>Pending</dt><dd>@lane.PendingCount</dd></div><div><dt>Size</dt><dd>@FormatBytes(lane.PendingBytes)</dd></div><div><dt>Leased</dt><dd>@lane.LeasedCount</dd></div><div><dt>Quarantine</dt><dd>@lane.QuarantineCount</dd></div></dl>
-                                <p>@PressureText(lane.PressureLevel)</p>
-                            </section>
-                        }
-                    </div>
-                }
+                <CaptureLaneFacts Lanes="_view.Summary.CaptureLanes.Value" />
             </article>
 
             <article class="instrument-card">
@@ -139,23 +123,7 @@
 
             <article class="instrument-card instrument-card--wide">
                 <header><div><p class="eyebrow">Container-visible filesystems</p><h2>Storage</h2></div><FreshnessBadge Value="_view.Summary.Storage.Freshness" /></header>
-                @if (_view.Summary.Storage.Value.Count == 0)
-                {
-                    <p class="empty-copy">No storage probe has reported a validated location.</p>
-                }
-                else
-                {
-                    <div class="storage-grid">
-                        @foreach (var storage in _view.Summary.Storage.Value)
-                        {
-                            <section class="storage-item @(storage.IsUnderPressure ? "storage-item--pressure" : null)">
-                                <div><h3>@SplitWords(storage.Alias)</h3><span>@(storage.IsUnderPressure ? "Under pressure" : storage.ProbeSucceeded ? "Normal" : "Probe unavailable")</span></div>
-                                <meter min="0" max="@storage.TotalBytes" value="@(storage.TotalBytes - storage.AvailableBytes)">@FormatBytes(storage.AvailableBytes) available</meter>
-                                <p>@FormatBytes(storage.AvailableBytes) available of @FormatBytes(storage.TotalBytes) / @storage.EffectiveRetentionDays day effective retention</p>
-                            </section>
-                        }
-                    </div>
-                }
+                <StorageFacts Storage="_view.Summary.Storage.Value" />
             </article>
 
             <article class="instrument-card">
