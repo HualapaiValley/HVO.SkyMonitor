@@ -94,7 +94,21 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
             Assert.AreEqual(14, measurement.DeclaredNodeCount, "The W6 graph must contribute all 14 nodes.");
             Assert.AreEqual(
                 measurement.DeclaredNodeCount, measurement.NodeCount, "Every node plan must be exported.");
-            Assert.AreEqual(0, measurement.EmbeddedPayloadBytes, "The contract must carry no image bytes.");
+            // The contract carries no image bytes, so the execution and availability evidence for a 25 MB frame
+            // must stay under a thousandth of it. The type-surface audit in the Processing tests is the
+            // structural control; this is the measured one.
+            Assert.IsTrue(
+                measurement.ExecutionEnvelopeBytes + measurement.AvailabilityEnvelopeBytes <
+                    measurement.RawPayloadBytes / 1000,
+                $"execution+availability {measurement.ExecutionEnvelopeBytes + measurement.AvailabilityEnvelopeBytes}"
+                    + $" against raw {measurement.RawPayloadBytes}");
+            Assert.AreEqual(
+                0,
+                measurement.LongOpaqueStringBytes,
+                "No execution or availability member may carry an opaque payload-sized string.");
+            Assert.IsTrue(
+                measurement.DurableStateUnchanged,
+                "The projection must not change any durable byte.");
 
             await WriteEvidenceAsync(measurement).ConfigureAwait(false);
         }
@@ -115,6 +129,7 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
         var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
             .ConfigureAwait(false);
 
+        var databasePath = Path.Combine(root, "journal", "raw-ingress.db");
         var snapshot = await operations
             .ReadRevisionSnapshotAsync(registry.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
         var origin = CreateOrigin();
@@ -132,6 +147,7 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
             .ConfigureAwait(false);
         Assert.IsNotNull(detail);
 
+        var durableBefore = HashDurableState(databasePath);
         var executionEvidence = ProcessingGraphEvidenceProjection.CreateExecutionEvidence(detail);
         var executionEnvelope = ProcessingGraphEvidenceProjection.CreateEnvelope(
             origin,
@@ -146,6 +162,7 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
         var availabilityEnvelope = ProcessingGraphEvidenceProjection.CreateEnvelope(
             origin, 3, Guid.NewGuid(), FixtureUtc, availability, ExecutionEvidenceRedactionPolicyV1.None);
         var availabilityBytes = GraphExecutionEvidenceJson.Serialize(availabilityEnvelope);
+        var durableAfter = HashDurableState(databasePath);
 
         foreach (var envelope in new[] { revisionEnvelope, executionEnvelope, availabilityEnvelope })
         {
@@ -154,6 +171,7 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
         }
 
         var declared = ComputeDeclaredBounds(snapshot);
+        var longStrings = LongOpaqueStringBytes(executionBytes) + LongOpaqueStringBytes(availabilityBytes);
         return new(
             capture.RawPayloadBytes,
             revisionBytes.Length,
@@ -166,10 +184,11 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
             executionEvidence.Nodes.Sum(static node => node.Inputs.Length),
             executionEvidence.Nodes.Sum(static node => node.Outputs.Length),
             availability.Observations.Length,
+            longStrings,
+            string.Equals(durableBefore, durableAfter, StringComparison.Ordinal),
             declared.NodeCount,
             declared.InputCount,
             declared.OutputCount,
-            EmbeddedPayloadBytes: 0,
             state.Status.ToString(),
             state.FailureReason,
             capture.LaneOutcome,
@@ -252,6 +271,42 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
             inputs += inputDocument.RootElement.GetArrayLength() * window;
         }
         return new(snapshot.Nodes.Length, inputs, outputs);
+    }
+
+    /// <summary>
+    /// Bytes held by string members longer than 128 characters that are not a SHA-256 or a redaction token. Any
+    /// non-zero value means an execution or availability envelope is carrying an opaque blob.
+    /// </summary>
+    private static int LongOpaqueStringBytes(byte[] canonicalJson)
+    {
+        using var document = JsonDocument.Parse(canonicalJson);
+        return Sum(document.RootElement);
+
+        static int Sum(JsonElement element) => element.ValueKind switch
+        {
+            JsonValueKind.Object => element.EnumerateObject().Sum(property => Sum(property.Value)),
+            JsonValueKind.Array => element.EnumerateArray().Sum(Sum),
+            JsonValueKind.String => element.GetString() is { Length: > 128 } value &&
+                !value.StartsWith(GraphExecutionEvidenceJson.RedactionPrefix, StringComparison.Ordinal)
+                    ? value.Length
+                    : 0,
+            _ => 0
+        };
+    }
+
+    /// <summary>Hashes every durable byte so the read-only projection can be proven not to have written.</summary>
+    private static string HashDurableState(string databasePath)
+    {
+        var builder = new System.Text.StringBuilder();
+        foreach (var path in new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm" })
+        {
+            builder.Append(path).Append('=');
+            builder.Append(File.Exists(path)
+                ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)))
+                : "absent");
+            builder.Append(';');
+        }
+        return builder.ToString();
     }
 
     private static InMemoryCelestialCatalog CreateCatalog()
@@ -358,10 +413,11 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
         int InputCount,
         int OutputCount,
         int ObservationCount,
+        int LongOpaqueStringBytes,
+        bool DurableStateUnchanged,
         int DeclaredNodeCount,
         int DeclaredInputBound,
         int DeclaredOutputBound,
-        int EmbeddedPayloadBytes,
         string ExecutionStatus,
         string? ExecutionFailureReason,
         string LaneOutcome,

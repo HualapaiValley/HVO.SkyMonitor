@@ -316,17 +316,17 @@ public static class GraphExecutionEvidenceJson
                     GraphExecutionEvidenceReasonCodes.SequenceConflict, "originSequence", storedPayloadSha256)
             ];
         }
+        var duplicate = storedPayloadSha256 is not null;
         var validation = ValidateSealed(envelope);
         if (!validation.IsValid)
         {
             return
             [
-                Fact(envelope, ExecutionEvidenceFactKind.Received, occurredAtUtc, duplicate: false),
+                Fact(envelope, ExecutionEvidenceFactKind.Received, occurredAtUtc, duplicate),
                 Fact(envelope, ExecutionEvidenceFactKind.Rejected, occurredAtUtc, duplicate: false,
                     validation.ReasonCode, validation.FieldPath)
             ];
         }
-        var duplicate = storedPayloadSha256 is not null;
         return
         [
             Fact(envelope, ExecutionEvidenceFactKind.Received, occurredAtUtc, duplicate),
@@ -408,6 +408,10 @@ public static class GraphExecutionEvidenceJson
                 break;
             }
             var length = range.ToSequence - range.FromSequence + 1;
+            if (length <= 0)
+            {
+                continue;
+            }
             var take = Math.Min(length, remaining);
             ranges.Add(range with { ToSequence = range.FromSequence + take - 1 });
             remaining -= take;
@@ -635,11 +639,14 @@ public static class GraphExecutionEvidenceJson
         {
             return Failure(GraphExecutionEvidenceReasonCodes.InvalidTime, "serverTimeUtc");
         }
+        // The published limits are the receiver's, not this build's: two builds of the same schema version must be
+        // able to negotiate even when one has changed a limit. A producer applies the minimum of the published and
+        // local value. Only well-formedness is validated here.
         if (value.Limits is null || !string.Equals(
                 value.Limits.SchemaVersion,
                 ExecutionEvidenceLimitsV1.CurrentSchemaVersion,
                 StringComparison.Ordinal) ||
-            value.Limits != ExecutionEvidenceLimitsV1.Current)
+            !IsPositive(value.Limits))
         {
             return Failure(GraphExecutionEvidenceReasonCodes.InvalidNegotiation, "limits");
         }
@@ -664,10 +671,27 @@ public static class GraphExecutionEvidenceJson
         {
             return validation;
         }
-        return string.Equals(
-                value.PayloadSha256, ComputeCanonicalPayloadSha256(value), StringComparison.Ordinal)
-            ? ExecutionEvidenceValidationResult.Success
-            : Failure(GraphExecutionEvidenceReasonCodes.InvalidHash, "payloadSha256");
+        // The placeholder is the same length as a real hash, so these canonical bytes are also the exact
+        // serialized length of the sealed envelope and one serialization answers both checks.
+        var canonical = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(
+            JsonSerializer.SerializeToElement(
+                value with { PayloadSha256 = UnhashedPayloadSha256 }, SerializerOptions)));
+        if (!string.Equals(
+                value.PayloadSha256, Convert.ToHexString(SHA256.HashData(canonical)), StringComparison.Ordinal))
+        {
+            return Failure(GraphExecutionEvidenceReasonCodes.InvalidHash, "payloadSha256");
+        }
+        var maximum = value.Kind switch
+        {
+            ExecutionEvidenceBodyKind.GraphExecution =>
+                GraphExecutionEvidenceLimits.MaximumExecutionEnvelopeBytes,
+            ExecutionEvidenceBodyKind.ArtifactAvailability =>
+                GraphExecutionEvidenceLimits.MaximumAvailabilityEnvelopeBytes,
+            _ => GraphExecutionEvidenceLimits.MaximumEnvelopeBytes
+        };
+        return canonical.Length > maximum
+            ? Failure(GraphExecutionEvidenceReasonCodes.PayloadTooLarge, "$")
+            : ExecutionEvidenceValidationResult.Success;
     }
 
     private static ExecutionEvidenceValidationResult ValidateOrigin(
@@ -822,6 +846,12 @@ public static class GraphExecutionEvidenceJson
         {
             return Failure(GraphExecutionEvidenceReasonCodes.LimitExceeded, $"{path}.nodes");
         }
+        // A JSON null array element materializes as a null reference, so it is rejected before any member of the
+        // element is read: every parse failure must stay a bounded validation result.
+        if (value.Nodes.Any(static node => node is null))
+        {
+            return Failure(GraphExecutionEvidenceReasonCodes.InvalidNode, $"{path}.nodes");
+        }
         if (value.Nodes.Select(static node => node.NodeId).Distinct(StringComparer.Ordinal).Count() !=
             value.Nodes.Length)
         {
@@ -863,12 +893,18 @@ public static class GraphExecutionEvidenceJson
         {
             return Failure(GraphExecutionEvidenceReasonCodes.InvalidNode, $"{path}.nodeId");
         }
-        if (value.Inputs.IsDefault || value.Inputs.Length > GraphExecutionEvidenceLimits.MaximumInputsPerNode ||
-            value.Outputs.IsDefault || value.Outputs.Length > GraphExecutionEvidenceLimits.MaximumOutputsPerNode ||
-            value.Attempts.IsDefault ||
-            value.Attempts.Length > GraphExecutionEvidenceLimits.MaximumAttemptsPerNode)
+        if (value.Inputs.IsDefault || value.Inputs.Length > GraphExecutionEvidenceLimits.MaximumInputsPerNode)
         {
             return Failure(GraphExecutionEvidenceReasonCodes.LimitExceeded, $"{path}.inputs");
+        }
+        if (value.Outputs.IsDefault || value.Outputs.Length > GraphExecutionEvidenceLimits.MaximumOutputsPerNode)
+        {
+            return Failure(GraphExecutionEvidenceReasonCodes.LimitExceeded, $"{path}.outputs");
+        }
+        if (value.Attempts.IsDefault ||
+            value.Attempts.Length > GraphExecutionEvidenceLimits.MaximumAttemptsPerNode)
+        {
+            return Failure(GraphExecutionEvidenceReasonCodes.LimitExceeded, $"{path}.attempts");
         }
         var previousInputOrdinal = -1;
         var previousOutputOrdinal = -1;
@@ -1286,6 +1322,16 @@ public static class GraphExecutionEvidenceJson
     private static int CanonicalLength(JsonElement value)
         => JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(value)).Length;
 
+    private static bool IsPositive(ExecutionEvidenceLimitsV1 limits)
+        => limits.MaximumEnvelopeBytes > 0 && limits.MaximumExecutionEnvelopeBytes > 0 &&
+            limits.MaximumAvailabilityEnvelopeBytes > 0 && limits.MaximumDefinitionBytes > 0 &&
+            limits.MaximumFrozenPlanBytes > 0 && limits.MaximumNodeCount > 0 &&
+            limits.MaximumAttemptsPerNode > 0 && limits.MaximumInputsPerNode > 0 &&
+            limits.MaximumOutputsPerNode > 0 && limits.MaximumInputsPerExecution > 0 &&
+            limits.MaximumOutputsPerExecution > 0 && limits.MaximumAvailabilityObservations > 0 &&
+            limits.MaximumFactsPerFeedback > 0 && limits.MaximumMissingRanges > 0 &&
+            limits.MaximumResyncRanges > 0 && limits.MaximumResyncUnits > 0;
+
     private static bool Utc(DateTimeOffset value) => value != default && value.Offset == TimeSpan.Zero;
 
     private static bool OptionalUtc(DateTimeOffset? value) => value is null || Utc(value.Value);
@@ -1322,6 +1368,21 @@ public static class GraphExecutionEvidenceJson
             RespectRequiredConstructorParameters = true,
             MaxDepth = 32
         };
+        // System.Text.Json resolves converters from this list before a type-level [JsonConverter], so the strict
+        // case-sensitive converters must be registered here or they never run and lowercase enum names are
+        // silently accepted on the messages that carry no payload hash.
+        options.Converters.Add(new StrictJsonStringEnumConverter<ExecutionEvidenceBodyKind>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<ExecutionEvidenceRevisionOrigin>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<ExecutionEvidenceExecutionClass>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<ExecutionEvidenceExecutionStatus>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<ExecutionEvidenceNodeStatus>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<ExecutionEvidenceAttemptStatus>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<ExecutionEvidenceInputKind>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<ExecutionEvidenceAvailabilityState>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<ExecutionEvidenceFactKind>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<ExecutionEvidenceNegotiationDisposition>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<FrameArtifactRole>());
+        options.Converters.Add(new StrictJsonStringEnumConverter<ProcessingOutcomeStatus>());
         options.Converters.Add(new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false));
         return options;
     }

@@ -67,6 +67,8 @@ internal static class GraphExecutionEvidenceFixtures
         "A4B5C6D7E8F9001122334455667788990AABBCCDDEEF1A2B3C4D5E6F70819293";
     private const string NodePlanSha256 =
         "B5C6D7E8F9001122334455667788990AABBCCDDEEF1A2B3C4D5E6F7081929300";
+    private const string AnnotateNodePlanSha256 =
+        "D7E8F9001122334455667788990AABBCCDDEEF1A2B3C4D5E6F70819293001122";
     private const string SharedPlanIdentityLocal =
         "C6D7E8F9001122334455667788990AABBCCDDEEF1A2B3C4D5E6F708192930011";
 
@@ -170,7 +172,10 @@ internal static class GraphExecutionEvidenceFixtures
                                 TimeSpan.FromSeconds(1).Ticks,
                                 "capture-loop")
                         ],
-                        [Output(ordinal: 0, PreviewOutputIdentity, FrameArtifactRole.Preview, "encoded-preview")],
+                        [
+                            Output(0, PreviewOutputIdentity, FrameArtifactRole.Preview, "encoded-preview"),
+                            Output(1, AnnotatedOutputIdentity, FrameArtifactRole.AnnotatedPreview, "annotated")
+                        ],
                         null,
                         BaseUtc.AddSeconds(1),
                         BaseUtc.AddSeconds(4)),
@@ -178,28 +183,31 @@ internal static class GraphExecutionEvidenceFixtures
                         ExecutionEvidenceNodeV1.CurrentSchemaVersion,
                         "annotate",
                         Required: false,
-                        NodePlanSha256,
-                        ExecutionEvidenceNodeStatus.Skipped,
-                        [ProcessingOutputInput(ordinal: 0, PreviewOutputIdentity)],
+                        AnnotateNodePlanSha256,
+                        ExecutionEvidenceNodeStatus.TerminalFailure,
+                        [
+                            ProcessingOutputInput(0, 0, PreviewOutputIdentity),
+                            ProcessingOutputInput(1, -1, AnnotatedOutputIdentity)
+                        ],
                         [
                             new(
                                 ExecutionEvidenceAttemptV1.CurrentSchemaVersion,
                                 1,
-                                ExecutionEvidenceAttemptStatus.Skipped,
+                                ExecutionEvidenceAttemptStatus.TerminalFailure,
                                 BaseUtc.AddSeconds(5),
                                 BaseUtc.AddSeconds(5),
-                                ProcessingOutcomeStatus.Skipped,
-                                "processing.optional-input-missing",
+                                ProcessingOutcomeStatus.TerminalFailure,
+                                "processing.optional-node-failed",
                                 0,
                                 "capture-loop")
                         ],
                         [],
-                        "processing.optional-input-missing",
+                        "processing.optional-node-failed",
                         BaseUtc.AddSeconds(5),
                         BaseUtc.AddSeconds(5))
                 ],
                 BaseUtc,
-                BaseUtc,
+                BaseUtc.AddSeconds(2),
                 BaseUtc.AddMinutes(5),
                 BaseUtc.AddHours(1),
                 CancellationRequested: false,
@@ -235,7 +243,7 @@ internal static class GraphExecutionEvidenceFixtures
                         Required: true,
                         NodePlanSha256,
                         ExecutionEvidenceNodeStatus.TerminalFailure,
-                        [RawInput(ordinal: 0)],
+                        [DescribedRawInput(ordinal: 0)],
                         [
                             new(
                                 ExecutionEvidenceAttemptV1.CurrentSchemaVersion,
@@ -264,7 +272,7 @@ internal static class GraphExecutionEvidenceFixtures
                         BaseUtc.AddSeconds(13))
                 ],
                 BaseUtc.AddSeconds(9),
-                BaseUtc.AddSeconds(9),
+                BaseUtc.AddSeconds(11),
                 BaseUtc.AddMinutes(15),
                 BaseUtc.AddHours(2),
                 CancellationRequested: true,
@@ -481,6 +489,8 @@ internal static class GraphExecutionEvidenceFixtures
             DefinitionIdentitySha256 = DefinitionIdentity,
             SharedPlanIdentitySha256 = SharedPlanIdentityLocal,
             LocalPlanIdentitySha256 = localPlanIdentity,
+            // Mirrors the persisted cameraagent-processing-frozen-plan-v1 node seed exactly, so a regression that
+            // drops one of the eight members changes these bytes.
             Nodes = new[]
             {
                 new
@@ -488,7 +498,22 @@ internal static class GraphExecutionEvidenceFixtures
                     NodeId = "preview",
                     Required = true,
                     PlanSha256 = NodePlanSha256,
-                    SharedPlanNodeIdentitySha256 = NodePlanSha256
+                    SharedPlanNodeIdentitySha256 = NodePlanSha256,
+                    DependenciesJson = """[{"producerId":"$raw","kind":"Artifact","required":true}]""",
+                    InputsJson = """[{"roles":["Raw"],"required":true,"bindingName":"input"}]""",
+                    OutputsJson = """[{"role":"Preview","variant":"encoded-preview","productKind":"PixelData"}]""",
+                    WindowJson = (string?)null
+                },
+                new
+                {
+                    NodeId = "annotate",
+                    Required = false,
+                    PlanSha256 = AnnotateNodePlanSha256,
+                    SharedPlanNodeIdentitySha256 = AnnotateNodePlanSha256,
+                    DependenciesJson = """[{"producerId":"preview","kind":"Artifact","required":false}]""",
+                    InputsJson = """[{"roles":["Preview"],"required":false,"bindingName":"input"}]""",
+                    OutputsJson = """[]""",
+                    WindowJson = (string?)"""{"kind":"Trailing","minimumInputCount":1,"maximumInputCount":2}"""
                 }
             }
         });
@@ -530,13 +555,43 @@ internal static class GraphExecutionEvidenceFixtures
                 null,
                 RawDescriptorSha256));
 
-    private static ExecutionEvidenceInputV1 ProcessingOutputInput(int ordinal, string outputIdentity)
+    /// <summary>A raw input enriched with the optional reconciliation metadata a receiver may match on.</summary>
+    private static ExecutionEvidenceInputV1 DescribedRawInput(int ordinal)
         => new(
             ExecutionEvidenceInputV1.CurrentSchemaVersion,
             ordinal,
             WindowPosition: 0,
+            ExecutionEvidenceInputKind.RawCapture,
+            new(
+                ExecutionEvidenceArtifactReferenceV1.CurrentSchemaVersion,
+                RawArtifactId,
+                CaptureId,
+                null,
+                FrameArtifactRole.Raw,
+                "raw",
+                RawPayloadSha256,
+                25_233_408L,
+                "application/octet-stream",
+                RawDescriptorSha256));
+
+    /// <summary>
+    /// A processing-output input exactly as the CameraAgent projection produces it: the durable input row carries
+    /// the producing output identity but no role or variant, so neither is invented here.
+    /// </summary>
+    private static ExecutionEvidenceInputV1 ProcessingOutputInput(
+        int ordinal,
+        int windowPosition,
+        string outputIdentity)
+        => new(
+            ExecutionEvidenceInputV1.CurrentSchemaVersion,
+            ordinal,
+            windowPosition,
             ExecutionEvidenceInputKind.ProcessingOutput,
-            Artifact(outputIdentity, FrameArtifactRole.Preview, "encoded-preview"));
+            new(
+                ExecutionEvidenceArtifactReferenceV1.CurrentSchemaVersion,
+                ProcessingIdentity.CreateArtifactId(outputIdentity),
+                CaptureId,
+                outputIdentity));
 
     private static ExecutionEvidenceOutputV1 Output(
         int ordinal,

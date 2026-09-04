@@ -53,7 +53,7 @@ internal static class ProcessingGraphEvidenceProjection
             execution.ExecutionClass == ProcessingGraphExecutionClass.Replay
                 ? ExecutionEvidenceExecutionClass.Replay
                 : ExecutionEvidenceExecutionClass.Live,
-            Enum.Parse<ExecutionEvidenceExecutionStatus>(execution.Status.ToString()),
+            MapStatus(execution.Status),
             execution.CaptureId,
             execution.PrimaryArtifactId,
             execution.GraphRevisionId,
@@ -90,9 +90,13 @@ internal static class ProcessingGraphEvidenceProjection
             .Select(output => new ArtifactAvailabilityObservationV1(
                 ArtifactAvailabilityObservationV1.CurrentSchemaVersion,
                 CreateOutputArtifact(output, detail.Execution.CaptureId),
-                Enum.Parse<ExecutionEvidenceAvailabilityState>(output.AvailabilityState),
+                MapAvailability(output.AvailabilityState),
                 observedAtUtc,
-                output.AvailabilityReason))
+                // The durable schema does not couple state and reason, but the contract reserves a reason for a
+                // non-available observation, so an 'Available' row's reason is dropped rather than exported.
+                MapAvailability(output.AvailabilityState) == ExecutionEvidenceAvailabilityState.Available
+                    ? null
+                    : output.AvailabilityReason))
             .ToImmutableArray();
         return observations.IsEmpty
             ? null
@@ -111,17 +115,19 @@ internal static class ProcessingGraphEvidenceProjection
         GraphRevisionEvidenceV1 revision,
         ExecutionEvidenceRedactionPolicyV1 redaction,
         ExecutionEvidenceCorrectionV1? correction = null)
-        => GraphExecutionEvidenceJson.Seal(new(
-            ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
-            evidenceId,
-            origin,
-            originSequence,
-            producedAtUtc,
-            ExecutionEvidenceBodyKind.GraphRevision,
-            GraphExecutionEvidenceJson.UnhashedPayloadSha256,
-            redaction,
-            GraphRevision: revision,
-            Correction: correction));
+        => GraphExecutionEvidenceJson.Seal(GraphExecutionEvidenceJson.Redact(
+            new(
+                ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
+                evidenceId,
+                origin,
+                originSequence,
+                producedAtUtc,
+                ExecutionEvidenceBodyKind.GraphRevision,
+                GraphExecutionEvidenceJson.UnhashedPayloadSha256,
+                redaction,
+                GraphRevision: revision,
+                Correction: correction),
+            redaction));
 
     /// <summary>Wraps one projected execution in a sealed, sequenced envelope, applying the redaction policy.</summary>
     internal static ExecutionEvidenceEnvelopeV1 CreateEnvelope(
@@ -154,17 +160,26 @@ internal static class ProcessingGraphEvidenceProjection
         DateTimeOffset producedAtUtc,
         ArtifactAvailabilityReportV1 availability,
         ExecutionEvidenceRedactionPolicyV1 redaction)
-        => GraphExecutionEvidenceJson.Seal(new(
-            ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
-            evidenceId,
-            origin,
-            originSequence,
-            producedAtUtc,
-            ExecutionEvidenceBodyKind.ArtifactAvailability,
-            GraphExecutionEvidenceJson.UnhashedPayloadSha256,
-            redaction,
-            Availability: availability));
+        => GraphExecutionEvidenceJson.Seal(GraphExecutionEvidenceJson.Redact(
+            new(
+                ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
+                evidenceId,
+                origin,
+                originSequence,
+                producedAtUtc,
+                ExecutionEvidenceBodyKind.ArtifactAvailability,
+                GraphExecutionEvidenceJson.UnhashedPayloadSha256,
+                redaction,
+                Availability: availability),
+            redaction));
 
+    /// <remarks>
+    /// <c>outputs[].ordinal</c> is the dense export ordinal the delivered store already surfaces through
+    /// <see cref="ProcessingGraphExecutionOutputState.Ordinal"/>, not the durable <c>output_ordinal</c> column.
+    /// Order is preserved because the store reads outputs ordered by the durable ordinal; the values differ only
+    /// when the stored ordinals have gaps. Surfacing the durable ordinal would change delivered read behaviour
+    /// and is therefore out of scope here.
+    /// </remarks>
     private static ExecutionEvidenceNodeV1 CreateNode(
         ProcessingGraphExecutionNodeState node,
         Guid executionCaptureId)
@@ -173,7 +188,7 @@ internal static class ProcessingGraphEvidenceProjection
             node.NodeId,
             node.Required,
             node.PlanSha256,
-            Enum.Parse<ExecutionEvidenceNodeStatus>(node.Status),
+            MapNodeStatus(node.Status),
             [.. node.Inputs.Select(CreateInput)],
             [.. node.Attempts.Select(CreateAttempt)],
             [.. node.Outputs.Select(output => new ExecutionEvidenceOutputV1(
@@ -210,7 +225,7 @@ internal static class ProcessingGraphEvidenceProjection
         => new(
             ExecutionEvidenceAttemptV1.CurrentSchemaVersion,
             attempt.AttemptNumber,
-            Enum.Parse<ExecutionEvidenceAttemptStatus>(attempt.Status),
+            MapAttemptStatus(attempt.Status),
             attempt.StartedUtc,
             attempt.CompletedUtc,
             attempt.Outcome,
@@ -228,6 +243,53 @@ internal static class ProcessingGraphEvidenceProjection
             output.OutputIdentitySha256,
             output.Role,
             output.Variant);
+
+    // The durable enums and strings are mapped explicitly rather than by name, so a future durable member is a
+    // compile-time or explicit-failure decision here instead of a silent name coincidence at export time.
+    private static ExecutionEvidenceExecutionStatus MapStatus(ProcessingGraphExecutionStatus value)
+        => value switch
+        {
+            ProcessingGraphExecutionStatus.Pending => ExecutionEvidenceExecutionStatus.Pending,
+            ProcessingGraphExecutionStatus.Running => ExecutionEvidenceExecutionStatus.Running,
+            ProcessingGraphExecutionStatus.Completed => ExecutionEvidenceExecutionStatus.Completed,
+            ProcessingGraphExecutionStatus.Failed => ExecutionEvidenceExecutionStatus.Failed,
+            ProcessingGraphExecutionStatus.Cancelled => ExecutionEvidenceExecutionStatus.Cancelled,
+            ProcessingGraphExecutionStatus.Expired => ExecutionEvidenceExecutionStatus.Expired,
+            _ => throw new InvalidDataException($"Unmapped durable execution status '{value}'.")
+        };
+
+    private static ExecutionEvidenceNodeStatus MapNodeStatus(string value)
+        => value switch
+        {
+            "Pending" => ExecutionEvidenceNodeStatus.Pending,
+            "Running" => ExecutionEvidenceNodeStatus.Running,
+            "Completed" => ExecutionEvidenceNodeStatus.Completed,
+            "Skipped" => ExecutionEvidenceNodeStatus.Skipped,
+            "RetryableFailure" => ExecutionEvidenceNodeStatus.RetryableFailure,
+            "TerminalFailure" => ExecutionEvidenceNodeStatus.TerminalFailure,
+            _ => throw new InvalidDataException($"Unmapped durable node status '{value}'.")
+        };
+
+    private static ExecutionEvidenceAttemptStatus MapAttemptStatus(string value)
+        => value switch
+        {
+            "Running" => ExecutionEvidenceAttemptStatus.Running,
+            "Completed" => ExecutionEvidenceAttemptStatus.Completed,
+            "Skipped" => ExecutionEvidenceAttemptStatus.Skipped,
+            "RetryableFailure" => ExecutionEvidenceAttemptStatus.RetryableFailure,
+            "TerminalFailure" => ExecutionEvidenceAttemptStatus.TerminalFailure,
+            "Interrupted" => ExecutionEvidenceAttemptStatus.Interrupted,
+            _ => throw new InvalidDataException($"Unmapped durable attempt status '{value}'.")
+        };
+
+    private static ExecutionEvidenceAvailabilityState MapAvailability(string value)
+        => value switch
+        {
+            "Available" => ExecutionEvidenceAvailabilityState.Available,
+            "Missing" => ExecutionEvidenceAvailabilityState.Missing,
+            "Quarantined" => ExecutionEvidenceAvailabilityState.Quarantined,
+            _ => throw new InvalidDataException($"Unmapped durable availability state '{value}'.")
+        };
 
     private static JsonElement ParseDocument(byte[] utf8Json)
     {

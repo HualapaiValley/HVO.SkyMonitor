@@ -24,6 +24,36 @@ public sealed class GraphExecutionEvidenceContractTests
         "uri", "url", "endpoint"
     ];
 
+    /// <summary>
+    /// Pinned SHA-256 of each committed golden fixture's canonical bytes (the trailing newline excluded), so a
+    /// fixture cannot be edited to match a changed serializer without the pin being updated deliberately.
+    /// </summary>
+    private static readonly Dictionary<string, string> FixtureSha256 = new(StringComparer.Ordinal)
+    {
+        ["cameraagent-execution-evidence-availability-v1.json"] =
+            "62D55903E2FE18E6EA2E5FB348ED27F723EDD28A4E6AE44BA3DDC19FD7F743E5",
+        ["cameraagent-execution-evidence-correction-v1.json"] =
+            "E3FED8A57AF03030D8D17C1ADD1E8A5B81FA4B6B34A256AECA880B357AAA6D52",
+        ["cameraagent-execution-evidence-execution-live-v1.json"] =
+            "92E1B35BA8AA450EF9451EB7BB5FE8F2AC296E42362F6C1936A3372289786E02",
+        ["cameraagent-execution-evidence-execution-replay-v1.json"] =
+            "2D8BD85FB2AB1554306FE1AF0979D747C612B745A6996C2A807229CD35D28B82",
+        ["cameraagent-execution-evidence-feedback-v1.json"] =
+            "E9A38CFBD4E398D809C6C7C3B764916459AB6F2EEE2CB2B4DAAF3E1D7B0EC0A0",
+        ["cameraagent-execution-evidence-negotiation-v1.json"] =
+            "C0ADBC980221DB62B2CC81E222C679E9709850AE042B01A81F55C5136161AAF2",
+        ["cameraagent-execution-evidence-resync-v1.json"] =
+            "00FA57D39B498D9388104CCC625C12A4A1D87121F658D6FFE176BB53041A2EFE",
+        ["cameraagent-execution-evidence-revision-assigned-v1.json"] =
+            "A6E76742124CD40E15FC718D5C2E3A36058E7B246614E141F01E9E3FAE834395",
+        ["cameraagent-execution-evidence-revision-local-v1.json"] =
+            "17456036A21A92B1FBC5F79AEEDCBE6CFA33DC8596D9974781AEA25F7AF19DAB",
+        ["cameraagent-execution-evidence-unknown-future-v1.json"] =
+            "2271EE06AE4B3E1341F6345A1ECFC089D021A76230724E1F459EC165B8E523CF"
+    };
+
+    private static readonly int[] ExpectedOptionalInputOrdinals = [0, 1];
+    private static readonly int[] ExpectedOptionalWindowPositions = [0, -1];
     private static readonly long[] ExpectedGapStarts = [5L, 8L];
     private static readonly long[] ExpectedGapEnds = [5L, 9L];
     private static readonly long[] ExpectedResyncStarts = [4L, 6L];
@@ -113,7 +143,7 @@ public sealed class GraphExecutionEvidenceContractTests
     }
 
     [TestMethod]
-    public void CanonicalPayloadHashExcludesItselfAndCoversEveryOtherMember()
+    public void CanonicalPayloadHashExcludesItselfAndChangesWithEveryProbedMember()
     {
         var envelope = GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope();
         Assert.AreEqual(envelope.PayloadSha256, GraphExecutionEvidenceJson.ComputeCanonicalPayloadSha256(envelope));
@@ -200,15 +230,19 @@ public sealed class GraphExecutionEvidenceContractTests
     public void ContractSurfaceCarriesNoImageBytesPathsOrHostCredentials()
     {
         var forbidden = ForbiddenMemberNameFragments;
+        // Every exported evidence type, with the count pinned so a newly exported type must be added to this
+        // audit deliberately rather than slipping past a name filter.
         var evidenceTypes = typeof(ExecutionEvidenceEnvelopeV1).Assembly.ExportedTypes
             .Where(static type => type.Namespace == typeof(ExecutionEvidenceEnvelopeV1).Namespace &&
-                type != typeof(ExecutionEvidenceLimitsV1) &&
-                type != typeof(ExecutionEvidenceValidationResult) &&
                 (type.Name.StartsWith("ExecutionEvidence", StringComparison.Ordinal) ||
                     type.Name.StartsWith("GraphExecutionEvidence", StringComparison.Ordinal) ||
                     type.Name.StartsWith("GraphRevisionEvidence", StringComparison.Ordinal) ||
                     type.Name.StartsWith("ArtifactAvailability", StringComparison.Ordinal)))
             .ToArray();
+        Assert.AreEqual(
+            ExpectedEvidenceTypeCount,
+            evidenceTypes.Length,
+            string.Join(", ", evidenceTypes.Select(static type => type.Name).Order(StringComparer.Ordinal)));
         var members = evidenceTypes
             .SelectMany(static type => type.GetProperties().Select(property => $"{type.Name}.{property.Name}"))
             .ToArray();
@@ -216,7 +250,8 @@ public sealed class GraphExecutionEvidenceContractTests
         var offending = members
             .Where(member => forbidden.Any(name =>
                 member.Contains(name, StringComparison.OrdinalIgnoreCase)) &&
-                !member.EndsWith(".FieldPath", StringComparison.Ordinal))
+                !member.EndsWith(".FieldPath", StringComparison.Ordinal) &&
+                !member.StartsWith("ExecutionEvidenceLimitsV1.", StringComparison.Ordinal))
             .ToArray();
         CollectionAssert.AreEqual(Array.Empty<string>(), offending, string.Join(", ", offending));
 
@@ -495,63 +530,173 @@ public sealed class GraphExecutionEvidenceContractTests
     }
 
     [TestMethod]
-    public void PublishedLimitsMatchTheEnforcedConstants()
+    public void EveryGoldenFixtureIsPinnedAndPresent()
     {
-        var limits = ExecutionEvidenceLimitsV1.Current;
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumEnvelopeBytes, limits.MaximumEnvelopeBytes);
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumDefinitionBytes, limits.MaximumDefinitionBytes);
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumFrozenPlanBytes, limits.MaximumFrozenPlanBytes);
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumNodeCount, limits.MaximumNodeCount);
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumAttemptsPerNode, limits.MaximumAttemptsPerNode);
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumInputsPerExecution, limits.MaximumInputsPerExecution);
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumOutputsPerExecution, limits.MaximumOutputsPerExecution);
-        Assert.AreEqual(
-            GraphExecutionEvidenceLimits.MaximumAvailabilityObservations, limits.MaximumAvailabilityObservations);
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumFactsPerFeedback, limits.MaximumFactsPerFeedback);
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumMissingRanges, limits.MaximumMissingRanges);
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumResyncRanges, limits.MaximumResyncRanges);
-        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumResyncUnits, limits.MaximumResyncUnits);
+        var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures");
+        var present = Directory
+            .EnumerateFiles(directory, "cameraagent-execution-evidence-*.json")
+            .Select(Path.GetFileName)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        CollectionAssert.AreEqual(
+            FixtureSha256.Keys.Order(StringComparer.Ordinal).ToArray(),
+            present,
+            "Every committed evidence fixture must have a pinned hash and vice versa.");
     }
 
     [TestMethod]
-    public void CardinalityLimitsAreEnforcedPerNodeAndPerExecution()
+    public void PublishedLimitsAreTheValuesTheValidatorActuallyEnforces()
     {
+        var limits = ExecutionEvidenceLimitsV1.Current;
         var envelope = GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope();
         var execution = envelope.Execution!;
         var node = execution.Nodes[0];
 
         AssertInvalid(
-            envelope with
-            {
-                Execution = execution with
-                {
-                    Nodes = [.. Enumerable.Range(0, GraphExecutionEvidenceLimits.MaximumNodeCount + 1)
-                        .Select(index => node with { NodeId = $"node-{index}" })]
-                }
-            },
+            WithNodes(envelope, Repeat(limits.MaximumNodeCount + 1, index =>
+                node with { NodeId = $"node-{index}", Inputs = [], Outputs = [] })),
             GraphExecutionEvidenceReasonCodes.LimitExceeded,
             "execution.nodes");
+        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(WithNodes(envelope, Repeat(
+            limits.MaximumNodeCount,
+            index => node with { NodeId = $"node-{index}", Inputs = [], Outputs = [] }))).IsValid);
 
         AssertInvalid(
-            envelope with
+            WithNodes(envelope, [node with
             {
-                Execution = execution with
-                {
-                    Nodes = [node with
-                    {
-                        Attempts = [.. Enumerable.Range(0, GraphExecutionEvidenceLimits.MaximumAttemptsPerNode + 1)
-                            .Select(index => node.Attempts[0] with { AttemptNumber = index + 1 })]
-                    }]
-                }
-            },
+                Attempts = Repeat(
+                    limits.MaximumAttemptsPerNode + 1,
+                    index => node.Attempts[0] with { AttemptNumber = index + 1 })
+            }]),
+            GraphExecutionEvidenceReasonCodes.LimitExceeded,
+            "execution.nodes[0].attempts");
+
+        AssertInvalid(
+            WithNodes(envelope, [node with
+            {
+                Inputs = Repeat(limits.MaximumInputsPerNode + 1, CreateRawInput)
+            }]),
             GraphExecutionEvidenceReasonCodes.LimitExceeded,
             "execution.nodes[0].inputs");
 
         AssertInvalid(
-            envelope with
+            WithNodes(envelope, [node with
             {
-                Execution = execution with { Nodes = [node, node] }
+                Outputs = Repeat(limits.MaximumOutputsPerNode + 1, CreateOutput)
+            }]),
+            GraphExecutionEvidenceReasonCodes.LimitExceeded,
+            "execution.nodes[0].outputs");
+
+        var fullInputNode = node with
+        {
+            Inputs = Repeat(limits.MaximumInputsPerNode, CreateRawInput),
+            Outputs = []
+        };
+        var nodesOverExecutionInputs = (limits.MaximumInputsPerExecution / limits.MaximumInputsPerNode) + 1;
+        AssertInvalid(
+            WithNodes(envelope, Repeat(
+                nodesOverExecutionInputs, index => fullInputNode with { NodeId = $"input-node-{index}" })),
+            GraphExecutionEvidenceReasonCodes.LimitExceeded,
+            "execution.nodes");
+
+        var fullOutputNode = node with { Inputs = [], Outputs = Repeat(limits.MaximumOutputsPerNode, CreateOutput) };
+        var nodesOverExecutionOutputs = (limits.MaximumOutputsPerExecution / limits.MaximumOutputsPerNode) + 1;
+        AssertInvalid(
+            WithNodes(envelope, Repeat(
+                nodesOverExecutionOutputs,
+                index => fullOutputNode with
+                {
+                    NodeId = $"output-node-{index}",
+                    Outputs = Repeat(
+                        limits.MaximumOutputsPerNode,
+                        ordinal => CreateOutput((index * limits.MaximumOutputsPerNode) + ordinal, ordinal))
+                })),
+            GraphExecutionEvidenceReasonCodes.LimitExceeded,
+            "execution.nodes");
+
+        var availability = GraphExecutionEvidenceFixtures.CreateAvailabilityEnvelope();
+        AssertInvalid(
+            availability with
+            {
+                Availability = availability.Availability! with
+                {
+                    Observations = Repeat(
+                        limits.MaximumAvailabilityObservations + 1,
+                        index => availability.Availability.Observations[0] with
+                        {
+                            Artifact = CreateArtifact(index)
+                        })
+                }
             },
+            GraphExecutionEvidenceReasonCodes.LimitExceeded,
+            "availability.observations");
+
+        var feedback = GraphExecutionEvidenceFixtures.CreateFeedback();
+        AssertInvalid(
+            feedback with
+            {
+                Facts = Repeat(limits.MaximumFactsPerFeedback + 1, _ => feedback.Facts[0])
+            },
+            GraphExecutionEvidenceReasonCodes.LimitExceeded,
+            "facts");
+        AssertInvalid(
+            feedback with
+            {
+                MissingRanges = Repeat(
+                    limits.MaximumMissingRanges + 1,
+                    index => new ExecutionEvidenceSequenceRangeV1(
+                        ExecutionEvidenceSequenceRangeV1.CurrentSchemaVersion, 4 + (index * 2), 4 + (index * 2)))
+            },
+            GraphExecutionEvidenceReasonCodes.LimitExceeded,
+            "missingRanges");
+
+        var resync = GraphExecutionEvidenceFixtures.CreateResyncRequest();
+        var overRanges = resync with
+        {
+            Ranges = Repeat(
+                limits.MaximumResyncRanges + 1,
+                index => new ExecutionEvidenceSequenceRangeV1(
+                    ExecutionEvidenceSequenceRangeV1.CurrentSchemaVersion, 4 + (index * 2), 4 + (index * 2)))
+        };
+        var overRangesValidation = GraphExecutionEvidenceJson.Validate(overRanges);
+        Assert.IsFalse(overRangesValidation.IsValid);
+        Assert.AreEqual(GraphExecutionEvidenceReasonCodes.LimitExceeded, overRangesValidation.ReasonCode);
+        Assert.AreEqual("ranges", overRangesValidation.FieldPath);
+
+        var overUnits = resync with
+        {
+            Ranges =
+            [
+                new(
+                    ExecutionEvidenceSequenceRangeV1.CurrentSchemaVersion,
+                    4,
+                    4 + limits.MaximumResyncUnits)
+            ]
+        };
+        var overUnitsValidation = GraphExecutionEvidenceJson.Validate(overUnits);
+        Assert.IsFalse(overUnitsValidation.IsValid);
+        Assert.AreEqual(GraphExecutionEvidenceReasonCodes.LimitExceeded, overUnitsValidation.ReasonCode);
+        Assert.AreEqual("ranges", overUnitsValidation.FieldPath);
+
+        Assert.AreEqual(GraphExecutionEvidenceLimits.MaximumEnvelopeBytes, limits.MaximumEnvelopeBytes);
+        Assert.AreEqual(
+            GraphExecutionEvidenceLimits.MaximumExecutionEnvelopeBytes, limits.MaximumExecutionEnvelopeBytes);
+        Assert.AreEqual(
+            GraphExecutionEvidenceLimits.MaximumAvailabilityEnvelopeBytes,
+            limits.MaximumAvailabilityEnvelopeBytes);
+        Assert.AreEqual(ProcessingGraphJson.MaximumDocumentBytes, limits.MaximumDefinitionBytes);
+        Assert.AreEqual(ProcessingGraphJson.MaximumDocumentBytes, limits.MaximumFrozenPlanBytes);
+        Assert.IsTrue(
+            limits.MaximumEnvelopeBytes > limits.MaximumDefinitionBytes + limits.MaximumFrozenPlanBytes,
+            "A maximum-size revision must fit inside one envelope.");
+    }
+
+    [TestMethod]
+    public void DuplicateNodeIdentifiersAreRejected()
+    {
+        var envelope = GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope();
+        AssertInvalid(
+            WithNodes(envelope, [envelope.Execution!.Nodes[0], envelope.Execution.Nodes[0]]),
             GraphExecutionEvidenceReasonCodes.InvalidNode,
             "execution.nodes");
     }
@@ -613,6 +758,134 @@ public sealed class GraphExecutionEvidenceContractTests
             GraphExecutionEvidenceReasonCodes.InvalidHash,
             GraphExecutionEvidenceJson.ParseEnvelope(System.Text.Encoding.UTF8.GetBytes(lowercaseHash))
                 .Validation.ReasonCode);
+    }
+
+    [TestMethod]
+    public void EnumNamesAreCaseSensitiveOnEveryMessageIncludingTheUnhashedOnes()
+    {
+        var envelope = System.Text.Encoding.UTF8.GetString(GraphExecutionEvidenceJson.Serialize(
+            GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope()));
+        var lowered = envelope.Replace(
+            "\"kind\":\"GraphExecution\"", "\"kind\":\"graphexecution\"", StringComparison.Ordinal);
+        Assert.AreEqual(
+            GraphExecutionEvidenceReasonCodes.InvalidJson,
+            GraphExecutionEvidenceJson.ParseEnvelope(System.Text.Encoding.UTF8.GetBytes(lowered))
+                .Validation.ReasonCode);
+
+        // Feedback carries no payload hash, so only a strict converter can reject a lowercase enum here.
+        var feedback = System.Text.Encoding.UTF8.GetString(GraphExecutionEvidenceJson.Serialize(
+            GraphExecutionEvidenceFixtures.CreateFeedback()));
+        var loweredFeedback = feedback.Replace(
+            "\"kind\":\"Received\"", "\"kind\":\"received\"", StringComparison.Ordinal);
+        Assert.AreNotEqual(feedback, loweredFeedback);
+        Assert.AreEqual(
+            GraphExecutionEvidenceReasonCodes.InvalidJson,
+            GraphExecutionEvidenceJson.ParseFeedback(System.Text.Encoding.UTF8.GetBytes(loweredFeedback))
+                .Validation.ReasonCode);
+
+        var negotiation = System.Text.Encoding.UTF8.GetString(GraphExecutionEvidenceJson.Serialize(
+            GraphExecutionEvidenceFixtures.CreateNegotiationResponse()));
+        var loweredNegotiation = negotiation.Replace(
+            "\"disposition\":\"Supported\"", "\"disposition\":\"supported\"", StringComparison.Ordinal);
+        Assert.AreEqual(
+            GraphExecutionEvidenceReasonCodes.InvalidJson,
+            GraphExecutionEvidenceJson.ParseNegotiationResponse(
+                System.Text.Encoding.UTF8.GetBytes(loweredNegotiation)).Validation.ReasonCode);
+
+        // The unattributed shared enums are strict too: role and outcome travel in the same messages.
+        var loweredRole = envelope.Replace("\"role\":\"Preview\"", "\"role\":\"preview\"", StringComparison.Ordinal);
+        Assert.AreNotEqual(envelope, loweredRole);
+        Assert.AreEqual(
+            GraphExecutionEvidenceReasonCodes.InvalidJson,
+            GraphExecutionEvidenceJson.ParseEnvelope(System.Text.Encoding.UTF8.GetBytes(loweredRole))
+                .Validation.ReasonCode);
+    }
+
+    [TestMethod]
+    public void NullArrayElementsFailBoundedInsteadOfThrowing()
+    {
+        var envelope = System.Text.Encoding.UTF8.GetString(GraphExecutionEvidenceJson.Serialize(
+            GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope()));
+        var start = envelope.IndexOf("\"nodes\":[", StringComparison.Ordinal);
+        Assert.IsTrue(start > 0);
+        var withNullNode = envelope.Insert(start + "\"nodes\":[".Length, "null,");
+        var parsed = GraphExecutionEvidenceJson.ParseEnvelope(
+            System.Text.Encoding.UTF8.GetBytes(withNullNode));
+        Assert.IsNull(parsed.Value);
+        Assert.AreEqual(GraphExecutionEvidenceReasonCodes.InvalidNode, parsed.Validation.ReasonCode);
+        Assert.AreEqual("execution.nodes", parsed.Validation.FieldPath);
+    }
+
+    [TestMethod]
+    public void NegotiationAcceptsAPeerThatPublishesDifferentLimitsForTheSameVersion()
+    {
+        var response = GraphExecutionEvidenceFixtures.CreateNegotiationResponse();
+        var peer = response with
+        {
+            Limits = response.Limits with { MaximumEnvelopeBytes = response.Limits.MaximumEnvelopeBytes / 2 }
+        };
+        Assert.IsTrue(
+            GraphExecutionEvidenceJson.Validate(peer).IsValid,
+            "Two builds of one schema version must negotiate even when a limit differs.");
+
+        var invalid = response with { Limits = response.Limits with { MaximumNodeCount = 0 } };
+        var validation = GraphExecutionEvidenceJson.Validate(invalid);
+        Assert.IsFalse(validation.IsValid);
+        Assert.AreEqual(GraphExecutionEvidenceReasonCodes.InvalidNegotiation, validation.ReasonCode);
+        Assert.AreEqual("limits", validation.FieldPath);
+    }
+
+    [TestMethod]
+    public void OptionalArtifactReconciliationMetadataIsCarriedAndBounded()
+    {
+        var replay = GraphExecutionEvidenceFixtures.CreateReplayExecutionEnvelope();
+        var artifact = replay.Execution!.Nodes[0].Inputs[0].Artifact;
+        Assert.AreEqual(25_233_408L, artifact.PayloadLength);
+        Assert.AreEqual("application/octet-stream", artifact.MediaType);
+
+        AssertInvalid(
+            WithNodes(replay, [replay.Execution.Nodes[0] with
+            {
+                Inputs = [replay.Execution.Nodes[0].Inputs[0] with
+                {
+                    Artifact = artifact with
+                    {
+                        MediaType = new string('m', GraphExecutionEvidenceLimits.MaximumMediaTypeLength + 1)
+                    }
+                }]
+            }]),
+            GraphExecutionEvidenceReasonCodes.InvalidOutput,
+            "execution.nodes[0].inputs[0].artifact.role");
+        AssertInvalid(
+            WithNodes(replay, [replay.Execution.Nodes[0] with
+            {
+                Inputs = [replay.Execution.Nodes[0].Inputs[0] with
+                {
+                    Artifact = artifact with { PayloadLength = -1 }
+                }]
+            }]),
+            GraphExecutionEvidenceReasonCodes.InvalidOutput,
+            "execution.nodes[0].inputs[0].artifact.role");
+    }
+
+    [TestMethod]
+    public void OptionalNodeTerminalFailureDoesNotFailTheExecution()
+    {
+        var envelope = GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope();
+        var optional = envelope.Execution!.Nodes[1];
+        Assert.IsFalse(optional.Required);
+        Assert.AreEqual(ExecutionEvidenceNodeStatus.TerminalFailure, optional.Status);
+        Assert.AreEqual(ExecutionEvidenceExecutionStatus.Completed, envelope.Execution.Status);
+        Assert.IsNull(envelope.Execution.FailureReasonCode);
+        Assert.AreNotEqual(envelope.Execution.Nodes[0].PlanSha256, optional.PlanSha256);
+        CollectionAssert.AreEqual(
+            ExpectedOptionalInputOrdinals, optional.Inputs.Select(static input => input.Ordinal).ToArray());
+        CollectionAssert.AreEqual(
+            ExpectedOptionalWindowPositions,
+            optional.Inputs.Select(static input => input.WindowPosition).ToArray());
+        CollectionAssert.AreEqual(
+            ExpectedOptionalInputOrdinals,
+            envelope.Execution.Nodes[0].Outputs.Select(static output => output.Ordinal).ToArray());
     }
 
     [TestMethod]
@@ -690,6 +963,41 @@ public sealed class GraphExecutionEvidenceContractTests
             },
             GraphExecutionEvidenceReasonCodes.InvalidRange,
             "missingRanges[0]");
+    }
+
+    private const int ExpectedEvidenceTypeCount = 38;
+
+    private static ExecutionEvidenceEnvelopeV1 WithNodes(
+        ExecutionEvidenceEnvelopeV1 envelope,
+        ImmutableArray<ExecutionEvidenceNodeV1> nodes)
+        => envelope with { Execution = envelope.Execution! with { Nodes = nodes } };
+
+    private static ImmutableArray<T> Repeat<T>(int count, Func<int, T> create)
+        => [.. Enumerable.Range(0, count).Select(create)];
+
+    private static ExecutionEvidenceInputV1 CreateRawInput(int ordinal)
+        => GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope().Execution!.Nodes[0].Inputs[0] with
+        {
+            Ordinal = ordinal
+        };
+
+    private static ExecutionEvidenceOutputV1 CreateOutput(int index)
+        => CreateOutput(index, index);
+
+    private static ExecutionEvidenceOutputV1 CreateOutput(int index, int ordinal)
+        => new(ExecutionEvidenceOutputV1.CurrentSchemaVersion, ordinal, CreateArtifact(index));
+
+    private static ExecutionEvidenceArtifactReferenceV1 CreateArtifact(int index)
+    {
+        var identity = Convert.ToHexString(SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"issue-536-limit-probe-{index}")));
+        return new(
+            ExecutionEvidenceArtifactReferenceV1.CurrentSchemaVersion,
+            ProcessingIdentity.CreateArtifactId(identity),
+            GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope().Execution!.CaptureId,
+            identity,
+            FrameArtifactRole.Preview,
+            "probe");
     }
 
     private static ExecutionEvidenceEnvelopeV1 Rebind(
@@ -771,6 +1079,9 @@ public sealed class GraphExecutionEvidenceContractTests
         var fixture = await File.ReadAllBytesAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", fileName)).ConfigureAwait(false);
         Assert.AreEqual((byte)'\n', fixture[^1], fileName);
-        return fixture[..^1];
+        var content = fixture[..^1];
+        Assert.IsTrue(FixtureSha256.TryGetValue(fileName, out var pinned), fileName);
+        Assert.AreEqual(pinned, Convert.ToHexString(SHA256.HashData(content)), fileName);
+        return content;
     }
 }

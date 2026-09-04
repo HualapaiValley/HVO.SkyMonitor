@@ -180,6 +180,147 @@ public sealed class ProcessingGraphEvidenceProjectionTests
         Assert.AreEqual("capture:0001", evidence.TriggerReference);
     }
 
+    /// <summary>
+    /// The projection is the only production code that will ever build these envelopes, so it must reproduce the
+    /// committed golden bytes exactly. A field-mapping regression (for example writing <c>availableUtc</c> where
+    /// <c>acceptedUtc</c> belongs) changes these bytes even though every value is individually well-formed.
+    /// </summary>
+    [TestMethod]
+    public async Task ProjectedLiveExecutionReproducesTheCommittedGoldenBytes()
+    {
+        var expected = await File.ReadAllBytesAsync(Path.Combine(
+                AppContext.BaseDirectory, "Fixtures", "cameraagent-execution-evidence-execution-live-v1.json"))
+            .ConfigureAwait(false);
+        Assert.AreEqual((byte)'\n', expected[^1]);
+
+        var envelope = ProcessingGraphEvidenceProjection.CreateEnvelope(
+            GoldenOrigin(),
+            originSequence: 3,
+            new("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            GoldenBaseUtc.AddSeconds(3),
+            ProcessingGraphEvidenceProjection.CreateExecutionEvidence(CreateGoldenDetail()),
+            ExecutionEvidenceRedactionPolicyV1.None);
+
+        CollectionAssert.AreEqual(expected[..^1], GraphExecutionEvidenceJson.Serialize(envelope));
+    }
+
+    private static readonly DateTimeOffset GoldenBaseUtc = new(2026, 8, 31, 1, 0, 0, TimeSpan.Zero);
+
+    private const string GoldenRevisionId =
+        "70819293A4B5C6D7E8F9001122334455667788990AABBCCDDEEF1A2B3C4D5E6F";
+    private const string GoldenDefinitionIdentity =
+        "2AC312ECFB623F71C3765E683517B23ED35B0B1176EE96CFDF7D7B0BA64B7FD9";
+    private const string GoldenSharedPlanIdentity =
+        "C6D7E8F9001122334455667788990AABBCCDDEEF1A2B3C4D5E6F708192930011";
+    private const string GoldenLocalPlanIdentity =
+        "6F70819293A4B5C6D7E8F9001122334455667788990AABBCCDDEEF1A2B3C4D5E";
+    private const string GoldenPreviewIdentity =
+        "1A2B3C4D5E6F70819293A4B5C6D7E8F9001122334455667788990AABBCCDDEEF";
+    private const string GoldenAnnotatedIdentity =
+        "2B3C4D5E6F70819293A4B5C6D7E8F9001122334455667788990AABBCCDDEEF1A";
+    private const string GoldenPreviewPlanSha256 =
+        "B5C6D7E8F9001122334455667788990AABBCCDDEEF1A2B3C4D5E6F7081929300";
+    private const string GoldenAnnotatePlanSha256 =
+        "D7E8F9001122334455667788990AABBCCDDEEF1A2B3C4D5E6F70819293001122";
+
+    private static ExecutionEvidenceOriginV1 GoldenOrigin()
+        => GraphExecutionEvidenceJson.BindIdentity(new(
+            ExecutionEvidenceOriginV1.CurrentSchemaVersion,
+            new("11111111-1111-4111-8111-111111111111"),
+            new("22222222-2222-4222-8222-222222222222"),
+            new("33333333-3333-4333-8333-333333333333"),
+            "1.0.0-fixture",
+            GraphExecutionEvidenceJson.UnhashedPayloadSha256,
+            new("44444444-4444-4444-8444-444444444444"),
+            new("55555555-5555-4555-8555-555555555555"),
+            new("66666666-6666-4666-8666-666666666666")));
+
+    private static ProcessingGraphExecutionDetail CreateGoldenDetail()
+        => new(
+            new(
+                new("77777777-7777-4777-8777-777777777777"),
+                ProcessingGraphExecutionClass.Live,
+                ProcessingGraphExecutionStatus.Completed,
+                CaptureId,
+                RawArtifactId,
+                GoldenRevisionId,
+                GoldenDefinitionIdentity,
+                GoldenSharedPlanIdentity,
+                GoldenLocalPlanIdentity,
+                "capture",
+                "capture:0001",
+                0,
+                GoldenBaseUtc,
+                GoldenBaseUtc.AddSeconds(2),
+                GoldenBaseUtc.AddMinutes(5),
+                GoldenBaseUtc.AddHours(1),
+                GoldenBaseUtc.AddSeconds(1),
+                GoldenBaseUtc.AddSeconds(5),
+                null,
+                false,
+                2),
+            [
+                new(
+                    "preview",
+                    true,
+                    GoldenPreviewPlanSha256,
+                    "Completed",
+                    null,
+                    2,
+                    GoldenBaseUtc.AddSeconds(1),
+                    GoldenBaseUtc.AddSeconds(4),
+                    [
+                        new(
+                            0, 0, ProcessingGraphExecutionInputKind.RawCapture, CaptureId, RawArtifactId,
+                            RawDescriptorSha256, RawPayloadSha256, null)
+                    ],
+                    [
+                        new(
+                            1, "capture-loop", GoldenBaseUtc.AddSeconds(1), GoldenBaseUtc.AddSeconds(2),
+                            "RetryableFailure", ProcessingOutcomeStatus.RetryableFailure,
+                            "processing.transient-io", TimeSpan.FromSeconds(1)),
+                        new(
+                            2, "capture-loop", GoldenBaseUtc.AddSeconds(3), GoldenBaseUtc.AddSeconds(4),
+                            "Completed", ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(1))
+                    ],
+                    [
+                        new(
+                            0, GoldenPreviewIdentity,
+                            ProcessingIdentity.CreateArtifactId(GoldenPreviewIdentity),
+                            FrameArtifactRole.Preview, "encoded-preview", "Available", null),
+                        new(
+                            1, GoldenAnnotatedIdentity,
+                            ProcessingIdentity.CreateArtifactId(GoldenAnnotatedIdentity),
+                            FrameArtifactRole.AnnotatedPreview, "annotated", "Available", null)
+                    ]),
+                new(
+                    "annotate",
+                    false,
+                    GoldenAnnotatePlanSha256,
+                    "TerminalFailure",
+                    "processing.optional-node-failed",
+                    1,
+                    GoldenBaseUtc.AddSeconds(5),
+                    GoldenBaseUtc.AddSeconds(5),
+                    [
+                        new(
+                            0, 0, ProcessingGraphExecutionInputKind.ProcessingOutput, CaptureId,
+                            ProcessingIdentity.CreateArtifactId(GoldenPreviewIdentity), null, null,
+                            GoldenPreviewIdentity),
+                        new(
+                            1, -1, ProcessingGraphExecutionInputKind.ProcessingOutput, CaptureId,
+                            ProcessingIdentity.CreateArtifactId(GoldenAnnotatedIdentity), null, null,
+                            GoldenAnnotatedIdentity)
+                    ],
+                    [
+                        new(
+                            1, "capture-loop", GoldenBaseUtc.AddSeconds(5), GoldenBaseUtc.AddSeconds(5),
+                            "TerminalFailure", ProcessingOutcomeStatus.TerminalFailure,
+                            "processing.optional-node-failed", TimeSpan.Zero)
+                    ],
+                    [])
+            ]);
+
     private static ExecutionEvidenceOriginV1 CreateOrigin()
         => GraphExecutionEvidenceJson.BindIdentity(new(
             ExecutionEvidenceOriginV1.CurrentSchemaVersion,

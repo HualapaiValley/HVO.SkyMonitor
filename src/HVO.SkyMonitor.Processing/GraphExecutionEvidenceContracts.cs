@@ -28,14 +28,27 @@ public static class GraphExecutionEvidenceSchemaVersions
 /// </summary>
 public static class GraphExecutionEvidenceLimits
 {
-    /// <summary>Maximum canonical bytes of one sequenced evidence envelope.</summary>
-    public const int MaximumEnvelopeBytes = 2 * 1024 * 1024;
+    /// <summary>
+    /// Absolute canonical byte cap for any evidence envelope. It must be able to hold a maximum-size revision,
+    /// because the CameraAgent store admits a 2 MiB canonical definition and a 2 MiB frozen plan for one
+    /// revision; a smaller cap would make a legally persisted revision permanently unexportable.
+    /// </summary>
+    public const int MaximumEnvelopeBytes = 8 * 1024 * 1024;
 
-    /// <summary>Maximum canonical bytes of the content-addressed graph definition carried by a revision unit.</summary>
-    public const int MaximumDefinitionBytes = 512 * 1024;
+    /// <summary>Canonical byte cap for a graph-execution envelope, which carries no document blob.</summary>
+    public const int MaximumExecutionEnvelopeBytes = 2 * 1024 * 1024;
+
+    /// <summary>Canonical byte cap for an artifact-availability envelope.</summary>
+    public const int MaximumAvailabilityEnvelopeBytes = 1024 * 1024;
+
+    /// <summary>
+    /// Maximum canonical bytes of the content-addressed graph definition carried by a revision unit. Matches
+    /// <see cref="ProcessingGraphJson.MaximumDocumentBytes"/> and the durable revision blob constraint.
+    /// </summary>
+    public const int MaximumDefinitionBytes = 2 * 1024 * 1024;
 
     /// <summary>Maximum canonical bytes of the frozen plan carried by a revision unit.</summary>
-    public const int MaximumFrozenPlanBytes = 512 * 1024;
+    public const int MaximumFrozenPlanBytes = 2 * 1024 * 1024;
 
     public const int MaximumFeedbackBytes = 256 * 1024;
 
@@ -47,12 +60,27 @@ public static class GraphExecutionEvidenceLimits
 
     public const int MaximumAttemptsPerNode = 32;
 
+    /// <summary>Matches the durable <c>input_ordinal &lt; 512</c> constraint on a recorded node input.</summary>
     public const int MaximumInputsPerNode = 512;
 
+    /// <summary>Matches the durable <c>output_ordinal &lt; 128</c> constraint on a recorded node output.</summary>
     public const int MaximumOutputsPerNode = 128;
 
+    /// <summary>
+    /// The aggregate per-execution budget, which is the binding limit: it is deliberately far below the
+    /// arithmetic product of <see cref="MaximumNodeCount"/> and <see cref="MaximumInputsPerNode"/>, because the
+    /// product describes what the durable ordinals permit per row rather than what one execution may export. The
+    /// aggregate is checked after every per-node check, so an execution that satisfies every node limit can still
+    /// be rejected here. The representative W6 graph declares an upper bound of 49 inputs, so this budget carries
+    /// roughly forty times the measured headroom.
+    /// </summary>
     public const int MaximumInputsPerExecution = 2048;
 
+    /// <summary>
+    /// The aggregate per-execution output budget. It binds before the product of <see cref="MaximumNodeCount"/>
+    /// and <see cref="MaximumOutputsPerNode"/> for the same reason as
+    /// <see cref="MaximumInputsPerExecution"/>; the representative W6 graph declares an upper bound of 17.
+    /// </summary>
     public const int MaximumOutputsPerExecution = 1024;
 
     public const int MaximumAvailabilityObservations = 1024;
@@ -552,10 +580,14 @@ public sealed record ExecutionEvidenceResyncRequestV1(
 public sealed record ExecutionEvidenceLimitsV1(
     string SchemaVersion,
     int MaximumEnvelopeBytes,
+    int MaximumExecutionEnvelopeBytes,
+    int MaximumAvailabilityEnvelopeBytes,
     int MaximumDefinitionBytes,
     int MaximumFrozenPlanBytes,
     int MaximumNodeCount,
     int MaximumAttemptsPerNode,
+    int MaximumInputsPerNode,
+    int MaximumOutputsPerNode,
     int MaximumInputsPerExecution,
     int MaximumOutputsPerExecution,
     int MaximumAvailabilityObservations,
@@ -569,10 +601,14 @@ public sealed record ExecutionEvidenceLimitsV1(
     public static ExecutionEvidenceLimitsV1 Current { get; } = new(
         CurrentSchemaVersion,
         GraphExecutionEvidenceLimits.MaximumEnvelopeBytes,
+        GraphExecutionEvidenceLimits.MaximumExecutionEnvelopeBytes,
+        GraphExecutionEvidenceLimits.MaximumAvailabilityEnvelopeBytes,
         GraphExecutionEvidenceLimits.MaximumDefinitionBytes,
         GraphExecutionEvidenceLimits.MaximumFrozenPlanBytes,
         GraphExecutionEvidenceLimits.MaximumNodeCount,
         GraphExecutionEvidenceLimits.MaximumAttemptsPerNode,
+        GraphExecutionEvidenceLimits.MaximumInputsPerNode,
+        GraphExecutionEvidenceLimits.MaximumOutputsPerNode,
         GraphExecutionEvidenceLimits.MaximumInputsPerExecution,
         GraphExecutionEvidenceLimits.MaximumOutputsPerExecution,
         GraphExecutionEvidenceLimits.MaximumAvailabilityObservations,
