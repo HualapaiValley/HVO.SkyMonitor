@@ -30,6 +30,7 @@ public sealed partial class SkyMapPage : ComponentBase, IAsyncDisposable
     private string? _manualKey;
     private string? _manualPayload;
     private long _manualExpectedVersion;
+    private long _manualExpectedSequence;
     private IJSObjectReference? _module;
     private ElementReference _confirmationDialog;
     private bool _focusConfirmation;
@@ -182,6 +183,7 @@ public sealed partial class SkyMapPage : ComponentBase, IAsyncDisposable
             _manualPayload = signature;
             _manualKey = NewKey();
             _manualExpectedVersion = manual.KnownVersion;
+            _manualExpectedSequence = manual.ManualSequence;
         }
         _busy = true;
         OperatorUiResult<ManualDeploymentLocationResult> result;
@@ -193,6 +195,7 @@ public sealed partial class SkyMapPage : ComponentBase, IAsyncDisposable
                 elevation,
                 timeZoneId,
                 _manualExpectedVersion,
+                _manualExpectedSequence,
                 _manualKey!,
                 reason,
                 CancellationToken.None).ConfigureAwait(false);
@@ -237,10 +240,11 @@ public sealed partial class SkyMapPage : ComponentBase, IAsyncDisposable
     private static string Describe(ManualDeploymentLocationResult result) => result.Status switch
     {
         ManualDeploymentLocationStatus.Applied =>
-            $"Recorded manual version {result.State.NextVersion}. It becomes the active deployment version at the "
-            + $"next CameraAgent start; captures already recorded keep version {result.State.KnownVersion}."
+            $"Recorded the coordinate entry. The next CameraAgent start appends it as deployment version "
+            + $"{result.State.NextVersion}; captures already recorded keep version {result.State.ActiveVersion}."
             + (result.State.CentralAcknowledgementRequired
-                ? " Central integration is enabled, so the new version is proposed for acknowledgement first."
+                ? " Central integration is enabled, so the new version is proposed for acknowledgement first "
+                  + "and activates only after LogicHost acknowledges it."
                 : string.Empty),
         ManualDeploymentLocationStatus.Replayed =>
             "This coordinate change was already recorded. No additional deployment version was created.",
@@ -256,17 +260,21 @@ public sealed partial class SkyMapPage : ComponentBase, IAsyncDisposable
         longitude = 0;
         elevation = 0;
         timeZoneId = _timeZoneInput?.Trim() ?? string.Empty;
-        if (!TryParseNumber(_latitudeInput, out latitude))
+        if (!TryParseNumber(_latitudeInput, -90, 90, out latitude))
         {
             SetManualMessage("Latitude must be a number between -90 and 90 degrees.", error: true);
             return false;
         }
-        if (!TryParseNumber(_longitudeInput, out longitude))
+        if (!TryParseNumber(_longitudeInput, -180, 180, out longitude))
         {
             SetManualMessage("Longitude must be a number between -180 and 180 degrees, east positive.", error: true);
             return false;
         }
-        if (!TryParseNumber(_elevationInput, out elevation))
+        if (!TryParseNumber(
+                _elevationInput,
+                ManualDeploymentLocationContract.MinimumElevationMeters,
+                ManualDeploymentLocationContract.MaximumElevationMeters,
+                out elevation))
         {
             SetManualMessage(
                 $"Elevation must be a number between {ManualDeploymentLocationContract.MinimumElevationMeters:F0} "
@@ -284,14 +292,35 @@ public sealed partial class SkyMapPage : ComponentBase, IAsyncDisposable
         return true;
     }
 
-    private static bool TryParseNumber(string value, out double parsed)
+    /// <summary>Parses within the same bounds the message advertises, so the guidance is truthful.</summary>
+    private static bool TryParseNumber(string value, double minimum, double maximum, out double parsed)
         => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out parsed)
-           && double.IsFinite(parsed);
+           && double.IsFinite(parsed)
+           && parsed >= minimum
+           && parsed <= maximum;
 
     private void SetManualMessage(string message, bool error)
     {
         _manualMessage = message;
         _manualMessageIsError = error;
+    }
+
+    /// <summary>
+    /// Describes the pending manual entry from the version it will actually occupy: once central
+    /// integration has turned it into a candidate the pending version already exists, and it activates
+    /// on acknowledgement rather than simply at the next start.
+    /// </summary>
+    private string PendingManualSummary()
+    {
+        if (_manual?.Override is not { PendingRestart: true } pending)
+        {
+            return "None";
+        }
+        var version = _manual.PendingVersion ?? _manual.NextVersion;
+        var recorded = pending.RecordedAtUtc.ToString("u", CultureInfo.InvariantCulture);
+        return _manual.PendingVersion is not null && _manual.CandidateAwaitingAcknowledgement
+            ? $"Version {version} entered {recorded} awaits central acknowledgement, then a restart"
+            : $"Version {version} entered {recorded} activates at the next start";
     }
 
     private static string NewKey() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);

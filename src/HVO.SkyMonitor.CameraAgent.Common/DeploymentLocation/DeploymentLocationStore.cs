@@ -220,9 +220,11 @@ public sealed class ProtectedDeploymentLocationStore(
                 await WriteManualAsync(manualPath, manual, cancellationToken).ConfigureAwait(false);
                 DeploymentLocationLog.ManualOverrideSuperseded(_logger, configurationSeed.LocationId);
             }
-            Volatile.Write(ref _history, snapshot.History);
-            Volatile.Write(ref _manual, manual);
+            // Written before the history so any reader that observes the new history also observes the
+            // manual state it was reconciled against.
             Volatile.Write(ref _configurationSeed, configurationSeed);
+            Volatile.Write(ref _manual, manual);
+            Volatile.Write(ref _history, snapshot.History);
             if (snapshot.Appended)
             {
                 DeploymentLocationLog.VersionAppended(_logger, snapshot.Active.LocationId, snapshot.Active.Version);
@@ -379,6 +381,19 @@ public sealed class ProtectedDeploymentLocationStore(
                         manual,
                         configurationSeed);
                 }
+                if (!GovernsConfiguration(manual!, configurationSeed))
+                {
+                    // The key was recorded, but a configuration change superseded it, so replaying it
+                    // would report success for coordinates that will never govern.
+                    outcome = "conflict";
+                    return ManualOutcome(
+                        ManualDeploymentLocationStatus.Conflict,
+                        ManualDeploymentLocationContract.SupersededEntryReasonCode,
+                        "manual.idempotencyKey",
+                        history,
+                        manual,
+                        configurationSeed);
+                }
                 outcome = "replayed";
                 return ManualOutcome(
                     ManualDeploymentLocationStatus.Replayed, null, null, history, manual, configurationSeed);
@@ -390,6 +405,19 @@ public sealed class ProtectedDeploymentLocationStore(
                     ManualDeploymentLocationStatus.Conflict,
                     ManualDeploymentLocationContract.ExpectedVersionConflictReasonCode,
                     "manual.expectedVersion",
+                    history,
+                    manual,
+                    configurationSeed);
+            }
+            // The history version alone cannot detect a competing pending manual entry, because the
+            // command deliberately never touches the history.
+            if (request.ExpectedManualSequence != ManualSequence(manual, configurationSeed))
+            {
+                outcome = "conflict";
+                return ManualOutcome(
+                    ManualDeploymentLocationStatus.Conflict,
+                    ManualDeploymentLocationContract.ExpectedManualSequenceConflictReasonCode,
+                    "manual.expectedManualSequence",
                     history,
                     manual,
                     configurationSeed);
@@ -416,7 +444,7 @@ public sealed class ProtectedDeploymentLocationStore(
                 configurationSeed,
                 SupersededAtUtc: null,
                 [
-                    .. entries,
+                    .. entries.TakeLast(ManualDeploymentLocationContract.MaximumRetainedEntries - 1),
                     new ManualDeploymentLocationAuditEntry(
                         entries.Count == 0 ? 1 : entries[^1].Sequence + 1,
                         ToMilliseconds(_timeProvider.GetUtcNow()),
@@ -433,7 +461,7 @@ public sealed class ProtectedDeploymentLocationStore(
             var (_, _, manualPath) = EnsureStatePaths();
             await WriteManualAsync(manualPath, record, cancellationToken).ConfigureAwait(false);
             Volatile.Write(ref _manual, record);
-            DeploymentLocationLog.ManualVersionRecorded(_logger, history.LocationId, knownVersion + 1);
+            DeploymentLocationLog.ManualEntryRecorded(_logger, history.LocationId, record.Entries[^1].Sequence);
             outcome = "applied";
             return ManualOutcome(
                 ManualDeploymentLocationStatus.Applied, null, null, history, record, configurationSeed);
@@ -515,9 +543,18 @@ public sealed class ProtectedDeploymentLocationStore(
         var effectiveFrom = seed.EffectiveFromUtc.HasValue
             ? ToMilliseconds(seed.EffectiveFromUtc.Value)
             : now;
-        var latestProposedEffectiveFrom = history?.Candidate?.EffectiveFromUtc > latest?.EffectiveFromUtc
+        // The floor must include the instant the latest version was activated, not only its declared
+        // effective-from: activating a staged version and appending in the same startup would otherwise
+        // produce equal activation and supersession instants and fail the chronology invariant.
+        var latestFloor = latest is null
+            ? (DateTimeOffset?)null
+            : history!.ActivatedAtUtc.TryGetValue(latest.Version, out var latestActivated)
+                && latestActivated > latest.EffectiveFromUtc
+                    ? latestActivated
+                    : latest.EffectiveFromUtc;
+        var latestProposedEffectiveFrom = history?.Candidate?.EffectiveFromUtc > latestFloor
             ? history.Candidate.EffectiveFromUtc
-            : latest?.EffectiveFromUtc;
+            : latestFloor;
         if (!seed.EffectiveFromUtc.HasValue
             && latestProposedEffectiveFrom.HasValue
             && effectiveFrom <= latestProposedEffectiveFrom.Value)
@@ -1128,6 +1165,16 @@ public sealed class ProtectedDeploymentLocationStore(
            && string.Equals(record.LocationId, configurationSeed.LocationId, StringComparison.Ordinal)
            && record.BaselineConfigurationSeed == configurationSeed;
 
+    private static long ManualSequence(
+        ManualDeploymentLocationRecord? manual,
+        DeploymentLocationSeed? configurationSeed)
+        => manual is not null
+           && configurationSeed is not null
+           && GovernsConfiguration(manual, configurationSeed)
+           && manual.Entries.Count > 0
+            ? manual.Entries[^1].Sequence
+            : 0;
+
     private static DeploymentLocationSeed GoverningSeed(
         DeploymentLocationHistory history,
         ManualDeploymentLocationRecord? manual,
@@ -1167,11 +1214,9 @@ public sealed class ProtectedDeploymentLocationStore(
         var centralAcknowledgementRequired = _options.CentralIntegration.Mode == CentralIntegrationMode.Enabled;
         if (history is null)
         {
-            return ManualDeploymentLocationState.Unsupported with
-            {
-                Supported = true,
-                CentralAcknowledgementRequired = centralAcknowledgementRequired
-            };
+            // No history means no version to append to, so reporting the contract as available would
+            // offer an entry form whose every command fails.
+            return ManualDeploymentLocationState.Unsupported;
         }
         var governs = manual is not null
             && configurationSeed is not null
@@ -1194,8 +1239,11 @@ public sealed class ProtectedDeploymentLocationStore(
         return new ManualDeploymentLocationState(
             Supported: true,
             LocationId: history.LocationId,
+            ActiveVersion: history.Snapshots[^1].Version,
             KnownVersion: knownVersion,
             NextVersion: knownVersion + 1,
+            PendingVersion: history.Staged?.Version ?? history.Candidate?.Version,
+            ManualSequence: ManualSequence(manual, configurationSeed),
             CentralAcknowledgementRequired: centralAcknowledgementRequired,
             StagedAcknowledgementPending: history.Staged is not null,
             CandidateAwaitingAcknowledgement: history.Candidate is not null,
@@ -1264,6 +1312,11 @@ public sealed class ProtectedDeploymentLocationStore(
             throw new InvalidDataException(
                 "Protected manual deployment-location state failed integrity validation.");
         }
+        if (record.Entries.Count > ManualDeploymentLocationContract.MaximumRetainedEntries)
+        {
+            throw new InvalidDataException(
+                "Protected manual deployment-location audit history exceeds its retained bound.");
+        }
         var previous = 0L;
         var keys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in record.Entries)
@@ -1301,9 +1354,9 @@ public sealed class ProtectedDeploymentLocationStore(
            && entry.Reason is null or { Length: <= ManualDeploymentLocationContract.MaximumReasonLength }
            && double.IsFinite(entry.LatitudeDegrees) && entry.LatitudeDegrees is >= -90 and <= 90
            && double.IsFinite(entry.LongitudeDegrees) && entry.LongitudeDegrees is >= -180 and <= 180
+           // The manual elevation bound is deliberately not applied here: it is command policy, and
+           // enforcing it on the read path would make an existing record unreadable if it ever tightened.
            && double.IsFinite(entry.ElevationMeters)
-           && entry.ElevationMeters >= ManualDeploymentLocationContract.MinimumElevationMeters
-           && entry.ElevationMeters <= ManualDeploymentLocationContract.MaximumElevationMeters
            && DeploymentLocationSnapshot.IsPortableTimeZoneId(entry.TimeZoneId);
 
     private void EnsurePhysicalStatePath(string path)
@@ -1373,8 +1426,8 @@ internal static partial class DeploymentLocationLog
     internal static partial void VersionLoaded(ILogger logger, string locationId, long version);
 
     [LoggerMessage(7305, LogLevel.Information,
-        "Deployment location {LocationId} manual version {Version} recorded and activates at the next start")]
-    internal static partial void ManualVersionRecorded(ILogger logger, string locationId, long version);
+        "Deployment location {LocationId} manual coordinate entry {Sequence} recorded; the next start appends its deployment version")]
+    internal static partial void ManualEntryRecorded(ILogger logger, string locationId, long sequence);
 
     [LoggerMessage(7306, LogLevel.Warning,
         "Deployment location {LocationId} manual override superseded by a changed startup configuration seed")]

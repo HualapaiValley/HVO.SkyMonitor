@@ -55,15 +55,39 @@ takes part in it.
   the manual entry is then proposed as its successor.
 - **Validation.** Latitude, longitude, the portable IANA time zone, and the
   canonical hash are validated by the deployment-location contract; elevation is
-  additionally bounded to -500 m to 9000 m for a manual entry. Coordinates equal
-  to the ones already governing return `Unchanged` and create no version. A
-  replayed `Idempotency-Key` with the same coordinates returns `Replayed`; the
-  same key with different coordinates returns `409`. A stale `expectedVersion`
-  returns `409` without writing anything.
+  additionally bounded to -500 m to 9000 m for a manual entry. That bound is
+  command policy only: it is never applied when reading an existing record, so
+  tightening it can never make a recorded entry unreadable. Coordinates equal to
+  the ones already governing return `Unchanged` and create no version.
+- **Concurrency.** A command carries both `expectedVersion` (the highest version
+  the protected history knows, including a candidate or staged one) and
+  `expectedManualSequence` (the newest recorded manual entry, or `0`). The second
+  token exists because the command deliberately never touches the history, so the
+  version alone cannot detect a competing pending entry. A stale value in either
+  returns `409` with `manual.expectedVersionConflict` or
+  `manual.expectedManualSequenceConflict` and writes nothing.
+- **Idempotency.** A replayed `Idempotency-Key` with the same coordinates returns
+  `Replayed`; the same key with different coordinates returns `409` with
+  `manual.idempotencyKeyConflict`; and a key whose entry belongs to a record a
+  configuration change has superseded returns `409` with
+  `manual.supersededEntry` rather than a misleading success. Every rejection
+  carries its bounded `reasonCode` and `fieldPath` as ProblemDetails extensions.
+  The record retains the 500 most recent entries, so the replay window is the
+  retained window.
+- **Recovery.** The sidecar is validated on every start. An unreadable, re-keyed,
+  or tampered record fails CameraAgent startup with
+  `Protected manual deployment-location state is unreadable` or
+  `… failed integrity validation`, exactly as a damaged history does. Delete
+  `<RawIngressRoot>/.location/manual-deployment-location.v1.protected` to recover;
+  the deployment then returns to its configured coordinates and every version
+  already appended to the protected history is retained.
 - **Rollback.** A rollback to a baseline image discards the manual override
   because the baseline does not read the sidecar. The protected history stays
   valid, so the baseline starts, appends a configured version, and the versions
   recorded while the manual entry was active remain intact with their captures.
+  The sidecar file itself survives the rollback, so rolling forward again with an
+  unchanged configuration seed makes the same entry govern once more and appends a
+  further version. Delete the sidecar before rolling forward to avoid that.
 
 ## Owner API
 

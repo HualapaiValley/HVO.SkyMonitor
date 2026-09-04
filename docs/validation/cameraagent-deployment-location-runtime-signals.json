@@ -7,7 +7,9 @@
   "logs": [
     { "eventId": 7301, "level": "Information", "fields": ["LocationId", "Version"] },
     { "eventId": 7302, "level": "Information", "fields": ["LocationId", "Version"] },
-    { "eventId": 7305, "level": "Information", "fields": ["LocationId", "Version"] },
+    { "eventId": 7303, "level": "Information", "fields": ["Outcome", "SourceKind", "VersionRelation"] },
+    { "eventId": 7304, "level": "Warning", "fields": [] },
+    { "eventId": 7305, "level": "Information", "fields": ["LocationId", "Sequence"] },
     { "eventId": 7306, "level": "Warning", "fields": ["LocationId"] }
   ],
   "metrics": [
@@ -27,7 +29,8 @@
   },
   "privacy": {
     "forbidden": ["latitude", "longitude", "elevation", "timezone", "protected payload", "Data Protection key material", "operator actor identifier"],
-    "identifiers": "LocationId and version may appear in authenticated configuration and structured logs; the coordinate-derived canonical hash remains protected, and hashes, location identifiers, and operator actor identifiers are never metric labels or trace tags."
+    "labelNote": "The outcome set is the union across operations; an individual operation emits a subset.",
+    "identifiers": "LocationId, version, and manual audit sequence may appear in authenticated configuration and structured logs; the coordinate-derived canonical hash remains protected, and hashes, location identifiers, and operator actor identifiers are never metric labels or trace tags."
   },
   "collection": {
     "focusedCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --filter FullyQualifiedName~DeploymentLocation",

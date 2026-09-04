@@ -23,6 +23,7 @@ internal interface ICameraAgentSkyMapUiService
         double elevationMeters,
         string timeZoneId,
         long expectedVersion,
+        long expectedManualSequence,
         string idempotencyKey,
         string? reason,
         CancellationToken cancellationToken);
@@ -104,6 +105,7 @@ internal sealed class CameraAgentSkyMapUiService(
         double elevationMeters,
         string timeZoneId,
         long expectedVersion,
+        long expectedManualSequence,
         string idempotencyKey,
         string? reason,
         CancellationToken cancellationToken)
@@ -125,6 +127,7 @@ internal sealed class CameraAgentSkyMapUiService(
                     elevationMeters,
                     timeZoneId,
                     expectedVersion,
+                    expectedManualSequence,
                     idempotencyKey,
                     actor,
                     reason),
@@ -163,10 +166,25 @@ internal sealed class CameraAgentSkyMapUiService(
         }
         if (string.Equals(
                 result.ReasonCode,
+                ManualDeploymentLocationContract.ExpectedManualSequenceConflictReasonCode,
+                StringComparison.Ordinal))
+        {
+            return "Another coordinate entry was recorded since this page was read. Refresh before retrying.";
+        }
+        if (string.Equals(
+                result.ReasonCode,
                 ManualDeploymentLocationContract.IdempotencyKeyConflictReasonCode,
                 StringComparison.Ordinal))
         {
             return "This command identifier was already recorded with different coordinates. Refresh before retrying.";
+        }
+        if (string.Equals(
+                result.ReasonCode,
+                ManualDeploymentLocationContract.SupersededEntryReasonCode,
+                StringComparison.Ordinal))
+        {
+            return "This command identifier was recorded against coordinates a configuration change has since "
+                + "superseded. Refresh and submit the entry again.";
         }
         return result.FieldPath switch
         {

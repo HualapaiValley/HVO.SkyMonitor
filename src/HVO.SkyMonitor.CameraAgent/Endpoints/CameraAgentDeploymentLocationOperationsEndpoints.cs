@@ -68,11 +68,22 @@ internal static class CameraAgentDeploymentLocationOperationsEndpoints
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
-        if (body.ExpectedVersion is not { } expectedVersion)
+        if (body.ExpectedVersion is not { } expectedVersion ||
+            body.ExpectedManualSequence is not { } expectedManualSequence)
         {
             return Results.Problem(
                 statusCode: StatusCodes.Status400BadRequest,
-                title: "The expected deployment-location version is required.");
+                title: "The expected deployment-location version and manual sequence are required.");
+        }
+        // Every coordinate is required explicitly: zero is a valid coordinate, so an omitted field
+        // must not silently record the null island.
+        if (body.LatitudeDegrees is not { } latitudeDegrees ||
+            body.LongitudeDegrees is not { } longitudeDegrees ||
+            body.ElevationMeters is not { } elevationMeters)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "Latitude, longitude, and elevation are required.");
         }
         var actor = CameraAgentCredentialAccess.GetOwnerId(context.User);
         if (string.IsNullOrWhiteSpace(actor))
@@ -86,23 +97,26 @@ internal static class CameraAgentDeploymentLocationOperationsEndpoints
         {
             var result = await store.ApplyManualAsync(
                 new ManualDeploymentLocationRequest(
-                    body.LatitudeDegrees,
-                    body.LongitudeDegrees,
-                    body.ElevationMeters,
+                    latitudeDegrees,
+                    longitudeDegrees,
+                    elevationMeters,
                     body.TimeZoneId ?? string.Empty,
                     expectedVersion,
+                    expectedManualSequence,
                     idempotencyKey,
                     actor,
                     body.Reason),
                 cancellationToken).ConfigureAwait(false);
             return result.Status switch
             {
-                ManualDeploymentLocationStatus.Invalid => Results.Problem(
-                    statusCode: StatusCodes.Status400BadRequest,
-                    title: "The manual deployment-location command is invalid."),
-                ManualDeploymentLocationStatus.Conflict => Results.Problem(
-                    statusCode: StatusCodes.Status409Conflict,
-                    title: "The manual deployment-location command conflicts with durable state."),
+                ManualDeploymentLocationStatus.Invalid => Rejected(
+                    StatusCodes.Status400BadRequest,
+                    "The manual deployment-location command is invalid.",
+                    result),
+                ManualDeploymentLocationStatus.Conflict => Rejected(
+                    StatusCodes.Status409Conflict,
+                    "The manual deployment-location command conflicts with durable state.",
+                    result),
                 _ => Results.Ok(result)
             };
         }
@@ -120,12 +134,24 @@ internal static class CameraAgentDeploymentLocationOperationsEndpoints
         }
     }
 
+    /// <summary>Returns the rejection with its bounded reason code; neither carries coordinates or a path.</summary>
+    private static IResult Rejected(int statusCode, string title, ManualDeploymentLocationResult result)
+        => Results.Problem(
+            statusCode: statusCode,
+            title: title,
+            extensions: new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["reasonCode"] = result.ReasonCode,
+                ["fieldPath"] = result.FieldPath
+            });
+
     private sealed record ManualDeploymentLocationRequestBody(
-        double LatitudeDegrees,
-        double LongitudeDegrees,
-        double ElevationMeters,
-        string? TimeZoneId,
+        double? LatitudeDegrees = null,
+        double? LongitudeDegrees = null,
+        double? ElevationMeters = null,
+        string? TimeZoneId = null,
         long? ExpectedVersion = null,
+        long? ExpectedManualSequence = null,
         string? Reason = null);
 
     private sealed class RequiredAntiforgeryMetadata : IAntiforgeryMetadata

@@ -35,10 +35,10 @@
     {
         <p class="sky-summary" role="note">@_state.Summary</p>
 
-        <section class="sky-grid" aria-label="Sky map facts">
+        <section class="sky-grid" aria-label="Sky map facts and observer coordinates">
             <article class="sky-card" aria-labelledby="sky-observer">
                 <header>
-                    <div><p class="eyebrow">Authoritative deployment coordinates</p><h2 id="sky-observer">Observer location</h2></div>
+                    <div><p class="eyebrow">Authoritative deployment coordinates</p><h2 id="sky-observer" tabindex="-1">Observer location</h2></div>
                     <span class="state-chip @(_manual is { Supported: true } ? "state-chip--open" : "state-chip--readonly")">@(_manual is { Supported: true } ? "Owner editable" : "Read only")</span>
                 </header>
                 <p class="truth-note">These values are the active immutable deployment version. They are owned by the protected local version store, never by this page's own state, and an owner edit appends a new version rather than rewriting this one. Nothing here geocodes, reads browser location, or uses the network.</p>
@@ -58,7 +58,7 @@
                     <div><dt>Effective at instant</dt><dd>@(_state.Observer.EffectiveAtInstant ? "Yes" : "No: the scene uses coordinates outside their effective window")</dd></div>
                     <div><dt>Staged acknowledgement</dt><dd>@(_state.Observer.StagedAcknowledgementPending ? "A central acknowledgement is staged and activates at the next start" : "None")</dd></div>
                     <div><dt>Canonical identity</dt><dd class="mono">@_state.Observer.CanonicalSha256</dd></div>
-                    <div><dt>Pending manual version</dt><dd>@(_manual?.Override is { PendingRestart: true } pendingOverride ? $"Version {_manual.NextVersion} entered {pendingOverride.RecordedAtUtc:u} activates at the next start" : "None")</dd></div>
+                    <div><dt>Pending manual version</dt><dd>@PendingManualSummary()</dd></div>
                 </dl>
             </article>
 
@@ -67,7 +67,7 @@
                     <div><p class="eyebrow">Audited local mutation</p><h2 id="sky-observer-edit">Edit observer coordinates</h2></div>
                     @if (_manual is { Supported: true } editable)
                     {
-                        <span class="state-chip state-chip--readonly">Current version @editable.KnownVersion</span>
+                        <span class="state-chip state-chip--readonly">Expected version @editable.KnownVersion</span>
                     }
                 </header>
                 @if (_manual is not { Supported: true })
@@ -79,7 +79,7 @@
                     <p class="truth-note">
                         Saving appends deployment version @_manual.NextVersion through the protected local owner. It becomes the
                         active version at the <strong>next CameraAgent start</strong>: every capture recorded by the running process
-                        keeps version @_manual.KnownVersion, and every capture after the restart carries the new version. Earlier
+                        keeps version @_manual.ActiveVersion, and every capture after the restart carries the new version. Earlier
                         versions and the captures bound to them are never rewritten. The entry is offline: no geocoding, tiles,
                         browser location, or network request is made.
                     </p>
@@ -162,7 +162,16 @@
             {
                 <dialog class="confirmation-panel" aria-labelledby="coordinate-heading" aria-describedby="coordinate-description"
                         @oncancel="CancelEdit" @ref="_confirmationDialog">
-                    <div><p class="eyebrow">Deployment-version confirmation</p><h2 id="coordinate-heading">Append manual version @confirming.NextVersion?</h2><p id="coordinate-description">Captures recorded by the running process keep version @confirming.KnownVersion. The entered coordinates become active at the next CameraAgent start@(confirming.CentralAcknowledgementRequired ? ", after LogicHost acknowledges the proposal" : string.Empty).</p></div>
+                    <div>
+                        <p class="eyebrow">Deployment-version confirmation</p>
+                        <h2 id="coordinate-heading">Append manual version @confirming.NextVersion?</h2>
+                        <p id="coordinate-description">Captures recorded by the running process keep version @confirming.ActiveVersion. The entered coordinates become active at the next CameraAgent start@(confirming.CentralAcknowledgementRequired ? ", after LogicHost acknowledges the proposal" : string.Empty).</p>
+                        @if (_manualMessage is not null)
+                        {
+                            @* The open modal makes the card behind it inert, so the outcome has to be announced here. *@
+                            <p class="truth-note @(_manualMessageIsError ? "manual-error" : "manual-ok")" role="alert">@_manualMessage</p>
+                        }
+                    </div>
                     <div><button type="button" class="btn btn-primary" disabled="@_busy" @onclick="ConfirmEditAsync">Confirm change</button><button type="button" class="btn btn-outline-light" disabled="@_busy" autofocus @onclick="CancelEdit">Cancel</button></div>
                 </dialog>
             }

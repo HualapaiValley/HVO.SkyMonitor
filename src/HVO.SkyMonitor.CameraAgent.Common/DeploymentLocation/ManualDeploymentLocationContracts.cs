@@ -30,11 +30,24 @@ public static class ManualDeploymentLocationContract
     /// <summary>The most recent audit entries a projection returns, newest first.</summary>
     public const int MaximumProjectedEntries = 50;
 
+    /// <summary>
+    /// The most recent audit entries the protected record retains. Older entries are dropped so an
+    /// authenticated caller cannot grow the record without bound; the idempotency replay window is
+    /// therefore the retained window.
+    /// </summary>
+    public const int MaximumRetainedEntries = 500;
+
     /// <summary>The reason code returned when an idempotency key is replayed with a different payload.</summary>
     public const string IdempotencyKeyConflictReasonCode = "manual.idempotencyKeyConflict";
 
     /// <summary>The reason code returned when the operator's expected version is not the current one.</summary>
     public const string ExpectedVersionConflictReasonCode = "manual.expectedVersionConflict";
+
+    /// <summary>The reason code returned when the operator's expected manual sequence is not the current one.</summary>
+    public const string ExpectedManualSequenceConflictReasonCode = "manual.expectedManualSequenceConflict";
+
+    /// <summary>The reason code returned when a replayed key belongs to a record a configuration change superseded.</summary>
+    public const string SupersededEntryReasonCode = "manual.supersededEntry";
 
     /// <summary>The reason code returned when a manual command carries an unusable actor or command identity.</summary>
     public const string InvalidCommandReasonCode = "manual.invalidCommand";
@@ -47,6 +60,7 @@ public sealed record ManualDeploymentLocationRequest(
     double ElevationMeters,
     string TimeZoneId,
     long ExpectedVersion,
+    long ExpectedManualSequence,
     string IdempotencyKey,
     string Actor,
     string? Reason);
@@ -96,11 +110,29 @@ public sealed record ManualDeploymentLocationOverride(
     string? Reason);
 
 /// <summary>The operator-facing state of the audited local manual coordinate contract.</summary>
+/// <param name="ActiveVersion">
+/// The version every capture this process records is stamped with. Operator statements about which
+/// captures keep which version must use this, never <paramref name="KnownVersion"/>.
+/// </param>
+/// <param name="KnownVersion">
+/// The highest version the protected history knows, including a candidate or staged version. This is
+/// the concurrency token a command echoes as its expected version; it is not the capture-stamped one.
+/// </param>
+/// <param name="PendingVersion">
+/// The version a candidate or staged snapshot already occupies, or null when none is pending.
+/// </param>
+/// <param name="ManualSequence">
+/// The sequence of the newest recorded manual entry, or zero when none. A command echoes it so a
+/// second operator cannot silently replace a pending manual entry the history has not yet versioned.
+/// </param>
 public sealed record ManualDeploymentLocationState(
     bool Supported,
     string LocationId,
+    long ActiveVersion,
     long KnownVersion,
     long NextVersion,
+    long? PendingVersion,
+    long ManualSequence,
     bool CentralAcknowledgementRequired,
     bool StagedAcknowledgementPending,
     bool CandidateAwaitingAcknowledgement,
@@ -108,12 +140,15 @@ public sealed record ManualDeploymentLocationState(
     DateTimeOffset? OverrideSupersededAtUtc,
     IReadOnlyList<ManualDeploymentLocationAuditEntry> History)
 {
-    /// <summary>The state a store without a manual mutation contract reports.</summary>
+    /// <summary>The state a store without a manual mutation contract, or without initialized history, reports.</summary>
     public static ManualDeploymentLocationState Unsupported { get; } = new(
         Supported: false,
         LocationId: string.Empty,
+        ActiveVersion: 0,
         KnownVersion: 0,
         NextVersion: 0,
+        PendingVersion: null,
+        ManualSequence: 0,
         CentralAcknowledgementRequired: false,
         StagedAcknowledgementPending: false,
         CandidateAwaitingAcknowledgement: false,

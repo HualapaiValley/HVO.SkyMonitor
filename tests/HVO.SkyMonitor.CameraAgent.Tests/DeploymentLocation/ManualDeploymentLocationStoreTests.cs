@@ -152,7 +152,7 @@ public sealed class ManualDeploymentLocationStoreTests
             Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 1),
             CancellationToken.None).ConfigureAwait(false);
         var reused = await store.ApplyManualAsync(
-            Request(10, 20, 30, "UTC", expectedVersion: 1),
+            Request(10, 20, 30, "UTC", expectedVersion: 1, expectedManualSequence: 1),
             CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(ManualDeploymentLocationStatus.Applied, first.Status);
@@ -262,12 +262,18 @@ public sealed class ManualDeploymentLocationStoreTests
             Assert.AreEqual(2L, activated.Manual.KnownVersion);
 
             var stale = await activated.ApplyManualAsync(
-                Request(19.82, -155.47, 4200, "Pacific/Honolulu", expectedVersion: 1, key: "second-stale"),
+                Request(
+                    19.82, -155.47, 4200, "Pacific/Honolulu",
+                    expectedVersion: 1, key: "second-stale", expectedManualSequence: 1),
                 CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(ManualDeploymentLocationStatus.Conflict, stale.Status);
+            Assert.AreEqual(
+                ManualDeploymentLocationContract.ExpectedVersionConflictReasonCode, stale.ReasonCode);
 
             var applied = await activated.ApplyManualAsync(
-                Request(19.82, -155.47, 4200, "Pacific/Honolulu", expectedVersion: 2, key: "second"),
+                Request(
+                    19.82, -155.47, 4200, "Pacific/Honolulu",
+                    expectedVersion: 2, key: "second", expectedManualSequence: 1),
                 CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(ManualDeploymentLocationStatus.Applied, applied.Status);
             Assert.HasCount(2, applied.State.History);
@@ -363,6 +369,167 @@ public sealed class ManualDeploymentLocationStoreTests
         Assert.AreEqual(2L, acknowledged.Version);
         Assert.AreEqual("Australia/Sydney", acknowledged.TimeZoneId);
         Assert.IsFalse(activated.Manual.StagedAcknowledgementPending);
+    }
+
+    [TestMethod]
+    public async Task ApplyManualAsync_WithADifferentKeyAndTheSameExpectedVersion_ConflictsOnTheManualSequence()
+    {
+        using var store = CreateStore();
+        _ = await store.InitializeAsync(
+            CreateSeed(35.347, -113.878, 0, "America/Phoenix"), CancellationToken.None).ConfigureAwait(false);
+        var first = await store.ApplyManualAsync(
+            Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 1, key: "first"),
+            CancellationToken.None).ConfigureAwait(false);
+
+        // A second operator holding the same page state carries the stale manual sequence. The history
+        // version cannot detect it, because the command never touches the history.
+        var competing = await store.ApplyManualAsync(
+            Request(19.82, -155.47, 4200, "Pacific/Honolulu", expectedVersion: 1, key: "second"),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(ManualDeploymentLocationStatus.Applied, first.Status);
+        Assert.AreEqual(1L, first.State.ManualSequence);
+        Assert.AreEqual(ManualDeploymentLocationStatus.Conflict, competing.Status);
+        Assert.AreEqual(
+            ManualDeploymentLocationContract.ExpectedManualSequenceConflictReasonCode, competing.ReasonCode);
+        Assert.AreEqual("Australia/Sydney", store.Manual.Override!.TimeZoneId);
+        Assert.HasCount(1, store.Manual.History);
+    }
+
+    [TestMethod]
+    public async Task ApplyManualAsync_ReplayedAfterSupersession_ConflictsInsteadOfReportingSuccess()
+    {
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        using (var store = CreateStore())
+        {
+            _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+            _ = await store.ApplyManualAsync(
+                Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 1),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        _timeProvider.UtcNow = Now.AddSeconds(1);
+        using var reconfigured = CreateStore();
+        _ = await reconfigured.InitializeAsync(
+            CreateSeed(20.5, 30.5, 400, "UTC"), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(reconfigured.Manual.OverrideSupersededAtUtc);
+
+        var replay = await reconfigured.ApplyManualAsync(
+            Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 2),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(ManualDeploymentLocationStatus.Conflict, replay.Status);
+        Assert.AreEqual(ManualDeploymentLocationContract.SupersededEntryReasonCode, replay.ReasonCode);
+        Assert.IsNull(reconfigured.Manual.Override);
+    }
+
+    [TestMethod]
+    public async Task ApplyManualAsync_WhileACentralAcknowledgementIsStaged_ProposesTheEntryAsItsSuccessor()
+    {
+        _options = CreateOptions(CentralIntegrationMode.Enabled);
+        var configured = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        DeploymentLocationSnapshot staged;
+        using (var proposing = CreateStore())
+        {
+            _ = await proposing.InitializeAsync(configured, CancellationToken.None).ConfigureAwait(false);
+            _ = await proposing.ApplyManualAsync(
+                Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 1, key: "first"),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        _timeProvider.UtcNow = Now.AddSeconds(1);
+        using (var acknowledged = CreateStore())
+        {
+            _ = await acknowledged.InitializeAsync(configured, CancellationToken.None).ConfigureAwait(false);
+            staged = acknowledged.Candidate!;
+            await acknowledged.StageAsync(staged, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(acknowledged.Manual.StagedAcknowledgementPending);
+
+            // A second entry made while the acknowledgement is staged must not disturb it.
+            var second = await acknowledged.ApplyManualAsync(
+                Request(
+                    19.82, -155.47, 4200, "Pacific/Honolulu",
+                    expectedVersion: 2, key: "second", expectedManualSequence: 1),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(ManualDeploymentLocationStatus.Applied, second.Status);
+            Assert.AreEqual(1L, acknowledged.Active!.Version);
+            Assert.AreEqual(2L, second.State.PendingVersion);
+        }
+
+        _timeProvider.UtcNow = Now.AddSeconds(2);
+        using var restarted = CreateStore();
+        var active = await restarted.InitializeAsync(configured, CancellationToken.None).ConfigureAwait(false);
+
+        // The acknowledged version activates first; the newer entry becomes its proposed successor.
+        Assert.AreEqual(2L, active.Version);
+        Assert.AreEqual(staged.CanonicalSha256, active.CanonicalSha256);
+        Assert.AreEqual("Australia/Sydney", active.TimeZoneId);
+        Assert.AreEqual(3L, restarted.Candidate!.Version);
+        Assert.AreEqual("Pacific/Honolulu", restarted.Candidate.TimeZoneId);
+        Assert.AreEqual(2L, restarted.Manual.ActiveVersion);
+        Assert.AreEqual(3L, restarted.Manual.KnownVersion);
+        Assert.IsTrue(restarted.Manual.CandidateAwaitingAcknowledgement);
+    }
+
+    [TestMethod]
+    public async Task ManualOverride_SupersessionIsIdempotentAcrossRepeatedStarts()
+    {
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        using (var store = CreateStore())
+        {
+            _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+            _ = await store.ApplyManualAsync(
+                Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 1),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        var reconfigured = CreateSeed(20.5, 30.5, 400, "UTC");
+        _timeProvider.UtcNow = Now.AddSeconds(1);
+        using (var first = CreateStore())
+        {
+            _ = await first.InitializeAsync(reconfigured, CancellationToken.None).ConfigureAwait(false);
+        }
+        var supersededPayload = await File.ReadAllBytesAsync(ManualPath()).ConfigureAwait(false);
+
+        _timeProvider.UtcNow = Now.AddSeconds(2);
+        using var second = CreateStore();
+        var unchanged = await second.InitializeAsync(reconfigured, CancellationToken.None).ConfigureAwait(false);
+
+        // A superseded record is never rewritten again, so the deferred write is safe to retry.
+        // The manual entry never activated, so the configured seed appended version two directly.
+        Assert.AreEqual(2L, unchanged.Version);
+        Assert.AreEqual("UTC", unchanged.TimeZoneId);
+        CollectionAssert.AreEqual(
+            supersededPayload, await File.ReadAllBytesAsync(ManualPath()).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Initialize_AfterAManualActivation_AppendsAConfiguredVersionExactlyAsABaselineWould()
+    {
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        using (var store = CreateStore())
+        {
+            _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+            _ = await store.ApplyManualAsync(
+                Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 1),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        _timeProvider.UtcNow = Now.AddSeconds(1);
+        using (var activated = CreateStore())
+        {
+            Assert.AreEqual(
+                2L, (await activated.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).Version);
+        }
+
+        // A rolled-back baseline never reads the sidecar, so remove it and reconcile the configured seed
+        // against the manual-activated history exactly as that baseline would.
+        File.Delete(ManualPath());
+        _timeProvider.UtcNow = Now.AddSeconds(2);
+        using var baseline = CreateStore();
+        var reverted = await baseline.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(3L, reverted.Version);
+        Assert.AreEqual("America/Phoenix", reverted.TimeZoneId);
+        Assert.AreEqual(35.347, reverted.LatitudeDegrees);
+        Assert.IsNull(baseline.Manual.Override);
+        Assert.IsEmpty(baseline.Manual.History);
     }
 
     [TestMethod]
@@ -489,8 +656,18 @@ public sealed class ManualDeploymentLocationStoreTests
         double elevation,
         string timeZoneId,
         long expectedVersion,
-        string key = "key-1")
-        => new(latitude, longitude, elevation, timeZoneId, expectedVersion, key, "owner-1", "relocated");
+        string key = "key-1",
+        long expectedManualSequence = 0)
+        => new(
+            latitude,
+            longitude,
+            elevation,
+            timeZoneId,
+            expectedVersion,
+            expectedManualSequence,
+            key,
+            "owner-1",
+            "relocated");
 
     private string HistoryPath()
         => Path.Combine(_options.Value.RawIngressRoot, ".location", "deployment-location.v1.protected");

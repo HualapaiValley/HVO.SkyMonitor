@@ -156,6 +156,7 @@ public sealed class CameraAgentSkyMapUiServiceTests
         Assert.AreEqual("owner-id", request.Actor);
         Assert.AreEqual("key-1", request.IdempotencyKey);
         Assert.AreEqual(4L, request.ExpectedVersion);
+        Assert.AreEqual(2L, request.ExpectedManualSequence);
         Assert.AreEqual("America/Phoenix", request.TimeZoneId);
     }
 
@@ -206,6 +207,7 @@ public sealed class CameraAgentSkyMapUiServiceTests
             1400,
             "America/Phoenix",
             4,
+            2,
             "key-1",
             "relocated",
             CancellationToken.None).ConfigureAwait(false);
@@ -245,8 +247,11 @@ public sealed class CameraAgentSkyMapUiServiceTests
         private static readonly ManualDeploymentLocationState State = new(
             Supported: true,
             LocationId: "hvo-observatory",
+            ActiveVersion: 4,
             KnownVersion: 4,
             NextVersion: 5,
+            PendingVersion: null,
+            ManualSequence: 2,
             CentralAcknowledgementRequired: false,
             StagedAcknowledgementPending: false,
             CandidateAwaitingAcknowledgement: false,

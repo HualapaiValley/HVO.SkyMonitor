@@ -140,8 +140,12 @@ public sealed class SkyMapPageTests
     public void SaveCoordinates_AppliesTheEnteredValuesAndStatesWhichCapturesKeepWhichVersion()
     {
         using var context = CreateContext();
-        var applied = ManualState(knownVersion: 4, pending: new ManualDeploymentLocationOverride(
-            31.5, -110.25, 1400, "America/Phoenix", PendingRestart: true, Instant, "owner-1", "relocated"));
+        var applied = ManualState(
+            knownVersion: 4,
+            activeVersion: 3,
+            manualSequence: 1,
+            pending: new ManualDeploymentLocationOverride(
+                31.5, -110.25, 1400, "America/Phoenix", PendingRestart: true, Instant, "owner-1", "relocated"));
         var service = new SkyMapUiService(
             SkyMapTestData.Result(Instant),
             manual: ManualState(),
@@ -171,8 +175,8 @@ public sealed class SkyMapPageTests
         Assert.AreEqual(3L, command.ExpectedVersion);
         Assert.AreEqual("relocated", command.Reason);
         Assert.IsFalse(string.IsNullOrWhiteSpace(command.IdempotencyKey));
-        Assert.Contains("Recorded manual version 5", cut.Markup, StringComparison.Ordinal);
-        Assert.Contains("captures already recorded keep version 4", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("appends it as deployment version 5", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("captures already recorded keep version 3", cut.Markup, StringComparison.Ordinal);
         Assert.IsEmpty(cut.FindAll("dialog.confirmation-panel"));
     }
 
@@ -255,6 +259,130 @@ public sealed class SkyMapPageTests
             "Latitude must be a number between -90 and 90 degrees.", cut.Markup, StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    public void Render_WithCentralIntegrationStagedAndSupersededState_StatesEachOneTruthfully()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SkyMapUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(
+                knownVersion: 4,
+                activeVersion: 3,
+                pendingVersion: 4,
+                manualSequence: 2,
+                centralAcknowledgementRequired: true,
+                stagedAcknowledgementPending: true,
+                candidateAwaitingAcknowledgement: true,
+                pending: new ManualDeploymentLocationOverride(
+                    31.5, -110.25, 1400, "America/Phoenix", PendingRestart: true, Instant, "owner-1", "moved"),
+                supersededAtUtc: Instant.AddDays(-1),
+                history:
+                [
+                    new ManualDeploymentLocationAuditEntry(
+                        2, Instant, "owner-1", "moved", "key-2", 3, 31.5, -110.25, 1400, "America/Phoenix"),
+                    new ManualDeploymentLocationAuditEntry(
+                        1, Instant.AddDays(-2), "owner-1", null, "key-1", 2, 30, -110, 1200, "UTC")
+                ])));
+
+        var cut = context.Render<SkyMapPage>();
+
+        cut.WaitForElement("#sky-map-latitude");
+        Assert.Contains("proposed to LogicHost first", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("A central acknowledgement is already staged", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("was superseded at", cut.Markup, StringComparison.Ordinal);
+        // The pending row names the version the candidate already occupies, not the next one.
+        Assert.Contains(
+            "Version 4 entered", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("awaits central acknowledgement", cut.Markup, StringComparison.Ordinal);
+        // Captures keep the active version, never the candidate or staged one.
+        Assert.Contains("keeps version 3", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("Expected version 4", cut.Markup, StringComparison.Ordinal);
+        Assert.HasCount(2, cut.FindAll("table.facts-table tbody tr th[scope='row']")
+            .Where(static cell => cell.TextContent.Contains("2026", StringComparison.Ordinal))
+            .ToArray());
+        Assert.Contains("owner-1", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("Not recorded", cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void SaveRetry_AfterEditingTheValues_MintsANewKeyAndReReadsTheExpectedTokens()
+    {
+        using var context = CreateContext();
+        var service = new SkyMapUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(manualSequence: 4),
+            applyResults:
+            [
+                OperatorUiResult<ManualDeploymentLocationResult>.Failure(
+                    OperatorUiResultKind.Unavailable, "The coordinate change could not be completed.")
+            ]);
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<SkyMapPage>();
+        cut.WaitForElement("#sky-map-latitude");
+        cut.Find("#sky-map-latitude").Change("31.500000");
+        cut.Find($"#{SkyMapPage.EditTriggerId}").Click();
+        cut.FindAll("dialog.confirmation-panel button")
+            .Single(static button => button.TextContent.Contains("Confirm change", StringComparison.Ordinal))
+            .Click();
+
+        // Editing the payload makes it a different command, so it must not reuse the previous key.
+        cut.Find("#sky-map-longitude").Change("-110.250000");
+        cut.FindAll("dialog.confirmation-panel button")
+            .Single(static button => button.TextContent.Contains("Confirm change", StringComparison.Ordinal))
+            .Click();
+
+        Assert.HasCount(2, service.Commands);
+        Assert.AreNotEqual(service.Commands[0].IdempotencyKey, service.Commands[1].IdempotencyKey);
+        Assert.AreEqual(4L, service.Commands[1].ExpectedManualSequence);
+        Assert.AreEqual(-111.65, service.Commands[0].LongitudeDegrees);
+        Assert.AreEqual(-110.25, service.Commands[1].LongitudeDegrees);
+    }
+
+    [TestMethod]
+    public void SaveCoordinates_WhenTheCommandIsUnavailable_AnnouncesInsideTheOpenDialog()
+    {
+        using var context = CreateContext();
+        var service = new SkyMapUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(),
+            applyResults:
+            [
+                OperatorUiResult<ManualDeploymentLocationResult>.Failure(
+                    OperatorUiResultKind.Unavailable, "The coordinate change could not be completed.")
+            ]);
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<SkyMapPage>();
+        cut.WaitForElement("#sky-map-latitude");
+        cut.Find("#sky-map-latitude").Change("31.500000");
+        cut.Find($"#{SkyMapPage.EditTriggerId}").Click();
+
+        cut.FindAll("dialog.confirmation-panel button")
+            .Single(static button => button.TextContent.Contains("Confirm change", StringComparison.Ordinal))
+            .Click();
+
+        // A modal dialog makes the rest of the document inert, so the outcome has to be announced inside it.
+        var alert = cut.Find("dialog.confirmation-panel p[role='alert']");
+        Assert.Contains("could not be completed", alert.TextContent, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void SaveCoordinates_WithAnOutOfRangeValue_BlocksTheCommandWithTheAdvertisedBounds()
+    {
+        using var context = CreateContext();
+        var service = new SkyMapUiService(SkyMapTestData.Result(Instant), manual: ManualState());
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<SkyMapPage>();
+        cut.WaitForElement("#sky-map-latitude");
+
+        cut.Find("#sky-map-latitude").Change("500");
+        cut.Find($"#{SkyMapPage.EditTriggerId}").Click();
+
+        Assert.IsEmpty(cut.FindAll("dialog.confirmation-panel"));
+        Assert.IsEmpty(service.Commands);
+        Assert.Contains(
+            "Latitude must be a number between -90 and 90 degrees.", cut.Markup, StringComparison.Ordinal);
+    }
+
     private static BunitContext CreateContext()
     {
         var context = new BunitContext();
@@ -264,20 +392,28 @@ public sealed class SkyMapPageTests
 
     private static ManualDeploymentLocationState ManualState(
         long knownVersion = 3,
+        long? activeVersion = null,
+        long? pendingVersion = null,
+        long manualSequence = 0,
         bool centralAcknowledgementRequired = false,
         bool stagedAcknowledgementPending = false,
+        bool candidateAwaitingAcknowledgement = false,
         ManualDeploymentLocationOverride? pending = null,
+        DateTimeOffset? supersededAtUtc = null,
         IReadOnlyList<ManualDeploymentLocationAuditEntry>? history = null)
         => new(
             Supported: true,
             LocationId: "hvo-observatory",
+            ActiveVersion: activeVersion ?? knownVersion,
             KnownVersion: knownVersion,
             NextVersion: knownVersion + 1,
+            PendingVersion: pendingVersion,
+            ManualSequence: manualSequence,
             CentralAcknowledgementRequired: centralAcknowledgementRequired,
             StagedAcknowledgementPending: stagedAcknowledgementPending,
-            CandidateAwaitingAcknowledgement: false,
+            CandidateAwaitingAcknowledgement: candidateAwaitingAcknowledgement,
             Override: pending,
-            OverrideSupersededAtUtc: null,
+            OverrideSupersededAtUtc: supersededAtUtc,
             History: history ?? []);
 
     internal sealed class SkyMapUiService(
@@ -317,6 +453,7 @@ public sealed class SkyMapPageTests
             double elevationMeters,
             string timeZoneId,
             long expectedVersion,
+            long expectedManualSequence,
             string idempotencyKey,
             string? reason,
             CancellationToken cancellationToken)
@@ -327,6 +464,7 @@ public sealed class SkyMapPageTests
                 elevationMeters,
                 timeZoneId,
                 expectedVersion,
+                expectedManualSequence,
                 idempotencyKey,
                 reason));
             var results = applyResults ?? [];
@@ -344,6 +482,7 @@ public sealed class SkyMapPageTests
             double ElevationMeters,
             string TimeZoneId,
             long ExpectedVersion,
+            long ExpectedManualSequence,
             string IdempotencyKey,
             string? Reason);
     }

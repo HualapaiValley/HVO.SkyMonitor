@@ -49,7 +49,7 @@ public sealed class CameraAgentDeploymentLocationOperationsEndpointsTests
 
         var response = await PostAsync(
             app,
-            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"America/Phoenix","expectedVersion":4,"reason":"relocated"}""",
+            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"America/Phoenix","expectedVersion":4,"expectedManualSequence":2,"reason":"relocated"}""",
             idempotencyKey: "key-1").ConfigureAwait(false);
 
         Assert.AreEqual(StatusCodes.Status200OK, response.Status);
@@ -64,18 +64,59 @@ public sealed class CameraAgentDeploymentLocationOperationsEndpointsTests
     }
 
     [TestMethod]
-    public async Task ApplyManual_WithoutAnExpectedVersion_IsRejectedBeforeTheStoreAsync()
+    public async Task ApplyManual_WithoutAnExpectedVersionOrSequence_IsRejectedBeforeTheStoreAsync()
+    {
+        var store = new RecordingStore();
+        using var app = CreateApp(store);
+
+        var missingBoth = await PostAsync(
+            app,
+            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"UTC"}""")
+            .ConfigureAwait(false);
+        var missingSequence = await PostAsync(
+            app,
+            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"UTC","expectedVersion":4}""")
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(StatusCodes.Status400BadRequest, missingBoth.Status);
+        Assert.AreEqual(StatusCodes.Status400BadRequest, missingSequence.Status);
+        Assert.IsEmpty(store.Requests);
+    }
+
+    [TestMethod]
+    public async Task ApplyManual_WithAnOmittedCoordinate_IsRejectedRatherThanRecordingZeroAsync()
     {
         var store = new RecordingStore();
         using var app = CreateApp(store);
 
         var response = await PostAsync(
             app,
-            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"UTC"}""")
+            """{"timeZoneId":"UTC","expectedVersion":4,"expectedManualSequence":2}""").ConfigureAwait(false);
+
+        Assert.AreEqual(StatusCodes.Status400BadRequest, response.Status);
+        // Zero is a valid coordinate, so an omitted field must never be recorded as the null island.
+        Assert.IsEmpty(store.Requests);
+    }
+
+    [TestMethod]
+    public async Task ApplyManual_WithoutAnIdempotencyKey_IsRejectedByTheStoreContractAsync()
+    {
+        var store = new RecordingStore
+        {
+            Status = ManualDeploymentLocationStatus.Invalid,
+            ReasonCode = ManualDeploymentLocationContract.InvalidCommandReasonCode
+        };
+        using var app = CreateApp(store);
+
+        var response = await PostAsync(
+            app,
+            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"UTC","expectedVersion":4,"expectedManualSequence":2}""")
             .ConfigureAwait(false);
 
         Assert.AreEqual(StatusCodes.Status400BadRequest, response.Status);
-        Assert.IsEmpty(store.Requests);
+        Assert.AreEqual(string.Empty, store.Requests.Single().IdempotencyKey);
+        StringAssert.Contains(
+            response.Body, ManualDeploymentLocationContract.InvalidCommandReasonCode, StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -86,7 +127,7 @@ public sealed class CameraAgentDeploymentLocationOperationsEndpointsTests
 
         var response = await PostAsync(
             app,
-            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"UTC","expectedVersion":4}""",
+            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"UTC","expectedVersion":4,"expectedManualSequence":2}""",
             anonymous: true).ConfigureAwait(false);
 
         Assert.AreEqual(StatusCodes.Status403Forbidden, response.Status);
@@ -102,15 +143,28 @@ public sealed class CameraAgentDeploymentLocationOperationsEndpointsTests
         ManualDeploymentLocationStatus status,
         int expected)
     {
-        var store = new RecordingStore { Status = status };
+        var store = new RecordingStore
+        {
+            Status = status,
+            ReasonCode = ManualDeploymentLocationContract.ExpectedVersionConflictReasonCode
+        };
         using var app = CreateApp(store);
 
         var response = await PostAsync(
             app,
-            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"UTC","expectedVersion":4}""")
+            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"UTC","expectedVersion":4,"expectedManualSequence":2}""")
             .ConfigureAwait(false);
 
         Assert.AreEqual(expected, response.Status);
+        if (expected != StatusCodes.Status200OK)
+        {
+            // A rejection must carry its bounded reason code so an API client can tell the cases apart.
+            StringAssert.Contains(response.Body, "reasonCode", StringComparison.Ordinal);
+            StringAssert.Contains(
+                response.Body,
+                ManualDeploymentLocationContract.ExpectedVersionConflictReasonCode,
+                StringComparison.Ordinal);
+        }
     }
 
     [TestMethod]
@@ -121,7 +175,7 @@ public sealed class CameraAgentDeploymentLocationOperationsEndpointsTests
 
         var response = await PostAsync(
             app,
-            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"UTC","expectedVersion":4}""")
+            """{"latitudeDegrees":31.5,"longitudeDegrees":-110.25,"elevationMeters":1400,"timeZoneId":"UTC","expectedVersion":4,"expectedManualSequence":2}""")
             .ConfigureAwait(false);
 
         Assert.AreEqual(StatusCodes.Status503ServiceUnavailable, response.Status);
@@ -233,8 +287,11 @@ public sealed class CameraAgentDeploymentLocationOperationsEndpointsTests
         private static readonly ManualDeploymentLocationState State = new(
             Supported: true,
             LocationId: "cameraagent-deployment",
+            ActiveVersion: 4,
             KnownVersion: 4,
             NextVersion: 5,
+            PendingVersion: null,
+            ManualSequence: 2,
             CentralAcknowledgementRequired: false,
             StagedAcknowledgementPending: false,
             CandidateAwaitingAcknowledgement: false,
@@ -245,6 +302,8 @@ public sealed class CameraAgentDeploymentLocationOperationsEndpointsTests
         internal List<ManualDeploymentLocationRequest> Requests { get; } = [];
 
         internal ManualDeploymentLocationStatus Status { get; set; } = ManualDeploymentLocationStatus.Applied;
+
+        internal string? ReasonCode { get; set; }
 
         internal bool Throw { get; set; }
 
@@ -264,7 +323,7 @@ public sealed class CameraAgentDeploymentLocationOperationsEndpointsTests
                     new IOException("/secret/location/path"));
             }
             Requests.Add(request);
-            return ValueTask.FromResult(new ManualDeploymentLocationResult(Status, null, null, State));
+            return ValueTask.FromResult(new ManualDeploymentLocationResult(Status, ReasonCode, null, State));
         }
 
         public ValueTask<DeploymentLocationSnapshot> InitializeAsync(
