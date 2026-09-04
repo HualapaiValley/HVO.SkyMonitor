@@ -482,7 +482,7 @@ public sealed class SchedulePageTests
                     OperatorUiResultKind.Unauthorized, "Authorization is required.")
                 : OperatorUiResult<CaptureScheduleOperatorState>.Success(state));
 
-        public ValueTask<OperatorUiResult<CameraAgentPipelineOperatorState>> GetPipelineAsync(
+        public virtual ValueTask<OperatorUiResult<CameraAgentPipelineOperatorState>> GetPipelineAsync(
             CancellationToken cancellationToken)
         {
             if (state is null)

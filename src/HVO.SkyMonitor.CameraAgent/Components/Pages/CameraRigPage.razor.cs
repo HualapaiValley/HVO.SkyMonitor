@@ -141,14 +141,21 @@ public sealed partial class CameraRigPage : ComponentBase
             _stageExpectedVersion = _state.StateVersion;
         }
         _busy = true;
-        var result = await ScheduleService.StageAsync(
-            _validatedJson,
-            _basisRevisionId,
-            _stageExpectedVersion,
-            _stageKey!,
-            "camera and rig draft",
-            CancellationToken.None).ConfigureAwait(false);
-        _busy = false;
+        OperatorUiResult<CaptureScheduleStoreSnapshot> result;
+        try
+        {
+            result = await ScheduleService.StageAsync(
+                _validatedJson,
+                _basisRevisionId,
+                _stageExpectedVersion,
+                _stageKey!,
+                "camera and rig draft",
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _busy = false;
+        }
         if (result.Kind != OperatorUiResultKind.Unavailable)
         {
             _stageKey = null;

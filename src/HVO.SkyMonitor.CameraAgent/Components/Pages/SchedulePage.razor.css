@@ -52,7 +52,7 @@
 .editor-table { position: relative; display: grid; gap: .35rem; margin-bottom: .6rem; overflow-x: auto; }
 .editor-row { display: grid; grid-template-columns: 1.2fr 1fr .7fr .8fr 1.3fr .8fr auto; gap: .4rem; align-items: center; min-width: 46rem; }
 .editor-row--head span { color: #8fa0b3; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; }
-.editor-group .form-control, .editor-group .form-select { min-height: 40px; padding: .3rem .5rem; border-color: #415268; background: #091017; color: #dce6f2; font-size: .85rem; }
+.editor-group .form-control, .editor-group .form-select, .editor-group .btn { min-height: 44px; padding: .3rem .5rem; border-color: #415268; background: #091017; color: #dce6f2; font-size: .85rem; }
 .window-list, .blackout-list { list-style: none; margin: 0 0 .6rem; padding: 0; display: grid; gap: .6rem; }
 .window-item { padding: .6rem; border: 1px solid #2c3a4a; background: #0b131b; }
 .window-item__head { display: grid; grid-template-columns: 1.2fr 1fr 1fr auto; gap: .5rem; align-items: end; }

@@ -1757,9 +1757,25 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 {
                     await AssertCurrentSkyResponsiveAsync(page, viewport).ConfigureAwait(false);
                 }
+                if (viewport.Width <= 390 && WorkspaceFormRoutes.Contains(route))
+                {
+                    var undersized = await page.EvaluateAsync<string>("""
+                        () => [...document.querySelectorAll('.operations-content input:not([type=checkbox]), .operations-content select, .operations-content button, .operations-content a.btn')]
+                            .filter(element => element.getClientRects().length > 0 && element.getBoundingClientRect().height < 44)
+                            .slice(0, 5)
+                            .map(element => `${element.tagName.toLowerCase()} "${(element.getAttribute('aria-label') || element.textContent || '').trim().slice(0, 30)}" h=${Math.round(element.getBoundingClientRect().height)}`)
+                            .join(' | ')
+                        """).ConfigureAwait(false);
+                    Assert.AreEqual(string.Empty, undersized, $"Workspace controls under 44 CSS pixels on {route}: {undersized}");
+                }
             }
         }
     }
+
+    private static readonly HashSet<string> WorkspaceFormRoutes = new(StringComparer.Ordinal)
+    {
+        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/data", "/operations/sky-map"
+    };
 
     private static async Task AssertOperationsWorkspaceAsync(IPage page)
     {

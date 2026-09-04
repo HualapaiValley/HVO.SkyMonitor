@@ -44,14 +44,7 @@ public sealed record CameraAgentSkyMapObserver(
     double? HorizontalAccuracyMeters,
     DateTimeOffset EffectiveFromUtc,
     DateTimeOffset? EffectiveUntilUtc,
-    bool EffectiveAtInstant)
-{
-    /// <summary>
-    /// Always false. This projection exposes no editing contract: the versioned
-    /// local configuration owner is the only writer of deployment coordinates.
-    /// </summary>
-    public bool Editable { get; }
-}
+    bool EffectiveAtInstant);
 
 /// <summary>One cardinal horizon direction and where the calibrated optics place it in the image.</summary>
 public sealed record CameraAgentSkyMapCardinal(

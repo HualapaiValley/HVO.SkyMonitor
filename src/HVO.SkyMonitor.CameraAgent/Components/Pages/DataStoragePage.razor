@@ -21,7 +21,7 @@
     else if (_view is null)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Data and storage facts unavailable" Message="@_message">
-            <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button>
+            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Try again</button>
         </PageStateNotice>
     }
     else

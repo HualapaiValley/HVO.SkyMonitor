@@ -52,7 +52,6 @@ public sealed class CameraAgentSkyMapProjectionTests
         var result = await Project(CreateCatalog(BrightStars())).ProjectAsync(Instant, CancellationToken.None)
             .ConfigureAwait(false);
 
-        Assert.IsFalse(result.Observer.Editable);
         Assert.AreEqual("sky-map-fixture-location", result.Observer.LocationId);
         Assert.AreEqual(1, result.Observer.Version);
         Assert.AreEqual(CameraAgentSkyMapLocationOrigin.StartupSeed, result.Observer.Origin);
@@ -148,7 +147,7 @@ public sealed class CameraAgentSkyMapProjectionTests
     private static string Serialize(CameraAgentSkyMapProjectionResult result)
         => JsonSerializer.Serialize(result, SerializerOptions);
 
-    private static CameraAgentSkyMapProjection Project(FixtureCatalog catalog)
+    internal static CameraAgentSkyMapProjection Project(FixtureCatalog catalog)
     {
         var accessor = new CameraAgentConfigurationAccessor();
         accessor.SetConfiguration(CreateConfig());
@@ -159,13 +158,13 @@ public sealed class CameraAgentSkyMapProjectionTests
             StandardConstellationTopology.CreateD3Celestial());
     }
 
-    private static FixtureCatalog CreateCatalog(IEnumerable<CelestialCatalogObject> objects)
+    internal static FixtureCatalog CreateCatalog(IEnumerable<CelestialCatalogObject> objects)
         => new(objects, new CatalogMetadata(
             "fixture-catalog", "1.4.0", new Uri("https://catalog.invalid/fixture"),
             new string('C', 64), "CC-BY-4.0", "2"));
 
     // Real Hipparcos identities so the installed topology can resolve figures.
-    private static IEnumerable<CelestialCatalogObject> BrightStars() =>
+    internal static IEnumerable<CelestialCatalogObject> BrightStars() =>
     [
         new("sirius", "Sirius", 6.752481, -16.716116, -1.46, 0.009, "32349"),
         new("canopus", "Canopus", 6.399195, -52.695661, -0.74, 0.164, "30438"),

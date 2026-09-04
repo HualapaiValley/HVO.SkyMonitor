@@ -37,6 +37,53 @@ public sealed class CaptureProfileFormModelTests
     }
 
     [TestMethod]
+    public void RoundTrip_WithoutControlPolicyKeepsNoneAndPreservesAwkwardPrecision()
+    {
+        var baseline = SchedulePageTests.Profile();
+        Assert.IsNull(baseline.Rig.ControlPolicy);
+        var basis = baseline with
+        {
+            Rig = baseline.Rig with
+            {
+                Optics = baseline.Rig.Optics with { RollDegrees = 0.30000000000000004, FocalLengthMillimeters = 1e-7 },
+                Pipeline = baseline.Rig.Pipeline with
+                {
+                    DayExposure = TimeSpan.FromTicks(12345678),
+                    CaptureInterval = TimeSpan.FromTicks(TimeSpan.TicksPerSecond * 7 + 3),
+                    NightGain = 1.0 / 3.0
+                }
+            },
+            Schedule = baseline.Schedule with
+            {
+                SetpointProfiles = [baseline.Schedule.SetpointProfiles[0] with { Exposure = TimeSpan.FromTicks(1), Gain = 123456789.123456789 }],
+                WeeklyWindows =
+                [
+                    baseline.Schedule.WeeklyWindows[0] with
+                    {
+                        Start = new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(18, 30, 45, 500)),
+                        End = new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.Sunrise, Offset: TimeSpan.FromTicks(-TimeSpan.TicksPerMinute * 3 - 1), DayOffset: 1, NoEventFallbackLocalTime: new TimeOnly(6, 0, 0, 0, 1))
+                    }
+                ]
+            }
+        };
+
+        var model = CaptureProfileFormModel.FromProfile(basis);
+        Assert.IsTrue(model.TryApply(basis, out var applied, out var errors), string.Join(" ", errors));
+
+        Assert.IsNull(applied.Rig.ControlPolicy);
+        Assert.AreEqual(
+            CameraAgentScheduleUiService.SerializeProfile(basis),
+            CameraAgentScheduleUiService.SerializeProfile(applied));
+        Assert.AreEqual(basis.Rig.Pipeline.DayExposure, applied.Rig.Pipeline.DayExposure);
+        Assert.AreEqual(basis.Schedule.WeeklyWindows[0].Start.LocalTime, applied.Schedule.WeeklyWindows[0].Start.LocalTime);
+        Assert.AreEqual(basis.Schedule.WeeklyWindows[0].End.Offset, applied.Schedule.WeeklyWindows[0].End.Offset);
+
+        model.GainControl = nameof(AutomaticControlOwnership.Disabled);
+        Assert.IsTrue(model.TryApply(basis, out var withPolicy, out errors), string.Join(" ", errors));
+        Assert.AreEqual(AutomaticControlOwnership.Disabled, withPolicy.Rig.ControlPolicy!.GainControl);
+    }
+
+    [TestMethod]
     public void TypedEdits_ChangeOnlyTheEditedFields()
     {
         var basis = RichProfile();

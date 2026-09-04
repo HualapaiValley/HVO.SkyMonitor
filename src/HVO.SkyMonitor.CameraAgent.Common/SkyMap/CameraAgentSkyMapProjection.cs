@@ -94,7 +94,6 @@ public sealed class CameraAgentSkyMapProjection(
         var objects = scene.Objects
             .OrderBy(static item => item.Magnitude)
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
-            .Take(MaximumObjects)
             .Select(static item => new CameraAgentSkyMapObject(
                 item.Id,
                 item.DisplayName,
@@ -134,8 +133,11 @@ public sealed class CameraAgentSkyMapProjection(
             latestScene);
     }
 
+    private string[]? _constellationIds;
+
+    // The topology is immutable for the process lifetime, so the sorted id set is computed once.
     private string[] ResolveConstellationIds()
-        => constellationTopology is InMemoryConstellationTopology topology && catalog is IHipparcosCatalog
+        => _constellationIds ??= constellationTopology is InMemoryConstellationTopology topology && catalog is IHipparcosCatalog
             ? topology.AllSegments
                 .Select(static segment => segment.ConstellationId)
                 .Distinct(StringComparer.Ordinal)

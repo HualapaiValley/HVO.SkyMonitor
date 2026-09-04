@@ -328,6 +328,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         AssertPublicCatalogHealthIsSanitized(health);
         await File.WriteAllTextAsync(Path.Combine(evidenceRoot, "health.json"), health).ConfigureAwait(false);
         await AssertBrowserEvidenceAsync(page, measuredCaptures[^1]).ConfigureAwait(false);
+        await VisitOperationsWorkspaceAsync(page).ConfigureAwait(false);
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         await faultSampler.CompleteAsync().ConfigureAwait(false);
         faultSampler.WriteCsv(Path.Combine(evidenceRoot, "process-faults.csv"));
@@ -790,6 +791,29 @@ public sealed class StandaloneW6DockerAcceptanceTests
         response.EnsureSuccessStatusCode();
         Assert.AreEqual("/", response.RequestMessage?.RequestUri?.AbsolutePath);
         return replacementPassword;
+    }
+
+    /// <summary>
+    /// Walks every Operations workspace section added by #517 so the deny-proxy count that follows
+    /// proves those pages make zero central requests in standalone mode.
+    /// </summary>
+    private static async Task VisitOperationsWorkspaceAsync(IPage page)
+    {
+        foreach (var (route, heading) in new[]
+        {
+            ("/operations/camera", "Camera & rig"),
+            ("/operations/sky-map", "Sky map & catalog"),
+            ("/operations/pipeline", "Pipeline summary"),
+            ("/operations/automations", "Automations"),
+            ("/operations/data", "Data & storage")
+        })
+        {
+            await page.GotoAsync(route).ConfigureAwait(false);
+            await page.GetByRole(AriaRole.Heading, new() { Name = heading, Level = 1 })
+                .WaitForAsync().ConfigureAwait(false);
+            await page.Locator(".page-state[role='status'] .spinner-border")
+                .WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        }
     }
 
     private static async Task SetCaptureStateAsync(IPage page, bool pause)

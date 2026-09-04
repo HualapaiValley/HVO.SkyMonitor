@@ -499,6 +499,9 @@ public sealed class OwnerAuthorizationTests
         using var anonymousEnvironmental = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/environmental/sources", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousEnvironmental.StatusCode);
+        using var anonymousSkyMap = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/sky-map", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousSkyMap.StatusCode);
 
         using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
@@ -517,6 +520,9 @@ public sealed class OwnerAuthorizationTests
         using var nonOwnerEnvironmental = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/environmental/history", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerEnvironmental.StatusCode);
+        using var nonOwnerSkyMap = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/sky-map", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerSkyMap.StatusCode);
         using var nonOwnerMutation = await nonOwnerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/capture/resume", UriKind.Relative),
             new { reason = "test" }).ConfigureAwait(false);
@@ -537,6 +543,17 @@ public sealed class OwnerAuthorizationTests
         Assert.AreEqual(HttpStatusCode.OK, ownerSchedule.StatusCode);
         var scheduleJson = await ownerSchedule.Content.ReadAsStringAsync().ConfigureAwait(false);
         Assert.IsFalse(scheduleJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+        using var ownerSkyMap = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/sky-map", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerSkyMap.StatusCode);
+        var skyMapJson = await ownerSkyMap.Content.ReadAsStringAsync().ConfigureAwait(false);
+        StringAssert.Contains(skyMapJson, "catalog", StringComparison.Ordinal);
+        StringAssert.Contains(skyMapJson, "observer", StringComparison.Ordinal);
+        Assert.IsFalse(skyMapJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(skyMapJson.Contains("file:", StringComparison.OrdinalIgnoreCase));
+        using var ownerSkyMapOutOfRange = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/sky-map?atUtc=2000-01-01T00:00:00Z", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, ownerSkyMapOutOfRange.StatusCode);
         using var ownerPipeline = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/pipeline", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, ownerPipeline.StatusCode);

@@ -179,7 +179,7 @@
 
                 <details class="editor-advanced">
                     <summary>Advanced canonical JSON</summary>
-                    <p class="editor-note">Edits here replace the typed fields until the draft is refreshed. Opaque module and step options are restored from the basis revision by the server.</p>
+                    <p class="editor-note">Edits here replace the typed fields until you change a typed field above, which rewrites this text from the form. Opaque module and step options are restored from the basis revision by the server.</p>
                     <textarea aria-label="Local profile JSON" @bind="_editorJson" @bind:event="oninput" @bind:after="JsonChanged" disabled="@_busy" spellcheck="false"></textarea>
                     <span>@_editorJson.Length chars</span>
                 </details>

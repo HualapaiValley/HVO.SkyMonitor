@@ -419,6 +419,11 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     {
         _jsonIsTruth = false;
         EditorChanged();
+        // Keep the advanced view showing exactly what a command would send.
+        if (_model is not null && _basisProfile is not null && _model.TryApply(_basisProfile, out var profile, out _))
+        {
+            _editorJson = CameraAgentScheduleUiService.SerializeProfile(profile);
+        }
     }
 
     private void JsonChanged()

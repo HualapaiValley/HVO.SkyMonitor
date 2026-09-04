@@ -15,7 +15,7 @@
 
     <form class="instant-picker" @onsubmit="ApplyInstantAsync" @onsubmit:preventDefault>
         <label for="sky-map-instant">Scene instant (UTC)</label>
-        <input id="sky-map-instant" type="datetime-local" step="1" @bind="_instantInput" @bind:event="oninput" disabled="@_loading" />
+        <input id="sky-map-instant" type="datetime-local" step="1" @bind="_instantInput" disabled="@_loading" />
         <button type="submit" class="btn btn-outline-light" disabled="@_loading">Project</button>
         <button type="button" class="btn btn-outline-light" disabled="@(_loading || _instantInput is null)" @onclick="UseNowAsync">Use now</button>
         <span class="instant-hint">Accepts at most 24 hours ahead and 62 days behind the current time. Leave empty to use the current instant.</span>
@@ -28,7 +28,7 @@
     else if (_state is null)
     {
         <PageStateNotice Kind="@(_invalid ? PageStateNotice.PageStateKind.Info : PageStateNotice.PageStateKind.Error)" Title="@(_invalid ? "Instant outside the accepted window" : "Sky map unavailable")" Message="@_message">
-            <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button>
+            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Try again</button>
         </PageStateNotice>
     }
     else

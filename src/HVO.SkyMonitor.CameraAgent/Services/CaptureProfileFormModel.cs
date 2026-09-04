@@ -223,16 +223,23 @@ internal sealed class CaptureProfileFormModel
         var temperatureTarget = string.IsNullOrWhiteSpace(TemperatureTargetC)
             ? (double?)null
             : ParseDouble(TemperatureTargetC, "Temperature target", problems);
-        var controlPolicy = (rig.ControlPolicy ?? new CameraControlPolicy()) with
-        {
-            ExposureControl = ParseEnum<AutomaticControlOwnership>(ExposureControl, "Exposure control", problems),
-            GainControl = ParseEnum<AutomaticControlOwnership>(GainControl, "Gain control", problems),
-            Temperature = new TemperatureControlDirective
+        var exposureControl = ParseEnum<AutomaticControlOwnership>(ExposureControl, "Exposure control", problems);
+        var gainControl = ParseEnum<AutomaticControlOwnership>(GainControl, "Gain control", problems);
+        var temperatureMode = ParseEnum<TemperatureControlMode>(TemperatureMode, "Temperature mode", problems);
+        // A basis without a control policy keeps none while every exposed value is still the default,
+        // so an untouched form never materialises a policy the revision never had.
+        var controlPolicy = rig.ControlPolicy is null &&
+            exposureControl == AutomaticControlOwnership.Unspecified &&
+            gainControl == AutomaticControlOwnership.Unspecified &&
+            temperatureMode == TemperatureControlMode.Unspecified &&
+            temperatureTarget is null
+            ? null
+            : (rig.ControlPolicy ?? new CameraControlPolicy()) with
             {
-                Mode = ParseEnum<TemperatureControlMode>(TemperatureMode, "Temperature mode", problems),
-                TargetC = temperatureTarget
-            }
-        };
+                ExposureControl = exposureControl,
+                GainControl = gainControl,
+                Temperature = new TemperatureControlDirective { Mode = temperatureMode, TargetC = temperatureTarget }
+            };
 
         var setpoints = Setpoints.Select(row => new CaptureScheduleSetpointProfile(
             row.Id.Trim(),
@@ -302,7 +309,20 @@ internal sealed class CaptureProfileFormModel
         }
     }
 
-    internal static string Number(double value) => value.ToString("0.###############", Invariant);
+    /// <summary>Shortest decimal text that parses back to exactly the same double.</summary>
+    internal static string Number(double value)
+    {
+        var compact = value.ToString("0.###############", Invariant);
+        return double.TryParse(compact, NumberStyles.Float, Invariant, out var parsed) && parsed == value
+            ? compact
+            : value.ToString("R", Invariant);
+    }
+
+    /// <summary>Local time text that round-trips seconds and sub-second ticks when present.</summary>
+    internal static string LocalTime(TimeOnly value)
+        => value.Ticks % TimeSpan.TicksPerMinute == 0
+            ? value.ToString("HH:mm", Invariant)
+            : value.ToString("HH:mm:ss.FFFFFFF", Invariant);
 
     private static double ParseDouble(string value, string label, List<string> problems)
     {
@@ -315,10 +335,10 @@ internal sealed class CaptureProfileFormModel
     }
 
     private static TimeSpan Milliseconds(string value, string label, List<string> problems)
-        => TimeSpan.FromMilliseconds(ParseDouble(value, label, problems));
+        => TimeSpan.FromTicks((long)Math.Round(ParseDouble(value, label, problems) * TimeSpan.TicksPerMillisecond));
 
     private static TimeSpan Seconds(string value, string label, List<string> problems)
-        => TimeSpan.FromSeconds(ParseDouble(value, label, problems));
+        => TimeSpan.FromTicks((long)Math.Round(ParseDouble(value, label, problems) * TimeSpan.TicksPerSecond));
 
     private static TEnum ParseEnum<TEnum>(string value, string label, List<string> problems)
         where TEnum : struct, Enum
@@ -401,10 +421,10 @@ internal sealed class CaptureProfileFormModel
         public static BoundaryRow From(CaptureScheduleBoundary boundary) => new()
         {
             Kind = boundary.Kind.ToString(),
-            LocalTime = boundary.LocalTime?.ToString("HH:mm", Invariant) ?? string.Empty,
+            LocalTime = boundary.LocalTime is { } localTime ? LocalTime(localTime) : string.Empty,
             OffsetMinutes = boundary.Offset == TimeSpan.Zero ? string.Empty : Number(boundary.Offset.TotalMinutes),
             DayOffset = boundary.DayOffset == 0 ? string.Empty : boundary.DayOffset.ToString(Invariant),
-            NoEventFallbackLocalTime = boundary.NoEventFallbackLocalTime?.ToString("HH:mm", Invariant) ?? string.Empty
+            NoEventFallbackLocalTime = boundary.NoEventFallbackLocalTime is { } fallback ? LocalTime(fallback) : string.Empty
         };
 
         public CaptureScheduleBoundary ToBoundary(string label, List<string> problems)

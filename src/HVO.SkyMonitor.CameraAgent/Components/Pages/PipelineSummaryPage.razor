@@ -20,7 +20,7 @@
     else if (_state is null)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Pipeline summary unavailable" Message="@_message">
-            <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button>
+            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Try again</button>
         </PageStateNotice>
     }
     else
