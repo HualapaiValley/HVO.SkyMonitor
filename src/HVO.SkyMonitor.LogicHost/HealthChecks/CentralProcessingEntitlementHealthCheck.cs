@@ -45,6 +45,14 @@ internal sealed class CentralProcessingEntitlementHealthCheck(
                     .Min(job => job.AvailableAtUtc)
             })
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var leasedBytesByRecipe = await dbContext.CentralDerivativeJobInputs.AsNoTracking()
+            .Where(input => input.Job!.Status == CentralDerivativeJobStatus.Leased && input.Job.LeaseExpiresAtUtc > now)
+            .GroupBy(input => input.Job!.RecipeName)
+            .Select(group => new { RecipeName = group.Key, Bytes = group.Sum(input => input.ByteLength) })
+            .ToDictionaryAsync(item => item.RecipeName, item => item.Bytes, cancellationToken).ConfigureAwait(false);
+        var leasedBytesByClass = leasedBytesByRecipe
+            .GroupBy(pair => settings.ResolveResourceClass(pair.Key))
+            .ToDictionary(group => group.Key, group => group.Sum(pair => pair.Value));
         var threshold = settings.BacklogDegradedAfter;
         bool OldBacklog(DateTimeOffset? oldest) => oldest is { } value && now - value > threshold;
         var byObservatory = groups.GroupBy(item => item.ObservatoryId).ToList();
@@ -88,6 +96,11 @@ internal sealed class CentralProcessingEntitlementHealthCheck(
                     && byClass.TryGetValue(item.Class, out var classTotals) && classTotals.Leased >= budget.ActiveJobs && item.OldBacklog))
             {
                 dimensions.Add("class");
+            }
+            if (perClass.Any(item => settings.ResourceClasses.TryGetValue(item.Class, out var budget) && budget.ActiveInputBytes > 0
+                    && leasedBytesByClass.TryGetValue(item.Class, out var classBytes) && classBytes >= budget.ActiveInputBytes && item.OldBacklog))
+            {
+                dimensions.Add("class-bytes");
             }
             if (dimensions.Count != 0)
             {

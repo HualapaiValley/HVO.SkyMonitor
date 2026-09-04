@@ -19,7 +19,7 @@
     { "name": "skymonitor.central.fairness.usage.bytes", "unit": "By", "labels": { "observatory": ["<observatory id>"], "direction": ["input", "output"] } }
   ],
   "healthChecks": [
-    { "name": "processing-entitlements", "tags": ["worker"], "data": ["enabled", "observatoriesWithWork", "pendingJobs", "activeLeases", "overAdmissionLimit", "saturatedWithOldBacklog"] }
+    { "name": "processing-entitlements", "tags": ["worker"], "data": ["enabled", "observatoriesWithWork", "pendingJobs", "activeLeases", "overAdmissionLimit", "saturatedWithOldBacklog", "saturatedDimensions"] }
   ],
   "collection": [
     "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --filter \"FullyQualifiedName~ProcessingEntitlementIntegrationTests\"",

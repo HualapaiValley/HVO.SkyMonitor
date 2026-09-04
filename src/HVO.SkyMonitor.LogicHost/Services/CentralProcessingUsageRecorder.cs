@@ -2,6 +2,7 @@ using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
@@ -13,6 +14,8 @@ namespace HVO.SkyMonitor.LogicHost.Services;
 /// site calls it, <see cref="CentralProcessingUsageInterceptor"/> covers attempts terminalized through tracked
 /// entities, and <see cref="RecordMissingAsync"/> is the periodic safety net for any path that slipped through.
 /// </summary>
+internal sealed record CentralProcessingUsageSignal(Guid ObservatoryId, string ResourceClass, string Outcome, long InputBytes, long OutputBytes);
+
 internal static class CentralProcessingUsageRecorder
 {
     public static Task<int> RecordAsync(
@@ -48,20 +51,75 @@ internal static class CentralProcessingUsageRecorder
         return recorded;
     }
 
-    /// <summary>Records usage for terminal attempts that have no usage row yet, oldest first, up to <paramref name="limit"/> rows.</summary>
+    /// <summary>
+    /// Records usage for terminal attempts that have no usage row yet, oldest first, up to <paramref name="limit"/>
+    /// rows. With a <paramref name="window"/> only attempts that ended within it are examined (an index range on
+    /// <c>EndedAtUtc</c>), which keeps the periodic safety-net sweep bounded on a long-lived installation; without a
+    /// window the whole history is repaired.
+    /// </summary>
     public static async Task<int> RecordMissingAsync(
         ApplicationDbContext dbContext,
         CentralProcessingEntitlementOptions? entitlements,
+        int limit,
+        TimeSpan? window,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(dbContext);
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        var since = window is { } span && span > TimeSpan.Zero ? DateTimeOffset.UtcNow - span : DateTimeOffset.MinValue;
+        return await dbContext.Database.ExecuteSqlRawAsync(
+                InsertSql("AND attempt.[EndedAtUtc] > @since", "TOP(@limit)"),
+                [Classes(entitlements), new SqlParameter("@limit", limit), new SqlParameter("@since", since)],
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Takes up to <paramref name="limit"/> usage rows that no replica has signaled yet, marking them signaled in the
+    /// same statement, so every committed usage row feeds the completion and byte metrics exactly once across any
+    /// number of LogicHost replicas (READPAST lets concurrent replicas take disjoint rows without blocking).
+    /// </summary>
+    public static async Task<IReadOnlyList<CentralProcessingUsageSignal>> TakeUnsignaledAsync(
+        ApplicationDbContext dbContext,
         int limit,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(dbContext);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        return await dbContext.Database.ExecuteSqlRawAsync(
-                InsertSql(string.Empty, "TOP(@limit)"),
-                [Classes(entitlements), new SqlParameter("@limit", limit)],
-                cancellationToken)
-            .ConfigureAwait(false);
+        var connection = dbContext.Database.GetDbConnection();
+        var opened = false;
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await dbContext.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            opened = true;
+        }
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE TOP(@limit) usage SET [SignaledAtUtc] = SYSDATETIMEOFFSET()
+                OUTPUT inserted.[ObservatoryId], inserted.[ResourceClass], inserted.[Outcome], inserted.[InputBytes], inserted.[OutputBytes]
+                FROM [CentralProcessingUsageRecords] AS usage WITH (READPAST)
+                WHERE usage.[SignaledAtUtc] IS NULL
+                """;
+            command.Transaction = dbContext.Database.CurrentTransaction?.GetDbTransaction();
+            command.Parameters.Add(new SqlParameter("@limit", limit));
+            var signals = new List<CentralProcessingUsageSignal>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                signals.Add(new CentralProcessingUsageSignal(
+                    reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3), reader.GetInt64(4)));
+            }
+            return signals;
+        }
+        finally
+        {
+            if (opened)
+            {
+                await dbContext.Database.CloseConnectionAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     private static SqlParameter Classes(CentralProcessingEntitlementOptions? entitlements)

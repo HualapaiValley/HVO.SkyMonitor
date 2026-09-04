@@ -65,8 +65,8 @@ are skipped), and returns a short ranked batch of candidates. The claimer
 locks the best candidate that is still claimable, takes a transaction-scoped
 application lock per observatory (and per resource class when that class has
 a budget), re-checks the counts without waiting on row locks (lease renewal
-takes the same observatory lock, so a renewing lease is never in flight
-during a re-check), and only then leases, so concurrent claims
+takes the same observatory and class locks, so a renewing lease is never in
+flight during a re-check), and only then leases, so concurrent claims
 from any number of workers or runners cannot exceed an entitlement (log event
 2220 and metric `skymonitor.central.fairness.throttled` by reason
 `observatory`, `camera`, `class`, `class-bytes`, or `observatory-class`). A
@@ -97,9 +97,12 @@ as the attempt's terminal update: the job service, the output writer
 (completion and quarantine), and operator cancellation call the recorder
 directly, a `SaveChanges` interceptor records attempts terminalized through
 tracked entities (graph cancellation, source invalidation, location
-quarantine), and the worker's queue sampling sweeps any terminal attempt that
-still lacks a row. The completion and byte metrics are derived from committed
-rows by that sampling, never from an open transaction. Aggregate by
+quarantine), and the worker's queue sampling sweeps any terminal attempt of
+the last hour that still lacks a row (an `EndedAtUtc` index bounds the
+sweep). The completion and byte metrics are derived from committed rows:
+each sampling pass marks rows `SignaledAtUtc` in the same statement that
+reads them, so every row is counted exactly once across any number of
+LogicHost replicas. Aggregate by
 observatory or camera for billing-ready reporting; no payment provider is
 involved.
 
@@ -111,8 +114,10 @@ saturation, throttled claims, completions, and usage bytes
 (`docs/validation/central-fairness-runtime-signals.json`). Raw ingest is never
 refused and derivative scheduling continues under overload; the
 `processing-entitlements` health check degrades when an observatory's pending
-work exceeds `AdmissionPendingLimit` or when a saturated observatory carries
-backlog older than `BacklogDegradedAfter`. That is the admission behavior:
+work exceeds `AdmissionPendingLimit` or when an observatory saturated on any
+enforced dimension (observatory, camera, class jobs, class bytes,
+observatory-class; reported as `saturatedDimensions`) carries backlog older
+than `BacklogDegradedAfter`. That is the admission behavior:
 bounded by entitlements, visible, never lossy.
 
 ## Capacity guidance

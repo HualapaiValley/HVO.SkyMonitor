@@ -4056,6 +4056,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 column: "ProducerSourceId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_CentralDerivativeJobAttempts_EndedAtUtc",
+                table: "CentralDerivativeJobAttempts",
+                column: "EndedAtUtc");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_CentralDerivativeJobAttempts_CentralDerivativeJobId_AttemptNumber",
                 table: "CentralDerivativeJobAttempts",
                 columns: new[] { "CentralDerivativeJobId", "AttemptNumber" },
@@ -5522,7 +5527,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     InputBytes = table.Column<long>(type: "bigint", nullable: false),
                     OutputBytes = table.Column<long>(type: "bigint", nullable: false),
                     RecipeDurationTicks = table.Column<long>(type: "bigint", nullable: false),
-                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    SignaledAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -5551,6 +5557,12 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "IX_CentralProcessingUsageRecords_RecordedAtUtc",
                 table: "CentralProcessingUsageRecords",
                 column: "RecordedAtUtc");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingUsageRecords_SignaledAtUtc",
+                table: "CentralProcessingUsageRecords",
+                column: "SignaledAtUtc",
+                filter: "[SignaledAtUtc] IS NULL");
 
             BaselineTriggerSql.CreateAll(migrationBuilder);
         }

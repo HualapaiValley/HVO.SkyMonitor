@@ -1,4 +1,5 @@
 using FluentAssertions;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
@@ -192,12 +193,51 @@ public sealed class ProcessingEntitlementIntegrationTests
         // The periodic sweep restores a row that is missing for any reason.
         await db.CentralProcessingUsageRecords.Where(record => record.CentralDerivativeJobId == tracked.JobId)
             .ExecuteDeleteAsync().ConfigureAwait(false);
-        (await CentralProcessingUsageRecorder.RecordMissingAsync(db, null, 100, CancellationToken.None).ConfigureAwait(false))
+        (await CentralProcessingUsageRecorder.RecordMissingAsync(db, null, 100, TimeSpan.FromHours(1), CancellationToken.None).ConfigureAwait(false))
             .Should().BeGreaterThanOrEqualTo(1);
         (await db.CentralProcessingUsageRecords.AsNoTracking().CountAsync(record => record.CentralDerivativeJobId == tracked.JobId).ConfigureAwait(false))
             .Should().Be(1);
-        (await CentralProcessingUsageRecorder.RecordMissingAsync(db, null, 100, CancellationToken.None).ConfigureAwait(false))
+        (await CentralProcessingUsageRecorder.RecordMissingAsync(db, null, 100, TimeSpan.FromHours(1), CancellationToken.None).ConfigureAwait(false))
             .Should().Be(0, "the sweep is idempotent");
+
+        // Metrics consume each usage row exactly once: a second take returns nothing for the rows already signaled.
+        var signals = await CentralProcessingUsageRecorder.TakeUnsignaledAsync(db, 1000, CancellationToken.None).ConfigureAwait(false);
+        signals.Should().Contain(signal => signal.ObservatoryId == observatory && signal.Outcome == "Skipped");
+        (await CentralProcessingUsageRecorder.TakeUnsignaledAsync(db, 1000, CancellationToken.None).ConfigureAwait(false)).Should().BeEmpty();
+        (await db.CentralProcessingUsageRecords.AsNoTracking().CountAsync(record => record.ObservatoryId == observatory && record.SignaledAtUtc == null).ConfigureAwait(false))
+            .Should().Be(0);
+    }
+
+    [TestMethod]
+    public async Task HealthReportsClassByteSaturation()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        var observatory = await SeedObservatoryAsync("class-bytes-health", sources: 2, availableOffset: TimeSpan.FromMinutes(-20)).ConfigureAwait(false);
+        long singleInputBytes;
+        await using (var seedScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            singleInputBytes = await seedScope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralArtifacts.AsNoTracking()
+                .Where(artifact => artifact.Frame!.ObservatoryId == observatory && artifact.Role == FrameArtifactRole.Raw)
+                .Select(artifact => artifact.ByteLength)
+                .FirstAsync().ConfigureAwait(false);
+        }
+        // Every class budget equals one single-input job, so the first lease of any class fills that class's budget.
+        using var factory = CreateFactory(CentralProcessingEntitlementOptions.KnownClasses
+            .Select(cls => ($"ProcessingEntitlements:ResourceClasses:{cls}:ActiveInputBytes", singleInputBytes.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            .Append(("ProcessingEntitlements:BacklogDegradedAfter", "00:01:00"))
+            .ToArray());
+        var lease = await ClaimAsync(factory, "class-bytes-health").ConfigureAwait(false);
+        lease.Should().NotBeNull("a single-input job fits an empty byte budget");
+        await using var scope = factory.Services.CreateAsyncScope();
+        var check = new CentralProcessingEntitlementHealthCheck(
+            scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+            scope.ServiceProvider.GetRequiredService<IOptions<CentralProcessingEntitlementOptions>>(),
+            TimeProvider.System);
+
+        var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None).ConfigureAwait(false);
+
+        result.Status.Should().Be(HealthStatus.Degraded, "the image class is at its byte budget with 20-minute-old backlog");
+        ((string)result.Data["saturatedDimensions"]).Should().Contain("class-bytes");
     }
 
     [TestMethod]

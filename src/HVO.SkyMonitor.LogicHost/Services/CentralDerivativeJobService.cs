@@ -608,19 +608,27 @@ internal sealed partial class CentralDerivativeJobService(
         ValidateLeaseDuration(leaseDuration);
         var now = timeProvider.GetUtcNow();
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        if (entitlementOptions?.Value is { Enabled: true })
+        if (entitlementOptions?.Value is { Enabled: true } renewalEntitlements)
         {
-            // Renewal updates a counted lease row; it takes the observatory entitlement lock (waiting, unlike claims)
-            // so the wait-free re-check of a concurrent claim never sees this lease as an in-flight row.
-            var observatoryId = await dbContext.CentralDerivativeJobs.AsNoTracking()
+            // Renewal updates a counted lease row; it takes the same entitlement locks a claim takes (observatory,
+            // then the resource class when that class has a budget), waiting unlike claims, so the wait-free
+            // re-check of a concurrent claim in any observatory never sees this lease as an in-flight row.
+            var renewing = await dbContext.CentralDerivativeJobs.AsNoTracking()
                 .Where(job => job.Id == jobId)
-                .Select(job => (Guid?)job.SourceArtifact!.Frame!.ObservatoryId)
+                .Select(job => new { job.SourceArtifact!.Frame!.ObservatoryId, job.RecipeName })
                 .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            if (observatoryId is { } observatory
-                && !await TryAcquireEntitlementLockAsync($"hvo-entitlement:{observatory:N}", RenewalLockTimeout, cancellationToken).ConfigureAwait(false))
+            if (renewing is not null)
             {
-                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-                throw new CentralDerivativeJobStateException("The observatory entitlement lock could not be acquired for lease renewal.");
+                var resourceClass = renewalEntitlements.ResolveResourceClass(renewing.RecipeName);
+                var classHasBudget = renewalEntitlements.ResourceClasses.TryGetValue(resourceClass, out var classBudget)
+                    && (classBudget.ActiveJobs > 0 || classBudget.ActiveInputBytes > 0);
+                if (!await TryAcquireEntitlementLockAsync($"hvo-entitlement:{renewing.ObservatoryId:N}", RenewalLockTimeout, cancellationToken).ConfigureAwait(false)
+                    || (classHasBudget
+                        && !await TryAcquireEntitlementLockAsync($"hvo-entitlement:class:{resourceClass}", RenewalLockTimeout, cancellationToken).ConfigureAwait(false)))
+                {
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    throw new CentralDerivativeJobStateException("The entitlement lock could not be acquired for lease renewal.");
+                }
             }
         }
         var leased = await ReadRenewalStateAsync(jobId, leaseToken, now, cancellationToken).ConfigureAwait(false);

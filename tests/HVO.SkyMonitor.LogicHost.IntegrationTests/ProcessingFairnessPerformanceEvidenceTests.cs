@@ -164,6 +164,11 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                 .Select(fraction => JainIndex(order.Take((int)Math.Ceiling(order.Length * fraction)), observatories))
                 .ToArray();
             var jain = jainByQuartile.Min();
+            // Jain's index alone tolerates one starved observatory among many, so every checkpoint also requires
+            // that every observatory has completed at least one job (a service-gap bound, not only a share bound).
+            var minCompletionsByQuartile = FairnessCheckpoints
+                .Select(fraction => MinCompletions(order.Take((int)Math.Ceiling(order.Length * fraction)), observatories))
+                .ToArray();
             completed.Should().Be(expectedJobs);
             maxActivePerObservatory.Should().BeLessThanOrEqualTo(2, "the observatory entitlement is enforced under concurrent claims");
             var firstQuarter = order.Take((int)Math.Ceiling(order.Length * 0.25)).GroupBy(id => id)
@@ -171,6 +176,8 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
             jain.Should().BeGreaterThan(0.7,
                 $"every observatory progresses at the same share throughout the drain, not only at the end (quartiles {string.Join('/', jainByQuartile.Select(value => value.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}, first quarter by observatory index {string.Join(' ', firstQuarter)}, readiness at start {readiness}, claim order {string.Join("", claimOrder.Take(40).Select(id => observatories.IndexOf(id).ToString(System.Globalization.CultureInfo.InvariantCulture)))})");
             expiredAndReclaimed.Should().BeGreaterThan(0, "lease loss and reclaim is part of the measured workload");
+            minCompletionsByQuartile.Min().Should().BeGreaterThanOrEqualTo(1,
+                $"no observatory is starved through any checkpoint (minimum completions per observatory at 25/50/75/100%: {string.Join('/', minCompletionsByQuartile)})");
             streams.Add(new
             {
                 cameras,
@@ -184,6 +191,7 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                 jobsPerSecond = drainElapsed.TotalSeconds <= 0 ? 0 : completed / drainElapsed.TotalSeconds,
                 fairnessJainIndex = jain,
                 fairnessJainIndexByQuartile = jainByQuartile,
+                minCompletionsPerObservatoryByQuartile = minCompletionsByQuartile,
                 completionsPerObservatoryMin = perObservatory.Min(),
                 completionsPerObservatoryMax = perObservatory.Max(),
                 maxActivePerObservatory,
@@ -233,6 +241,12 @@ public sealed class ProcessingFairnessPerformanceEvidenceTests
                 await Task.Delay(10 * (attempt + 1)).ConfigureAwait(false);
             }
         }
+    }
+
+    private static int MinCompletions(IEnumerable<Guid> completions, IReadOnlyCollection<Guid> observatories)
+    {
+        var counts = completions.GroupBy(id => id).ToDictionary(group => group.Key, group => group.Count());
+        return observatories.Min(id => counts.TryGetValue(id, out var count) ? count : 0);
     }
 
     private static double JainIndex(IEnumerable<Guid> completions, IReadOnlyCollection<Guid> observatories)
