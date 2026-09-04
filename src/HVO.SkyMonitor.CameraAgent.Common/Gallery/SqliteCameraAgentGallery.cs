@@ -662,17 +662,19 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
                 ORDER BY association.published_flag DESC, execution.execution_id DESC LIMIT 1)
         """;
 
-    // The page walks the commit-order index so every page costs one bounded
-    // index range regardless of history size; the detail lookup keys on the
-    // unique artifact id instead.
-    private const string ProductPageSelectSql = ProductRowColumnsSql + """
-
-        FROM processing_outputs output INDEXED BY ix_processing_outputs_committed
-        """;
-
+    // Product pages ride the two partial retention indexes that already exist
+    // in the shipped schema, so no schema change is needed: available outputs
+    // walk their commit-ordered index directly, and unavailable outputs (a
+    // small set that retention expires) are read through their own index and
+    // sorted. The detail lookup keys on the unique artifact id instead.
     private const string ProductAvailablePageSelectSql = ProductRowColumnsSql + """
 
         FROM processing_outputs output INDEXED BY ix_processing_outputs_retention_available
+        """;
+
+    private const string ProductUnavailablePageSelectSql = ProductRowColumnsSql + """
+
+        FROM processing_outputs output INDEXED BY ix_processing_outputs_retention_unavailable
         """;
 
     private const string ProductRowSelectSql = ProductRowColumnsSql + """
@@ -692,11 +694,12 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         var keys = new List<ProductKey>(normalized.PageSize + 1);
         using (var command = connection.CreateCommand())
         {
-            // The partial retention index covers the common "available only" page exactly.
-            var availableOnly = normalized.Availability == "Available" && normalized.Role is null && normalized.ProductKind is null && normalized.Recipe is null;
-            // The filter clauses emit the literal Available predicate that implies the partial index.
-            var sql = new StringBuilder(availableOnly ? ProductAvailablePageSelectSql : ProductPageSelectSql)
-                .AppendLine().AppendLine("WHERE 1 = 1").Append(ProductVisibilitySql).AppendLine();
+            // The literal availability term is exactly the partial index predicate, so the pinned index always applies.
+            var available = string.Equals(normalized.Availability, "Available", StringComparison.Ordinal);
+            var sql = new StringBuilder(available ? ProductAvailablePageSelectSql : ProductUnavailablePageSelectSql)
+                .AppendLine()
+                .AppendLine(available ? "WHERE output.availability_state = 'Available'" : "WHERE output.availability_state <> 'Available'")
+                .Append(ProductVisibilitySql).AppendLine();
             AppendProductFilterClauses(sql, command, normalized);
             if (cursor is not null)
             {
@@ -985,15 +988,11 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             sql.AppendLine("AND output.recipe_identity_sha256 = $recipe_identity");
             command.Parameters.AddWithValue("$recipe_identity", query.Recipe);
         }
-        if (query.Availability is not null && !string.Equals(query.Availability, "Available", StringComparison.Ordinal))
+        if (!string.Equals(query.Availability, "Available", StringComparison.Ordinal))
         {
+            // The page select already carries the literal partial-index term; this narrows within it.
             sql.AppendLine("AND output.availability_state = $availability");
             command.Parameters.AddWithValue("$availability", query.Availability);
-        }
-        else if (query.Availability is not null)
-        {
-            // A literal lets the partial retention index satisfy the predicate.
-            sql.AppendLine("AND output.availability_state = 'Available'");
         }
         if (query.FromUnixMilliseconds is { } from)
         {
@@ -1026,8 +1025,10 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             throw new CameraAgentGalleryQueryException("The product kind filter is invalid.");
         }
-        var availability = string.IsNullOrWhiteSpace(query.Availability) ? null : query.Availability.Trim();
-        if (availability is not null && !ProductAvailabilities.Contains(availability))
+        // Retained available products are the default view; missing and quarantined
+        // outputs are an explicit filter over the small set retention has not yet expired.
+        var availability = string.IsNullOrWhiteSpace(query.Availability) ? "Available" : query.Availability.Trim();
+        if (!ProductAvailabilities.Contains(availability))
         {
             throw new CameraAgentGalleryQueryException("The availability filter is invalid.");
         }
@@ -1098,7 +1099,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         FrameArtifactRole? Role,
         string? ProductKind,
         string? Recipe,
-        string? Availability,
+        string Availability,
         long? FromUnixMilliseconds,
         long? ToUnixMilliseconds,
         string FilterHash);

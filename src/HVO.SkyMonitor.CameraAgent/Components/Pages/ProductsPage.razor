@@ -10,7 +10,7 @@
 <PageTitle>Products</PageTitle>
 
 <div class="products-page">
-    <PageHeader Eyebrow="Retained outputs" Title="Products" Lead="Every output CameraAgent actually retains, newest first. Unsupported product types are absent rather than simulated.">
+    <PageHeader Eyebrow="Retained outputs" Title="Products" Lead="Every retained output CameraAgent can still serve, newest first. Missing and quarantined outputs are a separate filter; unsupported product types are absent rather than simulated.">
         @if (_page is not null) { <span class="result-count">@_page.Items.Count result@(_page.Items.Count == 1 ? string.Empty : "s")</span> }
         <a class="btn btn-outline-light" href="/archive/calendar">Calendar</a>
     </PageHeader>
@@ -18,7 +18,7 @@
     <form class="product-filters" @onsubmit="ApplyFilters" @onsubmit:preventDefault aria-label="Product filters">
         <div><label for="product-role">Role</label><select id="product-role" class="form-select" @bind="_draftRole"><option value="">Any role</option>@foreach (var role in Enum.GetValues<FrameArtifactRole>().Where(static role => role != FrameArtifactRole.Raw)) { <option value="@role">@OperationsPage.SplitWords(role.ToString())</option> }</select></div>
         <div><label for="product-kind">Kind</label><select id="product-kind" class="form-select" @bind="_draftKind"><option value="">Any kind</option><option value="PixelData">Pixel data</option><option value="Metadata">Metadata</option></select></div>
-        <div><label for="product-availability">Availability</label><select id="product-availability" class="form-select" @bind="_draftAvailability"><option value="">Any</option><option value="Available">Available</option><option value="Missing">Missing</option><option value="Quarantined">Quarantined</option></select></div>
+        <div><label for="product-availability">Availability</label><select id="product-availability" class="form-select" @bind="_draftAvailability"><option value="">Available</option><option value="Missing">Missing</option><option value="Quarantined">Quarantined</option></select></div>
         <div class="filter-actions"><button type="submit" class="btn btn-primary">Apply</button><button type="button" class="btn btn-outline-light" @onclick="ClearFilters">Clear</button></div>
     </form>
 

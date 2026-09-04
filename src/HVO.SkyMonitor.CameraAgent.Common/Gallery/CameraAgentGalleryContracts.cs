@@ -252,7 +252,9 @@ public interface ICameraAgentArchive
 
 // Products are the processing outputs CameraAgent actually retains for a
 // capture: calibrated, combined, preview, annotated, metadata products, and
-// saved layered materializations. Unsupported product types are absent.
+// saved layered materializations. Unsupported product types are absent. An
+// unset availability lists available products; missing and quarantined
+// outputs are an explicit filter.
 public sealed record CameraAgentProductQuery(
     int? PageSize = null,
     string? Cursor = null,

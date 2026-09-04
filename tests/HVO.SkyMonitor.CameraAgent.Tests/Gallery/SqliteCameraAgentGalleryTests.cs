@@ -1175,6 +1175,31 @@ public sealed class SqliteCameraAgentGalleryTests
     }
 
     [TestMethod]
+    public async Task GetProductPageAsync_ListsAvailableProductsByDefaultAndUnavailableOnRequest()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(1), "Physical", null).ConfigureAwait(false);
+        var kept = await fixture.AddProcessingOutputAsync(raw, "Preview", DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
+        var missing = await fixture.AddProcessingOutputAsync(raw, "Combined", DurableProcessingNodeStatus.Completed, role: FrameArtifactRole.Combined).ConfigureAwait(false);
+        await fixture.SetOutputAvailabilityAsync(missing.Artifact.ArtifactId, "Missing").ConfigureAwait(false);
+        var archive = fixture.Gallery;
+
+        var defaults = await archive.GetProductPageAsync(new CameraAgentProductQuery(), CancellationToken.None).ConfigureAwait(false);
+        var explicitAvailable = await archive.GetProductPageAsync(new CameraAgentProductQuery(Availability: "Available"), CancellationToken.None).ConfigureAwait(false);
+        var missingOnly = await archive.GetProductPageAsync(new CameraAgentProductQuery(Availability: "Missing"), CancellationToken.None).ConfigureAwait(false);
+        var quarantined = await archive.GetProductPageAsync(new CameraAgentProductQuery(Availability: "Quarantined"), CancellationToken.None).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(new[] { kept.Artifact.ArtifactId }, defaults.Items.Select(static item => item.ArtifactId).ToArray());
+        CollectionAssert.AreEqual(new[] { kept.Artifact.ArtifactId }, explicitAvailable.Items.Select(static item => item.ArtifactId).ToArray());
+        CollectionAssert.AreEqual(new[] { missing.Artifact.ArtifactId }, missingOnly.Items.Select(static item => item.ArtifactId).ToArray());
+        Assert.AreEqual("Missing", missingOnly.Items[0].Availability);
+        Assert.AreEqual("test-disposition", missingOnly.Items[0].AvailabilityReason);
+        Assert.AreEqual(0, quarantined.Items.Count);
+        // The detail lookup still resolves an unavailable product.
+        Assert.IsNotNull(await archive.GetProductAsync(missing.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task GetProductAsync_ResolvesSourcesNodeAndObservingDay()
     {
         using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
@@ -1281,6 +1306,20 @@ public sealed class SqliteCameraAgentGalleryTests
                 command.Parameters.AddWithValue("$artifact", outputArtifactId.ToString("N"));
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
+        }
+
+        internal async Task SetOutputAvailabilityAsync(Guid artifactId, string state)
+        {
+            using var connection = await OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE processing_outputs
+                SET availability_state = $state, availability_reason = 'test-disposition', unavailable_unix_ms = 1
+                WHERE artifact_id = $artifact;
+                """;
+            command.Parameters.AddWithValue("$state", state);
+            command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
 
         internal SqliteCameraAgentGallery OpenArchive(ObservingDayCalendar calendar)
