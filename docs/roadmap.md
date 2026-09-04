@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-09-02
+Status date: 2026-09-04
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -129,7 +129,7 @@ RM-005 #422-#425 delivered CameraAgent edge checkpoint
 
 RM-005 #426-#427 delivered central graph execution, hardened by #547
   +-> RM-005 #428 reusable runner contracts
-        +-> RM-017 immutable execution-evidence export and release convergence
+    +-> RM-017 immutable execution-evidence export and release convergence
 
 RM-017 standalone CameraAgent product completion
   +-> RM-018 LogicHost network operations and distribution
