@@ -77,6 +77,27 @@ public sealed class FilePolicyTests
     }
 
     [TestMethod]
+    public async Task CredentialFile_GeneratedCredentialOmitsByteOrderMark()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-{Guid.NewGuid():N}");
+        var path = Path.Combine(root, "temporary-password");
+        try
+        {
+            var generated = await CredentialFile.GetOrCreateAsync(null, path, CancellationToken.None);
+            var bytes = await File.ReadAllBytesAsync(generated);
+
+            // Shell tooling reads the credential byte-for-byte, so an encoding preamble would corrupt the secret.
+            Assert.IsTrue(bytes.Length >= 3);
+            CollectionAssert.AreNotEqual(new byte[] { 0xEF, 0xBB, 0xBF }, bytes[..3]);
+            Assert.IsTrue(bytes.All(static value => value is >= 0x21 and <= 0x7E || value == (byte)'\n'));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public void ProtectedFilesAndLocks_RejectLinks()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-{Guid.NewGuid():N}");
