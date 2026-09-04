@@ -816,6 +816,10 @@ internal sealed partial class CentralProcessingGraphScheduler(
             }
             catch (Exception exception)
             {
+                if (IsDatabaseFailure(exception))
+                {
+                    telemetry.RecordDependencyFailure("database", now);
+                }
                 if (logger is not null)
                 {
                     Log.ReplayWindowResolutionDeferred(logger, exception, execution.Id, windowJobId);

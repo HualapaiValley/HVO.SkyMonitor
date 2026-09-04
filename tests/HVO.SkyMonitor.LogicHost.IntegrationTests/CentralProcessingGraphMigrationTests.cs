@@ -2097,6 +2097,74 @@ public sealed class CentralProcessingGraphMigrationTests
     }
 
     /// <summary>
+    /// When the only assignment's revision is retired between selection and seal and nothing lower-scope remains, the
+    /// live expansion is refused and no graph owns the frame. The job scheduler must then run full legacy scheduling
+    /// on a reloaded source: the expansion attempt cleared the change tracker and detached the instance it was handed.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerRefusedLiveExpansionFallsThroughToLegacySchedulingOnAReloadedSource()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphRefusedLegacy_{Guid.NewGuid():N}"
+        };
+        var gate = new SourceFenceGateInterceptor(SourceFenceGateStage.AfterExecutionIdentityLock);
+        var schedulerOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .AddInterceptors(gate)
+            .Options;
+        var plainOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(schedulerOptions);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (raw, graphScheduler, workerTelemetry) =
+                await SeedFencedPreviewGraphAsync(context, now, "refused-legacy").ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            var revisionId = await context.CentralProcessingGraphRevisions.AsNoTracking().Select(item => item.Id)
+                .SingleAsync().ConfigureAwait(false);
+            var jobScheduler = new CentralDerivativeJobScheduler(
+                context, new CentralDerivativeRecipeCatalog(), new NoopWindowResolver(), graphScheduler: graphScheduler);
+            var artifact = await context.CentralArtifacts
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
+                .SingleAsync(item => item.Id == raw.Id).ConfigureAwait(false);
+            await using var catalogContext = new ApplicationDbContext(plainOptions);
+            var catalog = CreateCatalog(catalogContext);
+
+            var scheduling = jobScheduler.EnsureRequiredJobsAsync(artifact, now, CancellationToken.None);
+            await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            var retired = await catalog.RetireRevisionAsync(
+                revisionId, "operator-refused-legacy", "superseded", true, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            gate.Release();
+            await scheduling.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+
+            retired.Outcome.Should().Be(CentralProcessingGraphMutationOutcome.Applied);
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking().CountAsync().ConfigureAwait(false))
+                .Should().Be(0, "the retired revision has no fallback, so no execution is sealed");
+            var legacyJobs = await context.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => job.SourceCentralArtifactId == raw.Id)
+                .ToListAsync().ConfigureAwait(false);
+            legacyJobs.Should().NotBeEmpty("full legacy scheduling covers the frame the graph refused");
+            legacyJobs.Should().OnlyContain(job => job.GraphExecutionId == null);
+            legacyJobs.Select(job => job.RecipeName).Should().Contain(BuiltInProcessingRecipes.EncodedPreview);
+            (await context.CentralArtifacts.AsNoTracking().CountAsync(item => item.Id == raw.Id).ConfigureAwait(false))
+                .Should().Be(1, "the source row is reused, never re-inserted");
+        }
+        finally
+        {
+            gate.Release();
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// The revision fence takes no update lock, so concurrent live expansions of one revision do not serialize on it;
     /// the serializable re-read still holds a shared key lock until commit, which is what makes a retirement wait for
     /// an expansion that already observed the revision as published instead of racing past its seal.

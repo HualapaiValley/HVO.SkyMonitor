@@ -354,8 +354,18 @@ internal sealed class CentralDerivativeJobScheduler(
             // Invalid is an explicit refusal (a retired revision with no eligible fallback, or a source expired
             // between selection and seal); no graph owns the frame in that case, so legacy scheduling proceeds
             // exactly as when no graph applies, rather than leaving the frame without any derivative work.
-            if (graphResult.Outcome is not (CentralProcessingGraphScheduleOutcome.NotApplicable or
-                CentralProcessingGraphScheduleOutcome.Invalid))
+            if (graphResult.Outcome is CentralProcessingGraphScheduleOutcome.NotApplicable or
+                CentralProcessingGraphScheduleOutcome.Invalid)
+            {
+                // Any expansion attempt clears the change tracker and detaches the caller's instance; legacy
+                // persistence attaches new jobs to the source, so it must work on a tracked instance.
+                if (dbContext.Entry(artifact).State == EntityState.Detached)
+                {
+                    artifact = await LoadSchedulingArtifactAsync(
+                        artifact.DevicePublicId, artifact.ArtifactId, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            else
             {
                 // Resolve the legacy transient recipe through the same policy the persistence core applies, so a
                 // deployment without a legacy transient recipe (Hybrid mode, Calibrated-only catalog, or an
@@ -408,9 +418,10 @@ internal sealed class CentralDerivativeJobScheduler(
 
     /// <summary>
     /// Graph-covered recipe work stays graph-owned. When the effective graph carries no transient-validation node,
-    /// the deployment's transient recipe is still owned by the legacy scheduler for every graph disposition
-    /// (Created, Existing, AwaitingSources, Conflict, Invalid) so Central mode behaves the same for Raw and
-    /// Calibrated source roles. A graph that carries the transient node owns it and no legacy transient job is made.
+    /// the deployment's transient recipe is still owned by the legacy scheduler for every graph-owned disposition
+    /// (Created, Existing, AwaitingSources, Conflict) so Central mode behaves the same for Raw and Calibrated source
+    /// roles. A graph that carries the transient node owns it and no legacy transient job is made. NotApplicable and
+    /// Invalid never reach this branch: no graph owns the frame and full legacy scheduling runs instead.
     /// </summary>
     internal static bool SchedulesLegacyTransientRecipe(
         CentralProcessingGraphScheduleResult graphResult,
@@ -450,8 +461,8 @@ internal sealed class CentralDerivativeJobScheduler(
                         artifact, now, holdScope.Targets, transientOnly, cancellationToken).ConfigureAwait(false);
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                     // Legacy Raw scheduling notifies affected windows as before. The graph-covered transient-only
-                    // branch notifies for either source role and for every graph disposition it is reached with
-                    // (Created, Existing, AwaitingSources, Conflict, Invalid), wider than the Created/Existing
+                    // branch notifies for either source role and for every graph-owned disposition it is reached with
+                    // (Created, Existing, AwaitingSources, Conflict), wider than the Created/Existing
                     // notification the graph-only path issues: a legacy transient window job may have just been
                     // created or re-touched here regardless of how the graph expansion itself concluded.
                     resolveAffectedWindow = (transientOnly || artifact.Role == FrameArtifactRole.Raw)
