@@ -70,6 +70,24 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
         execution.Outcome!.Status.Should().Be(ProcessingOutcomeStatus.Produced);
         var (request, payloads) = ProcessingRunnerProjection.ProjectOutcome(
             claim.LeaseToken, execution.Outcome, execution.InputBytes, execution.Duration);
+
+        // An internally consistent but different recipe identity (a real built-in recipe with different options) is
+        // bound to the lease and rejected before publication.
+        Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.EncodedPreview, out var previewDefinition));
+        var forgedRecipe = ProcessingIdentity.CreateRecipeIdentity(
+            previewDefinition!, System.Text.Json.JsonSerializer.SerializeToElement(new { jpegQuality = 7 }));
+        var forgedProduct = request.Products[0] with
+        {
+            Recipe = forgedRecipe,
+            OutputIdentitySha256 = ProcessingIdentity.CreateOutputIdentity(
+                request.Products[0].Role, request.Products[0].Variant, forgedRecipe.IdentitySha256, request.Products[0].SourceArtifactIds)
+        };
+        var forged = await client.Invoking(item => item.CompleteAsync(
+                claim.JobId, request with { Products = [forgedProduct] }, payloads, CancellationToken.None))
+            .Should().ThrowAsync<ProcessingRunnerClientException>().ConfigureAwait(false);
+        forged.Which.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        forged.Which.ReasonCode.Should().Be(ProcessingRunnerReasonCodes.RecipeIdentityMismatch);
+
         var completion = await client.CompleteAsync(claim.JobId, request, payloads, CancellationToken.None)
             .ConfigureAwait(false);
         completion.Status.Should().Be(ProcessingOutcomeStatus.Produced);

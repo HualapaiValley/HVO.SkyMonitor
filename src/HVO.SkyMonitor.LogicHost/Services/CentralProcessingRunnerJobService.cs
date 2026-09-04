@@ -201,6 +201,21 @@ internal sealed partial class CentralProcessingRunnerJobService(
             throw CentralProcessingRunnerRejectedException.Create(
                 ProcessingRunnerReasonCodes.InvalidCompletion, "A non-produced outcome requires a reason code.");
         }
+        if (outcome.Products.Count != 0)
+        {
+            // Bind every product to the execution identity LogicHost derives from the frozen lease (recipe, normalized
+            // options, selector, frozen annotation, auxiliary inputs); a runner cannot substitute a different but
+            // internally consistent recipe for the leased one.
+            var expectedIdentity = await ResolveExpectedProductIdentityAsync(lease, cancellationToken).ConfigureAwait(false);
+            if (outcome.Products.Any(product => !string.Equals(
+                    product.Recipe.IdentitySha256, expectedIdentity, StringComparison.OrdinalIgnoreCase)))
+            {
+                telemetry.RecordCompletion("invalid", lease.RecipeName, timeProvider.GetElapsedTime(started), productBytes);
+                throw CentralProcessingRunnerRejectedException.Create(
+                    ProcessingRunnerReasonCodes.RecipeIdentityMismatch,
+                    "A product recipe identity does not match the leased execution request.");
+            }
+        }
         var result = await pipeline.PublishAsync(
             lease, outcome, request.InputBytes, request.ExecutionDuration, cancellationToken).ConfigureAwait(false);
         var elapsed = timeProvider.GetElapsedTime(started);
@@ -265,6 +280,24 @@ internal sealed partial class CentralProcessingRunnerJobService(
         telemetry.RecordFailure(request.ReasonCode, lease.RecipeName);
         Log.Failed(logger, runner.Runner.RunnerId, lease.JobId, lease.AttemptCount, lease.RecipeName,
             request.ReasonCode, request.Retryable ? "retryable" : "terminal", request.Message);
+    }
+
+    private async Task<string> ResolveExpectedProductIdentityAsync(
+        CentralDerivativeJobLease lease,
+        CancellationToken cancellationToken)
+    {
+        var (options, selector, annotation, canonicalInputs) = CentralDerivativeJobExecutor.CreateFrozenRequestInputs(lease);
+        var descriptions = await inputDescriber.DescribeAsync(lease, cancellationToken).ConfigureAwait(false);
+        var (request, failure) = LogicHostRecipeExecutionAdapter.CreateRequest(
+            descriptions.ProcessingInputs, lease.RecipeName, options, selector, lease.TargetVariant, annotation,
+            canonicalInputs, reconstructPayloads: false);
+        if (failure is not null || request is null)
+        {
+            throw CentralProcessingRunnerRejectedException.Create(
+                ProcessingRunnerReasonCodes.InvalidCompletion, "The leased execution request can no longer be rebuilt.");
+        }
+        return BuiltInProcessingRecipes.CreateExecutionIdentity(
+            request.RecipeName, request.Options, request.Input, request.Annotation, request.AuxiliaryInputs).IdentitySha256;
     }
 
     private async Task<ProcessingRunnerClaim?> PrepareClaimAsync(

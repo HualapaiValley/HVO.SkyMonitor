@@ -109,7 +109,11 @@ declared options (versions, canonical options, options hash, identity,
 operation kind) and re-derives the output identity from role, variant, recipe
 identity, and ordered sources before anything durable is keyed by them;
 mismatches and non-built-in recipes are rejected
-(`runner.recipe-identity-mismatch`, `runner.output-identity-mismatch`).
+(`runner.recipe-identity-mismatch`, `runner.output-identity-mismatch`). Every
+product is also bound to the execution identity LogicHost derives from the
+frozen lease (recipe, normalized options, selector, frozen annotation, and
+auxiliary inputs), so a different but internally consistent recipe can never be
+published under the leased job.
 Completion is authorized by the lease alone: eligibility may shrink through a
 placement change while a lease granted under the previous placement is still
 executing, and that work still publishes. An annotation job whose frozen

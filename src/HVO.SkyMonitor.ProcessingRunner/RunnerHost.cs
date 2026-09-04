@@ -163,6 +163,7 @@ internal sealed class RunnerHost(
                 {
                     _registration = registration;
                     interval = registration.HeartbeatInterval;
+                    TouchLiveness();
                 }
             }
             catch (ProcessingRunnerClientException exception)

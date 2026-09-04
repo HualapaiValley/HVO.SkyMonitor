@@ -279,6 +279,25 @@ internal sealed class CentralDerivativeJobExecutor(
         }
     }
 
+    /// <summary>
+    /// The frozen request inputs a lease carries (options, selector, annotation, canonical inputs) without any
+    /// durable side effect, so a completion can re-derive the execution identity the kernel must have produced.
+    /// </summary>
+    internal static (JsonElement Options, ProcessingInputSelector Selector, ProcessingAnnotationInput? Annotation,
+        IReadOnlyList<ProcessingAuxiliaryInput> CanonicalInputs) CreateFrozenRequestInputs(CentralDerivativeJobLease lease)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        using var optionsDocument = JsonDocument.Parse(lease.RecipeOptionsJson);
+        var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(lease.InputSelectorJson, SerializerOptions)
+            ?? throw new CentralDerivativeJobStateException("The derivative input selector is invalid.");
+        var canonicalInputs = CreateCanonicalInputs(lease)
+            ?? throw new CentralDerivativeJobStateException("The derivative canonical inputs are invalid.");
+        var annotation = string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
+            ? CreateAnnotation(lease.SceneProvenanceJson)
+            : null;
+        return (optionsDocument.RootElement.Clone(), selector, annotation, canonicalInputs);
+    }
+
     /// <summary>Transient runtime recipes read and write LogicHost transient state and never leave the process.</summary>
     internal static bool IsInProcessOnlyRecipe(string recipeName)
         => string.Equals(recipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal)
