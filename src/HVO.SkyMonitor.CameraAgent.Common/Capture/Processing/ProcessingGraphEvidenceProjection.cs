@@ -106,7 +106,11 @@ internal static class ProcessingGraphEvidenceProjection
                 observations);
     }
 
-    /// <summary>Wraps one projected body in a sealed, sequenced envelope.</summary>
+    /// <summary>
+    /// Wraps one projected revision in a sealed, sequenced envelope. The declared policy is stamped without a
+    /// rewrite because a revision body has no operator-identifying member today: redaction applies only to an
+    /// execution's trigger reference and lease owners.
+    /// </summary>
     internal static ExecutionEvidenceEnvelopeV1 CreateEnvelope(
         ExecutionEvidenceOriginV1 origin,
         long originSequence,
@@ -115,19 +119,17 @@ internal static class ProcessingGraphEvidenceProjection
         GraphRevisionEvidenceV1 revision,
         ExecutionEvidenceRedactionPolicyV1 redaction,
         ExecutionEvidenceCorrectionV1? correction = null)
-        => GraphExecutionEvidenceJson.Seal(GraphExecutionEvidenceJson.Redact(
-            new(
-                ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
-                evidenceId,
-                origin,
-                originSequence,
-                producedAtUtc,
-                ExecutionEvidenceBodyKind.GraphRevision,
-                GraphExecutionEvidenceJson.UnhashedPayloadSha256,
-                redaction,
-                GraphRevision: revision,
-                Correction: correction),
-            redaction));
+        => GraphExecutionEvidenceJson.Seal(new(
+            ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
+            evidenceId,
+            origin,
+            originSequence,
+            producedAtUtc,
+            ExecutionEvidenceBodyKind.GraphRevision,
+            GraphExecutionEvidenceJson.UnhashedPayloadSha256,
+            redaction,
+            GraphRevision: revision,
+            Correction: correction));
 
     /// <summary>Wraps one projected execution in a sealed, sequenced envelope, applying the redaction policy.</summary>
     internal static ExecutionEvidenceEnvelopeV1 CreateEnvelope(
@@ -152,7 +154,10 @@ internal static class ProcessingGraphEvidenceProjection
                 Correction: correction),
             redaction));
 
-    /// <summary>Wraps one availability report in a sealed, sequenced envelope. Availability is never corrected.</summary>
+    /// <summary>
+    /// Wraps one availability report in a sealed, sequenced envelope. Availability is never corrected, and like a
+    /// revision it has no operator-identifying member to rewrite.
+    /// </summary>
     internal static ExecutionEvidenceEnvelopeV1 CreateEnvelope(
         ExecutionEvidenceOriginV1 origin,
         long originSequence,
@@ -160,18 +165,16 @@ internal static class ProcessingGraphEvidenceProjection
         DateTimeOffset producedAtUtc,
         ArtifactAvailabilityReportV1 availability,
         ExecutionEvidenceRedactionPolicyV1 redaction)
-        => GraphExecutionEvidenceJson.Seal(GraphExecutionEvidenceJson.Redact(
-            new(
-                ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
-                evidenceId,
-                origin,
-                originSequence,
-                producedAtUtc,
-                ExecutionEvidenceBodyKind.ArtifactAvailability,
-                GraphExecutionEvidenceJson.UnhashedPayloadSha256,
-                redaction,
-                Availability: availability),
-            redaction));
+        => GraphExecutionEvidenceJson.Seal(new(
+            ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
+            evidenceId,
+            origin,
+            originSequence,
+            producedAtUtc,
+            ExecutionEvidenceBodyKind.ArtifactAvailability,
+            GraphExecutionEvidenceJson.UnhashedPayloadSha256,
+            redaction,
+            Availability: availability));
 
     /// <remarks>
     /// <c>outputs[].ordinal</c> is the dense export ordinal the delivered store already surfaces through

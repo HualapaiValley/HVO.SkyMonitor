@@ -156,6 +156,27 @@ public sealed class ProcessingGraphEvidenceProjectionTests
 
         Assert.IsNull(ProcessingGraphEvidenceProjection.CreateAvailabilityReport(
             new(detail.Execution, []), BaseUtc));
+
+        // The durable schema permits a reason on an Available row; the contract reserves a reason for a
+        // non-available observation, so the projection drops it rather than exporting an invalid observation.
+        var available = new ProcessingGraphExecutionDetail(
+            detail.Execution,
+            [detail.Nodes[0] with
+            {
+                Outputs = [detail.Nodes[0].Outputs[0] with
+                {
+                    AvailabilityState = "Available",
+                    AvailabilityReason = "reconciliation.restored"
+                }]
+            }]);
+        var restored = ProcessingGraphEvidenceProjection.CreateAvailabilityReport(available, BaseUtc);
+        Assert.IsNotNull(restored);
+        Assert.AreEqual(ExecutionEvidenceAvailabilityState.Available, restored.Observations[0].State);
+        Assert.IsNull(restored.Observations[0].ReasonCode);
+        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(
+            ProcessingGraphEvidenceProjection.CreateEnvelope(
+                CreateOrigin(), 4, Guid.NewGuid(), BaseUtc, restored,
+                ExecutionEvidenceRedactionPolicyV1.None)).IsValid);
     }
 
     [TestMethod]

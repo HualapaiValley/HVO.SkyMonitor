@@ -62,10 +62,12 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
                 measurement.FrozenPlanBytes <= GraphExecutionEvidenceLimits.MaximumFrozenPlanBytes,
                 $"frozen plan {measurement.FrozenPlanBytes}");
             Assert.IsTrue(
-                measurement.ExecutionEnvelopeBytes <= GraphExecutionEvidenceLimits.MaximumEnvelopeBytes,
+                measurement.ExecutionEnvelopeBytes <=
+                    GraphExecutionEvidenceLimits.MaximumExecutionEnvelopeBytes,
                 $"execution envelope {measurement.ExecutionEnvelopeBytes}");
             Assert.IsTrue(
-                measurement.AvailabilityEnvelopeBytes <= GraphExecutionEvidenceLimits.MaximumEnvelopeBytes,
+                measurement.AvailabilityEnvelopeBytes <=
+                    GraphExecutionEvidenceLimits.MaximumAvailabilityEnvelopeBytes,
                 $"availability envelope {measurement.AvailabilityEnvelopeBytes}");
             Assert.IsTrue(
                 measurement.NodeCount <= GraphExecutionEvidenceLimits.MaximumNodeCount,
@@ -130,6 +132,8 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
             .ConfigureAwait(false);
 
         var databasePath = Path.Combine(root, "journal", "raw-ingress.db");
+        Assert.IsTrue(File.Exists(databasePath), databasePath);
+        var durableBeforeRevision = HashDurableState(databasePath);
         var snapshot = await operations
             .ReadRevisionSnapshotAsync(registry.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
         var origin = CreateOrigin();
@@ -137,9 +141,11 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
         var revisionEnvelope = ProcessingGraphEvidenceProjection.CreateEnvelope(
             origin, 1, Guid.NewGuid(), FixtureUtc, revisionEvidence, ExecutionEvidenceRedactionPolicyV1.None);
         var revisionBytes = GraphExecutionEvidenceJson.Serialize(revisionEnvelope);
+        var durableAfterRevision = HashDurableState(databasePath);
 
         var capture = await RunLiveCaptureAsync(provider, operations, configuration).ConfigureAwait(false);
         Assert.AreEqual(layout.ByteLength, capture.RawPayloadBytes);
+        var durableBefore = HashDurableState(databasePath);
         var state = (await operations.ReadExecutionsAsync(
                 ProcessingGraphExecutionClass.Live, 1, CancellationToken.None).ConfigureAwait(false))
             .Single();
@@ -147,7 +153,6 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
             .ConfigureAwait(false);
         Assert.IsNotNull(detail);
 
-        var durableBefore = HashDurableState(databasePath);
         var executionEvidence = ProcessingGraphEvidenceProjection.CreateExecutionEvidence(detail);
         var executionEnvelope = ProcessingGraphEvidenceProjection.CreateEnvelope(
             origin,
@@ -185,7 +190,8 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
             executionEvidence.Nodes.Sum(static node => node.Outputs.Length),
             availability.Observations.Length,
             longStrings,
-            string.Equals(durableBefore, durableAfter, StringComparison.Ordinal),
+            string.Equals(durableBeforeRevision, durableAfterRevision, StringComparison.Ordinal) &&
+                string.Equals(durableBefore, durableAfter, StringComparison.Ordinal),
             declared.NodeCount,
             declared.InputCount,
             declared.OutputCount,

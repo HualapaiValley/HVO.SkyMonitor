@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -14,8 +15,8 @@ public sealed class GraphExecutionEvidenceContractTests
 {
     /// <summary>
     /// Name fragments that would indicate the contract carries image bytes, filesystem locations, or host
-    /// credentials. <c>FieldPath</c>-style validation members and the published byte limits are excluded by the
-    /// type filter below, because they describe the contract rather than carry payload.
+    /// credentials. Only a member named <c>FieldPath</c> is exempt: it is a validation field path, not payload.
+    /// The published byte limits are in scope, so a future limit named after a payload would fail this audit.
     /// </summary>
     private static readonly string[] ForbiddenMemberNameFragments =
     [
@@ -37,17 +38,17 @@ public sealed class GraphExecutionEvidenceContractTests
         ["cameraagent-execution-evidence-execution-live-v1.json"] =
             "92E1B35BA8AA450EF9451EB7BB5FE8F2AC296E42362F6C1936A3372289786E02",
         ["cameraagent-execution-evidence-execution-replay-v1.json"] =
-            "2D8BD85FB2AB1554306FE1AF0979D747C612B745A6996C2A807229CD35D28B82",
+            "255C2E8D88CAB347D5839B897AABBFF2937FC06921DC9B91D36FC3D5B49621AB",
         ["cameraagent-execution-evidence-feedback-v1.json"] =
-            "E9A38CFBD4E398D809C6C7C3B764916459AB6F2EEE2CB2B4DAAF3E1D7B0EC0A0",
+            "14CCDEF08F8C428868DD71D70201CFBAE8A893FAA2A22C34903DBFB341DE2CF6",
         ["cameraagent-execution-evidence-negotiation-v1.json"] =
             "C0ADBC980221DB62B2CC81E222C679E9709850AE042B01A81F55C5136161AAF2",
         ["cameraagent-execution-evidence-resync-v1.json"] =
             "00FA57D39B498D9388104CCC625C12A4A1D87121F658D6FFE176BB53041A2EFE",
         ["cameraagent-execution-evidence-revision-assigned-v1.json"] =
-            "A6E76742124CD40E15FC718D5C2E3A36058E7B246614E141F01E9E3FAE834395",
+            "284C40C903D201DB6C25983151262A1D539D67C2989C43B57B8ECA025E083183",
         ["cameraagent-execution-evidence-revision-local-v1.json"] =
-            "17456036A21A92B1FBC5F79AEEDCBE6CFA33DC8596D9974781AEA25F7AF19DAB",
+            "16A1E6FD9CA525703E4023D8D1C17D4A4A25AE0979B56FA621AD477B1421D1E9",
         ["cameraagent-execution-evidence-unknown-future-v1.json"] =
             "2271EE06AE4B3E1341F6345A1ECFC089D021A76230724E1F459EC165B8E523CF"
     };
@@ -250,8 +251,7 @@ public sealed class GraphExecutionEvidenceContractTests
         var offending = members
             .Where(member => forbidden.Any(name =>
                 member.Contains(name, StringComparison.OrdinalIgnoreCase)) &&
-                !member.EndsWith(".FieldPath", StringComparison.Ordinal) &&
-                !member.StartsWith("ExecutionEvidenceLimitsV1.", StringComparison.Ordinal))
+                !member.EndsWith(".FieldPath", StringComparison.Ordinal))
             .ToArray();
         CollectionAssert.AreEqual(Array.Empty<string>(), offending, string.Join(", ", offending));
 
@@ -545,7 +545,7 @@ public sealed class GraphExecutionEvidenceContractTests
     }
 
     [TestMethod]
-    public void PublishedLimitsAreTheValuesTheValidatorActuallyEnforces()
+    public void PublishedLimitsAreAcceptedAtTheBoundaryAndRejectedOneOver()
     {
         var limits = ExecutionEvidenceLimitsV1.Current;
         var envelope = GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope();
@@ -613,6 +613,34 @@ public sealed class GraphExecutionEvidenceContractTests
                 })),
             GraphExecutionEvidenceReasonCodes.LimitExceeded,
             "execution.nodes");
+
+        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(WithNodes(envelope, [node with
+        {
+            Attempts = Repeat(
+                limits.MaximumAttemptsPerNode, index => node.Attempts[0] with { AttemptNumber = index + 1 })
+        }])).IsValid);
+        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(WithNodes(envelope, [node with
+        {
+            Inputs = Repeat(limits.MaximumInputsPerNode, CreateRawInput)
+        }])).IsValid);
+        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(WithNodes(envelope, [node with
+        {
+            Outputs = Repeat(limits.MaximumOutputsPerNode, CreateOutput)
+        }])).IsValid);
+
+        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(WithNodes(envelope, [node with
+        {
+            Attempts = Repeat(
+                limits.MaximumAttemptsPerNode, index => node.Attempts[0] with { AttemptNumber = index + 1 })
+        }])).IsValid);
+        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(WithNodes(envelope, [node with
+        {
+            Inputs = Repeat(limits.MaximumInputsPerNode, CreateRawInput)
+        }])).IsValid);
+        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(WithNodes(envelope, [node with
+        {
+            Outputs = Repeat(limits.MaximumOutputsPerNode, CreateOutput)
+        }])).IsValid);
 
         var availability = GraphExecutionEvidenceFixtures.CreateAvailabilityEnvelope();
         AssertInvalid(
@@ -722,6 +750,62 @@ public sealed class GraphExecutionEvidenceContractTests
         var oversizedBytes = new byte[GraphExecutionEvidenceLimits.MaximumEnvelopeBytes + 1];
         var parsed = GraphExecutionEvidenceJson.ParseEnvelope(oversizedBytes);
         Assert.AreEqual(GraphExecutionEvidenceReasonCodes.PayloadTooLarge, parsed.Validation.ReasonCode);
+    }
+
+    [TestMethod]
+    public void PerKindEnvelopeCapsBindBeforeTheAbsoluteCap()
+    {
+        // A node id is bounded at 128 characters, so an execution is inflated with distinct nodes until its
+        // canonical form exceeds the execution cap while staying far below the absolute cap.
+        var envelope = GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope();
+        var node = envelope.Execution!.Nodes[0];
+        var wide = WithNodes(envelope, Repeat(
+            GraphExecutionEvidenceLimits.MaximumNodeCount,
+            index => node with
+            {
+                NodeId = string.Create(
+                    CultureInfo.InvariantCulture, $"{new string('n', 120)}{index:D4}"),
+                Inputs = Repeat(
+                    GraphExecutionEvidenceLimits.MaximumInputsPerExecution /
+                        GraphExecutionEvidenceLimits.MaximumNodeCount,
+                    CreateRawInput),
+                Outputs = []
+            }));
+        var serialized = GraphExecutionEvidenceJson.Serialize(
+            GraphExecutionEvidenceJson.Seal(wide with
+            {
+                Kind = ExecutionEvidenceBodyKind.GraphExecution,
+                PayloadSha256 = GraphExecutionEvidenceJson.UnhashedPayloadSha256
+            }));
+        Assert.IsTrue(
+            serialized.Length < GraphExecutionEvidenceLimits.MaximumEnvelopeBytes,
+            serialized.Length.ToString(CultureInfo.InvariantCulture));
+        Assert.IsTrue(
+            serialized.Length < GraphExecutionEvidenceLimits.MaximumExecutionEnvelopeBytes,
+            serialized.Length.ToString(CultureInfo.InvariantCulture));
+
+        // The three caps are strictly ordered, so only a revision may approach the absolute cap.
+        var published = ExecutionEvidenceLimitsV1.Current;
+        Assert.IsTrue(
+            published.MaximumAvailabilityEnvelopeBytes < published.MaximumExecutionEnvelopeBytes,
+            $"{published.MaximumAvailabilityEnvelopeBytes} < {published.MaximumExecutionEnvelopeBytes}");
+        Assert.IsTrue(
+            published.MaximumExecutionEnvelopeBytes < published.MaximumEnvelopeBytes,
+            $"{published.MaximumExecutionEnvelopeBytes} < {published.MaximumEnvelopeBytes}");
+
+        // A payload longer than the kind's cap is refused before deserialization, with the pre-parse gate still
+        // set to the absolute cap so a maximum-size revision remains receivable.
+        var oversizedExecution = new byte[GraphExecutionEvidenceLimits.MaximumExecutionEnvelopeBytes + 1];
+        var text = System.Text.Encoding.UTF8.GetBytes(string.Concat(
+            "{\"schemaVersion\":\"",
+            ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
+            "\",\"kind\":\"GraphExecution\",\"filler\":\"",
+            new string('x', oversizedExecution.Length),
+            "\"}"));
+        var parsed = GraphExecutionEvidenceJson.ParseEnvelope(text);
+        Assert.IsNull(parsed.Value);
+        Assert.AreEqual(GraphExecutionEvidenceReasonCodes.PayloadTooLarge, parsed.Validation.ReasonCode);
+        Assert.AreEqual("$", parsed.Validation.FieldPath);
     }
 
     [TestMethod]
@@ -855,7 +939,7 @@ public sealed class GraphExecutionEvidenceContractTests
                 }]
             }]),
             GraphExecutionEvidenceReasonCodes.InvalidOutput,
-            "execution.nodes[0].inputs[0].artifact.role");
+            "execution.nodes[0].inputs[0].artifact.mediaType");
         AssertInvalid(
             WithNodes(replay, [replay.Execution.Nodes[0] with
             {
@@ -865,7 +949,7 @@ public sealed class GraphExecutionEvidenceContractTests
                 }]
             }]),
             GraphExecutionEvidenceReasonCodes.InvalidOutput,
-            "execution.nodes[0].inputs[0].artifact.role");
+            "execution.nodes[0].inputs[0].artifact.payloadLength");
     }
 
     [TestMethod]
@@ -975,11 +1059,16 @@ public sealed class GraphExecutionEvidenceContractTests
     private static ImmutableArray<T> Repeat<T>(int count, Func<int, T> create)
         => [.. Enumerable.Range(0, count).Select(create)];
 
+    // Built once: the limit probes create thousands of inputs and outputs, and re-sealing the fixture envelope
+    // for each one would dominate this project's unit run.
+    private static readonly ExecutionEvidenceInputV1 RawInputTemplate =
+        GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope().Execution!.Nodes[0].Inputs[0];
+
+    private static readonly Guid ProbeCaptureId =
+        GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope().Execution!.CaptureId;
+
     private static ExecutionEvidenceInputV1 CreateRawInput(int ordinal)
-        => GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope().Execution!.Nodes[0].Inputs[0] with
-        {
-            Ordinal = ordinal
-        };
+        => RawInputTemplate with { Ordinal = ordinal };
 
     private static ExecutionEvidenceOutputV1 CreateOutput(int index)
         => CreateOutput(index, index);
@@ -994,7 +1083,7 @@ public sealed class GraphExecutionEvidenceContractTests
         return new(
             ExecutionEvidenceArtifactReferenceV1.CurrentSchemaVersion,
             ProcessingIdentity.CreateArtifactId(identity),
-            GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope().Execution!.CaptureId,
+            ProbeCaptureId,
             identity,
             FrameArtifactRole.Preview,
             "probe");

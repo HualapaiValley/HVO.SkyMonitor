@@ -59,9 +59,17 @@ public static class GraphExecutionEvidenceJson
     public static string ComputeCanonicalPayloadSha256(ExecutionEvidenceEnvelopeV1 envelope)
     {
         ArgumentNullException.ThrowIfNull(envelope);
-        return CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(
-            envelope with { PayloadSha256 = UnhashedPayloadSha256 }, SerializerOptions));
+        return Convert.ToHexString(SHA256.HashData(CanonicalPayloadBytes(envelope)));
     }
+
+    /// <summary>
+    /// The canonical bytes the payload hash is taken over. The placeholder is the same 64 characters as a real
+    /// hash, so this is also the exact serialized length of the sealed envelope.
+    /// </summary>
+    private static byte[] CanonicalPayloadBytes(ExecutionEvidenceEnvelopeV1 envelope)
+        => JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(
+            JsonSerializer.SerializeToElement(
+                envelope with { PayloadSha256 = UnhashedPayloadSha256 }, SerializerOptions)));
 
     /// <summary>Validates the envelope and returns it with the canonical payload hash bound.</summary>
     /// <param name="envelope">Envelope to seal; it is not mutated.</param>
@@ -200,7 +208,15 @@ public static class GraphExecutionEvidenceJson
             utf8Json,
             GraphExecutionEvidenceLimits.MaximumEnvelopeBytes,
             ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
-            ValidateSealed);
+            ValidateSealed,
+            // Only a revision may fill the absolute cap. Reading the declared kind from the bounded document and
+            // re-checking the length before materializing keeps the object graph inside the cap that actually
+            // binds, so an execution or availability payload cannot force an 8 MiB deserialization.
+            static root => root.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String &&
+                Enum.TryParse<ExecutionEvidenceBodyKind>(kind.GetString(), ignoreCase: false, out var parsed) &&
+                Enum.IsDefined(parsed)
+                    ? MaximumBytesFor(parsed)
+                    : GraphExecutionEvidenceLimits.MaximumEnvelopeBytes);
 
     /// <summary>Strictly parses one bounded feedback message.</summary>
     /// <param name="utf8Json">UTF-8 JSON bytes to parse.</param>
@@ -671,25 +687,14 @@ public static class GraphExecutionEvidenceJson
         {
             return validation;
         }
-        // The placeholder is the same length as a real hash, so these canonical bytes are also the exact
-        // serialized length of the sealed envelope and one serialization answers both checks.
-        var canonical = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(
-            JsonSerializer.SerializeToElement(
-                value with { PayloadSha256 = UnhashedPayloadSha256 }, SerializerOptions)));
+        // One serialization answers both the hash check and the per-kind size check.
+        var canonical = CanonicalPayloadBytes(value);
         if (!string.Equals(
                 value.PayloadSha256, Convert.ToHexString(SHA256.HashData(canonical)), StringComparison.Ordinal))
         {
             return Failure(GraphExecutionEvidenceReasonCodes.InvalidHash, "payloadSha256");
         }
-        var maximum = value.Kind switch
-        {
-            ExecutionEvidenceBodyKind.GraphExecution =>
-                GraphExecutionEvidenceLimits.MaximumExecutionEnvelopeBytes,
-            ExecutionEvidenceBodyKind.ArtifactAvailability =>
-                GraphExecutionEvidenceLimits.MaximumAvailabilityEnvelopeBytes,
-            _ => GraphExecutionEvidenceLimits.MaximumEnvelopeBytes
-        };
-        return canonical.Length > maximum
+        return canonical.Length > MaximumBytesFor(value.Kind)
             ? Failure(GraphExecutionEvidenceReasonCodes.PayloadTooLarge, "$")
             : ExecutionEvidenceValidationResult.Success;
     }
@@ -1008,12 +1013,21 @@ public static class GraphExecutionEvidenceJson
         {
             return Failure(GraphExecutionEvidenceReasonCodes.InvalidIdentity, $"{path}.artifactId");
         }
-        return (value.Role is not { } role || Enum.IsDefined(role)) &&
-            OptionalBounded(value.Variant, GraphExecutionEvidenceLimits.MaximumIdentifierLength) &&
-            value.PayloadLength is null or >= 0 &&
-            OptionalBounded(value.MediaType, GraphExecutionEvidenceLimits.MaximumMediaTypeLength)
+        if (value.Role is { } role && !Enum.IsDefined(role))
+        {
+            return Failure(GraphExecutionEvidenceReasonCodes.InvalidOutput, $"{path}.role");
+        }
+        if (!OptionalBounded(value.Variant, GraphExecutionEvidenceLimits.MaximumIdentifierLength))
+        {
+            return Failure(GraphExecutionEvidenceReasonCodes.InvalidOutput, $"{path}.variant");
+        }
+        if (value.PayloadLength is < 0)
+        {
+            return Failure(GraphExecutionEvidenceReasonCodes.InvalidOutput, $"{path}.payloadLength");
+        }
+        return OptionalBounded(value.MediaType, GraphExecutionEvidenceLimits.MaximumMediaTypeLength)
             ? ExecutionEvidenceValidationResult.Success
-            : Failure(GraphExecutionEvidenceReasonCodes.InvalidOutput, $"{path}.role");
+            : Failure(GraphExecutionEvidenceReasonCodes.InvalidOutput, $"{path}.mediaType");
     }
 
     private static ExecutionEvidenceValidationResult ValidateAvailability(
@@ -1249,7 +1263,8 @@ public static class GraphExecutionEvidenceJson
         ReadOnlyMemory<byte> utf8Json,
         int maximumBytes,
         string expectedSchemaVersion,
-        Func<T, ExecutionEvidenceValidationResult> validate)
+        Func<T, ExecutionEvidenceValidationResult> validate,
+        Func<JsonElement, int>? refineMaximumBytes = null)
         where T : class
     {
         if (utf8Json.Length > maximumBytes)
@@ -1272,6 +1287,10 @@ public static class GraphExecutionEvidenceJson
             if (!string.Equals(schema.GetString(), expectedSchemaVersion, StringComparison.Ordinal))
             {
                 return ParseFailure<T>(GraphExecutionEvidenceReasonCodes.UnsupportedSchema, "schemaVersion");
+            }
+            if (refineMaximumBytes is not null && utf8Json.Length > refineMaximumBytes(document.RootElement))
+            {
+                return ParseFailure<T>(GraphExecutionEvidenceReasonCodes.PayloadTooLarge, "$");
             }
             var value = document.RootElement.Deserialize<T>(SerializerOptions);
             if (value is null)
@@ -1321,6 +1340,17 @@ public static class GraphExecutionEvidenceJson
 
     private static int CanonicalLength(JsonElement value)
         => JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(value)).Length;
+
+    /// <summary>The canonical byte cap for one envelope kind. A revision may fill the absolute cap.</summary>
+    private static int MaximumBytesFor(ExecutionEvidenceBodyKind kind)
+        => kind switch
+        {
+            ExecutionEvidenceBodyKind.GraphExecution =>
+                GraphExecutionEvidenceLimits.MaximumExecutionEnvelopeBytes,
+            ExecutionEvidenceBodyKind.ArtifactAvailability =>
+                GraphExecutionEvidenceLimits.MaximumAvailabilityEnvelopeBytes,
+            _ => GraphExecutionEvidenceLimits.MaximumEnvelopeBytes
+        };
 
     private static bool IsPositive(ExecutionEvidenceLimitsV1 limits)
         => limits.MaximumEnvelopeBytes > 0 && limits.MaximumExecutionEnvelopeBytes > 0 &&

@@ -31,8 +31,9 @@ vocabulary as the bodies it carries.
   or redact inside them because doing so would change the content address the
   definition identity is built from. Host and runtime configuration, secrets,
   and endpoints are never carried, and `HVO.SkyMonitor.Processing`'s graph
-  validation already rejects host-incompatible nodes and secrets in a
-  definition; keeping an operator secret out of a node's options remains an
+  validation rejects host-incompatible nodes
+  (`processing.graph.host-inapplicable`). It does not scan node options for
+  secrets, so keeping an operator secret out of a node's options remains an
   operator responsibility on both hosts.
 - Local correctness never depends on export. Nothing in this contract is read
   during acquisition, raw ingress, live processing, publication, or replay.
@@ -103,6 +104,12 @@ No byte ever travels through this contract.
 not the durable `output_ordinal` column; order is preserved because the store
 reads outputs ordered by the durable ordinal.
 
+`inputs[].windowPosition` is the input's position relative to the execution's
+own capture, as the durable window selector records it: `0` is this capture and
+a negative value is that many captures earlier in a trailing window. It is a
+signed integer with no contract-level bound, because the durable column has
+none.
+
 ## Sequencing, idempotency, conflict, and acknowledgement
 
 - `originSequence` is a stable, strictly increasing sequence per
@@ -153,7 +160,10 @@ attached to an availability body.
 versions; the response selects the most preferred shared version and publishes
 `ExecutionEvidenceLimitsV1`. With no shared version the disposition is
 `Unsupported` with `evidence.unsupported-schema` and the producer must not send
-evidence. On the wire, a payload whose root `schemaVersion` is unknown — such
+evidence. A producer that has negotiated is expected to apply the minimum of the
+published and its own local value for every limit; this contract validates only
+that a published limits record is well formed, and the sender that applies the
+minimum is delivered by #537. On the wire, a payload whose root `schemaVersion` is unknown — such
 as a future `hvo-cameraagent-execution-evidence-v2` — is rejected before any
 member is interpreted, so a forward-incompatible unit is never partially
 applied. Unknown members, duplicate JSON keys, numeric enums, non-UTC
@@ -172,6 +182,8 @@ canonical byte sequence and one hash.
 | Frozen plan bytes | 2 MiB | 35,701 |
 | Nodes per execution | 128 | 14 declared and 14 exported |
 | Attempts per node | 32 | 1 observed |
+| Inputs per node | 512 | 3 observed |
+| Outputs per node | 128 | 1 observed |
 | Inputs per execution | 2,048 | 3 observed, 49 declared upper bound |
 | Outputs per execution | 1,024 | 1 observed, 17 declared upper bound |
 | Availability observations | 1,024 | 1 |
@@ -222,9 +234,10 @@ rather than only the one measured. The harness also asserts that the
 execution and availability evidence together stay under a thousandth of the
 25,233,408-byte frame, that no execution or availability member carries an
 opaque string longer than 128 characters, and that every durable byte
-(`raw-ingress.db`, its WAL and its shared-memory file) is unchanged across the
-projection — the projection is read-only by measurement, not only by
-inspection. Retained evidence is written to
+(`raw-ingress.db`, its WAL and its shared-memory file) is unchanged across each
+projection — one before/after pair brackets the revision projection and a second
+brackets the execution and availability projections, so the projection is
+read-only by measurement, not only by inspection. Retained evidence is written to
 `TestResults/issue-536/w6-evidence-payload-measurement.json` (override with
 `HVO_ISSUE536_EVIDENCE_ROOT`).
 
@@ -236,8 +249,9 @@ only one of the seventeen declared outputs and one of the thirty-two permitted
 attempts per node are exercised. The evidence file records the lane outcome
 alongside every measurement. The *cardinality* claim is sound because the
 declared bounds come from the frozen plan rather than the run; the *byte*
-figures are a representative lower bound with roughly a thirty-fold margin to
-the execution envelope cap, not a proof of the worst case.
+figures are a representative lower bound: the 9,347-byte execution envelope sits
+about 224 times below its 2 MiB cap, and the 64,580-byte revision envelope about
+130 times below the 8 MiB absolute cap. Neither is a proof of the worst case.
 
 Reproduce with:
 

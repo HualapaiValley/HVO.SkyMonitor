@@ -269,6 +269,29 @@ internal static class GraphExecutionEvidenceFixtures
                         [],
                         "processing.cancelled",
                         BaseUtc.AddSeconds(10),
+                        BaseUtc.AddSeconds(13)),
+                    new(
+                        ExecutionEvidenceNodeV1.CurrentSchemaVersion,
+                        "annotate",
+                        Required: false,
+                        AnnotateNodePlanSha256,
+                        ExecutionEvidenceNodeStatus.Skipped,
+                        [],
+                        [
+                            new(
+                                ExecutionEvidenceAttemptV1.CurrentSchemaVersion,
+                                1,
+                                ExecutionEvidenceAttemptStatus.Skipped,
+                                BaseUtc.AddSeconds(13),
+                                BaseUtc.AddSeconds(13),
+                                ProcessingOutcomeStatus.Skipped,
+                                "processing.required-producer-failed",
+                                0,
+                                "replay-runner")
+                        ],
+                        [],
+                        "processing.required-producer-failed",
+                        BaseUtc.AddSeconds(13),
                         BaseUtc.AddSeconds(13))
                 ],
                 BaseUtc.AddSeconds(9),
@@ -482,7 +505,9 @@ internal static class GraphExecutionEvidenceFixtures
     {
         var definition = CreateDefinition();
         using var definitionDocument = JsonDocument.Parse(ProcessingGraphJson.SerializeCanonical(definition));
-        var frozenPlan = JsonSerializer.SerializeToElement(new
+        // The coordinator persists the frozen plan through CaptureContractJson (web defaults, camelCase); using
+        // the default serializer here would pin PascalCase keys no receiver would ever see.
+        var frozenPlan = CaptureContractJson.SerializeToElement(new
         {
             SchemaVersion = "cameraagent-processing-frozen-plan-v1",
             RevisionId = revisionId,
