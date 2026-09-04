@@ -416,7 +416,7 @@ internal sealed class CameraAgentScheduleUiService(
         return result.Succeeded ? state.User : null;
     }
 
-    private static LocalCaptureProfileDefinition ParseProfile(string json)
+    internal static LocalCaptureProfileDefinition ParseProfile(string json)
         => JsonSerializer.Deserialize<LocalCaptureProfileDefinition>(json, SerializerOptions)
             ?? throw new JsonException("The local profile is empty.");
 

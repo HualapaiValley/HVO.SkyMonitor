@@ -1,0 +1,127 @@
+@page "/operations/camera"
+@layout OperationsLayout
+@using HVO.SkyMonitor.AgentCore
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Camera &amp; rig</PageTitle>
+
+<div class="camera-page">
+    <PageHeader Eyebrow="Immutable local profile" Title="Camera &amp; rig" Lead="Optics, orientation, exposure, and control policy of the local capture profile. Changes become a validated draft revision that is applied only at a capture boundary from the capture schedule.">
+        <button class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+    </PageHeader>
+
+    @if (_loading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading the local profile" Message="Reading immutable revisions." />
+    }
+    else if (_state is null || _model is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Profile unavailable" Message="@_message">
+            <button type="button" class="btn btn-outline-light" @onclick="RefreshAsync">Try again</button>
+        </PageStateNotice>
+    }
+    else
+    {
+        @if (_message is not null)
+        {
+            <section class="camera-banner @(_messageIsError ? "camera-banner--error" : null)" role="@(_messageIsError ? "alert" : "status")">@_message</section>
+        }
+
+        <section class="camera-revisions" aria-label="Profile revisions">
+            <article class="camera-card">
+                <p class="eyebrow">Active immutable profile</p>
+                <h2>Revision @_state.ActiveRevision.RevisionNumber</h2>
+                <code>@ShortHash(_state.ActiveRevision.ProfileSha256)</code>
+                <p>@_state.ActiveRevision.Source / @_state.ActiveRevision.CreatedUtc.ToString("u")</p>
+            </article>
+            <article class="camera-card">
+                <p class="eyebrow">Pending draft</p>
+                @if (_state.PendingRevision is null)
+                {
+                    <h2>No draft</h2><p>Saving below creates an immutable draft; apply or roll it back from the <a href="/operations/schedule">capture schedule</a>.</p>
+                }
+                else
+                {
+                    <h2>Revision @_state.PendingRevision.RevisionNumber</h2>
+                    <code>@ShortHash(_state.PendingRevision.ProfileSha256)</code>
+                    <p>This form edits the pending draft. <a href="/operations/schedule">Review and apply it</a> at the capture boundary.</p>
+                }
+            </article>
+            <article class="camera-card">
+                <p class="eyebrow">Module and sensor</p>
+                <h2>@_model.ModuleType</h2>
+                <dl>
+                    <div><dt>Sensor</dt><dd>@_model.SensorName</dd></div>
+                    <div><dt>Layout</dt><dd>@_model.SensorSummary</dd></div>
+                    <div><dt>Projection</dt><dd>@_model.ProjectionModel</dd></div>
+                    <div><dt>Schema</dt><dd>@_model.SchemaVersion</dd></div>
+                </dl>
+                <p class="camera-note">Module options, sensor identity@(_model.HasReadoutProfile ? ", readout" : "")@(_model.HasMeteringPolicy ? ", metering" : "")@(_model.HasSolarRegimePolicy ? ", solar regimes" : ""), and processing steps are read-only here and carry over from the basis revision unchanged.</p>
+            </article>
+        </section>
+
+        <form class="camera-form" @onsubmit="PreviewAsync" @onsubmit:preventDefault>
+            <fieldset class="camera-group" disabled="@_busy">
+                <legend>Optics and orientation</legend>
+                <div class="field-grid">
+                    <label>Lens kind<select class="form-select" @bind="_model.LensKind" @bind:after="FormChanged">@foreach (var kind in Enum.GetNames<LensKind>()) { <option value="@kind">@kind</option> }</select></label>
+                    <label>Focal length mm<input class="form-control" inputmode="decimal" @bind="_model.FocalLengthMillimeters" @bind:after="FormChanged" /></label>
+                    <label>Field of view deg<input class="form-control" inputmode="decimal" @bind="_model.FieldOfViewDegrees" @bind:after="FormChanged" /></label>
+                    <label>Optics roll deg<input class="form-control" inputmode="decimal" @bind="_model.RollDegrees" @bind:after="FormChanged" /></label>
+                    <label class="check"><input type="checkbox" @bind="_model.HorizontalFlip" @bind:after="FormChanged" /> Horizontal flip</label>
+                    <label>Boresight altitude deg<input class="form-control" inputmode="decimal" @bind="_model.BoresightAltitudeDegrees" @bind:after="FormChanged" /></label>
+                    <label>Boresight azimuth deg<input class="form-control" inputmode="decimal" @bind="_model.BoresightAzimuthDegrees" @bind:after="FormChanged" /></label>
+                    <label>Roll adjustment deg<input class="form-control" inputmode="decimal" @bind="_model.RollAdjustmentDegrees" @bind:after="FormChanged" /></label>
+                </div>
+            </fieldset>
+
+            <fieldset class="camera-group" disabled="@_busy">
+                <legend>Exposure and cadence</legend>
+                <div class="field-grid">
+                    <label>Capture interval s<input class="form-control" inputmode="decimal" @bind="_model.CaptureIntervalSeconds" @bind:after="FormChanged" /></label>
+                    <label>Cadence mode<select class="form-select" @bind="_model.CadenceMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<CaptureCadenceMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
+                    <label>Day exposure ms<input class="form-control" inputmode="decimal" @bind="_model.DayExposureMilliseconds" @bind:after="FormChanged" /></label>
+                    <label>Night exposure ms<input class="form-control" inputmode="decimal" @bind="_model.NightExposureMilliseconds" @bind:after="FormChanged" /></label>
+                    <label>Day gain<input class="form-control" inputmode="decimal" @bind="_model.DayGain" @bind:after="FormChanged" /></label>
+                    <label>Night gain<input class="form-control" inputmode="decimal" @bind="_model.NightGain" @bind:after="FormChanged" /></label>
+                </div>
+                @if (_model.HasEnvelope)
+                {
+                    <p class="camera-note">Metered exposure envelope</p>
+                    <div class="field-grid">
+                        <label>Minimum exposure ms<input class="form-control" inputmode="decimal" @bind="_model.MinimumExposureMilliseconds" @bind:after="FormChanged" /></label>
+                        <label>Maximum exposure ms<input class="form-control" inputmode="decimal" @bind="_model.MaximumExposureMilliseconds" @bind:after="FormChanged" /></label>
+                        <label>Minimum gain<input class="form-control" inputmode="decimal" @bind="_model.MinimumGain" @bind:after="FormChanged" /></label>
+                        <label>Maximum gain<input class="form-control" inputmode="decimal" @bind="_model.MaximumGain" @bind:after="FormChanged" /></label>
+                        <label>Target ADU level<input class="form-control" inputmode="decimal" @bind="_model.TargetAduLevel" @bind:after="FormChanged" /></label>
+                        <label>Adjustment order<select class="form-select" @bind="_model.ExposurePreference" @bind:after="FormChanged">@foreach (var preference in Enum.GetNames<ExposureGainPreference>()) { <option value="@preference">@Split(preference)</option> }</select></label>
+                    </div>
+                }
+                else
+                {
+                    <p class="camera-note">This profile has no metered exposure envelope; day and night values apply directly.</p>
+                }
+            </fieldset>
+
+            <fieldset class="camera-group" disabled="@_busy">
+                <legend>Control policy</legend>
+                <div class="field-grid">
+                    <label>Exposure control<select class="form-select" @bind="_model.ExposureControl" @bind:after="FormChanged">@foreach (var ownership in Enum.GetNames<AutomaticControlOwnership>()) { <option value="@ownership">@Split(ownership)</option> }</select></label>
+                    <label>Gain control<select class="form-select" @bind="_model.GainControl" @bind:after="FormChanged">@foreach (var ownership in Enum.GetNames<AutomaticControlOwnership>()) { <option value="@ownership">@Split(ownership)</option> }</select></label>
+                    <label>Temperature mode<select class="form-select" @bind="_model.TemperatureMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<TemperatureControlMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
+                    <label>Temperature target C<input class="form-control" inputmode="decimal" placeholder="none" @bind="_model.TemperatureTargetC" @bind:after="FormChanged" /></label>
+                </div>
+            </fieldset>
+
+            <div class="camera-actions">
+                <button type="submit" class="btn btn-outline-light" disabled="@_busy">Validate</button>
+                <button type="button" class="btn btn-primary" disabled="@(_busy || !_validated)" @onclick="StageAsync">Save immutable draft</button>
+                @if (!_validated) { <span class="camera-note">Validate the draft before saving it.</span> }
+            </div>
+        </form>
+    }
+</div>

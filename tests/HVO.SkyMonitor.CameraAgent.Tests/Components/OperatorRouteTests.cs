@@ -36,6 +36,7 @@ public sealed class OperatorRouteTests
             typeof(SystemStatusPage),
             typeof(PipelineSummaryPage),
             typeof(AutomationsPage),
+            typeof(CameraRigPage),
             typeof(DeviceBootstrap),
             typeof(FramesController)
         })
@@ -91,7 +92,8 @@ public sealed class OperatorRouteTests
             ("/devices", "Operations"),
             ("/operations/pipeline", "Operations"),
             ("/operations/automations", "Operations"),
-            ("/operations/schedule", "Operations")
+            ("/operations/schedule", "Operations"),
+            ("/operations/camera", "Operations")
         })
         {
             navigation.NavigateTo(path);
@@ -119,6 +121,7 @@ public sealed class OperatorRouteTests
             (typeof(QuarantinePage), ["/operations/quarantine"]),
             (typeof(PipelineSummaryPage), ["/operations/pipeline"]),
             (typeof(AutomationsPage), ["/operations/automations"]),
+            (typeof(CameraRigPage), ["/operations/camera"]),
             (typeof(DeviceBootstrap), ["/devices/bootstrap"])
         })
         {

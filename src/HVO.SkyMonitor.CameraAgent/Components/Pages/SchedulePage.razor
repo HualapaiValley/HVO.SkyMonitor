@@ -2,6 +2,7 @@
 @page "/operations/schedule"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.AgentCore
 @using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
@@ -103,9 +104,85 @@
         }
 
         <section class="editor-layout">
-            <article class="schedule-card editor-card">
-                <header><div><p class="eyebrow">Validated profile editor</p><h2>Canonical JSON</h2></div><span>@_editorJson.Length chars</span></header>
-                <textarea aria-label="Local profile JSON" @bind="_editorJson" @bind:event="oninput" @bind:after="EditorChanged" disabled="@_busy" spellcheck="false"></textarea>
+            <article class="schedule-card editor-card" aria-labelledby="schedule-editor-heading">
+                <header><div><p class="eyebrow">Validated profile editor</p><h2 id="schedule-editor-heading">Schedule draft</h2></div><span>Basis revision @(_state.PendingRevision ?? _state.ActiveRevision).RevisionNumber</span></header>
+                @if (_model is not null)
+                {
+                    <p class="editor-note">Typed fields rewrite only what they show. @_model.ProcessingStepCount processing step@(_model.ProcessingStepCount == 1 ? "" : "s"), @_model.DateExceptionCount date exception@(_model.DateExceptionCount == 1 ? "" : "s"), module options, and every other field carry over from the basis revision unchanged.</p>
+
+                    <fieldset class="editor-group" disabled="@_busy">
+                        <legend>Setpoint profiles</legend>
+                        <div class="editor-table" role="table" aria-label="Setpoint profiles">
+                            <div class="editor-row editor-row--head" role="row"><span role="columnheader">Identifier</span><span role="columnheader">Exposure ms</span><span role="columnheader">Gain</span><span role="columnheader">Interval s</span><span role="columnheader">Cadence</span><span role="columnheader">Target FPS</span><span role="columnheader"><span class="visually-hidden">Actions</span></span></div>
+                            @foreach (var row in _model.Setpoints)
+                            {
+                                <div class="editor-row" role="row" @key="row">
+                                    <span role="cell"><input class="form-control" aria-label="Setpoint identifier" @bind="row.Id" @bind:after="FormChanged" /></span>
+                                    <span role="cell"><input class="form-control" inputmode="decimal" aria-label="Setpoint exposure milliseconds" @bind="row.ExposureMilliseconds" @bind:after="FormChanged" /></span>
+                                    <span role="cell"><input class="form-control" inputmode="decimal" aria-label="Setpoint gain" @bind="row.Gain" @bind:after="FormChanged" /></span>
+                                    <span role="cell"><input class="form-control" inputmode="decimal" aria-label="Setpoint capture interval seconds" @bind="row.CaptureIntervalSeconds" @bind:after="FormChanged" /></span>
+                                    <span role="cell"><select class="form-select" aria-label="Setpoint cadence mode" @bind="row.CadenceMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<CaptureCadenceMode>()) { <option value="@mode">@Split(mode)</option> }</select></span>
+                                    <span role="cell"><input class="form-control" inputmode="decimal" aria-label="Setpoint target frames per second" placeholder="none" @bind="row.TargetFps" @bind:after="FormChanged" /></span>
+                                    <span role="cell"><button type="button" class="btn btn-sm btn-outline-light" aria-label="Remove setpoint @row.Id" @onclick="() => RemoveSetpoint(row)">Remove</button></span>
+                                </div>
+                            }
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-light" @onclick="AddSetpoint">Add setpoint profile</button>
+                    </fieldset>
+
+                    <fieldset class="editor-group" disabled="@_busy">
+                        <legend>Weekly windows</legend>
+                        @if (_model.WeeklyWindows.Count == 0)
+                        {
+                            <p class="editor-note">A canonical profile needs at least one weekly window.</p>
+                        }
+                        <ul class="window-list">
+                            @foreach (var window in _model.WeeklyWindows)
+                            {
+                                <li class="window-item" @key="window">
+                                    <div class="window-item__head">
+                                        <label>Identifier<input class="form-control" @bind="window.Id" @bind:after="FormChanged" /></label>
+                                        <label>Day<select class="form-select" @bind="window.Day" @bind:after="FormChanged">@foreach (var day in Enum.GetNames<DayOfWeek>()) { <option value="@day">@day</option> }</select></label>
+                                        <label>Setpoint profile<select class="form-select" @bind="window.SetpointProfileId" @bind:after="FormChanged">@foreach (var setpoint in _model.Setpoints) { <option value="@setpoint.Id">@setpoint.Id</option> }</select></label>
+                                        <button type="button" class="btn btn-sm btn-outline-light" aria-label="Remove window @window.Id" @onclick="() => RemoveWindow(window)">Remove</button>
+                                    </div>
+                                    <div class="boundary-grid">
+                                        @BoundaryFields(("Start", window.Start))
+                                        @BoundaryFields(("End", window.End))
+                                    </div>
+                                </li>
+                            }
+                        </ul>
+                        <button type="button" class="btn btn-sm btn-outline-light" @onclick="AddWindow">Add weekly window</button>
+                    </fieldset>
+
+                    <fieldset class="editor-group" disabled="@_busy">
+                        <legend>Blackouts</legend>
+                        @if (_model.Blackouts.Count == 0)
+                        {
+                            <p class="editor-note">No blackout closes the schedule regardless of windows.</p>
+                        }
+                        <ul class="blackout-list">
+                            @foreach (var blackout in _model.Blackouts)
+                            {
+                                <li @key="blackout">
+                                    <label>Identifier<input class="form-control" @bind="blackout.Id" @bind:after="FormChanged" /></label>
+                                    <label>Start UTC<input class="form-control" @bind="blackout.StartUtc" @bind:after="FormChanged" /></label>
+                                    <label>End UTC<input class="form-control" @bind="blackout.EndUtc" @bind:after="FormChanged" /></label>
+                                    <button type="button" class="btn btn-sm btn-outline-light" aria-label="Remove blackout @blackout.Id" @onclick="() => RemoveBlackout(blackout)">Remove</button>
+                                </li>
+                            }
+                        </ul>
+                        <button type="button" class="btn btn-sm btn-outline-light" @onclick="AddBlackout">Add blackout</button>
+                    </fieldset>
+                }
+
+                <details class="editor-advanced">
+                    <summary>Advanced canonical JSON</summary>
+                    <p class="editor-note">Edits here replace the typed fields until the draft is refreshed. Opaque module and step options are restored from the basis revision by the server.</p>
+                    <textarea aria-label="Local profile JSON" @bind="_editorJson" @bind:event="oninput" @bind:after="JsonChanged" disabled="@_busy" spellcheck="false"></textarea>
+                    <span>@_editorJson.Length chars</span>
+                </details>
                 <div class="editor-actions">
                     <button class="btn btn-outline-light" disabled="@_busy" @onclick="PreviewAsync">Validate and preview</button>
                     <button class="btn btn-primary" disabled="@_busy" @onclick="StageAsync">Save immutable draft</button>
@@ -187,3 +264,21 @@
         </section>
     }
 </div>
+
+@code {
+    private RenderFragment<(string Label, CaptureProfileFormModel.BoundaryRow Boundary)> BoundaryFields => context =>
+        @<div class="boundary-fields">
+            <span class="boundary-fields__label">@context.Label</span>
+            <label>Kind<select class="form-select" aria-label="@context.Label boundary kind" @bind="context.Boundary.Kind" @bind:after="FormChanged">@foreach (var kind in Enum.GetNames<CaptureScheduleBoundaryKind>()) { <option value="@kind">@Split(kind)</option> }</select></label>
+            @if (context.Boundary.IsFixed)
+            {
+                <label>Local time<input class="form-control" placeholder="18:30" aria-label="@context.Label local time" @bind="context.Boundary.LocalTime" @bind:after="FormChanged" /></label>
+            }
+            else
+            {
+                <label>Offset minutes<input class="form-control" inputmode="decimal" placeholder="0" aria-label="@context.Label offset minutes" @bind="context.Boundary.OffsetMinutes" @bind:after="FormChanged" /></label>
+                <label>No-event fallback<input class="form-control" placeholder="HH:mm" aria-label="@context.Label no-event fallback local time" @bind="context.Boundary.NoEventFallbackLocalTime" @bind:after="FormChanged" /></label>
+            }
+            <label>Day offset<input class="form-control" inputmode="numeric" placeholder="0" aria-label="@context.Label day offset" @bind="context.Boundary.DayOffset" @bind:after="FormChanged" /></label>
+        </div>;
+}

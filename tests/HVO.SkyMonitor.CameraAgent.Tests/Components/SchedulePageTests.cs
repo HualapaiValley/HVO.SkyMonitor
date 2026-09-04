@@ -27,7 +27,10 @@ public sealed class SchedulePageTests
         {
             Assert.IsTrue(cut.Markup.Contains("Capture schedule", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Revision 2", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Canonical JSON", StringComparison.Ordinal));
+            Assert.IsTrue(cut.Markup.Contains("Schedule draft", StringComparison.Ordinal));
+            Assert.IsTrue(cut.Markup.Contains("Advanced canonical JSON", StringComparison.Ordinal));
+            Assert.IsTrue(cut.Markup.Contains("Setpoint profiles", StringComparison.Ordinal));
+            Assert.IsTrue(cut.Markup.Contains("Weekly windows", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Create override", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Revision history", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Desired and effective graph", StringComparison.Ordinal));
@@ -314,6 +317,87 @@ public sealed class SchedulePageTests
         service.Complete();
         await command.ConfigureAwait(false);
         cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog")));
+    }
+
+    [TestMethod]
+    public void TypedSetpointEdit_StagesTheRewrittenProfile()
+    {
+        using var context = new BunitContext();
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForElement("input[aria-label='Setpoint gain']");
+
+        cut.Find("input[aria-label='Setpoint gain']").Change("1.125");
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+
+        Assert.HasCount(1, service.StageCommands);
+        var staged = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload);
+        Assert.AreEqual(1.125, staged.Schedule.SetpointProfiles[0].Gain);
+        Assert.AreEqual("night", staged.Schedule.SetpointProfiles[0].Id);
+        Assert.AreEqual(Profile().Schedule.WeeklyWindows[0].Id, staged.Schedule.WeeklyWindows[0].Id);
+        Assert.IsTrue(cut.Find("textarea").GetAttribute("value")!.Contains("1.125", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void InvalidTypedValue_BlocksStagingWithLabelledMessage()
+    {
+        using var context = new BunitContext();
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForElement("input[aria-label='Setpoint exposure milliseconds']");
+
+        cut.Find("input[aria-label='Setpoint exposure milliseconds']").Change("fast");
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+
+        Assert.IsEmpty(service.StageCommands);
+        StringAssert.Contains(cut.Find(".schedule-banner[role='alert']").TextContent, "Setpoint 'night' exposure must be a number.", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void AdvancedJsonEdit_TakesPrecedenceUntilATypedFieldChanges()
+    {
+        using var context = new BunitContext();
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForElement("textarea");
+        var edited = CameraAgentScheduleUiService.SerializeProfile(Profile() with
+        {
+            Schedule = Profile().Schedule with { SetpointProfiles = [Profile().Schedule.SetpointProfiles[0] with { Gain = 7 }] }
+        });
+
+        cut.Find("textarea").Input(edited);
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        Assert.AreEqual(7, CameraAgentScheduleUiService.ParseProfile(service.StageCommands[^1].Payload).Schedule.SetpointProfiles[0].Gain);
+
+        cut.Find("input[aria-label='Setpoint gain']").Change("2");
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+
+        Assert.AreEqual(2, CameraAgentScheduleUiService.ParseProfile(service.StageCommands[^1].Payload).Schedule.SetpointProfiles[0].Gain);
+    }
+
+    [TestMethod]
+    public void AddAndRemoveRows_RewriteTheDraftLists()
+    {
+        using var context = new BunitContext();
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForElement("input[aria-label='Setpoint gain']");
+
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Add blackout", StringComparison.Ordinal)).Click();
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Add setpoint profile", StringComparison.Ordinal)).Click();
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        var staged = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[^1].Payload);
+        Assert.HasCount(2, staged.Schedule.SetpointProfiles);
+        Assert.HasCount(1, staged.Schedule.Blackouts!);
+
+        cut.FindAll("button").Single(button => button.GetAttribute("aria-label")?.StartsWith("Remove blackout", StringComparison.Ordinal) == true).Click();
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+
+        Assert.IsTrue((CameraAgentScheduleUiService.ParseProfile(service.StageCommands[^1].Payload).Schedule.Blackouts?.Count ?? 0) == 0);
     }
 
     internal static CaptureScheduleOperatorState State()
