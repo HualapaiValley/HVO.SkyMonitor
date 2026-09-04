@@ -2025,12 +2025,13 @@ public sealed class CentralProcessingGraphMigrationTests
     }
 
     /// <summary>
-    /// The revision is read without a lock during selection; retirement serializes on the revision row. A retire
-    /// committing after selection but before the seal is observed by the in-transaction revision fence, so no
-    /// execution is ever sealed against a retired revision.
+    /// The revision is read without a lock during selection. A retirement committing after selection but before the
+    /// seal is observed by the in-transaction revision fence: a live expansion re-resolves at the current instant and
+    /// seals against the next lower-scope assignment instead of the retired revision (and instead of silently leaving
+    /// the frame without graph work), while a replay naming the retired revision is refused outright.
     /// </summary>
     [TestMethod]
-    public async Task SqlServerExpansionRejectsRevisionRetiredBetweenSelectionAndSeal()
+    public async Task SqlServerLiveExpansionFallsBackWhenTheRevisionIsRetiredBetweenSelectionAndSeal()
     {
         var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
         {
@@ -2051,36 +2052,39 @@ public sealed class CentralProcessingGraphMigrationTests
         {
             await context.Database.MigrateAsync().ConfigureAwait(false);
             var now = DateTimeOffset.UtcNow;
-            var (raw, graphScheduler, workerTelemetry) =
-                await SeedFencedPreviewGraphAsync(context, now, "revision-fence").ConfigureAwait(false);
+            var (raw, graphScheduler, workerTelemetry) = await SeedFencedPreviewGraphAsync(
+                context, now, "revision-fence", withGlobalFallback: true).ConfigureAwait(false);
             using var _ = workerTelemetry;
-            var revisionId = await context.CentralProcessingGraphRevisions.AsNoTracking().Select(item => item.Id)
-                .SingleAsync().ConfigureAwait(false);
+            var revisions = await context.CentralProcessingGraphAssignments.AsNoTracking()
+                .ToDictionaryAsync(item => item.Scope, item => item.RevisionId).ConfigureAwait(false);
+            var cameraRevisionId = revisions[CentralProcessingGraphAssignmentScope.LogicalCamera];
+            var fallbackRevisionId = revisions[CentralProcessingGraphAssignmentScope.GlobalDefault];
             await using var catalogContext = new ApplicationDbContext(plainOptions);
-            using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
-            var catalog = new ProcessingGraphCatalogService(
-                catalogContext,
-                new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog()),
-                TimeProvider.System,
-                catalogTelemetry,
-                NullLogger<ProcessingGraphCatalogService>.Instance);
+            var catalog = CreateCatalog(catalogContext);
 
             var expansion = graphScheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None);
             await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
-            // Sources are fenced but the revision is not yet, so the retirement commits ahead of the seal.
+            // Sources are fenced but the revision has not been re-read yet, so the retirement commits ahead of the seal.
             var retired = await catalog.RetireRevisionAsync(
-                revisionId, "operator-revision-fence", "superseded", true, CancellationToken.None)
+                cameraRevisionId, "operator-revision-fence", "superseded", true, CancellationToken.None)
                 .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
             gate.Release();
             var expanded = await expansion.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            var replay = await graphScheduler.ScheduleReplayAsync(
+                new(cameraRevisionId, [raw.Id], "operator-revision-fence", "retired-replay", "test"),
+                DateTimeOffset.UtcNow,
+                CancellationToken.None).ConfigureAwait(false);
 
             retired.Outcome.Should().Be(CentralProcessingGraphMutationOutcome.Applied);
-            expanded.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Invalid);
-            expanded.ReasonCode.Should().Be("revision-retired");
+            expanded.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Created);
+            expanded.Execution!.RevisionId.Should().Be(fallbackRevisionId,
+                "the live expansion re-resolved past the committed retirement to the global default");
+            replay.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Invalid);
+            replay.ReasonCode.Should().Be("revision-retired");
             context.ChangeTracker.Clear();
-            (await context.CentralProcessingGraphExecutions.AsNoTracking().CountAsync().ConfigureAwait(false))
-                .Should().Be(0, "no execution is sealed against a revision retired before the seal");
-            (await context.CentralDerivativeJobs.AsNoTracking().CountAsync().ConfigureAwait(false)).Should().Be(0);
+            var executions = await context.CentralProcessingGraphExecutions.AsNoTracking().ToListAsync().ConfigureAwait(false);
+            executions.Should().ContainSingle().Which.RevisionId.Should().Be(fallbackRevisionId,
+                "no execution is sealed against the retired revision");
             (await context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == raw.Id).ConfigureAwait(false))
                 .ObjectState.Should().Be(CentralArtifactObjectState.Available, "the source itself is untouched");
         }
@@ -2090,6 +2094,79 @@ public sealed class CentralProcessingGraphMigrationTests
             await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// The revision fence takes no update lock, so concurrent live expansions of one revision do not serialize on it;
+    /// the serializable re-read still holds a shared key lock until commit, which is what makes a retirement wait for
+    /// an expansion that already observed the revision as published instead of racing past its seal.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerRetirementWaitsForAnExpansionThatAlreadyReadTheRevision()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphRevisionShared_{Guid.NewGuid():N}"
+        };
+        var gate = new SourceFenceGateInterceptor(SourceFenceGateStage.AfterRevisionRead);
+        var schedulerOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .AddInterceptors(gate)
+            .Options;
+        var plainOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(schedulerOptions);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (raw, graphScheduler, workerTelemetry) =
+                await SeedFencedPreviewGraphAsync(context, now, "revision-shared").ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            var revisionId = await context.CentralProcessingGraphRevisions.AsNoTracking().Select(item => item.Id)
+                .SingleAsync().ConfigureAwait(false);
+            await using var catalogContext = new ApplicationDbContext(plainOptions);
+            var catalog = CreateCatalog(catalogContext);
+
+            var expansion = graphScheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None);
+            await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            var retire = catalog.RetireRevisionAsync(
+                revisionId, "operator-revision-shared", "superseded", true, CancellationToken.None);
+            var completedFirst = await Task.WhenAny(retire, Task.Delay(TimeSpan.FromSeconds(2))).ConfigureAwait(false);
+            completedFirst.Should().NotBeSameAs(retire,
+                "the retirement's write must wait for the expansion that already read the revision as published");
+            gate.Release();
+            var expanded = await expansion.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            var retired = await retire.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+
+            expanded.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Created);
+            expanded.Execution!.RevisionId.Should().Be(revisionId);
+            retired.Outcome.Should().Be(CentralProcessingGraphMutationOutcome.Applied);
+            context.ChangeTracker.Clear();
+            var revision = await context.CentralProcessingGraphRevisions.AsNoTracking()
+                .SingleAsync(item => item.Id == revisionId).ConfigureAwait(false);
+            revision.RetiredAtUtc.Should().NotBeNull();
+            var execution = await context.CentralProcessingGraphExecutions.AsNoTracking().SingleAsync().ConfigureAwait(false);
+            execution.ExpandedAtUtc.Should().NotBeNull();
+            execution.Status.Should().Be(CentralProcessingGraphExecutionStatus.Running,
+                "an execution sealed before the retirement committed keeps running against its frozen definition");
+        }
+        finally
+        {
+            gate.Release();
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static ProcessingGraphCatalogService CreateCatalog(ApplicationDbContext context)
+        => new(
+            context,
+            new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog()),
+            TimeProvider.System,
+            new ProcessingGraphCatalogTelemetry(TimeProvider.System),
+            NullLogger<ProcessingGraphCatalogService>.Instance);
 
     private const string FenceBucket = "skymonitor-artifacts";
     private const string FenceBucketPrefix = "s3://" + FenceBucket + "/";
@@ -2105,7 +2182,8 @@ public sealed class CentralProcessingGraphMigrationTests
         CentralDerivativeWorkerTelemetry Telemetry)> SeedFencedPreviewGraphAsync(
         ApplicationDbContext context,
         DateTimeOffset now,
-        string slug)
+        string slug,
+        bool withGlobalFallback = false)
     {
         var camera = await SeedCameraAsync(context, now, slug).ConfigureAwait(false);
         var recipeCatalog = new CentralDerivativeRecipeCatalog();
@@ -2137,6 +2215,15 @@ public sealed class CentralProcessingGraphMigrationTests
         raw.ChecksumSha256 = Convert.ToHexString(SHA256.HashData(payload));
         raw.StorageReference = FenceBucketPrefix + objectKey;
         context.AddRange(raw, CreateAssignment(definition, registry, camera, now));
+        if (withGlobalFallback)
+        {
+            var fallback = CreateAssignment(definition with { Name = $"sql-fence-{slug}-fallback" }, registry, camera, now);
+            fallback.Scope = CentralProcessingGraphAssignmentScope.GlobalDefault;
+            fallback.ObservatoryId = null;
+            fallback.LogicalCamera = null;
+            fallback.LogicalCameraId = null;
+            context.Add(fallback);
+        }
         await context.SaveChangesAsync().ConfigureAwait(false);
         context.ChangeTracker.Clear();
         var workerTelemetry = new CentralDerivativeWorkerTelemetry();
@@ -2176,7 +2263,10 @@ public sealed class CentralProcessingGraphMigrationTests
         AfterExecutionIdentityLock,
 
         /// <summary>After the first source row UPDLOCK/HOLDLOCK inside the expansion transaction.</summary>
-        AfterSourceRowLock
+        AfterSourceRowLock,
+
+        /// <summary>After the revision lifecycle re-read inside the expansion transaction.</summary>
+        AfterRevisionRead
     }
 
     /// <summary>
@@ -2215,12 +2305,24 @@ public sealed class CentralProcessingGraphMigrationTests
             CancellationToken cancellationToken = default)
         {
             if (stage == SourceFenceGateStage.AfterSourceRowLock &&
-                command.CommandText.Contains("[CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal))
+                command.CommandText.Contains("[CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal) ||
+                stage == SourceFenceGateStage.AfterRevisionRead && IsRevisionLifecycleRead(command.CommandText))
             {
                 await PauseAsync(cancellationToken).ConfigureAwait(false);
             }
             return result;
         }
+
+        /// <summary>
+        /// The fence's lifecycle re-read is the only plain SELECT of <c>RetiredAtUtc</c> from the revisions table
+        /// alone; resolution joins assignments, retirement uses an update lock, and seeding batches are inserts.
+        /// </summary>
+        private static bool IsRevisionLifecycleRead(string commandText)
+            => commandText.TrimStart().StartsWith("SELECT", StringComparison.Ordinal) &&
+                commandText.Contains("[RetiredAtUtc]", StringComparison.Ordinal) &&
+                commandText.Contains("[CentralProcessingGraphRevisions]", StringComparison.Ordinal) &&
+                !commandText.Contains("[CentralProcessingGraphAssignments]", StringComparison.Ordinal) &&
+                !commandText.Contains("UPDLOCK", StringComparison.Ordinal);
 
         private async Task PauseAsync(CancellationToken cancellationToken)
         {

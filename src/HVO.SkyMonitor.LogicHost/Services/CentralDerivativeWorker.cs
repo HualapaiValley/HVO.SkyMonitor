@@ -67,21 +67,19 @@ internal sealed partial class CentralDerivativeWorker(
         Justification = "A durable maintenance loop must retry after transient database failures.")]
     private async Task RunGraphMaintenanceAsync(CancellationToken stoppingToken)
     {
-        await using (var probe = scopeFactory.CreateAsyncScope())
-        {
-            if (probe.ServiceProvider.GetService<ICentralProcessingGraphScheduler>() is null)
-            {
-                return;
-            }
-        }
         var nextGraphRecoveryUtc = DateTimeOffset.MinValue;
         while (!stoppingToken.IsCancellationRequested)
         {
             var now = timeProvider.GetUtcNow();
             try
             {
+                // Resolved inside the guarded loop: a dependency that fails to construct (object storage credentials,
+                // for example) is logged and retried rather than faulting this task silently for the process lifetime.
                 await using var scope = scopeFactory.CreateAsyncScope();
-                var graphScheduler = scope.ServiceProvider.GetRequiredService<ICentralProcessingGraphScheduler>();
+                if (scope.ServiceProvider.GetService<ICentralProcessingGraphScheduler>() is not { } graphScheduler)
+                {
+                    return;
+                }
                 while (_graphConvergenceSignal.TryRead(out var graphExecutionId))
                 {
                     await ConvergeSignaledAsync(graphScheduler, graphExecutionId, now, stoppingToken)
@@ -104,6 +102,10 @@ internal sealed partial class CentralDerivativeWorker(
             {
                 telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
                 Log.GraphMaintenanceFailed(logger, exception);
+                // The signal wait below returns immediately while ids remain queued, so back off unconditionally
+                // after a fault instead of spinning through the queue against an unavailable database.
+                await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
+                continue;
             }
             await _graphConvergenceSignal.WaitAsync(_options.PollInterval, stoppingToken).ConfigureAwait(false);
         }

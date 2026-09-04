@@ -593,10 +593,11 @@ internal sealed record CentralArtifactRetentionFenceSnapshot(
 internal static class CentralArtifactRetentionLock
 {
     /// <summary>
-    /// Fences a set of artifacts against concurrent retention inside the caller's open transaction: takes the same row
-    /// lock <see cref="CentralArtifactRetentionService"/> reserves under, in ascending identifier order so two fencing
-    /// transactions never deadlock, then returns the durable state read under that lock. Providers without SQL Server
-    /// locking semantics skip the lock and still revalidate. Missing identifiers are absent from the result.
+    /// Fences a set of artifacts against concurrent retention inside the caller's open transaction: each row is read
+    /// under the same update lock <see cref="CentralArtifactRetentionService"/> reserves under, in ascending identifier
+    /// order so two fencing transactions never deadlock, and the state returned is the state read under that lock.
+    /// Providers without SQL Server locking semantics read without the hint. Missing identifiers are absent from the
+    /// result.
     /// </summary>
     public static async Task<IReadOnlyDictionary<Guid, CentralArtifactRetentionFenceSnapshot>> FenceAsync(
         ApplicationDbContext dbContext,
@@ -605,18 +606,24 @@ internal static class CentralArtifactRetentionLock
     {
         ArgumentNullException.ThrowIfNull(dbContext);
         var ids = centralArtifactIds.Distinct().Order().ToArray();
-        if (dbContext.Database.IsSqlServer())
+        var snapshots = new Dictionary<Guid, CentralArtifactRetentionFenceSnapshot>(ids.Length);
+        var lockRows = dbContext.Database.IsSqlServer();
+        foreach (var id in ids)
         {
-            foreach (var id in ids)
+            var source = lockRows
+                ? dbContext.CentralArtifacts.FromSqlInterpolated(
+                    $"SELECT * FROM [CentralArtifacts] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = {id}")
+                : dbContext.CentralArtifacts.Where(item => item.Id == id);
+            var snapshot = await source.AsNoTracking()
+                .Select(item => new CentralArtifactRetentionFenceSnapshot(
+                    item.Id, item.ObjectState, item.ReconstructionState, item.ChecksumSha256, item.ByteLength))
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (snapshot is not null)
             {
-                _ = await AcquireAsync(dbContext, id, cancellationToken).ConfigureAwait(false);
+                snapshots[snapshot.Id] = snapshot;
             }
         }
-        return await dbContext.CentralArtifacts.AsNoTracking()
-            .Where(item => ids.Contains(item.Id))
-            .Select(item => new CentralArtifactRetentionFenceSnapshot(
-                item.Id, item.ObjectState, item.ReconstructionState, item.ChecksumSha256, item.ByteLength))
-            .ToDictionaryAsync(item => item.Id, cancellationToken).ConfigureAwait(false);
+        return snapshots;
     }
 
     public static Task<int> AcquireAsync(
