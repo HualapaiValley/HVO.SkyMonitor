@@ -726,6 +726,11 @@ public sealed class OwnerAuthorizationTests
             (Path: "/calibration", Expected: "Calibration library"),
             (Path: "/environmental", Expected: "Environmental acquisition"),
             (Path: "/system", Expected: "System snapshot"),
+            (Path: "/operations/schedule", Expected: "Capture schedule"),
+            (Path: "/operations/camera", Expected: "Camera &amp; rig"),
+            (Path: "/operations/pipeline", Expected: "Pipeline summary"),
+            (Path: "/operations/automations", Expected: "Automations"),
+            (Path: "/operations/data", Expected: "Data &amp; storage"),
             (Path: "/devices/bootstrap", Expected: "Device Bootstrap")
         })
         {

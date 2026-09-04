@@ -485,6 +485,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             "page",
             await page.GetByRole(AriaRole.Link, new() { Name = "Operations", Exact = true })
                 .GetAttributeAsync("aria-current").ConfigureAwait(false));
+        await AssertOperationsWorkspaceAsync(page).ConfigureAwait(false);
 
         foreach (var asset in new[]
         {
@@ -1260,7 +1261,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.IsTrue(await previewTimes.EvaluateAllAsync<bool>(
             "elements => elements.every(element => Boolean(element.getAttribute('datetime')))").ConfigureAwait(false));
 
+        await page.Locator("details.editor-advanced summary").ClickAsync().ConfigureAwait(false);
         var editor = page.GetByLabel("Local profile JSON");
+        await VisibleAsync(editor).ConfigureAwait(false);
         var candidate = await editor.EvaluateAsync<string>("""
             element => {
                 const profile = JSON.parse(element.value);
@@ -1721,7 +1724,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var routes = new[]
         {
             "/", "/operations", "/operations/quarantine?kind=Artifact", "/gallery?pageSize=24", detailUrl,
-            "/schedule", "/calibration", "/system", "/Account/Login", "/Account/Recovery",
+            "/schedule", "/calibration", "/system", "/operations/camera", "/operations/pipeline",
+            "/operations/automations", "/operations/data", "/Account/Login", "/Account/Recovery",
             "/Account/Manage", "/Account/Manage/Email", "/Account/Manage/ChangePassword"
         };
         foreach (var viewport in viewports)
@@ -1743,6 +1747,35 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 }
             }
         }
+    }
+
+    private static async Task AssertOperationsWorkspaceAsync(IPage page)
+    {
+        // Desktop: the grouped section sidebar is visible, marks the current section, and the drawer toggle is hidden.
+        var sidebarNavigation = page.GetByRole(AriaRole.Navigation, new() { Name = "Operations navigation" });
+        await VisibleAsync(sidebarNavigation).ConfigureAwait(false);
+        Assert.AreEqual(
+            "page",
+            await sidebarNavigation.GetByRole(AriaRole.Link, new() { Name = "Capture schedule", Exact = true })
+                .GetAttributeAsync("aria-current").ConfigureAwait(false));
+        Assert.IsFalse(await page.Locator("button.operations-nav-toggle").IsVisibleAsync().ConfigureAwait(false));
+        foreach (var group in new[] { "Setup", "Capture", "Processing", "Data", "System" })
+        {
+            await VisibleAsync(sidebarNavigation.GetByText(group, new() { Exact = true })).ConfigureAwait(false);
+        }
+
+        // Narrow: the sidebar collapses behind a toggle that opens the drawer, and Escape returns focus to the toggle.
+        await page.SetViewportSizeAsync(390, 844).ConfigureAwait(false);
+        var toggle = page.Locator("button.operations-nav-toggle");
+        await VisibleAsync(toggle).ConfigureAwait(false);
+        Assert.IsFalse(await sidebarNavigation.IsVisibleAsync().ConfigureAwait(false));
+        await toggle.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(sidebarNavigation).ConfigureAwait(false);
+        Assert.AreEqual("true", await toggle.GetAttributeAsync("aria-expanded").ConfigureAwait(false));
+        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.classList.contains('operations-nav-toggle') === true").ConfigureAwait(false);
+        Assert.AreEqual("false", await toggle.GetAttributeAsync("aria-expanded").ConfigureAwait(false));
+        await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
     }
 
     private static async Task AssertCurrentSkyResponsiveAsync(IPage page, ViewportSize viewport)
