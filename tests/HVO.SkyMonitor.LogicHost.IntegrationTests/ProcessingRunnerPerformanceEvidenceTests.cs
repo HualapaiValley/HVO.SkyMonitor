@@ -111,11 +111,13 @@ public sealed class ProcessingRunnerPerformanceEvidenceTests
             claim.Should().NotBeNull();
             var fetchStarted = Stopwatch.GetTimestamp();
             var payloads = new ReadOnlyMemory<byte>[claim!.Inputs.Count];
+            long trialInputBytes = 0;
             for (var index = 0; index < payloads.Length; index++)
             {
                 payloads[index] = await client.DownloadInputAsync(claim, claim.Inputs[index], CancellationToken.None).ConfigureAwait(false);
-                inputBytes += payloads[index].Length;
+                trialInputBytes += payloads[index].Length;
             }
+            inputBytes += trialInputBytes;
             fetchLatencies.Add(Stopwatch.GetElapsedTime(fetchStarted).TotalMilliseconds);
             var executeStarted = Stopwatch.GetTimestamp();
             var outcome = await warm.Executor.ExecuteAsync(
@@ -123,7 +125,7 @@ public sealed class ProcessingRunnerPerformanceEvidenceTests
             var executeElapsed = Stopwatch.GetElapsedTime(executeStarted);
             executeLatencies.Add(executeElapsed.TotalMilliseconds);
             outcome.Status.Should().Be(ProcessingOutcomeStatus.Produced);
-            var (request, products) = ProcessingRunnerProjection.ProjectOutcome(claim.LeaseToken, outcome, inputBytes, executeElapsed);
+            var (request, products) = ProcessingRunnerProjection.ProjectOutcome(claim.LeaseToken, outcome, trialInputBytes, executeElapsed);
             productBytes += products.Sum(static product => (long)product.Length);
             var completeStarted = Stopwatch.GetTimestamp();
             (await client.CompleteAsync(claim.JobId, request, products, CancellationToken.None).ConfigureAwait(false)).Status
