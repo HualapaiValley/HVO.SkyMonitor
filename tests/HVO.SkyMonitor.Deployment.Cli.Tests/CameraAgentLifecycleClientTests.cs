@@ -31,15 +31,15 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
-    public async Task PauseAndDrain_FailsWhenTheCommandIsRejected()
+    public async Task PauseAndDrain_ReportsARejectedCommandAsAnInstallerFailure()
     {
-        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Conflict)));
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)));
         var client = new CameraAgentLifecycleClient(BaseAddress, handler);
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
             () => client.PauseAndDrainAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None));
 
-        StringAssert.Contains(exception.Message, "rejected the lifecycle pause", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "rejected the lifecycle pause command with status 401", StringComparison.Ordinal);
         Assert.AreEqual(1, handler.RequestCount);
     }
 
@@ -65,7 +65,8 @@ public sealed class CameraAgentLifecycleClientTests
     {
         using var handler = new ScriptedHandler((_, sequence, _) => Task.FromResult(sequence switch
         {
-            1 => State("Initializing", 0),
+            1 => State("Initializing", 0, initialized: false),
+            2 => State("Unavailable", 0, initialized: false),
             _ => State("Paused", 2)
         }));
         var client = new CameraAgentLifecycleClient(BaseAddress, handler);
@@ -73,7 +74,24 @@ public sealed class CameraAgentLifecycleClientTests
         var continuity = await client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None);
 
         Assert.AreEqual("Paused", continuity.CaptureState);
-        Assert.AreEqual(2, handler.RequestCount);
+        Assert.AreEqual(3, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task ConfirmDrained_RetriesTransientReadFailuresUntilTheBoundaryAppears()
+    {
+        using var handler = new ScriptedHandler((_, sequence, _) => sequence switch
+        {
+            1 => throw new HttpRequestException("connection refused"),
+            2 => Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)),
+            _ => Task.FromResult(State("Paused", 2))
+        });
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler);
+
+        var continuity = await client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None);
+
+        Assert.AreEqual("Paused", continuity.CaptureState);
+        Assert.AreEqual(3, handler.RequestCount);
     }
 
     [TestMethod]
@@ -90,9 +108,9 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
-    public async Task ConfirmDrained_FailsFastWhenCaptureControlIsUnavailable()
+    public async Task ConfirmDrained_FailsFastWhenInitializedCaptureControlIsUnavailable()
     {
-        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(State("Unavailable", 0)));
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(State("Unavailable", 3, initialized: true)));
         var client = new CameraAgentLifecycleClient(BaseAddress, handler);
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
@@ -115,16 +133,28 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
-    public async Task Resume_FailsWhenTheCommandIsRejected()
+    public async Task Resume_ReportsARejectedCommandAsAnInstallerFailure()
     {
-        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Conflict)));
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError)));
         var client = new CameraAgentLifecycleClient(BaseAddress, handler);
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
             () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None));
 
-        StringAssert.Contains(exception.Message, "rejected the lifecycle resume", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "rejected the lifecycle resume command with status 500", StringComparison.Ordinal);
         Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task Resume_ReportsATransportFailureAsAnInstallerFailure()
+    {
+        using var handler = new ScriptedHandler((_, _, _) => throw new HttpRequestException("connection reset"));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "did not accept the lifecycle resume command", StringComparison.Ordinal);
     }
 
     private static async Task<HttpResponseMessage> CommandAsync(
@@ -139,8 +169,8 @@ public sealed class CameraAgentLifecycleClientTests
         using var payload = JsonDocument.Parse(await request.Content!.ReadAsByteArrayAsync(cancellationToken));
         var commandId = payload.RootElement.GetProperty("operationId").GetGuid();
         // Each command carries its own id so a retry converges on the durable state
-        // instead of colliding with the earlier command's idempotency record, and it
-        // targets a state rather than a capture-control version.
+        // instead of replaying an earlier idempotency record, and it targets a state
+        // rather than a capture-control version.
         Assert.AreNotEqual(operationId, commandId);
         Assert.AreNotEqual(Guid.Empty, commandId);
         Assert.IsFalse(payload.RootElement.TryGetProperty("expectedVersion", out _));
@@ -148,11 +178,16 @@ public sealed class CameraAgentLifecycleClientTests
         return new HttpResponseMessage(HttpStatusCode.OK);
     }
 
-    private static HttpResponseMessage State(string captureState, long version, long captureSequence = 0, long rawLeased = 0)
+    private static HttpResponseMessage State(
+        string captureState,
+        long version,
+        long captureSequence = 0,
+        long rawLeased = 0,
+        bool initialized = true)
     {
         var json = $$"""
             {
-              "captureControl": { "value": { "state": "{{captureState}}", "version": {{version}} } },
+              "captureControl": { "value": { "state": "{{captureState}}", "version": {{version}}, "isInitialized": {{(initialized ? "true" : "false")}} } },
               "rawIngress": { "value": { "pendingCount": 0, "leasedCount": {{rawLeased}} } },
               "captureLanes": { "value": { "pendingCount": 0, "leasedCount": 0 } },
               "captureProcessing": { "value": { "pendingCount": 0, "leasedCount": 0 } },
