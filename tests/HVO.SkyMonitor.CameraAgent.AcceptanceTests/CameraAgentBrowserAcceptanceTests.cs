@@ -1724,7 +1724,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         {
             "/", "/operations", "/operations/quarantine?kind=Artifact", "/gallery?pageSize=24", detailUrl,
             "/schedule", "/calibration", "/system", "/operations/camera", "/operations/pipeline",
-            "/operations/automations", "/operations/data", "/Account/Login", "/Account/Recovery",
+            "/operations/automations", "/operations/data", "/operations/sky-map", "/Account/Login", "/Account/Recovery",
             "/Account/Manage", "/Account/Manage/Email", "/Account/Manage/ChangePassword"
         };
         foreach (var viewport in viewports)
