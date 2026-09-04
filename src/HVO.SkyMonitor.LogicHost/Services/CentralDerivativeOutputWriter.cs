@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.LogicHost.Configuration;
+using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
@@ -43,7 +45,8 @@ internal sealed partial class CentralDerivativeOutputWriter(
     TimeProvider timeProvider,
     ILogger<CentralDerivativeOutputWriter> logger,
     CentralObjectStorageNames? storageNames = null,
-    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : ICentralDerivativeOutputWriter
+    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null,
+    IOptions<CentralProcessingEntitlementOptions>? entitlementOptions = null) : ICentralDerivativeOutputWriter
 {
     private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
     private string Bucket => _storageNames.ArtifactBucket;
@@ -629,6 +632,8 @@ internal sealed partial class CentralDerivativeOutputWriter(
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw new CentralDerivativeJobStateException("The derivative job lease became stale before output completion.");
         }
+        await CentralProcessingUsageRecorder.RecordAsync(
+            dbContext, entitlementOptions?.Value, lease.JobId, lease.AttemptCount, cancellationToken).ConfigureAwait(false);
         foreach (var artifact in artifacts)
         {
             artifact.ObjectState = CentralArtifactObjectState.Available;
@@ -776,6 +781,8 @@ internal sealed partial class CentralDerivativeOutputWriter(
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw new CentralDerivativeJobStateException("The derivative job lease became stale before quarantine.");
         }
+        await CentralProcessingUsageRecorder.RecordAsync(
+            dbContext, entitlementOptions?.Value, lease.JobId, lease.AttemptCount, cancellationToken).ConfigureAwait(false);
         artifact.ObjectState = CentralArtifactObjectState.Quarantined;
         artifact.ReconstructionState = CentralReconstructionState.Quarantined;
         artifact.StateReasonCode = reasonCode;

@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -35,7 +36,9 @@ internal sealed partial class CentralDerivativeWorker(
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider,
     ILogger<CentralDerivativeWorker> logger,
-    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : BackgroundService
+    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null,
+    CentralProcessingFairnessTelemetry? fairnessTelemetry = null,
+    IOptions<CentralProcessingEntitlementOptions>? entitlementOptions = null) : BackgroundService
 {
     private const int MaximumSignaledConvergencesPerPass = 64;
     private readonly CentralDerivativeWorkerOptions _options = options.Value;
@@ -488,6 +491,31 @@ internal sealed partial class CentralDerivativeWorker(
         }
     }
 
+    /// <summary>
+    /// Keeps the cumulative completion and byte counters equal to the persisted usage rollups (one row per
+    /// observatory, class, and outcome, maintained in the same transaction as each usage row). The counters are
+    /// therefore an exact durable global fact: every replica reports the same totals, a restart or an unscraped
+    /// interval loses nothing, and nothing is ever scanned, consumed, or marked. The safety-net sweep first records
+    /// any terminal attempt of the last <see cref="UsageSweepWindow"/> that still lacks a usage row.
+    /// </summary>
+    private async Task SampleCommittedUsageAsync(
+        ApplicationDbContext dbContext,
+        CentralProcessingEntitlementOptions? entitlements,
+        CancellationToken cancellationToken)
+    {
+        if (fairnessTelemetry is null)
+        {
+            return;
+        }
+        await CentralProcessingUsageRecorder.RecordMissingAsync(dbContext, entitlements, UsageSweepLimit, UsageSweepWindow, cancellationToken)
+            .ConfigureAwait(false);
+        fairnessTelemetry.ReplaceUsageTotals(
+            await dbContext.CentralProcessingUsageRollups.AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false));
+    }
+
+    internal const int UsageSweepLimit = 500;
+    internal static readonly TimeSpan UsageSweepWindow = TimeSpan.FromHours(1);
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Design",
         "CA1031:Do not catch general exception types",
@@ -518,6 +546,32 @@ internal sealed partial class CentralDerivativeWorker(
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
             var oldest = snapshot.Count == 0 ? 0 : (long)Math.Max(0, (now - snapshot.Min(item => item.Oldest)).TotalSeconds);
+            if (fairnessTelemetry is not null)
+            {
+                var pendingStatuses = new[] { CentralDerivativeJobStatus.Pending, CentralDerivativeJobStatus.RetryableFailure };
+                var observatories = await dbContext.CentralDerivativeJobs.AsNoTracking()
+                    .Where(job => statuses.Contains(job.Status))
+                    .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
+                    .Select(group => new
+                    {
+                        ObservatoryId = group.Key,
+                        Pending = group.LongCount(job => pendingStatuses.Contains(job.Status)),
+                        Leased = group.LongCount(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc > now),
+                        Waiting = group.LongCount(job => job.Status == CentralDerivativeJobStatus.Waiting),
+                        OldestPending = group.Where(job => pendingStatuses.Contains(job.Status))
+                            .Min(job => (DateTimeOffset?)(job.AvailableAtUtc ?? job.CreatedAtUtc))
+                    })
+                    .ToListAsync(cancellationToken).ConfigureAwait(false);
+                var entitlements = entitlementOptions?.Value;
+                fairnessTelemetry.UpdateQueueSnapshot(observatories.Select(item => new CentralObservatoryQueueMeasurement(
+                    item.ObservatoryId,
+                    item.Pending,
+                    item.Leased,
+                    item.Waiting,
+                    item.OldestPending is { } oldestPending ? (long)Math.Max(0, (now - oldestPending).TotalSeconds) : 0,
+                    entitlements is { Enabled: true } ? entitlements.ResolveActiveJobs(item.ObservatoryId) : 0)).ToArray());
+                await SampleCommittedUsageAsync(dbContext, entitlements, cancellationToken).ConfigureAwait(false);
+            }
             telemetry.UpdateQueueSnapshot(
                 snapshot.Select(item => new CentralDerivativeQueueMeasurement(
                     item.Status switch

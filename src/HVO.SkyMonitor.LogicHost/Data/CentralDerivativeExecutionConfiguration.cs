@@ -20,6 +20,7 @@ internal static class CentralDerivativeExecutionConfiguration
         attempt.Property(item => item.ReasonCode).HasMaxLength(256);
         attempt.HasIndex(item => new { item.CentralDerivativeJobId, item.AttemptNumber }).IsUnique();
         attempt.HasIndex(item => new { item.Outcome, item.LeaseExpiresAtUtc });
+        attempt.HasIndex(item => item.EndedAtUtc);
         attempt.HasOne(item => item.Job)
             .WithMany(job => job.Attempts)
             .HasForeignKey(item => item.CentralDerivativeJobId)

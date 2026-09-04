@@ -35,6 +35,7 @@ documents link back without maintaining competing status.
 | Split-host deployment and smoke | `docs/runbooks/split-host-preflight.md` | Versioned inventory, preparation, immutable images, catalogs, services, application-assisted bootstrap, continuity refusal, W0 smoke, explicit teardown, resumable ledgers, and sanitized evidence. |
 | Local CameraAgent installer | `docs/runbooks/deployment-installer.md` | Self-contained Linux CLI, verified local/offline inputs, UUID-scoped layout, owner bootstrap, dry run, resume, and structured installation evidence. |
 | Self-hosted processing runner | `docs/runbooks/processing-runner.md` | `processing-runner-v1` placement configuration, runner environment, container image and compose example, health, and lease-loss/staleness operations. |
+| Processing entitlements and fair scheduling | `docs/runbooks/processing-entitlements.md` | Per-observatory entitlements, weighted fair share and starvation ordering, resource classes and budgets, runner pools, usage records, signals, backpressure, and capacity guidance. |
 | Signed distribution releases | `docs/runbooks/release-distribution.md` | Independent installer/catalog trains, Key Vault signing, immutable publication, public verification, retention, mirrors, and recovery. |
 | CameraAgent retention recovery | `docs/runbooks/cameraagent-retention.md` | Pending-upload retention invariant and outage recovery procedure. |
 

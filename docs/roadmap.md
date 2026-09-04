@@ -49,10 +49,12 @@ edge checkpoint, #426-#427 delivered central processing graph delivery and
 durable graph execution (PR #546), #547 and #549 hardened that merged execution
 boundary (PRs #548, #552), and #428 delivered the `processing-runner-v1`
 protocol, LogicHost runner registry and endpoints, and the self-hosted
-`HVO.SkyMonitor.ProcessingRunner` service and image. The RM-005 tail (#429 fair
-scheduling, then #430 elastic provider adapters, gated on the provider decision)
+`HVO.SkyMonitor.ProcessingRunner` service and image, and #429 delivered
+per-observatory entitlements, weighted fair scheduling with starvation
+prevention, runner pools, usage records, and per-observatory signals. The
+RM-005 tail (#430 elastic provider adapters, gated on the provider decision)
 continues on the LogicHost side without touching active `RM-017` files. #428's
-runner identity unblocks #536; #429 and #430 do not block `RM-017`.
+runner identity unblocks #536; #430 does not block `RM-017`.
 
 `RM-017` is Current beside the partially paused `RM-005`; #532, #515, #514,
 #517, #507, #516, #536, and #533 are delivered. #537 (durable evidence
@@ -134,7 +136,7 @@ RM-005 #422-#425 delivered CameraAgent edge checkpoint
 RM-005 #426-#427 delivered central graph execution, hardened by #547 and #549
   +-> RM-005 #428 delivered processing-runner-v1 and the self-hosted runner
     +-> RM-017 immutable execution-evidence export and release convergence
-    +-> RM-005 #429 fair scheduling, then #430 elastic provider adapters
+    +-> RM-005 #429 delivered fair scheduling and entitlements, then #430 elastic provider adapters
 
 RM-017 standalone CameraAgent product completion
   +-> RM-018 LogicHost network operations and distribution

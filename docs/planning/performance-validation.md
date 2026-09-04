@@ -209,6 +209,14 @@ revision-scoped under `TestResults/processing-runner/<revision>/` and the
 runtime signals are pinned in
 `docs/validation/central-runner-runtime-signals.json`.
 
+Fair scheduling evidence (#429): `ProcessingFairnessPerformanceEvidenceTests`
+(Manual, LogicHost integration project) drains deterministic 5-, 10-, and
+100-camera arrival streams under a per-observatory entitlement with concurrent
+claim loops and records Jain's fairness index, claim and queue latency,
+throughput, CPU, memory, and lease-loss recovery under
+`TestResults/processing-fairness/<revision>/`; signals are pinned in
+`docs/validation/central-fairness-runtime-signals.json`.
+
 ## 6. Output and Runtime Correlation
 
 Performance evidence is valid only when the same run or fixture also checks the
