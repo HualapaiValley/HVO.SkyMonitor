@@ -342,11 +342,13 @@ strictly below it is already terminal, so the cursor may advance to the barrier
 and no further, and the sweep never has to re-read anything it has passed. When
 nothing is active the barrier lifts and the sweep drains to the end.
 
-Sealing is deterministic within a sweep: the evidence identity is derived from
-the origin identity and the unit key, and the produced-at time is the execution's
-own completion time, so the same offered unit always produces the same bytes. A
-unit key already present with *different* bytes is a durable conflict, recorded
-for an operator in a bounded table, and the stored unit stays authoritative.
+The evidence identity of every unit is derived from the origin identity and the
+unit key, and a revision's and an execution's produced-at time is the execution's
+own completion time (its acceptance time when it never completed), so those two
+bodies are reproducible from immutable facts. An availability body is by
+definition an observation and carries the time it was made. A unit key already
+present with *different* bytes is a durable conflict, recorded for an operator in
+a bounded table, and the stored unit stays authoritative.
 
 The cursor advances only past executions the exporter actually sealed, rejected,
 or explicitly deferred. When a bound refuses enlistment, the oldest refused

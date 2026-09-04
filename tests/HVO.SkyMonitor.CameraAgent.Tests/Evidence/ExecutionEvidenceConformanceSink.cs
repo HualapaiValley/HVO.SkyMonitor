@@ -194,29 +194,24 @@ internal sealed class ExecutionEvidenceConformanceSink : IExecutionEvidenceTrans
                 var parsed = GraphExecutionEvidenceJson.ParseEnvelope(payload);
                 if (parsed.Value is not { } envelope)
                 {
-                    // A conformant receiver durably records the bytes and then refuses them with the validation
-                    // reason; it never silently drops a unit it could not parse.
-                    facts.Add(new(
-                        ExecutionEvidenceFactV1.CurrentSchemaVersion,
-                        ExecutionEvidenceFactKind.Received,
-                        Guid.Empty,
-                        0,
-                        GraphExecutionEvidenceJson.UnhashedPayloadSha256,
-                        now));
-                    facts.Add(new(
-                        ExecutionEvidenceFactV1.CurrentSchemaVersion,
-                        ExecutionEvidenceFactKind.Rejected,
-                        Guid.Empty,
-                        0,
-                        GraphExecutionEvidenceJson.UnhashedPayloadSha256,
-                        now,
-                        ReasonCode: parsed.Validation.ReasonCode ?? GraphExecutionEvidenceReasonCodes.InvalidJson,
-                        FieldPath: parsed.Validation.FieldPath));
-                    continue;
+                    // A fact must name a real evidence id and sequence, and an unparseable payload has neither, so
+                    // the whole request is refused rather than answered with a fact the contract's own validator
+                    // would reject.
+                    return ValueTask.FromResult(new ExecutionEvidenceSubmitTransportResult(
+                        ExecutionEvidenceTransportDisposition.Rejected,
+                        parsed.Validation.ReasonCode ?? GraphExecutionEvidenceReasonCodes.InvalidJson));
                 }
                 if (!string.Equals(
                         envelope.Origin.IdentitySha256, originIdentitySha256, StringComparison.Ordinal))
                 {
+                    // Received first: the receiver durably held the bytes before it refused them.
+                    facts.Add(new(
+                        ExecutionEvidenceFactV1.CurrentSchemaVersion,
+                        ExecutionEvidenceFactKind.Received,
+                        envelope.EvidenceId,
+                        envelope.OriginSequence,
+                        envelope.PayloadSha256,
+                        now));
                     facts.Add(new(
                         ExecutionEvidenceFactV1.CurrentSchemaVersion,
                         ExecutionEvidenceFactKind.Rejected,

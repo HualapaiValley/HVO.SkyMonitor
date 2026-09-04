@@ -245,9 +245,10 @@ edit those files while the host is running.
 
 The store pins schema version 1 and compares its entire `sqlite_master`
 definition against the canonical schema the first time the host opens it. A
-drifted or newer store fails closed: the lane reports
-`export.durable-state-unavailable` and stops for the lifetime of the process, so
-repairing or archiving the file requires a host restart to take effect. Capture,
+drifted or newer store fails closed with `export.durable-state-unavailable`. The
+check runs again on the next cycle, so archiving or repairing the file recovers
+the lane without a host restart, and the first cycle after a failed start is the
+one that retries it. Capture,
 raw ingress, live processing, publication, artifact upload, and replay continue
 unaffected, because nothing local reads this store.
 

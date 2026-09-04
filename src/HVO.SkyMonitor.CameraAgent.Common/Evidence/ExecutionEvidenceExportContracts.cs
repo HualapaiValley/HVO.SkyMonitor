@@ -80,6 +80,41 @@ public sealed record ExecutionEvidenceDiscoveryCursor(
 /// envelope, not a hash of the transport bytes: the receiver acknowledges that value, so storing anything else would
 /// make every acknowledgement fail to match its own unit.
 /// </summary>
+/// <summary>
+/// A durable row that cannot be sealed into a valid unit of this contract version, carrying the contract's own
+/// reason code so the durable rejection names why rather than a single catch-all.
+/// </summary>
+public sealed class ExecutionEvidenceSealException : InvalidOperationException
+{
+    public ExecutionEvidenceSealException()
+        : this(GraphExecutionEvidenceReasonCodes.InvalidBody, string.Empty)
+    {
+    }
+
+    public ExecutionEvidenceSealException(string message)
+        : this(message, string.Empty)
+    {
+    }
+
+    public ExecutionEvidenceSealException(string reasonCode, string fieldPath)
+        : base($"The evidence unit could not be sealed ({reasonCode}:{fieldPath}).")
+    {
+        ReasonCode = reasonCode;
+        FieldPath = fieldPath;
+    }
+
+    public ExecutionEvidenceSealException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+        ReasonCode = GraphExecutionEvidenceReasonCodes.InvalidBody;
+        FieldPath = string.Empty;
+    }
+
+    public string ReasonCode { get; } = GraphExecutionEvidenceReasonCodes.InvalidBody;
+
+    public string FieldPath { get; } = string.Empty;
+}
+
 public sealed record ExecutionEvidenceSealedUnit(
     Guid EvidenceId,
     ReadOnlyMemory<byte> Payload,

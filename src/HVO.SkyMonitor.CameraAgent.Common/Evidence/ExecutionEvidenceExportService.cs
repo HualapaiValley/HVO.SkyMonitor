@@ -499,7 +499,9 @@ internal sealed partial class ExecutionEvidenceExportService(
                 execution.Value!,
                 redaction))));
 
-        var observedAtUtc = producedAtUtc;
+        // The barrier means an execution is swept exactly once, so the availability body no longer has to be
+        // byte-stable across re-reads and can carry the time the observation was actually made.
+        var observedAtUtc = timeProvider.GetUtcNow();
         var availability = ProcessingGraphEvidenceProjection.CreateAvailabilityReport(detail, observedAtUtc);
         if (availability.Outcome == ProcessingGraphEvidenceProjectionOutcome.Rejected)
         {
@@ -539,7 +541,24 @@ internal sealed partial class ExecutionEvidenceExportService(
 
     /// <summary>Serializes one sealed envelope and keeps its canonical payload hash and evidence identity together.</summary>
     private static ExecutionEvidenceSealedUnit Seal(ExecutionEvidenceEnvelopeV1 envelope)
-        => new(envelope.EvidenceId, GraphExecutionEvidenceJson.Serialize(envelope), envelope.PayloadSha256);
+    {
+        // Validate first so a refusal carries the contract's own reason code and field path into the durable
+        // rejection record, rather than collapsing every cause into one catch-all.
+        var validation = GraphExecutionEvidenceJson.Validate(envelope);
+        if (!validation.IsValid)
+        {
+            throw new ExecutionEvidenceSealException(validation.ReasonCode!, validation.FieldPath!);
+        }
+        try
+        {
+            return new(envelope.EvidenceId, GraphExecutionEvidenceJson.Serialize(envelope), envelope.PayloadSha256);
+        }
+        catch (ArgumentException)
+        {
+            throw new ExecutionEvidenceSealException(
+                GraphExecutionEvidenceReasonCodes.PayloadTooLarge, "payload");
+        }
+    }
 
     private async ValueTask NegotiateAsync(
         ExecutionEvidenceOriginV1 origin,
@@ -845,9 +864,12 @@ internal sealed partial class ExecutionEvidenceExportService(
     private static bool IsRecoverable(Exception exception)
         // ArgumentException is included deliberately: the contract serializer raises it for every validation and
         // limit failure, and no such failure may ever fault the host that is acquiring and processing frames.
-        => exception is IOException or InvalidDataException or InvalidOperationException or ArgumentException or
+        => exception is IOException or InvalidDataException or InvalidOperationException or
             UnauthorizedAccessException or System.Text.Json.JsonException or Microsoft.Data.Sqlite.SqliteException or
-            KeyNotFoundException;
+            KeyNotFoundException ||
+            // A contract validation or limit failure arrives as ArgumentException and must never stop the host, but
+            // a null or out-of-range argument is a programming error and still surfaces.
+            (exception is ArgumentException and not (ArgumentNullException or ArgumentOutOfRangeException));
 
     private static partial class Log
     {

@@ -257,14 +257,23 @@ public sealed class SqliteExecutionEvidenceOutbox(
             {
                 sealedUnit = unit.Seal(sequence);
             }
-            catch (Exception exception) when (exception is ArgumentException or InvalidDataException or JsonException)
+            catch (Exception exception) when (exception is ArgumentException or InvalidDataException or
+                JsonException or ExecutionEvidenceSealException)
             {
                 // A durable row that cannot be sealed into a valid unit of this contract version can never be
                 // exported. Refusing it here keeps the failure inside the export lane: the cursor still advances,
-                // the loss is counted durably, and the host is never faulted by one unexportable execution.
+                // the loss is counted durably with the contract's own reason, and the host is never faulted by one
+                // unexportable execution.
                 return await RejectAsync(
-                    connection, transaction, cursor, executionId, backlog.HighestSequence,
-                    GraphExecutionEvidenceReasonCodes.InvalidBody, cancellationToken).ConfigureAwait(false);
+                    connection,
+                    transaction,
+                    cursor,
+                    executionId,
+                    backlog.HighestSequence,
+                    exception is ExecutionEvidenceSealException sealFailure
+                        ? sealFailure.ReasonCode
+                        : GraphExecutionEvidenceReasonCodes.InvalidBody,
+                    cancellationToken).ConfigureAwait(false);
             }
             var payload = sealedUnit.Payload.ToArray();
             if (!IsSha256(sealedUnit.PayloadSha256))
@@ -565,8 +574,8 @@ public sealed class SqliteExecutionEvidenceOutbox(
         root = NormalizeRoot(root);
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
-        // One transaction, so a multi-range replay is a snapshot and its attempts are counted exactly like a normal
-        // send. A resynchronized unit must not escape the byte bound, the attempt budget, or the backoff.
+        // One transaction, so a multi-range replay is a snapshot, and the attempt is counted exactly like a normal
+        // send so a unit that only ever arrives through resynchronization still exhausts its bounded budget.
         using var transaction = BeginImmediate(connection);
         var results = new List<ExecutionEvidenceUnit>(maximumUnits);
         long bytes = 0;
