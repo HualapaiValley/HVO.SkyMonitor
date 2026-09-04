@@ -27,6 +27,9 @@ internal static class Program
         try
         {
             var command = CommandLine.ParseCommand(args);
+            // A --config install can select JSON output without a --json token, so the error stream mode follows
+            // the parsed command once parsing succeeds; the argv guess only covers a parse failure.
+            jsonErrors = command.Json;
             if (command is InstallDeploymentCommand install)
             {
                 var result = await CameraAgentInstaller.InstallAsync(install.Request, cancellation.Token).ConfigureAwait(false);

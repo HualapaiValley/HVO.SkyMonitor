@@ -8,10 +8,10 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal static class SafeFileSystem
 {
-    private const UnixFileMode OwnerDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+    internal const UnixFileMode OwnerDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
     private const UnixFileMode OwnerFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
     // Includes the setuid/setgid/sticky bits so an adopted bind source cannot keep them while reporting 0700.
-    private const UnixFileMode AllPermissions =
+    internal const UnixFileMode AllPermissions =
         UnixFileMode.SetUser | UnixFileMode.SetGroup | UnixFileMode.StickyBit |
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
         UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |

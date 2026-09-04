@@ -426,7 +426,9 @@ internal static class CameraAgentStatePreflight
             }
             // The mount must be exactly owner rwx. Extra bits expose the state tree, and a tighter mode such as
             // 0500 or 0600 silently breaks the container's writes or its traversal into the bind source.
-            if ((identity.Mode & AllPermissions) != RequiredBindSourceMode)
+            // Compared against the constants CreateRuntimeDirectory writes, so the preflight can never reject a
+            // directory the deployment tooling itself produced.
+            if ((identity.Mode & SafeFileSystem.AllPermissions) != SafeFileSystem.OwnerDirectoryMode)
             {
                 findings.Add(new CameraAgentStatePreflightFinding(
                     "bind-source-mode", boundary, Blocking: true, source.HostPath,
@@ -435,15 +437,6 @@ internal static class CameraAgentStatePreflight
             }
         }
     }
-
-    private const UnixFileMode RequiredBindSourceMode =
-        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
-
-    private const UnixFileMode AllPermissions =
-        UnixFileMode.SetUser | UnixFileMode.SetGroup | UnixFileMode.StickyBit |
-        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-        UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
-        UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
 
     private static string FormatMode(UnixFileMode mode)
         => Convert.ToString((int)mode & 0b111_111_111_111, 8).PadLeft(4, '0');

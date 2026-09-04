@@ -314,6 +314,11 @@ hvo-skymonitor cameraagent preflight --instance-id <uuid> \
   --image-ref <repository@sha256:digest>
 ```
 
+A `--json` install or lifecycle invocation reserves standard error for its single error object, so the
+rendered report is written there only in human form. Read the complete report from
+`state/deployment/state-preflight.json`, or from `cameraagent preflight --json` on standard output; a
+`--dry-run` deliberately retains nothing, and its error message still enumerates every blocking code.
+
 Without `--image-ref` the installed image's declaration is evaluated; with it, the candidate's declaration is
 and the current contract is required, matching an in-place upgrade. The command exits `0` when compatible and
 `1` with error code `state-incompatible` otherwise. Each finding names its boundary code, path, observed

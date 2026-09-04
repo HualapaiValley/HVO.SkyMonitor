@@ -371,7 +371,7 @@ public sealed class UpgradePreflightTests
             Console.SetError(original);
         }
 
-        // Either way the complete report stays available to the operator.
+        // With persistence enabled the complete report stays available whether or not it was rendered.
         Assert.IsTrue(File.Exists(Path.Combine(fixture.Paths.DeploymentStateRoot, "state-preflight.json")));
     }
 
