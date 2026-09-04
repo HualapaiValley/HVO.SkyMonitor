@@ -123,7 +123,11 @@ public sealed record ImageInstallationIdentity(
     string? Component = null,
     string? ConfigurationContract = null,
     string? CatalogContract = null,
-    string? ReplayRunnerContract = null);
+    string? ReplayRunnerContract = null,
+    string? MinimumCompatibleRevision = null,
+    string? IdentityMigration = null,
+    string? RawIngressSchema = null,
+    string? CatalogManifestVersion = null);
 
 public sealed record DockerDaemonIdentity(
     string Id,

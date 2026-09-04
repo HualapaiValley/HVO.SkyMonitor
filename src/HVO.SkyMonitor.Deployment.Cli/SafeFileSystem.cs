@@ -10,6 +10,10 @@ internal static class SafeFileSystem
 {
     private const UnixFileMode OwnerDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
     private const UnixFileMode OwnerFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+    private const UnixFileMode AllPermissions =
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+        UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+        UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
 
     public static void EnsureSafeExistingAncestors(string path)
     {
@@ -37,6 +41,36 @@ internal static class SafeFileSystem
         EnsureSafeExistingAncestors(path);
         Directory.CreateDirectory(path);
         File.SetUnixFileMode(path, OwnerDirectoryMode);
+    }
+
+    /// <summary>
+    /// Creates or adopts a writable Compose bind source with the configured runtime ownership and owner-only mode.
+    /// Docker creates a missing nested bind source as <c>root:root</c> mode <c>0755</c>, which the
+    /// capability-dropped CameraAgent container cannot restrict, so every source must exist before Compose starts.
+    /// </summary>
+    public static void CreateRuntimeDirectory(string path, uint uid, uint gid)
+    {
+        EnsureSafeExistingAncestors(path);
+        if (!Directory.Exists(path))
+        {
+            Directory.CreateDirectory(path);
+            File.SetUnixFileMode(path, OwnerDirectoryMode);
+        }
+        else if (new DirectoryInfo(path).LinkTarget is not null)
+        {
+            throw new InstallerException($"Writable bind source '{path}' must not be a symbolic link.");
+        }
+
+        var identity = NativeLinux.GetDirectoryIdentity(path);
+        if (identity.Uid != uid || identity.Gid != gid)
+        {
+            throw new InstallerException(
+                $"Writable bind source '{path}' is owned by {identity.Uid}:{identity.Gid} instead of the configured runtime {uid}:{gid}; complete the CameraAgent reset procedure or restore its ownership before deploying.");
+        }
+        if ((identity.Mode & AllPermissions) != OwnerDirectoryMode)
+        {
+            File.SetUnixFileMode(path, OwnerDirectoryMode);
+        }
     }
 
     public static async Task WriteJsonAtomicAsync<T>(

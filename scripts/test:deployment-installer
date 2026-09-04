@@ -104,6 +104,8 @@ export HVO_INSTALLER_ALLOW_TEST_ROOT=1
 test "$(jq -er '.instanceId' "$root/first.json")" = "$instance_id"
 container="hvo-skymonitor-${instance_id//-/}"
 runner_container="$container-replay"
+instance_root="$root/product/cameraagents/$instance_id"
+identity_root="$instance_root/state/identity"
 test "$(jq -er '.healthy' "$root/first.json")" = true
 test "$(jq -er '.replayProfile' "$root/first.json")" = LocalRunner
 test "$(jq -er '.image.imageId' "$root/first.json")" = "$image_id"
@@ -122,8 +124,6 @@ test "$(jq -er '.catalog.databaseSha256' "$root/first.json")" = "$(jq -er '.cata
 if [[ -n "$baseline_revision" ]]; then
   recovery_state="$root/product/operations/cameraagent-$instance_id.owner-recovery.json"
   lifecycle_state="$root/product/operations/cameraagent-$instance_id.lifecycle.json"
-  instance_root="$root/product/cameraagents/$instance_id"
-  identity_root="$instance_root/state/identity"
   result_path="$instance_root/state/deployment/installation-result.json"
   lifecycle_header="$root/lifecycle.header"
 
@@ -367,5 +367,83 @@ if [[ -n "$baseline_revision" ]]; then
 
   printf 'Owner recovery upgrade, restart, and rollback contract passed from %s.\n' "$baseline_revision"
 fi
+
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent preflight \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/preflight.json"
+test "$(jq -er '.compatible' "$root/preflight.json")" = true
+test "$(jq -er '.outcome' "$root/preflight.json")" = compatible
+test "$(jq -er '.findings | length' "$root/preflight.json")" = 0
+test "$(jq -er '.instanceId' "$root/preflight.json")" = "$instance_id"
+
+for bind_source in identity data-protection provisioning raw archive replay-runner; do
+  test -d "$instance_root/state/$bind_source"
+  test "$(stat -c '%a' "$instance_root/state/$bind_source")" = 700
+  test "$(stat -c '%u:%g' "$instance_root/state/$bind_source")" = "$(id -u):$(id -g)"
+done
+
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/reset-uninstall.json"
+test "$(jq -er '.outcome' "$root/reset-uninstall.json")" = completed
+
+if "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reset-state \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/reset-refused.json" 2>"$root/reset-refused-error.json"; then
+  printf 'CameraAgent reset-state accepted an unconfirmed destructive request.\n' >&2
+  exit 1
+fi
+test ! -s "$root/reset-refused.json"
+test "$(jq -er '.errorCode' "$root/reset-refused-error.json")" = usage
+test -f "$identity_root/cameraagent_identity.db"
+
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reset-state \
+  --instance-id "$instance_id" \
+  --confirm-instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --dry-run \
+  --json >"$root/reset-plan.json"
+test "$(jq -er '.outcome' "$root/reset-plan.json")" = planned
+test -f "$identity_root/cameraagent_identity.db"
+jq -e --arg path "$identity_root" '.deletedPaths | index($path) != null' "$root/reset-plan.json" >/dev/null
+jq -e --arg path "$instance_root/instance-manifest.json" '.preservedPaths | index($path) != null' \
+  "$root/reset-plan.json" >/dev/null
+
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reset-state \
+  --instance-id "$instance_id" \
+  --confirm-instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/reset.json"
+test "$(jq -er '.outcome' "$root/reset.json")" = completed
+test ! -e "$identity_root/cameraagent_identity.db"
+test ! -e "$instance_root/state/raw/journal/raw-ingress.db"
+test "$(jq -er '.deletionCommitted' "$(jq -er '.evidencePath' "$root/reset.json")")" = true
+test -f "$instance_root/instance-manifest.json"
+test -f "$instance_root/application-identity.json"
+test -f "$instance_root/config/camera-module.json"
+test -f "$instance_root/config/owner-bootstrap/temporary-password"
+test -n "$(ls -A "$instance_root/config/secrets")"
+test ! -f "$instance_root/state/deployment/installation-result.json"
+test -d "$root/product/catalogs/hyg-v42-production"
+for bind_source in identity data-protection provisioning raw archive replay-runner; do
+  test -z "$(ls -A "$instance_root/state/$bind_source")"
+  test "$(stat -c '%a' "$instance_root/state/$bind_source")" = 700
+done
+
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" >"$root/post-reset.json"
+test "$(jq -er '.healthy' "$root/post-reset.json")" = true
+test "$(jq -er '.ownerBootstrapState' "$root/post-reset.json")" = owner-password-change-required
+test "$(jq -er '.installationId' "$root/post-reset.json")" = "$(jq -er '.installationId' "$root/first.json")"
+test "$(jq -er '.applicationIdentity' "$root/post-reset.json")" = "$(jq -er '.applicationIdentity' "$root/first.json")"
+test "$(jq -er '.configurationSha256' "$root/post-reset.json")" = "$(jq -er '.configurationSha256' "$root/first.json")"
+test -f "$identity_root/cameraagent_identity.db"
+sqlite3 "$identity_root/cameraagent_identity.db" \
+  "SELECT MigrationId FROM __EFMigrationsHistory;" >"$root/post-reset-identity-migrations.txt"
+test "$(wc -l <"$root/post-reset-identity-migrations.txt")" = 1
+
+printf 'CameraAgent state preflight and operator-confirmed reset contract passed for instance %s.\n' "$instance_id"
 
 printf 'Disposable offline installer contract passed for instance %s.\n' "$instance_id"

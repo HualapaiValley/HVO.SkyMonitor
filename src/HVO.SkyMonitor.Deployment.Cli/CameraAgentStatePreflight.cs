@@ -1,0 +1,540 @@
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using HVO.SkyMonitor.Deployment.Contracts;
+using Microsoft.Data.Sqlite;
+using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
+
+namespace HVO.SkyMonitor.Deployment;
+
+/// <summary>
+/// Whether the evaluated image must declare the current durable state contract. A rollback target installed
+/// before the label correction declares the superseded unbounded value and is admitted as a known contract.
+/// </summary>
+internal enum CameraAgentStateContractPolicy
+{
+    RequireCurrent,
+    AllowLegacy
+}
+
+internal sealed record CameraAgentStatePreflightFinding(
+    string Code,
+    string Boundary,
+    bool Blocking,
+    string Path,
+    string? Observed,
+    string? Expected,
+    string Remediation);
+
+internal sealed record CameraAgentStatePreflightReport(
+    int SchemaVersion,
+    string Outcome,
+    Guid InstanceId,
+    string InstanceRoot,
+    string? CandidateImageId,
+    string CandidateStateContract,
+    string? MinimumCompatibleRevision,
+    string InstalledStateContract,
+    bool Compatible,
+    IReadOnlyList<CameraAgentStatePreflightFinding> Findings,
+    DateTimeOffset EvaluatedUtc);
+
+/// <summary>
+/// The persisted-state boundaries a candidate CameraAgent image declares through its OCI labels.
+/// A boundary the image does not declare cannot be checked and is reported rather than assumed compatible.
+/// </summary>
+internal sealed record CameraAgentStateRequirements(
+    string? StateContract,
+    string? MinimumCompatibleRevision,
+    string? IdentityMigration,
+    int? RawIngressSchema,
+    int? CatalogManifestVersion)
+{
+    public static CameraAgentStateRequirements From(ImageInstallationIdentity image) => new(
+        image.UpgradeCompatibility,
+        image.MinimumCompatibleRevision,
+        image.IdentityMigration,
+        ParseVersion(image.RawIngressSchema),
+        ParseVersion(image.CatalogManifestVersion));
+
+    private static int? ParseVersion(string? value)
+        => int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
+}
+
+/// <summary>
+/// Evaluates every persisted CameraAgent state boundary against a candidate image before Compose starts the
+/// container, so an incompatible upgrade fails once with a consolidated report instead of through restart loops.
+/// </summary>
+internal static class CameraAgentStatePreflight
+{
+    public const int SchemaVersion = 1;
+
+    /// <summary>Deletes and reports nothing; every check is read-only.</summary>
+    public static CameraAgentStatePreflightReport Evaluate(
+        InstallationPaths paths,
+        Guid instanceId,
+        string? candidateImageId,
+        CameraAgentStateRequirements requirements,
+        string? installedStateContract,
+        uint uid,
+        uint gid,
+        ContractReplayProfile replayProfile,
+        CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(requirements);
+        var findings = new List<CameraAgentStatePreflightFinding>();
+        EvaluateStateContract(findings, requirements, installedStateContract, contractPolicy);
+        EvaluateCatalog(findings, paths, requirements);
+        EvaluateIdentityLineage(findings, paths, requirements);
+        EvaluateRawIngressSchema(findings, paths, requirements);
+        EvaluateBindSources(findings, paths, uid, gid, replayProfile);
+        var compatible = !findings.Any(static finding => finding.Blocking);
+        return new CameraAgentStatePreflightReport(
+            SchemaVersion,
+            compatible ? "compatible" : "incompatible",
+            instanceId,
+            paths.InstanceRoot,
+            candidateImageId,
+            CameraAgentStateContract.Describe(requirements.StateContract),
+            requirements.MinimumCompatibleRevision,
+            CameraAgentStateContract.Describe(installedStateContract),
+            compatible,
+            findings,
+            DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    /// Evaluates the persisted state for a candidate image and fails once with the complete boundary report before
+    /// any container, backup, or Compose mutation begins.
+    /// </summary>
+    public static async Task<CameraAgentStatePreflightReport> EnsureCompatibleAsync(
+        InstallationPaths paths,
+        Guid instanceId,
+        ImageInstallationIdentity candidate,
+        string? installedStateContract,
+        uint uid,
+        uint gid,
+        ContractReplayProfile replayProfile,
+        bool persist,
+        CancellationToken cancellationToken,
+        CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(candidate);
+        var report = Evaluate(
+            paths,
+            instanceId,
+            candidate.ImageId,
+            CameraAgentStateRequirements.From(candidate),
+            installedStateContract,
+            uid,
+            gid,
+            replayProfile,
+            contractPolicy);
+        var reportPath = Path.Combine(paths.DeploymentStateRoot, "state-preflight.json");
+        if (persist)
+        {
+            await SafeFileSystem.WriteJsonAtomicAsync(
+                reportPath,
+                report,
+                DeploymentJsonContext.Default.CameraAgentStatePreflightReport,
+                cancellationToken).ConfigureAwait(false);
+        }
+        if (report.Compatible)
+        {
+            return report;
+        }
+
+        // The rendered report carries every boundary at once; the thrown message stays single-line because
+        // deployment diagnostics are redacted to one line.
+        await Console.Error.WriteLineAsync(Render(report)).ConfigureAwait(false);
+        var codes = string.Join(", ", report.Findings.Where(static finding => finding.Blocking)
+            .Select(static finding => finding.Code).Distinct(StringComparer.Ordinal));
+        throw new InstallerException(
+            $"CameraAgent state preflight rejected this deployment before startup ({codes}). Minimum compatible revision {report.MinimumCompatibleRevision ?? "unknown"}; complete the CameraAgent-only reset or state-disposition procedure{(persist ? $" and see {reportPath}" : string.Empty)}.");
+    }
+
+    /// <summary>Renders every finding at once so an operator resolves the complete boundary set in one pass.</summary>
+    public static string Render(CameraAgentStatePreflightReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        var builder = new StringBuilder();
+        builder.Append(CultureInfo.InvariantCulture, $"CameraAgent state preflight for instance {report.InstanceId:D}: ");
+        builder.AppendLine(report.Compatible ? "compatible." : "incompatible.");
+        builder.AppendLine(CultureInfo.InvariantCulture,
+            $"Candidate state contract: {report.CandidateStateContract}; installed: {report.InstalledStateContract}.");
+        if (report.MinimumCompatibleRevision is { Length: > 0 } minimum)
+        {
+            builder.AppendLine(CultureInfo.InvariantCulture,
+                $"Minimum compatible CameraAgent revision: {minimum}. Earlier state requires an explicit reset or state-disposition procedure.");
+        }
+        foreach (var finding in report.Findings)
+        {
+            builder.AppendLine(CultureInfo.InvariantCulture,
+                $"- [{(finding.Blocking ? "blocking" : "advisory")}] {finding.Code} ({finding.Boundary}) at {finding.Path}: observed {finding.Observed ?? "none"}; expected {finding.Expected ?? "unspecified"}. {finding.Remediation}");
+        }
+        if (report.Findings.Count == 0)
+        {
+            builder.AppendLine("- No incompatible boundary was detected.");
+        }
+        return builder.ToString().TrimEnd();
+    }
+
+    private static void EvaluateStateContract(
+        List<CameraAgentStatePreflightFinding> findings,
+        CameraAgentStateRequirements requirements,
+        string? installedStateContract,
+        CameraAgentStateContractPolicy contractPolicy)
+    {
+        var candidateAccepted = contractPolicy == CameraAgentStateContractPolicy.AllowLegacy
+            ? CameraAgentStateContract.IsKnown(requirements.StateContract)
+            : CameraAgentStateContract.IsCurrent(requirements.StateContract);
+        if (!candidateAccepted)
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "candidate-state-contract-unsupported",
+                "image-label",
+                Blocking: true,
+                "io.hvo.skymonitor.state-compatibility",
+                CameraAgentStateContract.Describe(requirements.StateContract),
+                CameraAgentStateContract.Current,
+                "Deploy a CameraAgent image that declares the supported durable state contract."));
+            return;
+        }
+
+        // The superseded label carried no boundary, so an installation that declares it is admitted only when the
+        // persisted boundaries below prove the state already matches the candidate contract.
+        if (!CameraAgentStateContract.IsKnown(installedStateContract))
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "installed-state-contract-unknown",
+                "image-label",
+                Blocking: true,
+                "io.hvo.skymonitor.state-compatibility",
+                CameraAgentStateContract.Describe(installedStateContract),
+                CameraAgentStateContract.Current,
+                "The installed image declares an unrecognized state contract; complete an explicit state-disposition procedure."));
+        }
+    }
+
+    private static void EvaluateCatalog(
+        List<CameraAgentStatePreflightFinding> findings,
+        InstallationPaths paths,
+        CameraAgentStateRequirements requirements)
+    {
+        const string boundary = "catalog";
+        var manifestPath = Path.Combine(paths.CatalogRoot, "current", "manifest.json");
+        if (!Directory.Exists(paths.CatalogRoot))
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "catalog-missing", boundary, Blocking: true, paths.CatalogRoot, "absent", "installed catalog root",
+                "Install the approved production catalog bundle before starting CameraAgent."));
+            return;
+        }
+
+        // Full snapshot verification belongs to catalog installation and selection. Preflight owns the boundary a
+        // legacy in-place upgrade actually breaks: the selected manifest version and catalog identity.
+        var manifest = TryReadCatalogManifest(manifestPath);
+        if (manifest is null)
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "catalog-manifest-unreadable", boundary, Blocking: true, manifestPath, "unreadable",
+                requirements.CatalogManifestVersion?.ToString(CultureInfo.InvariantCulture) ?? "readable manifest",
+                "Reinstall the approved catalog bundle; the selected catalog manifest cannot be read."));
+            return;
+        }
+        if (requirements.CatalogManifestVersion is { } expected && manifest.Value.ManifestVersion != expected)
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "catalog-manifest-version", boundary, Blocking: true, manifestPath,
+                manifest.Value.ManifestVersion.ToString(CultureInfo.InvariantCulture),
+                expected.ToString(CultureInfo.InvariantCulture),
+                "Select an installed catalog whose manifest version matches the candidate image, then rerun the deployment."));
+        }
+        if (!string.Equals(manifest.Value.CatalogId, ProductionCatalog.CatalogId, StringComparison.Ordinal))
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "catalog-identity", boundary, Blocking: true, manifestPath,
+                manifest.Value.CatalogId ?? "none", ProductionCatalog.CatalogId,
+                "Select the approved production catalog identity for this instance."));
+        }
+    }
+
+    private static void EvaluateIdentityLineage(
+        List<CameraAgentStatePreflightFinding> findings,
+        InstallationPaths paths,
+        CameraAgentStateRequirements requirements)
+    {
+        const string boundary = "identity";
+        if (requirements.IdentityMigration is not { Length: > 0 } expected)
+        {
+            return;
+        }
+        var databasePath = CameraAgentStateLayout.IdentityDatabasePath(paths.StateRoot);
+        if (!File.Exists(databasePath))
+        {
+            return;
+        }
+
+        List<string> applied;
+        try
+        {
+            applied = ReadAppliedMigrations(databasePath);
+        }
+        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "identity-lineage-unreadable", boundary, Blocking: true, databasePath,
+                Redaction.SafeDiagnostic(exception.Message), expected,
+                "Stop the CameraAgent instance and rerun the preflight so the Identity database can be read."));
+            return;
+        }
+
+        if (applied.Count == 1 && string.Equals(applied[0], expected, StringComparison.Ordinal))
+        {
+            return;
+        }
+        findings.Add(new CameraAgentStatePreflightFinding(
+            "identity-migration-lineage", boundary, Blocking: true, databasePath,
+            applied.Count == 0 ? "no recorded migration" : string.Join(", ", applied), expected,
+            "The persisted Identity database was created by an incompatible CameraAgent revision; complete the CameraAgent-only reset procedure before upgrading."));
+    }
+
+    private static void EvaluateRawIngressSchema(
+        List<CameraAgentStatePreflightFinding> findings,
+        InstallationPaths paths,
+        CameraAgentStateRequirements requirements)
+    {
+        const string boundary = "raw-ingress";
+        if (requirements.RawIngressSchema is not { } expected)
+        {
+            return;
+        }
+        var databasePath = CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot);
+        if (!File.Exists(databasePath))
+        {
+            return;
+        }
+
+        long observed;
+        try
+        {
+            observed = ReadUserVersion(databasePath);
+        }
+        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "raw-ingress-schema-unreadable", boundary, Blocking: true, databasePath,
+                Redaction.SafeDiagnostic(exception.Message), expected.ToString(CultureInfo.InvariantCulture),
+                "Stop the CameraAgent instance and rerun the preflight so the raw-ingress journal can be read."));
+            return;
+        }
+
+        if (observed == expected)
+        {
+            return;
+        }
+        findings.Add(new CameraAgentStatePreflightFinding(
+            "raw-ingress-schema", boundary, Blocking: true, databasePath,
+            observed.ToString(CultureInfo.InvariantCulture), expected.ToString(CultureInfo.InvariantCulture),
+            "Archive the raw-ingress database and complete the CameraAgent-only reset procedure before upgrading."));
+    }
+
+    private static void EvaluateBindSources(
+        List<CameraAgentStatePreflightFinding> findings,
+        InstallationPaths paths,
+        uint uid,
+        uint gid,
+        ContractReplayProfile replayProfile)
+    {
+        const string boundary = "bind-source";
+        foreach (var source in CameraAgentStateLayout.WritableBindSources(paths.StateRoot, replayProfile))
+        {
+            if (!Directory.Exists(source.HostPath))
+            {
+                findings.Add(new CameraAgentStatePreflightFinding(
+                    "bind-source-missing", boundary, Blocking: true, source.HostPath, "absent",
+                    $"directory owned by {uid}:{gid} mode 0700 for {source.ContainerPath}",
+                    "Let the deployment tooling create the bind source before Compose starts; Docker would otherwise create it as root."));
+                continue;
+            }
+            if (new DirectoryInfo(source.HostPath).LinkTarget is not null)
+            {
+                findings.Add(new CameraAgentStatePreflightFinding(
+                    "bind-source-link", boundary, Blocking: true, source.HostPath, "symbolic link",
+                    "regular directory",
+                    "Replace the linked bind source with a regular owner-only directory."));
+                continue;
+            }
+            var identity = NativeLinux.GetDirectoryIdentity(source.HostPath);
+            if (identity.Uid != uid || identity.Gid != gid)
+            {
+                findings.Add(new CameraAgentStatePreflightFinding(
+                    "bind-source-ownership", boundary, Blocking: true, source.HostPath,
+                    string.Create(CultureInfo.InvariantCulture, $"{identity.Uid}:{identity.Gid}"),
+                    string.Create(CultureInfo.InvariantCulture, $"{uid}:{gid}"),
+                    "Re-create the bind source with the configured runtime UID/GID; the capability-dropped container cannot adopt a root-owned directory."));
+                continue;
+            }
+            if ((identity.Mode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+                                  UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute)) != 0)
+            {
+                findings.Add(new CameraAgentStatePreflightFinding(
+                    "bind-source-mode", boundary, Blocking: true, source.HostPath,
+                    FormatMode(identity.Mode), "0700",
+                    "Restrict the bind source to owner-only access before starting CameraAgent."));
+            }
+        }
+    }
+
+    private static string FormatMode(UnixFileMode mode)
+        => Convert.ToString((int)mode & 0b111_111_111, 8).PadLeft(4, '0');
+
+    private static (int ManifestVersion, string? CatalogId)? TryReadCatalogManifest(string manifestPath)
+    {
+        try
+        {
+            using var stream = SafeFileSystem.OpenRegularFileRead(manifestPath);
+            using var document = JsonDocument.Parse(stream, new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 32
+            });
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("manifestVersion", out var version) ||
+                version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var manifestVersion))
+            {
+                return null;
+            }
+            var catalogId = document.RootElement.TryGetProperty("catalog", out var catalog) &&
+                            catalog.ValueKind == JsonValueKind.Object &&
+                            catalog.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
+                ? id.GetString()
+                : null;
+            return (manifestVersion, catalogId);
+        }
+        catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException
+                                              or InstallerException)
+        {
+            return null;
+        }
+    }
+
+    private static List<string> ReadAppliedMigrations(string databasePath)
+    {
+        using var connection = OpenReadOnly(databasePath);
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
+        var migrations = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            migrations.Add(reader.GetString(0));
+        }
+        return migrations;
+    }
+
+    private static long ReadUserVersion(string databasePath)
+    {
+        using var connection = OpenReadOnly(databasePath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA user_version;";
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    private static SqliteConnection OpenReadOnly(string databasePath)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false
+        }.ToString());
+        try
+        {
+            connection.Open();
+            return connection;
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+    }
+}
+
+/// <summary>
+/// Resolves the installed instance and candidate image for the operator-facing
+/// <c>cameraagent preflight</c> command. The command inspects persisted state only; it never loads, starts,
+/// mutates, or deletes anything.
+/// </summary>
+internal static class CameraAgentStatePreflightManager
+{
+    public static Task<CameraAgentStatePreflightReport> ExecuteAsync(
+        CameraAgentStatePreflightRequest request,
+        CancellationToken cancellationToken)
+        => ExecuteAsync(request, new ProcessRunner(), cancellationToken);
+
+    internal static async Task<CameraAgentStatePreflightReport> ExecuteAsync(
+        CameraAgentStatePreflightRequest request,
+        IProcessRunner processRunner,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        request.Validate();
+        var instanceId = request.InstanceId!.Value;
+        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
+        if (!File.Exists(paths.ManifestPath))
+        {
+            throw new InstallerException("The selected instance has no retained manifest.");
+        }
+        InstanceManifest manifest;
+        await using (var stream = SafeFileSystem.OpenOwnerFileRead(paths.ManifestPath))
+        {
+            manifest = await JsonSerializer.DeserializeAsync(
+                           stream, DeploymentJsonContext.Default.InstanceManifest, cancellationToken).ConfigureAwait(false)
+                       ?? throw new InstallerException("The selected instance manifest is empty.");
+        }
+        if (manifest.InstanceId != instanceId || manifest.StateRoot != paths.StateRoot)
+        {
+            throw new InstallerException("The retained instance manifest does not correlate with the selected instance.");
+        }
+
+        var candidate = manifest.Image;
+        // Evaluating the installed image reports the instance as it stands; naming a candidate evaluates the
+        // in-place upgrade, which additionally requires the current durable state contract.
+        var policy = CameraAgentStateContractPolicy.AllowLegacy;
+        if (request.ImageReference is { Length: > 0 } reference)
+        {
+            policy = CameraAgentStateContractPolicy.RequireCurrent;
+            var docker = new DockerClient(processRunner);
+            var synthetic = new InstallRequest
+            {
+                FriendlyName = manifest.FriendlyName,
+                OwnerEmail = manifest.OwnerEmail,
+                ProductRoot = manifest.ProductRoot,
+                CatalogBundle = "/dev/null",
+                ImageReference = reference,
+                NoDownload = request.NoDownload
+            };
+            var prepared = await docker.PrepareImageAsync(synthetic, allowMutation: false, cancellationToken)
+                .ConfigureAwait(false);
+            candidate = prepared.Image;
+        }
+
+        return CameraAgentStatePreflight.Evaluate(
+            paths,
+            instanceId,
+            candidate.ImageId,
+            CameraAgentStateRequirements.From(candidate),
+            manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility,
+            manifest.RuntimeUid,
+            manifest.RuntimeGid,
+            manifest.ReplayProfile,
+            policy);
+    }
+}

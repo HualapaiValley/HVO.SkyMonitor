@@ -248,15 +248,41 @@ internal sealed class CameraAgentLifecycleManager
         {
             throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
         }
-        if (!rollback && (!request.MigrationBackwardCompatible || candidate.UpgradeCompatibility != "backward-compatible"))
+        if (!rollback && !request.MigrationBackwardCompatible)
         {
             throw new InstallerException("The candidate does not declare backward-compatible state migration; an explicit transactional restore path is required.");
         }
-        if (rollback && manifest.Image.UpgradeCompatibility != "backward-compatible" &&
-            manifest.UpgradeCompatibility != "backward-compatible")
+        if (!rollback && !CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
         {
-            throw new InstallerException("Automatic rollback is forbidden because the active image did not declare backward-compatible migration.");
+            throw new InstallerException(
+                $"The candidate image declares state compatibility '{CameraAgentStateContract.Describe(candidate.UpgradeCompatibility)}' instead of the supported '{CameraAgentStateContract.Current}' contract; an explicit state-disposition procedure is required.");
         }
+        if (rollback && !CameraAgentStateContract.IsKnown(manifest.Image.UpgradeCompatibility) &&
+            !CameraAgentStateContract.IsKnown(manifest.UpgradeCompatibility))
+        {
+            throw new InstallerException("Automatic rollback is forbidden because the active image did not declare a supported state contract.");
+        }
+        // Every boundary is proved before the backup, drain, stop, and Compose mutation begin, so an incompatible
+        // upgrade or rollback never reaches a container restart loop.
+        if (!request.DryRun)
+        {
+            foreach (var directory in ComposeDeployment.WritableStateDirectories(paths.StateRoot))
+            {
+                SafeFileSystem.CreateRuntimeDirectory(directory, manifest.RuntimeUid, manifest.RuntimeGid);
+            }
+        }
+        await CameraAgentStatePreflight.EnsureCompatibleAsync(
+            paths,
+            manifest.InstanceId,
+            candidate,
+            manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility,
+            manifest.RuntimeUid,
+            manifest.RuntimeGid,
+            manifest.ReplayProfile,
+            persist: !request.DryRun,
+            cancellationToken,
+            rollback ? CameraAgentStateContractPolicy.AllowLegacy : CameraAgentStateContractPolicy.RequireCurrent)
+            .ConfigureAwait(false);
         if (operation.CandidateImage is not null && operation.CandidateImage != candidate)
             throw new InstallerException("The retained image operation has a different candidate identity.");
         operation = operation with

@@ -172,7 +172,7 @@ config/camera-module.json
 config/compose/{compose.yml,instance.env}
 config/secrets/*
 config/owner-bootstrap/temporary-password
-state/deployment/{installation-state.json,installation-result.json}
+state/deployment/{installation-state.json,installation-result.json,state-preflight.json}
 operations/cameraagent-<uuid>.owner-recovery.json
 operations/owner-recovery/<operation-uuid>/temporary-password
 ```
@@ -277,6 +277,99 @@ container is stopped, it revalidates the catalog, image, configuration, owner,
 deployment location, and Compose identities and converges the same instance back
 to healthy without regenerating identity or credentials.
 
+## State Compatibility Boundary
+
+The CameraAgent image declares the durable state contract it reads and writes rather than a generic
+compatibility promise:
+
+```text
+io.hvo.skymonitor.state-compatibility=cameraagent-state-v2
+io.hvo.skymonitor.minimum-compatible-revision=70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f
+io.hvo.skymonitor.identity-migration=20260827053715_InitialIdentity
+io.hvo.skymonitor.raw-ingress-schema=12
+io.hvo.skymonitor.catalog-manifest-version=2
+```
+
+**CameraAgent state produced before `70ecdd3` is an incompatible source for a direct in-place upgrade.** Those
+revisions wrote catalog manifest version 1, Identity migration `20251125021552_CreateLocalIdentity`, and
+raw-ingress schema 11. The current image requires manifest version 2, migration
+`20260827053715_InitialIdentity`, and schema 12, and there is no supported automatic migration between them.
+Upgrading such an instance requires the CameraAgent-only reset below or an equivalent explicit
+state-disposition procedure. The superseded `backward-compatible` label value remains readable only so an
+already installed image stays inspectable; it is never accepted as an upgrade candidate declaration.
+
+Deployment preflight compares the declared boundaries against the persisted state before Compose starts the
+container, so an incompatible instance fails once with the complete boundary list instead of through container
+restart loops. Install, upgrade, and rollback all run it before any image, backup, or Compose mutation, and
+install/upgrade retain the report at `state/deployment/state-preflight.json`. Run it on demand without
+starting, loading, pulling, or mutating anything:
+
+```bash
+hvo-skymonitor cameraagent preflight --instance-id <uuid> --json
+hvo-skymonitor cameraagent preflight --instance-id <uuid> \
+  --image-ref <repository@sha256:digest> --no-download
+```
+
+Without `--image-ref` the installed image's declaration is evaluated; with it, the candidate's declaration is.
+The command exits `0` when compatible and `1` with error code `state-incompatible` otherwise. Each finding
+names its boundary code, path, observed value, expected value, and remediation. The checked boundaries are the
+selected catalog manifest version and catalog identity, the Identity migration lineage recorded in
+`__EFMigrationsHistory`, the raw-ingress `PRAGMA user_version`, and the ownership and mode of every writable
+Compose bind source. A boundary the candidate image does not declare is not compared and is never assumed
+compatible; such an image is rejected by the state-contract check instead.
+
+The installer and every lifecycle mutation pre-create all writable bind sources
+(`state/identity`, `state/data-protection`, `state/provisioning`, `state/raw`, `state/archive`, and
+`state/replay-runner`) with the configured runtime UID/GID and mode `0700` before Compose runs. Docker would
+otherwise create a missing nested bind source as `root:root` mode `0755`, and the capability-dropped container
+cannot restrict it. A bind source owned by another identity fails closed with the exact path and both
+identities rather than being silently adopted.
+
+## CameraAgent State Reset
+
+Reset deletes CameraAgent-owned local runtime state only. It never touches deployment configuration, secrets,
+credentials, installation identity, shared catalogs, another instance, or a shared service. It requires an
+explicit confirmation that repeats the instance UUID, and it refuses to run until the instance has completed a
+preserve-by-default uninstall and its container no longer exists.
+
+Destructive paths, all beneath `<instance-root>/state`:
+
+```text
+state/identity          # local Identity SQLite database and owner recovery socket
+state/data-protection   # Data Protection key ring
+state/provisioning      # device identity and device secrets
+state/raw               # raw-ingress journal, frames, index, quarantine, outboxes
+state/archive           # archived artifacts
+state/replay-runner     # local replay runner socket directory
+```
+
+Preserved: `instance-manifest.json`, `application-identity.json`, the whole `config/` tree including
+`config/secrets`, `config/owner-bootstrap`, `config/lifecycle-control`, `config/installation-verification`,
+and `config/compose`, plus `<product-root>/catalogs`, `<product-root>/operations`, and instance backups.
+
+```bash
+hvo-skymonitor cameraagent uninstall --instance-id <uuid>
+hvo-skymonitor cameraagent reset-state --instance-id <uuid> \
+  --confirm-instance-id <uuid> --dry-run
+hvo-skymonitor cameraagent reset-state --instance-id <uuid> \
+  --confirm-instance-id <uuid>
+hvo-skymonitor cameraagent install --instance-id <uuid> <same immutable inputs>
+```
+
+`--dry-run` records the same authenticated deletion inventory and prints the exact destructive and preserved
+paths without deleting anything. Both forms write owner-only evidence to
+`<product-root>/operations/state-reset-<operation-uuid>.evidence.json` containing the operation ID, request
+hash, host identity, instance manifest, destructive roots, preserved paths, and the complete per-entry
+ownership/mode/inode inventory captured before deletion. Deletion re-authenticates every entry's type,
+ownership, mode, link count, and filesystem before unlinking it and rejects symbolic links, foreign
+filesystems, and hard links.
+
+After deletion each state directory is recreated empty with the runtime UID/GID and mode `0700`, the retained
+completed installation result is withdrawn, and the retained installation phase returns to `Preflight` so the
+final `install` rerun re-seeds the owner from the preserved temporary password and converges the same
+instance identity back to healthy. Take an instance backup first if the deleted capture history matters; see
+[product-instance-layout.md](product-instance-layout.md).
+
 ## CameraAgent Lifecycle
 
 Run lifecycle commands as the Docker-capable deployment user, never as root.
@@ -293,6 +386,12 @@ hvo-skymonitor cameraagent rollback --instance-id <uuid>
 hvo-skymonitor cameraagent uninstall --instance-id <uuid>
 hvo-skymonitor cameraagent reinstall --instance-id <uuid>
 ```
+
+`--migration-backward-compatible` is the operator's explicit acknowledgement that no transactional restore
+path is being reserved. It is necessary but not sufficient: the candidate must also declare the current
+`cameraagent-state-v2` contract, and the persisted state must satisfy every declared boundary described in
+[State Compatibility Boundary](#state-compatibility-boundary). A rollback target installed before that label
+correction is accepted as a known contract because no state migration occurs on the way back.
 
 Each transition pins the Docker endpoint and daemon identity, validates the
 rendered Compose model, records pre-mutation continuity, creates and validates a
@@ -351,6 +450,9 @@ Run the x64 output with `--capabilities`; require protocol version `1` and
 completed runtime/native-library warmup. On an ARM64 builder, the existing
 `scripts/test:cameraagent-arm64-ci` gate performs the equivalent native publish,
 capability, image, and constrained-container checks.
+
+The campaign additionally proves the state preflight, the operator-confirmed CameraAgent-only reset, and the
+reset-then-reinstall convergence against a real image and a real product root.
 
 Run the disposable installer contract against the current image with
 `./scripts/test:deployment-installer`. To validate an owner-recovery image

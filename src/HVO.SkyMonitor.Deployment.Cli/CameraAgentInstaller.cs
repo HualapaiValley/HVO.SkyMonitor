@@ -267,6 +267,23 @@ internal sealed class CameraAgentInstaller
                 lifecycleControlToken,
                 passwordAuthorityEnabled);
 
+            // Compose writing created every writable bind source with the runtime identity. Prove the persisted
+            // catalog, Identity, and raw-ingress boundaries match this image before Compose starts the container,
+            // so an incompatible upgrade path fails once instead of through container restart loops.
+            await CameraAgentStatePreflight.EnsureCompatibleAsync(
+                paths,
+                instanceId,
+                image,
+                existingManifest?.Image.UpgradeCompatibility ?? image.UpgradeCompatibility,
+                uid,
+                gid,
+                (ContractReplayProfile)request.ReplayProfile,
+                persist: true,
+                cancellationToken,
+                // Installing an image is not an in-place state migration, so an image that predates the label
+                // correction is admitted as a known contract; the persisted boundaries it declares still decide.
+                CameraAgentStateContractPolicy.AllowLegacy).ConfigureAwait(false);
+
             state = await RecordPhaseAsync(paths, state, InstallationPhase.Compose, cancellationToken).ConfigureAwait(false);
             var rendered = await docker.ComposeAsync(
                 compose.ComposeFile,

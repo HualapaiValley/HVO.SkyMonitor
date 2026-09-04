@@ -54,8 +54,18 @@ FROM ${DOTNET_ASPNET_IMAGE}
 ARG HVO_SOURCE_REVISION=unknown
 WORKDIR /app
 
+# The state-compatibility label names the durable CameraAgent state contract this image
+# reads and writes. It is not a generic backward-compatibility promise: revisions before
+# minimum-compatible-revision produced catalog manifest v1, Identity migration
+# 20251125021552_CreateLocalIdentity, and raw-ingress schema 11, which this image cannot
+# adopt in place. Deployment preflight compares the three declared boundaries below against
+# the persisted state before the container starts.
 LABEL io.hvo.skymonitor.component="CameraAgent" \
-      io.hvo.skymonitor.state-compatibility="backward-compatible" \
+      io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
+      io.hvo.skymonitor.minimum-compatible-revision="70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f" \
+      io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
+      io.hvo.skymonitor.raw-ingress-schema="12" \
+      io.hvo.skymonitor.catalog-manifest-version="2" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.catalog-contract="hyg-v42-production-p3-s2" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
