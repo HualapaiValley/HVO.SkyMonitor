@@ -283,6 +283,9 @@ public class Program
         builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
         builder.Services.AddScoped<ICameraAgentEnvironmentalUiService, CameraAgentEnvironmentalUiService>();
         builder.Services.AddScoped<ICameraAgentTransientUiService, CameraAgentTransientUiService>();
+        builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
+        builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
+        builder.Services.AddCameraAgentReplayFlow();
 
         builder.Services.AddOptions<CapturePreviewOptions>()
             .Bind(builder.Configuration.GetSection("CapturePreview"))
@@ -388,6 +391,7 @@ public class Program
         app.MapCameraAgentGalleryEndpoints();
         app.MapCameraAgentArtifactEndpoints();
         app.MapCameraAgentOperationsEndpoints();
+        app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();

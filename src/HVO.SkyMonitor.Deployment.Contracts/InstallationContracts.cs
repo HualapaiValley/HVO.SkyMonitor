@@ -8,6 +8,8 @@ public static class DeploymentSchemaVersions
     public const int InstallationState = 1;
     public const int InstallationResult = 1;
     public const int LifecycleOperation = 1;
+    public const int StatePreflightReport = 1;
+    public const int StateResetEvidence = 1;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<DeploymentComponent>))]
@@ -123,7 +125,11 @@ public sealed record ImageInstallationIdentity(
     string? Component = null,
     string? ConfigurationContract = null,
     string? CatalogContract = null,
-    string? ReplayRunnerContract = null);
+    string? ReplayRunnerContract = null,
+    string? MinimumCompatibleRevision = null,
+    string? IdentityMigration = null,
+    string? RawIngressSchema = null,
+    string? CatalogManifestVersion = null);
 
 public sealed record DockerDaemonIdentity(
     string Id,

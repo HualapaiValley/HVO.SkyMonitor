@@ -275,6 +275,16 @@ public interface IProcessingGraphOperations
         Guid executionId,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Reads the immutable pipeline definition stored with a graph revision, or null when no
+    /// revision has that identifier; a malformed identifier is rejected with an argument
+    /// exception like every other revision read. A read-only accessor for operator inspection;
+    /// it changes no durable behaviour.
+    /// </summary>
+    ValueTask<CapturePipelineConfig?> ReadRevisionPipelineAsync(
+        string revisionId,
+        CancellationToken cancellationToken);
+
     ValueTask<ProcessingGraphExecutionState> CancelReplayAsync(
         Guid executionId,
         string idempotencyKey,

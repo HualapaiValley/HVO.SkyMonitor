@@ -1,0 +1,13 @@
+.lane-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .6rem; margin-top: .8rem; }
+.lane { min-width: 0; padding: .7rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-surface-elevated); }
+.lane header { display: flex; justify-content: space-between; gap: .5rem; }
+.lane h3 { margin: 0; font-size: .95rem; }
+.lane header span, .lane p { color: var(--hvo-muted-strong); font-size: .78rem; }
+.lane p { margin: .5rem 0 0; }
+.lane dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .3rem .6rem; margin: .5rem 0 0; }
+.lane dt { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
+.lane dd { margin: 0; font-weight: 650; }
+.lane { border-left: 3px solid var(--hvo-success-strong); }
+.lane--warning { border-left-color: var(--hvo-warning-strong); }
+.lane--critical { border-left-color: var(--hvo-danger-strong); }
+.empty-copy { color: var(--hvo-muted); }

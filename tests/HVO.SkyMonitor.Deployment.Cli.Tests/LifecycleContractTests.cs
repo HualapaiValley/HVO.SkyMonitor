@@ -533,7 +533,8 @@ public sealed class LifecycleContractTests
     [TestMethod]
     public async Task CatalogSelectAndRollback_CurrentContractsConverge()
     {
-        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed, seedCatalogSelection: false);
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
         if (string.IsNullOrEmpty(bundle)) Assert.Inconclusive("Set HVO_PRODUCTION_CATALOG_BUNDLE to run catalog transitions.");
         var selected = CatalogInstaller.Install(bundle, fixture.Paths.CatalogRoot, Guid.NewGuid());
@@ -1147,7 +1148,8 @@ public sealed class LifecycleContractTests
         public static async Task<LifecycleFixture> CreateAsync(
             InstanceLifecycleCondition condition,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile replayProfile =
-                HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess)
+                HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
+            bool seedCatalogSelection = true)
         {
             var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
             Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
@@ -1160,6 +1162,20 @@ public sealed class LifecycleContractTests
                 paths.ConfigRoot, paths.StateRoot, paths.DeploymentStateRoot,
                 Path.Combine(paths.ConfigRoot, "compose"), paths.OperationsRoot
             }) Directory.CreateDirectory(directory);
+            // The state preflight reads the selected catalog manifest before any lifecycle mutation, so the fixture
+            // publishes the same manifest-version and catalog-identity pointer a real installation exposes. Tests
+            // that install a real bundle into this root opt out because the adopted root needs its lineage binding.
+            if (seedCatalogSelection)
+            {
+                var catalogVersionRoot = Path.Combine(paths.CatalogRoot, "versions", ProductionCatalog.PackageVersion);
+                Directory.CreateDirectory(catalogVersionRoot);
+                await File.WriteAllTextAsync(
+                    Path.Combine(catalogVersionRoot, "manifest.json"),
+                    "{\"manifestVersion\":2,\"catalog\":{\"id\":\"" + ProductionCatalog.CatalogId + "\"}}",
+                    CancellationToken.None);
+                Directory.CreateSymbolicLink(
+                    Path.Combine(paths.CatalogRoot, "current"), $"versions/{ProductionCatalog.PackageVersion}");
+            }
             var uid = NativeLinux.getuid();
             var gid = NativeLinux.getgid();
             var daemon = new DockerDaemonIdentity("daemon", "host", "amd64", "29.7.2");
@@ -1328,7 +1344,11 @@ public sealed class LifecycleContractTests
                 var inspectedDigest = isCandidate ? candidateReference : initialReference;
                 var labels = new Dictionary<string, string>
                 {
-                    ["io.hvo.skymonitor.state-compatibility"] = "backward-compatible",
+                    ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
+                    ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
+                    ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
+                    ["io.hvo.skymonitor.raw-ingress-schema"] = "12",
+                    ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
                     ["org.opencontainers.image.revision"] = isCandidate ? new string('9', 40) : new string('8', 40),
                     ["io.hvo.skymonitor.component"] = "CameraAgent",
                     ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",

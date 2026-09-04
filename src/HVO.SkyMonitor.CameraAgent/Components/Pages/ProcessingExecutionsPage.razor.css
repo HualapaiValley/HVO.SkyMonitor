@@ -1,0 +1,24 @@
+.executions-page { display: flex; flex-direction: column; gap: 1rem; }
+.executions-refresh { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; color: var(--hvo-muted-strong); font-size: .85rem; }
+.executions-links { display: flex; flex-wrap: wrap; gap: .5rem; }
+.executions-links a { display: inline-flex; align-items: center; min-height: 44px; padding: .4rem .85rem; border: 1px solid var(--hvo-border-muted); border-radius: 999px; color: var(--hvo-muted-strong); background: var(--hvo-nav-badge-bg); text-decoration: none; }
+.execution-class { padding: 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-card-bg); box-shadow: var(--hvo-panel-shadow); }
+.execution-class > header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; }
+.execution-class h2 { margin: 0; font-size: 1.08rem; }
+.class-facts { display: flex; gap: 1.25rem; margin: 0; }
+.class-facts dt { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
+.class-facts dd { margin: .1rem 0 0; font-weight: 650; }
+.execution-table-wrap { margin-top: .8rem; overflow-x: auto; }
+.execution-table { width: 100%; min-width: 52rem; border-collapse: collapse; font-size: .88rem; }
+.execution-table th, .execution-table td { padding: .5rem .6rem; border-top: 1px solid var(--hvo-border-muted); text-align: left; vertical-align: top; }
+.execution-table th { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
+.execution-table a { color: var(--hvo-info-fg); }
+.execution-table code { color: #e9c986; overflow-wrap: anywhere; }
+.execution-row--active td { background: rgba(29, 78, 216, .08); }
+.state-chip { display: inline-flex; align-items: center; min-height: 1.7rem; padding: .2rem .65rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+.state-chip--completed { color: var(--hvo-success-fg); background: var(--hvo-success-bg); }
+.state-chip--running { color: var(--hvo-info-fg); background: var(--hvo-info-bg); }
+.state-chip--pending { color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
+.state-chip--failed { color: var(--hvo-danger-fg); background: var(--hvo-danger-bg); }
+.muted, .empty-copy { color: var(--hvo-muted); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

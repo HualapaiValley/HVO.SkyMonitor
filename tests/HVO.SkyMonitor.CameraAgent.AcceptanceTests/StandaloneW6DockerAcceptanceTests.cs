@@ -328,6 +328,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         AssertPublicCatalogHealthIsSanitized(health);
         await File.WriteAllTextAsync(Path.Combine(evidenceRoot, "health.json"), health).ConfigureAwait(false);
         await AssertBrowserEvidenceAsync(page, measuredCaptures[^1]).ConfigureAwait(false);
+        await VisitOperationsWorkspaceAsync(page).ConfigureAwait(false);
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         await faultSampler.CompleteAsync().ConfigureAwait(false);
         faultSampler.WriteCsv(Path.Combine(evidenceRoot, "process-faults.csv"));
@@ -792,6 +793,34 @@ public sealed class StandaloneW6DockerAcceptanceTests
         return replacementPassword;
     }
 
+    /// <summary>
+    /// Walks every Operations workspace section added by #517 so the deny-proxy count that follows
+    /// proves those pages make zero central requests in standalone mode.
+    /// </summary>
+    private static async Task VisitOperationsWorkspaceAsync(IPage page)
+    {
+        foreach (var (route, heading) in new[]
+        {
+            ("/operations/camera", "Camera & rig"),
+            ("/operations/sky-map", "Sky map & catalog"),
+            ("/operations/pipeline", "Pipeline summary"),
+            ("/operations/automations", "Automations"),
+            ("/operations/data", "Data & storage"),
+            ("/operations/pipeline/executions", "Processing executions"),
+            ("/operations/pipeline/graphs", "Named graphs"),
+            ("/operations/pipeline/graphs/new", "Draft graph")
+        })
+        {
+            await page.GotoAsync(route).ConfigureAwait(false);
+            await page.GetByRole(AriaRole.Heading, new() { Name = heading, Level = 1 })
+                .WaitForAsync().ConfigureAwait(false);
+            await page.Locator(".page-state[role='status'] .spinner-border")
+                .WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+            Assert.AreEqual(0, await page.Locator(".page-state--error").CountAsync().ConfigureAwait(false), $"{route} rendered an error notice.");
+            Assert.IsGreaterThan(0, await page.Locator("main h2").CountAsync().ConfigureAwait(false), $"{route} rendered no section content.");
+        }
+    }
+
     private static async Task SetCaptureStateAsync(IPage page, bool pause)
     {
         await page.GotoAsync("/operations").ConfigureAwait(false);
@@ -1029,7 +1058,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string runtimeRoot)
     {
         await page.GotoAsync("/schedule").ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Heading, new() { Name = "Schedule control", Level = 1 })
+        await page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule", Level = 1 })
             .WaitForAsync().ConfigureAwait(false);
         var activeHash = page.Locator(".schedule-card:has-text('Active immutable profile') code");
         var originalHash = (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim();
@@ -1138,7 +1167,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                         $"banners: {string.Join(" | ", banners)}; schedule: {scheduleText}");
                 }
                 await page.GotoAsync("/schedule").ConfigureAwait(false);
-                await page.GetByRole(AriaRole.Heading, new() { Name = "Schedule control", Level = 1 })
+                await page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule", Level = 1 })
                     .WaitForAsync().ConfigureAwait(false);
                 await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
             }

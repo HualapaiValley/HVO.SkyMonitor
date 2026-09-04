@@ -1,0 +1,106 @@
+@using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
+@using Microsoft.AspNetCore.Components.Web
+
+@if (_layout.Count == 0)
+{
+    <p class="diagram-empty">No nodes to draw.</p>
+}
+else
+{
+    <div class="diagram-wrap">
+        <svg class="diagram" role="group" aria-labelledby="@TitleId @DescriptionId" viewBox="0 0 @Width @Height" focusable="false">
+            <title id="@TitleId">Dependency diagram of @_layout.Count node@(_layout.Count == 1 ? "" : "s")</title>
+            <desc id="@DescriptionId">@Description</desc>
+            @foreach (var edge in _edges)
+            {
+                <path class="diagram-edge" d="@edge.Path" />
+            }
+            @foreach (var node in _layout)
+            {
+                <g class="@(node.Enabled ? "diagram-node" : "diagram-node diagram-node--disabled")" role="button" tabindex="0" aria-label="@node.Id: @(node.Enabled ? "enabled" : "disabled"), @(node.Required ? "required" : "optional"), @(node.Dependencies.Count == 0 ? "no declared dependencies" : $"depends on {string.Join(", ", node.Dependencies)}"). Activate to edit its row." @onclick="() => NodeSelected.InvokeAsync(node.Id)" @onkeydown="args => HandleKey(args, node.Id)">
+                    <rect x="@node.X" y="@node.Y" width="@NodeWidth" height="@NodeHeight" rx="6" />
+                    <text x="@(node.X + 10)" y="@(node.Y + 22)">@node.Id</text>
+                    <text class="diagram-node__meta" x="@(node.X + 10)" y="@(node.Y + 40)">@(node.Required ? "required" : "optional")@(node.Enabled ? "" : ", disabled")</text>
+                </g>
+            }
+        </svg>
+    </div>
+}
+
+@code {
+    private const int NodeWidth = 150;
+    private const int NodeHeight = 52;
+    private const int ColumnGap = 60;
+    private const int RowGap = 20;
+    private const int Margin = 12;
+    private static int _instances;
+    private readonly int _instance = Interlocked.Increment(ref _instances);
+    private List<LaidOutNode> _layout = [];
+    private List<Edge> _edges = [];
+
+    [Parameter, EditorRequired] public IReadOnlyList<CaptureProcessingPlanNode> Nodes { get; set; } = [];
+    [Parameter] public EventCallback<string> NodeSelected { get; set; }
+
+    private string TitleId => $"diagram-title-{_instance}";
+    private string DescriptionId => $"diagram-desc-{_instance}";
+    private int Width => _layout.Count == 0 ? 0 : _layout.Max(static node => node.X) + NodeWidth + Margin;
+    private int Height => _layout.Count == 0 ? 0 : _layout.Max(static node => node.Y) + NodeHeight + Margin;
+
+    private string Description => string.Join(" ", _layout.Select(node =>
+        node.Dependencies.Count == 0 ? $"{node.Id} has no declared dependencies." : $"{node.Id} depends on {string.Join(", ", node.Dependencies)}."));
+
+    protected override void OnParametersSet()
+    {
+        // Rank = longest dependency chain from a source; one column per rank, list order within a column.
+        var byId = Nodes.ToDictionary(static node => node.Id, StringComparer.Ordinal);
+        var ranks = new Dictionary<string, int>(StringComparer.Ordinal);
+        int Rank(string id, int depth)
+        {
+            if (ranks.TryGetValue(id, out var known)) { return known; }
+            if (depth > Nodes.Count || !byId.TryGetValue(id, out var node)) { return 0; }
+            var rank = 0;
+            foreach (var dependency in node.Dependencies ?? [])
+            {
+                if (byId.ContainsKey(dependency)) { rank = Math.Max(rank, Rank(dependency, depth + 1) + 1); }
+            }
+            ranks[id] = rank;
+            return rank;
+        }
+        foreach (var node in Nodes) { Rank(node.Id, 0); }
+        var columns = new Dictionary<int, int>();
+        _layout = [];
+        foreach (var node in Nodes)
+        {
+            var rank = ranks.GetValueOrDefault(node.Id);
+            var row = columns.GetValueOrDefault(rank);
+            columns[rank] = row + 1;
+            _layout.Add(new LaidOutNode(node.Id, node.Enabled, node.Required, node.Dependencies ?? [], Margin + rank * (NodeWidth + ColumnGap), Margin + row * (NodeHeight + RowGap)));
+        }
+        var positions = _layout.ToDictionary(static node => node.Id, StringComparer.Ordinal);
+        _edges = [];
+        foreach (var node in _layout)
+        {
+            foreach (var dependency in node.Dependencies)
+            {
+                if (positions.TryGetValue(dependency, out var source))
+                {
+                    var x1 = source.X + NodeWidth; var y1 = source.Y + NodeHeight / 2;
+                    var x2 = node.X; var y2 = node.Y + NodeHeight / 2;
+                    var mid = (x1 + x2) / 2;
+                    _edges.Add(new Edge($"M{x1},{y1} C{mid},{y1} {mid},{y2} {x2},{y2}"));
+                }
+            }
+        }
+    }
+
+    private async Task HandleKey(KeyboardEventArgs args, string nodeId)
+    {
+        if (args.Key is "Enter" or " ")
+        {
+            await NodeSelected.InvokeAsync(nodeId);
+        }
+    }
+
+    private sealed record LaidOutNode(string Id, bool Enabled, bool Required, IReadOnlyList<string> Dependencies, int X, int Y);
+    private sealed record Edge(string Path);
+}

@@ -57,6 +57,73 @@ internal sealed record OwnerRecoveryRequest(
     }
 }
 
+internal sealed record CameraAgentStatePreflightRequest(
+    Guid? InstanceId,
+    string ProductRoot,
+    string? ImageReference,
+    bool Json) : DeploymentCommand(Json)
+{
+    public void Validate()
+    {
+        if (InstanceId is null)
+        {
+            throw new InstallUsageException("--instance-id is required.");
+        }
+        ValidateProductRoot(ProductRoot);
+        if (ImageReference is not null &&
+            !System.Text.RegularExpressions.Regex.IsMatch(
+                ImageReference,
+                "^(sha256:[a-f0-9]{64}|[^@\\s]+@sha256:[a-f0-9]{64})$",
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+        {
+            throw new InstallUsageException("preflight requires an immutable --image-ref.");
+        }
+    }
+
+    internal static void ValidateProductRoot(string productRoot)
+    {
+        if (!Path.IsPathFullyQualified(productRoot) || productRoot.Contains("//", StringComparison.Ordinal) ||
+            Path.GetFullPath(productRoot) != productRoot.TrimEnd('/') || productRoot == "/")
+        {
+            throw new InstallUsageException("--product-root must be an absolute normalized path other than root.");
+        }
+        if (!string.Equals(productRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
+            Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT") != "1")
+        {
+            throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
+        }
+    }
+}
+
+internal sealed record CameraAgentStateResetRequest(
+    Guid? InstanceId,
+    Guid? ConfirmationInstanceId,
+    string ProductRoot,
+    bool DryRun,
+    bool Json) : DeploymentCommand(Json)
+{
+    public void Validate()
+    {
+        if (InstanceId is null)
+        {
+            throw new InstallUsageException("--instance-id is required.");
+        }
+        CameraAgentStatePreflightRequest.ValidateProductRoot(ProductRoot);
+        if (ConfirmationInstanceId != InstanceId)
+        {
+            throw new InstallUsageException("reset-state requires --confirm-instance-id matching --instance-id.");
+        }
+    }
+
+    public string ComputeRequestSha256()
+    {
+        var value = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"reset-state\n{InstanceId:D}\n{ProductRoot}");
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+}
+
 internal sealed record LifecycleRequest : DeploymentCommand
 {
     public LifecycleRequest(

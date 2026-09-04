@@ -10,6 +10,11 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [DoNotParallelize]
 public sealed class InstallerFlowTests
 {
+    // The installer always runs as the invoking Docker-capable user, so the contract fixtures must use the real
+    // runtime identity rather than a constant that only matches one developer machine.
+    private static readonly uint RuntimeUid = NativeLinux.getuid();
+    private static readonly uint RuntimeGid = NativeLinux.getgid();
+
     [TestMethod]
     public void IsAllowedOwnerBootstrapState_AllowsOnlyInstalledStateOrCompletedReplacement()
     {
@@ -56,8 +61,8 @@ public sealed class InstallerFlowTests
                 request,
                 runner,
                 _ => owner,
-                1000,
-                1000,
+                RuntimeUid,
+                RuntimeGid,
                 CancellationToken.None);
             owner.CurrentInstallationState = "owner-ready";
             var passwordSha256 = await SafeFileSystem.ComputeSha256Async(first.PasswordFile, CancellationToken.None);
@@ -77,8 +82,8 @@ public sealed class InstallerFlowTests
                 request,
                 runner,
                 _ => owner,
-                1000,
-                1000,
+                RuntimeUid,
+                RuntimeGid,
                 CancellationToken.None));
 
             StringAssert.Contains(legacy.Message, "invalid or unsupported", StringComparison.Ordinal);
@@ -95,8 +100,8 @@ public sealed class InstallerFlowTests
                 request,
                 runner,
                 _ => owner,
-                1000,
-                1000,
+                RuntimeUid,
+                RuntimeGid,
                 CancellationToken.None));
             StringAssert.Contains(drift.Message, "retained immutable manifest", StringComparison.Ordinal);
             await File.WriteAllTextAsync(manifestPath, retainedManifest);
@@ -117,8 +122,8 @@ public sealed class InstallerFlowTests
                 request,
                 runner,
                 _ => owner,
-                1000,
-                1000,
+                RuntimeUid,
+                RuntimeGid,
                 CancellationToken.None);
 
             Assert.AreEqual(InstallationOutcome.Installed, first.Outcome);
@@ -157,8 +162,8 @@ public sealed class InstallerFlowTests
                 request,
                 runner,
                 _ => owner,
-                1000,
-                1000,
+                RuntimeUid,
+                RuntimeGid,
                 CancellationToken.None));
             StringAssert.Contains(resultDrift.Message, "retained result", StringComparison.Ordinal);
             Assert.AreEqual(3, runner.ComposeUpCount);
@@ -172,8 +177,8 @@ public sealed class InstallerFlowTests
                 request,
                 runner,
                 _ => owner,
-                1000,
-                1000,
+                RuntimeUid,
+                RuntimeGid,
                 CancellationToken.None));
             StringAssert.Contains(unsupported.Message, "invalid or unsupported", StringComparison.Ordinal);
         }
@@ -219,8 +224,8 @@ public sealed class InstallerFlowTests
                 request,
                 runner,
                 _ => owner,
-                1000,
-                1000,
+                RuntimeUid,
+                RuntimeGid,
                 CancellationToken.None));
             var statePath = Path.Combine(
                 root,
@@ -239,8 +244,8 @@ public sealed class InstallerFlowTests
                 request with { Resume = true },
                 runner,
                 _ => owner,
-                1000,
-                1000,
+                RuntimeUid,
+                RuntimeGid,
                 CancellationToken.None);
 
             Assert.AreEqual(InstallationOutcome.Installed, resumed.Outcome);
@@ -338,8 +343,13 @@ public sealed class InstallerFlowTests
                             Labels = new Dictionary<string, string>
                             {
                                 ["org.opencontainers.image.revision"] = new string('a', 40),
-                                 ["io.hvo.skymonitor.component"] = "CameraAgent",
-                                 ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
+                                ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
+                                ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
+                                ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
+                                ["io.hvo.skymonitor.raw-ingress-schema"] = "12",
+                                ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
+                                ["io.hvo.skymonitor.component"] = "CameraAgent",
+                                ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
                                 ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2",
                                 ["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1"
                             }
@@ -360,7 +370,7 @@ public sealed class InstallerFlowTests
                         State = new { Running = true, Health = new { Status = "healthy" } },
                         Config = new
                         {
-                            User = "1000:1000",
+                            User = $"{RuntimeUid}:{RuntimeGid}",
                             Labels = new Dictionary<string, string>
                             {
                                 ["com.docker.compose.project"] = arguments[2],

@@ -151,13 +151,15 @@ public sealed class ReplayRunnerComposeTests
             CameraAgentReplayProfile.LocalRunner));
     }
 
+    // The installer always renders Compose as the invoking Docker-capable user, and writing a bind source now
+    // authenticates that identity, so the fixture must use the real runtime UID/GID rather than a fixed pair.
     private static ComposeFiles Write(InstallRequest request, InstallationPaths paths) => ComposeDeployment.Write(
         request,
         paths,
         Guid.NewGuid(),
         Guid.NewGuid(),
-        1000,
-        1000,
+        NativeLinux.getuid(),
+        NativeLinux.getgid(),
         $"sha256:{new string('a', 64)}",
         "test-catalog-v1",
         Path.Combine(paths.ConfigRoot, "owner-password"),

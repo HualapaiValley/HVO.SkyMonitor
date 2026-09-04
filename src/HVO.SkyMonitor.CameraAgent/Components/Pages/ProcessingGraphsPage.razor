@@ -1,0 +1,114 @@
+@page "/operations/pipeline/graphs"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Named graphs</PageTitle>
+
+<div class="graphs-page">
+    <PageHeader Eyebrow="Immutable graph registry" Title="Named graphs" Lead="Every processing graph revision this CameraAgent knows, its lifecycle, and its immutable identities. Exactly one revision is live at a time; activation, rollback, and retirement are confirmed against the registry version you saw.">
+        <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+    </PageHeader>
+
+    <nav class="graphs-links" aria-label="Pipeline sections">
+        <a href="/operations/pipeline">Pipeline summary</a>
+        <a href="/operations/pipeline/executions">Processing executions</a>
+        <a href="/operations/pipeline/graphs/new" class="graphs-links__primary">New draft graph</a>
+    </nav>
+
+    @if (_loading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading graph registry" Message="Reading the immutable revision registry." />
+    }
+    else if (_registry is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Graph registry unavailable" Message="@_message">
+            <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Try again</button>
+        </PageStateNotice>
+    }
+    else
+    {
+        @if (_message is not null)
+        {
+            <section class="graphs-banner @(_messageIsError ? "graphs-banner--error" : null)" role="@(_messageIsError ? "alert" : "status")">@_message</section>
+        }
+        <section class="registry-facts" aria-label="Registry state">
+            <dl class="fact-grid">
+                <div><dt>Mode</dt><dd>@Split(_registry.Mode.ToString())</dd></div>
+                <div><dt>Active revision</dt><dd><code>@_registry.ActiveRevisionId</code></dd></div>
+                <div><dt>Configured basic revision</dt><dd><code>@_registry.ConfiguredBasicRevisionId</code></dd></div>
+                <div><dt>Registry version</dt><dd>@_registry.StateVersion</dd></div>
+                <div><dt>Revisions</dt><dd>@_registry.Revisions.Count</dd></div>
+            </dl>
+        </section>
+
+        <section class="revision-table-wrap" aria-labelledby="revisions-heading">
+            <h2 id="revisions-heading">Revisions</h2>
+            @if (_registry.Revisions.Count == 0)
+            {
+                <p class="empty-copy">No graph revisions are registered.</p>
+            }
+            else
+            {
+                <table class="revision-table">
+                    <caption class="visually-hidden">Graph revisions, newest first</caption>
+                    <thead><tr><th scope="col">Graph</th><th scope="col">Lifecycle</th><th scope="col">Definition SHA-256</th><th scope="col">Created</th><th scope="col">Validated</th><th scope="col">Activated</th><th scope="col">Retired</th><th scope="col">Actions</th></tr></thead>
+                    <tbody>
+                        @foreach (var revision in _registry.Revisions.OrderByDescending(static revision => revision.CreatedUtc))
+                        {
+                            var isActive = string.Equals(revision.RevisionId, _registry.ActiveRevisionId, StringComparison.Ordinal);
+                            <tr class="@(isActive ? "revision-row--active" : null)">
+                                <td><a href="/operations/pipeline/graphs/@Uri.EscapeDataString(revision.RevisionId)"><strong>@revision.Name</strong> @revision.Revision</a><br /><code>@revision.RevisionId</code></td>
+                                <td><span class="state-chip @LifecycleClass(revision.Lifecycle)">@(isActive ? "Active" : revision.Lifecycle.ToString())</span></td>
+                                <td><code>@Short(revision.DefinitionIdentitySha256)</code></td>
+                                <td>@revision.CreatedUtc.ToString("u")</td>
+                                <td>@(revision.ValidatedUtc?.ToString("u") ?? "-")</td>
+                                <td>@(revision.ActivatedUtc?.ToString("u") ?? "-")</td>
+                                <td>@(revision.RetiredUtc?.ToString("u") ?? "-")</td>
+                                <td class="revision-actions">
+                                    @if (revision.Lifecycle == ProcessingGraphRevisionLifecycle.Draft)
+                                    {
+                                        <button id="@TriggerId(revision.RevisionId, "validate")" type="button" class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginAction(GraphAction.Validate, revision)">Validate</button>
+                                    }
+                                    @if (revision.Lifecycle == ProcessingGraphRevisionLifecycle.Validated && !isActive)
+                                    {
+                                        <button id="@TriggerId(revision.RevisionId, "activate")" type="button" class="btn btn-sm btn-primary" disabled="@_busy" @onclick="() => BeginAction(GraphAction.Activate, revision)">Review activate</button>
+                                    }
+                                    @if (revision.Lifecycle == ProcessingGraphRevisionLifecycle.Retired)
+                                    {
+                                        <button id="@TriggerId(revision.RevisionId, "rollback")" type="button" class="btn btn-sm btn-outline-warning" disabled="@_busy" @onclick="() => BeginAction(GraphAction.Rollback, revision)">Review rollback</button>
+                                    }
+                                    @if (!isActive && revision.Lifecycle is ProcessingGraphRevisionLifecycle.Draft or ProcessingGraphRevisionLifecycle.Validated)
+                                    {
+                                        <button id="@TriggerId(revision.RevisionId, "retire")" type="button" class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginAction(GraphAction.Retire, revision)">Retire</button>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+
+        @if (_pending is not null)
+        {
+            <dialog class="confirmation-panel" aria-labelledby="graph-confirm-heading" aria-describedby="graph-confirm-description" @oncancel="CancelAction" @ref="_confirmationDialog">
+                <div>
+                    <p class="eyebrow">Registry-version confirmation</p>
+                    <h2 id="graph-confirm-heading">@_pending.Heading</h2>
+                    <p id="graph-confirm-description">@_pending.Description</p>
+                    <dl class="fact-grid"><div><dt>Revision</dt><dd><code>@_pending.Revision.RevisionId</code></dd></div><div><dt>Expected registry version</dt><dd>@_pending.ExpectedVersion</dd></div></dl>
+                    <label>Reason<input class="form-control" @bind="_pending.Reason" placeholder="optional" /></label>
+                </div>
+                <div>
+                    <button type="button" class="btn @(_pending.Action == GraphAction.Retire ? "btn-danger" : "btn-primary")" disabled="@_busy" @onclick="ConfirmActionAsync">@_pending.ConfirmLabel</button>
+                    <button type="button" class="btn btn-outline-light" disabled="@_busy" autofocus @onclick="CancelAction">Cancel</button>
+                </div>
+            </dialog>
+        }
+    }
+</div>
