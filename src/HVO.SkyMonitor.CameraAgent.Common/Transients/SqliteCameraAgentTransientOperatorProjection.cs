@@ -88,13 +88,72 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
             row = await ReadAndValidateRowAsync(reader, cancellationToken).ConfigureAwait(false);
         }
 
+        var sources = await ReadSourcesAsync(connection, candidateId, cancellationToken).ConfigureAwait(false);
         return new CameraAgentTransientOperatorDetail(
             ProjectSummary(row),
             ProjectCandidateEvidence(row.Candidate, row.Phase),
             ProjectExtraction(row.Causal, row.Phase),
             ProjectExtraction(row.Centered, row.Phase),
             ProjectAssessment(row.Assessment, row.Phase),
-            ProjectFinal(row.Finalization, row.Phase));
+            ProjectFinal(row.Finalization, row.Phase),
+            sources);
+    }
+
+    internal const int MaximumSources = 64;
+
+    // Sources join the candidate journal to the raw-ingress captures in the
+    // same database; a journal without the source schema yields no links.
+    private static async ValueTask<IReadOnlyList<CameraAgentTransientOperatorSource>> ReadSourcesAsync(
+        SqliteConnection connection,
+        Guid candidateId,
+        CancellationToken cancellationToken)
+    {
+        if (!await TableExistsAsync(connection, "transient_candidate_sources", cancellationToken).ConfigureAwait(false) ||
+            !await TableExistsAsync(connection, "raw_captures", cancellationToken).ConfigureAwait(false))
+        {
+            return [];
+        }
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT s.source_ordinal, s.evidence_id, s.artifact_id, s.artifact_role,
+                   raw.capture_id, raw.capture_sequence, raw.exposure_started_unix_ms,
+                   s.observation_started_utc_ticks, s.observation_ended_utc_ticks
+            FROM transient_candidate_sources s
+            JOIN raw_captures raw ON raw.raw_capture_row_id = s.raw_capture_row_id
+            WHERE s.candidate_id = $candidate
+            ORDER BY s.source_ordinal
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
+        command.Parameters.AddWithValue("$limit", MaximumSources);
+        var sources = new List<CameraAgentTransientOperatorSource>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var role = reader.GetInt32(3);
+            sources.Add(new CameraAgentTransientOperatorSource(
+                reader.GetInt32(0),
+                Guid.ParseExact(reader.GetString(1), "N"),
+                Guid.ParseExact(reader.GetString(2), "N"),
+                Enum.IsDefined(typeof(HVO.SkyMonitor.AgentCore.FrameArtifactRole), role) ? (HVO.SkyMonitor.AgentCore.FrameArtifactRole)role : null,
+                Guid.ParseExact(reader.GetString(4), "N"),
+                reader.GetInt64(5),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
+                new DateTimeOffset(reader.GetInt64(7), TimeSpan.Zero),
+                new DateTimeOffset(reader.GetInt64(8), TimeSpan.Zero)));
+        }
+        return sources;
+    }
+
+    private static async ValueTask<bool> TableExistsAsync(
+        SqliteConnection connection,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $name);";
+        command.Parameters.AddWithValue("$name", tableName);
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 0L) == 1;
     }
 
     private static async ValueTask<ProjectedRow> ReadAndValidateRowAsync(

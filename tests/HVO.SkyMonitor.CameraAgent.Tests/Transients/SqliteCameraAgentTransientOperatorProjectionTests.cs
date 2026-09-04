@@ -31,6 +31,80 @@ public sealed class SqliteCameraAgentTransientOperatorProjectionTests
         MinimumFragmentAlignmentCosine: 0.95);
 
     [TestMethod]
+    public async Task DetailResolvesJournalSourcesToRetainedCaptures()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        await fixture.ExecuteAsync("""
+            CREATE TABLE raw_captures (
+                raw_capture_row_id INTEGER PRIMARY KEY,
+                capture_id TEXT NOT NULL,
+                capture_sequence INTEGER NOT NULL,
+                exposure_started_unix_ms INTEGER NOT NULL
+            );
+            CREATE TABLE transient_candidate_sources (
+                candidate_id TEXT NOT NULL,
+                source_ordinal INTEGER NOT NULL,
+                evidence_id TEXT NOT NULL,
+                raw_capture_row_id INTEGER NOT NULL,
+                artifact_id TEXT NOT NULL,
+                artifact_role INTEGER NOT NULL,
+                observation_started_utc_ticks INTEGER NOT NULL,
+                observation_ended_utc_ticks INTEGER NOT NULL
+            );
+            """).ConfigureAwait(false);
+        var candidateId = Guid.Parse("00000000-0000-0000-0000-000000000201");
+        var firstCapture = Guid.NewGuid();
+        var secondCapture = Guid.NewGuid();
+        var firstArtifact = Guid.NewGuid();
+        var secondArtifact = Guid.NewGuid();
+        var started = new DateTimeOffset(2026, 9, 4, 6, 30, 0, TimeSpan.Zero);
+        await fixture.InsertReservedAsync(candidateId, started.ToUnixTimeMilliseconds()).ConfigureAwait(false);
+        await fixture.ExecuteAsync(
+            "INSERT INTO raw_captures VALUES (11, $c1, 41, $e1), (12, $c2, 42, $e2);",
+            ("$c1", firstCapture.ToString("N")), ("$e1", started.ToUnixTimeMilliseconds()),
+            ("$c2", secondCapture.ToString("N")), ("$e2", started.AddSeconds(5).ToUnixTimeMilliseconds())).ConfigureAwait(false);
+        await fixture.ExecuteAsync(
+            """
+            INSERT INTO transient_candidate_sources VALUES
+                ($candidate, 1, $ev2, 12, $a2, 1, $s2, $d2),
+                ($candidate, 0, $ev1, 11, $a1, 0, $s1, $d1);
+            """,
+            ("$candidate", candidateId.ToString("N")),
+            ("$ev1", Guid.NewGuid().ToString("N")), ("$a1", firstArtifact.ToString("N")),
+            ("$s1", started.UtcTicks), ("$d1", started.AddSeconds(2).UtcTicks),
+            ("$ev2", Guid.NewGuid().ToString("N")), ("$a2", secondArtifact.ToString("N")),
+            ("$s2", started.AddSeconds(5).UtcTicks), ("$d2", started.AddSeconds(7).UtcTicks)).ConfigureAwait(false);
+
+        var detail = await fixture.Projection.GetCandidateAsync(candidateId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(detail?.Sources);
+        Assert.AreEqual(2, detail.Sources.Count);
+        Assert.AreEqual(0, detail.Sources[0].Ordinal);
+        Assert.AreEqual(firstCapture, detail.Sources[0].CaptureId);
+        Assert.AreEqual(41, detail.Sources[0].CaptureSequence);
+        Assert.AreEqual(firstArtifact, detail.Sources[0].ArtifactId);
+        Assert.AreEqual(HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw, detail.Sources[0].Role);
+        Assert.AreEqual(started, detail.Sources[0].ExposureStartedUtc);
+        Assert.AreEqual(started, detail.Sources[0].ObservationStartedUtc);
+        Assert.AreEqual(started.AddSeconds(2), detail.Sources[0].ObservationEndedUtc);
+        Assert.AreEqual(secondCapture, detail.Sources[1].CaptureId);
+        Assert.AreEqual(HVO.SkyMonitor.AgentCore.FrameArtifactRole.Calibrated, detail.Sources[1].Role);
+    }
+
+    [TestMethod]
+    public async Task DetailReportsNoSourcesWithoutTheSourceSchema()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var candidateId = Guid.Parse("00000000-0000-0000-0000-000000000202");
+        await fixture.InsertReservedAsync(candidateId, 100).ConfigureAwait(false);
+
+        var detail = await fixture.Projection.GetCandidateAsync(candidateId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(detail?.Sources);
+        Assert.AreEqual(0, detail.Sources.Count);
+    }
+
+    [TestMethod]
     public async Task PageUsesBoundedDescendingKeysetPagination()
     {
         using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);

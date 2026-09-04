@@ -27,7 +27,21 @@ public sealed record CameraAgentTransientOperatorDetail(
     CameraAgentTransientExtractionEvidence CausalEvidence,
     CameraAgentTransientExtractionEvidence CenteredEvidence,
     CameraAgentTransientAssessmentEvidence AssessmentEvidence,
-    CameraAgentTransientFinalEvidence FinalEvidence);
+    CameraAgentTransientFinalEvidence FinalEvidence,
+    IReadOnlyList<CameraAgentTransientOperatorSource>? Sources = null);
+
+// A durable source frame the candidate was extracted from, resolved to the
+// retained raw capture so the operator can open the exact evidence.
+public sealed record CameraAgentTransientOperatorSource(
+    int Ordinal,
+    Guid EvidenceId,
+    Guid ArtifactId,
+    HVO.SkyMonitor.AgentCore.FrameArtifactRole? Role,
+    Guid CaptureId,
+    long CaptureSequence,
+    DateTimeOffset ExposureStartedUtc,
+    DateTimeOffset ObservationStartedUtc,
+    DateTimeOffset ObservationEndedUtc);
 
 public sealed record CameraAgentTransientCandidateEvidence(
     string State,
