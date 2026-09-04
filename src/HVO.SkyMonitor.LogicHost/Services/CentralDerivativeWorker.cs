@@ -87,6 +87,9 @@ internal sealed partial class CentralDerivativeWorker(
                     await ConvergeSignaledAsync(graphScheduler, graphExecutionId, now, stoppingToken)
                         .ConfigureAwait(false);
                 }
+                // Re-read the clock after the drain: the batch records its poll instant as LastGraphRecoveryUtc, and a
+                // long signal burst must not make a recovery that just completed look stale.
+                now = timeProvider.GetUtcNow();
                 if (now >= nextGraphRecoveryUtc)
                 {
                     await graphScheduler.ConvergeBatchAsync(now, stoppingToken).ConfigureAwait(false);

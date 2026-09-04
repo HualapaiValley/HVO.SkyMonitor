@@ -495,6 +495,7 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
         "canceled" => "canceled",
         "superseded" => "superseded",
         "source-unavailable" => "source-unavailable",
+        "revision-retired" => "revision-retired",
         _ => "other"
     };
 

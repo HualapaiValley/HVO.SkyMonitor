@@ -2024,6 +2024,73 @@ public sealed class CentralProcessingGraphMigrationTests
         }
     }
 
+    /// <summary>
+    /// The revision is read without a lock during selection; retirement serializes on the revision row. A retire
+    /// committing after selection but before the seal is observed by the in-transaction revision fence, so no
+    /// execution is ever sealed against a retired revision.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerExpansionRejectsRevisionRetiredBetweenSelectionAndSeal()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphRevisionFence_{Guid.NewGuid():N}"
+        };
+        var gate = new SourceFenceGateInterceptor(SourceFenceGateStage.AfterSourceRowLock);
+        var schedulerOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .AddInterceptors(gate)
+            .Options;
+        var plainOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(schedulerOptions);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (raw, graphScheduler, workerTelemetry) =
+                await SeedFencedPreviewGraphAsync(context, now, "revision-fence").ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            var revisionId = await context.CentralProcessingGraphRevisions.AsNoTracking().Select(item => item.Id)
+                .SingleAsync().ConfigureAwait(false);
+            await using var catalogContext = new ApplicationDbContext(plainOptions);
+            using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+            var catalog = new ProcessingGraphCatalogService(
+                catalogContext,
+                new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog()),
+                TimeProvider.System,
+                catalogTelemetry,
+                NullLogger<ProcessingGraphCatalogService>.Instance);
+
+            var expansion = graphScheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None);
+            await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            // Sources are fenced but the revision is not yet, so the retirement commits ahead of the seal.
+            var retired = await catalog.RetireRevisionAsync(
+                revisionId, "operator-revision-fence", "superseded", true, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            gate.Release();
+            var expanded = await expansion.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+
+            retired.Outcome.Should().Be(CentralProcessingGraphMutationOutcome.Applied);
+            expanded.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Invalid);
+            expanded.ReasonCode.Should().Be("revision-retired");
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking().CountAsync().ConfigureAwait(false))
+                .Should().Be(0, "no execution is sealed against a revision retired before the seal");
+            (await context.CentralDerivativeJobs.AsNoTracking().CountAsync().ConfigureAwait(false)).Should().Be(0);
+            (await context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == raw.Id).ConfigureAwait(false))
+                .ObjectState.Should().Be(CentralArtifactObjectState.Available, "the source itself is untouched");
+        }
+        finally
+        {
+            gate.Release();
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
     private const string FenceBucket = "skymonitor-artifacts";
     private const string FenceBucketPrefix = "s3://" + FenceBucket + "/";
 

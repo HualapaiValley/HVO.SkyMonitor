@@ -464,33 +464,14 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 return new(CentralProcessingGraphScheduleOutcome.Existing, existing);
             }
             // Selection above ran without holds, so retention may have expired a source in the meantime. Fence every
-            // source on the same row lock CentralArtifactRetentionService.ReserveAsync takes (stable ascending order so
-            // two concurrent expansions never deadlock), then revalidate from the database rather than the selected
-            // instances. Retention's reservation runs after this lock and sees the sealed execution reference; an
-            // expansion that loses the race fails here explicitly instead of sealing an execution whose source is gone.
-            if (dbContext.Database.IsSqlServer())
-            {
-                foreach (var sourceId in orderedSources.Select(item => item.Artifact.Id).Distinct().Order())
-                {
-                    _ = await CentralArtifactRetentionLock.AcquireAsync(dbContext, sourceId, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-            }
-            var fencedSourceIds = orderedSources.Select(item => item.Artifact.Id).Distinct().ToArray();
-            var fencedSources = await dbContext.CentralArtifacts.AsNoTracking()
-                .Where(item => fencedSourceIds.Contains(item.Id))
-                .Select(item => new
-                {
-                    item.Id,
-                    item.ObjectState,
-                    item.ReconstructionState,
-                    item.ChecksumSha256,
-                    item.ByteLength
-                })
-                .ToDictionaryAsync(item => item.Id, cancellationToken).ConfigureAwait(false);
+            // source on the row lock retention reserves under and revalidate from the database rather than the
+            // selected instances. Retention's reservation runs after this lock and sees the sealed execution
+            // reference; an expansion that loses the race fails here explicitly instead of sealing an execution whose
+            // source is gone.
+            var fencedSources = await CentralArtifactRetentionLock.FenceAsync(
+                dbContext, orderedSources.Select(item => item.Artifact.Id), cancellationToken).ConfigureAwait(false);
             if (orderedSources.Any(item => !fencedSources.TryGetValue(item.Artifact.Id, out var fenced) ||
-                    fenced.ObjectState != CentralArtifactObjectState.Available ||
-                    fenced.ReconstructionState != CentralReconstructionState.Complete ||
+                    !fenced.IsUsable ||
                     !string.Equals(fenced.ChecksumSha256, item.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
                     fenced.ByteLength != item.Artifact.ByteLength))
             {
@@ -504,7 +485,39 @@ internal sealed partial class CentralProcessingGraphScheduler(
                     executionClass.ToString(), "source-unavailable", timeProvider.GetElapsedTime(started), 0);
                 return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "source-retention-expired");
             }
+            // The revision was likewise read without a lock. Retirement serializes on the revision row
+            // (CentralProcessingGraphAssignmentLock.AcquireRevisionAsync), so taking it here and re-reading the
+            // lifecycle guarantees no execution is sealed against a revision whose retirement is already committed,
+            // whatever effective instant the selection used.
+            if (dbContext.Database.IsSqlServer())
+            {
+                _ = await CentralProcessingGraphAssignmentLock.AcquireRevisionAsync(
+                    dbContext, revision.Id, cancellationToken).ConfigureAwait(false);
+            }
+            var retiredAtUtc = await dbContext.CentralProcessingGraphRevisions.AsNoTracking()
+                .Where(item => item.Id == revision.Id)
+                .Select(item => item.RetiredAtUtc)
+                .SingleAsync(cancellationToken).ConfigureAwait(false);
+            if (retiredAtUtc is not null)
+            {
+                rolledBack = true;
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                if (logger is not null)
+                {
+                    Log.RevisionRetiredFenced(logger, executionClass.ToString(), revision.Id, requestIdentity);
+                }
+                telemetry.RecordGraphExpansion(
+                    executionClass.ToString(), "revision-retired", timeProvider.GetElapsedTime(started), 0);
+                return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "revision-retired");
+            }
             var anchor = sources[0];
+            // Every caller selects frame-locally (live from the anchor frame, replay after its explicit check), and
+            // the frame, installation, and environmental inputs frozen below all derive from the anchor; a cross-frame
+            // set here is a programming error, never a request outcome.
+            if (sources.Any(source => source.CentralFrameId != anchor.CentralFrameId))
+            {
+                throw new CentralDerivativeJobStateException("Processing graph sources must belong to one frame.");
+            }
             var frame = anchor.Frame!;
             var installation = frame.LogicalCameraInstallation
                 ?? throw new CentralDerivativeJobStateException("The graph source installation is unavailable.");
@@ -1967,5 +1980,9 @@ internal sealed partial class CentralProcessingGraphScheduler(
         [LoggerMessage(2152, LogLevel.Warning,
             "Processing graph expansion rejected: a selected source was no longer available inside the retention fence. Class={ExecutionClass}, RequestIdentity={RequestIdentity}")]
         public static partial void SourceRetentionFenced(ILogger logger, string executionClass, string requestIdentity);
+
+        [LoggerMessage(2153, LogLevel.Warning,
+            "Processing graph expansion rejected: the revision was retired before the execution could be sealed. Class={ExecutionClass}, RevisionId={RevisionId}, RequestIdentity={RequestIdentity}")]
+        public static partial void RevisionRetiredFenced(ILogger logger, string executionClass, Guid revisionId, string requestIdentity);
     }
 }

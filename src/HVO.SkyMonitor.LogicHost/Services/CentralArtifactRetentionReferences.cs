@@ -578,8 +578,47 @@ internal enum CentralArtifactRetentionResult
     Pending
 }
 
+internal sealed record CentralArtifactRetentionFenceSnapshot(
+    Guid Id,
+    CentralArtifactObjectState ObjectState,
+    CentralReconstructionState ReconstructionState,
+    string ChecksumSha256,
+    long ByteLength)
+{
+    public bool IsUsable
+        => ObjectState == CentralArtifactObjectState.Available &&
+            ReconstructionState == CentralReconstructionState.Complete;
+}
+
 internal static class CentralArtifactRetentionLock
 {
+    /// <summary>
+    /// Fences a set of artifacts against concurrent retention inside the caller's open transaction: takes the same row
+    /// lock <see cref="CentralArtifactRetentionService"/> reserves under, in ascending identifier order so two fencing
+    /// transactions never deadlock, then returns the durable state read under that lock. Providers without SQL Server
+    /// locking semantics skip the lock and still revalidate. Missing identifiers are absent from the result.
+    /// </summary>
+    public static async Task<IReadOnlyDictionary<Guid, CentralArtifactRetentionFenceSnapshot>> FenceAsync(
+        ApplicationDbContext dbContext,
+        IEnumerable<Guid> centralArtifactIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(dbContext);
+        var ids = centralArtifactIds.Distinct().Order().ToArray();
+        if (dbContext.Database.IsSqlServer())
+        {
+            foreach (var id in ids)
+            {
+                _ = await AcquireAsync(dbContext, id, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        return await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(item => ids.Contains(item.Id))
+            .Select(item => new CentralArtifactRetentionFenceSnapshot(
+                item.Id, item.ObjectState, item.ReconstructionState, item.ChecksumSha256, item.ByteLength))
+            .ToDictionaryAsync(item => item.Id, cancellationToken).ConfigureAwait(false);
+    }
+
     public static Task<int> AcquireAsync(
         ApplicationDbContext dbContext,
         Guid centralArtifactId,
