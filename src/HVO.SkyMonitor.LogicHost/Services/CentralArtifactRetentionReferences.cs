@@ -2,6 +2,7 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
+using System.Data.SqlTypes;
 using System.Data.Common;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
@@ -580,6 +581,32 @@ internal enum CentralArtifactRetentionResult
 
 internal static class CentralArtifactRetentionLock
 {
+    /// <summary>
+    /// Fences a set of artifacts against concurrent retention inside the caller's open transaction: takes the row
+    /// lock <see cref="CentralArtifactRetentionService"/> reserves under on each row, in SQL Server
+    /// <c>uniqueidentifier</c> order so the acquisition order matches a set-based <c>UPDLOCK</c> join over the same
+    /// rows (the window resolver's), then returns the rows as read under those locks. Providers without SQL Server
+    /// locking semantics only read. Missing identifiers are absent from the result.
+    /// </summary>
+    public static async Task<IReadOnlyDictionary<Guid, CentralArtifact>> FenceAsync(
+        ApplicationDbContext dbContext,
+        IEnumerable<Guid> centralArtifactIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(dbContext);
+        var ids = centralArtifactIds.Distinct().OrderBy(static id => new SqlGuid(id)).ToArray();
+        if (dbContext.Database.IsSqlServer())
+        {
+            foreach (var id in ids)
+            {
+                _ = await AcquireAsync(dbContext, id, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        return await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(item => ids.Contains(item.Id))
+            .ToDictionaryAsync(item => item.Id, cancellationToken).ConfigureAwait(false);
+    }
+
     public static Task<int> AcquireAsync(
         ApplicationDbContext dbContext,
         Guid centralArtifactId,

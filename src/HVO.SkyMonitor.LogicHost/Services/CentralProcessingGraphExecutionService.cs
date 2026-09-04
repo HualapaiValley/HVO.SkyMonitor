@@ -61,7 +61,8 @@ internal enum CentralProcessingGraphCancellationOutcome
 {
     Applied,
     Unchanged,
-    NotFoundOrDenied
+    NotFoundOrDenied,
+    Forbidden
 }
 
 internal interface ICentralProcessingGraphExecutionService
@@ -244,6 +245,13 @@ internal sealed class CentralProcessingGraphExecutionService(
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             return CentralProcessingGraphCancellationOutcome.NotFoundOrDenied;
         }
+        // Reading an execution needs only membership; stopping one is a management action. A Viewer who requested
+        // their own replay may still cancel it, but never a live ingest execution or another member's replay.
+        if (!await HasCancellationAuthorityAsync(execution, actorId, cancellationToken).ConfigureAwait(false))
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return CentralProcessingGraphCancellationOutcome.Forbidden;
+        }
         if (IsTerminal(execution.Status) || execution.Status == CentralProcessingGraphExecutionStatus.CancelRequested)
         {
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -304,6 +312,16 @@ internal sealed class CentralProcessingGraphExecutionService(
         }
         return sourceArtifactIds.Select(id => sources.Single(source => source.ArtifactId == id).CentralArtifactId).ToArray();
     }
+
+    private async Task<bool> HasCancellationAuthorityAsync(
+        CentralProcessingGraphExecution execution,
+        string actorId,
+        CancellationToken cancellationToken)
+        => execution.ExecutionClass == CentralProcessingGraphExecutionClass.Replay &&
+                string.Equals(execution.ActorId, actorId, StringComparison.Ordinal)
+            || await ObservatoryMembershipAccess.ForManager(dbContext, actorId)
+                .AnyAsync(membership => membership.ObservatoryId == execution.ObservatoryId, cancellationToken)
+                .ConfigureAwait(false);
 
     private IQueryable<CentralProcessingGraphExecution> AuthorizedQuery(string actorId, Guid? observatoryScope)
     {

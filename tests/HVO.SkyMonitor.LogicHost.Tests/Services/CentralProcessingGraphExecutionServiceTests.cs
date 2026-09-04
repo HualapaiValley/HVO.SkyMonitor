@@ -213,6 +213,99 @@ public sealed class CentralProcessingGraphExecutionServiceTests
     }
 
     [TestMethod]
+    public async Task CancellationRequiresManagementAuthorityOrOwnershipOfTheReplay()
+    {
+        await using var context = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .ConfigureWarnings(warnings => warnings.Ignore(InMemoryEventId.TransactionIgnoredWarning))
+            .Options);
+        var now = DateTimeOffset.UtcNow;
+        var observatory = CreateObservatory("owner", "authority", now);
+        var users = new Dictionary<string, ApplicationUser>(StringComparer.Ordinal);
+        foreach (var (userId, role) in new (string, ObservatoryMembershipRole?)[]
+                 {
+                     ("viewer", ObservatoryMembershipRole.Viewer),
+                     ("manager", ObservatoryMembershipRole.Manager),
+                     ("owner", ObservatoryMembershipRole.Owner),
+                     ("outsider", null)
+                 })
+        {
+            var user = new ApplicationUser { Id = userId, UserName = userId, AccountType = AccountType.User };
+            users[userId] = user;
+            context.Add(user);
+            if (role is { } membershipRole)
+            {
+                context.ObservatoryMemberships.Add(new ObservatoryMembership
+                {
+                    Observatory = observatory,
+                    User = user,
+                    UserId = user.Id,
+                    Role = membershipRole,
+                    AddedAtUtc = now
+                });
+            }
+        }
+        var ownReplay = CreateExecution(observatory.Id, now);
+        ownReplay.ActorId = "viewer";
+        ownReplay.RequestIdentitySha256 = new string('1', 64);
+        var otherReplay = CreateExecution(observatory.Id, now);
+        otherReplay.ActorId = "manager";
+        otherReplay.RequestIdentitySha256 = new string('2', 64);
+        var live = CreateExecution(observatory.Id, now);
+        live.ExecutionClass = CentralProcessingGraphExecutionClass.Live;
+        live.Trigger = CentralProcessingGraphTrigger.Ingest;
+        live.AssignmentId = Guid.NewGuid();
+        live.ActorId = "logic-host";
+        live.RequestIdentitySha256 = new string('3', 64);
+        context.AddRange(observatory, ownReplay, otherReplay, live);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        foreach (var execution in new[] { ownReplay, otherReplay, live })
+        {
+            execution.Status = CentralProcessingGraphExecutionStatus.Running;
+            execution.ExpandedAtUtc = now;
+            execution.StartedAtUtc = now;
+        }
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        context.ChangeTracker.Clear();
+        var signal = new CentralProcessingGraphConvergenceSignal();
+        var service = new CentralProcessingGraphExecutionService(context, new UnusedScheduler(), signal);
+
+        var viewerOnLive = await service.CancelAsync(live.Id, "viewer", null, now, CancellationToken.None)
+            .ConfigureAwait(false);
+        var viewerOnOtherReplay = await service.CancelAsync(otherReplay.Id, "viewer", null, now, CancellationToken.None)
+            .ConfigureAwait(false);
+        var viewerOnOwnReplay = await service.CancelAsync(ownReplay.Id, "viewer", null, now, CancellationToken.None)
+            .ConfigureAwait(false);
+        var managerOnLive = await service.CancelAsync(live.Id, "manager", null, now, CancellationToken.None)
+            .ConfigureAwait(false);
+        var ownerOnOtherReplay = await service.CancelAsync(otherReplay.Id, "owner", null, now, CancellationToken.None)
+            .ConfigureAwait(false);
+        var outsiderOnLive = await service.CancelAsync(live.Id, "outsider", null, now, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(CentralProcessingGraphCancellationOutcome.Forbidden, viewerOnLive);
+        Assert.AreEqual(CentralProcessingGraphCancellationOutcome.Forbidden, viewerOnOtherReplay);
+        Assert.AreEqual(CentralProcessingGraphCancellationOutcome.Applied, viewerOnOwnReplay);
+        Assert.AreEqual(CentralProcessingGraphCancellationOutcome.Applied, managerOnLive);
+        Assert.AreEqual(CentralProcessingGraphCancellationOutcome.Applied, ownerOnOtherReplay);
+        Assert.AreEqual(CentralProcessingGraphCancellationOutcome.NotFoundOrDenied, outsiderOnLive,
+            "a non-member cannot even observe the execution, so the outcome stays indistinguishable from absence");
+        context.ChangeTracker.Clear();
+        var persisted = await context.CentralProcessingGraphExecutions.AsNoTracking()
+            .ToDictionaryAsync(item => item.Id).ConfigureAwait(false);
+        Assert.AreEqual(CentralProcessingGraphExecutionStatus.CancelRequested, persisted[ownReplay.Id].Status);
+        Assert.AreEqual(CentralProcessingGraphExecutionStatus.CancelRequested, persisted[live.Id].Status);
+        Assert.AreEqual(CentralProcessingGraphExecutionStatus.CancelRequested, persisted[otherReplay.Id].Status);
+        var signaled = new List<Guid>();
+        while (signal.TryRead(out var signaledId))
+        {
+            signaled.Add(signaledId);
+        }
+        CollectionAssert.AreEquivalent(new[] { ownReplay.Id, live.Id, otherReplay.Id }, signaled,
+            "only applied cancellations wake convergence; forbidden and denied attempts signal nothing");
+    }
+
+    [TestMethod]
     public async Task CancellationRecordsRequestingActorOnNonterminalNodesWithoutChangingTheirStatus()
     {
         await using var context = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()

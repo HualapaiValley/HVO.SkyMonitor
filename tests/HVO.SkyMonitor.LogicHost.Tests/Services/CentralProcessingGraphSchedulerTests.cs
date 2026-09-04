@@ -864,6 +864,139 @@ public sealed class CentralProcessingGraphSchedulerTests
             .ConfigureAwait(false);
         Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Invalid, malformed.Outcome);
         Assert.AreEqual("revision-invalid", malformed.ReasonCode);
+
+        // Retirement is checked before the definition is compiled: a retired revision is refused for new replay
+        // work regardless of its content, and the reason names retirement rather than an unrelated defect.
+        malformedRevision.RetiredAtUtc = now;
+        malformedRevision.RetiredByUserId = "operator";
+        malformedRevision.RetirementReasonCode = "superseded";
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var retired = await scheduler.ScheduleReplayAsync(valid, now, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Invalid, retired.Outcome);
+        Assert.AreEqual("revision-retired", retired.ReasonCode);
+    }
+
+    [TestMethod]
+    public async Task ScheduleReplayRejectsSourcesThatSpanFramesOfOneInstallation()
+    {
+        await using var context = CreateContext();
+        var now = DateTimeOffset.UtcNow;
+        var observatoryId = Guid.NewGuid();
+        var registrationId = Guid.NewGuid();
+        var camera = new LogicalCamera
+        {
+            ObservatoryId = observatoryId,
+            Slug = "span-camera",
+            Name = "Span Camera",
+            Description = "Test",
+            CreatedAtUtc = now.AddDays(-1),
+            CreatedByUserId = "operator"
+        };
+        var installation = new LogicalCameraInstallation
+        {
+            LogicalCamera = camera,
+            LogicalCameraId = camera.Id,
+            RegistrationId = registrationId,
+            InstallationPublicId = Guid.NewGuid(),
+            AssignedAtUtc = now.AddDays(-1),
+            AssignedByUserId = "operator",
+            AssignmentReasonCode = "test"
+        };
+        camera.Installations.Add(installation);
+        CentralArtifact CreateFrameRaw(long captureSequence)
+        {
+            var raw = CreateArtifact();
+            raw.Frame!.ObservatoryId = observatoryId;
+            raw.Frame.RegistrationId = registrationId;
+            raw.Frame.LogicalCameraInstallation = installation;
+            raw.Frame.LogicalCameraInstallationId = installation.Id;
+            raw.Frame.CaptureSequence = captureSequence;
+            raw.Frame.Artifacts.Add(raw);
+            return raw;
+        }
+        static CentralArtifact CreateCalibrated(CentralArtifact raw, char checksumDigit)
+        {
+            var calibrated = new CentralArtifact
+            {
+                CentralFrameId = raw.Frame!.Id,
+                Frame = raw.Frame,
+                DevicePublicId = raw.DevicePublicId,
+                ArtifactId = Guid.NewGuid(),
+                Role = FrameArtifactRole.Calibrated,
+                Variant = "calibrated",
+                RecipeVersion = "calibrated-v1",
+                ManifestSchemaVersion = "manifest-v1",
+                MediaType = "application/x-hvo-linear-frame",
+                ByteLength = 2,
+                ChecksumSha256 = new string(checksumDigit, 64),
+                StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}",
+                IdempotencyKey = Guid.NewGuid().ToString("N"),
+                ReceivedAtUtc = raw.ReceivedAtUtc,
+                CreatedUtc = raw.CreatedUtc,
+                ObjectState = CentralArtifactObjectState.Available,
+                ReconstructionState = CentralReconstructionState.Complete
+            };
+            raw.Frame.Artifacts.Add(calibrated);
+            return calibrated;
+        }
+        var firstRaw = CreateFrameRaw(100);
+        var firstCalibrated = CreateCalibrated(firstRaw, '2');
+        var secondRaw = CreateFrameRaw(101);
+        var secondCalibrated = CreateCalibrated(secondRaw, '3');
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        var definition = CreateRawAndCalibratedPreviewGraph();
+        var portable = ProcessingGraphCompiler.Compile(definition).Plan!;
+        var central = ProcessingGraphCompiler.Compile(
+            definition, new(ProcessingGraphHosts.LogicHost, registry.Capabilities)).Plan!;
+        var revision = new CentralProcessingGraphRevision
+        {
+            Name = definition.Name,
+            Revision = definition.Revision,
+            DefinitionJson = Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(definition)),
+            DefinitionIdentitySha256 = portable.DefinitionIdentitySha256,
+            PortablePlanIdentitySha256 = portable.PlanIdentitySha256,
+            CentralPlanIdentitySha256 = central.PlanIdentitySha256,
+            CreatedAtUtc = now.AddMinutes(-2),
+            CreatedByUserId = "operator",
+            PublishedAtUtc = now.AddMinutes(-1),
+            PublishedByUserId = "operator"
+        };
+        context.AddRange(
+            camera, installation, firstRaw.Frame!, firstRaw, firstCalibrated, secondRaw.Frame!, secondRaw,
+            secondCalibrated, revision);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+        var scheduler = CreateScheduler(context, telemetry, catalogTelemetry, nodeRegistry: registry);
+
+        Guid[] OrderedSources(CentralArtifact raw, CentralArtifact calibrated)
+            => central.Sources.Select(source => source.Id switch
+            {
+                "$raw" => raw.Id,
+                "$calibrated" => calibrated.Id,
+                _ => throw new InvalidOperationException("Unexpected graph source.")
+            }).ToArray();
+
+        // Both frames belong to one observatory and one installation, so only the frame identity separates them.
+        var spanning = await scheduler.ScheduleReplayAsync(
+            new(revision.Id, OrderedSources(firstRaw, secondCalibrated), "operator", "span-frames", "test"),
+            now,
+            CancellationToken.None).ConfigureAwait(false);
+        var sameFrame = await scheduler.ScheduleReplayAsync(
+            new(revision.Id, OrderedSources(firstRaw, firstCalibrated), "operator", "same-frame", "test"),
+            now,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Invalid, spanning.Outcome);
+        Assert.AreEqual("replay-sources-span-frames", spanning.ReasonCode);
+        Assert.IsNull(spanning.Execution);
+        Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Created, sameFrame.Outcome);
+        Assert.AreEqual(sameFrame.Execution!.Id, (await context.CentralProcessingGraphExecutions.AsNoTracking()
+            .SingleAsync().ConfigureAwait(false)).Id, "the rejected replay persisted nothing");
+        CollectionAssert.AreEquivalent(
+            new[] { firstRaw.Id, firstCalibrated.Id },
+            sameFrame.Execution!.Sources.Select(source => source.CentralArtifactId).ToArray());
+        Assert.IsTrue(sameFrame.Execution.Sources.All(source => source.Artifact!.CentralFrameId == firstRaw.Frame!.Id));
     }
 
     [TestMethod]
@@ -2156,6 +2289,58 @@ public sealed class CentralProcessingGraphSchedulerTests
                         [-2, -1, 0, 1, 2],
                         ["rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile"])
                     : null,
+                ImmutableArray<string>.Empty,
+                [ProcessingGraphHosts.LogicHost])]);
+    }
+
+    /// <summary>A single Preview node that needs both frame sources: Raw as its primary artifact, Calibrated for ordering.</summary>
+    private static ProcessingGraphDefinition CreateRawAndCalibratedPreviewGraph()
+    {
+        _ = BuiltInProcessingRecipes.TryGetDefinition(
+            BuiltInProcessingRecipes.EncodedPreview, out var recipeDefinition);
+        var options = BuiltInProcessingRecipes.NormalizeOptions(
+            BuiltInProcessingRecipes.EncodedPreview,
+            CaptureContractJson.SerializeToElement(new EncodedPreviewOptions()));
+        return new(
+            ProcessingGraphSchemaVersions.Current,
+            "test-raw-and-calibrated",
+            "1",
+            [
+                new ProcessingGraphSourceDefinition(
+                    "$raw",
+                    [new ProcessingGraphProductContract(
+                        FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData)]),
+                new ProcessingGraphSourceDefinition(
+                    "$calibrated",
+                    [new ProcessingGraphProductContract(
+                        FrameArtifactRole.Calibrated, "source", ProcessingProductKind.PixelData)])
+            ],
+            [new ProcessingGraphNodeDefinition(
+                "Preview",
+                BuiltInProcessingRecipes.EncodedPreview,
+                CentralDerivativeRecipeCatalog.PreviewRecipeVersion,
+                ProcessingOperationKind.Transform,
+                true,
+                ProcessingGraphNodeFailurePolicy.Required,
+                0,
+                options,
+                [
+                    new ProcessingGraphDependencyDefinition("$raw"),
+                    new ProcessingGraphDependencyDefinition("$calibrated", ProcessingGraphDependencyKind.Ordering)
+                ],
+                [new ProcessingGraphInputContract(
+                    [FrameArtifactRole.Raw],
+                    [ProcessingProductKind.PixelData],
+                    [],
+                    [],
+                    [])],
+                [new ProcessingGraphProductContract(
+                    FrameArtifactRole.Preview,
+                    CentralDerivativeRecipeCatalog.PreviewVariant,
+                    ProcessingProductKind.PixelData,
+                    recipeDefinition,
+                    MediaType: "image/jpeg")],
+                null,
                 ImmutableArray<string>.Empty,
                 [ProcessingGraphHosts.LogicHost])]);
     }

@@ -102,6 +102,9 @@ internal sealed class ProcessingGraphExecutionsController(
             CentralProcessingGraphCancellationOutcome.Applied => Accepted(),
             CentralProcessingGraphCancellationOutcome.Unchanged => NoContent(),
             CentralProcessingGraphCancellationOutcome.NotFoundOrDenied => NotFound(),
+            // The caller can already read this execution through its membership, so refusing the management action
+            // discloses nothing further and 403 states the real reason instead of pretending the execution is absent.
+            CentralProcessingGraphCancellationOutcome.Forbidden => Forbid(),
             _ => throw new InvalidOperationException("The graph cancellation outcome is unsupported.")
         };
     }

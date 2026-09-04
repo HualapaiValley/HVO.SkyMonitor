@@ -192,6 +192,36 @@ public sealed class CentralDerivativeJobSchedulerTransientOwnershipTests
         Assert.HasCount(1, hybridWithoutPolicy.Affected);
     }
 
+    /// <summary>
+    /// An explicit graph refusal (retired revision without an eligible fallback, or a source expired between
+    /// selection and seal) means no graph owns the frame: full legacy scheduling proceeds exactly as for
+    /// <c>NotApplicable</c>. The in-memory provider proves the legacy path was entered by failing at its hold fence,
+    /// the same signal the transient-only path above relies on; a graph-owned outcome never reaches that fence.
+    /// </summary>
+    [TestMethod]
+    [DataRow((int)CentralProcessingGraphScheduleOutcome.NotApplicable)]
+    [DataRow((int)CentralProcessingGraphScheduleOutcome.Invalid)]
+    public async Task InvalidLiveOutcomeFallsThroughToFullLegacyScheduling(int outcomeValue)
+    {
+        var now = new DateTimeOffset(2026, 9, 4, 9, 0, 0, TimeSpan.Zero);
+        var outcome = (CentralProcessingGraphScheduleOutcome)outcomeValue;
+        await using var context = CreateContext();
+        var artifact = CreateArtifact(FrameArtifactRole.Raw);
+        context.AddRange(artifact.Frame!, artifact);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var scheduler = new CentralDerivativeJobScheduler(
+            context,
+            new CentralDerivativeRecipeCatalog(),
+            new RecordingWindowResolver(),
+            graphScheduler: new StubGraphScheduler(new CentralProcessingGraphScheduleResult(
+                outcome, ReasonCode: outcome == CentralProcessingGraphScheduleOutcome.Invalid ? "revision-retired" : null)));
+
+        var legacyPath = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            scheduler.EnsureRequiredJobsAsync(artifact, now, CancellationToken.None)).ConfigureAwait(false);
+
+        Assert.Contains("relational database provider", legacyPath.Message);
+    }
+
     private static ApplicationDbContext CreateContext()
         => new(new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())

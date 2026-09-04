@@ -246,6 +246,7 @@ public sealed class CentralDerivativeWorkerTests
 
         await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
         await jobs.SecondClaim.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await WaitUntilAsync(() => scheduler.ConvergedIds.Count == 2, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
 
         scheduler.ConvergedIds.Should().Contain(ScriptedGraphScheduler.CorruptExecutionId);
@@ -268,6 +269,59 @@ public sealed class CentralDerivativeWorkerTests
             .Should().BeTrue("a real database fault during signaled convergence still degrades database health");
     }
 
+    /// <summary>
+    /// The health check reports <c>graph-recovery-stale</c> after <c>2 x QueueSampleInterval</c>. Graph recovery used to
+    /// run inline in slot 0's claim loop, so a recipe longer than that on a single-slot worker starved recovery and
+    /// signaled convergence. Both must keep running while the only slot is still executing.
+    /// </summary>
+    [TestMethod]
+    public async Task GraphRecoveryAndSignaledConvergenceContinueWhileTheOnlySlotExecutesALongRecipeAsync()
+    {
+        var gate = new BlockingExecutor();
+        var jobs = new ScriptedJobService
+        {
+            Claim = (attempt, _) => Task.FromResult(attempt == 1 ? CreateLease() : null)
+        };
+        var signal = new CentralProcessingGraphConvergenceSignal();
+        var scheduler = new ScriptedGraphScheduler();
+        await using var harness = CreateHarness(
+            jobs,
+            _ => gate,
+            graphScheduler: scheduler,
+            signal: signal,
+            queueSampleInterval: TimeSpan.FromMilliseconds(50));
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        var recoveryPollsAtEntry = scheduler.ConvergeBatchCount;
+        var executionId = Guid.NewGuid();
+        signal.Signal(executionId);
+        await WaitUntilAsync(
+            () => scheduler.ConvergedIds.Contains(executionId) && scheduler.ConvergeBatchCount >= recoveryPollsAtEntry + 2,
+            TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        gate.Released.Should().BeFalse("the recipe is still executing while recovery and convergence progressed");
+        gate.Release();
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        scheduler.ConvergedIds.Should().Contain(executionId);
+        scheduler.ConvergeBatchCount.Should().BeGreaterThanOrEqualTo(recoveryPollsAtEntry + 2,
+            "periodic recovery kept polling on its own cadence while the slot was busy");
+        harness.Telemetry.ActiveCount.Should().Be(0);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!condition())
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new TimeoutException("The worker did not reach the expected state in time.");
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(10)).ConfigureAwait(false);
+        }
+    }
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2000:Dispose objects before losing scope",
@@ -277,7 +331,8 @@ public sealed class CentralDerivativeWorkerTests
         Func<IServiceProvider, ICentralDerivativeJobExecutor> executor,
         TimeSpan? renewalInterval = null,
         ICentralProcessingGraphScheduler? graphScheduler = null,
-        CentralProcessingGraphConvergenceSignal? signal = null)
+        CentralProcessingGraphConvergenceSignal? signal = null,
+        TimeSpan? queueSampleInterval = null)
     {
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(builder =>
@@ -294,7 +349,7 @@ public sealed class CentralDerivativeWorkerTests
         var options = Options.Create(new CentralDerivativeWorkerOptions
         {
             PollInterval = TimeSpan.FromMilliseconds(10),
-            QueueSampleInterval = TimeSpan.FromHours(1),
+            QueueSampleInterval = queueSampleInterval ?? TimeSpan.FromHours(1),
             LeaseDuration = TimeSpan.FromSeconds(1),
             RenewalInterval = renewalInterval ?? TimeSpan.FromMilliseconds(250)
         });
@@ -331,7 +386,35 @@ public sealed class CentralDerivativeWorkerTests
             return Converge(executionId);
         }
 
-        public Task ConvergeBatchAsync(DateTimeOffset now, CancellationToken cancellationToken) => Task.CompletedTask;
+        public int ConvergeBatchCount => Volatile.Read(ref _convergeBatchCount);
+
+        private int _convergeBatchCount;
+
+        public Task ConvergeBatchAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _convergeBatchCount);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class BlockingExecutor : ICentralDerivativeJobExecutor
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool Released => _release.Task.IsCompleted;
+
+        public void Release() => _release.TrySetResult();
+
+        public async Task<CentralDerivativeExecutionResult> ExecuteAsync(
+            CentralDerivativeJobLease lease,
+            CancellationToken cancellationToken)
+        {
+            Entered.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.Produced, Guid.NewGuid(), null);
+        }
     }
 
     private static CentralDerivativeJobLease CreateLease() => new(
