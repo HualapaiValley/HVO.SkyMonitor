@@ -93,6 +93,10 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         var configurationContract = Label(labels, "io.hvo.skymonitor.configuration-contract");
         var catalogContract = Label(labels, "io.hvo.skymonitor.catalog-contract");
         var replayRunnerContract = Label(labels, "io.hvo.skymonitor.replay-runner-contract");
+        var minimumCompatibleRevision = Label(labels, "io.hvo.skymonitor.minimum-compatible-revision");
+        var identityMigration = Label(labels, "io.hvo.skymonitor.identity-migration");
+        var rawIngressSchema = Label(labels, "io.hvo.skymonitor.raw-ingress-schema");
+        var catalogManifestVersion = Label(labels, "io.hvo.skymonitor.catalog-manifest-version");
 
         return (identity, new ImageInstallationIdentity(
             request.ImageArchive is null ? "registry" : "archive",
@@ -105,7 +109,11 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             Component: component,
             ConfigurationContract: configurationContract,
             CatalogContract: catalogContract,
-            ReplayRunnerContract: replayRunnerContract));
+            ReplayRunnerContract: replayRunnerContract,
+            MinimumCompatibleRevision: minimumCompatibleRevision,
+            IdentityMigration: identityMigration,
+            RawIngressSchema: rawIngressSchema,
+            CatalogManifestVersion: catalogManifestVersion));
     }
 
     private async Task<HashSet<string>> ReadLoadedImageIdsAsync(string output, CancellationToken cancellationToken)

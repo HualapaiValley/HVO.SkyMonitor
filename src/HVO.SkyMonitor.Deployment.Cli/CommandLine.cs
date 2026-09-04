@@ -16,6 +16,14 @@ internal static class CommandLine
         {
             return ParseOwnerRecovery(args);
         }
+        if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "preflight")
+        {
+            return ParseStatePreflight(args);
+        }
+        if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "reset-state")
+        {
+            return ParseStateReset(args);
+        }
         return ParseLifecycle(args);
     }
 
@@ -198,7 +206,7 @@ internal static class CommandLine
             ["catalog", "rollback", ..] => (LifecycleOperationKind.CatalogRollback, 2),
             ["catalog", "gc", ..] => (LifecycleOperationKind.CatalogGarbageCollect, 2),
             _ => throw new InstallUsageException(
-                "Usage: hvo-skymonitor status|cameraagent <install|recover-owner|upgrade|rollback|reinstall|uninstall|purge>|catalog <install|select|rollback|gc> [options]")
+                "Usage: hvo-skymonitor status|cameraagent <install|recover-owner|preflight|reset-state|upgrade|rollback|reinstall|uninstall|purge>|catalog <install|select|rollback|gc> [options]")
         };
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         var flags = new HashSet<string>(StringComparer.Ordinal);
@@ -255,6 +263,67 @@ internal static class CommandLine
         }
         request.Validate();
         return request;
+    }
+
+    private static CameraAgentStatePreflightRequest ParseStatePreflight(string[] args)
+    {
+        var (values, flags) = ParseOptions(args, 2, ["--json"]);
+        RejectUnknown(values, ["--instance-id", "--product-root", "--image-ref"]);
+        var request = new CameraAgentStatePreflightRequest(
+            ParseGuid(Get(values, "--instance-id"), "--instance-id"),
+            Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
+            Get(values, "--image-ref"),
+            flags.Contains("--json"));
+        request.Validate();
+        return request;
+    }
+
+    private static CameraAgentStateResetRequest ParseStateReset(string[] args)
+    {
+        var (values, flags) = ParseOptions(args, 2, ["--json", "--dry-run"]);
+        RejectUnknown(values, ["--instance-id", "--confirm-instance-id", "--product-root"]);
+        var request = new CameraAgentStateResetRequest(
+            ParseGuid(Get(values, "--instance-id"), "--instance-id"),
+            ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
+            Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
+            flags.Contains("--dry-run"),
+            flags.Contains("--json"));
+        request.Validate();
+        return request;
+    }
+
+    private static (Dictionary<string, string?> Values, HashSet<string> Flags) ParseOptions(
+        string[] args,
+        int optionOffset,
+        IReadOnlyCollection<string> supportedFlags)
+    {
+        var values = new Dictionary<string, string?>(StringComparer.Ordinal);
+        var flags = new HashSet<string>(StringComparer.Ordinal);
+        for (var index = optionOffset; index < args.Length; index++)
+        {
+            var option = args[index];
+            if (!option.StartsWith("--", StringComparison.Ordinal))
+            {
+                throw new InstallUsageException("Unexpected positional argument.");
+            }
+            if (supportedFlags.Contains(option))
+            {
+                if (!flags.Add(option)) throw new InstallUsageException($"Duplicate option '{option}'.");
+                continue;
+            }
+            if (index + 1 >= args.Length || args[index + 1].StartsWith("--", StringComparison.Ordinal) ||
+                !values.TryAdd(option, args[++index]))
+            {
+                throw new InstallUsageException($"Option '{option}' requires one non-duplicate value.");
+            }
+        }
+        return (values, flags);
+    }
+
+    private static void RejectUnknown(Dictionary<string, string?> values, IReadOnlyCollection<string> known)
+    {
+        var unknown = values.Keys.FirstOrDefault(option => !known.Contains(option));
+        if (unknown is not null) throw new InstallUsageException($"Unknown option '{unknown}'.");
     }
 
     private static OwnerRecoveryRequest ParseOwnerRecovery(string[] args)
