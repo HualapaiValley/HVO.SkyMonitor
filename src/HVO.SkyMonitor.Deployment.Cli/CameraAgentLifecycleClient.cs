@@ -155,9 +155,10 @@ internal sealed class CameraAgentLifecycleClient(
             }
             catch (BudgetExceededException)
             {
-                // A read truncated by the approaching deadline says nothing new;
-                // a read that exhausted a full read budget does.
-                if (budget >= _budgets.ReadTimeout)
+                // A read truncated by the approaching deadline says nothing new
+                // once something has been observed; a read that exhausted a full
+                // read budget, or the only read the boundary ever got, does.
+                if (budget >= _budgets.ReadTimeout || (lastState is null && lastReadFailure is null))
                 {
                     lastReadFailure = "CameraAgent did not report its lifecycle state within its budget.";
                 }

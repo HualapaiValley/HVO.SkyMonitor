@@ -201,7 +201,7 @@ public sealed class CameraAgentLifecycleClientTests
             1 => State("PauseRequested", 3, rawLeased: 2),
             _ => new HttpResponseMessage(HttpStatusCode.NotFound)
         }));
-        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets with { ReadTimeout = TimeSpan.FromSeconds(1) });
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
@@ -305,6 +305,33 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
+    public async Task PauseAndDrain_ReportsTheOnlyBoundaryReadWhenItExhaustsItsBudget()
+    {
+        var operationId = Guid.NewGuid();
+        var budgets = new LifecycleBudgets(
+            ReadTimeout: TimeSpan.FromSeconds(1),
+            DrainDeadline: TimeSpan.FromSeconds(2),
+            DrainPollInterval: TimeSpan.FromMilliseconds(10));
+        using var handler = new ScriptedHandler(async (request, sequence, cancellationToken) =>
+        {
+            if (sequence == 1)
+            {
+                // The pause leaves less than one read budget, so the boundary gets the floor read only.
+                await Task.Delay(TimeSpan.FromMilliseconds(1500), cancellationToken);
+                return await CommandAsync(request, "pause", operationId, cancellationToken);
+            }
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            return State("Paused", 4);
+        });
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, budgets);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.PauseAndDrainAsync(operationId, "lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "the last state read failed: CameraAgent did not report its lifecycle state within its budget", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task Resume_WaitsThroughStartupInitializationForTheAcknowledgement()
     {
         var operationId = Guid.NewGuid();
@@ -324,7 +351,9 @@ public sealed class CameraAgentLifecycleClientTests
     [TestMethod]
     public async Task Resume_ReportsAnUnacknowledgedCommandAsAnInstallerFailure()
     {
-        var budgets = FastBudgets with { DrainDeadline = TimeSpan.FromMilliseconds(100) };
+        // The read budget is deliberately far larger than the drain budget so a
+        // resume that used the wrong one would exceed the elapsed-time bound.
+        var budgets = FastBudgets with { DrainDeadline = TimeSpan.FromMilliseconds(100), ReadTimeout = TimeSpan.FromSeconds(20) };
         using var handler = new ScriptedHandler(async (_, _, cancellationToken) =>
         {
             await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
