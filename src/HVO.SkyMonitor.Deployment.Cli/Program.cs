@@ -27,6 +27,9 @@ internal static class Program
         try
         {
             var command = CommandLine.ParseCommand(args);
+            // A --config install can select JSON output without a --json token, so the error stream mode follows
+            // the parsed command once parsing succeeds; the argv guess only covers a parse failure.
+            jsonErrors = command.Json;
             if (command is InstallDeploymentCommand install)
             {
                 var result = await CameraAgentInstaller.InstallAsync(install.Request, cancellation.Token).ConfigureAwait(false);
@@ -38,6 +41,38 @@ internal static class Program
                 else
                 {
                     await WriteHumanResultAsync(result).ConfigureAwait(false);
+                }
+            }
+            else if (command is CameraAgentStatePreflightRequest preflight)
+            {
+                var report = await CameraAgentStatePreflightManager.ExecuteAsync(preflight, cancellation.Token)
+                    .ConfigureAwait(false);
+                await Console.Out.WriteLineAsync(preflight.Json
+                    ? JsonSerializer.Serialize(report, DeploymentJsonContext.Default.CameraAgentStatePreflightReport)
+                    : CameraAgentStatePreflight.Render(report)).ConfigureAwait(false);
+                if (report.Compatible)
+                {
+                    return 0;
+                }
+                await WriteErrorAsync(
+                    preflight.Json,
+                    "state-incompatible",
+                    "The persisted CameraAgent state is incompatible with the candidate image.").ConfigureAwait(false);
+                return 1;
+            }
+            else if (command is CameraAgentStateResetRequest reset)
+            {
+                var result = await CameraAgentStateResetManager.ExecuteAsync(reset, cancellation.Token)
+                    .ConfigureAwait(false);
+                if (reset.Json)
+                {
+                    await Console.Out.WriteLineAsync(
+                        JsonSerializer.Serialize(result, DeploymentJsonContext.Default.CameraAgentStateResetResult))
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await WriteStateResetResultAsync(result).ConfigureAwait(false);
                 }
             }
             else if (command is OwnerRecoveryRequest recovery)
@@ -159,6 +194,23 @@ internal static class Program
         if (result.Running is not null) await Console.Out.WriteLineAsync($"Runtime: running={result.Running}; healthy={result.Healthy}").ConfigureAwait(false);
         foreach (var path in result.PreservedPaths) await Console.Out.WriteLineAsync($"Preserved: {path}").ConfigureAwait(false);
         if (result.ResumeCommand is not null) await Console.Out.WriteLineAsync($"Resume: {result.ResumeCommand}").ConfigureAwait(false);
+    }
+
+    private static async Task WriteStateResetResultAsync(CameraAgentStateResetResult result)
+    {
+        await Console.Out.WriteLineAsync($"Outcome: {result.Outcome}").ConfigureAwait(false);
+        await Console.Out.WriteLineAsync($"Operation: cameraagent state reset / {result.OperationId:D}").ConfigureAwait(false);
+        await Console.Out.WriteLineAsync($"Instance: {result.InstanceId:D}").ConfigureAwait(false);
+        foreach (var path in result.DeletedPaths)
+        {
+            await Console.Out.WriteLineAsync($"Destructive: {path}").ConfigureAwait(false);
+        }
+        foreach (var path in result.PreservedPaths)
+        {
+            await Console.Out.WriteLineAsync($"Preserved: {path}").ConfigureAwait(false);
+        }
+        await Console.Out.WriteLineAsync($"Evidence: {result.EvidencePath}").ConfigureAwait(false);
+        await Console.Out.WriteLineAsync($"Next: {result.NextCommand}").ConfigureAwait(false);
     }
 
     private static async Task WriteOwnerRecoveryResultAsync(OwnerRecoveryResult result)

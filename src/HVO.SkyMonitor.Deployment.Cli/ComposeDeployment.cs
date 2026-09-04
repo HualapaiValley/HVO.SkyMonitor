@@ -32,6 +32,23 @@ internal static class ComposeDeployment
         _ => throw new ArgumentOutOfRangeException(nameof(replayProfile))
     };
 
+    /// <summary>The Compose project and container name derived from the immutable instance identity.</summary>
+    public static string ContainerNameFor(Guid instanceId) => $"hvo-skymonitor-{instanceId:N}";
+
+    /// <summary>
+    /// Every writable state directory the generated Compose model can bind, including the replay-runner socket
+    /// directory, so a profile change never leaves a nested bind source for Docker to create as root.
+    /// </summary>
+    public static IReadOnlyList<string> WritableStateDirectories(string stateRoot) =>
+    [
+        Path.Combine(stateRoot, CameraAgentStateLayout.IdentityDirectoryName),
+        Path.Combine(stateRoot, CameraAgentStateLayout.DataProtectionDirectoryName),
+        Path.Combine(stateRoot, CameraAgentStateLayout.ProvisioningDirectoryName),
+        Path.Combine(stateRoot, CameraAgentStateLayout.RawDirectoryName),
+        Path.Combine(stateRoot, CameraAgentStateLayout.ArchiveDirectoryName),
+        Path.Combine(stateRoot, CameraAgentStateLayout.ReplayRunnerDirectoryName)
+    ];
+
     private const string Template = """
 services:
   cameraagent:
@@ -151,14 +168,17 @@ services:
         var secretsRoot = Path.Combine(outputPaths.ConfigRoot, "secrets");
         foreach (var path in new[]
         {
-            outputPaths.ConfigRoot, composeRoot, secretsRoot, outputPaths.StateRoot,
-            Path.Combine(outputPaths.StateRoot, "identity"), Path.Combine(outputPaths.StateRoot, "data-protection"),
-            Path.Combine(outputPaths.StateRoot, "provisioning"), Path.Combine(outputPaths.StateRoot, "raw"),
-            Path.Combine(outputPaths.StateRoot, "archive"), Path.Combine(outputPaths.StateRoot, "replay-runner"),
-            outputPaths.DeploymentStateRoot
+            outputPaths.ConfigRoot, composeRoot, secretsRoot, outputPaths.StateRoot, outputPaths.DeploymentStateRoot
         })
         {
             SafeFileSystem.CreateOwnerDirectory(path);
+        }
+
+        // Every writable bind source must exist with the runtime identity before Compose starts; Docker would
+        // otherwise create a missing nested source as root and the capability-dropped container could not restrict it.
+        foreach (var path in WritableStateDirectories(outputPaths.StateRoot))
+        {
+            SafeFileSystem.CreateRuntimeDirectory(path, uid, gid);
         }
 
         var configuration = CameraConfiguration.Generate(request, applicationIdentity);
