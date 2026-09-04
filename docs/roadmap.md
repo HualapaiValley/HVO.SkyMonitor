@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-09-02
+Status date: 2026-09-04
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -44,12 +44,15 @@ The planning horizons are:
 | `RM-005` | Local-first processing graphs and distributed runners | Generalize immutable graphs, durable CameraAgent jobs and replay, central graph execution, self-hosted runners, fairness, and optional elastic providers. | [Epic #421](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/421); [#422](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/422)-[#430](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/430) | Consumes `RM-004` product semantics and the delivered provider-neutral S3 application boundary. Current MinIO deployment and test infrastructure is an accepted temporary baseline; any backend change invalidates affected central evidence. Live CameraAgent processing remains immediate and in-process; only explicit archived replay or central work may use external runners. |
 | `RM-017` | Standalone CameraAgent product completion | Advance the delivered standalone foundation into independently testable, installable, operable, recoverable, observable, and releasable CameraAgent software, including coherent authenticated local workflows, named graph and replay operation, bounded immutable execution-evidence export, component-scoped quality gates, and signed multi-architecture distribution. | [Epic #513](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/513); [Standalone CameraAgent Product Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/2) | #532 delivered explicit product/test ownership after the `RM-005` CameraAgent edge checkpoint through #425; #515 now establishes the first product-workflow shell and recovery foundation. The retained [operations prototype at `fdca7f1`](https://github.com/RoySalisbury/HVO.SkyMonitor/commit/fdca7f10e7b2771a90fe02e23a3107d56f93cc06) guides visual hierarchy and interaction only, not runtime contracts. The export contract and release convergence also require #426-#428; #429 and #430 do not block completion. LogicHost product work is excluded, and existing optional integration remains compatibility and regression evidence only. Separately managed extensions, formats, notifications, hardware qualification, environmental-source acquisition, profiling, and native-CI evidence remain outside this completion claim. |
 
-`RM-005` remains Current but is partially paused after #425 delivered the
-CameraAgent edge checkpoint. Do not automatically claim #426-#430, but the
-operator may deliberately resume that central and scale tail within the shared
-capacity when it does not overlap active `RM-017` files or evidence windows.
-#426-#428 must complete before #536 can begin; #429 and #430 do not block
-`RM-017` and remain outside its automatic path.
+`RM-005` remains Current but is partially paused. #422-#425 delivered the
+CameraAgent edge checkpoint, #426-#427 delivered central processing graph
+delivery and durable graph execution (PR #546), and #547 hardened that merged
+execution boundary (PR #548; deferred observations continue in #549). Do not
+automatically claim #428-#430, but the operator may deliberately resume that
+runner and scale tail within the shared capacity when it does not overlap
+active `RM-017` files or evidence windows. #428 must complete before #536 can
+begin; #429 and #430 do not block `RM-017` and remain outside its automatic
+path.
 
 `RM-017` is Current beside the partially paused `RM-005`; #532 is delivered and
 #515 is the active critical-path candidate. One coordinator owns both queues and
@@ -125,8 +128,9 @@ RM-004 layered capture products
 RM-005 #422-#425 delivered CameraAgent edge checkpoint
   +-> RM-017 independent product, test, CI, and operator-workflow tranche
 
-RM-005 #426-#428 central graph and reusable runner contracts
-  +-> RM-017 immutable execution-evidence export and release convergence
+RM-005 #426-#427 delivered central graph execution, hardened by #547
+  +-> RM-005 #428 reusable runner contracts
+    +-> RM-017 immutable execution-evidence export and release convergence
 
 RM-017 standalone CameraAgent product completion
   +-> RM-018 LogicHost network operations and distribution

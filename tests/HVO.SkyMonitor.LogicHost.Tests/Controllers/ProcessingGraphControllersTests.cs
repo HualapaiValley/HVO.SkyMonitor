@@ -148,7 +148,8 @@ public sealed class ProcessingGraphControllersTests
         {
             (CentralProcessingGraphCancellationOutcome.Applied, typeof(AcceptedResult)),
             (CentralProcessingGraphCancellationOutcome.Unchanged, typeof(NoContentResult)),
-            (CentralProcessingGraphCancellationOutcome.NotFoundOrDenied, typeof(NotFoundResult))
+            (CentralProcessingGraphCancellationOutcome.NotFoundOrDenied, typeof(NotFoundResult)),
+            (CentralProcessingGraphCancellationOutcome.Forbidden, typeof(ForbidResult))
         };
         foreach (var expected in cancellationResults)
         {

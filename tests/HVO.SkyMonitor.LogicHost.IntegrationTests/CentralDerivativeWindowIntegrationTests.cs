@@ -1351,12 +1351,18 @@ public sealed class CentralDerivativeWindowIntegrationTests
         ]);
         AssertBoundedTransientMetricTags(metrics, ReadRuntimeMetricAllowlists());
         var activities = collector.Activities.ToArray();
+        // Maintenance (window resolution, retrospective scheduling) runs concurrently with the claim loop, so the
+        // worker may legitimately claim another job that became runnable during this one; assert on the execution
+        // span of the job under test and on the stage spans connected to it.
         var execution = activities.Single(activity =>
-            activity.Name == "central-derivative.execute" && activity.Kind == ActivityKind.Consumer);
+            activity.Name == "central-derivative.execute" && activity.Kind == ActivityKind.Consumer &&
+            activity.Tags.TryGetValue("job.id", out var taggedJobId) &&
+            string.Equals(taggedJobId, jobId.ToString(), StringComparison.OrdinalIgnoreCase));
         foreach (var stage in new[] { "verify", "load", "detect", "converge", "persist" })
         {
             var activity = activities.FirstOrDefault(item =>
-                item.Name == $"central-derivative.{stage}" && item.Kind == ActivityKind.Internal);
+                item.Name == $"central-derivative.{stage}" && item.Kind == ActivityKind.Internal &&
+                IsDescendantOf(item, execution, activities));
             Assert.IsNotNull(activity,
                 $"Missing production activity for stage '{stage}'. Observed: {string.Join(',', activities.Select(item => $"{item.Name}:{item.Kind}"))}");
             Assert.AreEqual(execution.TraceId, activity.TraceId);
@@ -1371,8 +1377,10 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 workerOptions,
                 telemetry,
                 TimeProvider.System);
-            (await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false)).Status
-                .Should().Be(HealthStatus.Healthy);
+            var healthy = await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+            healthy.Status.Should().Be(HealthStatus.Healthy,
+                "worker health after the run should be clean; data: {0}",
+                string.Join(", ", healthy.Data.Select(pair => $"{pair.Key}={pair.Value}")));
             telemetry.RecordDependencyFailure("storage", DateTimeOffset.UtcNow);
             (await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false)).Status
                 .Should().Be(HealthStatus.Degraded);

@@ -372,6 +372,73 @@ public sealed class ProcessingGraphCatalogAndDeliveryServiceTests
     }
 
     [TestMethod]
+    public async Task ResolveAppliesRetirementAsEligibilityCutoffAndFallsBackToLowerScope()
+    {
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2026, 9, 4, 8, 0, 0, TimeSpan.Zero);
+        var clock = new TestTimeProvider(now);
+        using var telemetry = new ProcessingGraphCatalogTelemetry(clock);
+        var service = CreateCatalog(context, clock, telemetry);
+        var observatory = new Observatory
+        {
+            OwnerUserId = "owner",
+            Name = "Retirement Observatory",
+            CreatedAtUtc = now.AddDays(-1),
+            IsActive = true
+        };
+        context.Add(observatory);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var fallback = (await service.CreateRevisionAsync(
+            CreateDefinition("retire-fallback", "1"), "editor", true, CancellationToken.None).ConfigureAwait(false)).Value!;
+        var overriding = (await service.CreateRevisionAsync(
+            CreateDefinition("retire-override", "1", nodeId: "PreviewOverride"), "editor", true, CancellationToken.None)
+            .ConfigureAwait(false)).Value!;
+        foreach (var revisionId in new[] { fallback.Id, overriding.Id })
+        {
+            Assert.AreEqual(CentralProcessingGraphMutationOutcome.Applied, (await service.PublishRevisionAsync(
+                revisionId, "editor", true, CancellationToken.None).ConfigureAwait(false)).Outcome);
+        }
+        var globalAssignment = (await service.AssignAsync(
+            new CentralProcessingGraphAssignmentRequest(
+                fallback.Id, CentralProcessingGraphTargetHost.Central, CentralProcessingGraphAssignmentScope.GlobalDefault,
+                null, null, now, null, "global-fallback"),
+            "editor", true, null, CancellationToken.None).ConfigureAwait(false)).Value!;
+        var observatoryAssignment = (await service.AssignAsync(
+            new CentralProcessingGraphAssignmentRequest(
+                overriding.Id, CentralProcessingGraphTargetHost.Central, CentralProcessingGraphAssignmentScope.Observatory,
+                observatory.Id, null, now, null, "observatory-override"),
+            "editor", true, null, CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        var beforeRetirement = await service.ResolveAsync(
+            CentralProcessingGraphTargetHost.Central, observatory.Id, null, now, CancellationToken.None)
+            .ConfigureAwait(false);
+        clock.UtcNow = now.AddMinutes(5);
+        var retired = await service.RetireRevisionAsync(
+            overriding.Id, "editor", "superseded", true, CancellationToken.None).ConfigureAwait(false);
+        var atRetirement = await service.ResolveAsync(
+            CentralProcessingGraphTargetHost.Central, observatory.Id, null, now.AddMinutes(5), CancellationToken.None)
+            .ConfigureAwait(false);
+        var priorInstant = await service.ResolveAsync(
+            CentralProcessingGraphTargetHost.Central, observatory.Id, null, now.AddMinutes(4), CancellationToken.None)
+            .ConfigureAwait(false);
+        var laterForUser = await service.ResolveForUserAsync(
+            CentralProcessingGraphTargetHost.Central, observatory.Id, null, now.AddMinutes(6), "editor", true, null,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(observatoryAssignment.Id, beforeRetirement!.Id, "the higher scope wins while its revision is eligible");
+        Assert.AreEqual(CentralProcessingGraphMutationOutcome.Applied, retired.Outcome);
+        Assert.AreEqual(globalAssignment.Id, atRetirement!.Id,
+            "at and after the retirement instant the retired assignment is skipped and the next lower scope resolves");
+        Assert.AreEqual(observatoryAssignment.Id, priorInstant!.Id,
+            "an effective instant before retirement still resolves the retired revision, so prior provenance is not rewritten");
+        Assert.AreEqual(globalAssignment.Id, laterForUser!.Id);
+        Assert.AreEqual(fallback.Id, laterForUser.Revision.Id);
+        var retainedAssignment = await context.CentralProcessingGraphAssignments.AsNoTracking()
+            .SingleAsync(item => item.Id == observatoryAssignment.Id).ConfigureAwait(false);
+        Assert.IsNull(retainedAssignment.EffectiveUntilUtc, "retirement does not rewrite the assignment row");
+    }
+
+    [TestMethod]
     public async Task CatalogRejectsInvalidAuthorityScopeHostAndSecretMaterial()
     {
         await using var context = CreateContext();

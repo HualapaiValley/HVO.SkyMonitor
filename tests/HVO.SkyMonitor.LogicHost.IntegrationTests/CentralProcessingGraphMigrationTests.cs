@@ -9,8 +9,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Minio;
+using Minio.DataModel.Args;
 using System.Collections.Immutable;
 using System.Data.Common;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -1888,6 +1891,563 @@ public sealed class CentralProcessingGraphMigrationTests
         };
         revision.Assignments.Add(assignment);
         return assignment;
+    }
+
+    /// <summary>
+    /// Expansion selects its sources without holds and only later persists the execution that retention treats as a
+    /// hold. Inside the expansion transaction every source row is fenced with the same UPDLOCK/HOLDLOCK retention's
+    /// reservation takes, so a concurrent release must wait for the seal and then observe the Running execution as a
+    /// hold instead of expiring a source the execution has already frozen.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerExpansionFencesSourceRetentionUntilTheExecutionIsSealed()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphRetentionFence_{Guid.NewGuid():N}"
+        };
+        var gate = new SourceFenceGateInterceptor(SourceFenceGateStage.AfterSourceRowLock);
+        var schedulerOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .AddInterceptors(gate)
+            .Options;
+        var plainOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(schedulerOptions);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (raw, graphScheduler, workerTelemetry) =
+                await SeedFencedPreviewGraphAsync(context, now, "fence-seal").ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            await using var retentionContext = new ApplicationDbContext(plainOptions);
+            using var retentionTelemetry = new CentralArtifactRetentionTelemetry();
+            var retention = CreateRetentionService(retentionContext, retentionTelemetry);
+
+            var expansion = graphScheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None);
+            await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            var release = retention.ReleaseAsync(raw.Id, CancellationToken.None);
+            var completedFirst = await Task.WhenAny(release, Task.Delay(TimeSpan.FromSeconds(2))).ConfigureAwait(false);
+            completedFirst.Should().NotBeSameAs(release,
+                "retention must block on the fenced source row until the expansion transaction completes");
+            gate.Release();
+            var expanded = await expansion.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            var released = await release.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+
+            expanded.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Created);
+            released.Should().Be(CentralArtifactRetentionResult.Held,
+                "once the seal is visible the sealed execution's source reference is an active hold");
+            context.ChangeTracker.Clear();
+            var execution = await context.CentralProcessingGraphExecutions.AsNoTracking()
+                .Include(item => item.Sources)
+                .SingleAsync().ConfigureAwait(false);
+            execution.Status.Should().Be(CentralProcessingGraphExecutionStatus.Running);
+            execution.ExpandedAtUtc.Should().NotBeNull();
+            execution.Sources.Should().ContainSingle(source => source.CentralArtifactId == raw.Id);
+            var artifact = await context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == raw.Id)
+                .ConfigureAwait(false);
+            artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+            artifact.RetentionDeletionToken.Should().BeNull();
+            (await GetFixtureMinio().StatObjectAsync(new StatObjectArgs()
+                .WithBucket(FenceBucket)
+                .WithObject(raw.StorageReference[FenceBucketPrefix.Length..])).ConfigureAwait(false)).Size
+                .Should().Be(raw.ByteLength, "the fenced source object survives the concurrent release");
+        }
+        finally
+        {
+            gate.Release();
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// A source that retention expires after selection but before the fence is revalidated inside the expansion
+    /// transaction: the expansion fails explicitly with <c>source-retention-expired</c> and persists nothing, instead
+    /// of sealing an execution whose frozen source object no longer exists.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerExpansionRejectsSourceExpiredBetweenSelectionAndFence()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphRetentionExpired_{Guid.NewGuid():N}"
+        };
+        var gate = new SourceFenceGateInterceptor(SourceFenceGateStage.AfterExecutionIdentityLock);
+        var schedulerOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .AddInterceptors(gate)
+            .Options;
+        var plainOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(schedulerOptions);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (raw, graphScheduler, workerTelemetry) =
+                await SeedFencedPreviewGraphAsync(context, now, "fence-expired").ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            await using var retentionContext = new ApplicationDbContext(plainOptions);
+            using var retentionTelemetry = new CentralArtifactRetentionTelemetry();
+            var retention = CreateRetentionService(retentionContext, retentionTelemetry);
+
+            var expansion = graphScheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None);
+            await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            // The source row is not fenced yet, so retention wins the race and expires the selected source.
+            var released = await retention.ReleaseAsync(raw.Id, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            gate.Release();
+            var expanded = await expansion.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+
+            released.Should().Be(CentralArtifactRetentionResult.Released);
+            expanded.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Invalid);
+            expanded.ReasonCode.Should().Be("source-retention-expired");
+            expanded.Execution.Should().BeNull();
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking().CountAsync().ConfigureAwait(false))
+                .Should().Be(0, "a fenced-out expansion persists no execution, source, or node rows");
+            (await context.CentralDerivativeJobs.AsNoTracking().CountAsync().ConfigureAwait(false)).Should().Be(0);
+            (await context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == raw.Id).ConfigureAwait(false))
+                .ObjectState.Should().Be(CentralArtifactObjectState.Expired);
+        }
+        finally
+        {
+            gate.Release();
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The revision is read without a lock during selection. A retirement committing after selection but before the
+    /// seal is observed by the in-transaction revision fence: a live expansion re-resolves at the current instant and
+    /// seals against the next lower-scope assignment instead of the retired revision (and instead of silently leaving
+    /// the frame without graph work), while a replay naming the retired revision is refused outright.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerLiveExpansionFallsBackWhenTheRevisionIsRetiredBetweenSelectionAndSeal()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphRevisionFence_{Guid.NewGuid():N}"
+        };
+        var gate = new SourceFenceGateInterceptor(SourceFenceGateStage.AfterExecutionIdentityLock);
+        var schedulerOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .AddInterceptors(gate)
+            .Options;
+        var plainOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(schedulerOptions);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (raw, graphScheduler, workerTelemetry) = await SeedFencedPreviewGraphAsync(
+                context, now, "revision-fence", withGlobalFallback: true).ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            var revisions = await context.CentralProcessingGraphAssignments.AsNoTracking()
+                .ToDictionaryAsync(item => item.Scope, item => item.RevisionId).ConfigureAwait(false);
+            var cameraRevisionId = revisions[CentralProcessingGraphAssignmentScope.LogicalCamera];
+            var fallbackRevisionId = revisions[CentralProcessingGraphAssignmentScope.GlobalDefault];
+            await using var catalogContext = new ApplicationDbContext(plainOptions);
+            var catalog = CreateCatalog(catalogContext);
+
+            var expansion = graphScheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None);
+            await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            // Selection is done but the revision has not been re-read inside the transaction yet, so the retirement
+            // commits ahead of the seal.
+            var retired = await catalog.RetireRevisionAsync(
+                cameraRevisionId, "operator-revision-fence", "superseded", true, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            gate.Release();
+            var expanded = await expansion.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            var replay = await graphScheduler.ScheduleReplayAsync(
+                new(cameraRevisionId, [raw.Id], "operator-revision-fence", "retired-replay", "test"),
+                DateTimeOffset.UtcNow,
+                CancellationToken.None).ConfigureAwait(false);
+
+            retired.Outcome.Should().Be(CentralProcessingGraphMutationOutcome.Applied);
+            expanded.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Created);
+            expanded.Execution!.RevisionId.Should().Be(fallbackRevisionId,
+                "the live expansion re-resolved past the committed retirement to the global default");
+            replay.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Invalid);
+            replay.ReasonCode.Should().Be("revision-retired");
+            context.ChangeTracker.Clear();
+            var executions = await context.CentralProcessingGraphExecutions.AsNoTracking().ToListAsync().ConfigureAwait(false);
+            executions.Should().ContainSingle().Which.RevisionId.Should().Be(fallbackRevisionId,
+                "no execution is sealed against the retired revision");
+            (await context.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == raw.Id).ConfigureAwait(false))
+                .ObjectState.Should().Be(CentralArtifactObjectState.Available, "the source itself is untouched");
+        }
+        finally
+        {
+            gate.Release();
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// When the only assignment's revision is retired between selection and seal and nothing lower-scope remains, the
+    /// live expansion is refused and no graph owns the frame. The job scheduler must then run full legacy scheduling
+    /// on a reloaded source: the expansion attempt cleared the change tracker and detached the instance it was handed.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerRefusedLiveExpansionFallsThroughToLegacySchedulingOnAReloadedSource()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphRefusedLegacy_{Guid.NewGuid():N}"
+        };
+        var gate = new SourceFenceGateInterceptor(SourceFenceGateStage.AfterExecutionIdentityLock);
+        var schedulerOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .AddInterceptors(gate)
+            .Options;
+        var plainOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(schedulerOptions);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (raw, graphScheduler, workerTelemetry) =
+                await SeedFencedPreviewGraphAsync(context, now, "refused-legacy").ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            var revisionId = await context.CentralProcessingGraphRevisions.AsNoTracking().Select(item => item.Id)
+                .SingleAsync().ConfigureAwait(false);
+            var jobScheduler = new CentralDerivativeJobScheduler(
+                context, new CentralDerivativeRecipeCatalog(), new NoopWindowResolver(), graphScheduler: graphScheduler);
+            var artifact = await context.CentralArtifacts
+                .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
+                .SingleAsync(item => item.Id == raw.Id).ConfigureAwait(false);
+            await using var catalogContext = new ApplicationDbContext(plainOptions);
+            var catalog = CreateCatalog(catalogContext);
+
+            var scheduling = jobScheduler.EnsureRequiredJobsAsync(artifact, now, CancellationToken.None);
+            await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            var retired = await catalog.RetireRevisionAsync(
+                revisionId, "operator-refused-legacy", "superseded", true, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            gate.Release();
+            await scheduling.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+
+            retired.Outcome.Should().Be(CentralProcessingGraphMutationOutcome.Applied);
+            context.ChangeTracker.Clear();
+            (await context.CentralProcessingGraphExecutions.AsNoTracking().CountAsync().ConfigureAwait(false))
+                .Should().Be(0, "the retired revision has no fallback, so no execution is sealed");
+            var legacyJobs = await context.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => job.SourceCentralArtifactId == raw.Id)
+                .ToListAsync().ConfigureAwait(false);
+            legacyJobs.Should().NotBeEmpty("full legacy scheduling covers the frame the graph refused");
+            legacyJobs.Should().OnlyContain(job => job.GraphExecutionId == null);
+            legacyJobs.Select(job => job.RecipeName).Should().Contain(BuiltInProcessingRecipes.EncodedPreview);
+            (await context.CentralArtifacts.AsNoTracking().CountAsync(item => item.Id == raw.Id).ConfigureAwait(false))
+                .Should().Be(1, "the source row is reused, never re-inserted");
+        }
+        finally
+        {
+            gate.Release();
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The revision fence takes no update lock, so concurrent live expansions of one revision do not serialize on it;
+    /// the serializable re-read still holds a shared key lock until commit, which is what makes a retirement wait for
+    /// an expansion that already observed the revision as published instead of racing past its seal.
+    /// </summary>
+    [TestMethod]
+    public async Task SqlServerRetirementWaitsForAnExpansionThatAlreadyReadTheRevision()
+    {
+        var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+        {
+            InitialCatalog = $"SkyMonitorGraphRevisionShared_{Guid.NewGuid():N}"
+        };
+        var gate = new SourceFenceGateInterceptor(SourceFenceGateStage.AfterRevisionRead);
+        var schedulerOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .AddInterceptors(gate)
+            .Options;
+        var plainOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var context = new ApplicationDbContext(schedulerOptions);
+        try
+        {
+            await context.Database.MigrateAsync().ConfigureAwait(false);
+            var now = DateTimeOffset.UtcNow;
+            var (raw, graphScheduler, workerTelemetry) =
+                await SeedFencedPreviewGraphAsync(context, now, "revision-shared").ConfigureAwait(false);
+            using var _ = workerTelemetry;
+            var revisionId = await context.CentralProcessingGraphRevisions.AsNoTracking().Select(item => item.Id)
+                .SingleAsync().ConfigureAwait(false);
+            await using var catalogContext = new ApplicationDbContext(plainOptions);
+            var catalog = CreateCatalog(catalogContext);
+
+            var expansion = graphScheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None);
+            await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            var retire = catalog.RetireRevisionAsync(
+                revisionId, "operator-revision-shared", "superseded", true, CancellationToken.None);
+            var completedFirst = await Task.WhenAny(retire, Task.Delay(TimeSpan.FromSeconds(2))).ConfigureAwait(false);
+            completedFirst.Should().NotBeSameAs(retire,
+                "the retirement's write must wait for the expansion that already read the revision as published");
+            gate.Release();
+            var expanded = await expansion.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            var retired = await retire.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+
+            expanded.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Created);
+            expanded.Execution!.RevisionId.Should().Be(revisionId);
+            retired.Outcome.Should().Be(CentralProcessingGraphMutationOutcome.Applied);
+            context.ChangeTracker.Clear();
+            var revision = await context.CentralProcessingGraphRevisions.AsNoTracking()
+                .SingleAsync(item => item.Id == revisionId).ConfigureAwait(false);
+            revision.RetiredAtUtc.Should().NotBeNull();
+            var execution = await context.CentralProcessingGraphExecutions.AsNoTracking().SingleAsync().ConfigureAwait(false);
+            execution.ExpandedAtUtc.Should().NotBeNull();
+            execution.Status.Should().Be(CentralProcessingGraphExecutionStatus.Running,
+                "an execution sealed before the retirement committed keeps running against its frozen definition");
+        }
+        finally
+        {
+            gate.Release();
+            await context.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static ProcessingGraphCatalogService CreateCatalog(ApplicationDbContext context)
+        => new(
+            context,
+            new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog()),
+            TimeProvider.System,
+            new ProcessingGraphCatalogTelemetry(TimeProvider.System),
+            NullLogger<ProcessingGraphCatalogService>.Instance);
+
+    private const string FenceBucket = "skymonitor-artifacts";
+    private const string FenceBucketPrefix = "s3://" + FenceBucket + "/";
+
+    private static IMinioClient GetFixtureMinio()
+        => AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+
+    /// <summary>
+    /// Seeds a camera, a Raw source whose object really exists in the fixture object store (so retention can delete
+    /// it), and a single-node Preview assignment, returning a scheduler bound to <paramref name="context"/>.
+    /// </summary>
+    private static async Task<(CentralArtifact Raw, CentralProcessingGraphScheduler GraphScheduler,
+        CentralDerivativeWorkerTelemetry Telemetry)> SeedFencedPreviewGraphAsync(
+        ApplicationDbContext context,
+        DateTimeOffset now,
+        string slug,
+        bool withGlobalFallback = false)
+    {
+        var camera = await SeedCameraAsync(context, now, slug).ConfigureAwait(false);
+        var recipeCatalog = new CentralDerivativeRecipeCatalog();
+        var registry = new CentralProcessingGraphNodeRegistry(recipeCatalog);
+        var basic = DatabaseSeeder.CreateBasicCentralProcessingGraph(recipeCatalog);
+        var definition = basic with
+        {
+            Name = $"sql-fence-{slug}",
+            Nodes = [.. basic.Nodes.Where(node => node.Id == "Preview")]
+        };
+        var payload = new byte[] { 7, 11, 13, 17 };
+        var objectKey = $"artifacts/graph-fence/{Guid.NewGuid():N}/{slug}.bin";
+        var minio = GetFixtureMinio();
+        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(FenceBucket)).ConfigureAwait(false))
+        {
+            await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(FenceBucket)).ConfigureAwait(false);
+        }
+        await using (var stream = new MemoryStream(payload, writable: false))
+        {
+            await minio.PutObjectAsync(new PutObjectArgs()
+                .WithBucket(FenceBucket)
+                .WithObject(objectKey)
+                .WithStreamData(stream)
+                .WithObjectSize(payload.Length)
+                .WithContentType("application/octet-stream")).ConfigureAwait(false);
+        }
+        var raw = CreateSourceArtifact(camera, FrameArtifactRole.Raw, 'A', now.AddMinutes(-1));
+        raw.ByteLength = payload.Length;
+        raw.ChecksumSha256 = Convert.ToHexString(SHA256.HashData(payload));
+        raw.StorageReference = FenceBucketPrefix + objectKey;
+        context.AddRange(raw, CreateAssignment(definition, registry, camera, now));
+        if (withGlobalFallback)
+        {
+            var fallback = CreateAssignment(definition with { Name = $"sql-fence-{slug}-fallback" }, registry, camera, now);
+            fallback.Scope = CentralProcessingGraphAssignmentScope.GlobalDefault;
+            fallback.ObservatoryId = null;
+            fallback.LogicalCamera = null;
+            fallback.LogicalCameraId = null;
+            context.Add(fallback);
+        }
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        context.ChangeTracker.Clear();
+        var workerTelemetry = new CentralDerivativeWorkerTelemetry();
+        using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+        var catalog = new ProcessingGraphCatalogService(
+            context, registry, TimeProvider.System, catalogTelemetry, NullLogger<ProcessingGraphCatalogService>.Instance);
+        var graphScheduler = new CentralProcessingGraphScheduler(
+            context, catalog, registry, new NoopWindowResolver(), new UnusedObjectReader(),
+            workerTelemetry, TimeProvider.System);
+        return (raw, graphScheduler, workerTelemetry);
+    }
+
+    private static CentralArtifactRetentionService CreateRetentionService(
+        ApplicationDbContext db,
+        CentralArtifactRetentionTelemetry telemetry)
+    {
+        var references = new CentralArtifactRetentionReferences(db);
+        var processor = new CentralArtifactRetentionProcessor(
+            db,
+            references,
+            ObjectStoreTestClient.Create(GetFixtureMinio()),
+            TimeProvider.System,
+            telemetry,
+            NullLogger<CentralArtifactRetentionProcessor>.Instance);
+        return new(
+            db,
+            references,
+            processor,
+            TimeProvider.System,
+            telemetry,
+            NullLogger<CentralArtifactRetentionService>.Instance);
+    }
+
+    private enum SourceFenceGateStage
+    {
+        /// <summary>After the request-identity application lock, before any source row is fenced.</summary>
+        AfterExecutionIdentityLock,
+
+        /// <summary>After the first source row UPDLOCK/HOLDLOCK inside the expansion transaction.</summary>
+        AfterSourceRowLock,
+
+        /// <summary>
+        /// Before the first command that follows the revision lifecycle re-read inside the expansion transaction, so
+        /// the re-read's reader is fully consumed and only its held key lock remains.
+        /// </summary>
+        AfterRevisionRead
+    }
+
+    /// <summary>
+    /// Pauses the expansion transaction at a chosen point so a concurrent retention release can be raced against it.
+    /// </summary>
+    private sealed class SourceFenceGateInterceptor(SourceFenceGateStage stage) : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _triggered;
+        private int _armed;
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            await PauseIfArmedAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            await PauseIfArmedAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+
+        public override async ValueTask<InterceptionResult<object>> ScalarExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<object> result,
+            CancellationToken cancellationToken = default)
+        {
+            await PauseIfArmedAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+
+        private async Task PauseIfArmedAsync(CancellationToken cancellationToken)
+        {
+            if (stage == SourceFenceGateStage.AfterRevisionRead && Volatile.Read(ref _armed) == 1)
+            {
+                await PauseAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        public TaskCompletionSource Reached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Release() => _release.TrySetResult();
+
+        public override async ValueTask<int> NonQueryExecutedAsync(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            int result,
+            CancellationToken cancellationToken = default)
+        {
+            if (stage == SourceFenceGateStage.AfterExecutionIdentityLock &&
+                command.CommandText.Contains("sp_getapplock", StringComparison.Ordinal) &&
+                command.Parameters.Cast<DbParameter>().Any(parameter =>
+                    parameter.Value is string resource &&
+                    resource.StartsWith("processing-graph-execution:", StringComparison.Ordinal)))
+            {
+                await PauseAsync(cancellationToken).ConfigureAwait(false);
+            }
+            return result;
+        }
+
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            DbDataReader result,
+            CancellationToken cancellationToken = default)
+        {
+            if (stage == SourceFenceGateStage.AfterSourceRowLock &&
+                command.CommandText.Contains("[CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal))
+            {
+                await PauseAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (stage == SourceFenceGateStage.AfterRevisionRead && IsRevisionLifecycleRead(command.CommandText))
+            {
+                // Arm only: the pause happens before the next command, once this reader has been consumed.
+                Volatile.Write(ref _armed, 1);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// The fence's lifecycle re-read is the only plain SELECT of <c>RetiredAtUtc</c> from the revisions table
+        /// alone; resolution joins assignments, retirement uses an update lock, and seeding batches are inserts.
+        /// </summary>
+        private static bool IsRevisionLifecycleRead(string commandText)
+            => commandText.TrimStart().StartsWith("SELECT", StringComparison.Ordinal) &&
+                commandText.Contains("[RetiredAtUtc]", StringComparison.Ordinal) &&
+                commandText.Contains("[CentralProcessingGraphRevisions]", StringComparison.Ordinal) &&
+                !commandText.Contains("[CentralProcessingGraphAssignments]", StringComparison.Ordinal) &&
+                !commandText.Contains("UPDLOCK", StringComparison.Ordinal);
+
+        private async Task PauseAsync(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref _triggered, 1) != 0)
+            {
+                return;
+            }
+            Reached.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     [TestMethod]

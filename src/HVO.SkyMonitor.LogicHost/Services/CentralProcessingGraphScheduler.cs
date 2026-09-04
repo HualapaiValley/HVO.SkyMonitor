@@ -76,6 +76,9 @@ internal sealed partial class CentralProcessingGraphScheduler(
 {
     private const int ConvergenceBatchSize = 100;
     private const string LiveActor = "logic-host";
+    internal const string RevisionRetiredReasonCode = "revision-retired";
+    private const int MaximumLiveExpansionAttempts = 2;
+    internal const string SourceRetentionExpiredReasonCode = "source-retention-expired";
     private static readonly EnvironmentalObservationSourceKind[] EnvironmentalSourcePriority =
         Enum.GetValues<EnvironmentalObservationSourceKind>();
     private static readonly EnvironmentalObservationQuality[] EnvironmentalQualities =
@@ -88,52 +91,82 @@ internal sealed partial class CentralProcessingGraphScheduler(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        var artifact = await LoadArtifactAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
-        if (!IsUsable(artifact) || !CentralProcessingGraphNodeRegistry.IsSupportedSourceRole(artifact.Role) ||
-            artifact.Frame?.LogicalCameraInstallation is not { RetiredAtUtc: null } installation ||
-            installation.LogicalCamera is not { DeactivatedAtUtc: null } camera ||
-            camera.ObservatoryId != artifact.Frame.ObservatoryId)
+        // Resolution reads the catalog without a lock. When the expansion fence observes that the resolved revision
+        // was retired in the meantime, resolve once more at an instant past that retirement (whichever clock stamped
+        // it), so the next lower-scope assignment or none wins instead of the frame silently losing its work. The
+        // ingest instant itself is kept for everything the retried expansion stamps, matching the sibling legacy
+        // work created in the same scheduling pass. Expansion clears the change tracker, so every attempt reloads
+        // its own tracked source graph and a retry never leaves one behind for the caller.
+        var resolveAtUtc = now;
+        for (var attempt = 1; ; attempt++)
         {
-            return new(CentralProcessingGraphScheduleOutcome.NotApplicable);
+            CentralProcessingGraphScheduleResult Return(CentralProcessingGraphScheduleResult result)
+            {
+                if (attempt > 1)
+                {
+                    dbContext.ChangeTracker.Clear();
+                }
+                return result;
+            }
+            var artifact = await LoadArtifactAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
+            if (!IsUsable(artifact) || !CentralProcessingGraphNodeRegistry.IsSupportedSourceRole(artifact.Role) ||
+                artifact.Frame?.LogicalCameraInstallation is not { RetiredAtUtc: null } installation ||
+                installation.LogicalCamera is not { DeactivatedAtUtc: null } camera ||
+                camera.ObservatoryId != artifact.Frame.ObservatoryId)
+            {
+                return Return(new(CentralProcessingGraphScheduleOutcome.NotApplicable));
+            }
+            var assignment = await catalog.ResolveAsync(
+                CentralProcessingGraphTargetHost.Central,
+                artifact.Frame.ObservatoryId,
+                installation.LogicalCameraId,
+                resolveAtUtc,
+                cancellationToken).ConfigureAwait(false);
+            if (assignment?.Revision is null)
+            {
+                return Return(new(CentralProcessingGraphScheduleOutcome.NotApplicable));
+            }
+            var plan = CompileAndVerify(assignment.Revision);
+            var provenance = await LoadSourceProvenanceAsync(
+                artifact.Frame.Artifacts.Select(static item => item.Id), cancellationToken).ConfigureAwait(false);
+            if (!plan.Sources.Any(source => source.Outputs.Any(output =>
+                    SourceContractMatches(output, artifact, ResolveSourceProvenance(artifact, provenance)))))
+            {
+                return Return(new(CentralProcessingGraphScheduleOutcome.NotApplicable));
+            }
+            var coversTransientValidation = ContainsTransientValidationNode(plan);
+            var sources = SelectLiveSources(plan, artifact, provenance);
+            if (sources is null)
+            {
+                return Return(new(CentralProcessingGraphScheduleOutcome.AwaitingSources,
+                    CoversTransientValidation: coversTransientValidation));
+            }
+            var result = await ExpandAsync(
+                assignment.Revision,
+                assignment,
+                plan,
+                sources,
+                CentralProcessingGraphExecutionClass.Live,
+                CentralProcessingGraphTrigger.Ingest,
+                LiveActor,
+                idempotencyKey: string.Empty,
+                "automatic-ingest",
+                now,
+                cancellationToken).ConfigureAwait(false);
+            if (attempt < MaximumLiveExpansionAttempts && result is
+                { Outcome: CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: RevisionRetiredReasonCode })
+            {
+                var retiredAtUtc = await dbContext.CentralProcessingGraphRevisions.AsNoTracking()
+                    .Where(item => item.Id == assignment.RevisionId)
+                    .Select(item => item.RetiredAtUtc)
+                    .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                var afterRetirement = (retiredAtUtc ?? resolveAtUtc).AddTicks(1);
+                var current = timeProvider.GetUtcNow();
+                resolveAtUtc = current > afterRetirement ? current : afterRetirement;
+                continue;
+            }
+            return result with { CoversTransientValidation = coversTransientValidation };
         }
-        var assignment = await catalog.ResolveAsync(
-            CentralProcessingGraphTargetHost.Central,
-            artifact.Frame.ObservatoryId,
-            installation.LogicalCameraId,
-            now,
-            cancellationToken).ConfigureAwait(false);
-        if (assignment?.Revision is null)
-        {
-            return new(CentralProcessingGraphScheduleOutcome.NotApplicable);
-        }
-        var plan = CompileAndVerify(assignment.Revision);
-        var provenance = await LoadSourceProvenanceAsync(
-            artifact.Frame.Artifacts.Select(static item => item.Id), cancellationToken).ConfigureAwait(false);
-        if (!plan.Sources.Any(source => source.Outputs.Any(output =>
-                SourceContractMatches(output, artifact, ResolveSourceProvenance(artifact, provenance)))))
-        {
-            return new(CentralProcessingGraphScheduleOutcome.NotApplicable);
-        }
-        var coversTransientValidation = ContainsTransientValidationNode(plan);
-        var sources = SelectLiveSources(plan, artifact, provenance);
-        if (sources is null)
-        {
-            return new(CentralProcessingGraphScheduleOutcome.AwaitingSources,
-                CoversTransientValidation: coversTransientValidation);
-        }
-        var result = await ExpandAsync(
-            assignment.Revision,
-            assignment,
-            plan,
-            sources,
-            CentralProcessingGraphExecutionClass.Live,
-            CentralProcessingGraphTrigger.Ingest,
-            LiveActor,
-            idempotencyKey: string.Empty,
-            "automatic-ingest",
-            now,
-            cancellationToken).ConfigureAwait(false);
-        return result with { CoversTransientValidation = coversTransientValidation };
     }
 
     /// <summary>
@@ -165,6 +198,12 @@ internal sealed partial class CentralProcessingGraphScheduler(
         {
             return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "revision-not-published");
         }
+        // A retired revision keeps its provenance for executions that already ran against it, but it is no longer
+        // eligible for new work; replay names a revision directly and so must be rejected explicitly here.
+        if (revision.RetiredAtUtc is not null)
+        {
+            return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: RevisionRetiredReasonCode);
+        }
         ProcessingGraphExecutionPlan plan;
         try
         {
@@ -193,6 +232,13 @@ internal sealed partial class CentralProcessingGraphScheduler(
             !SourcesMatch(plan, ordered.Select(static item => item!).ToArray(), provenance))
         {
             return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "invalid-replay-sources");
+        }
+        // Live expansion selects sources frame-locally from `artifact.Frame.Artifacts`. Replay must reproduce that
+        // selection exactly, so a set spanning two frames of one installation is rejected rather than silently
+        // composing products that never coexisted in a single capture.
+        if (ordered.Select(item => item!.CentralFrameId).Distinct().Count() != 1)
+        {
+            return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "replay-sources-span-frames");
         }
         return await ExpandAsync(
             revision,
@@ -412,6 +458,14 @@ internal sealed partial class CentralProcessingGraphScheduler(
         // before its reconciliation query, and the outer failure handler must then leave the completed transaction
         // alone so a second rollback cannot replace the original persistence failure.
         var rolledBack = false;
+        CentralProcessingGraphExecution created;
+        async Task<CentralProcessingGraphScheduleResult> RejectAsync(string outcome, string reasonCode)
+        {
+            rolledBack = true;
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            telemetry.RecordGraphExpansion(executionClass.ToString(), outcome, timeProvider.GetElapsedTime(started), 0);
+            return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: reasonCode);
+        }
         try
         {
             if (dbContext.Database.IsSqlServer())
@@ -450,7 +504,31 @@ internal sealed partial class CentralProcessingGraphScheduler(
                     executionClass.ToString(), "existing", timeProvider.GetElapsedTime(started), 0);
                 return new(CentralProcessingGraphScheduleOutcome.Existing, existing);
             }
+            // The revision was read without a lock during selection. This serializable re-read holds a shared key
+            // lock on the revision row until commit, so a retirement in flight (ProcessingGraphCatalogService takes the
+            // row's update lock) cannot convert to its write until this expansion commits, and a retirement that
+            // already committed is observed here before any source row is locked. No update lock is taken: every live
+            // expansion of one revision would otherwise serialize through the whole expansion.
+            var retiredAtUtc = await dbContext.CentralProcessingGraphRevisions.AsNoTracking()
+                .Where(item => item.Id == revision.Id)
+                .Select(item => item.RetiredAtUtc)
+                .SingleAsync(cancellationToken).ConfigureAwait(false);
+            if (retiredAtUtc is not null)
+            {
+                if (logger is not null)
+                {
+                    Log.RevisionRetiredFenced(logger, executionClass.ToString(), revision.Id, requestIdentity);
+                }
+                return await RejectAsync(RevisionRetiredReasonCode, RevisionRetiredReasonCode).ConfigureAwait(false);
+            }
             var anchor = sources[0];
+            // Every caller selects frame-locally (live from the anchor frame, replay after its explicit check), and
+            // the frame, installation, and environmental inputs frozen below all derive from the anchor; a cross-frame
+            // set here is a programming error, never a request outcome.
+            if (sources.Any(source => source.CentralFrameId != anchor.CentralFrameId))
+            {
+                throw new CentralDerivativeJobStateException("Processing graph sources must belong to one frame.");
+            }
             var frame = anchor.Frame!;
             var installation = frame.LogicalCameraInstallation
                 ?? throw new CentralDerivativeJobStateException("The graph source installation is unavailable.");
@@ -627,6 +705,24 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 AddDependencies(execution, node, jobs, sourceRows, plan, frame, now);
                 AddExternalInputRequirements(jobs[node.Definition.Id], node, frame, now);
             }
+            // Selection ran without holds, so retention may have expired a source since. Immediately before the rows
+            // are persisted, fence every source on the row lock retention reserves under and revalidate the durable
+            // state read under that lock. Retention's reservation runs after this lock and sees the sealed execution
+            // reference; an expansion that loses the race fails here explicitly instead of sealing an execution whose
+            // source is gone. The lock is taken this late so it is held only across persistence and the seal.
+            var fencedSources = await CentralArtifactRetentionLock.FenceAsync(
+                dbContext, orderedSources.Select(item => item.Artifact.Id), cancellationToken).ConfigureAwait(false);
+            if (orderedSources.Any(item => !fencedSources.TryGetValue(item.Artifact.Id, out var fenced) ||
+                    !IsUsable(fenced) ||
+                    !string.Equals(fenced.ChecksumSha256, item.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
+                    fenced.ByteLength != item.Artifact.ByteLength))
+            {
+                if (logger is not null)
+                {
+                    Log.SourceRetentionFenced(logger, executionClass.ToString(), requestIdentity);
+                }
+                return await RejectAsync("source-unavailable", SourceRetentionExpiredReasonCode).ConfigureAwait(false);
+            }
             dbContext.CentralProcessingGraphExecutions.Add(execution);
             try
             {
@@ -665,18 +761,10 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 .ConfigureAwait(false);
             await ConvergeCoreAsync(persisted, now, cancellationToken).ConfigureAwait(false);
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            if (executionClass == CentralProcessingGraphExecutionClass.Replay)
-            {
-                foreach (var windowJobId in persisted.Jobs.Where(static job => job.WaitKind == CentralDerivativeWaitKind.Window)
-                             .Select(static job => job.Id).ToArray())
-                {
-                    await windowResolver.ResolveAsync(windowJobId, now, cancellationToken).ConfigureAwait(false);
-                }
-            }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             telemetry.RecordGraphExpansion(
                 executionClass.ToString(), "created", timeProvider.GetElapsedTime(started), persisted.Jobs.Count);
-            return new(CentralProcessingGraphScheduleOutcome.Created, persisted);
+            created = persisted;
         }
         catch
         {
@@ -691,6 +779,56 @@ internal sealed partial class CentralProcessingGraphScheduler(
         finally
         {
             dbContext.ChangeTracker.Clear();
+        }
+        if (executionClass == CentralProcessingGraphExecutionClass.Replay)
+        {
+            await ResolveReplayWindowsAsync(created, now, cancellationToken).ConfigureAwait(false);
+        }
+        return new(CentralProcessingGraphScheduleOutcome.Created, created);
+    }
+
+    /// <summary>
+    /// Resolves a replay's window nodes only after the seal is committed: the resolver locks frame rows before their
+    /// artifacts, so running it while the expansion transaction still held the source fence would invert that order
+    /// against a concurrent resolution. The sealed execution is durable either way, and the worker's periodic
+    /// ResolveWaitingAsync covers any window this immediate pass does not resolve, so a resolver fault is logged
+    /// rather than reported as a failed expansion.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "The execution is already durable; window resolution is retried by the worker.")]
+    private async Task ResolveReplayWindowsAsync(
+        CentralProcessingGraphExecution execution,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        foreach (var windowJobId in execution.Jobs.Where(static job => job.WaitKind == CentralDerivativeWaitKind.Window)
+                     .Select(static job => job.Id).ToArray())
+        {
+            try
+            {
+                await windowResolver.ResolveAsync(windowJobId, now, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                if (IsDatabaseFailure(exception))
+                {
+                    telemetry.RecordDependencyFailure("database", now);
+                }
+                if (logger is not null)
+                {
+                    Log.ReplayWindowResolutionDeferred(logger, exception, execution.Id, windowJobId);
+                }
+            }
+            finally
+            {
+                dbContext.ChangeTracker.Clear();
+            }
         }
     }
 
@@ -1909,5 +2047,17 @@ internal sealed partial class CentralProcessingGraphScheduler(
         [LoggerMessage(2151, LogLevel.Warning,
             "Processing graph recovery rotation failed for ExecutionId={ExecutionId}.")]
         public static partial void RotationFailed(ILogger logger, Exception exception, Guid executionId);
+
+        [LoggerMessage(2152, LogLevel.Warning,
+            "Processing graph expansion rejected: a selected source was no longer available inside the retention fence. Class={ExecutionClass}, RequestIdentity={RequestIdentity}")]
+        public static partial void SourceRetentionFenced(ILogger logger, string executionClass, string requestIdentity);
+
+        [LoggerMessage(2153, LogLevel.Warning,
+            "Processing graph expansion rejected: the revision was retired before the execution could be sealed. Class={ExecutionClass}, RevisionId={RevisionId}, RequestIdentity={RequestIdentity}")]
+        public static partial void RevisionRetiredFenced(ILogger logger, string executionClass, Guid revisionId, string requestIdentity);
+
+        [LoggerMessage(2154, LogLevel.Warning,
+            "Replay window resolution deferred to the worker after the seal committed. ExecutionId={ExecutionId}, JobId={JobId}")]
+        public static partial void ReplayWindowResolutionDeferred(ILogger logger, Exception exception, Guid executionId, Guid jobId);
     }
 }
