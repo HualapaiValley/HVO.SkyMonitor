@@ -752,6 +752,7 @@ public sealed class OwnerAuthorizationTests
             (Path: "/operations/pipeline/executions", Expected: "Processing executions"),
             (Path: "/operations/pipeline/graphs", Expected: "Named graphs"),
             (Path: "/operations/pipeline/graphs/new", Expected: "Draft graph"),
+            (Path: "/operations/pipeline/replays/new", Expected: "Submit this capture for replay"),
             (Path: "/devices/bootstrap", Expected: "Device Bootstrap")
         })
         {

@@ -330,6 +330,11 @@ public sealed class CameraAgentReplayUiServiceTests
                             "Available", null)])
                 ]));
 
+
+        public ValueTask<CapturePipelineConfig?> ReadRevisionPipelineAsync(string revisionId, CancellationToken cancellationToken)
+
+            => ValueTask.FromResult<CapturePipelineConfig?>(null);
+
         public ValueTask<ProcessingGraphExecutionState> CancelReplayAsync(
             Guid executionId,
             string idempotencyKey,

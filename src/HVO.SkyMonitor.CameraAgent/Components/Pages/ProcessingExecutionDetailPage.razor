@@ -20,6 +20,11 @@
         {
             <a href="/gallery/@_view.Execution.CaptureId">Source capture</a>
             <a href="/operations/pipeline/graphs">Named graphs</a>
+            @if (_view.Execution.ExecutionClass == ProcessingGraphExecutionClass.Replay)
+            {
+                <a href="/operations/pipeline/replays/@_view.Execution.ExecutionId">Replay progress and controls</a>
+            }
+            <a href="/operations/pipeline/replays/new?captureId=@_view.Execution.CaptureId">Replay this capture with another graph</a>
         }
     </nav>
 
