@@ -34,6 +34,56 @@ public sealed class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public void CurrentSkyPresentsDurableFactsObservingNightAndCombinedLineage()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var capture = OperatorUiTestData.Capture();
+        var combinedId = Guid.Parse("00000000-0000-0000-0000-000000000103");
+        capture = capture with
+        {
+            Artifacts =
+            [
+                .. capture.Artifacts,
+                new CameraAgentGalleryArtifact(combinedId, HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined, "combine", null, OperatorUiTestData.Now,
+                    "application/x-hvo-packed-image", new string('H', 64), 4096,
+                    new CameraAgentGalleryRecipe("rolling-mean", "1.0.0", "build-7", new string('C', 64), new string('D', 64)),
+                    [capture.Artifacts[0].ArtifactId, Guid.NewGuid(), Guid.NewGuid()], "combine-node")
+            ]
+        };
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, ObservingDayCalendar.Create("America/Phoenix"));
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+            new(OperatorUiTestData.CurrentImage() with { StructuredLayersAvailable = true }, facts, null)));
+
+        var cut = context.Render<CurrentSkyPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var summary = cut.Find(".current-sky-summary").TextContent;
+            StringAssert.Contains(summary, "Observing night", StringComparison.Ordinal);
+            // 11:59 UTC is 04:59 in Phoenix, inside the night that began at local noon on the 22nd.
+            StringAssert.Contains(summary, "2026-07-22 (America/Phoenix)", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "rig-test", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "1 s", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "640 × 480", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "Quantified, 25% cover", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "Unregistered causal arithmetic mean of 3 source frames, recipe rolling-mean", StringComparison.Ordinal);
+            Assert.IsFalse(summary.Contains("registered stack", StringComparison.OrdinalIgnoreCase));
+            Assert.AreEqual("/gallery/00000000-0000-0000-0000-000000000001", cut.Find(".layers-link").GetAttribute("href"));
+        });
+
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+            new(OperatorUiTestData.CurrentImage(), null, "Capture facts are temporarily unavailable.")));
+        var degraded = context.Render<CurrentSkyPage>();
+        degraded.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(degraded.Find(".facts-unavailable").TextContent, "temporarily unavailable", StringComparison.Ordinal);
+            StringAssert.Contains(degraded.Find(".current-sky-summary").TextContent, "Observing nightUnavailable", StringComparison.Ordinal);
+            Assert.IsNotNull(degraded.Find(".capture-image img"));
+        });
+    }
+
+    [TestMethod]
     public void AvailableStageCanBeSelectedAndUnavailableStageCannot()
     {
         using var context = new BunitContext();
