@@ -32,7 +32,7 @@
             <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button>
         </PageStateNotice>
     }
-    else if (_page is null || _page.Items.Count == 0)
+    else if (_page is null || (_page.Items.Count == 0 && _page.SkippedCount == 0))
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No retained products match" Message="Change or clear the filters. Product types CameraAgent does not generate never appear here." />
     }

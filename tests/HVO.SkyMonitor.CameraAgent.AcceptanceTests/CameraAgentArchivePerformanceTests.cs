@@ -47,8 +47,11 @@ public sealed class CameraAgentArchivePerformanceTests
             Assert.IsGreaterThan(ObservingDayCalendar.MaximumRangeDays / 2, firstCalendar.Days.Count(static day => day.CaptureCount > 0));
             foreach (var (name, sql) in new[]
             {
-                ("products-page", "SELECT output.output_identity_sha256 FROM processing_outputs output INDEXED BY ix_processing_outputs_committed WHERE 1 = 1 ORDER BY output.committed_unix_ms DESC, output.output_identity_sha256 DESC LIMIT 51;"),
-                ("calendar-day", "SELECT COUNT(*) FROM raw_captures raw INDEXED BY ix_raw_captures_gallery_time WHERE raw.exposure_started_unix_ms >= 0 AND raw.exposure_started_unix_ms < 1 AND raw.state = 'committed';")
+                // The execution-class scalar column is omitted: its tie-break sorts at most a few association rows per output and
+                // would report a temporary b-tree of its own, while the page ordering below must come from the index alone.
+                ("products-page", "SELECT output.output_identity_sha256, output.committed_unix_ms FROM processing_outputs output INDEXED BY ix_processing_outputs_committed WHERE 1 = 1 AND (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association WHERE association.output_identity_sha256 = output.output_identity_sha256) OR EXISTS (SELECT 1 FROM processing_execution_outputs association WHERE association.output_identity_sha256 = output.output_identity_sha256 AND association.published_flag = 1)) AND output.role = 'Preview' ORDER BY output.committed_unix_ms DESC, output.output_identity_sha256 DESC LIMIT 51;"),
+                ("products-available", "SELECT output.output_identity_sha256, output.committed_unix_ms FROM processing_outputs output INDEXED BY ix_processing_outputs_retention_available WHERE output.availability_state = 'Available' AND (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association WHERE association.output_identity_sha256 = output.output_identity_sha256) OR EXISTS (SELECT 1 FROM processing_execution_outputs association WHERE association.output_identity_sha256 = output.output_identity_sha256 AND association.published_flag = 1)) ORDER BY output.committed_unix_ms DESC, output.output_identity_sha256 DESC LIMIT 51;"),
+                ("calendar-day", "SELECT COUNT(*), MIN(raw.exposure_started_unix_ms), MAX(raw.exposure_started_unix_ms) FROM raw_captures raw INDEXED BY ix_raw_captures_gallery_time WHERE raw.exposure_started_unix_ms >= 0 AND raw.exposure_started_unix_ms < 1 AND raw.state = 'committed' AND EXISTS (SELECT 1 FROM processing_nodes node WHERE node.capture_id = raw.capture_id AND node.status = 'Completed');")
             })
             {
                 var plan = await fixture.ExplainAsync(sql).ConfigureAwait(false);

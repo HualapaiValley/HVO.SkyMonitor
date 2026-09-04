@@ -96,6 +96,10 @@
                         @CameraAgentCurrentSkyFactsProjector.CombinedMethodLabel of @lineage.SourceCount source frame@(lineage.SourceCount == 1 ? string.Empty : "s")@(lineage.RecipeName is null ? string.Empty : $", recipe {lineage.RecipeName}").
                     </p>
                 }
+                @if (_facts?.CombinedLineageUnavailable == true)
+                {
+                    <p class="facts-unavailable" role="status">Combined stage lineage is not available in this bounded view.</p>
+                }
                 @if (_factsUnavailableReason is not null)
                 {
                     <p class="facts-unavailable" role="status">@_factsUnavailableReason</p>

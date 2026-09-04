@@ -78,7 +78,11 @@ public sealed class CameraAgentCurrentSkyFactsProjectorTests
         Assert.AreEqual(newer.ArtifactId, CameraAgentCurrentSkyFactsProjector.Project(complete, Phoenix).CombinedLineage?.ArtifactId);
         Assert.AreEqual(older.ArtifactId, CameraAgentCurrentSkyFactsProjector.Project(complete, Phoenix, older.ArtifactId).CombinedLineage?.ArtifactId);
         Assert.AreEqual(1, CameraAgentCurrentSkyFactsProjector.Project(complete, Phoenix, older.ArtifactId).CombinedLineage?.SourceCount);
-        Assert.IsNull(CameraAgentCurrentSkyFactsProjector.Project(bounded, Phoenix).CombinedLineage);
+        var boundedFacts = CameraAgentCurrentSkyFactsProjector.Project(bounded, Phoenix);
+        Assert.IsNull(boundedFacts.CombinedLineage);
+        Assert.IsTrue(boundedFacts.CombinedLineageUnavailable);
+        Assert.IsFalse(CameraAgentCurrentSkyFactsProjector.Project(complete, Phoenix).CombinedLineageUnavailable);
+        Assert.IsTrue(CameraAgentCurrentSkyFactsProjector.Project(bounded, Phoenix, Guid.NewGuid()).CombinedLineageUnavailable);
         Assert.AreEqual(newer.ArtifactId, CameraAgentCurrentSkyFactsProjector.Project(bounded, Phoenix, newer.ArtifactId).CombinedLineage?.ArtifactId);
         Assert.IsNull(CameraAgentCurrentSkyFactsProjector.Project(complete, Phoenix, Guid.NewGuid()).CombinedLineage);
     }

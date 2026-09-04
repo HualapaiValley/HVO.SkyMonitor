@@ -18,7 +18,8 @@ public sealed record CameraAgentCurrentSkyFacts(
     string EvidenceAvailability,
     CameraAgentCurrentSkyCloudFacts Cloud,
     CameraAgentCombinedLineage? CombinedLineage,
-    ProfileIdentityDescriptor? ProcessingProfile);
+    ProfileIdentityDescriptor? ProcessingProfile,
+    bool CombinedLineageUnavailable = false);
 
 public sealed record CameraAgentCurrentSkyCloudFacts(
     string Availability,
@@ -53,7 +54,7 @@ public static class CameraAgentCurrentSkyFactsProjector
         ArgumentNullException.ThrowIfNull(calendar);
         var detail = capture.Detail;
         var cloud = detail?.CloudAssessment;
-        var combinedArtifacts = capture.Artifacts.Where(static artifact => artifact.Role == FrameArtifactRole.Combined);
+        var combinedArtifacts = capture.Artifacts.Where(static artifact => artifact.Role == FrameArtifactRole.Combined).ToArray();
         var combined = combinedArtifactId is { } displayed
             ? combinedArtifacts.FirstOrDefault(artifact => artifact.ArtifactId == displayed)
             : capture.ArtifactsTruncated
@@ -85,6 +86,8 @@ public static class CameraAgentCurrentSkyFactsProjector
                     combined.SourceArtifactIds,
                     combined.Recipe?.Name,
                     combined.Recipe?.IdentitySha256),
-            detail?.ProcessingProfile);
+            detail?.ProcessingProfile,
+            // Lineage exists but the bounded artifact list did not carry it.
+            combined is null && capture.ArtifactsTruncated && (combinedArtifactId is not null || combinedArtifacts.Length > 0));
     }
 }

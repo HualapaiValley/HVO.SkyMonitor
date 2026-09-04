@@ -49,6 +49,7 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
         _isLoading = true;
         _errorMessage = null;
         _detail = null;
+        _redirecting = false;
         try
         {
             var result = await OperatorService.GetProductDetailAsync(ArtifactId, cancellation.Token);

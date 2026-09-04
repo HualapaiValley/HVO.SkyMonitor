@@ -670,6 +670,11 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         FROM processing_outputs output INDEXED BY ix_processing_outputs_committed
         """;
 
+    private const string ProductAvailablePageSelectSql = ProductRowColumnsSql + """
+
+        FROM processing_outputs output INDEXED BY ix_processing_outputs_retention_available
+        """;
+
     private const string ProductRowSelectSql = ProductRowColumnsSql + """
 
         FROM processing_outputs output
@@ -687,7 +692,10 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         var keys = new List<ProductKey>(normalized.PageSize + 1);
         using (var command = connection.CreateCommand())
         {
-            var sql = new StringBuilder(ProductPageSelectSql).AppendLine().AppendLine("WHERE 1 = 1").Append(ProductVisibilitySql).AppendLine();
+            // The partial retention index covers the common "available only" page exactly.
+            var availableOnly = normalized.Availability == "Available" && normalized.Role is null && normalized.ProductKind is null && normalized.Recipe is null;
+            var sql = new StringBuilder(availableOnly ? ProductAvailablePageSelectSql : ProductPageSelectSql)
+                .AppendLine().AppendLine(availableOnly ? "WHERE output.availability_state = 'Available'" : "WHERE 1 = 1").Append(ProductVisibilitySql).AppendLine();
             AppendProductFilterClauses(sql, command, normalized);
             if (cursor is not null)
             {
@@ -976,10 +984,15 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             sql.AppendLine("AND output.recipe_identity_sha256 = $recipe_identity");
             command.Parameters.AddWithValue("$recipe_identity", query.Recipe);
         }
-        if (query.Availability is not null)
+        if (query.Availability is not null && !string.Equals(query.Availability, "Available", StringComparison.Ordinal))
         {
             sql.AppendLine("AND output.availability_state = $availability");
             command.Parameters.AddWithValue("$availability", query.Availability);
+        }
+        else if (query.Availability is not null)
+        {
+            // A literal lets the partial retention index satisfy the predicate.
+            sql.AppendLine("AND output.availability_state = 'Available'");
         }
         if (query.FromUnixMilliseconds is { } from)
         {

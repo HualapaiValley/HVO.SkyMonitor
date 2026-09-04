@@ -14,8 +14,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class ArchivePagesTests
 {
     private static readonly ObservingDayCalendar Phoenix = ObservingDayCalendar.Create("America/Phoenix");
-    // Words that would imply authority CameraAgent does not have over local candidates.
-    private static readonly string[] ForbiddenCandidateClaims = ["fireball", "ground track", "impact", "reconstruct", "validated event", "correlat", "publish", "speed", "altitude", "multi-site"];
+    // Affirmative claims that would imply authority CameraAgent does not have over local candidates,
+    // matched against visible text so a negated disclaimer is not mistaken for a claim.
+    private static readonly string[] ForbiddenCandidateClaims = ["fireball", "ground track", "impact location", "reconstructed event", "validated event", "correlated event", "published event", "multi-site", "entry speed", "peak altitude"];
 
     [TestMethod]
     public void Calendar_ListsObservingNightsWithCountsAndDayLinks()
@@ -83,7 +84,8 @@ public sealed class ArchivePagesTests
         var clamped = context.Render<ArchiveCalendarPage>();
         clamped.WaitForAssertion(() =>
         {
-            Assert.IsTrue(observed?.FromDate >= DateOnly.MinValue);
+            Assert.AreEqual(DateOnly.MinValue.AddDays(ArchiveCalendarPage.RangeDays * 2), observed?.ToDate);
+            Assert.AreEqual(DateOnly.MinValue.AddDays(ArchiveCalendarPage.RangeDays + 1), observed?.FromDate);
             Assert.IsNotNull(clamped.Find(".range-nav"));
         });
     }
@@ -98,9 +100,13 @@ public sealed class ArchivePagesTests
         service.ProductDetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Failure(OperatorUiResultKind.Unauthorized, "denied"));
         var navigation = context.Services.GetRequiredService<NavigationManager>();
 
-        context.Render<ArchiveCalendarPage>();
+        navigation.NavigateTo("/archive/calendar");
+        var calendar = context.Render<ArchiveCalendarPage>();
+        calendar.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
         navigation.NavigateTo("/archive/products");
-        context.Render<ProductsPage>();
+        var products = context.Render<ProductsPage>();
+        products.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
+        navigation.NavigateTo("/archive/products/detail");
         var detail = context.Render<ProductDetail>(parameters => parameters.Add(page => page.ArtifactId, Guid.NewGuid()));
 
         detail.WaitForAssertion(() =>
@@ -241,9 +247,10 @@ public sealed class ArchivePagesTests
             Assert.AreEqual(new DateTimeOffset(2026, 7, 21, 19, 0, 0, TimeSpan.Zero), transient.LastQuery?.FromUtc);
             Assert.AreEqual(new DateTimeOffset(2026, 7, 22, 18, 59, 59, TimeSpan.Zero), transient.LastQuery?.ToUtc);
             StringAssert.Contains(list.Find(".range-state").TextContent, "Showing candidates created between", StringComparison.Ordinal);
+            var visible = list.Find(".transient-page").TextContent;
             foreach (var forbidden in ForbiddenCandidateClaims)
             {
-                Assert.IsFalse(list.Markup.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
+                Assert.IsFalse(visible.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
             }
         });
 
@@ -264,7 +271,7 @@ public sealed class ArchivePagesTests
             var link = detail.Find(".source-list a");
             Assert.AreEqual("/gallery/00000000-0000-0000-0000-000000000002", link.GetAttribute("href"));
             StringAssert.Contains(link.TextContent, "Capture #41", StringComparison.Ordinal);
-            var text = detail.Markup;
+            var text = detail.Find(".transient-detail").TextContent;
             foreach (var forbidden in ForbiddenCandidateClaims)
             {
                 Assert.IsFalse(text.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);

@@ -658,7 +658,8 @@ internal sealed class CameraAgentOperatorUiService(
         }
     }
 
-    private (CameraAgentCurrentSkyFacts Facts, Guid? CombinedArtifactId)? _cachedFacts;
+    private static readonly TimeSpan FactsCacheLifetime = TimeSpan.FromSeconds(60);
+    private (CameraAgentCurrentSkyFacts Facts, Guid? CombinedArtifactId, DateTimeOffset ReadUtc)? _cachedFacts;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
     public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
@@ -677,7 +678,9 @@ internal sealed class CameraAgentOperatorUiService(
             .FirstOrDefault(static slot => slot.Stage == CameraAgentPresentationStage.Combined)?.ArtifactId;
         // Facts are immutable once a capture is committed, so a circuit that
         // polls every few seconds re-reads them only when the capture changes.
-        if (_cachedFacts is { } cached && cached.Facts.CaptureId == displayed.CaptureId && cached.CombinedArtifactId == combinedArtifactId)
+        // Availability and cloud facts can still change for a displayed capture, so the memo expires.
+        if (_cachedFacts is { } cached && cached.Facts.CaptureId == displayed.CaptureId && cached.CombinedArtifactId == combinedArtifactId &&
+            timeProvider.GetUtcNow() - cached.ReadUtc < FactsCacheLifetime)
         {
             return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, cached.Facts, null));
         }
@@ -689,7 +692,7 @@ internal sealed class CameraAgentOperatorUiService(
                 return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "The displayed capture is no longer retained."));
             }
             var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, observingDays.Current, combinedArtifactId);
-            _cachedFacts = (facts, combinedArtifactId);
+            _cachedFacts = (facts, combinedArtifactId, timeProvider.GetUtcNow());
             return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, facts, null));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

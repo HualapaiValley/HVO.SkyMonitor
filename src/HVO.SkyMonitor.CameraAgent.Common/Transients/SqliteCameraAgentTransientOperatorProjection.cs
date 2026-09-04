@@ -611,6 +611,11 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
             normalized = normalized.PadRight(normalized.Length + (4 - normalized.Length % 4) % 4, '=');
             var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(normalized));
             var parts = decoded.Split(':');
+            // A cursor issued before ranges existed carries two parts and is valid only without a range.
+            if (parts.Length == 2 && fromUnixMilliseconds is null && toUnixMilliseconds is null)
+            {
+                parts = [parts[0], parts[1], "-", "-"];
+            }
             if (parts.Length != 4 || !long.TryParse(
                     parts[0],
                     System.Globalization.NumberStyles.None,
