@@ -163,7 +163,8 @@ versions; the response selects the most preferred shared version and publishes
 evidence. A producer that has negotiated is expected to apply the minimum of the
 published and its own local value for every limit; this contract validates only
 that a published limits record is well formed, and the sender that applies the
-minimum is delivered by #537. On the wire, a payload whose root `schemaVersion` is unknown — such
+minimum is delivered by #537. On the wire, a payload whose root `schemaVersion`
+is unknown — such
 as a future `hvo-cameraagent-execution-evidence-v2` — is rejected before any
 member is interpreted, so a forward-incompatible unit is never partially
 applied. Unknown members, duplicate JSON keys, numeric enums, non-UTC
@@ -191,9 +192,9 @@ canonical byte sequence and one hash.
 | Missing ranges / resync ranges | 64 / 64 | |
 | Resync units | 256 | |
 
-Every value above travels in the negotiation response, so a producer learns them
-before it sends anything and applies the minimum of the published and its own
-local value. The following caps are enforced by validation but are not
+Every value above travels in the negotiation response, so a producer learns
+them before it sends anything and applies the minimum of the published and its
+own local value. The following caps are enforced by validation but are not
 negotiated, because they are fixed by the durable schema or by the message
 shape:
 
@@ -212,6 +213,14 @@ The per-node input and output caps mirror the durable ordinal constraints; the
 per-execution aggregates are the binding limit and are checked after every
 per-node check, so an execution can satisfy every node cap and still be
 rejected on the aggregate.
+
+The byte caps are canonical-form caps, and validation measures the canonical
+form. A receiver additionally refuses a payload whose *raw* length exceeds the
+cap for its declared body kind before deserializing it, because raw length is
+what bounds the work of materializing it. A conformant producer always sends
+canonical bytes, for which the two lengths are identical; a whitespace-padded
+payload can therefore be refused with `evidence.payload-too-large` even when its
+canonical form would have fit.
 
 The absolute envelope cap must hold a maximum-size revision: the durable store admits a
 2 MiB canonical definition and a 2 MiB frozen plan for one revision

@@ -628,20 +628,6 @@ public sealed class GraphExecutionEvidenceContractTests
             Outputs = Repeat(limits.MaximumOutputsPerNode, CreateOutput)
         }])).IsValid);
 
-        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(WithNodes(envelope, [node with
-        {
-            Attempts = Repeat(
-                limits.MaximumAttemptsPerNode, index => node.Attempts[0] with { AttemptNumber = index + 1 })
-        }])).IsValid);
-        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(WithNodes(envelope, [node with
-        {
-            Inputs = Repeat(limits.MaximumInputsPerNode, CreateRawInput)
-        }])).IsValid);
-        Assert.IsTrue(GraphExecutionEvidenceJson.Validate(WithNodes(envelope, [node with
-        {
-            Outputs = Repeat(limits.MaximumOutputsPerNode, CreateOutput)
-        }])).IsValid);
-
         var availability = GraphExecutionEvidenceFixtures.CreateAvailabilityEnvelope();
         AssertInvalid(
             availability with
@@ -755,8 +741,9 @@ public sealed class GraphExecutionEvidenceContractTests
     [TestMethod]
     public void PerKindEnvelopeCapsBindBeforeTheAbsoluteCap()
     {
-        // A node id is bounded at 128 characters, so an execution is inflated with distinct nodes until its
-        // canonical form exceeds the execution cap while staying far below the absolute cap.
+        // A maximally wide execution — every node, each with the largest node id and its share of the
+        // per-execution input budget — still stays below the execution cap, so the cap that binds a real
+        // execution is never the absolute one. The cap-crossing case is the synthetic document below.
         var envelope = GraphExecutionEvidenceFixtures.CreateLiveExecutionEnvelope();
         var node = envelope.Execution!.Nodes[0];
         var wide = WithNodes(envelope, Repeat(
@@ -795,12 +782,12 @@ public sealed class GraphExecutionEvidenceContractTests
 
         // A payload longer than the kind's cap is refused before deserialization, with the pre-parse gate still
         // set to the absolute cap so a maximum-size revision remains receivable.
-        var oversizedExecution = new byte[GraphExecutionEvidenceLimits.MaximumExecutionEnvelopeBytes + 1];
+        var fillerLength = GraphExecutionEvidenceLimits.MaximumExecutionEnvelopeBytes + 1;
         var text = System.Text.Encoding.UTF8.GetBytes(string.Concat(
             "{\"schemaVersion\":\"",
             ExecutionEvidenceEnvelopeV1.CurrentSchemaVersion,
             "\",\"kind\":\"GraphExecution\",\"filler\":\"",
-            new string('x', oversizedExecution.Length),
+            new string('x', fillerLength),
             "\"}"));
         var parsed = GraphExecutionEvidenceJson.ParseEnvelope(text);
         Assert.IsNull(parsed.Value);
