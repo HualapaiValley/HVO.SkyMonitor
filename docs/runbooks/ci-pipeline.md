@@ -321,12 +321,21 @@ sibling names such as `HVO.SkyMonitor.CameraAgent.Tests` and
 | `cameraagent` | `src/HVO.SkyMonitor.CameraAgent`, `CameraAgent.Common`, `CameraAgent.Modules.Zwo`, `CameraAgent.Replay`, `CameraAgent.ReplayRunner`, and `tests/HVO.SkyMonitor.CameraAgent.{Tests,AcceptanceTests,IntegrationTests}` |
 | `logichost` | `src/HVO.SkyMonitor.LogicHost` and `tests/HVO.SkyMonitor.LogicHost.{Tests,IntegrationTests,TestInfrastructure}` |
 | `combined` | `tests/HVO.SkyMonitor.CameraAgent.LogicHost.{Tests,IntegrationTests}` |
-| `delivery` | `src/HVO.SkyMonitor.Deployment.*`, `tools/HVO.SkyMonitor.Deployment.ReleaseTool`, `tests/HVO.SkyMonitor.Deployment.*.Tests`, `deploy/**`, `docker-compose.apps.yml`, `.env.template`, `scripts/deploy:environment`, `scripts/deploy/**`, `scripts/catalog:*`, `scripts/catalog/**`, `scripts/install-hvo-skymonitor.sh`, `scripts/infra:operation-lock`, `scripts/test:deploy-environment`, `scripts/test:deploy-environment-cli`, `scripts/test:deployment-installer`, `scripts/test:deployment-logichost-outage-contract`, `scripts/test:deployment-normal-flow-contract`, `docs/catalog/hyg-v42-attribution.md`, and `docs/catalog/hyg-v42-license.md` |
+| `delivery` | `src/HVO.SkyMonitor.Deployment.*`, `tools/HVO.SkyMonitor.Deployment.ReleaseTool`, and `tests/HVO.SkyMonitor.Deployment.*.Tests` |
 
-`tests/fixtures/catalog/hyg-v42-bright-stars.sqlite` is a deployment-contract
-input but not a delivery component input: seven test projects across every
-component load it, so it selects the complete matrix while still selecting the
-exhaustive catalog and shard deployment suites.
+Deployment inputs that are not project directories — `deploy/**`,
+`docker-compose.apps.yml`, `.env.template`, `scripts/deploy*`,
+`scripts/catalog*`, `scripts/install-hvo-skymonitor.sh`,
+`scripts/infra:operation-lock`, `scripts/test:deploy*`,
+`scripts/test:deployment-*`, the HYG v42 attribution and license inputs, and
+`tests/fixtures/catalog/hyg-v42-bright-stars.sqlite` — are deliberately **not**
+mapped to the delivery component. Test code reads several of them from the
+repository root at run time, which no project file records: for example
+`SqlOperationsIssue255Tests` and `DatabaseInitializationAcceptanceTests` read and
+assert `deploy/sql/*.sql`, and seven test projects across every component load
+the catalog fixture. Narrowing them would silently drop the suites that assert
+them, so they keep their independent deployment-contract selection and otherwise
+select the complete matrix, exactly as before component scoping.
 
 The classification rules applied to that map are:
 
@@ -348,16 +357,17 @@ The classification rules applied to that map are:
   running a narrow plan.
 - Documentation-only pull requests stay in reduced mode only through the
   existing allowlist, and only while no allowlisted path is compiled, embedded,
-  or copied into a project. An allowlisted path that a project file includes
-  carries an executable contract, so it leaves reduced mode and selects the
-  including project's component.
+  or copied into a project. Seven allowlisted paths are included by project
+  files today — `THIRD-PARTY-NOTICES.md` and six `docs/validation/*.json`
+  signal manifests — and each leaves reduced mode for the complete matrix. The
+  remaining 232 allowlisted paths still classify reduced.
 
 Seam selection is an inverse allowlist. A host path is treated as an exported
 protocol or integration seam unless it is explicitly host-private, so a new host
 directory fails closed into combined coverage. The host-private set is:
 
 - `src/HVO.SkyMonitor.CameraAgent/{Components,Properties,wwwroot}/**`, except `Components/Account/**`, which wires the identity endpoints the combined suite exercises, and `Properties/AssemblyInfo.cs`, whose `InternalsVisibleTo` grants are what let the combined suites compile
-- `src/HVO.SkyMonitor.CameraAgent.Common/{Background,Diagnostics,Frames,Gallery,Imaging,Logging,Properties,Reflection,Scheduling,SkyMap,Storage}/**`
+- `src/HVO.SkyMonitor.CameraAgent.Common/{Background,Diagnostics,Frames,Gallery,Imaging,Logging,Properties,Reflection,Scheduling,SkyMap,Storage}/**`, except `Properties/AssemblyInfo.cs`, whose `InternalsVisibleTo` grant is what lets `CameraAgent.LogicHost.Tests` compile
 - `src/HVO.SkyMonitor.CameraAgent.{Modules.Zwo,Replay,ReplayRunner}/**`
 - `src/HVO.SkyMonitor.LogicHost/{Components,Properties,wwwroot}/**`, with the same `Components/Account/**` and `Properties/AssemblyInfo.cs` exceptions
 - every `tests/**` path except `tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/**`, which is the non-test fixture project both the LogicHost and combined suites compose
@@ -387,14 +397,20 @@ Directory ownership is not the only way a source reaches a project. A file that
 another project compiles, embeds, or copies through a relative MSBuild item —
 `<Compile Include>`, `<None Include>` with `CopyToOutputDirectory`, and the rest —
 also selects the including project's component, wherever in the repository it
-lives. `deploy/split-host/camera-modules/*.json` therefore selects the CameraAgent
-lane as well as delivery, and a `docs/**` file that a test project copies leaves
-reduced mode instead of skipping every gate. The classifier derives this from the
-checked-out project files rather than a list, and skips project references, which
-the component map already models, and wildcard includes, whose directories
-already fall to the complete matrix. `scripts/test:ci-classification` copies the
-real project files into its fixture repository and asserts that all 61 resolvable
-links select at least what a file in the including project selects.
+lives. `tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs`
+therefore selects the combined lane because the combined integration project
+compiles it, and `THIRD-PARTY-NOTICES.md` and `docs/validation/*.json` leave
+reduced mode because shipping and test projects copy them.
+
+Link derivation only ever **widens** a plan. A path outside every project
+directory still selects the complete matrix, because test code also reads
+repository-root files at run time in ways no project file records. The
+classifier derives links from the checked-out project files rather than a list,
+and skips project references, which the component map already models, and
+wildcard includes, whose directories the contract test proves already select the
+complete matrix. `scripts/test:ci-classification` copies the real project files
+into its fixture repository and asserts that every resolvable link selects at
+least what a file in the including project selects.
 
 ### Exact Affected-Gate Selection
 
@@ -413,10 +429,9 @@ including reduced. The table records only what varies.
 | LogicHost seam (controllers, services, data, infrastructure) | no | logichost, combined | no |
 | `tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/**` | no | logichost, combined | no |
 | Combined fixture or combined suite | no | cameraagent, logichost, combined | no |
-| Installer, distribution, or catalog delivery script | no | delivery | yes |
-| `deploy/split-host/camera-modules/*.json`, which `CameraAgent.Tests` copies | no | cameraagent, delivery | yes |
-| Other `deploy/**` inputs | no | delivery | yes |
-| A `docs/**` file a project copies, such as `docs/validation/*.json` | depends | the including project's lanes | no |
+| `src/HVO.SkyMonitor.Deployment.*`, the release tool, or their tests | no | delivery | yes |
+| `deploy/**`, `scripts/deploy*`, `scripts/catalog*`, or the other non-project deployment inputs | yes | every lane claimed by the complete matrix | yes |
+| `THIRD-PARTY-NOTICES.md` or a `docs/validation/*.json` a project copies | yes | every lane claimed by the complete matrix | no |
 | `docs/catalog/hyg-v42-attribution.md` or `hyg-v42-license.md` | no | delivery | no |
 | CameraAgent or LogicHost `Dockerfile` or host configuration sample | no | that host, combined | yes |
 | CI, classifier, coverage, package, toolchain, solution, or architecture-test input | yes | every lane claimed by the complete matrix | yes for the deployment-contract inputs; the rest run every other gate |

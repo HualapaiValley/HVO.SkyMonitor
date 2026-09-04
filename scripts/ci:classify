@@ -367,29 +367,31 @@ list_linked_projects() {
     including_project="${including_project%%/*}"
     [[ -z "$project" || "$including_project" != "$project" ]] || continue
     printf '%s\n' "$including_project"
-  done < <(grep -rlF --include='*.csproj' "${patterns[@]}" src tests tools 2>/dev/null) | sort -u
+  done < <(grep -rlF --include='*.csproj' "${patterns[@]}" src tests tools scripts 2>/dev/null) | sort -u
 }
 
 select_components() {
   local path="$1" linked_projects="${2:-}" top rest project linked_project
 
-  # A source that another project compiles or copies selects that project's
-  # component wherever it lives, including outside src/ and tests/.
+  # A source that another project compiles or copies also selects that project's
+  # component, wherever the source itself lives.
   while IFS= read -r linked_project; do
     [[ -n "$linked_project" ]] || continue
     apply_linked_project "$linked_project"
   done <<< "$linked_projects"
 
-  # Delivery inputs that are not .NET project directories.
-  case "$path" in
-    deploy/* | docker-compose.apps.yml | .env.template | scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-skymonitor.sh | scripts/infra:operation-lock | scripts/catalog:* | scripts/catalog/* | scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract | docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md)
-      delivery="true"
-      return 0
-      ;;
-  esac
+  # Deployment inputs that are not .NET project directories are intentionally not
+  # mapped to the delivery component. Test code reads several of them from the
+  # repository root at run time, which no project file records, so narrowing them
+  # would silently drop the suites that assert them. They keep their independent
+  # deployment-contract selection and otherwise fall through to the complete
+  # matrix, exactly as before component scoping.
 
   top="${path%%/*}"
   rest="${path#"$top"/}"
+  # A path outside every project directory always selects the complete matrix.
+  # Test code reads repository-root files that no project file records, so link
+  # derivation can widen such a path's plan but must never narrow it.
   if [[ "$top" != "src" && "$top" != "tests" && "$top" != "tools" ]] || [[ "$rest" != */* ]]; then
     complete_reason="at least one path is outside every component boundary"
     select_complete_matrix

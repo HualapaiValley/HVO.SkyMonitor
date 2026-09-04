@@ -217,10 +217,16 @@ verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTes
 verify_component_plan "src/HVO.SkyMonitor.Deployment.Contracts/Installation.cs"        full true  false false false false false true
 verify_component_plan "tests/HVO.SkyMonitor.Deployment.Cli.Tests/InstallerTests.cs"    full true  false false false false false true
 verify_component_plan "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"         full true  false false false false false true
-verify_component_plan "deploy/split-host/compose.logichost.yml"                        full true  false false false false false true
-verify_component_plan "docs/catalog/hyg-v42-license.md"                                full false false false false false false true
-verify_component_plan "scripts/deploy/product-layout.sh"                               full true  false false false false false true
-verify_component_plan "scripts/catalog/install-hyg-v42.sh"                             full true  false false false false false true
+
+# Deployment inputs that are not project directories keep their independent
+# deployment-contract selection and otherwise stay on the complete matrix,
+# because test code reads several of them from the repository root at run time.
+verify_component_plan "deploy/split-host/compose.logichost.yml"                        full true  true  true  true  true  true  true
+verify_component_plan "deploy/sql/logichost-runtime-role.sql"                          full true  true  true  true  true  true  true
+verify_component_plan "deploy/split-host/camera-modules/allsky01.virtual-asi676mc.full.json" full true true true true true true true
+verify_component_plan "docs/catalog/hyg-v42-license.md"                                full false true  true  true  true  true  true
+verify_component_plan "scripts/deploy/product-layout.sh"                               full true  true  true  true  true  true  true
+verify_component_plan "scripts/catalog/install-hyg-v42.sh"                             full true  true  true  true  true  true  true
 
 # Every host namespace the combined suites reference must reach the combined
 # lane. This is checked against the real sources rather than a hand-maintained
@@ -233,7 +239,7 @@ expect_combined_probe() {
   probe_head="$(git -C "$work_root" rev-parse HEAD)"
   output="$(cd "$work_root" && "$classifier" pull_request "$probe_base" "$probe_head")"
   grep -Fxq 'combined=true' <<< "$output" || {
-    printf 'A namespace the combined suites consume is classified host-private: %s\n' "$probe" >&2
+    printf 'A file the combined suites depend on does not select the combined lane: %s\n' "$probe" >&2
     exit 1
   }
 }
@@ -333,17 +339,30 @@ for link_record in "${link_records[@]}"; do
   linked_source="${link_record#*|}"
   [[ -n "$including_project" && -n "$linked_source" ]] || continue
   [[ "$linked_source" != *.csproj ]] || continue
-  # A wildcard include cannot name one repository path; the directories they
-  # cover already fall to the complete matrix.
-  [[ "$linked_source" != *'*'* && "$linked_source" != *'?'* ]] || continue
+  # A wildcard include cannot name one repository path. Prove its directory
+  # already fails closed instead of assuming it.
+  if [[ "$linked_source" == *'*'* || "$linked_source" == *'?'* ]]; then
+    ((link_probe_index += 1))
+    wildcard_flags="$(plan_flags "$(dirname "$linked_source")/WildcardProbe.cs" "wildcard-$link_probe_index")"
+    grep -Fxq 'complete=true' <<< "$wildcard_flags" || {
+      printf 'Wildcard include %s covers a directory that does not select the complete matrix.\n' \
+        "$linked_source" >&2
+      exit 1
+    }
+    continue
+  fi
   [[ -e "$repo_root/$linked_source" ]] || {
     printf 'Project link does not resolve to a repository path: %s -> %s\n' \
       "$including_project" "$linked_source" >&2
     exit 1
   }
   ((link_probe_index += 1))
-  including_directory="$(cd "$repo_root" && git ls-files "*/$including_project/*.csproj" | head -1)"
-  including_directory="$(dirname "$including_directory")"
+  mapfile -t including_matches < <(cd "$repo_root" && git ls-files "*/$including_project/*.csproj")
+  if (( ${#including_matches[@]} != 1 )); then
+    printf 'Project directory name is ambiguous across top-level directories: %s\n' "$including_project" >&2
+    exit 1
+  fi
+  including_directory="$(dirname "${including_matches[0]}")"
   including_flags="$(plan_flags "$including_directory/LinkOwnerProbe.cs" "owner-$link_probe_index")"
   linked_flags="$(plan_flags "$linked_source" "linked-$link_probe_index")"
   while IFS= read -r flag; do
@@ -356,11 +375,27 @@ for link_record in "${link_records[@]}"; do
   done <<< "$including_flags"
 done
 
-if (( link_probe_index < 50 )); then
+if (( link_probe_index < 60 )); then
   printf 'Only %s project links were classified; the cross-check is not enumerating the repository.\n' \
     "$link_probe_index" >&2
   exit 1
 fi
+
+# The enumerator must scan project files outside tests/, and must resolve links
+# that leave the project's own top-level directory. Both are the widenings this
+# cross-check exists to keep.
+mapfile -t link_including_projects < <(printf '%s\n' "${link_records[@]}" | cut -d'|' -f1 | sort -u)
+mapfile -t src_project_names < <(cd "$repo_root" && git ls-files 'src/*/*.csproj' \
+  | while IFS= read -r candidate; do basename "$(dirname "$candidate")"; done | sort -u)
+comm -12 <(printf '%s\n' "${link_including_projects[@]}") <(printf '%s\n' "${src_project_names[@]}") \
+  | grep -q . || {
+  printf 'No src/ project file contributed a link record; the enumerator narrowed to tests/.\n' >&2
+  exit 1
+}
+printf '%s\n' "${link_records[@]}" | grep -qE '^[^|]*\|(docs|deploy)/' || {
+  printf 'No link outside src/, tests/, and tools/ was resolved; the depth widening regressed.\n' >&2
+  exit 1
+}
 
 # Every real project directory must be claimed by a component, except the
 # intentionally cross-cutting ones. A new project therefore cannot slip into a
@@ -386,11 +421,16 @@ while IFS= read -r project_directory; do
 done < <(cd "$repo_root" && git ls-files 'src/*/*.csproj' 'tests/*/*.csproj' 'tools/*/*.csproj' \
   | while IFS= read -r project; do dirname "$project"; done | sort -u)
 
-if (( project_directory_count < 20 )); then
+if (( project_directory_count < 40 )); then
   printf 'Only %s project directories were classified; the orphan cross-check is not enumerating the repository.\n' \
     "$project_directory_count" >&2
   exit 1
 fi
+
+# An otherwise-allowlisted path that a project compiles, embeds, or copies leaves
+# reduced mode. It is outside every project directory, so it still selects the
+# complete matrix rather than only its including projects' lanes.
+verify_component_plan "THIRD-PARTY-NOTICES.md" full false true true true true true true
 
 # Cross-cutting inputs always select the complete solution matrix.
 complete_matrix_paths=(
@@ -422,6 +462,8 @@ complete_matrix_paths=(
   "tests/Example.Tests/ExampleTests.cs"
   "tests/fixtures/frames/sample.bin"
   "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
+  "docs/validation/central-transient-fault-matrix.json"
+  "docs/validation/logichost-ui-runtime-signals.json"
   "tools/asi-capture/capture.sh"
   "docker/local/Dockerfile"
 )
