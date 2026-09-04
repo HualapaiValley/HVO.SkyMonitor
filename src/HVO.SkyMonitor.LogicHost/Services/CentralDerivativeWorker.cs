@@ -50,7 +50,60 @@ internal sealed partial class CentralDerivativeWorker(
         }
         Log.Lifecycle(logger, "started", _options.Concurrency);
         return Task.WhenAll(Enumerable.Range(0, _options.Concurrency)
-            .Select(slot => RunSlotAsync(slot, stoppingToken)));
+            .Select(slot => RunSlotAsync(slot, stoppingToken))
+            .Append(RunGraphMaintenanceAsync(stoppingToken)));
+    }
+
+    /// <summary>
+    /// Graph convergence (signaled and periodic recovery) runs on its own loop so a slot executing a long recipe
+    /// never delays it. The health check's <c>graph-recovery-stale</c> threshold is <c>2 x QueueSampleInterval</c>;
+    /// with recovery tied to slot 0's claim loop, any legitimate recipe longer than that reported stale despite
+    /// healthy lease renewal. Convergence is serialized per execution by its own row lock, so it is safe to run
+    /// while any slot executes a lease, and the signal channel keeps its single reader here.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "A durable maintenance loop must retry after transient database failures.")]
+    private async Task RunGraphMaintenanceAsync(CancellationToken stoppingToken)
+    {
+        await using (var probe = scopeFactory.CreateAsyncScope())
+        {
+            if (probe.ServiceProvider.GetService<ICentralProcessingGraphScheduler>() is null)
+            {
+                return;
+            }
+        }
+        var nextGraphRecoveryUtc = DateTimeOffset.MinValue;
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            var now = timeProvider.GetUtcNow();
+            try
+            {
+                await using var scope = scopeFactory.CreateAsyncScope();
+                var graphScheduler = scope.ServiceProvider.GetRequiredService<ICentralProcessingGraphScheduler>();
+                while (_graphConvergenceSignal.TryRead(out var graphExecutionId))
+                {
+                    await ConvergeSignaledAsync(graphScheduler, graphExecutionId, now, stoppingToken)
+                        .ConfigureAwait(false);
+                }
+                if (now >= nextGraphRecoveryUtc)
+                {
+                    await graphScheduler.ConvergeBatchAsync(now, stoppingToken).ConfigureAwait(false);
+                    nextGraphRecoveryUtc = now + _options.QueueSampleInterval;
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+                Log.GraphMaintenanceFailed(logger, exception);
+            }
+            await _graphConvergenceSignal.WaitAsync(_options.PollInterval, stoppingToken).ConfigureAwait(false);
+        }
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
@@ -60,7 +113,6 @@ internal sealed partial class CentralDerivativeWorker(
     private async Task RunSlotAsync(int slot, CancellationToken stoppingToken)
     {
         var nextQueueSampleUtc = DateTimeOffset.MinValue;
-        var nextGraphRecoveryUtc = DateTimeOffset.MinValue;
         while (!stoppingToken.IsCancellationRequested)
         {
             telemetry.RecordPoll(timeProvider.GetUtcNow());
@@ -71,21 +123,6 @@ internal sealed partial class CentralDerivativeWorker(
                 await using var claimScope = scopeFactory.CreateAsyncScope();
                 if (slot == 0)
                 {
-                    var now = timeProvider.GetUtcNow();
-                    if (claimScope.ServiceProvider.GetService<ICentralProcessingGraphScheduler>() is
-                        { } graphScheduler)
-                    {
-                        while (_graphConvergenceSignal.TryRead(out var graphExecutionId))
-                        {
-                            await ConvergeSignaledAsync(graphScheduler, graphExecutionId, now, stoppingToken)
-                                .ConfigureAwait(false);
-                        }
-                        if (now >= nextGraphRecoveryUtc)
-                        {
-                            await graphScheduler.ConvergeBatchAsync(now, stoppingToken).ConfigureAwait(false);
-                            nextGraphRecoveryUtc = now + _options.QueueSampleInterval;
-                        }
-                    }
                     if (claimScope.ServiceProvider.GetService<ICentralTransientRetrospectiveScheduler>() is { } scheduler)
                     {
                         await scheduler.ScheduleBatchAsync(timeProvider.GetUtcNow(), stoppingToken)
@@ -111,14 +148,7 @@ internal sealed partial class CentralDerivativeWorker(
                 telemetry.RecordClaim("failed", timeProvider.GetElapsedTime(claimStarted));
                 telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
                 Log.ClaimFailed(logger, exception, slot);
-                if (slot == 0)
-                {
-                    await _graphConvergenceSignal.WaitAsync(_options.PollInterval, stoppingToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
-                }
+                await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
                 continue;
             }
             telemetry.RecordClaim(
@@ -149,7 +179,7 @@ internal sealed partial class CentralDerivativeWorker(
     /// health, while a graph whose frozen state cannot converge is logged here. The convergence "failed" outcome
     /// itself is emitted exactly once by <see cref="CentralProcessingGraphScheduler.ConvergeAsync"/> for every thrown
     /// convergence (batch or signaled), so this method must not record a second one. Database faults propagate so
-    /// the slot's claim loop records the dependency failure and backs off as before.
+    /// the maintenance loop records the dependency failure and backs off as before.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Design",
@@ -573,6 +603,9 @@ internal sealed partial class CentralDerivativeWorker(
         [LoggerMessage(2175, LogLevel.Error,
             "Central processing graph signaled convergence failed: ExecutionId={ExecutionId}")]
         public static partial void SignaledConvergenceFailed(ILogger logger, Exception exception, Guid executionId);
+
+        [LoggerMessage(2176, LogLevel.Warning, "Central processing graph maintenance loop failed; retrying")]
+        public static partial void GraphMaintenanceFailed(ILogger logger, Exception exception);
 
         [LoggerMessage(2139, LogLevel.Warning,
             "Central derivative failure persistence failed: JobId={JobId}, Attempt={Attempt}")]

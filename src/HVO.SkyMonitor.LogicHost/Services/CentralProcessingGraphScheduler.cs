@@ -165,6 +165,12 @@ internal sealed partial class CentralProcessingGraphScheduler(
         {
             return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "revision-not-published");
         }
+        // A retired revision keeps its provenance for executions that already ran against it, but it is no longer
+        // eligible for new work; replay names a revision directly and so must be rejected explicitly here.
+        if (revision.RetiredAtUtc is not null)
+        {
+            return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "revision-retired");
+        }
         ProcessingGraphExecutionPlan plan;
         try
         {
@@ -193,6 +199,13 @@ internal sealed partial class CentralProcessingGraphScheduler(
             !SourcesMatch(plan, ordered.Select(static item => item!).ToArray(), provenance))
         {
             return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "invalid-replay-sources");
+        }
+        // Live expansion selects sources frame-locally from `artifact.Frame.Artifacts`. Replay must reproduce that
+        // selection exactly, so a set spanning two frames of one installation is rejected rather than silently
+        // composing products that never coexisted in a single capture.
+        if (ordered.Select(item => item!.CentralFrameId).Distinct().Count() != 1)
+        {
+            return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "replay-sources-span-frames");
         }
         return await ExpandAsync(
             revision,
@@ -449,6 +462,47 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 telemetry.RecordGraphExpansion(
                     executionClass.ToString(), "existing", timeProvider.GetElapsedTime(started), 0);
                 return new(CentralProcessingGraphScheduleOutcome.Existing, existing);
+            }
+            // Selection above ran without holds, so retention may have expired a source in the meantime. Fence every
+            // source on the same row lock CentralArtifactRetentionService.ReserveAsync takes (stable ascending order so
+            // two concurrent expansions never deadlock), then revalidate from the database rather than the selected
+            // instances. Retention's reservation runs after this lock and sees the sealed execution reference; an
+            // expansion that loses the race fails here explicitly instead of sealing an execution whose source is gone.
+            if (dbContext.Database.IsSqlServer())
+            {
+                foreach (var sourceId in orderedSources.Select(item => item.Artifact.Id).Distinct().Order())
+                {
+                    _ = await CentralArtifactRetentionLock.AcquireAsync(dbContext, sourceId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            var fencedSourceIds = orderedSources.Select(item => item.Artifact.Id).Distinct().ToArray();
+            var fencedSources = await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(item => fencedSourceIds.Contains(item.Id))
+                .Select(item => new
+                {
+                    item.Id,
+                    item.ObjectState,
+                    item.ReconstructionState,
+                    item.ChecksumSha256,
+                    item.ByteLength
+                })
+                .ToDictionaryAsync(item => item.Id, cancellationToken).ConfigureAwait(false);
+            if (orderedSources.Any(item => !fencedSources.TryGetValue(item.Artifact.Id, out var fenced) ||
+                    fenced.ObjectState != CentralArtifactObjectState.Available ||
+                    fenced.ReconstructionState != CentralReconstructionState.Complete ||
+                    !string.Equals(fenced.ChecksumSha256, item.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
+                    fenced.ByteLength != item.Artifact.ByteLength))
+            {
+                rolledBack = true;
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                if (logger is not null)
+                {
+                    Log.SourceRetentionFenced(logger, executionClass.ToString(), requestIdentity);
+                }
+                telemetry.RecordGraphExpansion(
+                    executionClass.ToString(), "source-unavailable", timeProvider.GetElapsedTime(started), 0);
+                return new(CentralProcessingGraphScheduleOutcome.Invalid, ReasonCode: "source-retention-expired");
             }
             var anchor = sources[0];
             var frame = anchor.Frame!;
@@ -1909,5 +1963,9 @@ internal sealed partial class CentralProcessingGraphScheduler(
         [LoggerMessage(2151, LogLevel.Warning,
             "Processing graph recovery rotation failed for ExecutionId={ExecutionId}.")]
         public static partial void RotationFailed(ILogger logger, Exception exception, Guid executionId);
+
+        [LoggerMessage(2152, LogLevel.Warning,
+            "Processing graph expansion rejected: a selected source was no longer available inside the retention fence. Class={ExecutionClass}, RequestIdentity={RequestIdentity}")]
+        public static partial void SourceRetentionFenced(ILogger logger, string executionClass, string requestIdentity);
     }
 }

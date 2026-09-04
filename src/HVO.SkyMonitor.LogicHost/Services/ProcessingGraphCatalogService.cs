@@ -449,6 +449,10 @@ internal sealed partial class ProcessingGraphCatalogService(
                 item.EffectiveFromUtc <= effectiveAtUtc &&
                 (item.EffectiveUntilUtc == null || effectiveAtUtc < item.EffectiveUntilUtc) &&
                 item.Revision!.PublishedAtUtc <= effectiveAtUtc &&
+                // Retirement is an eligibility cutoff, not a rewrite: an assignment whose revision was retired at or
+                // before the effective instant stops resolving and the next lower-scope eligible assignment wins.
+                // Executions already expanded keep the frozen definition and provenance they recorded.
+                (item.Revision.RetiredAtUtc == null || effectiveAtUtc < item.Revision.RetiredAtUtc) &&
                 (item.Scope == CentralProcessingGraphAssignmentScope.GlobalDefault ||
                  item.Scope == CentralProcessingGraphAssignmentScope.Observatory && item.ObservatoryId == observatoryId ||
                  item.Scope == CentralProcessingGraphAssignmentScope.LogicalCamera && item.ObservatoryId == observatoryId &&

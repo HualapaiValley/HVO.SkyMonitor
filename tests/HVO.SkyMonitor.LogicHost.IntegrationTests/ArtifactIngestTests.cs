@@ -2514,6 +2514,189 @@ public sealed class ArtifactIngestTests
             .Should().Be("projected-annotation-v3");
     }
 
+    /// <summary>
+    /// Finding 1 of #547 (deferred from #546): the canonical seeded graph freezes its Preview output contract with
+    /// <c>"algorithms":[]</c>, while the real built-in encoded preview reports non-empty algorithm provenance
+    /// (<c>jpeg</c>). Every earlier live Docker test took the legacy scheduler because its device had no logical-camera
+    /// installation (the graph path is <c>NotApplicable</c> without one), and the graph Docker tests fed synthetic
+    /// products whose algorithms were copied from the empty contract, so the binding predicate only ever compared
+    /// <c>[]</c> with <c>[]</c>. This test ingests through the real multipart path with an installed camera, runs the
+    /// real executor, and converges the execution to <c>Completed</c> against the seeded Preview contract.
+    /// </summary>
+    [TestMethod]
+    public async Task MultipartIngestV2_SeededPreviewGraphBindsRealEncodedPreviewAlgorithmProvenance()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("seeded-graph-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        Guid revisionId;
+        Guid assignmentId;
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId)
+                .ConfigureAwait(false);
+            var camera = new LogicalCamera
+            {
+                ObservatoryId = registration.ObservatoryId,
+                Slug = $"seeded-graph-{Guid.NewGuid():N}",
+                Name = "Seeded Graph Camera",
+                Description = "Real encoded preview through the seeded Preview contract",
+                CreatedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-2),
+                CreatedByUserId = registration.OwnerUserId
+            };
+            var installation = new LogicalCameraInstallation
+            {
+                LogicalCamera = camera,
+                LogicalCameraId = camera.Id,
+                RegistrationId = registration.Id,
+                InstallationPublicId = Guid.NewGuid(),
+                AssignedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-1),
+                AssignedByUserId = registration.OwnerUserId,
+                AssignmentReasonCode = "seeded-graph-test"
+            };
+            camera.Installations.Add(installation);
+            // The seeded revision's Preview node, verbatim, including its frozen empty algorithm set. Only the
+            // Preview node is assigned so a single real recipe run completes the whole execution.
+            var registry = scope.ServiceProvider.GetRequiredService<ICentralProcessingGraphNodeRegistry>();
+            var seeded = DatabaseSeeder.CreateBasicCentralProcessingGraph();
+            var definition = seeded with
+            {
+                Name = $"seeded-preview-{Guid.NewGuid():N}",
+                Nodes = [.. seeded.Nodes.Where(node => node.Id == "Preview")]
+            };
+            var portable = ProcessingGraphCompiler.Compile(definition);
+            portable.IsValid.Should().BeTrue(string.Join(Environment.NewLine, portable.Diagnostics));
+            var central = ProcessingGraphCompiler.Compile(
+                definition, new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
+            central.IsValid.Should().BeTrue(string.Join(Environment.NewLine, central.Diagnostics));
+            var revision = new CentralProcessingGraphRevision
+            {
+                Name = definition.Name,
+                Revision = definition.Revision,
+                DefinitionJson = Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(definition)),
+                DefinitionIdentitySha256 = portable.Plan!.DefinitionIdentitySha256,
+                PortablePlanIdentitySha256 = portable.Plan.PlanIdentitySha256,
+                CentralPlanIdentitySha256 = central.Plan!.PlanIdentitySha256,
+                CreatedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-2),
+                CreatedByUserId = registration.OwnerUserId,
+                PublishedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-1),
+                PublishedByUserId = registration.OwnerUserId
+            };
+            var assignment = new CentralProcessingGraphAssignment
+            {
+                Revision = revision,
+                RevisionId = revision.Id,
+                TargetHost = CentralProcessingGraphTargetHost.Central,
+                Scope = CentralProcessingGraphAssignmentScope.LogicalCamera,
+                ObservatoryId = registration.ObservatoryId,
+                LogicalCamera = camera,
+                LogicalCameraId = camera.Id,
+                EffectiveFromUtc = DateTimeOffset.UnixEpoch.AddDays(-1),
+                CreatedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-1),
+                ActorUserId = registration.OwnerUserId,
+                ReasonCode = "seeded-graph-test"
+            };
+            revision.Assignments.Add(assignment);
+            db.AddRange(camera, installation, revision, assignment);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            revisionId = revision.Id;
+            assignmentId = assignment.Id;
+        }
+
+        var payload = new byte[] { 1, 32, 128, 255 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, captureSequence: 4701);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        Guid executionId;
+        Guid graphJobId;
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var source = await db.CentralArtifacts.AsNoTracking().Include(item => item.Frame)
+                .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
+            source.Frame!.LogicalCameraInstallationId.Should().NotBeNull("ingest binds the installed camera");
+            var execution = await db.CentralProcessingGraphExecutions.AsNoTracking()
+                .Include(item => item.Jobs).ThenInclude(job => job.Outputs)
+                .SingleAsync(item => item.AnchorSourceCentralArtifactId == source.Id).ConfigureAwait(false);
+            execution.ExecutionClass.Should().Be(CentralProcessingGraphExecutionClass.Live);
+            execution.RevisionId.Should().Be(revisionId);
+            execution.AssignmentId.Should().Be(assignmentId);
+            execution.ExpandedAtUtc.Should().NotBeNull();
+            var graphJob = execution.Jobs.Should().ContainSingle().Subject;
+            graphJob.RecipeName.Should().Be(BuiltInProcessingRecipes.EncodedPreview);
+            graphJob.Status.Should().Be(CentralDerivativeJobStatus.Pending);
+            var slot = graphJob.Outputs.Should().ContainSingle().Subject;
+            slot.ContractJson.Should().Contain("\"algorithms\":[]",
+                "the seeded Preview contract pins an empty algorithm set rather than omitting the property");
+            slot.ResultCentralArtifactId.Should().BeNull();
+            executionId = execution.Id;
+            graphJobId = graphJob.Id;
+            (await db.CentralDerivativeJobs.AsNoTracking()
+                .CountAsync(job => job.SourceCentralArtifactId == source.Id && job.GraphExecutionId == null)
+                .ConfigureAwait(false)).Should().Be(0, "a graph-assigned frame receives no legacy derivative work");
+            await db.CentralDerivativeJobs.Where(job => job.Id != graphJobId
+                    && (job.Status == CentralDerivativeJobStatus.Pending
+                        || job.Status == CentralDerivativeJobStatus.RetryableFailure))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+        }
+
+        CentralDerivativeExecutionResult result;
+        await using (var workerScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var lease = await workerScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                .ClaimNextAsync("seeded-graph-worker", TimeSpan.FromMinutes(2), CancellationToken.None)
+                .ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            lease!.JobId.Should().Be(graphJobId);
+            lease.GraphExecutionId.Should().Be(executionId);
+            result = await workerScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+        }
+        result.Status.Should().Be(ProcessingOutcomeStatus.Produced, result.ReasonCode);
+
+        await using (var convergeScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            await convergeScope.ServiceProvider.GetRequiredService<ICentralProcessingGraphScheduler>()
+                .ConvergeAsync(executionId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var completed = await assertionDb.CentralProcessingGraphExecutions.AsNoTracking()
+            .Include(item => item.Jobs).ThenInclude(job => job.Outputs).ThenInclude(output => output.ResultArtifact)
+            .SingleAsync(item => item.Id == executionId).ConfigureAwait(false);
+        completed.Status.Should().Be(CentralProcessingGraphExecutionStatus.Completed);
+        var completedJob = completed.Jobs.Single();
+        completedJob.Status.Should().Be(CentralDerivativeJobStatus.Completed);
+        var boundSlot = completedJob.Outputs.Single();
+        boundSlot.ResultCentralArtifactId.Should().Be(completedJob.ResultCentralArtifactId);
+        boundSlot.BoundAtUtc.Should().NotBeNull();
+        boundSlot.ResultArtifact!.ArtifactId.Should().Be(result.ArtifactId!.Value);
+        boundSlot.ResultArtifact.MediaType.Should().Be("image/jpeg");
+        var evidence = await assertionDb.CentralArtifactProcessingEvidence.AsNoTracking()
+            .SingleAsync(item => item.CentralArtifactId == boundSlot.ResultCentralArtifactId).ConfigureAwait(false);
+        evidence.GraphProductContractIdentitySha256.Should().Be(boundSlot.ContractIdentitySha256);
+        evidence.OutputIdentitySha256.Should().Be(boundSlot.ResultOutputIdentitySha256);
+        evidence.AlgorithmsJson.Should().NotBe("[]", "the real encoded preview records its algorithm provenance");
+        evidence.AlgorithmsJson.Should().Contain("\"jpeg\"");
+        using var ownerClient = await ArtifactRetrievalTests.CreateUserClientAsync(
+            TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
+        var preview = await ReadDerivativeAsync(
+            ownerClient, boundSlot.ResultArtifact.DevicePublicId, result.ArtifactId.Value).ConfigureAwait(false);
+        var decoded = JpegImageCodec.DecodeJpeg(preview);
+        decoded.Width.Should().Be(2);
+        decoded.Height.Should().Be(2);
+    }
+
     [TestMethod]
     public async Task CentralDerivativeMissingInputSuspendsWorkUntilObjectIsRestored()
     {
