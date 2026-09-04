@@ -555,16 +555,13 @@ internal sealed partial class CentralDerivativeWindowResolver(
         {
             return false;
         }
-        foreach (var centralArtifactId in selected.Select(item => item.Candidate.Artifact.Id).Order())
-        {
-            _ = await CentralArtifactRetentionLock.AcquireAsync(dbContext, centralArtifactId, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        var selectedArtifactIds = selectedIds.ToArray();
-        var usableCount = await dbContext.CentralArtifacts.CountAsync(artifact => selectedArtifactIds.Contains(artifact.Id)
-            && artifact.ObjectState == CentralArtifactObjectState.Available
-            && artifact.ReconstructionState == CentralReconstructionState.Complete, cancellationToken).ConfigureAwait(false);
-        if (usableCount != selected.Length)
+        // The hold-fence validation above already holds these rows' update locks in this transaction; the shared
+        // fence re-reads their durable state under those locks so every fence site applies one usability test.
+        var fenced = await CentralArtifactRetentionLock.FenceAsync(dbContext, selectedIds, cancellationToken)
+            .ConfigureAwait(false);
+        if (selectedIds.Any(id => !fenced.TryGetValue(id, out var artifact)
+                || artifact.ObjectState != CentralArtifactObjectState.Available
+                || artifact.ReconstructionState != CentralReconstructionState.Complete))
         {
             return false;
         }

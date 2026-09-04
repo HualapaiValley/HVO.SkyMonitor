@@ -51,69 +51,63 @@ internal sealed partial class CentralDerivativeWorker(
         Log.Lifecycle(logger, "started", _options.Concurrency);
         return Task.WhenAll(Enumerable.Range(0, _options.Concurrency)
             .Select(slot => RunSlotAsync(slot, stoppingToken))
-            .Append(RunGraphMaintenanceAsync(stoppingToken)));
+            .Append(RunMaintenanceAsync(stoppingToken)));
     }
 
     /// <summary>
-    /// Graph convergence (signaled and periodic recovery) runs on its own loop so a slot executing a long recipe
-    /// never delays it. The health check's <c>graph-recovery-stale</c> threshold is <c>2 x QueueSampleInterval</c>;
-    /// with recovery tied to slot 0's claim loop, any legitimate recipe longer than that reported stale despite
-    /// healthy lease renewal. Convergence is serialized per execution by its own row lock, so it is safe to run
-    /// while any slot executes a lease, and the signal channel keeps its single reader here.
+    /// Every periodic duty of the worker runs here, on its own loop, so a slot executing a long recipe never delays
+    /// it: signaled and periodic graph convergence, retrospective transient scheduling, waiting-window resolution,
+    /// and queue sampling. The health check's <c>graph-recovery-stale</c> and <c>window-overdue</c> signals therefore
+    /// only fire when maintenance genuinely stops. Each duty is serialized by its own database locks, so running
+    /// them while any slot executes a lease is safe, and the signal channel keeps its single reader here. Window
+    /// resolution used to run immediately before each slot-0 claim; at <see cref="CentralDerivativeWorkerOptions.PollInterval"/>
+    /// cadence a newly resolvable window waits at most one interval, the same bound the idle claim loop already had.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Design",
         "CA1031:Do not catch general exception types",
         Justification = "A durable maintenance loop must retry after transient database failures.")]
-    private async Task RunGraphMaintenanceAsync(CancellationToken stoppingToken)
+    private async Task RunMaintenanceAsync(CancellationToken stoppingToken)
     {
         var nextGraphRecoveryUtc = DateTimeOffset.MinValue;
+        var nextQueueSampleUtc = DateTimeOffset.MinValue;
         while (!stoppingToken.IsCancellationRequested)
         {
-            var now = timeProvider.GetUtcNow();
-            if (!_graphConvergenceSignal.HasPending && now < nextGraphRecoveryUtc)
-            {
-                // Nothing to do: sleep until a signal arrives or the recovery deadline, without building a scope.
-                var untilRecovery = nextGraphRecoveryUtc - now;
-                await _graphConvergenceSignal.WaitAsync(
-                    untilRecovery < _options.PollInterval ? untilRecovery : _options.PollInterval, stoppingToken)
-                    .ConfigureAwait(false);
-                continue;
-            }
-            await using var scope = scopeFactory.CreateAsyncScope();
-            ICentralProcessingGraphScheduler? graphScheduler;
             try
             {
-                // Resolved inside the loop: a dependency that fails to construct (object storage credentials, for
-                // example) is logged and retried rather than faulting this task silently for the process lifetime. An
-                // activation failure is not a database fault, so it carries no dependency label; recovery staleness
-                // reports it honestly while it persists.
-                graphScheduler = scope.ServiceProvider.GetService<ICentralProcessingGraphScheduler>();
-            }
-            catch (Exception exception)
-            {
-                Log.GraphMaintenanceFailed(logger, exception);
-                await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
-                continue;
-            }
-            if (graphScheduler is null)
-            {
-                return;
-            }
-            try
-            {
-                while (_graphConvergenceSignal.TryRead(out var graphExecutionId))
+                // Resolved inside the guarded loop: a dependency that fails to construct (object storage credentials,
+                // for example) is logged and retried rather than faulting this task silently for the process lifetime.
+                await using var scope = scopeFactory.CreateAsyncScope();
+                if (scope.ServiceProvider.GetService<ICentralProcessingGraphScheduler>() is { } graphScheduler)
                 {
-                    await ConvergeSignaledAsync(graphScheduler, graphExecutionId, now, stoppingToken)
+                    var signaledAt = timeProvider.GetUtcNow();
+                    while (_graphConvergenceSignal.TryRead(out var graphExecutionId))
+                    {
+                        await ConvergeSignaledAsync(graphScheduler, graphExecutionId, signaledAt, stoppingToken)
+                            .ConfigureAwait(false);
+                    }
+                    // Read the clock after the drain: the batch records its poll instant as LastGraphRecoveryUtc, and
+                    // a long signal burst must not make a recovery that just completed look stale.
+                    var recoveryAt = timeProvider.GetUtcNow();
+                    if (recoveryAt >= nextGraphRecoveryUtc)
+                    {
+                        await graphScheduler.ConvergeBatchAsync(recoveryAt, stoppingToken).ConfigureAwait(false);
+                        nextGraphRecoveryUtc = recoveryAt + _options.QueueSampleInterval;
+                    }
+                }
+                if (scope.ServiceProvider.GetService<ICentralTransientRetrospectiveScheduler>() is { } retrospective)
+                {
+                    await retrospective.ScheduleBatchAsync(timeProvider.GetUtcNow(), stoppingToken)
                         .ConfigureAwait(false);
                 }
-                // Re-read the clock after the drain: the batch records its poll instant as LastGraphRecoveryUtc, and a
-                // long signal burst must not make a recovery that just completed look stale.
-                now = timeProvider.GetUtcNow();
-                if (now >= nextGraphRecoveryUtc)
+                await scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+                    .ResolveWaitingAsync(timeProvider.GetUtcNow(), stoppingToken)
+                    .ConfigureAwait(false);
+                var sampleAt = timeProvider.GetUtcNow();
+                if (sampleAt >= nextQueueSampleUtc)
                 {
-                    await graphScheduler.ConvergeBatchAsync(now, stoppingToken).ConfigureAwait(false);
-                    nextGraphRecoveryUtc = now + _options.QueueSampleInterval;
+                    await SampleQueueAsync(sampleAt, stoppingToken).ConfigureAwait(false);
+                    nextQueueSampleUtc = sampleAt + _options.QueueSampleInterval;
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -122,8 +116,13 @@ internal sealed partial class CentralDerivativeWorker(
             }
             catch (Exception exception)
             {
-                telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
-                Log.GraphMaintenanceFailed(logger, exception);
+                // Only real database faults degrade database health; an activation failure or a duty's own state
+                // fault is logged and retried without a misleading dependency label.
+                if (CentralProcessingGraphScheduler.IsDatabaseFailure(exception))
+                {
+                    telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+                }
+                Log.MaintenanceFailed(logger, exception);
                 // The signal wait below returns immediately while ids remain queued, so back off unconditionally
                 // after a fault instead of spinning through the queue against an unavailable database.
                 await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
@@ -139,7 +138,6 @@ internal sealed partial class CentralDerivativeWorker(
         Justification = "A durable worker slot must retry after transient claim failures.")]
     private async Task RunSlotAsync(int slot, CancellationToken stoppingToken)
     {
-        var nextQueueSampleUtc = DateTimeOffset.MinValue;
         while (!stoppingToken.IsCancellationRequested)
         {
             telemetry.RecordPoll(timeProvider.GetUtcNow());
@@ -148,17 +146,6 @@ internal sealed partial class CentralDerivativeWorker(
             try
             {
                 await using var claimScope = scopeFactory.CreateAsyncScope();
-                if (slot == 0)
-                {
-                    if (claimScope.ServiceProvider.GetService<ICentralTransientRetrospectiveScheduler>() is { } scheduler)
-                    {
-                        await scheduler.ScheduleBatchAsync(timeProvider.GetUtcNow(), stoppingToken)
-                            .ConfigureAwait(false);
-                    }
-                    await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
-                        .ResolveWaitingAsync(timeProvider.GetUtcNow(), stoppingToken)
-                        .ConfigureAwait(false);
-                }
                 using (telemetry.StartStage("claim", "other"))
                 {
                     lease = await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
@@ -183,8 +170,6 @@ internal sealed partial class CentralDerivativeWorker(
                 timeProvider.GetElapsedTime(claimStarted));
             if (lease is null)
             {
-                nextQueueSampleUtc = await SampleQueueIfDueAsync(
-                    slot, nextQueueSampleUtc, stoppingToken).ConfigureAwait(false);
                 await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
                 continue;
             }
@@ -195,8 +180,6 @@ internal sealed partial class CentralDerivativeWorker(
             {
                 await ExecuteLeaseAsync(lease, stoppingToken).ConfigureAwait(false);
             }
-            nextQueueSampleUtc = await SampleQueueIfDueAsync(
-                slot, nextQueueSampleUtc, stoppingToken).ConfigureAwait(false);
         }
     }
 
@@ -459,20 +442,6 @@ internal sealed partial class CentralDerivativeWorker(
         }
     }
 
-    private async Task<DateTimeOffset> SampleQueueIfDueAsync(
-        int slot,
-        DateTimeOffset nextQueueSampleUtc,
-        CancellationToken cancellationToken)
-    {
-        var now = timeProvider.GetUtcNow();
-        if (slot != 0 || now < nextQueueSampleUtc)
-        {
-            return nextQueueSampleUtc;
-        }
-        await SampleQueueAsync(now, cancellationToken).ConfigureAwait(false);
-        return now + _options.QueueSampleInterval;
-    }
-
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Design",
         "CA1031:Do not catch general exception types",
@@ -631,8 +600,8 @@ internal sealed partial class CentralDerivativeWorker(
             "Central processing graph signaled convergence failed: ExecutionId={ExecutionId}")]
         public static partial void SignaledConvergenceFailed(ILogger logger, Exception exception, Guid executionId);
 
-        [LoggerMessage(2176, LogLevel.Warning, "Central processing graph maintenance loop failed; retrying")]
-        public static partial void GraphMaintenanceFailed(ILogger logger, Exception exception);
+        [LoggerMessage(2176, LogLevel.Warning, "Central derivative worker maintenance loop failed; retrying")]
+        public static partial void MaintenanceFailed(ILogger logger, Exception exception);
 
         [LoggerMessage(2139, LogLevel.Warning,
             "Central derivative failure persistence failed: JobId={JobId}, Attempt={Attempt}")]
