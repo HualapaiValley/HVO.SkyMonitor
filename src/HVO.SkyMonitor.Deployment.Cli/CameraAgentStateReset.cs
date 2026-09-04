@@ -35,7 +35,7 @@ internal sealed record CameraAgentStateResetResult(
 /// </summary>
 internal static class CameraAgentStateResetManager
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = DeploymentSchemaVersions.StateResetEvidence;
 
     public static Task<CameraAgentStateResetResult> ExecuteAsync(
         CameraAgentStateResetRequest request,
@@ -90,6 +90,9 @@ internal static class CameraAgentStateResetManager
         }
         await docker.EnsureNoInstanceReferencesAsync(instanceId, paths.InstanceRoot, cancellationToken).ConfigureAwait(false);
 
+        // Everything the reset must be able to complete is validated before the first irreversible deletion, so a
+        // rejected precondition can never leave an instance with deleted state and a retained completed result.
+        var retainedState = await ReadInstallationStateAsync(paths, instanceId, cancellationToken).ConfigureAwait(false);
         var operationId = Guid.NewGuid();
         var deletable = CameraAgentStateLayout.ResettableStateDirectories(paths.StateRoot)
             .Where(Directory.Exists)
@@ -126,6 +129,10 @@ internal static class CameraAgentStateResetManager
                 evidencePath, NextCommand(instanceId), DateTimeOffset.UtcNow);
         }
 
+        // Owner bootstrap must run again against the preserved temporary password, so the retained completed result
+        // is withdrawn before the deletion while the installation identity, configuration, and secrets stay
+        // untouched. An interruption after this point leaves a pending installation the preflight still guards.
+        await RewindInstallationStateAsync(paths, retainedState, cancellationToken).ConfigureAwait(false);
         foreach (var directory in deletable)
         {
             SafeTreeDeletion.DeleteChild(paths.StateRoot, Path.GetFileName(directory), uid, gid);
@@ -135,9 +142,6 @@ internal static class CameraAgentStateResetManager
             SafeFileSystem.CreateRuntimeDirectory(directory, uid, gid);
         }
 
-        // Owner bootstrap must run again against the preserved temporary password, so the retained completed result
-        // is withdrawn while the installation identity, configuration, and secrets stay untouched.
-        await RewindInstallationStateAsync(paths, instanceId, cancellationToken).ConfigureAwait(false);
         var completedUtc = DateTimeOffset.UtcNow;
         await SafeFileSystem.WriteJsonAtomicAsync(
             evidencePath,
@@ -168,18 +172,17 @@ internal static class CameraAgentStateResetManager
         paths.BackupsRoot
     ];
 
-    private static async Task RewindInstallationStateAsync(
+    private static async Task<InstallationState> ReadInstallationStateAsync(
         InstallationPaths paths,
         Guid instanceId,
         CancellationToken cancellationToken)
     {
-        var statePath = paths.StatePath;
-        if (!File.Exists(statePath))
+        if (!File.Exists(paths.StatePath))
         {
             throw new InstallerException("The retained installation state is required to reset CameraAgent state.");
         }
         InstallationState state;
-        await using (var stream = SafeFileSystem.OpenOwnerFileRead(statePath))
+        await using (var stream = SafeFileSystem.OpenOwnerFileRead(paths.StatePath))
         {
             state = await System.Text.Json.JsonSerializer.DeserializeAsync(
                         stream, DeploymentJsonContext.Default.InstallationState, cancellationToken).ConfigureAwait(false)
@@ -189,8 +192,20 @@ internal static class CameraAgentStateResetManager
         {
             throw new InstallerException("The retained installation state belongs to a different instance.");
         }
+        if (File.Exists(paths.ResultPath))
+        {
+            SafeFileSystem.ValidateOwnerFile(paths.ResultPath);
+        }
+        return state;
+    }
+
+    private static async Task RewindInstallationStateAsync(
+        InstallationPaths paths,
+        InstallationState state,
+        CancellationToken cancellationToken)
+    {
         await SafeFileSystem.WriteJsonAtomicAsync(
-            statePath,
+            paths.StatePath,
             state with
             {
                 Phase = InstallationPhase.Preflight,

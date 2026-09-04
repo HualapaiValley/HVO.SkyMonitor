@@ -267,13 +267,12 @@ internal static class CommandLine
 
     private static CameraAgentStatePreflightRequest ParseStatePreflight(string[] args)
     {
-        var (values, flags) = ParseOptions(args, 2, ["--json", "--no-download"]);
+        var (values, flags) = ParseOptions(args, 2, ["--json"]);
         RejectUnknown(values, ["--instance-id", "--product-root", "--image-ref"]);
         var request = new CameraAgentStatePreflightRequest(
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
             Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
             Get(values, "--image-ref"),
-            flags.Contains("--no-download"),
             flags.Contains("--json"));
         request.Validate();
         return request;

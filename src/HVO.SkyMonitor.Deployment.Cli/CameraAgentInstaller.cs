@@ -274,7 +274,9 @@ internal sealed class CameraAgentInstaller
                 paths,
                 instanceId,
                 image,
-                existingManifest?.Image.UpgradeCompatibility ?? image.UpgradeCompatibility,
+                existingManifest is not null
+                    ? existingManifest.Image.UpgradeCompatibility ?? existingManifest.UpgradeCompatibility
+                    : image.UpgradeCompatibility,
                 uid,
                 gid,
                 (ContractReplayProfile)request.ReplayProfile,

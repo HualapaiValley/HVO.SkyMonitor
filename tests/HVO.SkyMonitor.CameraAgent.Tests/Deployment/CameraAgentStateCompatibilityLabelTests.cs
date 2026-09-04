@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.Catalog.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 
@@ -62,7 +63,9 @@ public sealed class CameraAgentStateCompatibilityLabelTests
     {
         var labels = ReadImageLabels();
 
-        Assert.AreEqual("2", labels["io.hvo.skymonitor.catalog-manifest-version"]);
+        Assert.AreEqual(
+            CatalogSnapshotResolver.SupportedManifestVersion.ToString(CultureInfo.InvariantCulture),
+            labels["io.hvo.skymonitor.catalog-manifest-version"]);
         Assert.AreEqual("hyg-v42-production-p3-s2", labels["io.hvo.skymonitor.catalog-contract"]);
     }
 

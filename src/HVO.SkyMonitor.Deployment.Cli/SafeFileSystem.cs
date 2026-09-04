@@ -10,7 +10,9 @@ internal static class SafeFileSystem
 {
     private const UnixFileMode OwnerDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
     private const UnixFileMode OwnerFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+    // Includes the setuid/setgid/sticky bits so an adopted bind source cannot keep them while reporting 0700.
     private const UnixFileMode AllPermissions =
+        UnixFileMode.SetUser | UnixFileMode.SetGroup | UnixFileMode.StickyBit |
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
         UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
         UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
@@ -51,9 +53,11 @@ internal static class SafeFileSystem
     public static void CreateRuntimeDirectory(string path, uint uid, uint gid)
     {
         EnsureSafeExistingAncestors(path);
+        var created = false;
         if (!Directory.Exists(path))
         {
             Directory.CreateDirectory(path);
+            created = true;
             File.SetUnixFileMode(path, OwnerDirectoryMode);
         }
         else if (new DirectoryInfo(path).LinkTarget is not null)
@@ -64,6 +68,12 @@ internal static class SafeFileSystem
         var identity = NativeLinux.GetDirectoryIdentity(path);
         if (identity.Uid != uid || identity.Gid != gid)
         {
+            // A directory this call just created belongs to the invoking user, not the configured runtime identity.
+            // Remove it again so a mismatched invocation cannot leave behind a source it will refuse forever.
+            if (created)
+            {
+                Directory.Delete(path);
+            }
             throw new InstallerException(
                 $"Writable bind source '{path}' is owned by {identity.Uid}:{identity.Gid} instead of the configured runtime {uid}:{gid}; complete the CameraAgent reset procedure or restore its ownership before deploying.");
         }

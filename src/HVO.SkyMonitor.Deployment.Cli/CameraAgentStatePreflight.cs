@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Data.Sqlite;
 using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
@@ -67,7 +68,7 @@ internal sealed record CameraAgentStateRequirements(
 /// </summary>
 internal static class CameraAgentStatePreflight
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = DeploymentSchemaVersions.StatePreflightReport;
 
     /// <summary>Deletes and reports nothing; every check is read-only.</summary>
     public static CameraAgentStatePreflightReport Evaluate(
@@ -203,6 +204,21 @@ internal static class CameraAgentStatePreflight
             return;
         }
 
+        if (!CameraAgentStateContract.IsCurrent(requirements.StateContract) &&
+            requirements is { MinimumCompatibleRevision: null, IdentityMigration: null, RawIngressSchema: null })
+        {
+            // A rollback target that predates the label correction declares no boundary, so nothing about the
+            // persisted state can be compared against it. Surface that explicitly instead of implying a check ran.
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "candidate-boundaries-undeclared",
+                "image-label",
+                Blocking: false,
+                "io.hvo.skymonitor.minimum-compatible-revision",
+                "none",
+                "declared identity-migration, raw-ingress-schema, and catalog-manifest-version",
+                "This target predates the state-compatibility correction; its persisted-state boundaries cannot be verified. Confirm the instance has not crossed a state boundary since it was installed."));
+        }
+
         // The superseded label carried no boundary, so an installation that declares it is admitted only when the
         // persisted boundaries below prove the state already matches the candidate contract.
         if (!CameraAgentStateContract.IsKnown(installedStateContract))
@@ -240,16 +256,18 @@ internal static class CameraAgentStatePreflight
         {
             findings.Add(new CameraAgentStatePreflightFinding(
                 "catalog-manifest-unreadable", boundary, Blocking: true, manifestPath, "unreadable",
-                requirements.CatalogManifestVersion?.ToString(CultureInfo.InvariantCulture) ?? "readable manifest",
+                CatalogSnapshotResolver.SupportedManifestVersion.ToString(CultureInfo.InvariantCulture),
                 "Reinstall the approved catalog bundle; the selected catalog manifest cannot be read."));
             return;
         }
-        if (requirements.CatalogManifestVersion is { } expected && manifest.Value.ManifestVersion != expected)
+        // A candidate that declares no manifest version is still compared against the resolver the runtime uses.
+        var expectedManifestVersion = requirements.CatalogManifestVersion ?? CatalogSnapshotResolver.SupportedManifestVersion;
+        if (manifest.Value.ManifestVersion != expectedManifestVersion)
         {
             findings.Add(new CameraAgentStatePreflightFinding(
                 "catalog-manifest-version", boundary, Blocking: true, manifestPath,
                 manifest.Value.ManifestVersion.ToString(CultureInfo.InvariantCulture),
-                expected.ToString(CultureInfo.InvariantCulture),
+                expectedManifestVersion.ToString(CultureInfo.InvariantCulture),
                 "Select an installed catalog whose manifest version matches the candidate image, then rerun the deployment."));
         }
         if (!string.Equals(manifest.Value.CatalogId, ProductionCatalog.CatalogId, StringComparison.Ordinal))
@@ -278,9 +296,10 @@ internal static class CameraAgentStatePreflight
         }
 
         List<string> applied;
+        bool uninitialized;
         try
         {
-            applied = ReadAppliedMigrations(databasePath);
+            (applied, uninitialized) = ReadIdentityLineage(databasePath);
         }
         catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
         {
@@ -291,7 +310,9 @@ internal static class CameraAgentStatePreflight
             return;
         }
 
-        if (applied.Count == 1 && string.Equals(applied[0], expected, StringComparison.Ordinal))
+        // The runtime creates and migrates this database itself, so a file that carries neither a recorded
+        // migration nor any Identity table is a fresh start rather than an incompatible lineage.
+        if (uninitialized || (applied.Count == 1 && string.Equals(applied[0], expected, StringComparison.Ordinal)))
         {
             return;
         }
@@ -318,9 +339,10 @@ internal static class CameraAgentStatePreflight
         }
 
         long observed;
+        long schemaObjects;
         try
         {
-            observed = ReadUserVersion(databasePath);
+            (observed, schemaObjects) = ReadRawIngressSchema(databasePath);
         }
         catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
         {
@@ -331,7 +353,9 @@ internal static class CameraAgentStatePreflight
             return;
         }
 
-        if (observed == expected)
+        // SqliteRawCaptureJournal initializes a database whose user_version is 0 with no schema objects, so that
+        // state is compatible rather than an unsupported schema.
+        if (observed == expected || (observed == 0 && schemaObjects == 0))
         {
             return;
         }
@@ -367,7 +391,20 @@ internal static class CameraAgentStatePreflight
                     "Replace the linked bind source with a regular owner-only directory."));
                 continue;
             }
-            var identity = NativeLinux.GetDirectoryIdentity(source.HostPath);
+            UnixPathIdentity identity;
+            try
+            {
+                identity = NativeLinux.GetDirectoryIdentity(source.HostPath);
+            }
+            catch (InstallerException exception)
+            {
+                findings.Add(new CameraAgentStatePreflightFinding(
+                    "bind-source-unreadable", boundary, Blocking: true, source.HostPath,
+                    Redaction.SafeDiagnostic(exception.Message),
+                    string.Create(CultureInfo.InvariantCulture, $"directory owned by {uid}:{gid} mode 0700"),
+                    "Re-create the bind source as a regular owner-only directory before starting CameraAgent."));
+                continue;
+            }
             if (identity.Uid != uid || identity.Gid != gid)
             {
                 findings.Add(new CameraAgentStatePreflightFinding(
@@ -377,7 +414,8 @@ internal static class CameraAgentStatePreflight
                     "Re-create the bind source with the configured runtime UID/GID; the capability-dropped container cannot adopt a root-owned directory."));
                 continue;
             }
-            if ((identity.Mode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+            if ((identity.Mode & (UnixFileMode.SetUser | UnixFileMode.SetGroup | UnixFileMode.StickyBit |
+                                  UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
                                   UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute)) != 0)
             {
                 findings.Add(new CameraAgentStatePreflightFinding(
@@ -389,7 +427,7 @@ internal static class CameraAgentStatePreflight
     }
 
     private static string FormatMode(UnixFileMode mode)
-        => Convert.ToString((int)mode & 0b111_111_111, 8).PadLeft(4, '0');
+        => Convert.ToString((int)mode & 0b111_111_111_111, 8).PadLeft(4, '0');
 
     private static (int ManifestVersion, string? CatalogId)? TryReadCatalogManifest(string manifestPath)
     {
@@ -422,27 +460,43 @@ internal static class CameraAgentStatePreflight
         }
     }
 
-    private static List<string> ReadAppliedMigrations(string databasePath)
+    private static (List<string> Applied, bool Uninitialized) ReadIdentityLineage(string databasePath)
     {
         using var connection = OpenReadOnly(databasePath);
-        using var command = connection.CreateCommand();
-        command.CommandText =
-            "SELECT MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
         var migrations = new List<string>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
+        using (var command = connection.CreateCommand())
         {
-            migrations.Add(reader.GetString(0));
+            command.CommandText =
+                "SELECT MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                migrations.Add(reader.GetString(0));
+            }
         }
-        return migrations;
+        if (migrations.Count > 0)
+        {
+            return (migrations, false);
+        }
+
+        using var identityTables = connection.CreateCommand();
+        identityTables.CommandText =
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name LIKE 'AspNet%';";
+        return (migrations, Convert.ToInt64(identityTables.ExecuteScalar(), CultureInfo.InvariantCulture) == 0);
     }
 
-    private static long ReadUserVersion(string databasePath)
+    private static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
     {
         using var connection = OpenReadOnly(databasePath);
-        using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA user_version;";
-        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        long userVersion;
+        using (var version = connection.CreateCommand())
+        {
+            version.CommandText = "PRAGMA user_version;";
+            userVersion = Convert.ToInt64(version.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
+        using var objects = connection.CreateCommand();
+        objects.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';";
+        return (userVersion, Convert.ToInt64(objects.ExecuteScalar(), CultureInfo.InvariantCulture));
     }
 
     private static SqliteConnection OpenReadOnly(string databasePath)
@@ -519,7 +573,8 @@ internal static class CameraAgentStatePreflightManager
                 ProductRoot = manifest.ProductRoot,
                 CatalogBundle = "/dev/null",
                 ImageReference = reference,
-                NoDownload = request.NoDownload
+                // The preflight never mutates, so the candidate is inspected locally and never pulled or loaded.
+                NoDownload = true
             };
             var prepared = await docker.PrepareImageAsync(synthetic, allowMutation: false, cancellationToken)
                 .ConfigureAwait(false);

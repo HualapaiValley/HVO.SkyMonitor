@@ -174,6 +174,7 @@ config/secrets/*
 config/owner-bootstrap/temporary-password
 state/deployment/{installation-state.json,installation-result.json,state-preflight.json}
 operations/cameraagent-<uuid>.owner-recovery.json
+operations/state-reset-<operation-uuid>.evidence.json
 operations/owner-recovery/<operation-uuid>/temporary-password
 ```
 
@@ -300,23 +301,32 @@ already installed image stays inspectable; it is never accepted as an upgrade ca
 
 Deployment preflight compares the declared boundaries against the persisted state before Compose starts the
 container, so an incompatible instance fails once with the complete boundary list instead of through container
-restart loops. Install, upgrade, and rollback all run it before any image, backup, or Compose mutation, and
-install/upgrade retain the report at `state/deployment/state-preflight.json`. Run it on demand without
-starting, loading, pulling, or mutating anything:
+restart loops. Install, upgrade, and rollback all run it before any backup, drain, stop, or Compose mutation
+and before the container starts; the candidate image is inspected first because its labels are the expected
+values being compared. Install and upgrade retain the report at `state/deployment/state-preflight.json`. Run
+it on demand without starting, loading, pulling, or mutating anything:
 
 ```bash
 hvo-skymonitor cameraagent preflight --instance-id <uuid> --json
 hvo-skymonitor cameraagent preflight --instance-id <uuid> \
-  --image-ref <repository@sha256:digest> --no-download
+  --image-ref <repository@sha256:digest>
 ```
 
-Without `--image-ref` the installed image's declaration is evaluated; with it, the candidate's declaration is.
-The command exits `0` when compatible and `1` with error code `state-incompatible` otherwise. Each finding
-names its boundary code, path, observed value, expected value, and remediation. The checked boundaries are the
-selected catalog manifest version and catalog identity, the Identity migration lineage recorded in
-`__EFMigrationsHistory`, the raw-ingress `PRAGMA user_version`, and the ownership and mode of every writable
-Compose bind source. A boundary the candidate image does not declare is not compared and is never assumed
-compatible; such an image is rejected by the state-contract check instead.
+Without `--image-ref` the installed image's declaration is evaluated; with it, the candidate's declaration is
+and the current contract is required, matching an in-place upgrade. The command exits `0` when compatible and
+`1` with error code `state-incompatible` otherwise. Each finding names its boundary code, path, observed
+value, expected value, and remediation. The checked boundaries are the selected catalog manifest version and
+catalog identity, the Identity migration lineage recorded in `__EFMigrationsHistory`, the raw-ingress
+`PRAGMA user_version`, and the ownership and mode of every writable Compose bind source.
+
+An in-place upgrade always requires a candidate that declares `cameraagent-state-v2`, so every boundary is
+compared. Installing an image, and rolling back to one, are not state migrations and therefore also accept the
+superseded declaration; an image that predates the correction declares no boundary, so those boundaries are
+skipped rather than compared, and the report records an advisory `candidate-boundaries-undeclared` finding
+naming exactly what could not be verified. The catalog manifest version is still compared against the version
+the runtime resolver enforces even when the image declares none. Rolling a state boundary backwards is not
+supported: if an instance has run a newer state contract, restore it through the reset procedure below rather
+than by rolling back to a pre-`70ecdd3` image.
 
 The installer and every lifecycle mutation pre-create all writable bind sources
 (`state/identity`, `state/data-protection`, `state/provisioning`, `state/raw`, `state/archive`, and

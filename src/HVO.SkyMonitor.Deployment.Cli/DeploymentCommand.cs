@@ -61,7 +61,6 @@ internal sealed record CameraAgentStatePreflightRequest(
     Guid? InstanceId,
     string ProductRoot,
     string? ImageReference,
-    bool NoDownload,
     bool Json) : DeploymentCommand(Json)
 {
     public void Validate()

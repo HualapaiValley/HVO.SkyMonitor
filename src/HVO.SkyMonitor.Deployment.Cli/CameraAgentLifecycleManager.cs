@@ -264,12 +264,11 @@ internal sealed class CameraAgentLifecycleManager
         }
         // Every boundary is proved before the backup, drain, stop, and Compose mutation begin, so an incompatible
         // upgrade or rollback never reaches a container restart loop.
-        if (!request.DryRun)
+        // Creating an empty owner-only directory the installed Compose model already binds is idempotent and
+        // non-destructive, so a dry run evaluates the same bind sources the committed mutation would.
+        foreach (var directory in ComposeDeployment.WritableStateDirectories(paths.StateRoot))
         {
-            foreach (var directory in ComposeDeployment.WritableStateDirectories(paths.StateRoot))
-            {
-                SafeFileSystem.CreateRuntimeDirectory(directory, manifest.RuntimeUid, manifest.RuntimeGid);
-            }
+            SafeFileSystem.CreateRuntimeDirectory(directory, manifest.RuntimeUid, manifest.RuntimeGid);
         }
         await CameraAgentStatePreflight.EnsureCompatibleAsync(
             paths,

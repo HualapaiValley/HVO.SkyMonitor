@@ -122,10 +122,100 @@ public sealed class UpgradePreflightTests
 
         var rollback = Evaluate(fixture, legacy, CameraAgentStateContractPolicy.AllowLegacy);
         Assert.IsTrue(rollback.Compatible, CameraAgentStatePreflight.Render(rollback));
+        var advisory = rollback.Findings.Single();
+        Assert.AreEqual("candidate-boundaries-undeclared", advisory.Code);
+        Assert.IsFalse(advisory.Blocking, "a rollback target may not be blocked for predating the correction");
+        StringAssert.Contains(
+            CameraAgentStatePreflight.Render(rollback), "candidate-boundaries-undeclared", StringComparison.Ordinal);
     }
 
     [TestMethod]
-    public void Evaluate_UndeclaredCandidateBoundaries_AreNeverAssumedCompatible()
+    public void Evaluate_UninitializedPersistedDatabases_MatchTheRuntimeFreshInitialization()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteEmptyIdentityDatabase();
+        fixture.WriteRawIngressDatabase(schemaVersion: 0, createTable: false);
+        fixture.CreateBindSources();
+
+        var report = Evaluate(fixture);
+
+        // SqliteRawCaptureJournal initializes a user_version 0 database with no schema objects, and EF migrates an
+        // Identity database that carries neither a lineage row nor an AspNet table. Neither is an incompatible state.
+        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
+        Assert.AreEqual(0, report.Findings.Count);
+    }
+
+    [TestMethod]
+    public async Task EnsureCompatibleAsync_LegacyState_FailsOnceWithTheCompleteBoundaryReport()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 1);
+        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 11);
+        fixture.CreateBindSources();
+        var candidate = new ImageInstallationIdentity(
+            "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,
+            UpgradeCompatibility: CameraAgentStateContract.Current,
+            MinimumCompatibleRevision: MinimumCompatibleRevision,
+            IdentityMigration: CurrentIdentityMigration,
+            RawIngressSchema: "12",
+            CatalogManifestVersion: "2");
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => CameraAgentStatePreflight.EnsureCompatibleAsync(
+                fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.LegacyUnbounded,
+                RuntimeUid, RuntimeGid,
+                HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
+                persist: true, CancellationToken.None));
+
+        foreach (var code in new[] { "catalog-manifest-version", "identity-migration-lineage", "raw-ingress-schema" })
+        {
+            StringAssert.Contains(exception.Message, code, StringComparison.Ordinal);
+        }
+        StringAssert.Contains(exception.Message, MinimumCompatibleRevision, StringComparison.Ordinal);
+
+        var reportPath = Path.Combine(fixture.Paths.DeploymentStateRoot, "state-preflight.json");
+        Assert.IsTrue(File.Exists(reportPath), "the consolidated report must be retained for the operator");
+        await using var stream = SafeFileSystem.OpenOwnerFileRead(reportPath);
+        var persisted = await JsonSerializer.DeserializeAsync(
+            stream, DeploymentJsonContext.Default.CameraAgentStatePreflightReport, CancellationToken.None);
+        Assert.AreEqual("incompatible", persisted!.Outcome);
+        Assert.IsFalse(persisted.Compatible);
+        Assert.AreEqual(3, persisted.Findings.Count);
+    }
+
+    [TestMethod]
+    public async Task EnsureCompatibleAsync_CompatibleState_RetainsTheReportWithoutThrowing()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.CreateBindSources();
+        var candidate = new ImageInstallationIdentity(
+            "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,
+            UpgradeCompatibility: CameraAgentStateContract.Current,
+            MinimumCompatibleRevision: MinimumCompatibleRevision,
+            IdentityMigration: CurrentIdentityMigration,
+            RawIngressSchema: "12",
+            CatalogManifestVersion: "2");
+
+        var report = await CameraAgentStatePreflight.EnsureCompatibleAsync(
+            fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.LegacyUnbounded,
+            RuntimeUid, RuntimeGid,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
+            persist: true, CancellationToken.None);
+
+        Assert.IsTrue(report.Compatible);
+        Assert.AreEqual(
+            DeploymentSchemaVersions.StatePreflightReport,
+            report.SchemaVersion);
+        Assert.IsTrue(File.Exists(Path.Combine(fixture.Paths.DeploymentStateRoot, "state-preflight.json")));
+    }
+
+    [TestMethod]
+    public void Evaluate_UndeclaredCandidateBoundaries_AreSkippedRatherThanCompared()
     {
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
@@ -136,8 +226,9 @@ public sealed class UpgradePreflightTests
 
         var report = Evaluate(fixture, undeclared);
 
-        // A boundary the image does not declare cannot be compared, so it is silently skipped rather than passed;
-        // the fail-closed decision for those images belongs to the contract check above.
+        // A boundary the image does not declare cannot be compared, so it is skipped. On an in-place upgrade the
+        // candidate must declare the current contract, and this image does, so only its own omissions go unchecked.
+        // The catalog manifest version is still compared against the resolver constant the runtime enforces.
         Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
         Assert.AreEqual(0, report.Findings.Count);
     }
@@ -180,6 +271,13 @@ public sealed class UpgradePreflightTests
         var exception = Assert.ThrowsExactly<InstallerException>(
             () => SafeFileSystem.CreateRuntimeDirectory(source, RuntimeUid + 1, RuntimeGid + 1));
         StringAssert.Contains(exception.Message, "instead of the configured runtime", StringComparison.Ordinal);
+
+        var absent = Path.Combine(fixture.Paths.StateRoot, CameraAgentStateLayout.ProvisioningDirectoryName);
+        Assert.ThrowsExactly<InstallerException>(
+            () => SafeFileSystem.CreateRuntimeDirectory(absent, RuntimeUid + 1, RuntimeGid + 1));
+        Assert.IsFalse(
+            Directory.Exists(absent),
+            "a refused bind source must not be left behind for the next run to reject again");
     }
 
     [TestMethod]
@@ -194,10 +292,10 @@ public sealed class UpgradePreflightTests
             [
                 "cameraagent", "preflight", "--instance-id", instanceId.ToString("D"),
                 "--product-root", "/tmp/hvo-preflight", "--image-ref", $"sha256:{new string('a', 64)}",
-                "--no-download", "--json"
+                "--json"
             ]);
             Assert.AreEqual(instanceId, preflight.InstanceId);
-            Assert.IsTrue(preflight.NoDownload);
+            Assert.AreEqual($"sha256:{new string('a', 64)}", preflight.ImageReference);
             Assert.IsTrue(preflight.Json);
 
             var reset = (CameraAgentStateResetRequest)CommandLine.ParseCommand(
@@ -400,7 +498,19 @@ public sealed class UpgradePreflightTests
             command.ExecuteNonQuery();
         }
 
-        public void WriteRawIngressDatabase(int schemaVersion)
+        public void WriteEmptyIdentityDatabase()
+        {
+            var path = CameraAgentStateLayout.IdentityDatabasePath(Paths.StateRoot);
+            SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(path)!);
+            using var connection = new SqliteConnection($"Data Source={path}");
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "CREATE TABLE __EFMigrationsHistory (MigrationId TEXT NOT NULL PRIMARY KEY, ProductVersion TEXT NOT NULL);";
+            command.ExecuteNonQuery();
+        }
+
+        public void WriteRawIngressDatabase(int schemaVersion, bool createTable = true)
         {
             var path = CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot);
             SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(path)!);
@@ -409,7 +519,7 @@ public sealed class UpgradePreflightTests
             using var command = connection.CreateCommand();
 #pragma warning disable CA2100 // PRAGMA user_version cannot be parameterized; the value is a test constant.
             command.CommandText =
-                "CREATE TABLE raw_capture (id INTEGER PRIMARY KEY);" +
+                (createTable ? "CREATE TABLE raw_capture (id INTEGER PRIMARY KEY);" : string.Empty) +
                 $"PRAGMA user_version = {schemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)};";
 #pragma warning restore CA2100
             command.ExecuteNonQuery();

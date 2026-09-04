@@ -8,6 +8,8 @@ public static class DeploymentSchemaVersions
     public const int InstallationState = 1;
     public const int InstallationResult = 1;
     public const int LifecycleOperation = 1;
+    public const int StatePreflightReport = 1;
+    public const int StateResetEvidence = 1;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<DeploymentComponent>))]

@@ -53,7 +53,11 @@ public sealed record CatalogSnapshotResult(
 /// <summary>Resolves and validates the active immutable catalog snapshot below an installation root.</summary>
 public static class CatalogSnapshotResolver
 {
-    private const int SupportedManifestVersion = 2;
+    /// <summary>
+    /// The only catalog manifest version this resolver accepts. Deployment images declare the same value so an
+    /// upgrade preflight can compare a selected catalog against the runtime that will read it.
+    /// </summary>
+    public const int SupportedManifestVersion = 2;
     private const int Sha256HexLength = 64;
     private const int MaximumManifestLength = 65_536;
     private const int MaximumCatalogIdLength = 32;
