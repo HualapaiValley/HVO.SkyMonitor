@@ -231,18 +231,19 @@ internal sealed partial class ExecutionEvidenceExportService(
         {
             return (ExecutionEvidenceExportAvailability.Degraded, ExecutionEvidenceExportReasonCodes.Quarantined);
         }
-        if (backlog.ProjectionRejectedEvents > 0)
-        {
-            // A recorded loss stays visible for the life of the store rather than for the one cycle that observed
-            // it, because nothing will ever export those executions and an operator has to decide what that means.
-            return (ExecutionEvidenceExportAvailability.Degraded,
-                ExecutionEvidenceExportReasonCodes.ProjectionRejected);
-        }
         if (backlog.OldestPendingUtc is { } oldest &&
             timeProvider.GetUtcNow() - oldest > TimeSpan.FromHours(exportOptions.MaximumPendingAgeHours))
         {
             return (ExecutionEvidenceExportAvailability.Degraded,
                 ExecutionEvidenceExportReasonCodes.BacklogSaturated);
+        }
+        if (backlog.ProjectionRejectedEvents > 0)
+        {
+            // A recorded loss stays visible for the life of the store rather than for the one cycle that observed
+            // it, because nothing will ever export those executions. It is ranked below every ongoing condition,
+            // though: a historical and unactionable loss must not hide an aging backlog that is happening now.
+            return (ExecutionEvidenceExportAvailability.Degraded,
+                ExecutionEvidenceExportReasonCodes.ProjectionRejected);
         }
         if (backlog.PendingCount + backlog.RetryCount > 0)
         {
@@ -294,14 +295,6 @@ internal sealed partial class ExecutionEvidenceExportService(
         var exportedRevisions = new HashSet<string>(StringComparer.Ordinal);
         string? rejectedReason = null;
 
-        // The sweep orders by the immutable acceptance time so the delivered index can serve it, which means a
-        // forward cursor could otherwise pass an execution that is still running and miss it when it later becomes
-        // terminal. The barrier is the oldest acceptance time that has not reached a terminal status: everything
-        // strictly below it is already terminal, so the cursor can advance to it and no further without ever
-        // needing to re-read what it has already passed.
-        var barrier = await operations.ReadOldestActiveExecutionKeyAsync(cancellationToken).ConfigureAwait(false)
-            ?? long.MaxValue;
-
         for (var batch = 0; batch < exportOptions.MaximumDiscoveryBatchesPerCycle; batch++)
         {
             var started = timeProvider.GetTimestamp();
@@ -310,6 +303,18 @@ internal sealed partial class ExecutionEvidenceExportService(
                 cursor.ExecutionId,
                 exportOptions.DiscoveryBatchSize,
                 cancellationToken).ConfigureAwait(false);
+            // The sweep orders by the immutable acceptance time so the delivered index can serve it, which means a
+            // forward cursor could otherwise pass an execution that is still running and miss it when it later
+            // becomes terminal. The barrier is the oldest acceptance time that has not reached a terminal status:
+            // everything strictly below it is already terminal, so the cursor can advance to it and no further,
+            // without ever re-reading what it has passed.
+            //
+            // It is read immediately after the rows, never before: every row above was already terminal when it was
+            // read, so anything accepted after this barrier read has a key greater than every row in the batch, and
+            // anything still active at this read is caught by the comparison below. Reading it once per cycle would
+            // let an execution enqueued after that read be passed by a later batch.
+            var barrier = await operations.ReadOldestActiveExecutionKeyAsync(cancellationToken).ConfigureAwait(false)
+                ?? long.MaxValue;
             if (rows.Count == 0)
             {
                 telemetry.Record("sweep", "drained", timeProvider.GetElapsedTime(started));
@@ -332,8 +337,8 @@ internal sealed partial class ExecutionEvidenceExportService(
                     telemetry.Record("sweep", "barrier", timeProvider.GetElapsedTime(started));
                     return rejectedReason;
                 }
-                var units = await CreateUnitsAsync(row, origin, redaction, exportedRevisions, cancellationToken)
-                    .ConfigureAwait(false);
+                var (units, projectionReason) = await CreateUnitsAsync(
+                    row, origin, redaction, exportedRevisions, cancellationToken).ConfigureAwait(false);
                 var next = cursor with
                 {
                     TerminalUnixMs = row.AcceptedUnixMs,
@@ -347,8 +352,7 @@ internal sealed partial class ExecutionEvidenceExportService(
                     rejectedReason ??= ExecutionEvidenceExportReasonCodes.ProjectionRejected;
                     cursor = next;
                     await outbox.RecordProjectionRejectedAsync(
-                        root, cursor, row.ExecutionId, GraphExecutionEvidenceReasonCodes.InvalidBody,
-                        cancellationToken).ConfigureAwait(false);
+                        root, cursor, row.ExecutionId, projectionReason, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
@@ -421,7 +425,7 @@ internal sealed partial class ExecutionEvidenceExportService(
     /// Projects one terminal execution into its sealed units. A revision is always offered before the executions that
     /// depend on it, so the receiver can resolve a plan identity from a lower origin sequence.
     /// </summary>
-    private async ValueTask<IReadOnlyList<ExecutionEvidenceEnlistmentUnit>> CreateUnitsAsync(
+    private async ValueTask<(IReadOnlyList<ExecutionEvidenceEnlistmentUnit> Units, string ReasonCode)> CreateUnitsAsync(
         ProcessingGraphTerminalExecution row,
         ExecutionEvidenceOriginV1 origin,
         ExecutionEvidenceRedactionPolicyV1 redaction,
@@ -432,7 +436,7 @@ internal sealed partial class ExecutionEvidenceExportService(
             .ConfigureAwait(false);
         if (detail is null)
         {
-            return [];
+            return ([], GraphExecutionEvidenceReasonCodes.UnknownRevision);
         }
 
         var units = new List<ExecutionEvidenceEnlistmentUnit>(3);
@@ -453,7 +457,7 @@ internal sealed partial class ExecutionEvidenceExportService(
                 // exported. The execution is skipped rather than shipped without the body a receiver needs.
                 Log.ProjectionRejected(
                     logger, GraphExecutionEvidenceReasonCodes.UnknownRevision, "graphRevision.revisionId");
-                return [];
+                return ([], GraphExecutionEvidenceReasonCodes.UnknownRevision);
             }
             var assignment = await operations.ReadAssignmentProvenanceAsync(revisionId, cancellationToken)
                 .ConfigureAwait(false);
@@ -461,7 +465,7 @@ internal sealed partial class ExecutionEvidenceExportService(
             if (revision.Outcome == ProcessingGraphEvidenceProjectionOutcome.Rejected)
             {
                 Log.ProjectionRejected(logger, revision.ReasonCode!, revision.FieldPath!);
-                return [];
+                return ([], revision.ReasonCode!);
             }
             var revisionKey = $"revision:{revisionId}";
             units.Add(new(
@@ -481,7 +485,7 @@ internal sealed partial class ExecutionEvidenceExportService(
         if (execution.Outcome == ProcessingGraphEvidenceProjectionOutcome.Rejected)
         {
             Log.ProjectionRejected(logger, execution.ReasonCode!, execution.FieldPath!);
-            return [];
+            return ([], execution.ReasonCode!);
         }
         // Every unit is sealed deterministically from immutable production facts. A bounded re-read of the same
         // execution must produce byte-identical bytes, or the durable idempotency key would disagree with the
@@ -506,7 +510,7 @@ internal sealed partial class ExecutionEvidenceExportService(
         if (availability.Outcome == ProcessingGraphEvidenceProjectionOutcome.Rejected)
         {
             Log.ProjectionRejected(logger, availability.ReasonCode!, availability.FieldPath!);
-            return units;
+            return (units, availability.ReasonCode!);
         }
         if (availability.Outcome == ProcessingGraphEvidenceProjectionOutcome.Projected)
         {
@@ -522,7 +526,7 @@ internal sealed partial class ExecutionEvidenceExportService(
                     availability.Value!,
                     redaction))));
         }
-        return units;
+        return (units, GraphExecutionEvidenceReasonCodes.InvalidBody);
     }
 
     /// <summary>
@@ -555,8 +559,9 @@ internal sealed partial class ExecutionEvidenceExportService(
         }
         catch (ArgumentException)
         {
-            throw new ExecutionEvidenceSealException(
-                GraphExecutionEvidenceReasonCodes.PayloadTooLarge, "payload");
+            // Validation above already produced a precise reason for everything it can see; anything the serializer
+            // still refuses is reported neutrally rather than guessed at.
+            throw new ExecutionEvidenceSealException(GraphExecutionEvidenceReasonCodes.InvalidBody, "envelope");
         }
     }
 

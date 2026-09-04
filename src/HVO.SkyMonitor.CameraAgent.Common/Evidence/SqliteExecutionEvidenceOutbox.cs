@@ -1252,21 +1252,32 @@ public sealed class SqliteExecutionEvidenceOutbox(
         await PruneConflictsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Bounds the conflict sample table and advances the monotonic conflict counter. The sample saturates by design;
+    /// the counter is what an operator reads as the true total.
+    /// </summary>
     private static async ValueTask PruneConflictsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
-            DELETE FROM execution_evidence_conflicts
-            WHERE conflict_id NOT IN (
-                SELECT conflict_id FROM execution_evidence_conflicts
-                ORDER BY conflict_id DESC LIMIT $keep);
-            """;
-        command.Parameters.AddWithValue("$keep", MaximumRetainedConflicts);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                DELETE FROM execution_evidence_conflicts
+                WHERE conflict_id NOT IN (
+                    SELECT conflict_id FROM execution_evidence_conflicts
+                    ORDER BY conflict_id DESC LIMIT $keep);
+                """;
+            command.Parameters.AddWithValue("$keep", MaximumRetainedConflicts);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        using var count = connection.CreateCommand();
+        count.Transaction = transaction;
+        count.CommandText =
+            "UPDATE execution_evidence_state SET conflict_events = conflict_events + 1 WHERE state_key = 1;";
+        await count.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async ValueTask<ExecutionEvidenceOriginRecord?> ReadOriginAsync(
@@ -1323,7 +1334,9 @@ public sealed class SqliteExecutionEvidenceOutbox(
         using (var conflictCommand = connection.CreateCommand())
         {
             conflictCommand.Transaction = transaction;
-            conflictCommand.CommandText = "SELECT COUNT(*) FROM execution_evidence_conflicts;";
+            // The sample table is bounded, so its row count saturates; the reported total is a monotonic counter.
+            conflictCommand.CommandText =
+                "SELECT conflict_events FROM execution_evidence_state WHERE state_key = 1;";
             conflicts = Convert.ToInt64(
                 await conflictCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
                 CultureInfo.InvariantCulture);
@@ -1670,12 +1683,13 @@ public sealed class SqliteExecutionEvidenceOutbox(
             discovery_execution_id TEXT NOT NULL CHECK(length(discovery_execution_id) IN (0, 32)),
             deferred_terminal_unix_ms INTEGER NOT NULL CHECK(deferred_terminal_unix_ms >= 0),
             source_pruned_events INTEGER NOT NULL CHECK(source_pruned_events >= 0),
-            projection_rejected_events INTEGER NOT NULL CHECK(projection_rejected_events >= 0)
+            projection_rejected_events INTEGER NOT NULL CHECK(projection_rejected_events >= 0),
+            conflict_events INTEGER NOT NULL CHECK(conflict_events >= 0)
         ) STRICT;
         INSERT INTO execution_evidence_state(
             state_key, discovery_terminal_unix_ms, discovery_execution_id,
-            deferred_terminal_unix_ms, source_pruned_events, projection_rejected_events)
-            VALUES (1, 0, '', 0, 0, 0);
+            deferred_terminal_unix_ms, source_pruned_events, projection_rejected_events, conflict_events)
+            VALUES (1, 0, '', 0, 0, 0, 0);
         CREATE TABLE execution_evidence_rejections(
             execution_id TEXT PRIMARY KEY CHECK(length(execution_id) = 32),
             reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 128),

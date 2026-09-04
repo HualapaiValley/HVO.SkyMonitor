@@ -76,11 +76,6 @@ public sealed record ExecutionEvidenceDiscoveryCursor(
 }
 
 /// <summary>
-/// One sealed evidence unit. <see cref="PayloadSha256"/> is the contract's canonical payload hash carried inside the
-/// envelope, not a hash of the transport bytes: the receiver acknowledges that value, so storing anything else would
-/// make every acknowledgement fail to match its own unit.
-/// </summary>
-/// <summary>
 /// A durable row that cannot be sealed into a valid unit of this contract version, carrying the contract's own
 /// reason code so the durable rejection names why rather than a single catch-all.
 /// </summary>
@@ -92,7 +87,7 @@ public sealed class ExecutionEvidenceSealException : InvalidOperationException
     }
 
     public ExecutionEvidenceSealException(string message)
-        : this(message, string.Empty)
+        : base(message)
     {
     }
 
@@ -115,6 +110,11 @@ public sealed class ExecutionEvidenceSealException : InvalidOperationException
     public string FieldPath { get; } = string.Empty;
 }
 
+/// <summary>
+/// One sealed evidence unit. <see cref="PayloadSha256"/> is the contract's canonical payload hash carried inside the
+/// envelope, not a hash of the transport bytes: the receiver acknowledges that value, so storing anything else would
+/// make every acknowledgement fail to match its own unit.
+/// </summary>
 public sealed record ExecutionEvidenceSealedUnit(
     Guid EvidenceId,
     ReadOnlyMemory<byte> Payload,

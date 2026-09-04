@@ -307,7 +307,6 @@ public sealed class ExecutionEvidenceExportOptions : IValidatableObject
     [Range(1, 64)]
     public int MaximumDiscoveryBatchesPerCycle { get; init; } = 8;
 
-
     /// <summary>Evidence units in one submission request.</summary>
     [Range(1, 256)]
     public int MaximumRequestUnits { get; init; } = 32;
