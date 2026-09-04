@@ -383,7 +383,7 @@ public sealed class OutboxOperationsEndpointTests
             int maximumUnits, long maximumBytes, DateTimeOffset nowUtc, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public ValueTask AcknowledgeAsync(
+        public ValueTask<ExecutionEvidenceAcknowledgementDisposition> AcknowledgeAsync(
             string root, string originIdentitySha256, long originSequence, string payloadSha256,
             DateTimeOffset acknowledgedUtc, CancellationToken cancellationToken)
             => throw new NotSupportedException();
