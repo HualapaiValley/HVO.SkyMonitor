@@ -32,6 +32,14 @@
     "HVO.SkyMonitor.LogicHost/Services/CentralTransientPayloadReleaseService.cs": {
       "line": 0.86,
       "branch": 0.64
+    },
+    "HVO.SkyMonitor.LogicHost/Services/CentralArtifactRetentionProcessor.cs": {
+      "line": 0.83,
+      "branch": 0.52
+    },
+    "HVO.SkyMonitor.LogicHost/Services/CentralArtifactRetentionReferences.cs": {
+      "line": 0.91,
+      "branch": 0.66
     }
   }
 }

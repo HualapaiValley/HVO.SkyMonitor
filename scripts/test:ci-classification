@@ -179,8 +179,9 @@ verify_component_plan "tests/HVO.SkyMonitor.AgentCore.Tests/ContractTests.cs"   
 
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor"           full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/wwwroot/site.css"                full false false false true  false false false
-verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Capture/Loop.cs"          full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Imaging/Filter.cs"        full false false false true  false false false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Storage/LocalStore.cs"     full false false false true  false false false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Gallery/Thumbnail.cs"      full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/Module.cs"           full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Replay/Transport.cs"             full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.ReplayRunner/Program.cs"         full false false false true  false false false
@@ -194,12 +195,16 @@ verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Program.cs"               
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Fleet/Registration.cs"    full false false false true  false true  false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Upload/Outbox.cs"         full false false false true  false true  false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Options/AgentOptions.cs"  full false false false true  false true  false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Capture/Loop.cs"          full false false false true  false true  false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Environmental/Delivery.cs" full false false false true  false true  false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Transients/Candidate.cs"  full false false false true  false true  false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Modules/VirtualSky/Sky.cs" full false false false true  false true  false
 
 verify_component_plan "src/HVO.SkyMonitor.LogicHost/Components/Dashboard.razor"        full false false false false true  false false
 verify_component_plan "src/HVO.SkyMonitor.LogicHost/wwwroot/app.css"                   full false false false false true  false false
 verify_component_plan "tests/HVO.SkyMonitor.LogicHost.Tests/ServiceTests.cs"           full false false false false true  false false
 verify_component_plan "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/IngestTests.cs" full false false false false true  false false
-verify_component_plan "tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/Fixture.cs"   full false false false false true  false false
+verify_component_plan "tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/Fixture.cs"   full false false false false true  true  false
 verify_component_plan "src/HVO.SkyMonitor.LogicHost/Controllers/StatusController.cs"   full false false false false true  true  false
 verify_component_plan "src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngest.cs"        full false false false false true  true  false
 verify_component_plan "src/HVO.SkyMonitor.LogicHost/Data/Migrations/20250101_X.cs"     full false false false false true  true  false
@@ -214,6 +219,71 @@ verify_component_plan "deploy/split-host/compose.logichost.yml"                 
 verify_component_plan "docs/catalog/hyg-v42-license.md"                                full false false false false false false true
 verify_component_plan "scripts/deploy/product-layout.sh"                               full true  false false false false false true
 verify_component_plan "scripts/catalog/install-hyg-v42.sh"                             full true  false false false false false true
+
+# Every namespace the combined suites compile against must reach the combined
+# lane. This is checked against the real `using` directives rather than a
+# hand-maintained list, so a host directory cannot silently become host-private.
+expect_combined_probe() {
+  local probe="$1" probe_base probe_head output
+  probe_base="$(git -C "$work_root" rev-parse HEAD)"
+  commit_file "$probe"
+  probe_head="$(git -C "$work_root" rev-parse HEAD)"
+  output="$(cd "$work_root" && "$classifier" pull_request "$probe_base" "$probe_head")"
+  grep -Fxq 'combined=true' <<< "$output" || {
+    printf 'A namespace the combined suites consume is classified host-private: %s\n' "$probe" >&2
+    exit 1
+  }
+}
+
+combined_namespace_count=0
+while IFS= read -r combined_namespace; do
+  case "$combined_namespace" in
+    HVO.SkyMonitor.CameraAgent.Common.*)
+      seam_project="src/HVO.SkyMonitor.CameraAgent.Common"
+      seam_segment="${combined_namespace#HVO.SkyMonitor.CameraAgent.Common.}"
+      ;;
+    HVO.SkyMonitor.LogicHost.*)
+      seam_project="src/HVO.SkyMonitor.LogicHost"
+      seam_segment="${combined_namespace#HVO.SkyMonitor.LogicHost.}"
+      ;;
+    *) continue ;;
+  esac
+  seam_segment="${seam_segment%%.*}"
+  [[ -d "$repo_root/$seam_project/$seam_segment" ]] || continue
+  ((combined_namespace_count += 1))
+  expect_combined_probe "$seam_project/$seam_segment/CombinedSeamProbe.cs"
+done < <(grep -rhoE '^using HVO\.SkyMonitor\.(CameraAgent\.Common|LogicHost)\.[A-Za-z0-9_]+' \
+  --include='*.cs' \
+  "$repo_root/tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests" \
+  "$repo_root/tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests" \
+  | sed 's/^using //' | sort -u)
+
+if (( combined_namespace_count == 0 )); then
+  printf 'No combined host namespace was discovered; the seam cross-check is not exercising anything.\n' >&2
+  exit 1
+fi
+
+# Every real project directory must be claimed by a component, except the
+# intentionally cross-cutting ones. A new project therefore cannot slip into a
+# narrow plan without an explicit decision here.
+complete_matrix_projects=(
+  tests/HVO.SkyMonitor.Architecture.Tests
+)
+while IFS= read -r project_directory; do
+  if printf '%s\n' "${complete_matrix_projects[@]}" | grep -Fxq -- "$project_directory"; then
+    continue
+  fi
+  probe_base="$(git -C "$work_root" rev-parse HEAD)"
+  commit_file "$project_directory/ClassificationProbe.cs"
+  probe_head="$(git -C "$work_root" rev-parse HEAD)"
+  probe_output="$(cd "$work_root" && "$classifier" pull_request "$probe_base" "$probe_head")"
+  if grep -Fxq 'complete=true' <<< "$probe_output"; then
+    printf 'Project directory is not claimed by any component and falls back to the complete matrix: %s\n' \
+      "$project_directory" >&2
+    exit 1
+  fi
+done < <(cd "$repo_root" && git ls-files 'src/*/*.csproj' 'tests/*/*.csproj' 'tools/*/*.csproj' \
+  | while IFS= read -r project; do dirname "$project"; done | sort -u)
 
 # Cross-cutting inputs always select the complete solution matrix.
 complete_matrix_paths=(
@@ -244,6 +314,7 @@ complete_matrix_paths=(
   "src/Example/Program.cs"
   "tests/Example.Tests/ExampleTests.cs"
   "tests/fixtures/frames/sample.bin"
+  "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
   "tools/asi-capture/capture.sh"
   "docker/local/Dockerfile"
 )
@@ -262,14 +333,14 @@ verify_component_plan "src/HVO.SkyMonitor.LogicHost/Dockerfile"                 
 
 # A mixed diff unions every affected lane.
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
-commit_file "src/HVO.SkyMonitor.CameraAgent.Common/Capture/Mixed.cs"
+commit_file "src/HVO.SkyMonitor.CameraAgent.Common/Storage/Mixed.cs"
 commit_file "src/HVO.SkyMonitor.LogicHost/Components/Mixed.razor"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
 expect_components false false true true false false pull_request "$base_sha" "$head_sha"
 
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
 commit_file "docs/mixed.md"
-commit_file "src/HVO.SkyMonitor.CameraAgent.Common/Capture/DocsMixed.cs"
+commit_file "src/HVO.SkyMonitor.CameraAgent.Common/Storage/DocsMixed.cs"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
 expect_plan full false pull_request "$base_sha" "$head_sha"
 expect_components false false true false false false pull_request "$base_sha" "$head_sha"
@@ -470,13 +541,13 @@ expect_required_accept "documentation-only reduced plan" pull_request "$reduced_
 cameraagent_plan="$(plan full false false true false false false false)"
 cameraagent_success="$(results changes=success quality=success catalog-contracts=success \
   build=success architecture=success coverage-policy=success \
-  migrations-cameraagent=success cameraagent-component=success)"
+  migrations-cameraagent=success migrations-logichost=success cameraagent-component=success)"
 expect_required_accept "CameraAgent-only component plan" pull_request "$cameraagent_plan" "$cameraagent_success"
 
 logichost_plan="$(plan full false false false true false false false)"
 logichost_success="$(results changes=success quality=success catalog-contracts=success \
   build=success architecture=success coverage-policy=success \
-  migrations-logichost=success logichost-component=success)"
+  migrations-cameraagent=success migrations-logichost=success logichost-component=success)"
 expect_required_accept "LogicHost-only component plan" pull_request "$logichost_plan" "$logichost_success"
 
 shared_plan="$(plan full false true true true true true false)"
@@ -497,27 +568,27 @@ expect_required_accept "combined fixture component plan" pull_request "$combined
 delivery_plan="$(plan full false false false false false true true)"
 delivery_success="$(results changes=success quality=success catalog-contracts=success \
   deployment-contracts=success build=success architecture=success coverage-policy=success \
-  delivery-component=success)"
+  migrations-cameraagent=success migrations-logichost=success delivery-component=success)"
 expect_required_accept "delivery component plan" pull_request "$delivery_plan" "$delivery_success"
 
 # Failure, cancellation, missing, and unexpected results are all rejected.
 for job in changes quality catalog-contracts build architecture coverage-policy \
-  migrations-cameraagent cameraagent-component; do
+  migrations-cameraagent migrations-logichost cameraagent-component; do
   for outcome in failure cancelled skipped; do
     expect_required_reject "$job=$outcome in the CameraAgent plan" pull_request "$cameraagent_plan" \
       "$(results changes=success quality=success catalog-contracts=success build=success \
         architecture=success coverage-policy=success migrations-cameraagent=success \
-        cameraagent-component=success "$job=$outcome")"
+        migrations-logichost=success cameraagent-component=success "$job=$outcome")"
   done
 done
 
 for job in unit integration coverage logichost-component combined-integration \
-  delivery-component shared-libraries migrations-logichost deployment-contracts; do
+  delivery-component shared-libraries deployment-contracts; do
   for outcome in failure cancelled success; do
     expect_required_reject "unexpected $job=$outcome in the CameraAgent plan" pull_request "$cameraagent_plan" \
       "$(results changes=success quality=success catalog-contracts=success build=success \
         architecture=success coverage-policy=success migrations-cameraagent=success \
-        cameraagent-component=success "$job=$outcome")"
+        migrations-logichost=success cameraagent-component=success "$job=$outcome")"
   done
 done
 
@@ -525,6 +596,8 @@ expect_required_reject "cancelled unit in the complete matrix" pull_request "$co
   "$(results changes=success quality=success catalog-contracts=success build=success \
     architecture=success coverage-policy=success migrations-cameraagent=success \
     migrations-logichost=success unit=cancelled integration=success coverage=success)"
+expect_required_reject "shared plan dropping a consuming lane" pull_request \
+  "$(plan full false true false false false false false)" "$shared_success"
 expect_required_reject "missing deployment contracts result" pull_request "$complete_plan_deployed" \
   "$(results changes=success quality=success catalog-contracts=success build=success \
     architecture=success coverage-policy=success migrations-cameraagent=success \
@@ -658,13 +731,26 @@ grep -Fq "if: always() && needs.changes.outputs.deployment_shards == 'true'" "$w
 }
 
 # Cross-cutting gates never depend on component selection.
-for job in catalog-contracts build architecture coverage-policy; do
+for job in catalog-contracts build architecture coverage-policy \
+  migrations-cameraagent migrations-logichost; do
   job_body="$(extract_workflow_job "$job")"
   grep -Fxq "    if: needs.changes.outputs.mode == 'full'" <<< "$job_body" || {
     printf 'Cross-cutting gate must run for every full-mode head: %s\n' "$job" >&2
     exit 1
   }
 done
+
+# The Architecture & Publish gate owns both category selections of the
+# architecture project, so no component plan can drop the Unit boundary cases.
+architecture_job="$(extract_workflow_job architecture)"
+grep -Fq 'tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER"' <<< "$architecture_job" || {
+  printf 'Architecture & Publish must run the Architecture Unit selection.\n' >&2
+  exit 1
+}
+grep -Fq 'tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter "TestCategory=Integration&FullyQualifiedName~ArchitectureBoundaryTests"' <<< "$architecture_job" || {
+  printf 'Architecture & Publish must run the Architecture Integration selection.\n' >&2
+  exit 1
+}
 for job in unit integration coverage; do
   job_body="$(extract_workflow_job "$job")"
   grep -Fxq "    if: needs.changes.outputs.complete == 'true'" <<< "$job_body" || {
@@ -674,10 +760,6 @@ for job in unit integration coverage; do
 done
 for host in cameraagent logichost; do
   job_body="$(extract_workflow_job "migrations-$host")"
-  grep -Fxq "    if: needs.changes.outputs.$host == 'true'" <<< "$job_body" || {
-    printf 'Split migration gate must follow its host classifier output: %s\n' "$host" >&2
-    exit 1
-  }
   grep -Fq "./scripts/ci:canonical-migration $host" <<< "$job_body" || {
     printf 'Split migration gate must enforce its canonical migration: %s\n' "$host" >&2
     exit 1
@@ -705,6 +787,12 @@ for component in "${!lane_jobs[@]}"; do
     printf 'Component lane must enforce its own coverage baseline: %s\n' "$component" >&2
     exit 1
   }
+  if [[ "$component" != "combined" ]]; then
+    grep -Fq "./scripts/ci:component-publish $component" <<< "$job_body" || {
+      printf 'Component lane must publish its own shipping outputs: %s\n' "$component" >&2
+      exit 1
+    }
+  fi
   [[ -f "$repo_root/scripts/coverage/baseline.$component.json" ]] || {
     printf 'Component lane has no coverage baseline: %s\n' "$component" >&2
     exit 1

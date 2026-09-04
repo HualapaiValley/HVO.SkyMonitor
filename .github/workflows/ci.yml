@@ -336,6 +336,10 @@ jobs:
           dotnet restore HVO.SkyMonitor.v9.slnx
           dotnet clean HVO.SkyMonitor.v9.slnx --configuration Release
           dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+      - name: Validate architecture unit contracts
+        env:
+          UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+        run: dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/architecture-unit --logger "trx;LogFileName=architecture-unit.trx"
       - name: Validate architecture graph and publish outputs
         env:
           HVO_PUBLISH_EVIDENCE_ROOT: ${{ github.workspace }}/TestResults/publish
@@ -392,6 +396,14 @@ jobs:
             "$replay_runner_x64_bytes" "$replay_runner_arm64_bytes" \
             "$processing_runner_x64_bytes" "$processing_runner_arm64_bytes" \
             > TestResults/publish/summary.txt
+      - name: Upload architecture unit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: architecture-unit-evidence
+          path: TestResults/architecture-unit/
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload architecture coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -415,7 +427,7 @@ jobs:
   migrations-cameraagent:
     name: CameraAgent Migrations
     needs: changes
-    if: needs.changes.outputs.cameraagent == 'true'
+    if: needs.changes.outputs.mode == 'full'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 15
     steps:
@@ -440,7 +452,7 @@ jobs:
   migrations-logichost:
     name: LogicHost Migrations
     needs: changes
-    if: needs.changes.outputs.logichost == 'true'
+    if: needs.changes.outputs.mode == 'full'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 15
     steps:
@@ -487,7 +499,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.shared == 'true'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
       INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware

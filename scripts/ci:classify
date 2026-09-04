@@ -240,7 +240,9 @@ contains_project() {
 
 # Host paths default to being an exported protocol or integration seam. Only the
 # explicitly listed host-private areas skip the combined lane, so a new host
-# directory fails closed into combined coverage.
+# directory fails closed into combined coverage. A directory is host-private only
+# when no combined suite compiles against it; scripts/test:ci-classification
+# rechecks that against the combined projects' actual using directives.
 is_host_private_path() {
   local path="$1"
 
@@ -251,14 +253,17 @@ is_host_private_path() {
     src/HVO.SkyMonitor.CameraAgent/Components/* | src/HVO.SkyMonitor.CameraAgent/Properties/* | src/HVO.SkyMonitor.CameraAgent/wwwroot/*)
       return 0
       ;;
-    src/HVO.SkyMonitor.CameraAgent.Common/Background/* | src/HVO.SkyMonitor.CameraAgent.Common/Capture/* | src/HVO.SkyMonitor.CameraAgent.Common/Diagnostics/* | src/HVO.SkyMonitor.CameraAgent.Common/Environmental/* | src/HVO.SkyMonitor.CameraAgent.Common/Frames/* | src/HVO.SkyMonitor.CameraAgent.Common/Gallery/*)
+    src/HVO.SkyMonitor.CameraAgent.Common/Background/* | src/HVO.SkyMonitor.CameraAgent.Common/Diagnostics/* | src/HVO.SkyMonitor.CameraAgent.Common/Frames/* | src/HVO.SkyMonitor.CameraAgent.Common/Gallery/*)
       return 0
       ;;
-    src/HVO.SkyMonitor.CameraAgent.Common/Imaging/* | src/HVO.SkyMonitor.CameraAgent.Common/Logging/* | src/HVO.SkyMonitor.CameraAgent.Common/Modules/* | src/HVO.SkyMonitor.CameraAgent.Common/Properties/* | src/HVO.SkyMonitor.CameraAgent.Common/Reflection/* | src/HVO.SkyMonitor.CameraAgent.Common/Scheduling/* | src/HVO.SkyMonitor.CameraAgent.Common/SkyMap/* | src/HVO.SkyMonitor.CameraAgent.Common/Storage/* | src/HVO.SkyMonitor.CameraAgent.Common/Transients/*)
+    src/HVO.SkyMonitor.CameraAgent.Common/Imaging/* | src/HVO.SkyMonitor.CameraAgent.Common/Logging/* | src/HVO.SkyMonitor.CameraAgent.Common/Properties/* | src/HVO.SkyMonitor.CameraAgent.Common/Reflection/* | src/HVO.SkyMonitor.CameraAgent.Common/Scheduling/* | src/HVO.SkyMonitor.CameraAgent.Common/SkyMap/* | src/HVO.SkyMonitor.CameraAgent.Common/Storage/*)
       return 0
       ;;
     src/HVO.SkyMonitor.LogicHost/Components/* | src/HVO.SkyMonitor.LogicHost/Properties/* | src/HVO.SkyMonitor.LogicHost/wwwroot/*)
       return 0
+      ;;
+    tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/*)
+      return 1
       ;;
     tests/*)
       return 0
@@ -290,7 +295,7 @@ select_components() {
 
   # Delivery inputs that are not .NET project directories.
   case "$path" in
-    deploy/* | docker-compose.apps.yml | .env.template | scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-skymonitor.sh | scripts/infra:operation-lock | scripts/catalog:* | scripts/catalog/* | scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract | docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md | tests/fixtures/catalog/hyg-v42-bright-stars.sqlite)
+    deploy/* | docker-compose.apps.yml | .env.template | scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-skymonitor.sh | scripts/infra:operation-lock | scripts/catalog:* | scripts/catalog/* | scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract | docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md)
       delivery="true"
       return 0
       ;;

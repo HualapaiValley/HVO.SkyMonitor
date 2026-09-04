@@ -3,6 +3,9 @@ set -euo pipefail
 
 # Publish one component's shipping outputs from its own project roots and retain
 # a checksum manifest so a component lane produces its own delivery evidence.
+# Architecture & Publish stays the owner of the exhaustive both-architecture
+# publish matrix and runs for every full-mode head, so each lane publishes one
+# runtime identifier only. The `combined` lane ships nothing and has no arm.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -35,19 +38,14 @@ mkdir -p "$evidence_root"
 case "$component" in
   shared)
     publish_project src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj processing-runner-linux-x64 linux-x64
-    publish_project src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj processing-runner-linux-arm64 linux-arm64
     test -x "$evidence_root/processing-runner-linux-x64/HVO.SkyMonitor.ProcessingRunner"
-    test -x "$evidence_root/processing-runner-linux-arm64/HVO.SkyMonitor.ProcessingRunner"
-    file "$evidence_root/processing-runner-linux-arm64/HVO.SkyMonitor.ProcessingRunner" | grep -q 'ARM aarch64'
     ;;
   cameraagent)
     publish_project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj cameraagent
     publish_project src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj replay-runner-linux-x64 linux-x64
-    publish_project src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj replay-runner-linux-arm64 linux-arm64
     test -f "$evidence_root/cameraagent/HVO.SkyMonitor.CameraAgent.dll"
     test ! -e "$evidence_root/cameraagent/HVO.SkyMonitor.LogicHost.dll"
     test -x "$evidence_root/replay-runner-linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner"
-    file "$evidence_root/replay-runner-linux-arm64/HVO.SkyMonitor.CameraAgent.ReplayRunner" | grep -q 'ARM aarch64'
     ;;
   logichost)
     publish_project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj logichost
@@ -56,10 +54,7 @@ case "$component" in
     ;;
   delivery)
     publish_project src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj installer-linux-x64 linux-x64
-    publish_project src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj installer-linux-arm64 linux-arm64
     test -x "$evidence_root/installer-linux-x64/HVO.SkyMonitor.Deployment.Cli"
-    test -x "$evidence_root/installer-linux-arm64/HVO.SkyMonitor.Deployment.Cli"
-    file "$evidence_root/installer-linux-arm64/HVO.SkyMonitor.Deployment.Cli" | grep -q 'ARM aarch64'
     ;;
   *)
     printf 'Usage: scripts/ci:component-publish <shared|cameraagent|logichost|delivery>\n' >&2

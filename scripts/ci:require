@@ -5,6 +5,10 @@ set -euo pipefail
 # validated classifier plan, so a plan that silently drops an affected gate is a
 # rejected plan rather than a green merge.
 
+# Plan and result values are split on whitespace; disable pathname expansion so a
+# value can never glob against the runner workspace.
+set -f
+
 event_name="${1:-}"
 plan_input="${2:-}"
 result_input="${3:-}"
@@ -121,6 +125,16 @@ if [[ "${plan[complete]}" == "true" && "${plan[mode]}" != "full" ]]; then
   reject "the complete matrix requires mode=full"
 fi
 
+# The classifier's shared fan-out rule is part of the plan contract: a shared
+# contract change must claim every consuming lane. A plan that drops one of those
+# lanes is rejected rather than aggregated. A host seam change legitimately claims
+# combined without the opposite host, so combined carries no such invariant.
+if [[ "${plan[shared]}" == "true" ]]; then
+  for key in cameraagent logichost combined delivery; do
+    [[ "${plan[$key]}" == "true" ]] || reject "a shared plan must claim every consuming lane, missing '$key'"
+  done
+fi
+
 expected_when() {
   if [[ "$1" == "true" ]]; then
     printf 'success\n'
@@ -150,8 +164,8 @@ expected[build]="$(expected_when "$full_mode")"
 expected[architecture]="$(expected_when "$full_mode")"
 expected[coverage-policy]="$(expected_when "$full_mode")"
 expected[deployment-contracts]="$(expected_when "${plan[deployment]}")"
-expected[migrations-cameraagent]="$(expected_when "${plan[cameraagent]}")"
-expected[migrations-logichost]="$(expected_when "${plan[logichost]}")"
+expected[migrations-cameraagent]="$(expected_when "$full_mode")"
+expected[migrations-logichost]="$(expected_when "$full_mode")"
 expected[unit]="$(expected_when "${plan[complete]}")"
 expected[integration]="$(expected_when "${plan[complete]}")"
 expected[coverage]="$(expected_when "${plan[complete]}")"

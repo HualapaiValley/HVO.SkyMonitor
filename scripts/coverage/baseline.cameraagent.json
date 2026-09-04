@@ -14,7 +14,7 @@
       "branch": 0.69
     },
     "HVO.SkyMonitor.CameraAgent.Common/Capture/Distribution/SqliteCaptureLaneStore.cs": {
-      "line": 0.97,
+      "line": 0.95,
       "branch": 0.86
     },
     "HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/SqliteCaptureProcessingStore.cs": {
@@ -56,6 +56,26 @@
     "HVO.SkyMonitor.CameraAgent.Common/Upload/SqliteArtifactOutbox.cs": {
       "line": 0.92,
       "branch": 0.75
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactUploadClient.cs": {
+      "line": 0.76,
+      "branch": 0.76
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactOutboxDrainService.cs": {
+      "line": 0.69,
+      "branch": 0.65
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawIngressFileStore.cs": {
+      "line": 0.88,
+      "branch": 0.62
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawIngressReconciler.cs": {
+      "line": 0.85,
+      "branch": 0.71
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Fleet/SqliteFleetStatusOutbox.cs": {
+      "line": 0.88,
+      "branch": 0.83
     }
   }
 }

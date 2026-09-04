@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # Restore and build one component from its own project roots. A lane must never
-# depend on a solution-wide restore or on another lane's build output.
+# depend on a solution-wide restore or on another lane's build output. Each list
+# contains the component's own shipping project roots (everything the lane
+# publishes) plus its test project roots.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -25,6 +27,7 @@ case "$component" in
     ;;
   cameraagent)
     projects=(
+      src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
       src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
       tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj
       tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj
@@ -33,6 +36,7 @@ case "$component" in
     ;;
   logichost)
     projects=(
+      src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
       tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj
       tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj
     )
@@ -45,24 +49,16 @@ case "$component" in
     ;;
   delivery)
     projects=(
+      src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj
       tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj
       tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj
     )
-    ;;
-  --list-projects)
-    "$0" "${2:?component required}" --print
-    exit 0
     ;;
   *)
     printf 'Usage: scripts/ci:component-build <shared|cameraagent|logichost|combined|delivery>\n' >&2
     exit 2
     ;;
 esac
-
-if [[ "${2:-}" == "--print" ]]; then
-  printf '%s\n' "${projects[@]}"
-  exit 0
-fi
 
 for project in "${projects[@]}"; do
   dotnet restore "$project"

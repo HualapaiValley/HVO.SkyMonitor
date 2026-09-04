@@ -27,12 +27,49 @@ for baseline in "${baselines[@]}"; do
     (.aggregate.branch | type == "number" and . > 0 and . <= 1) and
     (.aggregate.tolerancePercentagePoints | type == "number" and . >= 0 and . <= 1) and
     (.files | type == "object") and
-    all(.files[]; (.line | type == "number") and (.branch | type == "number"))
+    all(.files[];
+      (.line | type == "number" and . >= 0 and . <= 1) and
+      (.branch | type == "number" and . >= 0 and . <= 1))
   ' "$baseline" > /dev/null || {
     printf 'Coverage baseline is malformed: %s\n' "$baseline" >&2
     exit 1
   }
 done
+
+# Every aggregate file floor must also be enforced by the component lane that a
+# change to that file selects, so a component plan cannot silently drop a risk
+# floor the complete matrix enforces. A component floor may sit below the
+# aggregate only when the lane provably cannot reach it and the entry records a
+# `belowAggregateReason`.
+component_of() {
+  case "$1" in
+    tools/* | HVO.SkyMonitor.Deployment.*) printf 'delivery\n' ;;
+    HVO.SkyMonitor.CameraAgent*) printf 'cameraagent\n' ;;
+    HVO.SkyMonitor.LogicHost*) printf 'logichost\n' ;;
+    *) printf 'shared\n' ;;
+  esac
+}
+
+while IFS= read -r aggregate_path; do
+  source_path="$aggregate_path"
+  [[ "$source_path" == tools/* ]] || source_path="src/$source_path"
+  [[ -f "$source_path" ]] || continue
+  owning_component="$(component_of "$aggregate_path")"
+  jq --exit-status \
+    --arg path "$aggregate_path" \
+    --slurpfile aggregate scripts/coverage/baseline.json '
+      ($aggregate[0].files[$path]) as $required |
+      (.files[$path]) as $candidate |
+      $candidate != null and
+      ((($candidate.line >= $required.line) and ($candidate.branch >= $required.branch)) or
+        (($candidate.belowAggregateReason | type == "string") and
+         ($candidate.belowAggregateReason | length > 0)))
+    ' "scripts/coverage/baseline.$owning_component.json" > /dev/null || {
+    printf 'Component baseline %s must enforce the aggregate floor for %s or record a belowAggregateReason.\n' \
+      "scripts/coverage/baseline.$owning_component.json" "$aggregate_path" >&2
+    exit 1
+  }
+done < <(jq -r '.files | keys[]' scripts/coverage/baseline.json)
 
 if [[ "$event_name" != "pull_request" ]]; then
   printf 'Coverage policy validated %s baselines; non-pull-request events have no merge target.\n' \
@@ -42,6 +79,14 @@ fi
 
 if [[ -z "$base_ref" ]]; then
   printf 'A pull request coverage policy check requires a base ref.\n' >&2
+  exit 1
+fi
+
+# Fail closed when the merge target is unavailable: without it, every baseline
+# would look new and the non-regression gate would silently become a no-op.
+if ! git rev-parse --verify --quiet "origin/$base_ref^{commit}" > /dev/null; then
+  printf 'Merge target origin/%s is unavailable; the coverage non-regression check cannot run.\n' \
+    "$base_ref" >&2
   exit 1
 fi
 
