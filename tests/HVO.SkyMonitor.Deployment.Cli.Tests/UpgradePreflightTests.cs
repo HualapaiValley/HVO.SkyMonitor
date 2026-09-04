@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[DoNotParallelize]
 public sealed class UpgradePreflightTests
 {
     private const string CurrentIdentityMigration = "20260827053715_InitialIdentity";
@@ -24,6 +25,8 @@ public sealed class UpgradePreflightTests
         "catalog-manifest-version", "identity-migration-lineage", "raw-ingress-schema",
         "bind-source-missing", "bind-source-mode"
     ];
+
+    private static readonly string[] ExpectedTightenedModes = ["0500", "0600"];
 
     private static readonly string[] ExpectedBindSourceNames =
     [
@@ -175,7 +178,7 @@ public sealed class UpgradePreflightTests
                 fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.LegacyUnbounded,
                 RuntimeUid, RuntimeGid,
                 HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
-                persist: true, CancellationToken.None));
+                persist: true, renderToStandardError: false, CancellationToken.None));
 
         foreach (var code in new[] { "catalog-manifest-version", "identity-migration-lineage", "raw-ingress-schema" })
         {
@@ -213,7 +216,7 @@ public sealed class UpgradePreflightTests
             fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.LegacyUnbounded,
             RuntimeUid, RuntimeGid,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
-            persist: true, CancellationToken.None);
+            persist: true, renderToStandardError: false, CancellationToken.None);
 
         Assert.IsTrue(report.Compatible);
         Assert.AreEqual(
@@ -301,6 +304,84 @@ public sealed class UpgradePreflightTests
                 $"a declared boundary must not be reported as omitted: {declared}");
         }
     }
+
+    [TestMethod]
+    public void Evaluate_BindSourceTighterThanOwnerOnly_IsReportedAsIncompatible()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.CreateBindSources();
+        // A read-only or non-traversable source blocks the container's writes just as surely as a loose one
+        // exposes its state, so neither direction may pass as compatible.
+        fixture.SetBindSourceMode(
+            CameraAgentStateLayout.RawDirectoryName, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        fixture.SetBindSourceMode(
+            CameraAgentStateLayout.ArchiveDirectoryName, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        var report = Evaluate(fixture);
+
+        Assert.IsFalse(report.Compatible);
+        var modes = report.Findings.Where(static finding => finding.Code == "bind-source-mode").ToArray();
+        Assert.AreEqual(2, modes.Length, CameraAgentStatePreflight.Render(report));
+        CollectionAssert.AreEquivalent(
+            ExpectedTightenedModes, modes.Select(static finding => finding.Observed).ToArray());
+        foreach (var finding in modes)
+        {
+            Assert.AreEqual("0700", finding.Expected);
+            Assert.IsTrue(finding.Blocking);
+            StringAssert.Contains(finding.Remediation, "tighter one blocks", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
+    public async Task EnsureCompatibleAsync_JsonInvocation_LeavesStandardErrorToTheSingleJsonObject()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 1);
+        fixture.CreateBindSources();
+        var candidate = IncompatibleCandidate();
+        var original = Console.Error;
+        try
+        {
+            using var suppressed = new StringWriter();
+            Console.SetError(suppressed);
+            await Assert.ThrowsExactlyAsync<InstallerException>(
+                () => CameraAgentStatePreflight.EnsureCompatibleAsync(
+                    fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.LegacyUnbounded,
+                    RuntimeUid, RuntimeGid,
+                    HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
+                    persist: true, renderToStandardError: false, CancellationToken.None));
+            Assert.AreEqual(
+                string.Empty,
+                suppressed.ToString(),
+                "a --json invocation reserves standard error for exactly one JSON object");
+
+            using var rendered = new StringWriter();
+            Console.SetError(rendered);
+            await Assert.ThrowsExactlyAsync<InstallerException>(
+                () => CameraAgentStatePreflight.EnsureCompatibleAsync(
+                    fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.LegacyUnbounded,
+                    RuntimeUid, RuntimeGid,
+                    HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
+                    persist: true, renderToStandardError: true, CancellationToken.None));
+            StringAssert.Contains(rendered.ToString(), "catalog-manifest-version", StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+
+        // Either way the complete report stays available to the operator.
+        Assert.IsTrue(File.Exists(Path.Combine(fixture.Paths.DeploymentStateRoot, "state-preflight.json")));
+    }
+
+    private static ImageInstallationIdentity IncompatibleCandidate() => new(
+        "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,
+        UpgradeCompatibility: CameraAgentStateContract.Current,
+        MinimumCompatibleRevision: MinimumCompatibleRevision,
+        IdentityMigration: CurrentIdentityMigration,
+        RawIngressSchema: "12",
+        CatalogManifestVersion: "2");
 
     [TestMethod]
     public void CreateRuntimeDirectory_PreCreatesNestedBindSourcesAndRestrictsAnAdoptedMode()
@@ -549,6 +630,9 @@ public sealed class UpgradePreflightTests
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
                 UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
                 UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+
+        public void SetBindSourceMode(string name, UnixFileMode mode)
+            => File.SetUnixFileMode(Path.Combine(Paths.StateRoot, name), mode);
 
         public void RemoveBindSource(string name) => Directory.Delete(Path.Combine(Paths.StateRoot, name), true);
 

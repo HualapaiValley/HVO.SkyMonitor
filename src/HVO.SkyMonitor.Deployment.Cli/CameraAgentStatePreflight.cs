@@ -118,6 +118,7 @@ internal static class CameraAgentStatePreflight
         uint gid,
         ContractReplayProfile replayProfile,
         bool persist,
+        bool renderToStandardError,
         CancellationToken cancellationToken,
         CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent)
     {
@@ -147,9 +148,12 @@ internal static class CameraAgentStatePreflight
             return report;
         }
 
-        // The rendered report carries every boundary at once; the thrown message stays single-line because
-        // deployment diagnostics are redacted to one line.
-        await Console.Error.WriteLineAsync(Render(report)).ConfigureAwait(false);
+        // The rendered report carries every boundary at once, but a --json invocation reserves standard error for
+        // exactly one JSON object, so that form relies on the enumerated codes and the retained report instead.
+        if (renderToStandardError)
+        {
+            await Console.Error.WriteLineAsync(Render(report)).ConfigureAwait(false);
+        }
         var codes = string.Join(", ", report.Findings.Where(static finding => finding.Blocking)
             .Select(static finding => finding.Code).Distinct(StringComparer.Ordinal));
         throw new InstallerException(
@@ -420,17 +424,26 @@ internal static class CameraAgentStatePreflight
                     "Re-create the bind source with the configured runtime UID/GID; the capability-dropped container cannot adopt a root-owned directory."));
                 continue;
             }
-            if ((identity.Mode & (UnixFileMode.SetUser | UnixFileMode.SetGroup | UnixFileMode.StickyBit |
-                                  UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
-                                  UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute)) != 0)
+            // The mount must be exactly owner rwx. Extra bits expose the state tree, and a tighter mode such as
+            // 0500 or 0600 silently breaks the container's writes or its traversal into the bind source.
+            if ((identity.Mode & AllPermissions) != RequiredBindSourceMode)
             {
                 findings.Add(new CameraAgentStatePreflightFinding(
                     "bind-source-mode", boundary, Blocking: true, source.HostPath,
                     FormatMode(identity.Mode), "0700",
-                    "Restrict the bind source to owner-only access before starting CameraAgent."));
+                    "Set the bind source to exactly owner-only read, write, and execute; a looser mode exposes CameraAgent state and a tighter one blocks its writes or traversal."));
             }
         }
     }
+
+    private const UnixFileMode RequiredBindSourceMode =
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+    private const UnixFileMode AllPermissions =
+        UnixFileMode.SetUser | UnixFileMode.SetGroup | UnixFileMode.StickyBit |
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+        UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+        UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
 
     private static string FormatMode(UnixFileMode mode)
         => Convert.ToString((int)mode & 0b111_111_111_111, 8).PadLeft(4, '0');

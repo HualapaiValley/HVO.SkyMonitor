@@ -281,6 +281,7 @@ internal sealed class CameraAgentInstaller
                 gid,
                 (ContractReplayProfile)request.ReplayProfile,
                 persist: true,
+                renderToStandardError: !request.Json,
                 cancellationToken,
                 // Installing an image is not an in-place state migration, so an image that predates the label
                 // correction is admitted as a known contract; the persisted boundaries it declares still decide.

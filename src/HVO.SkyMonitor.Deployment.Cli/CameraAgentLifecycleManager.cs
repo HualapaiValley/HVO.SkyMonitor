@@ -280,6 +280,7 @@ internal sealed class CameraAgentLifecycleManager
             manifest.RuntimeGid,
             manifest.ReplayProfile,
             persist: !request.DryRun,
+            renderToStandardError: !request.Json,
             cancellationToken,
             rollback ? CameraAgentStateContractPolicy.AllowLegacy : CameraAgentStateContractPolicy.RequireCurrent)
             .ConfigureAwait(false);
