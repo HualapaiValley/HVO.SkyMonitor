@@ -347,6 +347,33 @@ public sealed class CentralDerivativeWorkerTests
         harness.Telemetry.ActiveCount.Should().Be(0);
     }
 
+    /// <summary>
+    /// Each maintenance duty is guarded independently: a graph scheduler whose dependency chain cannot even be
+    /// constructed must not stop waiting-window resolution or retrospective scheduling from running.
+    /// </summary>
+    [TestMethod]
+    public async Task FailingGraphSchedulerActivationDoesNotStarveOtherMaintenanceDutiesAsync()
+    {
+        var jobs = new ScriptedJobService();
+        var resolver = new CountingWindowResolver();
+        var retrospective = new CountingRetrospectiveScheduler();
+        await using var harness = CreateHarness(
+            jobs,
+            _ => new ImmediateExecutor(),
+            graphSchedulerFactory: _ => throw new InvalidOperationException("object storage credentials unavailable"),
+            windowResolver: resolver,
+            retrospectiveScheduler: retrospective);
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await WaitUntilAsync(
+            () => resolver.WaitingResolutions >= 3 && retrospective.Batches >= 3, TimeSpan.FromSeconds(5))
+            .ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        harness.Telemetry.HasRecentDependencyFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse("an activation failure is not a database dependency failure");
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
@@ -372,7 +399,8 @@ public sealed class CentralDerivativeWorkerTests
         CentralProcessingGraphConvergenceSignal? signal = null,
         TimeSpan? queueSampleInterval = null,
         ICentralDerivativeWindowResolver? windowResolver = null,
-        ICentralTransientRetrospectiveScheduler? retrospectiveScheduler = null)
+        ICentralTransientRetrospectiveScheduler? retrospectiveScheduler = null,
+        Func<IServiceProvider, ICentralProcessingGraphScheduler>? graphSchedulerFactory = null)
     {
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(builder =>
@@ -383,6 +411,10 @@ public sealed class CentralDerivativeWorkerTests
         if (graphScheduler is not null)
         {
             services.AddScoped(_ => graphScheduler);
+        }
+        if (graphSchedulerFactory is not null)
+        {
+            services.AddScoped(graphSchedulerFactory);
         }
         if (retrospectiveScheduler is not null)
         {

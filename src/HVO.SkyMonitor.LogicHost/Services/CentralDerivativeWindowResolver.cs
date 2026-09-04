@@ -559,7 +559,10 @@ internal sealed partial class CentralDerivativeWindowResolver(
         // fence re-reads their durable state under those locks so every fence site applies one usability test.
         var fenced = await CentralArtifactRetentionLock.FenceAsync(dbContext, selectedIds, cancellationToken)
             .ConfigureAwait(false);
-        if (selectedIds.Any(id => !fenced.TryGetValue(id, out var artifact)
+        // One artifact per requirement: two requirements selecting the same artifact would violate the unique
+        // (job, artifact) input index at persistence, so the set is rejected here as it was by the old count check.
+        if (selectedIds.Count != selected.Length ||
+            selectedIds.Any(id => !fenced.TryGetValue(id, out var artifact)
                 || artifact.ObjectState != CentralArtifactObjectState.Available
                 || artifact.ReconstructionState != CentralReconstructionState.Complete))
         {
