@@ -246,6 +246,57 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    public void ParseCommand_OwnerRecoveryRequiresOneSafePasswordSource()
+    {
+        var instanceId = Guid.NewGuid();
+        var generated = (OwnerRecoveryRequest)CommandLine.ParseCommand([
+            "cameraagent", "recover-owner",
+            "--instance-id", instanceId.ToString("D"),
+            "--generate-password",
+            "--json"
+        ]);
+
+        Assert.AreEqual(instanceId, generated.InstanceId);
+        Assert.IsTrue(generated.GeneratePassword);
+        Assert.IsTrue(generated.Json);
+        Assert.IsNull(generated.PasswordFile);
+        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "recover-owner",
+            "--instance-id", instanceId.ToString("D")
+        ]));
+        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "recover-owner",
+            "--instance-id", instanceId.ToString("D"),
+            "--generate-password",
+            "--password-file", "/owner-private/password"
+        ]));
+    }
+
+    [TestMethod]
+    public void ParseCommand_OwnerRecoveryRejectsPasswordOnCommandLine()
+    {
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "recover-owner",
+            "--instance-id", Guid.NewGuid().ToString("D"),
+            "--password", "must-not-be-accepted"
+        ]));
+
+        StringAssert.Contains(exception.Message, "Unknown option", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ParseCommand_OwnerRecoveryDoesNotReflectUnexpectedPositionalInput()
+    {
+        const string secret = "must-not-be-reflected";
+
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "recover-owner", secret
+        ]));
+
+        Assert.IsFalse(exception.Message.Contains(secret, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void ParseCommand_PurgeRequiresMatchingConfirmation()
     {
         var instanceId = Guid.NewGuid();

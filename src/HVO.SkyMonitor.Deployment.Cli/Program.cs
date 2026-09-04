@@ -40,6 +40,43 @@ internal static class Program
                     await WriteHumanResultAsync(result).ConfigureAwait(false);
                 }
             }
+            else if (command is OwnerRecoveryRequest recovery)
+            {
+                OwnerRecoveryResult result;
+                try
+                {
+                    result = await OwnerRecoveryManager.ExecuteAsync(recovery, cancellation.Token).ConfigureAwait(false);
+                }
+                catch (OwnerRecoveryProtocolException)
+                {
+                    throw;
+                }
+                catch (InstallerException exception)
+                {
+                    throw new InstallerException(
+                        "Owner recovery failed. Inspect the owner-only deployment state and retry as directed.",
+                        exception);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    throw new InstallerException(
+                        "Owner recovery failed. Inspect the owner-only deployment state and retry as directed.",
+                        exception);
+                }
+                if (recovery.Json)
+                {
+                    await Console.Out.WriteLineAsync(
+                        JsonSerializer.Serialize(result, DeploymentJsonContext.Default.OwnerRecoveryResult)).ConfigureAwait(false);
+                }
+                else
+                {
+                    await WriteOwnerRecoveryResultAsync(result).ConfigureAwait(false);
+                }
+            }
             else
             {
                 var lifecycle = await CameraAgentLifecycleManager.ExecuteAsync((LifecycleRequest)command, cancellation.Token)
@@ -65,6 +102,23 @@ internal static class Program
         {
             await WriteErrorAsync(jsonErrors, "canceled", "Deployment operation canceled.").ConfigureAwait(false);
             return 130;
+        }
+        catch (OwnerRecoveryProtocolException exception)
+        {
+            var (code, message) = exception.Disposition switch
+            {
+                OwnerRecoveryFailureDisposition.FreshOperationRequired => (
+                    "fresh-operation-required",
+                    "CameraAgent rejected owner recovery before completion; start a new recovery operation."),
+                OwnerRecoveryFailureDisposition.ResumeRequired => (
+                    "resume-required",
+                    "CameraAgent owner recovery may be incomplete; resume the retained operation."),
+                _ => (
+                    "recovery-unsupported",
+                    "CameraAgent owner recovery is unsupported or is not enabled for this installation.")
+            };
+            await WriteErrorAsync(jsonErrors, code, message).ConfigureAwait(false);
+            return 1;
         }
         catch (InstallerException exception)
         {
@@ -105,5 +159,17 @@ internal static class Program
         if (result.Running is not null) await Console.Out.WriteLineAsync($"Runtime: running={result.Running}; healthy={result.Healthy}").ConfigureAwait(false);
         foreach (var path in result.PreservedPaths) await Console.Out.WriteLineAsync($"Preserved: {path}").ConfigureAwait(false);
         if (result.ResumeCommand is not null) await Console.Out.WriteLineAsync($"Resume: {result.ResumeCommand}").ConfigureAwait(false);
+    }
+
+    private static async Task WriteOwnerRecoveryResultAsync(OwnerRecoveryResult result)
+    {
+        await Console.Out.WriteLineAsync($"Outcome: {result.Outcome}").ConfigureAwait(false);
+        await Console.Out.WriteLineAsync($"Operation: owner recovery / {result.OperationId:D}").ConfigureAwait(false);
+        await Console.Out.WriteLineAsync($"Instance: {result.InstanceId:D}").ConfigureAwait(false);
+        if (result.PasswordFile is not null)
+        {
+            await Console.Out.WriteLineAsync($"Temporary password file: {result.PasswordFile}").ConfigureAwait(false);
+        }
+        await Console.Out.WriteLineAsync($"State: {result.OwnerBootstrapState}").ConfigureAwait(false);
     }
 }

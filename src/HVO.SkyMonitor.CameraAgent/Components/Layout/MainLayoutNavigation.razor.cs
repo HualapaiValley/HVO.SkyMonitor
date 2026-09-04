@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
+using Microsoft.AspNetCore.Components.Web;
 using HVO.SkyMonitor.CameraAgent.Security;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Layout;
@@ -11,9 +12,19 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 {
     private static readonly IReadOnlyList<NavigationLink> PrimaryLinks =
     [
-        new NavigationLink("/", "Current sky", "bi bi-stars", NavLinkMatch.All),
-        new NavigationLink("/gallery", "Archive", "bi bi-images", NavLinkMatch.Prefix),
-        new NavigationLink("/operations", "Technical workspace", "bi bi-activity", NavLinkMatch.Prefix)
+        new NavigationLink("/", "Current sky", NavLinkMatch.All),
+        new NavigationLink("/gallery", "Archive", NavLinkMatch.Prefix),
+        new NavigationLink("/operations", "Operations", NavLinkMatch.Prefix)
+    ];
+
+    private static readonly string[] AdditionalOperationsRoutes =
+    [
+        "/schedule",
+        "/calibration",
+        "/system",
+        "/environmental",
+        "/transients",
+        "/devices"
     ];
 
     [Inject]
@@ -25,6 +36,11 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 
     private string SignInUrl => ReturnUrlHelper.BuildLoginPath(CurrentReturnUrl);
 
+    private ElementReference _menuToggle;
+
+    private bool _menuOpen;
+    private string _currentPath = "/";
+
     protected override void OnInitialized()
     {
         UpdateReturnUrl(NavigationManager.Uri);
@@ -34,14 +50,45 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
     private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
     {
         UpdateReturnUrl(e.Location);
+        _menuOpen = false;
         _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void ToggleMenu() => _menuOpen = !_menuOpen;
+
+    private async Task HandleMenuKeyDown(KeyboardEventArgs eventArgs)
+    {
+        if (_menuOpen && string.Equals(eventArgs.Key, "Escape", StringComparison.Ordinal))
+        {
+            _menuOpen = false;
+            await _menuToggle.FocusAsync().ConfigureAwait(false);
+        }
     }
 
     private void UpdateReturnUrl(string location)
     {
         var baseRelative = NavigationManager.ToBaseRelativePath(location);
         CurrentReturnUrl = ReturnUrlHelper.NormalizeReturnUrl(baseRelative);
+        _currentPath = new Uri(location).AbsolutePath;
     }
+
+    private string NavigationClass(NavigationLink link)
+        => IsAdditionalOperationsRoute(link) ? "nav-badge active" : "nav-badge";
+
+    private string? NavigationCurrent(NavigationLink link)
+        => IsPrimaryRouteCurrent(link) ? "page" : null;
+
+    private bool IsPrimaryRouteCurrent(NavigationLink link)
+        => IsPathOrChild(_currentPath, link.Href) || IsAdditionalOperationsRoute(link);
+
+    private bool IsAdditionalOperationsRoute(NavigationLink link)
+        => string.Equals(link.Href, "/operations", StringComparison.Ordinal) &&
+           !IsPathOrChild(_currentPath, "/operations") &&
+           AdditionalOperationsRoutes.Any(path => IsPathOrChild(_currentPath, path));
+
+    private static bool IsPathOrChild(string path, string candidate)
+        => string.Equals(path, candidate, StringComparison.OrdinalIgnoreCase) ||
+           path.StartsWith($"{candidate}/", StringComparison.OrdinalIgnoreCase);
 
     public void Dispose()
     {
@@ -96,5 +143,5 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
         return "??";
     }
 
-    private sealed record NavigationLink(string Href, string Label, string IconClass, NavLinkMatch Match);
+    private sealed record NavigationLink(string Href, string Label, NavLinkMatch Match);
 }

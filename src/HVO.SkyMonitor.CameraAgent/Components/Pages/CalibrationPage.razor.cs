@@ -5,12 +5,14 @@ using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Components;
+using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
 public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
 {
     private const int PageSize = 100;
+    private const string RollbackTriggerId = "review-calibration-rollback";
     private CalibrationUiStatus? _status;
     private CalibrationUiBundlePage? _page;
     private CalibrationUiBundleDetail? _detail;
@@ -42,12 +44,13 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
     private bool _loading = true;
     private bool _busy;
     private bool _focusConfirmation;
-    private bool _restoreHeadingFocus;
+    private bool _restoreConfirmationFocus;
     private bool _acquisitionRunning;
     private bool _disposed;
     private Task? _acquisitionTask;
-    private ElementReference _confirmationPanel;
-    private ElementReference _heading;
+    private IJSObjectReference? _module;
+    private ElementReference _confirmationDialog;
+    private string? _confirmationTriggerId;
 
     [Inject] internal ICameraAgentCalibrationUiService CalibrationService { get; set; } = default!;
 
@@ -55,10 +58,14 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
 
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
 
+    [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
+
     private string? RollbackTarget => _status?.LastActivation?.FromBundleId is { } target &&
         !string.Equals(target, _status.ActiveBundle?.BundleId, StringComparison.Ordinal)
             ? target
             : null;
+
+    private bool AcquisitionInProgress => _acquisitionRunning || _status?.PendingAcquisition is not null;
 
     private string ConfirmationHeading => _confirmation switch
     {
@@ -85,12 +92,17 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         if (_focusConfirmation)
         {
             _focusConfirmation = false;
-            await _confirmationPanel.FocusAsync().ConfigureAwait(false);
+            _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
+                "import", "./Components/Pages/CalibrationPage.razor.js").ConfigureAwait(false);
+            await _module.InvokeVoidAsync("showModal", _confirmationDialog).ConfigureAwait(false);
         }
-        else if (_restoreHeadingFocus)
+        else if (_restoreConfirmationFocus)
         {
-            _restoreHeadingFocus = false;
-            await _heading.FocusAsync().ConfigureAwait(false);
+            _restoreConfirmationFocus = false;
+            _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
+                "import", "./Components/Pages/CalibrationPage.razor.js").ConfigureAwait(false);
+            await _module.InvokeVoidAsync(
+                "focusById", _confirmationTriggerId, "calibration-heading").ConfigureAwait(false);
         }
     }
 
@@ -137,13 +149,14 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         _pendingExpectedVersion = _status.Version;
         _pendingKey = NewKey();
         _pendingReason = request.Reason;
+        _confirmationTriggerId = "start-calibration-acquisition";
         _confirmation = "acquire";
         _focusConfirmation = true;
     }
 
-    private void BeginActivation(string bundleId, bool rollback)
+    private void BeginActivation(string bundleId, string triggerId, bool rollback)
     {
-        if (_status is null)
+        if (_status is null || AcquisitionInProgress)
         {
             return;
         }
@@ -152,6 +165,7 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         _pendingExpectedVersion = _status.Version;
         _pendingKey = NewKey();
         _pendingReason = string.IsNullOrWhiteSpace(_reason) ? null : _reason.Trim();
+        _confirmationTriggerId = triggerId;
         _confirmation = rollback ? "rollback" : "activate";
         _focusConfirmation = true;
     }
@@ -219,9 +233,9 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         var expectedVersion = _pendingExpectedVersion;
         var key = _pendingKey!;
         _confirmation = null;
-        _restoreHeadingFocus = true;
         _acquisitionRunning = true;
         _acquisitionTask = ObserveAcquisitionAsync(request, expectedVersion, key);
+        _restoreConfirmationFocus = _confirmation is null && _status is not null;
         while (!_acquisitionTask.IsCompleted && !_disposed)
         {
             await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
@@ -271,7 +285,7 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
                 }
                 var cancelled = result.Kind == OperatorUiResultKind.Conflict &&
                     result.Message?.Contains("cancelled", StringComparison.OrdinalIgnoreCase) == true;
-                ClearConfirmation();
+                ClearConfirmation(restoreFocus: _restoreConfirmationFocus);
                 await RefreshAsync().ConfigureAwait(false);
                 SetMessage(
                     result.IsSuccess
@@ -279,6 +293,7 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
                         : result.Message ?? "Calibration acquisition failed.",
                     error: !result.IsSuccess && !cancelled);
             }).ConfigureAwait(false);
+            await InvokeAsync(StateHasChanged).ConfigureAwait(false);
         }
         catch (Exception)
         {
@@ -455,21 +470,29 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         _status = null;
         _page = null;
         _detail = null;
-        ClearConfirmation();
+        ClearConfirmation(restoreFocus: false);
         NavigationManager.NavigateTo("/Account/AccessDenied");
     }
 
-    private void CancelConfirmation() => ClearConfirmation();
+    private void CancelConfirmation()
+    {
+        if (!_busy)
+        {
+            ClearConfirmation();
+        }
+    }
 
-    private void ClearConfirmation()
+    private void ClearConfirmation(bool restoreFocus = true)
     {
         _confirmation = null;
         _pendingTarget = null;
         _pendingAcquisition = null;
         _pendingKey = null;
         _pendingReason = null;
-        _restoreHeadingFocus = true;
+        _restoreConfirmationFocus = restoreFocus;
     }
+
+    private static string ActivationTriggerId(string bundleId) => $"review-calibration-activate-{bundleId}";
 
     private void CloseDetail() => _detail = null;
 
@@ -524,9 +547,18 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         => string.Create(CultureInfo.InvariantCulture,
             $"{applicability.MinimumLightExposure?.TotalSeconds.ToString("g", CultureInfo.InvariantCulture) ?? "any"} s / {applicability.EffectiveFromUtc:u} to {applicability.EffectiveUntilUtc?.ToString("u", CultureInfo.InvariantCulture) ?? "open"}");
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         _disposed = true;
-        return ValueTask.CompletedTask;
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+        }
     }
 }

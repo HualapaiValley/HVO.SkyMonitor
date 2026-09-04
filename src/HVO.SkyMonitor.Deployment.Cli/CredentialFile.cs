@@ -18,12 +18,12 @@ internal static class CredentialFile
 
         if (suppliedPath is not null)
         {
-            SafeFileSystem.ValidateOwnerFile(suppliedPath, allowReadOnly: true);
-            if (new FileInfo(suppliedPath).Length is < 16 or > 4096)
+            await using var source = SafeFileSystem.OpenOwnerFileRead(suppliedPath, allowReadOnly: true);
+            if (source.Length is < 16 or > 256)
             {
                 throw new InstallerException("The supplied password file length is invalid.");
             }
-            _ = await SafeFileSystem.CopyPrivateFileAsync(suppliedPath, generatedPath, cancellationToken)
+            _ = await SafeFileSystem.CopyPrivateFileAsync(source, generatedPath, cancellationToken)
                 .ConfigureAwait(false);
             return generatedPath;
         }
@@ -34,7 +34,7 @@ internal static class CredentialFile
         var password = Convert.ToBase64String(random).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         using var stream = new FileStream(generatedPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
         File.SetUnixFileMode(generatedPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        using var writer = new StreamWriter(stream, Encoding.UTF8, 1024, leaveOpen: true);
+        using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), 1024, leaveOpen: true);
         await writer.WriteAsync(password.AsMemory(), cancellationToken).ConfigureAwait(false);
         await writer.WriteLineAsync("Aa1!".AsMemory(), cancellationToken).ConfigureAwait(false);
         await writer.FlushAsync(cancellationToken).ConfigureAwait(false);

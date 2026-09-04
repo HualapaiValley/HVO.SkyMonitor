@@ -273,7 +273,7 @@ internal static class CatalogLifecycleManager
                 LastLifecycleOperationId = operation.OperationId,
                 UpdatedUtc = DateTimeOffset.UtcNow
             };
-            var postMutation = await lifecycle.PauseAndDrainAsync(operation.OperationId, lifecycleControlToken, cancellationToken)
+            var postMutation = await lifecycle.ConfirmDrainedAsync(lifecycleControlToken, cancellationToken)
                 .ConfigureAwait(false);
             if (operation.PreMutationContinuity is null || postMutation.CaptureSequence < operation.PreMutationContinuity.CaptureSequence)
                 throw new InstallerException("Catalog selection did not preserve the durable capture-sequence boundary.");
@@ -355,11 +355,12 @@ internal static class CatalogLifecycleManager
         await owner.VerifyInstallationAsync(
             token,
             new InstallationVerificationExpectation(
-                manifest.InstanceId.ToString("D"), manifest.OwnerEmail, result.OwnerBootstrapState,
+                manifest.ApplicationIdentity.ToString("D"), manifest.OwnerEmail, result.OwnerBootstrapState,
                 manifest.ConfigurationSha256, manifest.RigProfileSha256, manifest.ScheduleSha256,
                 manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
                 manifest.ReplayProfile,
-                catalog), cancellationToken).ConfigureAwait(false);
+                catalog,
+                AllowCompletedPasswordReplacement: true), cancellationToken).ConfigureAwait(false);
         await docker.VerifyContainerAsync(compose, paths, manifest.Image, manifest.RuntimeUid, manifest.RuntimeGid, cancellationToken)
             .ConfigureAwait(false);
     }

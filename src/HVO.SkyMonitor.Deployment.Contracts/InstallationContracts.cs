@@ -198,7 +198,9 @@ public sealed record LifecycleOperationState(
     string? FailureCode = null,
     string? FailureMessage = null,
     LifecycleContinuityBoundary? PreMutationContinuity = null,
-    LifecycleContinuityBoundary? PostMutationContinuity = null);
+    LifecycleContinuityBoundary? PostMutationContinuity = null,
+    [property: JsonPropertyName("originalOwnerBootstrapState")]
+    string? ExpectedOwnerBootstrapState = null);
 
 public sealed record LifecycleContinuityBoundary(
     string CaptureState,

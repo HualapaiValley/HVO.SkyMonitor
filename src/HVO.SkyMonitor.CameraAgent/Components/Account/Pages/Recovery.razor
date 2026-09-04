@@ -1,0 +1,33 @@
+@page "/Account/Recovery"
+@page "/Account/ForgotPassword"
+@page "/Account/ForgotPasswordConfirmation"
+@page "/Account/ResetPassword"
+@page "/Account/ResetPasswordConfirmation"
+@page "/Account/ResendEmailConfirmation"
+@page "/Account/ConfirmEmail"
+@page "/Account/ConfirmEmailChange"
+@page "/Account/InvalidPasswordReset"
+@page "/Account/Manage/SetPassword"
+
+<PageTitle>Recover owner access</PageTitle>
+
+<section class="recovery-page" aria-labelledby="recovery-heading">
+    <p class="recovery-page__eyebrow">Offline recovery</p>
+    <h1 id="recovery-heading">Recover owner access</h1>
+    <p class="recovery-page__intro">CameraAgent does not email password-reset links or reveal whether an account exists.</p>
+
+    <div class="recovery-card">
+        <h2>Run recovery on the CameraAgent host</h2>
+        <ol>
+            <li>Sign in to the host as the deployment runtime user.</li>
+            <li>Run the local installer command using the installed instance identifier.</li>
+            <li>Open the owner-only password file it reports, sign in, and replace that temporary password immediately.</li>
+        </ol>
+        <code>hvo-skymonitor cameraagent recover-owner --instance-id &lt;instance-id&gt; --generate-password</code>
+        <p>Recovery uses retained owner-only provisioning proof over an owner-only Unix-domain socket. Capture and durable storage continue while the local Identity credential changes.</p>
+    </div>
+
+    <a class="recovery-page__back" href="Account/Login">Return to login</a>
+</section>
+
+<script type="module" src="@Assets["Components/Account/Pages/Recovery.razor.js"]"></script>

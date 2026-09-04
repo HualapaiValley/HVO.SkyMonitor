@@ -93,10 +93,11 @@
 
         @if (_confirmRevisionId is not null)
         {
-            <section class="confirmation-panel" role="alertdialog" aria-labelledby="apply-heading" tabindex="-1" @ref="_confirmationPanel">
-                <div><p class="eyebrow">Capture-boundary confirmation</p><h2 id="apply-heading">@(_confirmRollback ? "Rollback revision?" : "Apply revision?")</h2><p>The current admitted capture will finish durable publication before this revision becomes active.</p></div>
-                <div><button class="btn btn-primary" disabled="@_busy" @onclick="ConfirmActivationAsync">@(_confirmRollback ? "Confirm rollback" : "Confirm apply")</button><button class="btn btn-outline-light" disabled="@_busy" @onclick="CancelActivation">Cancel</button></div>
-            </section>
+            <dialog class="confirmation-panel" aria-labelledby="apply-heading" aria-describedby="apply-description"
+                    @oncancel="CancelActivation" @ref="_confirmationDialog">
+                <div><p class="eyebrow">Capture-boundary confirmation</p><h2 id="apply-heading">@(_confirmRollback ? "Rollback revision?" : "Apply revision?")</h2><p id="apply-description">The current admitted capture will finish durable publication before this revision becomes active.</p></div>
+                <div><button type="button" class="btn btn-primary" disabled="@_busy" @onclick="ConfirmActivationAsync">@(_confirmRollback ? "Confirm rollback" : "Confirm apply")</button><button type="button" class="btn btn-outline-light" disabled="@_busy" autofocus @onclick="CancelActivation">Cancel</button></div>
+            </dialog>
         }
 
         <section class="editor-layout">

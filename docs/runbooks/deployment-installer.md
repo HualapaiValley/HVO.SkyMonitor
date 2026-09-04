@@ -173,6 +173,8 @@ config/compose/{compose.yml,instance.env}
 config/secrets/*
 config/owner-bootstrap/temporary-password
 state/deployment/{installation-state.json,installation-result.json}
+operations/cameraagent-<uuid>.owner-recovery.json
+operations/owner-recovery/<operation-uuid>/temporary-password
 ```
 
 The manifest binds installation, instance, application, runtime UID/GID, exact
@@ -196,6 +198,71 @@ application to seed and authenticate the configured owner. The installer then
 removes `LocalIdentity__AdminPasswordFile` authority, recreates the exact
 Compose service, and requires the durable `owner-password-change-required`
 state. The operator completes password replacement through CameraAgent.
+
+If the owner loses the durable password after initial setup, recover access from
+the CameraAgent host as the Docker-capable deployment runtime user, never as
+root:
+
+```bash
+hvo-skymonitor cameraagent recover-owner --instance-id <uuid> --generate-password
+```
+
+Alternatively, provide an absolute owner-only mode `0400` or `0600` file with
+`--password-file`. Password input is never accepted on the command line. The
+command validates the installed manifest/result, runtime UID/GID, product and
+instance locks, and the retained lifecycle-control credential. It contacts the
+installed CameraAgent directly through `<state-root>/identity/owner.sock`, which
+the existing Identity state mount exposes inside the container as
+`/app/App_Data/owner.sock`; redirects and system proxies are disabled. The CLI
+requires the socket directory to be mode `0700` and the socket to be a
+single-link mode `0600` Unix socket owned by the exact installation runtime
+UID/GID. The recovery endpoints return `404` on every TCP listener, including
+loopback, bridge, published, and reverse-proxy requests. The command never sends
+the lifecycle credential or temporary password to a public listener and never
+edits Identity SQLite directly.
+
+Recovery socket activation requires Linux, explicit
+`LocalIdentity:AllowMissingAdminPassword=true`, removed runtime password
+authority, and a configured lifecycle-control credential. Generated Compose
+already mounts the Identity state directory, so an existing installation gains
+the socket when upgraded to a supporting CameraAgent image without a Compose
+enable flag or host-port restriction. Lifecycle stop, uninstall, and rollback
+remove only a socket whose type, ownership, mode, and link count still match the
+installed runtime identity. After an ungraceful stop, CameraAgent startup locks
+and authenticates the owner-only parent directory, refuses a concurrent startup,
+active listener, or unexpected node, and rechecks an inactive runtime-owned
+socket immediately before removing it and binding again. The owner-only parent
+remains the access boundary if termination occurs in the brief interval before
+the new socket is restricted to mode `0600`.
+
+Before disclosing either recovery secret, the CLI sends a random nonce and
+requires the Unix-socket listener to return an operation-bound HMAC-SHA256 proof
+using the retained lifecycle credential. It then obtains a five-minute Data
+Protection challenge bound to the operation, configured owner, and current
+security stamp. The challenge, password, and resulting bootstrap state use
+bounded `application/octet-stream` messages rather than JSON. Completion
+requires exactly one configured site owner, removed bootstrap password
+authority, and an unchanged challenge. It resets that owner only, restores the
+mandatory temporary-password gate, rotates the security stamp to revoke
+existing cookies and interactive authorization, and records the operation
+idempotently in existing Identity tables. Capture and durable storage continue
+throughout the Identity-only transaction. An older or disabled CameraAgent
+fails closed as unsupported.
+
+If acknowledgement is interrupted or the outcome is ambiguous, rerun the exact
+command with `--resume`; the same operation ID and staged password are reused.
+A definitive pre-completion rejection closes that attempt and requires a fresh
+command without `--resume`. Human output prints only the operation ID, resulting
+state, and owner-only password-file path; `--json` omits the path. Sign in with
+that temporary password, replace it immediately, then securely remove the
+recovery password file. Never retain its content in shell history, logs,
+tickets, or evidence.
+
+The lifecycle-control credential is site-owner-equivalent recovery authority.
+Keep its retained file and mirror owner-only, preserve its manifest hash
+binding, and rotate the whole installed instance through an approved lifecycle
+when compromise is suspected. Device verification material and
+`device-secrets.dat` are not owner-recovery proof.
 
 Each mutation publishes a durable phase. A failed run retains redacted state and
 diagnostics. Resume only an explicitly known instance:
@@ -284,6 +351,29 @@ Run the x64 output with `--capabilities`; require protocol version `1` and
 completed runtime/native-library warmup. On an ARM64 builder, the existing
 `scripts/test:cameraagent-arm64-ci` gate performs the equivalent native publish,
 capability, image, and constrained-container checks.
+
+Run the disposable installer contract against the current image with
+`./scripts/test:deployment-installer`. To validate an owner-recovery image
+transition, use a clean committed worktree with an ancestor pre-support commit
+available locally:
+
+```bash
+HVO_INSTALLER_BASELINE_REVISION=<pre-support-commit> \
+  ./scripts/test:deployment-installer
+```
+
+The extended path builds the baseline image and candidate image/CLI from exact
+Git archives, completes the initial password replacement to establish an
+owner-ready baseline, verifies a completed installer rerun preserves that state,
+proves unsupported recovery retains resumable state, performs an image-only
+upgrade, authenticates the mounted owner-only socket, and resumes the same
+recovery operation without restarting the CameraAgent process. It rejects the
+prior durable password and authenticated session, verifies the
+replacement-password gate, hard-restarts and replays recovery idempotently,
+verifies capture control remains running, and rolls back while preserving
+installation, configuration, catalog, and recovered Identity state. The exact
+production catalog bundle remains required through
+`HVO_PRODUCTION_CATALOG_BUNDLE`.
 
 The `Signed Distribution Release` workflow publishes independent installer and
 catalog tags, signed manifests and indexes, checksums, SBOMs, provenance,

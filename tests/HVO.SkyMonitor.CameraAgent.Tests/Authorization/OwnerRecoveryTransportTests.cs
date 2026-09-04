@@ -1,0 +1,208 @@
+using System.Diagnostics;
+using System.Net.Sockets;
+using System.Runtime.Versioning;
+using HVO.SkyMonitor.CameraAgent.Authorization;
+
+namespace HVO.SkyMonitor.CameraAgent.Tests.Authorization;
+
+[TestClass]
+[TestCategory("Unit")]
+[SupportedOSPlatform("linux")]
+public sealed class OwnerRecoveryTransportTests
+{
+    private const UnixFileMode ParentMode =
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+    private const UnixFileMode SocketMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+    private const UnixFileMode TransientSocketMode = SocketMode |
+        UnixFileMode.UserExecute |
+        UnixFileMode.GroupRead |
+        UnixFileMode.GroupExecute |
+        UnixFileMode.OtherRead |
+        UnixFileMode.OtherExecute;
+    private const string CrashRootEnvironmentVariable = "HVO_OWNER_RECOVERY_CRASH_ROOT";
+
+    [TestMethod]
+    public async Task PrepareSocketPath_RemovesSocketLeftByHardTerminationAsync()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Unix owner recovery is Linux-only.");
+        }
+
+        var root = CreateRoot();
+        var markerPath = Path.Combine(root, "listening");
+        using var process = StartCrashChild(root);
+        try
+        {
+            var childProcessId = await WaitForMarkerAsync(process, markerPath).ConfigureAwait(false);
+            using (var childProcess = Process.GetProcessById(childProcessId))
+            {
+                childProcess.Kill(entireProcessTree: true);
+                await childProcess.WaitForExitAsync().ConfigureAwait(false);
+            }
+
+            var socketPath = Path.Combine(root, OwnerRecoveryTransport.SocketFileName);
+            Assert.IsTrue(File.Exists(socketPath));
+
+            OwnerRecoveryTransport.PrepareSocketPath(socketPath);
+
+            Assert.IsFalse(File.Exists(socketPath));
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync().ConfigureAwait(false);
+            }
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void PrepareSocketPath_RefusesActiveListener()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Unix owner recovery is Linux-only.");
+        }
+
+        var root = CreateRoot();
+        var socketPath = Path.Combine(root, OwnerRecoveryTransport.SocketFileName);
+        using var socket = Bind(socketPath);
+        try
+        {
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => OwnerRecoveryTransport.PrepareSocketPath(socketPath));
+
+            StringAssert.Contains(exception.Message, "already active", StringComparison.Ordinal);
+            Assert.IsTrue(File.Exists(socketPath));
+        }
+        finally
+        {
+            socket.Dispose();
+            File.Delete(socketPath);
+            Directory.Delete(root);
+        }
+    }
+
+    [TestMethod]
+    public void PrepareSocketPath_RefusesUnexpectedNode()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Unix owner recovery is Linux-only.");
+        }
+
+        var root = CreateRoot();
+        var socketPath = Path.Combine(root, OwnerRecoveryTransport.SocketFileName);
+        File.WriteAllText(socketPath, "not-a-socket");
+        File.SetUnixFileMode(socketPath, SocketMode);
+        try
+        {
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => OwnerRecoveryTransport.PrepareSocketPath(socketPath));
+
+            StringAssert.Contains(exception.Message, "not an owner-only runtime socket", StringComparison.Ordinal);
+            Assert.IsTrue(File.Exists(socketPath));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void PrepareSocketPath_RefusesConcurrentStartup()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Unix owner recovery is Linux-only.");
+        }
+
+        var root = CreateRoot();
+        using var startupLock = OwnerRecoveryNative.OpenParent(root);
+        OwnerRecoveryNative.LockForStartup(startupLock);
+        try
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                OwnerRecoveryTransport.PrepareSocketPath(
+                    Path.Combine(root, OwnerRecoveryTransport.SocketFileName)));
+
+            StringAssert.Contains(exception.Message, "already in progress", StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task HardTerminationChildAsync()
+    {
+        var root = Environment.GetEnvironmentVariable(CrashRootEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return;
+        }
+
+        using var socket = Bind(Path.Combine(root, OwnerRecoveryTransport.SocketFileName), TransientSocketMode);
+        await File.WriteAllTextAsync(
+            Path.Combine(root, "listening"),
+            Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture)).ConfigureAwait(false);
+        await Task.Delay(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+    }
+
+    private static string CreateRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-owner-recovery-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.SetUnixFileMode(root, ParentMode);
+        return root;
+    }
+
+    private static Socket Bind(string socketPath, UnixFileMode mode = SocketMode)
+    {
+        var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        socket.Bind(new UnixDomainSocketEndPoint(socketPath));
+        socket.Listen();
+        File.SetUnixFileMode(socketPath, mode);
+        return socket;
+    }
+
+    private static Process StartCrashChild(string root)
+    {
+        var startInfo = new ProcessStartInfo("dotnet")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add("test");
+        startInfo.ArgumentList.Add(typeof(OwnerRecoveryTransportTests).Assembly.Location);
+        startInfo.ArgumentList.Add("--filter");
+        startInfo.ArgumentList.Add(
+            $"FullyQualifiedName={typeof(OwnerRecoveryTransportTests).FullName}.{nameof(HardTerminationChildAsync)}");
+        startInfo.Environment[CrashRootEnvironmentVariable] = root;
+        return Process.Start(startInfo)
+            ?? throw new InvalidOperationException("The owner recovery crash child could not be started.");
+    }
+
+    private static async Task<int> WaitForMarkerAsync(Process process, string markerPath)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (!File.Exists(markerPath))
+        {
+            if (process.HasExited)
+            {
+                var output = await process.StandardOutput.ReadToEndAsync().ConfigureAwait(false);
+                var error = await process.StandardError.ReadToEndAsync().ConfigureAwait(false);
+                Assert.Fail($"The owner recovery crash child exited early.{Environment.NewLine}{output}{error}");
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(50), timeout.Token).ConfigureAwait(false);
+        }
+        return int.Parse(
+            await File.ReadAllTextAsync(markerPath, timeout.Token).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
+}

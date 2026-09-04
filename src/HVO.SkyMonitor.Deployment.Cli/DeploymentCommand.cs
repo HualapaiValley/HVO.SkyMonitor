@@ -9,6 +9,54 @@ internal abstract record DeploymentCommand(bool Json);
 
 internal sealed record InstallDeploymentCommand(InstallRequest Request) : DeploymentCommand(Request.Json);
 
+internal sealed record OwnerRecoveryRequest(
+    Guid? InstanceId,
+    string ProductRoot,
+    string? PasswordFile,
+    bool GeneratePassword,
+    bool Resume,
+    bool Json) : DeploymentCommand(Json)
+{
+    public void Validate()
+    {
+        if (InstanceId is null)
+        {
+            throw new InstallUsageException("--instance-id is required.");
+        }
+        ValidateAbsolutePath(ProductRoot, "--product-root");
+        if (!string.Equals(ProductRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
+            Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT") != "1")
+        {
+            throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
+        }
+        if (PasswordFile is not null)
+        {
+            ValidateAbsolutePath(PasswordFile, "--password-file");
+        }
+        if ((PasswordFile is null) == !GeneratePassword)
+        {
+            throw new InstallUsageException("Specify exactly one of --password-file or --generate-password.");
+        }
+    }
+
+    public string ComputeRequestSha256()
+    {
+        var value = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{InstanceId:D}\n{GeneratePassword}");
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
+    private static void ValidateAbsolutePath(string path, string option)
+    {
+        if (!Path.IsPathFullyQualified(path) || path.Contains("//", StringComparison.Ordinal) ||
+            Path.GetFullPath(path) != path.TrimEnd('/') || path == "/")
+        {
+            throw new InstallUsageException($"{option} must be an absolute normalized path other than root.");
+        }
+    }
+}
+
 internal sealed record LifecycleRequest : DeploymentCommand
 {
     public LifecycleRequest(

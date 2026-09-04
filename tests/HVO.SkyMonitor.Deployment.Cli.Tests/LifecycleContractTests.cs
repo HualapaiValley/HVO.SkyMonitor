@@ -572,13 +572,13 @@ public sealed class LifecycleContractTests
 
         var selectedResult = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = selected.PackageVersion },
-            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(),
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual(selected.PackageVersion, selectedResult.Catalog!.PackageVersion);
 
         var rollbackResult = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.CatalogRollback), fixture.Runner,
-            _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(), fixture.Uid, fixture.Gid, CancellationToken.None);
+            _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual(previous.PackageVersion, rollbackResult.Catalog!.PackageVersion);
         Assert.AreEqual(2, fixture.Runner.ComposeUpCount);
         Assert.AreEqual(2, fixture.Runner.ComposeRestartCount);
@@ -636,7 +636,7 @@ public sealed class LifecycleContractTests
         };
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            request, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(), fixture.Uid, fixture.Gid, CancellationToken.None));
+            request, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
 
         var committedManifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
@@ -647,10 +647,13 @@ public sealed class LifecycleContractTests
         Assert.IsNotNull(retained.PostMutationContinuity);
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
-            request with { Resume = true }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(),
+            request with { Resume = true }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None);
 
         Assert.AreEqual("completed", result.Outcome);
+        // One durable pause per operation; the post-mutation boundary only confirms it.
+        Assert.AreEqual(1, lifecycle.PauseCount);
+        Assert.AreEqual(1, lifecycle.ConfirmCount);
         retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
         Assert.AreEqual(LifecycleOperationPhase.Completed, retained!.Phase);
         Assert.IsFalse(retained.MutationStarted);
@@ -668,7 +671,7 @@ public sealed class LifecycleContractTests
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Reinstall),
-            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(), fixture.Uid, fixture.Gid, CancellationToken.None);
+            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
 
         Assert.AreEqual("completed", result.Outcome);
         Assert.AreEqual(InstanceLifecycleCondition.Installed, result.LifecycleCondition);
@@ -688,7 +691,7 @@ public sealed class LifecycleContractTests
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Reinstall), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(), fixture.Uid, fixture.Gid, CancellationToken.None));
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
 
         Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
         Assert.IsNull(fixture.Runner.ActiveImageId);
@@ -710,7 +713,7 @@ public sealed class LifecycleContractTests
                 ImageReference = candidateReference,
                 NoDownload = true,
                 MigrationBackwardCompatible = true
-            }, fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(),
+            }, fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
 
         Assert.AreEqual(0, fixture.Runner.ComposeRestartCount);
@@ -724,7 +727,7 @@ public sealed class LifecycleContractTests
         var candidateImageId = $"sha256:{new string('5', 64)}";
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
-        var owner = new FakeOwnerClient { RejectNextVerification = true };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
             ImageReference = candidateReference,
@@ -745,6 +748,176 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    public async Task UpgradeAsync_OwnerStateRegressionRestoresExactOriginalRuntime()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        var candidateImageId = $"sha256:{new string('5', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { CurrentOwnerBootstrapState = "owner-ready" };
+        owner.VerificationStates.Enqueue("owner-password-change-required");
+        owner.VerificationStates.Enqueue("owner-ready");
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = candidateReference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(
+            fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual("owner-ready", retained!.ExpectedOwnerBootstrapState);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        Assert.AreEqual(InstallationStatus.Failed, retained.Status);
+        Assert.IsFalse(retained.MutationStarted);
+    }
+
+    [TestMethod]
+    public async Task UpgradeAsync_OwnerCompletesPasswordReplacementDuringMutation_Converges()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        var candidateImageId = $"sha256:{new string('5', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity);
+        owner.VerificationStates.Enqueue("owner-ready");
+        owner.VerificationStates.Enqueue("owner-ready");
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = candidateReference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.AreEqual(candidateImageId, result.Image!.ImageId);
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(
+            fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual("owner-ready", retained!.ExpectedOwnerBootstrapState);
+    }
+
+    [TestMethod]
+    public async Task UpgradeAsync_OwnerStateRegressesAfterCandidateRestart_RestoresOriginalRuntime()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        var candidateImageId = $"sha256:{new string('5', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity);
+        owner.VerificationStates.Enqueue("owner-ready");
+        owner.VerificationStates.Enqueue("owner-password-change-required");
+        owner.VerificationStates.Enqueue("owner-ready");
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = candidateReference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(
+            fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual("owner-ready", retained!.ExpectedOwnerBootstrapState);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        Assert.AreEqual(InstallationStatus.Failed, retained.Status);
+    }
+
+    [TestMethod]
+    public async Task UpgradeAsync_InterruptedMutationPersistsRestoredOwnerProgressionBeforeRetry()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        var candidateImageId = $"sha256:{new string('5', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = candidateReference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(
+            fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            fixture.Paths.LifecycleStatePath,
+            retained! with
+            {
+                Phase = LifecycleOperationPhase.Mutating,
+                Status = InstallationStatus.Running,
+                MutationStarted = true,
+                FailureCode = null,
+                FailureMessage = null,
+                ExpectedOwnerBootstrapState = "owner-password-change-required"
+            },
+            DeploymentJsonContext.Default.LifecycleOperationState,
+            CancellationToken.None);
+        owner.VerificationStates.Enqueue("owner-ready");
+        owner.VerificationStates.Enqueue("owner-password-change-required");
+        owner.VerificationStates.Enqueue("owner-ready");
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        retained = await CameraAgentLifecycleManager.ReadOperationAsync(
+            fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual("owner-ready", retained!.ExpectedOwnerBootstrapState);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        Assert.AreEqual(InstallationStatus.Failed, retained.Status);
+    }
+
+    [TestMethod]
+    public async Task UpgradeAsync_PreparedOwnerStateChangeIsRejectedWithoutOverwritingSnapshot()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        var candidateImageId = $"sha256:{new string('5', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.RejectNextStop = true;
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { CurrentOwnerBootstrapState = "owner-ready" };
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = candidateReference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        owner.CurrentOwnerBootstrapState = "owner-password-change-required";
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(
+            fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual("owner-ready", retained!.ExpectedOwnerBootstrapState);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+    }
+
+    [TestMethod]
     public async Task UpgradeAsync_FailedLocalRunnerCandidateCapturesBothContainerLogsBeforeRollback()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
@@ -760,7 +933,7 @@ public sealed class LifecycleContractTests
             candidateImageId,
             fixture.Uid,
             fixture.Gid);
-        var owner = new FakeOwnerClient { RejectNextVerification = true };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Upgrade) with
@@ -821,7 +994,7 @@ public sealed class LifecycleContractTests
         };
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            request, fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(),
+            request, fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
 
         var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
@@ -910,7 +1083,7 @@ public sealed class LifecycleContractTests
                 NoDownload = true,
                 MigrationBackwardCompatible = true
             },
-            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(), fixture.Uid, fixture.Gid, CancellationToken.None);
+            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
 
         var upgraded = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         Assert.AreEqual(ComposeDeployment.TemplateVersion, upgraded.ComposeTemplateVersion);
@@ -920,14 +1093,14 @@ public sealed class LifecycleContractTests
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Rollback),
-            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(), fixture.Uid, fixture.Gid, CancellationToken.None));
+            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
 
         Assert.AreEqual(candidateImageId, fixture.Runner.ActiveImageId);
         await File.WriteAllTextAsync(retainedRollbackCompose, originalCompose);
 
         var rollback = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Rollback) with { Resume = true },
-            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(), fixture.Uid, fixture.Gid, CancellationToken.None);
+            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
 
         Assert.AreEqual(fixture.Manifest.Image.ImageId, rollback.Image!.ImageId);
         var rolledBack = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
@@ -943,6 +1116,7 @@ public sealed class LifecycleContractTests
         private LifecycleFixture(
             string root,
             Guid instanceId,
+            Guid applicationIdentity,
             InstallationPaths paths,
             InstanceManifest manifest,
             FakeRunner runner,
@@ -952,6 +1126,7 @@ public sealed class LifecycleContractTests
         {
             Root = root;
             InstanceId = instanceId;
+            ApplicationIdentity = applicationIdentity;
             Paths = paths;
             Manifest = manifest;
             Runner = runner;
@@ -962,6 +1137,7 @@ public sealed class LifecycleContractTests
 
         public string Root { get; }
         public Guid InstanceId { get; }
+        public Guid ApplicationIdentity { get; }
         public InstallationPaths Paths { get; }
         public InstanceManifest Manifest { get; }
         public FakeRunner Runner { get; }
@@ -1002,7 +1178,9 @@ public sealed class LifecycleContractTests
                 CatalogContract: "hyg-v42-production-p3-s2",
                 ReplayRunnerContract: localRunner ? "local-replay-runner-v1" : null);
             var installationId = Guid.NewGuid();
-            var applicationIdentity = instanceId;
+            // The bound application identity is deliberately distinct from the instance id so that
+            // lifecycle verification cannot pass by comparing the wrong identity.
+            var applicationIdentity = Guid.NewGuid();
             const string composeModel = "services: {}\n";
             var manifest = new InstanceManifest(
                 1, "HVO.SkyMonitor", "cameraagent-install-v1", DeploymentComponent.CameraAgent,
@@ -1037,7 +1215,7 @@ public sealed class LifecycleContractTests
                 Path.Combine(paths.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion"), catalog.PackageVersion);
             foreach (var directory in Directory.EnumerateDirectories(paths.InstanceRoot, "*", SearchOption.AllDirectories).Prepend(paths.InstanceRoot))
                 File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            return new LifecycleFixture(root, instanceId, paths, manifest, new FakeRunner(daemon, localRunner), uid, gid, previous);
+            return new LifecycleFixture(root, instanceId, applicationIdentity, paths, manifest, new FakeRunner(daemon, localRunner), uid, gid, previous);
         }
 
         public LifecycleRequest Request(LifecycleOperationKind? operation)
@@ -1332,6 +1510,7 @@ public sealed class LifecycleContractTests
     {
         public bool RejectNextResume { get; set; }
         public int PauseCount { get; private set; }
+        public int ConfirmCount { get; private set; }
 
         public Task<LifecycleContinuity> PauseAndDrainAsync(
             Guid operationId,
@@ -1340,6 +1519,13 @@ public sealed class LifecycleContractTests
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             PauseCount++;
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
+        }
+
+        public Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken)
+        {
+            Assert.AreEqual("lifecycle-token", verificationToken);
+            ConfirmCount++;
             return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
         }
 
@@ -1355,14 +1541,18 @@ public sealed class LifecycleContractTests
         }
     }
 
-    private sealed class FakeOwnerClient : IOwnerBootstrapClient
+    private sealed class FakeOwnerClient(Guid expectedAgentId) : IOwnerBootstrapClient
     {
         public bool RejectNextVerification { get; set; }
+        public string CurrentOwnerBootstrapState { get; set; } = "owner-password-change-required";
+        public Queue<string> VerificationStates { get; } = new();
 
         public Task WaitForHealthAsync(CancellationToken cancellationToken, TimeSpan? timeout = null) => Task.CompletedTask;
         public Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)
             => Task.FromResult("owner-password-change-required");
-        public Task VerifyInstallationAsync(
+        public Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken)
+            => Task.FromResult(CurrentOwnerBootstrapState);
+        public Task<string> VerifyInstallationAsync(
             string verificationToken,
             InstallationVerificationExpectation expectation,
             CancellationToken cancellationToken)
@@ -1372,7 +1562,21 @@ public sealed class LifecycleContractTests
                 RejectNextVerification = false;
                 throw new InstallerException("simulated candidate verification failure");
             }
-            return Task.CompletedTask;
+            if (expectation.AgentId != expectedAgentId.ToString("D"))
+            {
+                throw new InstallerException("simulated application identity mismatch");
+            }
+            var currentState = VerificationStates.TryDequeue(out var state)
+                ? state
+                : CurrentOwnerBootstrapState;
+            if (!OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
+                    expectation.OwnerBootstrapState,
+                    currentState,
+                    expectation.AllowCompletedPasswordReplacement))
+            {
+                throw new InstallerException("simulated owner bootstrap state mismatch");
+            }
+            return Task.FromResult(currentState);
         }
     }
 }

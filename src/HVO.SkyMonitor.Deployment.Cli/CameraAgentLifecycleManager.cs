@@ -166,6 +166,7 @@ internal sealed class CameraAgentLifecycleManager
         if (rollback && manifest.PreviousImage is null) throw new InstallerException("No previous image is retained for rollback.");
         var operation = await BeginAsync(request, paths, rollback ? LifecycleOperationKind.Rollback : LifecycleOperationKind.Upgrade,
             manifest, cancellationToken).ConfigureAwait(false);
+        var owner = ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url);
         if (!operation.MutationStarted)
         {
             await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
@@ -190,10 +191,20 @@ internal sealed class CameraAgentLifecycleManager
             {
                 throw new InstallerException("The committed image lifecycle records do not match the retained operation.");
             }
-            var committedOwner = ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url);
-            await VerifyCandidateAsync(committedOwner, docker, compose, paths, manifest, installationResult, manifest.Image,
-                verificationToken, uid, gid, cancellationToken)
+            var committedExpectedOwnerState = operation.ExpectedOwnerBootstrapState;
+            var verifiedOwnerState = await VerifyCandidateAsync(owner, docker, compose, paths, manifest, installationResult, manifest.Image,
+                verificationToken, uid, gid, cancellationToken,
+                committedExpectedOwnerState ?? installationResult.OwnerBootstrapState,
+                allowCompletedPasswordReplacement:
+                    committedExpectedOwnerState is null or "owner-password-change-required")
                 .ConfigureAwait(false);
+            if (verifiedOwnerState != committedExpectedOwnerState)
+            {
+                operation = await RecordAsync(
+                    paths,
+                    operation with { ExpectedOwnerBootstrapState = verifiedOwnerState },
+                    cancellationToken).ConfigureAwait(false);
+            }
             var committedLifecycle = CreateLifecycleClient(installationResult.Url, lifecycleClientFactory);
             await committedLifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
@@ -258,6 +269,40 @@ internal sealed class CameraAgentLifecycleManager
         {
             return Result(operation.Kind, "planned", operation.OperationId, paths, manifest with { Image = candidate }, manifest.DockerDaemon, null, null);
         }
+        var expectedOwnerState = operation.ExpectedOwnerBootstrapState;
+        if (!operation.MutationStarted)
+        {
+            var currentOwnerState = await owner.ReadInstallationStateAsync(verificationToken, cancellationToken)
+                .ConfigureAwait(false);
+            if (expectedOwnerState is null)
+            {
+                if (!OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
+                        installationResult.OwnerBootstrapState,
+                        currentOwnerState,
+                        allowCompletedPasswordReplacement: true))
+                {
+                    throw new InstallerException("CameraAgent reported an invalid owner bootstrap state before image mutation.");
+                }
+                expectedOwnerState = currentOwnerState;
+                operation = operation with { ExpectedOwnerBootstrapState = expectedOwnerState };
+            }
+            else if (!OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
+                         expectedOwnerState,
+                         currentOwnerState,
+                         allowCompletedPasswordReplacement: true))
+            {
+                throw new InstallerException("CameraAgent owner bootstrap state changed after image lifecycle preparation.");
+            }
+            else if (currentOwnerState != expectedOwnerState)
+            {
+                expectedOwnerState = currentOwnerState;
+                operation = operation with { ExpectedOwnerBootstrapState = expectedOwnerState };
+            }
+        }
+        var allowLegacyOwnerStateProgression = expectedOwnerState is null;
+        expectedOwnerState ??= installationResult.OwnerBootstrapState;
+        var allowOwnerStateProgression = allowLegacyOwnerStateProgression ||
+                                         expectedOwnerState == "owner-password-change-required";
         operation = await RecordAsync(paths, operation, cancellationToken).ConfigureAwait(false);
         SafeFileSystem.CreateOwnerDirectory(Path.Combine(paths.OperationsRoot, "lifecycle"));
         SafeFileSystem.CreateOwnerDirectory(operationRoot);
@@ -319,7 +364,6 @@ internal sealed class CameraAgentLifecycleManager
         var baseAddress = installationResult.Url;
         var lifecycle = CreateLifecycleClient(baseAddress, lifecycleClientFactory);
         var candidateLifecycle = lifecycle;
-        var owner = ownerClientFactory?.Invoke(baseAddress) ?? new OwnerBootstrapClient(baseAddress);
         if (operation.MutationStarted)
         {
             SafeFileSystem.WriteTextAtomic(compose.ComposeFile, originalCompose);
@@ -327,8 +371,20 @@ internal sealed class CameraAgentLifecycleManager
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                 ["up", "--detach", "--remove-orphans"], cancellationToken).ConfigureAwait(false);
-            await VerifyCandidateAsync(owner, docker, compose, paths, manifest, installationResult, manifest.Image,
-                verificationToken, uid, gid, cancellationToken).ConfigureAwait(false);
+            var restoredOwnerState = await VerifyCandidateAsync(
+                owner, docker, compose, paths, manifest, installationResult, manifest.Image,
+                verificationToken, uid, gid, cancellationToken, expectedOwnerState, allowOwnerStateProgression)
+                .ConfigureAwait(false);
+            if (restoredOwnerState != expectedOwnerState)
+            {
+                expectedOwnerState = restoredOwnerState;
+                allowOwnerStateProgression = allowLegacyOwnerStateProgression ||
+                                             expectedOwnerState == "owner-password-change-required";
+                operation = await RecordAsync(
+                    paths,
+                    operation with { ExpectedOwnerBootstrapState = expectedOwnerState },
+                    cancellationToken).ConfigureAwait(false);
+            }
             await lifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             operation = await RecordAsync(paths, operation with
             {
@@ -364,6 +420,7 @@ internal sealed class CameraAgentLifecycleManager
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName, ["stop"], cancellationToken)
                 .ConfigureAwait(false);
+            OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
             var backup = await InstanceBackupManager.CreateAsync(paths, manifest, operation.OperationId, processRunner, cancellationToken)
                 .ConfigureAwait(false);
             operation = await RecordAsync(paths, operation with
@@ -379,22 +436,42 @@ internal sealed class CameraAgentLifecycleManager
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             await docker.ComposeAsync(candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName,
                 ["up", "--detach", "--remove-orphans"], cancellationToken).ConfigureAwait(false);
-            await VerifyCandidateAsync(owner, docker, candidateCompose, paths, manifest, installationResult, candidate, verificationToken, uid, gid,
-                cancellationToken).ConfigureAwait(false);
-            operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.CandidateVerified }, cancellationToken)
+            var verifiedOwnerState = await VerifyCandidateAsync(
+                owner, docker, candidateCompose, paths, manifest, installationResult, candidate, verificationToken, uid, gid,
+                cancellationToken, expectedOwnerState, allowOwnerStateProgression).ConfigureAwait(false);
+            expectedOwnerState = verifiedOwnerState;
+            allowOwnerStateProgression = allowLegacyOwnerStateProgression ||
+                                         expectedOwnerState == "owner-password-change-required";
+            operation = await RecordAsync(paths, operation with
+            {
+                Phase = LifecycleOperationPhase.CandidateVerified,
+                ExpectedOwnerBootstrapState = expectedOwnerState
+            }, cancellationToken)
                 .ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             await docker.ComposeAsync(candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName, ["restart"], cancellationToken)
                 .ConfigureAwait(false);
-            await VerifyCandidateAsync(owner, docker, candidateCompose, paths, manifest, installationResult, candidate, verificationToken, uid, gid,
-                cancellationToken).ConfigureAwait(false);
-            var postMutation = await candidateLifecycle.PauseAndDrainAsync(operation.OperationId, lifecycleControlToken, cancellationToken)
+            verifiedOwnerState = await VerifyCandidateAsync(
+                owner, docker, candidateCompose, paths, manifest, installationResult, candidate, verificationToken, uid, gid,
+                cancellationToken, expectedOwnerState, allowOwnerStateProgression).ConfigureAwait(false);
+            if (verifiedOwnerState != expectedOwnerState)
+            {
+                expectedOwnerState = verifiedOwnerState;
+                allowOwnerStateProgression = allowLegacyOwnerStateProgression ||
+                                             expectedOwnerState == "owner-password-change-required";
+                operation = await RecordAsync(
+                    paths,
+                    operation with { ExpectedOwnerBootstrapState = expectedOwnerState },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            var postMutation = await candidateLifecycle.ConfirmDrainedAsync(lifecycleControlToken, cancellationToken)
                 .ConfigureAwait(false);
             EnsureContinuity(operation.PreMutationContinuity, postMutation);
             operation = await RecordAsync(paths, operation with
             {
                 Phase = LifecycleOperationPhase.CandidateVerified,
-                PostMutationContinuity = ToBoundary(postMutation)
+                PostMutationContinuity = ToBoundary(postMutation),
+                ExpectedOwnerBootstrapState = expectedOwnerState
             }, cancellationToken).ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             SafeFileSystem.CreateOwnerDirectory(rollbackRoot);
@@ -443,6 +520,7 @@ internal sealed class CameraAgentLifecycleManager
                 using var recovery = new CancellationTokenSource(TimeSpan.FromMinutes(4));
                 try
                 {
+                    var failedPhase = operation.Phase;
                     operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Restoring }, recovery.Token)
                         .ConfigureAwait(false);
                     var diagnostics = new StringBuilder();
@@ -476,10 +554,28 @@ internal sealed class CameraAgentLifecycleManager
                             File.Delete(retainedRollbackEnvironment);
                     }
                     EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(recovery.Token).ConfigureAwait(false));
+                    if (failedPhase is LifecycleOperationPhase.Mutating or LifecycleOperationPhase.CandidateVerified)
+                    {
+                        await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
+                            ["stop"], recovery.Token).ConfigureAwait(false);
+                        OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
+                    }
                     await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                         ["up", "--detach", "--remove-orphans"], recovery.Token).ConfigureAwait(false);
-                    await VerifyCandidateAsync(owner, docker, compose, paths, manifest, installationResult, manifest.Image,
-                        verificationToken, uid, gid, recovery.Token).ConfigureAwait(false);
+                    var restoredOwnerState = await VerifyCandidateAsync(
+                        owner, docker, compose, paths, manifest, installationResult, manifest.Image,
+                        verificationToken, uid, gid, recovery.Token, expectedOwnerState, allowOwnerStateProgression)
+                        .ConfigureAwait(false);
+                    if (restoredOwnerState != expectedOwnerState)
+                    {
+                        expectedOwnerState = restoredOwnerState;
+                        allowOwnerStateProgression = allowLegacyOwnerStateProgression ||
+                                                     expectedOwnerState == "owner-password-change-required";
+                        operation = await RecordAsync(
+                            paths,
+                            operation with { ExpectedOwnerBootstrapState = expectedOwnerState },
+                            recovery.Token).ConfigureAwait(false);
+                    }
                     await lifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, recovery.Token).ConfigureAwait(false);
                     operation = operation with
                     {
@@ -537,6 +633,7 @@ internal sealed class CameraAgentLifecycleManager
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                 ["down"], cancellationToken).ConfigureAwait(false);
+            OwnerRecoverySocket.RemoveStoppedSocket(paths, manifest.RuntimeUid, manifest.RuntimeGid);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, paths.InstanceRoot, cancellationToken)
                 .ConfigureAwait(false);
@@ -605,6 +702,7 @@ internal sealed class CameraAgentLifecycleManager
         if (request.DryRun) return Result(operation.Kind, "planned", operation.OperationId, paths, manifest, daemon, false, false);
         await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
         operation = await RecordAsync(paths, operation with { MutationStarted = true }, cancellationToken).ConfigureAwait(false);
+        OwnerRecoverySocket.RemoveStoppedSocket(paths, manifest.RuntimeUid, manifest.RuntimeGid);
         EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
         await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
             ["up", "--detach", "--force-recreate", "--remove-orphans"], cancellationToken).ConfigureAwait(false);
@@ -726,7 +824,7 @@ internal sealed class CameraAgentLifecycleManager
             DateTimeOffset.UtcNow);
     }
 
-    private static async Task VerifyCandidateAsync(
+    private static async Task<string> VerifyCandidateAsync(
         IOwnerBootstrapClient owner,
         DockerClient docker,
         ComposeFiles compose,
@@ -737,19 +835,23 @@ internal sealed class CameraAgentLifecycleManager
         string verificationToken,
         uint uid,
         uint gid,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? ownerBootstrapState = null,
+        bool allowCompletedPasswordReplacement = true)
     {
         await owner.WaitForHealthAsync(cancellationToken).ConfigureAwait(false);
-        await owner.VerifyInstallationAsync(
+        var verifiedOwnerState = await owner.VerifyInstallationAsync(
             verificationToken,
             new InstallationVerificationExpectation(
-                manifest.InstanceId.ToString("D"), manifest.OwnerEmail, result.OwnerBootstrapState,
+                manifest.ApplicationIdentity.ToString("D"), manifest.OwnerEmail, ownerBootstrapState ?? result.OwnerBootstrapState,
                 manifest.ConfigurationSha256, manifest.RigProfileSha256, manifest.ScheduleSha256,
                 manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
                 manifest.ReplayProfile,
-                manifest.Catalog),
+                manifest.Catalog,
+                allowCompletedPasswordReplacement),
             cancellationToken).ConfigureAwait(false);
         await docker.VerifyContainerAsync(compose, paths, image, uid, gid, cancellationToken).ConfigureAwait(false);
+        return verifiedOwnerState;
     }
 
     private static InstallRequest ImageRequest(

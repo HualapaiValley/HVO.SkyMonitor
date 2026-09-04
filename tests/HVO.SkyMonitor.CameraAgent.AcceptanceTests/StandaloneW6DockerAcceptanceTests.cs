@@ -977,7 +977,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             return;
         }
-        var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
+        var confirmation = page.Locator("dialog.confirmation-panel");
         await OpenDialogAsync(
             page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }),
             confirmation).ConfigureAwait(false);
@@ -996,7 +996,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             return;
         }
-        var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
+        var confirmation = page.Locator("dialog.confirmation-panel");
         var activate = await WaitForCalibrationActivateAsync(page).ConfigureAwait(false);
         await OpenDialogAsync(activate, confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
@@ -1036,7 +1036,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.AreEqual(ExpectedLocalProfileSha256[..12], originalHash);
         await ValidateSchedulePreviewAsync(page).ConfigureAwait(false);
         Assert.IsGreaterThanOrEqualTo(2, await page.Locator(".preview-card time").CountAsync().ConfigureAwait(false));
-        var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
+        var confirmation = page.Locator("dialog.confirmation-panel");
         await page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }).First.ClickAsync().ConfigureAwait(false);
         await confirmation.WaitForAsync(new() { State = WaitForSelectorState.Visible }).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm rollback" }).ClickAsync().ConfigureAwait(false);
@@ -1084,7 +1084,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         await activeHeading.WaitForAsync().ConfigureAwait(false);
         await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
         Assert.AreEqual(originalBundleId, (await activeHeading.InnerTextAsync().ConfigureAwait(false)).Trim());
-        var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
+        var confirmation = page.Locator("dialog.confirmation-panel");
         await OpenDialogAsync(
             page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }),
             confirmation).ConfigureAwait(false);

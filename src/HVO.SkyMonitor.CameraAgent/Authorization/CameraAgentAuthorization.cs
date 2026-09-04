@@ -83,12 +83,12 @@ internal sealed class SiteOwnerRequirement : IAuthorizationRequirement
 }
 
 internal sealed class SiteOwnerAuthorizationHandler(
-    UserManager<ApplicationUser> userManager,
+    IServiceScopeFactory scopeFactory,
     ILookupNormalizer normalizer,
-    IOptions<LocalIdentityOptions> identityOptions)
+    IOptions<LocalIdentityOptions> identityOptions,
+    IOptions<IdentityOptions> identityFrameworkOptions)
     : AuthorizationHandler<SiteOwnerRequirement>
 {
-    private readonly UserManager<ApplicationUser> _userManager = userManager;
     private readonly string _configuredNormalizedEmail = normalizer.NormalizeEmail(identityOptions.Value.AdminEmail);
 
     protected override async Task HandleRequirementAsync(
@@ -101,13 +101,34 @@ internal sealed class SiteOwnerAuthorizationHandler(
             return;
         }
 
-        var user = await _userManager.GetUserAsync(context.User).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var user = await userManager.FindByIdAsync(ownerId).ConfigureAwait(false);
         if (user?.IsSiteOwner == true &&
             (!requirement.RequireReadyOwner || !user.PasswordChangeRequired) &&
             !string.IsNullOrWhiteSpace(user.NormalizedEmail) &&
-            string.Equals(user.NormalizedEmail, _configuredNormalizedEmail, StringComparison.Ordinal))
+            string.Equals(user.NormalizedEmail, _configuredNormalizedEmail, StringComparison.Ordinal) &&
+            await HasCurrentSecurityStampAsync(
+                userManager, context.User, user, identityFrameworkOptions.Value).ConfigureAwait(false))
         {
             context.Succeed(requirement);
         }
+    }
+
+    private static async Task<bool> HasCurrentSecurityStampAsync(
+        UserManager<ApplicationUser> userManager,
+        ClaimsPrincipal principal,
+        ApplicationUser user,
+        IdentityOptions options)
+    {
+        if (!userManager.SupportsUserSecurityStamp)
+        {
+            return false;
+        }
+
+        var principalStamp = principal.FindFirstValue(options.ClaimsIdentity.SecurityStampClaimType);
+        var durableStamp = await userManager.GetSecurityStampAsync(user).ConfigureAwait(false);
+        return !string.IsNullOrEmpty(principalStamp) &&
+               string.Equals(principalStamp, durableStamp, StringComparison.Ordinal);
     }
 }

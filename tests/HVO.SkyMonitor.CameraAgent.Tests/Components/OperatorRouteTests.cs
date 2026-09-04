@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Components.Pages.Devices;
 using HVO.SkyMonitor.CameraAgent.Controllers.v1;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -51,10 +52,45 @@ public sealed class OperatorRouteTests
         CollectionAssert.AreEqual(
             new[]
             {
-                ("Current sky", "/"), ("Archive", "/gallery"), ("Technical workspace", "/operations")
+                ("Current sky", "/"), ("Archive", "/gallery"), ("Operations", "/operations")
             },
             links);
         Assert.IsFalse(cut.Markup.Contains("Configuration", StringComparison.Ordinal));
         Assert.IsFalse(cut.Markup.Contains("Notifications", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void Navigation_IdentifiesDirectChildAndGroupedCurrentRoutes()
+    {
+        using var context = new BunitContext();
+        context.AddAuthorization().SetAuthorized("owner");
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        var cut = context.Render<MainLayoutNavigation>();
+
+        foreach (var (path, label) in new[]
+        {
+            ("/", "Current sky"),
+            ("/gallery", "Archive"),
+            ("/gallery/capture-id", "Archive"),
+            ("/operations", "Operations"),
+            ("/operations/quarantine", "Operations"),
+            ("/schedule", "Operations"),
+            ("/calibration", "Operations"),
+            ("/system", "Operations"),
+            ("/environmental", "Operations"),
+            ("/transients", "Operations"),
+            ("/devices", "Operations")
+        })
+        {
+            navigation.NavigateTo(path);
+            cut.WaitForAssertion(() =>
+            {
+                var current = cut.FindAll(".nav-badge")
+                    .Where(link => link.GetAttribute("aria-current") == "page")
+                    .ToArray();
+                Assert.HasCount(1, current, path);
+                Assert.AreEqual(label, current[0].TextContent.Trim(), path);
+            });
+        }
     }
 }

@@ -1,5 +1,10 @@
+using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Net.Http.Json;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
@@ -18,6 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 public sealed class CameraAgentBrowserAcceptanceTests
 {
     private const float DefaultTimeoutMilliseconds = 45_000;
+    private const string OwnerRecoveryAttestationPurpose = "HVO.SkyMonitor.CameraAgent.OwnerRecovery.Attestation.v1";
 
     [TestMethod]
     public async Task FirstOwnerLoginRequiresPasswordReplacementAndRevokesStaleSessionAsync()
@@ -140,6 +146,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await VisibleAsync(oldCredentialPage.GetByText("Error: Invalid login attempt.", new() { Exact = true }))
             .ConfigureAwait(false);
+        await AssertComputedContrastAsync(
+            oldCredentialPage,
+            "/Account/Login",
+            new ViewportSize { Width = 1280, Height = 720 }).ConfigureAwait(false);
 
         await using var replacementCredentialContext = await browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -156,6 +166,352 @@ public sealed class CameraAgentBrowserAcceptanceTests
     }
 
     [TestMethod]
+    public async Task LocalOwnerRecoveryRevokesSessionsAndPreservesCaptureContinuityAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        if (!File.Exists(playwright.Chromium.ExecutablePath))
+        {
+            Assert.Inconclusive(
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
+        }
+
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await host.RestartWithoutPasswordAuthorityAsync().ConfigureAwait(false);
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true
+        }).ConfigureAwait(false);
+        await using var staleContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString()
+        }).ConfigureAwait(false);
+        var stalePage = await staleContext.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(stalePage, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword)
+            .ConfigureAwait(false);
+        await stalePage.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/").ConfigureAwait(false);
+        await stalePage.GotoAsync("/operations").ConfigureAwait(false);
+        await VisibleAsync(stalePage.GetByRole(AriaRole.Heading, new() { Name = "Capture operations", Level = 1 }))
+            .ConfigureAwait(false);
+        var staleCaptureAction = stalePage.Locator("#capture-action");
+        var staleConfirmation = stalePage.Locator("dialog.confirmation");
+        await OpenDialogAsync(staleCaptureAction, staleConfirmation).ConfigureAwait(false);
+
+        await using var staleReadContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString()
+        }).ConfigureAwait(false);
+        var staleReadPage = await staleReadContext.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(staleReadPage, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword)
+            .ConfigureAwait(false);
+        await staleReadPage.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/").ConfigureAwait(false);
+        await staleReadPage.GotoAsync("/operations").ConfigureAwait(false);
+        await VisibleAsync(staleReadPage.GetByRole(AriaRole.Heading, new() { Name = "Capture operations", Level = 1 }))
+            .ConfigureAwait(false);
+
+        using var lifecycleClient = new HttpClient
+        {
+            BaseAddress = host.BaseAddress,
+            Timeout = TimeSpan.FromSeconds(15)
+        };
+        lifecycleClient.DefaultRequestHeaders.Add(
+            "X-HVO-Installation-Token",
+            CameraAgentKestrelFixture.LifecycleControlToken);
+        var before = await ReadLifecycleContinuityAsync(lifecycleClient).ConfigureAwait(false);
+        var operationId = Guid.NewGuid();
+        var nonce = RandomNumberGenerator.GetBytes(32);
+        using (var tcpRequest = new HttpRequestMessage(
+                   HttpMethod.Post, "/api/internal/owner-bootstrap/recovery/attestation"))
+        {
+            tcpRequest.Headers.Add("X-HVO-Recovery-Operation", operationId.ToString("D"));
+            tcpRequest.Headers.Add("X-Forwarded-For", "127.0.0.1");
+            tcpRequest.Headers.Add("X-Forwarded-Proto", "http");
+            tcpRequest.Content = new ByteArrayContent(nonce);
+            tcpRequest.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+            using var response = await lifecycleClient.SendAsync(tcpRequest).ConfigureAwait(false);
+            Assert.AreEqual(404, (int)response.StatusCode);
+        }
+
+        using var recoveryClient = CreateUnixSocketHttpClient(host.RecoverySocketPath);
+        recoveryClient.DefaultRequestHeaders.Add(
+            "X-HVO-Installation-Token",
+            CameraAgentKestrelFixture.LifecycleControlToken);
+        using (var request = new HttpRequestMessage(
+                   HttpMethod.Post, "/api/internal/owner-bootstrap/recovery/attestation"))
+        {
+            request.Headers.Add("X-HVO-Recovery-Operation", operationId.ToString("D"));
+            request.Content = new ByteArrayContent(nonce);
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+            using var response = await recoveryClient.SendAsync(request).ConfigureAwait(false);
+            Assert.AreEqual(200, (int)response.StatusCode);
+            Assert.AreEqual("no-store", response.Headers.CacheControl?.ToString());
+            var proof = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            var expectedProof = CreateOwnerRecoveryAttestationProof(
+                CameraAgentKestrelFixture.LifecycleControlToken, operationId, nonce);
+            Assert.IsTrue(CryptographicOperations.FixedTimeEquals(proof, expectedProof));
+        }
+        using var challengeRequest = CreateOwnerRecoveryRequest(
+            "/api/internal/owner-bootstrap/recovery/challenge", operationId, []);
+        using var challengeResponse = await recoveryClient.SendAsync(challengeRequest).ConfigureAwait(false);
+        var challengeBody = await challengeResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+        Assert.AreEqual(200, (int)challengeResponse.StatusCode);
+        Assert.AreEqual("no-store", challengeResponse.Headers.CacheControl?.ToString());
+        var challenge = Encoding.UTF8.GetString(challengeBody);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(challenge));
+
+        const string temporaryPassword = "RecoveredBrowserOwner!515";
+        using var completeRequest = CreateOwnerRecoveryRequest(
+            "/api/internal/owner-bootstrap/recovery/complete",
+            operationId,
+            CreateOwnerRecoveryCompletionPayload(challenge!, temporaryPassword));
+        using var completeResponse = await recoveryClient.SendAsync(completeRequest).ConfigureAwait(false);
+        var completeBody = await completeResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.AreEqual(200, (int)completeResponse.StatusCode, completeBody);
+        Assert.AreEqual("no-store", completeResponse.Headers.CacheControl?.ToString());
+        Assert.IsFalse(Encoding.UTF8.GetString(challengeBody)
+            .Contains(CameraAgentKestrelFixture.OwnerEmail, StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(completeBody.Contains(temporaryPassword, StringComparison.Ordinal));
+
+        if (!new Uri(stalePage.Url).AbsolutePath.Equals("/Account/AccessDenied", StringComparison.OrdinalIgnoreCase))
+        {
+            await stalePage.GetByRole(AriaRole.Button, new() { Name = "Confirm pause capture" }).ClickAsync()
+                .ConfigureAwait(false);
+        }
+        await stalePage.WaitForURLAsync(url =>
+            new Uri(url).AbsolutePath.Equals("/Account/AccessDenied", StringComparison.OrdinalIgnoreCase))
+            .ConfigureAwait(false);
+        await staleReadPage.WaitForURLAsync(url =>
+            new Uri(url).AbsolutePath.Equals("/Account/AccessDenied", StringComparison.OrdinalIgnoreCase))
+            .ConfigureAwait(false);
+
+        var stale = await staleContext.APIRequest.GetAsync("/api/v1/operations/summary").ConfigureAwait(false);
+        try
+        {
+            Assert.AreEqual(401, stale.Status);
+        }
+        finally
+        {
+            await stale.DisposeAsync().ConfigureAwait(false);
+        }
+
+        LifecycleContinuity after = before;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline && after.CaptureSequence <= before.CaptureSequence)
+        {
+            await Task.Delay(250).ConfigureAwait(false);
+            after = await ReadLifecycleContinuityAsync(lifecycleClient).ConfigureAwait(false);
+        }
+        Assert.AreEqual(before.CaptureState, after.CaptureState);
+        Assert.IsGreaterThan(before.CaptureSequence, after.CaptureSequence);
+
+        await using var oldPasswordContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString()
+        }).ConfigureAwait(false);
+        var oldPasswordPage = await oldPasswordContext.NewPageAsync().ConfigureAwait(false);
+        await oldPasswordPage.GotoAsync("/Account/Login").ConfigureAwait(false);
+        await oldPasswordPage.GetByLabel("Email").FillAsync(CameraAgentKestrelFixture.OwnerEmail).ConfigureAwait(false);
+        await oldPasswordPage.GetByLabel("Password").FillAsync(CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await oldPasswordPage.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync()
+            .ConfigureAwait(false);
+        await VisibleAsync(oldPasswordPage.GetByText("Error: Invalid login attempt.", new() { Exact = true }))
+            .ConfigureAwait(false);
+
+        await using var recoveredContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString()
+        }).ConfigureAwait(false);
+        var recoveredPage = await recoveredContext.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(recoveredPage, CameraAgentKestrelFixture.OwnerEmail, temporaryPassword).ConfigureAwait(false);
+        await recoveredPage.WaitForURLAsync(
+            url => url.Contains("/Account/ReplaceTemporaryPassword", StringComparison.OrdinalIgnoreCase))
+            .ConfigureAwait(false);
+        const string finalPassword = "FinalRecoveredOwner!515";
+        await recoveredPage.GetByLabel("Current password").FillAsync(temporaryPassword).ConfigureAwait(false);
+        await recoveredPage.GetByLabel("New password", new() { Exact = true }).FillAsync(finalPassword).ConfigureAwait(false);
+        await recoveredPage.GetByLabel("Confirm new password").FillAsync(finalPassword).ConfigureAwait(false);
+        await SubmitPasswordReplacementAsync(recoveredPage, recoveredContext).ConfigureAwait(false);
+
+        await host.RestartAsync().ConfigureAwait(false);
+        await using var finalContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString()
+        }).ConfigureAwait(false);
+        var finalPage = await finalContext.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(finalPage, CameraAgentKestrelFixture.OwnerEmail, finalPassword).ConfigureAwait(false);
+        await finalPage.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/").ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task ObservatoryShellAndAccountPagesRemainLocalResponsiveAndKeyboardReachableAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        if (!File.Exists(playwright.Chromium.ExecutablePath))
+        {
+            Assert.Inconclusive(
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
+        }
+
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true
+        }).ConfigureAwait(false);
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 390, Height = 844 },
+            ColorScheme = ColorScheme.Dark,
+            ReducedMotion = ReducedMotion.Reduce
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        var externalRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            var requestUri = new Uri(request.Url);
+            if (!string.Equals(requestUri.Host, host.BaseAddress.Host, StringComparison.OrdinalIgnoreCase) ||
+                requestUri.Port != host.BaseAddress.Port)
+            {
+                externalRequests.Add(request.Url);
+            }
+        };
+
+        await page.GotoAsync("/Account/Login").ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("HVO SkyMonitor", new() { Exact = true })).ConfigureAwait(false);
+        foreach (var retiredRoute in new[]
+        {
+            "/Account/ForgotPassword",
+            "/Account/ForgotPasswordConfirmation",
+            "/Account/ResetPassword?code=retired-browser-token",
+            "/Account/ResetPasswordConfirmation",
+            "/Account/ResendEmailConfirmation",
+            "/Account/ConfirmEmail",
+            "/Account/ConfirmEmailChange",
+            "/Account/InvalidPasswordReset",
+            "/Account/Manage/SetPassword",
+            "/account/recovery?code=retired-browser-token#fragment"
+        })
+        {
+            await page.GotoAsync(retiredRoute).ConfigureAwait(false);
+            var canonicalRecovery = new Uri(page.Url);
+            Assert.AreEqual("/Account/Recovery", canonicalRecovery.AbsolutePath, retiredRoute);
+            Assert.AreEqual(string.Empty, canonicalRecovery.Query, retiredRoute);
+            Assert.AreEqual(string.Empty, canonicalRecovery.Fragment, retiredRoute);
+        }
+        await page.GotoAsync("/Account/Login").ConfigureAwait(false);
+        Assert.IsFalse((await page.ContentAsync().ConfigureAwait(false)).Contains("cdn.jsdelivr", StringComparison.OrdinalIgnoreCase));
+        await page.GetByRole(AriaRole.Link, new() { Name = "Recover owner access" }).ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Recover owner access", Level = 1 }))
+            .ConfigureAwait(false);
+        Assert.IsEmpty(await page.Locator("input").AllAsync().ConfigureAwait(false));
+        Assert.IsFalse((await page.Locator("main").InnerTextAsync().ConfigureAwait(false))
+            .Contains(CameraAgentKestrelFixture.OwnerEmail, StringComparison.OrdinalIgnoreCase));
+
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword)
+            .ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/").ConfigureAwait(false);
+        var currentSkyHeading = page.GetByRole(AriaRole.Heading, new() { Name = "Current sky", Level = 1 });
+        await VisibleAsync(currentSkyHeading).ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".current-sky-hero")).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var keyboardPage = await context.NewPageAsync().ConfigureAwait(false);
+        try
+        {
+            await keyboardPage.GotoAsync("/").ConfigureAwait(false);
+            await VisibleAsync(keyboardPage.GetByRole(AriaRole.Heading, new() { Name = "Current sky", Level = 1 }))
+                .ConfigureAwait(false);
+            await WaitForInteractiveShellAsync(keyboardPage).ConfigureAwait(false);
+            var skipLink = keyboardPage.Locator(".skip-link");
+            await keyboardPage.EvaluateAsync(
+                "() => { document.body.tabIndex = -1; document.body.focus(); }").ConfigureAwait(false);
+            await keyboardPage.Keyboard.PressAsync("Tab").ConfigureAwait(false);
+            var firstTabTarget = await keyboardPage.EvaluateAsync<string>(
+                "() => `${document.activeElement?.tagName ?? ''}#${document.activeElement?.id ?? ''}.${document.activeElement?.className ?? ''}`")
+                .ConfigureAwait(false);
+            Assert.AreEqual("A#.skip-link", firstTabTarget, $"Unexpected first tab target: {firstTabTarget}");
+            await Task.Delay(300).ConfigureAwait(false);
+            var skipLinkTop = await skipLink.EvaluateAsync<double>(
+                "element => element.getBoundingClientRect().top").ConfigureAwait(false);
+            Assert.IsGreaterThanOrEqualTo(0, skipLinkTop);
+            await keyboardPage.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+            await keyboardPage.WaitForFunctionAsync("() => document.activeElement?.id === 'mainContent'").ConfigureAwait(false);
+        }
+        finally
+        {
+            await keyboardPage.CloseAsync().ConfigureAwait(false);
+        }
+
+        var menuToggle = page.Locator("button.shell-menu__toggle");
+        await VisibleAsync(menuToggle).ConfigureAwait(false);
+        await OpenMenuWithKeyboardAsync(menuToggle).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Link, new() { Name = "Operations", Exact = true }).First)
+            .ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('button.shell-menu__toggle')?.getAttribute('aria-expanded') === 'false'")
+            .ConfigureAwait(false);
+        await WaitForFocusAsync(page, menuToggle).ConfigureAwait(false);
+        await OpenMenuWithKeyboardAsync(menuToggle).ConfigureAwait(false);
+        var accountToggle = page.Locator("summary.nav-avatar-button");
+        await accountToggle.ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('details.nav-account-info')?.open === true")
+            .ConfigureAwait(false);
+        var accountSettings = page.GetByRole(AriaRole.Link, new() { Name = "Account settings", Exact = true });
+        Assert.AreEqual("Account/Manage", await accountSettings.GetAttributeAsync("href").ConfigureAwait(false));
+        await page.GotoAsync("/Account/Manage").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Account settings", Level = 1 }))
+            .ConfigureAwait(false);
+        var ownerEmail = page.GetByRole(AriaRole.Link, new() { Name = "Owner email", Exact = true });
+        Assert.AreEqual("Account/Manage/Email", await ownerEmail.GetAttributeAsync("href").ConfigureAwait(false));
+        await page.GotoAsync("/Account/Manage/Email").ConfigureAwait(false);
+        Assert.AreEqual("", await page.Locator("#owner-email").GetAttributeAsync("readonly").ConfigureAwait(false));
+        Assert.AreEqual(
+            0,
+            await page.Locator("[role='alert'], [role='status'], [aria-live]").CountAsync().ConfigureAwait(false));
+        Assert.IsFalse(await page.EvaluateAsync<bool>(
+            "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false));
+
+        await page.SetViewportSizeAsync(1024, 768).ConfigureAwait(false);
+        await page.GotoAsync("/").ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var desktopCurrentSky = page.GetByRole(AriaRole.Link, new() { Name = "Current sky", Exact = true });
+        await VisibleAsync(desktopCurrentSky).ConfigureAwait(false);
+        Assert.IsFalse(await page.Locator("button.shell-menu__toggle").IsVisibleAsync().ConfigureAwait(false));
+        await desktopCurrentSky.FocusAsync().ConfigureAwait(false);
+        await WaitForFocusAsync(page, desktopCurrentSky).ConfigureAwait(false);
+        await page.GotoAsync("/schedule").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Schedule control", Level = 1 }))
+            .ConfigureAwait(false);
+        await VisibleAsync(page.GetByLabel("Current schedule state")).ConfigureAwait(false);
+        Assert.AreEqual(
+            "page",
+            await page.GetByRole(AriaRole.Link, new() { Name = "Operations", Exact = true })
+                .GetAttributeAsync("aria-current").ConfigureAwait(false));
+
+        foreach (var asset in new[]
+        {
+            "/vendor/bootstrap/bootstrap.min.css",
+            "/vendor/bootstrap-icons/bootstrap-icons.min.css",
+            "/vendor/bootstrap-icons/fonts/bootstrap-icons.woff2"
+        })
+        {
+            var response = await context.APIRequest.GetAsync(asset).ConfigureAwait(false);
+            try
+            {
+                Assert.AreEqual(200, response.Status, asset);
+                Assert.IsGreaterThan(1000, (await response.BodyAsync().ConfigureAwait(false)).Length, asset);
+            }
+            finally
+            {
+                await response.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
+        Assert.IsEmpty(externalRequests, string.Join(Environment.NewLine, externalRequests));
+        await page.GotoAsync("/").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Current sky", Level = 1 }))
+            .ConfigureAwait(false);
+    }
+
+    [TestMethod]
     [TestCategory("Manual")]
     [DoNotParallelize]
     public async Task OwnerOperationsGalleryAndResponsiveAcceptanceAsync()
@@ -167,7 +523,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
         }
 
-        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(
+            enableCentralIntegration: true).ConfigureAwait(false);
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
             Headless = true
@@ -509,8 +866,38 @@ public sealed class CameraAgentBrowserAcceptanceTests
         })
         {
             await page.SetViewportSizeAsync(viewport.Width, viewport.Height).ConfigureAwait(false);
-            Assert.IsFalse(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1")
-                .ConfigureAwait(false), $"capture detail overflowed at {viewport.Width}x{viewport.Height}");
+            await WaitForResponsiveShellLayoutAsync(page, viewport.Width).ConfigureAwait(false);
+            var overflow = await page.EvaluateAsync<string>(
+                """
+                () => {
+                  const root = document.documentElement;
+                  if (root.scrollWidth <= root.clientWidth + 1) return '';
+                  const describe = selector => {
+                    const element = document.querySelector(selector);
+                    if (!element) return `${selector}=missing`;
+                    const rect = element.getBoundingClientRect();
+                    const style = getComputedStyle(element);
+                    return `${selector}=[${rect.left.toFixed(1)},${rect.right.toFixed(1)}]` +
+                      ` width=${style.width} min=${style.minWidth} padding=${style.paddingInline}` +
+                      ` grid=${style.gridTemplateColumns}`;
+                  };
+                  const offenders = [...document.querySelectorAll('*')]
+                    .map(element => ({ element, rect: element.getBoundingClientRect() }))
+                    .filter(item => item.rect.right > root.clientWidth + 1 || item.rect.left < -1)
+                    .slice(0, 8)
+                    .map(item => `${item.element.tagName.toLowerCase()}.${item.element.className || ''} ` +
+                      `[${item.rect.left.toFixed(1)},${item.rect.right.toFixed(1)}]`);
+                  const structure = [
+                    'body', '.app-frame', '.shell-header', '.shell-header__bar',
+                    '.shell-brand', '.shell-menu', '.shell-menu__toggle'
+                  ].map(describe);
+                  return `viewport inner=${innerWidth} outer=${outerWidth} visual=${visualViewport?.width} ` +
+                    `mobile=${matchMedia('(max-width: 767.98px)').matches}; ` +
+                    `document ${root.clientWidth}/${root.scrollWidth}; ${structure.join('; ')}; ` +
+                    `offenders: ${offenders.join('; ')}`;
+                }
+                """).ConfigureAwait(false);
+            Assert.AreEqual(string.Empty, overflow, $"capture detail overflowed at {viewport.Width}x{viewport.Height}");
             Assert.AreEqual("contain", await page.Locator(".detail-capture-image img")
                 .EvaluateAsync<string>("image => getComputedStyle(image).objectFit").ConfigureAwait(false));
         }
@@ -614,14 +1001,11 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(page.GetByText(first.BundleId!, new() { Exact = true }).First).ConfigureAwait(false);
         var activeBundle = page.Locator(".calibration-card--active h2");
         Assert.AreEqual(first.BundleId, (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim());
-        await page.WaitForFunctionAsync("() => window.Blazor !== undefined").ConfigureAwait(false);
-        await page.WaitForTimeoutAsync(1_000).ConfigureAwait(false);
-
-        await page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }).ClickAsync().ConfigureAwait(false);
+        var reviewAcquisition = page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" });
+        var confirmation = page.Locator("dialog.confirmation-panel");
+        await OpenDialogAsync(reviewAcquisition, confirmation).ConfigureAwait(false);
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
-        var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
-        await VisibleAsync(confirmation).ConfigureAwait(false);
-        await WaitForFocusAsync(page, confirmation).ConfigureAwait(false);
+        await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
         var resultBanner = page.Locator(".calibration-banner");
         try
@@ -642,7 +1026,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(activate).ConfigureAwait(false);
         await activate.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(confirmation).ConfigureAwait(false);
-        await WaitForFocusAsync(page, confirmation).ConfigureAwait(false);
+        await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             "prior => document.querySelector('.calibration-card--active h2')?.textContent?.trim() !== prior",
@@ -656,7 +1040,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(rollback).ConfigureAwait(false);
         await rollback.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(confirmation).ConfigureAwait(false);
-        await WaitForFocusAsync(page, confirmation).ConfigureAwait(false);
+        await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             "expected => document.querySelector('.calibration-card--active h2')?.textContent?.trim() === expected",
@@ -730,14 +1114,13 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.AreEqual("5", await page.GetByLabel("Exact light exposure seconds").InputValueAsync().ConfigureAwait(false));
 
         await page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }).ClickAsync().ConfigureAwait(false);
-        var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
+        var confirmation = page.Locator("dialog.confirmation-panel");
         await VisibleAsync(confirmation).ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "element => element === document.activeElement", await confirmation.ElementHandleAsync().ConfigureAwait(false))
+            "element => element.contains(document.activeElement)", await confirmation.ElementHandleAsync().ConfigureAwait(false))
             .ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Cancel" }).ClickAsync().ConfigureAwait(false);
-        await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
-        await page.WaitForFunctionAsync("() => document.activeElement?.id === 'calibration-heading'").ConfigureAwait(false);
+        await AssertDialogCancelIsSynchronouslyGuardedAsync(confirmation).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.id === 'start-calibration-acquisition'").ConfigureAwait(false);
     }
 
     private static async Task AssertSchedulePreviewAsync(IPage page)
@@ -752,10 +1135,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var desiredGraph = page.Locator(".pipeline-columns article").First;
         var telemetryToggle = desiredGraph.Locator("li:has(strong:text-is('Telemetry'))")
             .GetByRole(AriaRole.Button, new() { Name = "Disable" });
-        await telemetryToggle.ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.GetByText(
+        var graphUpdated = page.GetByText(
             "Desired graph updated in the editor. Save the immutable draft to persist it.",
-            new() { Exact = true })).ConfigureAwait(false);
+            new() { Exact = true });
+        await ClickAndWaitForVisibleAsync(telemetryToggle, graphUpdated).ConfigureAwait(false);
         await desiredGraph.Locator("li:has(strong:text-is('Telemetry'))")
             .GetByRole(AriaRole.Button, new() { Name = "Enable" }).ClickAsync().ConfigureAwait(false);
         await desiredGraph.Locator("li:has(strong:text-is('Calibration'))")
@@ -787,18 +1170,18 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await editor.FillAsync(candidate).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Save immutable draft" }).ClickAsync().ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Draft saved.", new() { Exact = true })).ConfigureAwait(false);
-        var reviewApply = page.GetByRole(AriaRole.Button, new() { Name = "Review apply" });
+        var reviewApply = page.GetByLabel("Current schedule state")
+            .GetByRole(AriaRole.Button, new() { Name = "Review apply" });
         await reviewApply.ClickAsync().ConfigureAwait(false);
-        var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
+        var confirmation = page.Locator("dialog.confirmation-panel");
         await VisibleAsync(confirmation).ConfigureAwait(false);
         Assert.AreEqual("Apply revision?", await confirmation.GetAttributeAsync("aria-labelledby").ConfigureAwait(false) is { } labelId
             ? await page.Locator($"#{labelId}").InnerTextAsync().ConfigureAwait(false)
             : null);
         await page.WaitForFunctionAsync(
-            "element => element === document.activeElement", await confirmation.ElementHandleAsync().ConfigureAwait(false))
+            "element => element.contains(document.activeElement)", await confirmation.ElementHandleAsync().ConfigureAwait(false))
             .ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Cancel" }).ClickAsync().ConfigureAwait(false);
-        await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        await AssertDialogCancelIsSynchronouslyGuardedAsync(confirmation).ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             "element => element === document.activeElement", await reviewApply.ElementHandleAsync().ConfigureAwait(false))
             .ConfigureAwait(false);
@@ -831,7 +1214,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         await page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }).First.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm apply" }).ClickAsync().ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm rollback" }).ClickAsync().ConfigureAwait(false);
         await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             """
@@ -852,6 +1235,53 @@ public sealed class CameraAgentBrowserAcceptanceTests
             "invalid", StringComparison.OrdinalIgnoreCase));
     }
 
+    private static async Task<LifecycleContinuity> ReadLifecycleContinuityAsync(HttpClient client)
+    {
+        using var response = await client.GetAsync(
+            new Uri("/api/internal/deployment/lifecycle/state", UriKind.Relative)).ConfigureAwait(false);
+        var body = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+        Assert.AreEqual(200, (int)response.StatusCode, System.Text.Encoding.UTF8.GetString(body));
+        using var json = JsonDocument.Parse(body);
+        return new LifecycleContinuity(
+            json.RootElement.GetProperty("captureControl").GetProperty("value").GetProperty("state").GetString()
+                ?? string.Empty,
+            json.RootElement.GetProperty("captureSequence").GetInt64());
+    }
+
+    private static byte[] CreateOwnerRecoveryAttestationProof(
+        string token,
+        Guid operationId,
+        ReadOnlySpan<byte> nonce)
+    {
+        var prefix = Encoding.UTF8.GetBytes($"{OwnerRecoveryAttestationPurpose}\n{operationId:D}\n");
+        var payload = new byte[prefix.Length + nonce.Length];
+        prefix.CopyTo(payload, 0);
+        nonce.CopyTo(payload.AsSpan(prefix.Length));
+        return HMACSHA256.HashData(Encoding.UTF8.GetBytes(token), payload);
+    }
+
+    private static HttpRequestMessage CreateOwnerRecoveryRequest(string path, Guid operationId, byte[] payload)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, path);
+        request.Headers.Add("X-HVO-Recovery-Operation", operationId.ToString("D"));
+        request.Content = new ByteArrayContent(payload);
+        request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        return request;
+    }
+
+    private static byte[] CreateOwnerRecoveryCompletionPayload(string challenge, string password)
+    {
+        var challengeBytes = Encoding.UTF8.GetBytes(challenge);
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
+        var payload = new byte[9 + challengeBytes.Length + passwordBytes.Length];
+        payload[0] = 1;
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), challengeBytes.Length);
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(5, 4), passwordBytes.Length);
+        challengeBytes.CopyTo(payload, 9);
+        passwordBytes.CopyTo(payload, 9 + challengeBytes.Length);
+        return payload;
+    }
+
     private static async Task LoginAsync(IPage page, string email, string password)
     {
         await page.GotoAsync("/Account/Login").ConfigureAwait(false);
@@ -861,6 +1291,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.WaitForURLAsync(url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase))
             .ConfigureAwait(false);
     }
+
+    private sealed record LifecycleContinuity(string CaptureState, long CaptureSequence);
 
     private static async Task SubmitPasswordReplacementAsync(IPage page, IBrowserContext context)
     {
@@ -917,6 +1349,12 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 .ConfigureAwait(false));
         }
         var renderedValidation = await page.Locator("[role=alert]").AllInnerTextsAsync().ConfigureAwait(false);
+        var form = page.Locator("form[action='/Account/ReplaceTemporaryPassword']");
+        var formState = await form.CountAsync().ConfigureAwait(false) == 1
+            ? await form.EvaluateAsync<string>(
+                "form => `method=${form.method},submitDisabled=${form.querySelector('button[type=submit]')?.disabled ?? 'missing'}`")
+                .ConfigureAwait(false)
+            : "form-missing";
         var status = await context.APIRequest.GetAsync("/api/internal/owner-bootstrap/status").ConfigureAwait(false);
         try
         {
@@ -928,8 +1366,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 $"fieldLengths={string.Join(',', fieldLengths)}",
                 $"browserValidation={string.Join('|', browserMessages.Where(static value => value.Length > 0))}",
                 $"renderedValidation={string.Join('|', renderedValidation)}",
-                $"bootstrapStatusCode={status.Status}",
-                $"bootstrapStatus={await status.TextAsync().ConfigureAwait(false)}");
+                $"form={formState}",
+                $"bootstrapStatusCode={status.Status}");
         }
         finally
         {
@@ -942,7 +1380,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.GotoAsync("/operations").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture operations", Level = 1 }))
             .ConfigureAwait(false);
-        await VisibleAsync(page.Locator("header nav.app-navbar")).ConfigureAwait(false);
+        await VisibleAsync(page.Locator("header.shell-header")).ConfigureAwait(false);
         await VisibleAsync(page.Locator("main#mainContent")).ConfigureAwait(false);
         await VisibleAsync(page.Locator(".heading-status .state-chip")).ConfigureAwait(false);
         Assert.IsFalse(string.IsNullOrWhiteSpace(
@@ -995,6 +1433,12 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(image).ConfigureAwait(false);
         Assert.IsTrue(await image.EvaluateAsync<bool>(
             "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0").ConfigureAwait(false));
+        await page.WaitForFunctionAsync(
+            """
+            () => document.querySelectorAll('.stage-selector button').length === 4 &&
+                document.querySelectorAll('.stage-selector button[aria-pressed=true]').length === 1
+            """)
+            .ConfigureAwait(false);
         Assert.AreEqual(4, await page.Locator(".stage-selector button").CountAsync().ConfigureAwait(false));
         Assert.AreEqual(1, await page.Locator(".stage-selector button[aria-pressed='true']").CountAsync().ConfigureAwait(false));
         Assert.IsGreaterThan(0, await page.Locator(".stage-selector button:disabled").CountAsync().ConfigureAwait(false));
@@ -1002,12 +1446,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         var trigger = page.Locator("#current-sky-view-large");
         var dialog = page.Locator("dialog.large-viewer");
-        for (var attempt = 0; attempt < 20 && !await dialog.IsVisibleAsync().ConfigureAwait(false); attempt++)
-        {
-            await trigger.ClickAsync().ConfigureAwait(false);
-            await Task.Delay(100).ConfigureAwait(false);
-        }
-        Assert.IsTrue(await dialog.IsVisibleAsync().ConfigureAwait(false), "The large image dialog did not open after interactivity became available.");
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await trigger.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(dialog).ConfigureAwait(false);
         Assert.IsTrue(await dialog.Locator("img").EvaluateAsync<bool>(
             "element => element.complete && element.naturalWidth > 0").ConfigureAwait(false));
         var nativeSize = dialog.GetByRole(AriaRole.Button, new() { Name = "100%" });
@@ -1034,27 +1475,17 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.AreEqual("Simulated evidence", await evidenceBadge.InnerTextAsync().ConfigureAwait(false));
         await VisibleAsync(page.GetByText("Older captures", new() { Exact = true })).ConfigureAwait(false);
 
-        for (var attempt = 0; attempt < 10; attempt++)
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var advanced = page.Locator(".advanced-filters");
+        if (!await advanced.EvaluateAsync<bool>("details => details.open").ConfigureAwait(false))
         {
-            var advanced = page.Locator(".advanced-filters");
-            if (!await advanced.EvaluateAsync<bool>("details => details.open").ConfigureAwait(false))
-            {
-                await advanced.Locator("summary").ClickAsync().ConfigureAwait(false);
-            }
-            await page.GetByLabel("Evidence origin").SelectOptionAsync("Simulated").ConfigureAwait(false);
-            await page.GetByLabel("Page size").SelectOptionAsync("24").ConfigureAwait(false);
-            await page.GetByRole(AriaRole.Button, new() { Name = "Apply filters" }).ClickAsync().ConfigureAwait(false);
-            try
-            {
-                await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal),
-                    new PageWaitForURLOptions { Timeout = 2_000 }).ConfigureAwait(false);
-                break;
-            }
-            catch (TimeoutException) when (attempt < 9)
-            {
-                await Task.Delay(250).ConfigureAwait(false);
-            }
+            await advanced.Locator("summary").ClickAsync().ConfigureAwait(false);
         }
+        await page.GetByLabel("Evidence origin").SelectOptionAsync("Simulated").ConfigureAwait(false);
+        await page.GetByLabel("Page size").SelectOptionAsync("24").ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Apply filters" }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal))
+            .ConfigureAwait(false);
         await VisibleAsync(page.Locator(".capture-card").First).ConfigureAwait(false);
         await AssertVisibleImagesDecodeAsync(page).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Older captures" }).ClickAsync().ConfigureAwait(false);
@@ -1142,7 +1573,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static async Task AssertSystemNavigationAsync(IPage page)
     {
-        await page.GetByRole(AriaRole.Link, new() { Name = "System", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.GotoAsync("/system").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "System snapshot", Level = 1 }))
             .ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Read-only system facts:", new() { Exact = true })).ConfigureAwait(false);
@@ -1189,7 +1620,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var routes = new[]
         {
             "/", "/operations", "/operations/quarantine?kind=Artifact", "/gallery?pageSize=24", detailUrl,
-            "/schedule", "/calibration", "/system"
+            "/schedule", "/calibration", "/system", "/Account/Login", "/Account/Recovery",
+            "/Account/Manage", "/Account/Manage/Email", "/Account/Manage/ChangePassword"
         };
         foreach (var viewport in viewports)
         {
@@ -1363,7 +1795,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 };
               };
               const pairs = [...document.querySelectorAll(
-                'main h1, main h2, main h3, main h4, main a, main p, main dt, main dd, main label, main button:not(:disabled), main input, main select, main textarea, main code, main time, main strong, main span, main .state-chip, main .decision-chip')]
+                'main h1, main h2, main h3, main h4, main a, main p, main dt, main dd, main label, main button:not(:disabled), main input, main select, main textarea, main code, main time, main strong, main span, main .alert, main .state-chip, main .decision-chip')]
                 .filter(element => element.getClientRects().length > 0 &&
                   (['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName) || (element.textContent || '').trim().length > 0));
               const measured = pairs.map(element => Object.assign(measure(element), {
@@ -1388,28 +1820,114 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static async Task OpenDialogAsync(ILocator trigger, ILocator dialog)
     {
-        for (var attempt = 0; attempt < 10; attempt++)
-        {
-            await trigger.ClickAsync().ConfigureAwait(false);
-            try
-            {
-                await dialog.WaitForAsync(new LocatorWaitForOptions
-                {
-                    State = WaitForSelectorState.Visible,
-                    Timeout = 2_000
-                }).ConfigureAwait(false);
-                return;
-            }
-            catch (TimeoutException) when (attempt < 9)
-            {
-                await Task.Delay(250).ConfigureAwait(false);
-            }
-        }
+        await WaitForInteractiveShellAsync(trigger.Page).ConfigureAwait(false);
+        await trigger.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(dialog).ConfigureAwait(false);
     }
+
+    private static async Task WaitForResponsiveShellLayoutAsync(IPage page, int viewportWidth)
+    {
+        await page.WaitForFunctionAsync(
+            """
+            expectedMobile => {
+              const toggle = document.querySelector('.shell-menu__toggle');
+              const menu = document.querySelector('.shell-menu');
+              if (!toggle || !menu || matchMedia('(max-width: 767.98px)').matches !== expectedMobile) return false;
+              const toggleVisible = getComputedStyle(toggle).display !== 'none';
+              return toggleVisible === expectedMobile &&
+                (!expectedMobile || toggle.getBoundingClientRect().width <= menu.getBoundingClientRect().width + 1);
+            }
+            """,
+            viewportWidth <= 767).ConfigureAwait(false);
+    }
+
+    private static async Task AssertDialogCancelIsSynchronouslyGuardedAsync(ILocator dialog)
+    {
+        await dialog.EvaluateAsync(
+            """
+            element => {
+              globalThis.hvoLastDialogCancelWasGuarded = false;
+              element.addEventListener(
+                'cancel',
+                event => {
+                  globalThis.hvoLastDialogCancelWasGuarded =
+                    event.defaultPrevented && element.dataset.hvoCancelGuarded === 'true';
+                },
+                { capture: true, once: true });
+            }
+            """).ConfigureAwait(false);
+        await dialog.Page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
+        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        var guarded = await dialog.Page.EvaluateAsync<bool>(
+            "() => globalThis.hvoLastDialogCancelWasGuarded === true").ConfigureAwait(false);
+        Assert.IsTrue(guarded, "The native dialog cancel default must be prevented before server dispatch.");
+    }
+
+    private static async Task ClickAndWaitForVisibleAsync(ILocator trigger, ILocator result)
+    {
+        await WaitForInteractiveShellAsync(trigger.Page).ConfigureAwait(false);
+        await trigger.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(result).ConfigureAwait(false);
+    }
+
+    private static async Task OpenMenuWithKeyboardAsync(ILocator toggle)
+    {
+        await WaitForInteractiveShellAsync(toggle.Page).ConfigureAwait(false);
+        await toggle.PressAsync("Enter").ConfigureAwait(false);
+        await toggle.Page.WaitForFunctionAsync(
+            "element => element.getAttribute('aria-expanded') === 'true'",
+            await toggle.ElementHandleAsync().ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    private static Task WaitForInteractiveShellAsync(IPage page)
+        => page.Locator(".app-frame[data-interactive='true']").WaitForAsync();
 
     private static async Task WaitForFocusAsync(IPage page, ILocator locator)
         => await page.WaitForFunctionAsync(
             "element => element === document.activeElement",
+            await locator.ElementHandleAsync().ConfigureAwait(false)).ConfigureAwait(false);
+
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned HttpClient owns and disposes its socket handler.")]
+    private static HttpClient CreateUnixSocketHttpClient(string socketPath)
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            UseProxy = false,
+            UseCookies = false,
+            ConnectCallback = async (_, cancellationToken) =>
+            {
+                var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+                try
+                {
+                    await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), cancellationToken)
+                        .ConfigureAwait(false);
+                    return new NetworkStream(socket, ownsSocket: true);
+                }
+                catch
+                {
+                    socket.Dispose();
+                    throw;
+                }
+            }
+        };
+        try
+        {
+            return new HttpClient(handler, disposeHandler: true)
+            {
+                BaseAddress = new Uri("http://localhost", UriKind.Absolute)
+            };
+        }
+        catch
+        {
+            handler.Dispose();
+            throw;
+        }
+    }
+
+    private static async Task WaitForContainedFocusAsync(IPage page, ILocator locator)
+        => await page.WaitForFunctionAsync(
+            "element => element.contains(document.activeElement)",
             await locator.ElementHandleAsync().ConfigureAwait(false)).ConfigureAwait(false);
 
     private static Task VisibleAsync(ILocator locator, float timeout = DefaultTimeoutMilliseconds)

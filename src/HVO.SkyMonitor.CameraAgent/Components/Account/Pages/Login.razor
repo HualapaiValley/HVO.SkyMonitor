@@ -7,15 +7,16 @@
 
 <PageTitle>Log in</PageTitle>
 
-<h1>Log in</h1>
-<div class="row">
-    <div class="col-lg-6">
-        <section>
+<section class="account-page" aria-labelledby="login-heading">
+    <header class="account-page__heading">
+        <p class="account-page__eyebrow">Local observatory access</p>
+        <h1 id="login-heading">Log in</h1>
+        <p>Use the configured site owner account. CameraAgent authentication remains local when the internet is unavailable.</p>
+    </header>
+    <div class="account-card">
             <StatusMessage Message="@errorMessage" />
             <EditForm EditContext="editContext" method="post" OnSubmit="LoginUser" FormName="login">
                 <DataAnnotationsValidator />
-                <h2>Use a local account to log in.</h2>
-                <hr />
                 <ValidationSummary class="text-danger" role="alert" />
                 <div class="form-floating mb-3">
                     <InputText @bind-Value="Input.Email" id="Input.Email" class="form-control"
@@ -38,16 +39,10 @@
                 <div>
                     <button type="submit" class="w-100 btn btn-lg btn-primary">Log in</button>
                 </div>
-                <hr />
-                <div>
-                    <p>
-                        <a href="Account/ForgotPassword">Forgot your password?</a>
-                    </p>
-                    <p>
-                        <a href="Account/ResendEmailConfirmation">Resend email confirmation</a>
-                    </p>
-                </div>
             </EditForm>
-        </section>
+            <footer class="account-card__footer">
+                <a href="Account/Recovery">Recover owner access</a>
+                <span>Recovery requires local administrative access to this CameraAgent host.</span>
+            </footer>
     </div>
-</div>
+</section>

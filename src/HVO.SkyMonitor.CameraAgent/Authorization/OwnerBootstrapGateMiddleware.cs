@@ -83,9 +83,10 @@ internal sealed class OwnerBootstrapGateMiddleware(
                IsExactPath(path, "/health") ||
                IsExactPath(path, "/alive") ||
                IsExactPath(path, "/metrics") ||
-               IsExactPath(path, "/favicon.png") ||
-               IsExactPath(path, "/HVO.SkyMonitor.CameraAgent.styles.css") ||
-               path.StartsWithSegments("/_framework", StringComparison.OrdinalIgnoreCase) ||
+                IsExactPath(path, "/favicon.png") ||
+                IsExactPath(path, "/HVO.SkyMonitor.CameraAgent.styles.css") ||
+                (path.Value?.EndsWith(".razor.js", StringComparison.OrdinalIgnoreCase) ?? false) ||
+                path.StartsWithSegments("/_framework", StringComparison.OrdinalIgnoreCase) ||
                path.StartsWithSegments("/_blazor", StringComparison.OrdinalIgnoreCase) ||
                path.StartsWithSegments("/_content", StringComparison.OrdinalIgnoreCase) ||
                path.StartsWithSegments("/css", StringComparison.OrdinalIgnoreCase);

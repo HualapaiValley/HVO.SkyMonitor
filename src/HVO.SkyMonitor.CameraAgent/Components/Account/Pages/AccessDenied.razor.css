@@ -1,0 +1,17 @@
+header {
+    width: min(100%, 38rem);
+    margin: clamp(1rem, 8vh, 5rem) auto;
+    padding: clamp(1.25rem, 5vw, 2rem);
+    border: 1px solid rgba(248, 113, 113, 0.4);
+    border-radius: 0.8rem;
+    background: var(--hvo-danger-bg);
+}
+
+header h1 {
+    font-size: clamp(2rem, 8vw, 3rem);
+    letter-spacing: -0.04em;
+}
+
+.text-danger {
+    color: var(--hvo-danger-fg) !important;
+}

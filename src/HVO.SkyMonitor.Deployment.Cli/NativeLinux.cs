@@ -17,6 +17,7 @@ internal static partial class NativeLinux
     private const uint StatxMountId = 0x00001000;
     private const uint DirectoryType = 0x4000;
     private const uint RegularFileType = 0x8000;
+    internal const uint SocketNodeType = 0xC000;
     private const uint TypeMask = 0xF000;
     private const int OpenReadOnly = 0;
     private const int OpenReadWrite = 2;
@@ -29,6 +30,7 @@ internal static partial class NativeLinux
     private const uint RenameNoReplace = 1;
     private const int TimeError = 5;
     private const int StatusUnsynchronized = 0x0040;
+    private const int NoSuchFileOrDirectory = 2;
 
     [LibraryImport("libc")]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
@@ -134,11 +136,24 @@ internal static partial class NativeLinux
     }
 
     public static UnixNodeIdentity GetNodeIdentity(string path)
+        => TryGetNodeIdentity(path)
+            ?? throw new InstallerException($"Entry '{path}' could not be authenticated.");
+
+    public static UnixNodeIdentity? TryGetNodeIdentity(string path)
     {
         const uint mask = StatxType | StatxMode | StatxLinkCount | StatxUid | StatxGid | StatxInode | StatxMountId;
-        if (StatX(AtFileDescriptorCurrentWorkingDirectory, path, AtSymbolicLinkNoFollow, mask, out var status) != 0 ||
-            (status.Mask & mask) != mask)
+        if (StatX(AtFileDescriptorCurrentWorkingDirectory, path, AtSymbolicLinkNoFollow, mask, out var status) != 0)
+        {
+            if (Marshal.GetLastPInvokeError() == NoSuchFileOrDirectory)
+            {
+                return null;
+            }
             throw new InstallerException($"Entry '{path}' could not be authenticated.");
+        }
+        if ((status.Mask & mask) != mask)
+        {
+            throw new InstallerException($"Entry '{path}' could not be authenticated.");
+        }
         return ToNodeIdentity(status);
     }
 

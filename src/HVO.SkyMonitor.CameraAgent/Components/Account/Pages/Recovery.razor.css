@@ -1,0 +1,56 @@
+.recovery-page {
+    width: min(100%, 44rem);
+    margin: clamp(1rem, 5vh, 4rem) auto;
+}
+
+.recovery-page__eyebrow {
+    margin: 0 0 0.4rem;
+    color: var(--hvo-accent);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+}
+
+.recovery-page h1 {
+    margin: 0;
+    font-size: clamp(2rem, 8vw, 3rem);
+    letter-spacing: -0.04em;
+}
+
+.recovery-page__intro,
+.recovery-card p {
+    color: var(--hvo-muted);
+    line-height: 1.6;
+}
+
+.recovery-card {
+    margin: 1.5rem 0;
+    padding: clamp(1.25rem, 5vw, 2rem);
+    border: 1px solid var(--hvo-border-stronger);
+    border-radius: 0.8rem;
+    background: var(--hvo-surface);
+}
+
+.recovery-card h2 {
+    font-size: 1.15rem;
+}
+
+.recovery-card li {
+    margin-block: 0.55rem;
+}
+
+.recovery-card code {
+    display: block;
+    overflow-x: auto;
+    padding: 0.85rem;
+    border: 1px solid var(--hvo-border-muted);
+    border-radius: 0.45rem;
+    color: #bfdbfe;
+    background: #060a10;
+    white-space: nowrap;
+}
+
+.recovery-page__back {
+    font-weight: 700;
+}

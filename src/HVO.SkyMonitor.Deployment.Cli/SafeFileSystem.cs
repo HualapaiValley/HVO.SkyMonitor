@@ -195,19 +195,22 @@ internal static class SafeFileSystem
         string destinationPath,
         CancellationToken cancellationToken)
     {
+        await using var source = OpenRegularFileRead(sourcePath);
+        return await CopyPrivateFileAsync(source, destinationPath, cancellationToken).ConfigureAwait(false);
+    }
+
+    public static async Task<string> CopyPrivateFileAsync(
+        FileStream source,
+        string destinationPath,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(source);
         var directory = Path.GetDirectoryName(destinationPath)
             ?? throw new InstallerException($"Path '{destinationPath}' has no parent directory.");
         CreateOwnerDirectory(directory);
         var temporary = Path.Combine(directory, $".{Path.GetFileName(destinationPath)}.{Guid.NewGuid():N}.tmp");
         try
         {
-            using var sourceHandle = NativeLinux.OpenReadOnlyNoFollow(sourcePath);
-            var sourceIdentity = NativeLinux.GetOpenFileIdentity(sourceHandle, sourcePath);
-            if (sourceIdentity.LinkCount != 1)
-            {
-                throw new InstallerException($"Input file '{sourcePath}' must not have hard links.");
-            }
-            await using var source = new FileStream(sourceHandle, FileAccess.Read, 128 * 1024, isAsync: false);
             await using var destination = new FileStream(
                 temporary,
                 FileMode.CreateNew,

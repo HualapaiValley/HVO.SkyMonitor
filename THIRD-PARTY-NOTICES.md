@@ -92,3 +92,44 @@ reviewed V1.41 license file has SHA-256
 `98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2`.
 
 Source: https://www.zwoastro.com/software/product-sdk/
+
+## Bootstrap
+
+HVO.SkyMonitor distributes Bootstrap 5.3.8 CSS for offline CameraAgent browser
+operation.
+
+Copyright (c) 2011-2025 The Bootstrap Authors.
+
+Licensed under the MIT License. Source:
+https://github.com/twbs/bootstrap/tree/v5.3.8
+
+## Bootstrap Icons
+
+HVO.SkyMonitor distributes Bootstrap Icons 1.11.3 CSS and fonts for offline
+CameraAgent browser operation.
+
+Copyright (c) 2019-2024 The Bootstrap Authors.
+
+Licensed under the MIT License. Source:
+https://github.com/twbs/icons/tree/v1.11.3
+
+The following MIT terms apply to the Bootstrap and Bootstrap Icons copies
+described above:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

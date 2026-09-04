@@ -289,6 +289,33 @@ public sealed class SchedulePageTests
         Assert.AreEqual(service.StageCommands[0].ExpectedVersion, service.StageCommands[1].ExpectedVersion);
     }
 
+    [TestMethod]
+    public async Task ActivationCancel_WhileCommandIsPending_KeepsConfirmationOpenAsync()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = new DelayedScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.FindAll("button").Any(button =>
+            button.TextContent.Contains("Review rollback", StringComparison.Ordinal))));
+        await cut.FindAll("button").Single(button =>
+            button.TextContent.Contains("Review rollback", StringComparison.Ordinal)).ClickAsync().ConfigureAwait(false);
+        var dialog = cut.Find("dialog");
+
+        var command = cut.FindAll("button").Single(button =>
+            button.TextContent.Contains("Confirm rollback", StringComparison.Ordinal))
+            .TriggerEventAsync("onclick", EventArgs.Empty);
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.Find("dialog .btn-primary").HasAttribute("disabled")));
+
+        await dialog.TriggerEventAsync("oncancel", EventArgs.Empty).ConfigureAwait(false);
+
+        Assert.HasCount(1, cut.FindAll("dialog"));
+        service.Complete();
+        await command.ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog")));
+    }
+
     private static CaptureScheduleOperatorState State()
     {
         var profile = Profile();
@@ -359,7 +386,7 @@ public sealed class SchedulePageTests
                         DayOffset: 1),
                     "night")]));
 
-    private sealed class ScheduleUiService(CaptureScheduleOperatorState? state) : ICameraAgentScheduleUiService
+    private class ScheduleUiService(CaptureScheduleOperatorState? state) : ICameraAgentScheduleUiService
     {
         internal List<string> RollbackRevisionIds { get; } = [];
         internal List<string> ActivationRevisionIds { get; } = [];
@@ -416,7 +443,7 @@ public sealed class SchedulePageTests
                 OperatorUiResultKind.Invalid, "Synthetic activation result."));
         }
 
-        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> RollbackAsync(
+        public virtual ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> RollbackAsync(
             string revisionId, long expectedVersion, string idempotencyKey, string? reason,
             CancellationToken cancellationToken)
         {
@@ -434,6 +461,25 @@ public sealed class SchedulePageTests
             string overrideId, long expectedVersion, string idempotencyKey, string? reason,
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
+    }
+
+    private sealed class DelayedScheduleUiService(CaptureScheduleOperatorState state) : ScheduleUiService(state)
+    {
+        private readonly TaskCompletionSource<OperatorUiResult<CaptureScheduleStoreSnapshot>> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal void Complete() => _completion.TrySetResult(
+            OperatorUiResult<CaptureScheduleStoreSnapshot>.Failure(
+                OperatorUiResultKind.Invalid,
+                "Synthetic rollback result."));
+
+        public override async ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> RollbackAsync(
+            string revisionId,
+            long expectedVersion,
+            string idempotencyKey,
+            string? reason,
+            CancellationToken cancellationToken)
+            => await _completion.Task.ConfigureAwait(false);
     }
 
     private sealed class ProjectionPipelineFactory : ICaptureProcessingPipelineFactory

@@ -242,11 +242,60 @@ Structured events contain no email, password, token, path, or credential value:
 | `4181` | `OwnerTemporaryPasswordMismatch` | Configured temporary input conflicts with still-pending durable state. |
 | `4182` | `OwnerPasswordBootstrapCompleted` | Replacement committed and the completing session was refreshed. |
 | `4183` | `OwnerOperationDeniedDuringBootstrap` | A pending owner attempted an ordinary API operation. |
+| `4184` | `OwnerPasswordRecoveryRequested` | A lifecycle-authorized Unix-socket recovery challenge was accepted. |
+| `4185` | `OwnerPasswordRecoveryCompleted` | The configured owner credential and security stamp changed atomically. |
+| `4186` | `OwnerPasswordRecoveryRejected` | Recovery failed closed with a bounded reason and operation ID. |
+| `4187` | `OwnerPasswordRecoveryEndpointFailed` | A recovery endpoint failed unexpectedly and returned only a fixed diagnostic. |
 
-No anonymous account creation or password endpoint is added. Owner recovery and
-email reset remain separate work. Installer and split-host configuration
-transitions remove temporary runtime authority and correlated bootstrap files;
-do not emulate either transition or password recovery with direct SQLite edits.
+No anonymous account creation or browser email-reset endpoint is added. The
+login recovery link contains static local-host instructions and never accepts an
+email address. Generated confirmation/reset/change-email routes do not issue or
+consume tokens, and the configured owner email is read-only in the browser.
+
+Offline owner recovery uses
+`hvo-skymonitor cameraagent recover-owner --instance-id <uuid>
+(--generate-password|--password-file <absolute-owner-only-file>)`. The CLI must
+run locally as the installed runtime user. The recorded installation must be
+running on Linux with explicit missing-password mode, removed password
+authority, and the lifecycle-control credential configured. Generated Compose
+uses the existing Identity state mount to expose `/app/App_Data/owner.sock` as
+`<state-root>/identity/owner.sock`, including after an image-only upgrade from an
+installation created before recovery support. No recovery enable setting or
+host-port restriction is required. The CLI requires the parent directory to be
+mode `0700` and the single-link mode `0600` Unix socket to be owned by the exact
+installation runtime UID/GID. Recovery routes return `404` on every TCP
+listener. On restart after a process kill or power loss, CameraAgent locks and
+authenticates the owner-only parent, refuses a concurrent startup, active
+listener, or unexpected node, and rechecks an inactive runtime-owned socket
+immediately before unlinking it. The mode `0700` parent remains the access
+boundary if termination precedes the new listener's mode `0600` restriction. The
+CLI disables redirects and system proxies, sends a random nonce
+without either recovery secret, and requires an operation-bound HMAC-SHA256
+lifecycle proof from the socket before disclosure. It then authenticates
+bounded binary challenge/complete messages with the owner-only
+lifecycle-control credential over that socket, never a public installation
+URL. The five-minute
+challenge binds operation ID, owner ID, and current security stamp. Completion
+requires exactly one site owner matching `LocalIdentity:AdminEmail` and removed
+bootstrap password authority; it resets only that owner, restores
+`PasswordChangeRequired`, rotates the security stamp, and records the last
+operation in existing `AspNetUserTokens` state for idempotent resume. Old
+cookies and connected circuits lose owner authorization on their next request
+or protected action. Capture and storage are not paused or restarted.
+
+Recovery responses and structured events contain no owner email, password,
+challenge, lifecycle token, secret hash, or filesystem path. The lifecycle
+credential is site-owner-equivalent recovery authority. Device verification
+codes and `device-secrets.dat` are not substitutes. Installer and split-host
+configuration transitions remove temporary runtime authority and correlated
+bootstrap files; never emulate either transition or recovery with direct SQLite
+edits.
+
+Resume only an interrupted or ambiguous attempt so the same staged credential
+and operation ID are reused. A definitive CameraAgent rejection marks the
+attempt closed and requires a fresh command without `--resume`. Human output may
+report the private password-file path needed by the local operator; structured
+`--json` output omits it.
 
 Every temporary remote credential registration binds the full inventory target
 identity. Cleanup re-correlates that identity before and after deletion and
@@ -586,6 +635,9 @@ as a metric label.
 | Device calls fail after restore | Restore CameraAgent `device-secrets.dat` with its matching Data Protection key ring and confirm central registration is Active and unexpired. |
 | Cookies fail after rebuild | Verify the matching host's `DataProtection-Keys` bind mount was preserved and readable. |
 | CameraAgent owner is redirected after login | Complete `/Account/ReplaceTemporaryPassword`; inspect the bounded owner-bootstrap status without recording credential values. |
+| CameraAgent owner password is lost | On the installed host, run `hvo-skymonitor cameraagent recover-owner --instance-id <uuid> --generate-password` as the deployment runtime user. Use `--resume` only for the same interrupted operation, replace the temporary password immediately, and remove the generated file. |
+| Owner recovery returns unsupported or a public recovery route returns `404` | Confirm the command runs as the installed runtime user on the installed Linux host, the lifecycle-control token and mirror still match the manifest, runtime password authority is removed, and `<state-root>/identity/owner.sock` is the expected owner-only socket. Never retry against a TCP URL or paste the token into a request. |
+| Owner recovery reports a conflict | Inspect owner/bootstrap ambiguity and retained manifest correlation. Do not modify Identity SQLite. |
 | CameraAgent starts without an owner password | This is valid only with a durable owner and explicit `AllowMissingAdminPassword=true`. Initial seeding still requires a temporary password. |
 | MinIO access fails | Check scoped application credentials and the two approved buckets; do not switch the application to root credentials. |
 
