@@ -351,7 +351,11 @@ internal sealed class CentralDerivativeJobScheduler(
         {
             var graphResult = await graphScheduler.ScheduleLiveAsync(artifact.Id, now, cancellationToken)
                 .ConfigureAwait(false);
-            if (graphResult.Outcome != CentralProcessingGraphScheduleOutcome.NotApplicable)
+            // Invalid is an explicit refusal (a retired revision with no eligible fallback, or a source expired
+            // between selection and seal); no graph owns the frame in that case, so legacy scheduling proceeds
+            // exactly as when no graph applies, rather than leaving the frame without any derivative work.
+            if (graphResult.Outcome is not (CentralProcessingGraphScheduleOutcome.NotApplicable or
+                CentralProcessingGraphScheduleOutcome.Invalid))
             {
                 // Resolve the legacy transient recipe through the same policy the persistence core applies, so a
                 // deployment without a legacy transient recipe (Hybrid mode, Calibrated-only catalog, or an

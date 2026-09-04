@@ -2037,7 +2037,7 @@ public sealed class CentralProcessingGraphMigrationTests
         {
             InitialCatalog = $"SkyMonitorGraphRevisionFence_{Guid.NewGuid():N}"
         };
-        var gate = new SourceFenceGateInterceptor(SourceFenceGateStage.AfterSourceRowLock);
+        var gate = new SourceFenceGateInterceptor(SourceFenceGateStage.AfterExecutionIdentityLock);
         var schedulerOptions = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseSqlServer(builder.ConnectionString)
             .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
@@ -2064,7 +2064,8 @@ public sealed class CentralProcessingGraphMigrationTests
 
             var expansion = graphScheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None);
             await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
-            // Sources are fenced but the revision has not been re-read yet, so the retirement commits ahead of the seal.
+            // Selection is done but the revision has not been re-read inside the transaction yet, so the retirement
+            // commits ahead of the seal.
             var retired = await catalog.RetireRevisionAsync(
                 cameraRevisionId, "operator-revision-fence", "superseded", true, CancellationToken.None)
                 .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
@@ -2265,7 +2266,10 @@ public sealed class CentralProcessingGraphMigrationTests
         /// <summary>After the first source row UPDLOCK/HOLDLOCK inside the expansion transaction.</summary>
         AfterSourceRowLock,
 
-        /// <summary>After the revision lifecycle re-read inside the expansion transaction.</summary>
+        /// <summary>
+        /// Before the first command that follows the revision lifecycle re-read inside the expansion transaction, so
+        /// the re-read's reader is fully consumed and only its held key lock remains.
+        /// </summary>
         AfterRevisionRead
     }
 
@@ -2276,6 +2280,45 @@ public sealed class CentralProcessingGraphMigrationTests
     {
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _triggered;
+        private int _armed;
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            await PauseIfArmedAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            await PauseIfArmedAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+
+        public override async ValueTask<InterceptionResult<object>> ScalarExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<object> result,
+            CancellationToken cancellationToken = default)
+        {
+            await PauseIfArmedAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+
+        private async Task PauseIfArmedAsync(CancellationToken cancellationToken)
+        {
+            if (stage == SourceFenceGateStage.AfterRevisionRead && Volatile.Read(ref _armed) == 1)
+            {
+                await PauseAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
 
         public TaskCompletionSource Reached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -2305,10 +2348,14 @@ public sealed class CentralProcessingGraphMigrationTests
             CancellationToken cancellationToken = default)
         {
             if (stage == SourceFenceGateStage.AfterSourceRowLock &&
-                command.CommandText.Contains("[CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal) ||
-                stage == SourceFenceGateStage.AfterRevisionRead && IsRevisionLifecycleRead(command.CommandText))
+                command.CommandText.Contains("[CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal))
             {
                 await PauseAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (stage == SourceFenceGateStage.AfterRevisionRead && IsRevisionLifecycleRead(command.CommandText))
+            {
+                // Arm only: the pause happens before the next command, once this reader has been consumed.
+                Volatile.Write(ref _armed, 1);
             }
             return result;
         }

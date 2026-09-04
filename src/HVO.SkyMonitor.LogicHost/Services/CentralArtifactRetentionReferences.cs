@@ -2,6 +2,7 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
+using System.Data.SqlTypes;
 using System.Data.Common;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
@@ -578,52 +579,32 @@ internal enum CentralArtifactRetentionResult
     Pending
 }
 
-internal sealed record CentralArtifactRetentionFenceSnapshot(
-    Guid Id,
-    CentralArtifactObjectState ObjectState,
-    CentralReconstructionState ReconstructionState,
-    string ChecksumSha256,
-    long ByteLength)
-{
-    public bool IsUsable
-        => ObjectState == CentralArtifactObjectState.Available &&
-            ReconstructionState == CentralReconstructionState.Complete;
-}
-
 internal static class CentralArtifactRetentionLock
 {
     /// <summary>
-    /// Fences a set of artifacts against concurrent retention inside the caller's open transaction: each row is read
-    /// under the same update lock <see cref="CentralArtifactRetentionService"/> reserves under, in ascending identifier
-    /// order so two fencing transactions never deadlock, and the state returned is the state read under that lock.
-    /// Providers without SQL Server locking semantics read without the hint. Missing identifiers are absent from the
-    /// result.
+    /// Fences a set of artifacts against concurrent retention inside the caller's open transaction: takes the row
+    /// lock <see cref="CentralArtifactRetentionService"/> reserves under on each row, in SQL Server
+    /// <c>uniqueidentifier</c> order so the acquisition order matches a set-based <c>UPDLOCK</c> join over the same
+    /// rows (the window resolver's), then returns the rows as read under those locks. Providers without SQL Server
+    /// locking semantics only read. Missing identifiers are absent from the result.
     /// </summary>
-    public static async Task<IReadOnlyDictionary<Guid, CentralArtifactRetentionFenceSnapshot>> FenceAsync(
+    public static async Task<IReadOnlyDictionary<Guid, CentralArtifact>> FenceAsync(
         ApplicationDbContext dbContext,
         IEnumerable<Guid> centralArtifactIds,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(dbContext);
-        var ids = centralArtifactIds.Distinct().Order().ToArray();
-        var snapshots = new Dictionary<Guid, CentralArtifactRetentionFenceSnapshot>(ids.Length);
-        var lockRows = dbContext.Database.IsSqlServer();
-        foreach (var id in ids)
+        var ids = centralArtifactIds.Distinct().OrderBy(static id => new SqlGuid(id)).ToArray();
+        if (dbContext.Database.IsSqlServer())
         {
-            var source = lockRows
-                ? dbContext.CentralArtifacts.FromSqlInterpolated(
-                    $"SELECT * FROM [CentralArtifacts] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = {id}")
-                : dbContext.CentralArtifacts.Where(item => item.Id == id);
-            var snapshot = await source.AsNoTracking()
-                .Select(item => new CentralArtifactRetentionFenceSnapshot(
-                    item.Id, item.ObjectState, item.ReconstructionState, item.ChecksumSha256, item.ByteLength))
-                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            if (snapshot is not null)
+            foreach (var id in ids)
             {
-                snapshots[snapshot.Id] = snapshot;
+                _ = await AcquireAsync(dbContext, id, cancellationToken).ConfigureAwait(false);
             }
         }
-        return snapshots;
+        return await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(item => ids.Contains(item.Id))
+            .ToDictionaryAsync(item => item.Id, cancellationToken).ConfigureAwait(false);
     }
 
     public static Task<int> AcquireAsync(

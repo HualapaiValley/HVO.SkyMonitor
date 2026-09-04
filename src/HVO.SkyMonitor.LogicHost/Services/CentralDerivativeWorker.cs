@@ -71,15 +71,37 @@ internal sealed partial class CentralDerivativeWorker(
         while (!stoppingToken.IsCancellationRequested)
         {
             var now = timeProvider.GetUtcNow();
+            if (!_graphConvergenceSignal.HasPending && now < nextGraphRecoveryUtc)
+            {
+                // Nothing to do: sleep until a signal arrives or the recovery deadline, without building a scope.
+                var untilRecovery = nextGraphRecoveryUtc - now;
+                await _graphConvergenceSignal.WaitAsync(
+                    untilRecovery < _options.PollInterval ? untilRecovery : _options.PollInterval, stoppingToken)
+                    .ConfigureAwait(false);
+                continue;
+            }
+            await using var scope = scopeFactory.CreateAsyncScope();
+            ICentralProcessingGraphScheduler? graphScheduler;
             try
             {
-                // Resolved inside the guarded loop: a dependency that fails to construct (object storage credentials,
-                // for example) is logged and retried rather than faulting this task silently for the process lifetime.
-                await using var scope = scopeFactory.CreateAsyncScope();
-                if (scope.ServiceProvider.GetService<ICentralProcessingGraphScheduler>() is not { } graphScheduler)
-                {
-                    return;
-                }
+                // Resolved inside the loop: a dependency that fails to construct (object storage credentials, for
+                // example) is logged and retried rather than faulting this task silently for the process lifetime. An
+                // activation failure is not a database fault, so it carries no dependency label; recovery staleness
+                // reports it honestly while it persists.
+                graphScheduler = scope.ServiceProvider.GetService<ICentralProcessingGraphScheduler>();
+            }
+            catch (Exception exception)
+            {
+                Log.GraphMaintenanceFailed(logger, exception);
+                await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
+                continue;
+            }
+            if (graphScheduler is null)
+            {
+                return;
+            }
+            try
+            {
                 while (_graphConvergenceSignal.TryRead(out var graphExecutionId))
                 {
                     await ConvergeSignaledAsync(graphScheduler, graphExecutionId, now, stoppingToken)
