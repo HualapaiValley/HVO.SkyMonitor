@@ -105,6 +105,33 @@ public sealed class SqliteCameraAgentTransientOperatorProjectionTests
     }
 
     [TestMethod]
+    public async Task PageFiltersByCreatedRangeAndKeepsTheCursorOrder()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var early = Guid.Parse("00000000-0000-0000-0000-000000000301");
+        var inside = Guid.Parse("00000000-0000-0000-0000-000000000302");
+        var late = Guid.Parse("00000000-0000-0000-0000-000000000303");
+        await fixture.InsertReservedAsync(early, 1_000).ConfigureAwait(false);
+        await fixture.InsertReservedAsync(inside, 2_000).ConfigureAwait(false);
+        await fixture.InsertReservedAsync(late, 3_000).ConfigureAwait(false);
+
+        var page = await fixture.Projection.GetPageAsync(
+            new CameraAgentTransientOperatorQuery(
+                FromUtc: DateTimeOffset.FromUnixTimeMilliseconds(1_500),
+                ToUtc: DateTimeOffset.FromUnixTimeMilliseconds(2_500)),
+            CancellationToken.None).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(new[] { inside }, page.Items.Select(static item => item.CandidateId).ToArray());
+        Assert.IsNull(page.NextCursor);
+        await Assert.ThrowsExactlyAsync<CameraAgentTransientOperatorQueryException>(async () =>
+            await fixture.Projection.GetPageAsync(
+                new CameraAgentTransientOperatorQuery(
+                    FromUtc: DateTimeOffset.FromUnixTimeMilliseconds(2),
+                    ToUtc: DateTimeOffset.FromUnixTimeMilliseconds(1)),
+                CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task PageUsesBoundedDescendingKeysetPagination()
     {
         using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);

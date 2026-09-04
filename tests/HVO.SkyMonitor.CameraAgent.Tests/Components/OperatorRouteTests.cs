@@ -72,13 +72,16 @@ public sealed class OperatorRouteTests
             ("/", "Current sky"),
             ("/gallery", "Archive"),
             ("/gallery/capture-id", "Archive"),
+            ("/archive/calendar", "Archive"),
+            ("/archive/products/artifact-id", "Archive"),
             ("/operations", "Operations"),
             ("/operations/quarantine", "Operations"),
             ("/schedule", "Operations"),
             ("/calibration", "Operations"),
             ("/system", "Operations"),
             ("/environmental", "Operations"),
-            ("/transients", "Operations"),
+            ("/transients", "Archive"),
+            ("/transients/candidate-id", "Archive"),
             ("/devices", "Operations")
         })
         {

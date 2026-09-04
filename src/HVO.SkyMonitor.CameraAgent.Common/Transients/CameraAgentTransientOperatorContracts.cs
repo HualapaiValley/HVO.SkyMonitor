@@ -2,7 +2,9 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Transients;
 
 public sealed record CameraAgentTransientOperatorQuery(
     int? PageSize = null,
-    string? Cursor = null);
+    string? Cursor = null,
+    DateTimeOffset? FromUtc = null,
+    DateTimeOffset? ToUtc = null);
 
 public sealed record CameraAgentTransientOperatorPage(
     IReadOnlyList<CameraAgentTransientOperatorCandidate> Items,

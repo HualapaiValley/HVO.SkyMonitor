@@ -44,10 +44,16 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
                 $"Page size must be between 1 and {MaximumPageSize}.");
         }
         var cursor = DecodeCursor(query.Cursor);
+        var from = query.FromUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
+        var to = query.ToUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
+        if (from > to)
+        {
+            throw new CameraAgentTransientOperatorQueryException("The time range is invalid.");
+        }
         await _rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
         var hasRuntime = await RuntimeTableExistsAsync(connection, cancellationToken).ConfigureAwait(false);
-        using var command = CreateSummaryCommand(connection, cursor, pageSize, hasRuntime);
+        using var command = CreateSummaryCommand(connection, cursor, from, to, pageSize, hasRuntime);
         var rows = new List<SummaryRow>(pageSize + 1);
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -654,6 +660,8 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
     private static SqliteCommand CreateSummaryCommand(
         SqliteConnection connection,
         Cursor? cursor,
+        long? fromUnixMilliseconds,
+        long? toUnixMilliseconds,
         int pageSize,
         bool hasRuntime)
     {
@@ -664,9 +672,20 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
         var runtimeJoin = hasRuntime
             ? "LEFT JOIN transient_worker_candidates w ON w.candidate_id = j.candidate_id"
             : string.Empty;
-        var cursorPredicate = cursor is null
-            ? string.Empty
-            : "WHERE j.created_unix_ms < $cursor_created OR (j.created_unix_ms = $cursor_created AND j.candidate_id < $cursor_candidate)";
+        var predicates = new List<string>(3);
+        if (cursor is not null)
+        {
+            predicates.Add("(j.created_unix_ms < $cursor_created OR (j.created_unix_ms = $cursor_created AND j.candidate_id < $cursor_candidate))");
+        }
+        if (fromUnixMilliseconds is not null)
+        {
+            predicates.Add("j.created_unix_ms >= $from");
+        }
+        if (toUnixMilliseconds is not null)
+        {
+            predicates.Add("j.created_unix_ms <= $to");
+        }
+        var cursorPredicate = predicates.Count == 0 ? string.Empty : "WHERE " + string.Join(" AND ", predicates);
         command.CommandText = $"""
             SELECT j.candidate_id, j.event_id, j.state, j.phase,
                    j.created_unix_ms, j.updated_unix_ms,
@@ -686,6 +705,14 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
         {
             command.Parameters.AddWithValue("$cursor_created", cursor.CreatedUnixMilliseconds);
             command.Parameters.AddWithValue("$cursor_candidate", cursor.CandidateId);
+        }
+        if (fromUnixMilliseconds is not null)
+        {
+            command.Parameters.AddWithValue("$from", fromUnixMilliseconds.Value);
+        }
+        if (toUnixMilliseconds is not null)
+        {
+            command.Parameters.AddWithValue("$to", toUnixMilliseconds.Value);
         }
         command.Parameters.AddWithValue("$limit", pageSize + 1);
         return command;
