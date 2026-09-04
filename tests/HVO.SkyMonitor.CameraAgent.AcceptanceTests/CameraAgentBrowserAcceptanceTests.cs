@@ -190,7 +190,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await stalePage.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/").ConfigureAwait(false);
         await stalePage.GotoAsync("/operations").ConfigureAwait(false);
-        await VisibleAsync(stalePage.GetByRole(AriaRole.Heading, new() { Name = "Capture operations", Level = 1 }))
+        await VisibleAsync(stalePage.GetByRole(AriaRole.Heading, new() { Name = "Operations overview", Level = 1 }))
             .ConfigureAwait(false);
         var staleCaptureAction = stalePage.Locator("#capture-action");
         var staleConfirmation = stalePage.Locator("dialog.confirmation");
@@ -205,7 +205,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await staleReadPage.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/").ConfigureAwait(false);
         await staleReadPage.GotoAsync("/operations").ConfigureAwait(false);
-        await VisibleAsync(staleReadPage.GetByRole(AriaRole.Heading, new() { Name = "Capture operations", Level = 1 }))
+        await VisibleAsync(staleReadPage.GetByRole(AriaRole.Heading, new() { Name = "Operations overview", Level = 1 }))
             .ConfigureAwait(false);
 
         using var lifecycleClient = new HttpClient
@@ -478,7 +478,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await desktopCurrentSky.FocusAsync().ConfigureAwait(false);
         await WaitForFocusAsync(page, desktopCurrentSky).ConfigureAwait(false);
         await page.GotoAsync("/schedule").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Schedule control", Level = 1 }))
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule", Level = 1 }))
             .ConfigureAwait(false);
         await VisibleAsync(page.GetByLabel("Current schedule state")).ConfigureAwait(false);
         Assert.AreEqual(
@@ -1227,7 +1227,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
     private static async Task AssertSchedulePreviewAsync(IPage page)
     {
         await page.GotoAsync("/schedule").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Schedule control" })).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule" })).ConfigureAwait(false);
         var activeHash = page.Locator(".schedule-card:has-text('Active immutable profile') code");
         var originalActiveHash = (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim();
         var preview = page.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" });
@@ -1479,7 +1479,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
     private static async Task AssertOperationsAndCaptureControlAsync(IPage page)
     {
         await page.GotoAsync("/operations").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture operations", Level = 1 }))
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Operations overview", Level = 1 }))
             .ConfigureAwait(false);
         await VisibleAsync(page.Locator("header.shell-header")).ConfigureAwait(false);
         await VisibleAsync(page.Locator("main#mainContent")).ConfigureAwait(false);

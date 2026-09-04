@@ -1,4 +1,5 @@
 @page "/operations"
+@layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Operations
 @using HVO.SkyMonitor.CameraAgent.Services
@@ -12,7 +13,7 @@
     <header class="operations-heading">
         <div>
             <p class="eyebrow">Protected local operations</p>
-            <h1>Capture operations</h1>
+            <h1>Operations overview</h1>
             <p>Durable acquisition, processing, delivery, and storage facts from this CameraAgent.</p>
         </div>
         <div class="heading-status" aria-live="polite">
@@ -24,17 +25,6 @@
             <button type="button" class="refresh-link" disabled="@_isSubmitting" @onclick="RefreshNowAsync">Refresh now</button>
         </div>
     </header>
-
-    <nav class="technical-navigation" aria-label="Technical workspace">
-        <a href="/operations" aria-current="page"><i class="bi bi-activity"></i><span>Operations</span></a>
-        <a href="/transients"><i class="bi bi-lightning-charge"></i><span>Transients</span></a>
-        <a href="/schedule"><i class="bi bi-calendar3"></i><span>Schedule</span></a>
-        <a href="/calibration"><i class="bi bi-sliders"></i><span>Calibration</span></a>
-        <a href="/environmental"><i class="bi bi-cloud-sun"></i><span>Environment</span></a>
-        <a href="/system"><i class="bi bi-cpu"></i><span>System</span></a>
-        <a href="/devices/bootstrap"><i class="bi bi-usb-symbol"></i><span>Device</span></a>
-        <a href="/operations/quarantine"><i class="bi bi-shield-exclamation"></i><span>Quarantine</span></a>
-    </nav>
 
     @if (_isInitialLoading)
     {
@@ -191,7 +181,7 @@
             <article class="instrument-card instrument-card--wide">
                 <header><div><p class="eyebrow">Startup snapshot</p><h2>Configuration status</h2></div><FreshnessBadge Value="_view.Summary.Configuration.Freshness" /></header>
                 <dl class="fact-grid"><div><dt>Validation</dt><dd>@SplitWords(_view.Summary.Configuration.Value.ValidationStatus)</dd></div><div><dt>Current</dt><dd>@YesNo(_view.Summary.Configuration.Value.IsCurrent)</dd></div><div><dt>Central integration</dt><dd>@SplitWords(_view.Summary.Configuration.Value.CentralIntegration)</dd></div><div><dt>Agent</dt><dd>@(_view.Summary.Configuration.Value.AgentId ?? "Unavailable")</dd></div><div><dt>Module</dt><dd>@(_view.Summary.Configuration.Value.ModuleType ?? "Unavailable")</dd></div></dl>
-                <a class="inline-link" href="/system">Inspect allowlisted startup configuration</a>
+                <a class="inline-link" href="/operations/system">Inspect allowlisted startup configuration</a>
             </article>
         </section>
 

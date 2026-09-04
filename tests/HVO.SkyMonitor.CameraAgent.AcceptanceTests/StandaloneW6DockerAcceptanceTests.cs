@@ -1029,7 +1029,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string runtimeRoot)
     {
         await page.GotoAsync("/schedule").ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Heading, new() { Name = "Schedule control", Level = 1 })
+        await page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule", Level = 1 })
             .WaitForAsync().ConfigureAwait(false);
         var activeHash = page.Locator(".schedule-card:has-text('Active immutable profile') code");
         var originalHash = (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim();
@@ -1138,7 +1138,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                         $"banners: {string.Join(" | ", banners)}; schedule: {scheduleText}");
                 }
                 await page.GotoAsync("/schedule").ConfigureAwait(false);
-                await page.GetByRole(AriaRole.Heading, new() { Name = "Schedule control", Level = 1 })
+                await page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule", Level = 1 })
                     .WaitForAsync().ConfigureAwait(false);
                 await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
             }

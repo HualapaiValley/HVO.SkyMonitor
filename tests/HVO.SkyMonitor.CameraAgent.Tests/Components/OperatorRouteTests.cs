@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Components.Pages.Devices;
 using HVO.SkyMonitor.CameraAgent.Controllers.v1;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
@@ -33,6 +34,8 @@ public sealed class OperatorRouteTests
             typeof(ProductsPage),
             typeof(ProductDetail),
             typeof(SystemStatusPage),
+            typeof(PipelineSummaryPage),
+            typeof(AutomationsPage),
             typeof(DeviceBootstrap),
             typeof(FramesController)
         })
@@ -85,7 +88,10 @@ public sealed class OperatorRouteTests
             ("/environmental", "Operations"),
             ("/transients", "Archive"),
             ("/transients/candidate-id", "Archive"),
-            ("/devices", "Operations")
+            ("/devices", "Operations"),
+            ("/operations/pipeline", "Operations"),
+            ("/operations/automations", "Operations"),
+            ("/operations/schedule", "Operations")
         })
         {
             navigation.NavigateTo(path);
@@ -97,6 +103,36 @@ public sealed class OperatorRouteTests
                 Assert.HasCount(1, current, path);
                 Assert.AreEqual(label, current[0].TextContent.Trim(), path);
             });
+        }
+    }
+
+    [TestMethod]
+    public void OperationsPages_UseTheWorkspaceLayoutAndKeepAliasRoutes()
+    {
+        foreach (var (type, routes) in new (Type Type, string[] Routes)[]
+        {
+            (typeof(OperationsPage), ["/operations"]),
+            (typeof(SchedulePage), ["/schedule", "/operations/schedule"]),
+            (typeof(CalibrationPage), ["/calibration", "/operations/calibration"]),
+            (typeof(EnvironmentalPage), ["/environmental", "/operations/environment"]),
+            (typeof(SystemStatusPage), ["/system", "/operations/system"]),
+            (typeof(QuarantinePage), ["/operations/quarantine"]),
+            (typeof(PipelineSummaryPage), ["/operations/pipeline"]),
+            (typeof(AutomationsPage), ["/operations/automations"]),
+            (typeof(DeviceBootstrap), ["/devices/bootstrap"])
+        })
+        {
+            var layout = type.GetCustomAttribute<LayoutAttribute>();
+            Assert.IsNotNull(layout, type.FullName);
+            Assert.AreEqual(typeof(OperationsLayout), layout.LayoutType, type.FullName);
+            CollectionAssert.AreEquivalent(
+                routes,
+                type.GetCustomAttributes<RouteAttribute>().Select(static route => route.Template).ToArray(),
+                type.FullName);
+        }
+        foreach (var type in new[] { typeof(CurrentSkyPage), typeof(GalleryPage), typeof(TransientPage), typeof(ArchiveCalendarPage) })
+        {
+            Assert.IsNull(type.GetCustomAttribute<LayoutAttribute>(), type.FullName);
         }
     }
 }

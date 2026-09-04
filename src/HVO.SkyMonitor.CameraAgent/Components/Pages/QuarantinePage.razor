@@ -1,4 +1,5 @@
 @page "/operations/quarantine"
+@layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Operations
 @using HVO.SkyMonitor.CameraAgent.Services
@@ -9,7 +10,6 @@
 <PageTitle>Quarantine</PageTitle>
 
 <div class="quarantine-page">
-    <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/operations">Operations</a><span>/</span><span aria-current="page">Quarantine</span></nav>
     <header class="page-heading">
         <div><p class="eyebrow">Protected durable recovery</p><h1>Quarantine browser</h1><p>Cursor-paged artifact, environmental, and transient-runtime records. Results remain bounded and storage paths are never disclosed.</p></div>
         @if (_page is not null) { <span class="result-count">@_page.Items.Count record@(_page.Items.Count == 1 ? string.Empty : "s")</span> }

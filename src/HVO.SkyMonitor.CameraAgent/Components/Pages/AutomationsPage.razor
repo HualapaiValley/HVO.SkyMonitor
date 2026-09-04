@@ -1,0 +1,124 @@
+@page "/operations/automations"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Environmental
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Automations</PageTitle>
+
+<div class="automations-page">
+    <PageHeader Eyebrow="Registered local tasks" Title="Automations" Lead="Every automated behaviour this CameraAgent runs on its own, with the durable state that drives it. Only registered task and trigger kinds appear here; nothing on this page executes arbitrary commands.">
+        <button class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
+    </PageHeader>
+
+    @if (_loading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading registered automations" Message="Reading the capture schedule and environmental source state." />
+    }
+    else
+    {
+        @if (_schedule is null && _environment is null)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Automations unavailable" Message="@(_message ?? "Neither the capture schedule nor the environmental sources could be read.")">
+                <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button>
+            </PageStateNotice>
+        }
+        else if (_message is not null)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Showing partial data" Message="@_message" />
+        }
+
+        <section class="automation-grid" aria-label="Registered automations">
+            @if (_schedule is not null)
+            {
+                <article class="automation-card automation-card--wide" aria-labelledby="automation-schedule">
+                    <header>
+                        <div><p class="eyebrow">Exposure-admission authority</p><h2 id="automation-schedule">Capture schedule</h2></div>
+                        <span class="state-chip @(_schedule.Decision.Admitted ? "state-chip--open" : "state-chip--closed")">@(_schedule.Decision.Admitted ? "Open" : "Closed")</span>
+                    </header>
+                    <dl class="fact-grid">
+                        <div><dt>Active revision</dt><dd>Revision @_schedule.ActiveRevision.RevisionNumber</dd></div>
+                        <div><dt>Reason</dt><dd>@Split(_schedule.Decision.Reason.ToString())</dd></div>
+                        <div><dt>Next transition</dt><dd>@FormatUtc(_schedule.Decision.NextTransitionUtc)</dd></div>
+                        <div><dt>Weekly windows</dt><dd>@_schedule.ActiveRevision.Definition.WeeklyWindows.Count</dd></div>
+                        <div><dt>Date exceptions</dt><dd>@(_schedule.ActiveRevision.Definition.DateExceptions?.Count ?? 0)</dd></div>
+                        <div><dt>Blackouts</dt><dd>@(_schedule.ActiveRevision.Definition.Blackouts?.Count ?? 0)</dd></div>
+                        <div><dt>Active overrides</dt><dd>@_schedule.Overrides.Count</dd></div>
+                        <div><dt>Setpoint profiles</dt><dd>@string.Join(", ", _schedule.ActiveRevision.Definition.SetpointProfiles.Select(static profile => profile.Id))</dd></div>
+                    </dl>
+                    <h3>Next scheduled activity</h3>
+                    @if (_schedule.Preview.Intervals.Count == 0)
+                    {
+                        <p class="empty-copy">No open or closed intervals occur in the current preview range.</p>
+                    }
+                    else
+                    {
+                        <ol class="calendar-list">
+                            @foreach (var interval in _schedule.Preview.Intervals.Take(MaximumIntervals))
+                            {
+                                <li>
+                                    <strong>@(interval.SetpointProfileId ?? "Closed")</strong>
+                                    <span>@Split(interval.Source.ToString())</span>
+                                    <time datetime="@interval.StartUtc.ToString("O")">@interval.StartUtc.ToString("u")</time>
+                                    <time datetime="@interval.EndUtc.ToString("O")">@interval.EndUtc.ToString("u")</time>
+                                </li>
+                            }
+                        </ol>
+                    }
+                    <a class="inline-link" href="/operations/schedule">Edit the capture schedule</a>
+                </article>
+            }
+
+            @if (_environment is not null)
+            {
+                <article class="automation-card automation-card--wide" aria-labelledby="automation-environment">
+                    <header>
+                        <div><p class="eyebrow">Environmental acquisition</p><h2 id="automation-environment">Source acquisition tasks</h2></div>
+                        <span class="state-chip @(_environment.Enabled ? "state-chip--open" : "state-chip--closed")">@(_environment.Enabled ? "Enabled" : "Disabled")</span>
+                    </header>
+                    @if (_environment.Sources.Count == 0)
+                    {
+                        <p class="empty-copy">No environmental sources are registered in the startup configuration.</p>
+                    }
+                    else
+                    {
+                        <ul class="task-list">
+                            @foreach (var source in _environment.Sources)
+                            {
+                                <li>
+                                    <div><strong>@source.Id</strong><span>@Split(source.Kind.ToString()) / @(source.Required ? "required" : "optional") / @(source.SupportsOnDemand ? "on demand available" : "polling only")</span></div>
+                                    <dl>
+                                        <div><dt>Next poll</dt><dd>@FormatUtc(source.NextPollUtc)</dd></div>
+                                        <div><dt>Freshness</dt><dd>@Split(source.Freshness)</dd></div>
+                                        <div><dt>Last outcome</dt><dd>@(source.LastDisposition is null ? "None yet" : Split(source.LastDisposition.ToString()!))</dd></div>
+                                        <div><dt>Consecutive failures</dt><dd>@source.ConsecutiveFailures</dd></div>
+                                    </dl>
+                                </li>
+                            }
+                        </ul>
+                    }
+                    <a class="inline-link" href="/operations/environment">Review environmental history</a>
+                </article>
+            }
+
+            <article class="automation-card" aria-labelledby="automation-triggers">
+                <header><div><p class="eyebrow">Registered vocabulary</p><h2 id="automation-triggers">Trigger kinds</h2></div></header>
+                <p>Environmental acquisition may only be started by these registered triggers.</p>
+                <ul class="trigger-list">
+                    @foreach (var trigger in Enum.GetValues<EnvironmentalAcquisitionTrigger>())
+                    {
+                        <li>@Split(trigger.ToString())</li>
+                    }
+                </ul>
+            </article>
+
+            <article class="automation-card" aria-labelledby="automation-definitions">
+                <header><div><p class="eyebrow">Not yet available</p><h2 id="automation-definitions">Custom definitions</h2></div></header>
+                <p>Operator-defined automations and their durable run history need a versioned local contract that does not exist yet. Until it does, this page presents only the tasks registered above and records nothing new.</p>
+            </article>
+        </section>
+    }
+</div>

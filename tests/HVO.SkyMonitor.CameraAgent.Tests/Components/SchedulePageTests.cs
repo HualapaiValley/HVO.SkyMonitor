@@ -25,7 +25,7 @@ public sealed class SchedulePageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.IsTrue(cut.Markup.Contains("Schedule control", StringComparison.Ordinal));
+            Assert.IsTrue(cut.Markup.Contains("Capture schedule", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Revision 2", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Canonical JSON", StringComparison.Ordinal));
             Assert.IsTrue(cut.Markup.Contains("Create override", StringComparison.Ordinal));
@@ -316,7 +316,7 @@ public sealed class SchedulePageTests
         cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog")));
     }
 
-    private static CaptureScheduleOperatorState State()
+    internal static CaptureScheduleOperatorState State()
     {
         var profile = Profile();
         var revision = new CaptureScheduleRevisionSnapshot(
@@ -361,7 +361,7 @@ public sealed class SchedulePageTests
         return new CaptureScheduleOperatorState(4, revision, null, [revision, prior], decision, preview, []);
     }
 
-    private static LocalCaptureProfileDefinition Profile()
+    internal static LocalCaptureProfileDefinition Profile()
         => new(
             LocalCaptureProfileDefinition.LegacySchemaVersion,
             new CameraModuleDescriptor("test"),
@@ -386,7 +386,7 @@ public sealed class SchedulePageTests
                         DayOffset: 1),
                     "night")]));
 
-    private class ScheduleUiService(CaptureScheduleOperatorState? state) : ICameraAgentScheduleUiService
+    internal class ScheduleUiService(CaptureScheduleOperatorState? state) : ICameraAgentScheduleUiService
     {
         internal List<string> RollbackRevisionIds { get; } = [];
         internal List<string> ActivationRevisionIds { get; } = [];

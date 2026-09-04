@@ -1,0 +1,53 @@
+@inherits LayoutComponentBase
+@layout MainLayout
+
+<div class="operations-layout" @onkeydown="HandleKeyDown">
+    <button type="button"
+            class="operations-nav-toggle"
+            aria-controls="operations-sections"
+            aria-expanded="@_sectionsOpen.ToString().ToLowerInvariant()"
+            @ref="_toggle"
+            @onclick="ToggleSections">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"></path></svg>
+        <span>Operations sections</span>
+        @if (Current is not null) { <span class="operations-nav-toggle__current">@Current.Label</span> }
+    </button>
+
+    <aside id="operations-sections" class="@(_sectionsOpen ? "operations-sidebar operations-sidebar--open" : "operations-sidebar")" aria-label="Operations sections">
+        <div class="operations-sidebar__head">
+            <p class="eyebrow">Local administration</p>
+            <strong>Operations</strong>
+            <button type="button" class="operations-sidebar__close" aria-label="Close Operations sections" @onclick="CloseSectionsAsync">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+            </button>
+        </div>
+        <nav class="operations-navigation" aria-label="Operations navigation">
+            @foreach (var group in OperationsSectionCatalog.Groups)
+            {
+                var sections = OperationsSectionCatalog.Sections.Where(section => section.Group == group).ToArray();
+                if (sections.Length == 0) { continue; }
+                if (group != "Overview") { <p class="operations-navigation__group" id="@GroupId(group)">@group</p> }
+                <ul aria-labelledby="@(group == "Overview" ? null : GroupId(group))">
+                    @foreach (var section in sections)
+                    {
+                        var current = Current is not null && section.Slug == Current.Slug;
+                        <li>
+                            <a href="@section.Href" class="@(current ? "operations-navigation__link operations-navigation__link--current" : "operations-navigation__link")" aria-current="@(current ? "page" : null)" title="@section.Summary" @onclick="CloseSectionsAsync">
+                                <span>@section.Label</span>
+                            </a>
+                        </li>
+                    }
+                </ul>
+            }
+        </nav>
+    </aside>
+
+    @if (_sectionsOpen)
+    {
+        <button type="button" class="operations-sidebar__backdrop" aria-label="Close Operations sections" tabindex="-1" @onclick="CloseSectionsAsync"></button>
+    }
+
+    <div class="operations-content">
+        @Body
+    </div>
+</div>

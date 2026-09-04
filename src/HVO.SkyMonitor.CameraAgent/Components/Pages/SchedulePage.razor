@@ -1,4 +1,6 @@
 @page "/schedule"
+@page "/operations/schedule"
+@layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
@@ -11,7 +13,7 @@
     <header class="schedule-header">
         <div>
             <p class="eyebrow">Local acquisition authority</p>
-            <h1 id="schedule-heading" tabindex="-1">Schedule control</h1>
+            <h1 id="schedule-heading" tabindex="-1">Capture schedule</h1>
             <p>Durable profile revisions, effective UTC windows, and standalone admission state.</p>
         </div>
         <button class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>

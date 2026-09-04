@@ -720,9 +720,9 @@ public sealed class OwnerAuthorizationTests
         foreach (var page in new[]
         {
             (Path: "/", Expected: "Current sky"),
-            (Path: "/operations", Expected: "Capture operations"),
+            (Path: "/operations", Expected: "Operations overview"),
             (Path: "/gallery", Expected: "Archive"),
-            (Path: "/schedule", Expected: "Schedule control"),
+            (Path: "/schedule", Expected: "Capture schedule"),
             (Path: "/calibration", Expected: "Calibration library"),
             (Path: "/environmental", Expected: "Environmental acquisition"),
             (Path: "/system", Expected: "System snapshot"),
