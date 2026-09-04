@@ -378,6 +378,7 @@ test "$(jq -er '.instanceId' "$root/preflight.json")" = "$instance_id"
 # An installed image that predates the state-compatibility correction declares no boundary, so the report may
 # carry the advisory naming that gap. No finding may ever be blocking on a compatible instance.
 test "$(jq -er '[.findings[] | select(.blocking)] | length' "$root/preflight.json")" = 0
+test "$(jq -er '[.findings[] | select(.code != "candidate-boundaries-undeclared")] | length' "$root/preflight.json")" = 0
 
 for bind_source in identity data-protection provisioning raw archive replay-runner; do
   test -d "$instance_root/state/$bind_source"

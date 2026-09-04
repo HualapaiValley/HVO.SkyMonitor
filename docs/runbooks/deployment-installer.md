@@ -301,9 +301,10 @@ already installed image stays inspectable; it is never accepted as an upgrade ca
 
 Deployment preflight compares the declared boundaries against the persisted state before Compose starts the
 container, so an incompatible instance fails once with the complete boundary list instead of through container
-restart loops. Install, upgrade, and rollback all run it before any backup, drain, stop, or Compose mutation
-and before the container starts; the candidate image is inspected first because its labels are the expected
-values being compared. Install and upgrade retain the report at `state/deployment/state-preflight.json`. Run
+restart loops. Install, upgrade, and rollback all run it before any backup, drain, stop, or `docker compose` invocation and
+before the container starts. The candidate image is inspected first because its labels are the expected values
+being compared, and on install the catalog bundle and Compose files are written first because the preflight
+reads the selected catalog and the bind sources they establish. Install and upgrade retain the report at `state/deployment/state-preflight.json`. Run
 it on demand without starting, loading, pulling, or mutating anything:
 
 ```bash

@@ -204,19 +204,23 @@ internal static class CameraAgentStatePreflight
             return;
         }
 
-        if (!CameraAgentStateContract.IsCurrent(requirements.StateContract) &&
-            requirements is { MinimumCompatibleRevision: null, IdentityMigration: null, RawIngressSchema: null })
+        // A candidate that omits a boundary label leaves that boundary unverifiable. Name exactly which ones
+        // instead of implying a comparison ran; an image predating the correction declares none of them.
+        var undeclared = new List<string>();
+        if (requirements.MinimumCompatibleRevision is null) undeclared.Add("minimum-compatible-revision");
+        if (requirements.IdentityMigration is null) undeclared.Add("identity-migration");
+        if (requirements.RawIngressSchema is null) undeclared.Add("raw-ingress-schema");
+        if (requirements.CatalogManifestVersion is null) undeclared.Add("catalog-manifest-version");
+        if (undeclared.Count > 0)
         {
-            // A rollback target that predates the label correction declares no boundary, so nothing about the
-            // persisted state can be compared against it. Surface that explicitly instead of implying a check ran.
             findings.Add(new CameraAgentStatePreflightFinding(
                 "candidate-boundaries-undeclared",
                 "image-label",
                 Blocking: false,
-                "io.hvo.skymonitor.minimum-compatible-revision",
+                string.Join(", ", undeclared.Select(static label => $"io.hvo.skymonitor.{label}")),
                 "none",
-                "declared identity-migration, raw-ingress-schema, and catalog-manifest-version",
-                "This target predates the state-compatibility correction; its persisted-state boundaries cannot be verified. Confirm the instance has not crossed a state boundary since it was installed."));
+                "a declared boundary for each label",
+                "This image declares no value for those boundaries, so the persisted state cannot be compared against them. Confirm the instance has not crossed a state boundary since it was installed."));
         }
 
         // The superseded label carried no boundary, so an installation that declares it is admitted only when the
@@ -256,7 +260,9 @@ internal static class CameraAgentStatePreflight
         {
             findings.Add(new CameraAgentStatePreflightFinding(
                 "catalog-manifest-unreadable", boundary, Blocking: true, manifestPath, "unreadable",
-                CatalogSnapshotResolver.SupportedManifestVersion.ToString(CultureInfo.InvariantCulture),
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"a readable manifest declaring version {CatalogSnapshotResolver.SupportedManifestVersion}"),
                 "Reinstall the approved catalog bundle; the selected catalog manifest cannot be read."));
             return;
         }
@@ -464,14 +470,22 @@ internal static class CameraAgentStatePreflight
     {
         using var connection = OpenReadOnly(databasePath);
         var migrations = new List<string>();
-        using (var command = connection.CreateCommand())
+        // The runtime materializes the file on its first connection and only then creates the history table, so a
+        // table-less database is an interrupted fresh start rather than an unreadable one.
+        using (var history = connection.CreateCommand())
         {
-            command.CommandText =
-                "SELECT MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
-            using var reader = command.ExecuteReader();
-            while (reader.Read())
+            history.CommandText =
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = '__EFMigrationsHistory';";
+            if (Convert.ToInt64(history.ExecuteScalar(), CultureInfo.InvariantCulture) != 0)
             {
-                migrations.Add(reader.GetString(0));
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    "SELECT MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    migrations.Add(reader.GetString(0));
+                }
             }
         }
         if (migrations.Count > 0)

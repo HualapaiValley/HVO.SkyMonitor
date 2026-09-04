@@ -115,16 +115,23 @@ public sealed class UpgradePreflightTests
 
         var upgrade = Evaluate(fixture, legacy);
         Assert.IsFalse(upgrade.Compatible);
-        Assert.AreEqual(
-            "candidate-state-contract-unsupported",
-            upgrade.Findings.Single().Code);
-        Assert.AreEqual(CameraAgentStateContract.LegacyUnbounded, upgrade.Findings.Single().Observed);
+        var blocking = upgrade.Findings.Single(static finding => finding.Blocking);
+        Assert.AreEqual("candidate-state-contract-unsupported", blocking.Code);
+        Assert.AreEqual(CameraAgentStateContract.LegacyUnbounded, blocking.Observed);
 
         var rollback = Evaluate(fixture, legacy, CameraAgentStateContractPolicy.AllowLegacy);
         Assert.IsTrue(rollback.Compatible, CameraAgentStatePreflight.Render(rollback));
         var advisory = rollback.Findings.Single();
         Assert.AreEqual("candidate-boundaries-undeclared", advisory.Code);
         Assert.IsFalse(advisory.Blocking, "a rollback target may not be blocked for predating the correction");
+        foreach (var label in new[]
+                 {
+                     "minimum-compatible-revision", "identity-migration", "raw-ingress-schema",
+                     "catalog-manifest-version"
+                 })
+        {
+            StringAssert.Contains(advisory.Path, label, StringComparison.Ordinal);
+        }
         StringAssert.Contains(
             CameraAgentStatePreflight.Render(rollback), "candidate-boundaries-undeclared", StringComparison.Ordinal);
     }
@@ -226,11 +233,13 @@ public sealed class UpgradePreflightTests
 
         var report = Evaluate(fixture, undeclared);
 
-        // A boundary the image does not declare cannot be compared, so it is skipped. On an in-place upgrade the
-        // candidate must declare the current contract, and this image does, so only its own omissions go unchecked.
-        // The catalog manifest version is still compared against the resolver constant the runtime enforces.
+        // A boundary the image does not declare cannot be compared, so it is skipped rather than treated as met,
+        // and the report names every skipped boundary. The catalog manifest version is still compared against the
+        // resolver constant the runtime enforces, which this instance satisfies.
         Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
-        Assert.AreEqual(0, report.Findings.Count);
+        var advisory = report.Findings.Single();
+        Assert.AreEqual("candidate-boundaries-undeclared", advisory.Code);
+        Assert.IsFalse(advisory.Blocking);
     }
 
     [TestMethod]
