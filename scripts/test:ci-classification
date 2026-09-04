@@ -178,6 +178,8 @@ verify_component_plan "tests/HVO.SkyMonitor.Astronomy.Tests/ProjectionTests.cs" 
 verify_component_plan "tests/HVO.SkyMonitor.AgentCore.Tests/ContractTests.cs"          full false false true  true  true  true  true
 
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor"           full false false false true  false false false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Components/Account/Login.razor"  full false false false true  false true  false
+verify_component_plan "src/HVO.SkyMonitor.LogicHost/Components/Account/Login.razor"    full false false false false true  true  false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/wwwroot/site.css"                full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Imaging/Filter.cs"        full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Storage/LocalStore.cs"     full false false false true  false false false
@@ -243,6 +245,10 @@ while IFS= read -r combined_namespace; do
       seam_project="src/HVO.SkyMonitor.CameraAgent.Common"
       seam_segment="${combined_namespace#HVO.SkyMonitor.CameraAgent.Common.}"
       ;;
+    HVO.SkyMonitor.CameraAgent.*)
+      seam_project="src/HVO.SkyMonitor.CameraAgent"
+      seam_segment="${combined_namespace#HVO.SkyMonitor.CameraAgent.}"
+      ;;
     HVO.SkyMonitor.LogicHost.*)
       seam_project="src/HVO.SkyMonitor.LogicHost"
       seam_segment="${combined_namespace#HVO.SkyMonitor.LogicHost.}"
@@ -253,7 +259,7 @@ while IFS= read -r combined_namespace; do
   [[ -d "$repo_root/$seam_project/$seam_segment" ]] || continue
   ((combined_namespace_count += 1))
   expect_combined_probe "$seam_project/$seam_segment/CombinedSeamProbe.cs"
-done < <(grep -rhoE 'HVO\.SkyMonitor\.(CameraAgent\.Common|LogicHost)\.[A-Za-z0-9_]+' \
+done < <(grep -rhoE 'HVO\.SkyMonitor\.(CameraAgent(\.Common)?|LogicHost)\.[A-Za-z0-9_]+' \
   --include='*.cs' \
   "$repo_root/tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests" \
   "$repo_root/tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests" \
@@ -261,6 +267,20 @@ done < <(grep -rhoE 'HVO\.SkyMonitor\.(CameraAgent\.Common|LogicHost)\.[A-Za-z0-
 
 if (( combined_namespace_count == 0 )); then
   printf 'No combined host namespace was discovered; the seam cross-check is not exercising anything.\n' >&2
+  exit 1
+fi
+
+# An assembly that grants its internals to a combined suite is part of what the
+# combined lane compiles, so the file carrying that grant must select combined.
+internals_grant_count=0
+while IFS= read -r grant_file; do
+  ((internals_grant_count += 1))
+  expect_combined_probe "${grant_file#"$repo_root/"}"
+done < <(grep -rl --include='*.cs' -E 'InternalsVisibleTo\("HVO\.SkyMonitor\.CameraAgent\.LogicHost' \
+  "$repo_root/src" 2>/dev/null || true)
+
+if (( internals_grant_count == 0 )); then
+  printf 'No combined internals grant was discovered; the grant cross-check is not exercising anything.\n' >&2
   exit 1
 fi
 
@@ -287,12 +307,18 @@ plan_flags() {
     | grep -E '^(complete|shared|cameraagent|logichost|combined|delivery)='
 }
 
-mapfile -t link_records < <(cd "$repo_root" && git ls-files 'tests/*/*.csproj' | while IFS= read -r csproj; do
+mapfile -t link_records < <(cd "$repo_root" && git ls-files '*/*/*.csproj' | while IFS= read -r csproj; do
+  csproj_top="${csproj%%/*}"
   including="$(basename "$(dirname "$csproj")")"
-  { grep -oE 'Include="\.\.\\[^"]+\.cs"' "$csproj" 2>/dev/null || true; } | while IFS= read -r include; do
-    include="${include#Include=\"..\\}"
+  { grep -oE 'Include="(\.\.[\\/])+[^"]+"' "$csproj" 2>/dev/null || true; } | while IFS= read -r include; do
+    include="${include#Include=\"}"
     include="${include%\"}"
-    printf '%s|tests/%s\n' "$including" "${include//\\//}"
+    include="${include//\\//}"
+    if [[ "$include" == ../../* ]]; then
+      printf '%s|%s\n' "$including" "${include#../../}"
+    elif [[ "$include" == ../* ]]; then
+      printf '%s|%s/%s\n' "$including" "$csproj_top" "${include#../}"
+    fi
   done
 done | sort -u)
 
@@ -306,8 +332,19 @@ for link_record in "${link_records[@]}"; do
   including_project="${link_record%%|*}"
   linked_source="${link_record#*|}"
   [[ -n "$including_project" && -n "$linked_source" ]] || continue
+  [[ "$linked_source" != *.csproj ]] || continue
+  # A wildcard include cannot name one repository path; the directories they
+  # cover already fall to the complete matrix.
+  [[ "$linked_source" != *'*'* && "$linked_source" != *'?'* ]] || continue
+  [[ -e "$repo_root/$linked_source" ]] || {
+    printf 'Project link does not resolve to a repository path: %s -> %s\n' \
+      "$including_project" "$linked_source" >&2
+    exit 1
+  }
   ((link_probe_index += 1))
-  including_flags="$(plan_flags "tests/$including_project/LinkOwnerProbe.cs" "owner-$link_probe_index")"
+  including_directory="$(cd "$repo_root" && git ls-files "*/$including_project/*.csproj" | head -1)"
+  including_directory="$(dirname "$including_directory")"
+  including_flags="$(plan_flags "$including_directory/LinkOwnerProbe.cs" "owner-$link_probe_index")"
   linked_flags="$(plan_flags "$linked_source" "linked-$link_probe_index")"
   while IFS= read -r flag; do
     [[ "$flag" == *=true ]] || continue
@@ -319,13 +356,21 @@ for link_record in "${link_records[@]}"; do
   done <<< "$including_flags"
 done
 
+if (( link_probe_index < 50 )); then
+  printf 'Only %s project links were classified; the cross-check is not enumerating the repository.\n' \
+    "$link_probe_index" >&2
+  exit 1
+fi
+
 # Every real project directory must be claimed by a component, except the
 # intentionally cross-cutting ones. A new project therefore cannot slip into a
 # narrow plan without an explicit decision here.
 complete_matrix_projects=(
   tests/HVO.SkyMonitor.Architecture.Tests
 )
+project_directory_count=0
 while IFS= read -r project_directory; do
+  ((project_directory_count += 1))
   if printf '%s\n' "${complete_matrix_projects[@]}" | grep -Fxq -- "$project_directory"; then
     continue
   fi
@@ -340,6 +385,12 @@ while IFS= read -r project_directory; do
   fi
 done < <(cd "$repo_root" && git ls-files 'src/*/*.csproj' 'tests/*/*.csproj' 'tools/*/*.csproj' \
   | while IFS= read -r project; do dirname "$project"; done | sort -u)
+
+if (( project_directory_count < 20 )); then
+  printf 'Only %s project directories were classified; the orphan cross-check is not enumerating the repository.\n' \
+    "$project_directory_count" >&2
+  exit 1
+fi
 
 # Cross-cutting inputs always select the complete solution matrix.
 complete_matrix_paths=(
@@ -616,7 +667,10 @@ expect_required_accept "shared contract component plan" pull_request "$shared_pl
 
 combined_plan="$(plan full false false true true true false false)"
 expect_required_reject "combined plan without a host lane" pull_request \
-  "$(plan full false false false false true false false)" "$complete_success"
+  "$(plan full false false false false true false false)" \
+  "$(results changes=success quality=success catalog-contracts=success \
+    build=success architecture=success coverage-policy=success \
+    migrations-cameraagent=success migrations-logichost=success combined-integration=success)"
 combined_success="$(results changes=success quality=success catalog-contracts=success \
   build=success architecture=success coverage-policy=success \
   migrations-cameraagent=success migrations-logichost=success \
@@ -655,7 +709,10 @@ expect_required_reject "cancelled unit in the complete matrix" pull_request "$co
     architecture=success coverage-policy=success migrations-cameraagent=success \
     migrations-logichost=success unit=cancelled integration=success coverage=success)"
 expect_required_reject "shared plan dropping a consuming lane" pull_request \
-  "$(plan full false true false false false false false)" "$shared_success"
+  "$(plan full false true false false false false false)" \
+  "$(results changes=success quality=success catalog-contracts=success \
+    build=success architecture=success coverage-policy=success \
+    migrations-cameraagent=success migrations-logichost=success shared-libraries=success)"
 expect_required_reject "missing deployment contracts result" pull_request "$complete_plan_deployed" \
   "$(results changes=success quality=success catalog-contracts=success build=success \
     architecture=success coverage-policy=success migrations-cameraagent=success \
@@ -855,19 +912,27 @@ for component in "${!lane_jobs[@]}"; do
     printf 'Component lane has no coverage baseline: %s\n' "$component" >&2
     exit 1
   }
+  lane_slot_count=0
   while IFS= read -r slot; do
+    ((lane_slot_count += 1))
     grep -Fq -- "--results-directory $slot " <<< "$job_body" || {
       printf 'Component lane %s does not produce its expected coverage slot: %s\n' "$component" "$slot" >&2
       exit 1
     }
   done < <("$repo_root/scripts/coverage:component" --list-slots "$component")
+  (( lane_slot_count > 0 )) || {
+    printf 'Component lane declares no coverage slot: %s\n' "$component" >&2
+    exit 1
+  }
 done
 
 # Every component coverage slot must also belong to the aggregate rollup, and no
 # slot may be claimed by two components.
 declare -A slot_owner=()
+slot_count=0
 while IFS= read -r component; do
   while IFS= read -r slot; do
+    ((slot_count += 1))
     if [[ -n "${slot_owner[$slot]:-}" ]]; then
       printf 'Coverage slot %s is claimed by both %s and %s\n' "$slot" "${slot_owner[$slot]}" "$component" >&2
       exit 1
@@ -879,6 +944,11 @@ while IFS= read -r component; do
     }
   done < <("$repo_root/scripts/coverage:component" --list-slots "$component")
 done < <("$repo_root/scripts/coverage:component" --list-components)
+
+if (( slot_count != 20 )); then
+  printf 'Expected 20 component coverage slots across the five lanes, found %s.\n' "$slot_count" >&2
+  exit 1
+fi
 
 release_workflow="$repo_root/.github/workflows/release.yml"
 grep -Fq -- '-f branch=main -f event=push -f status=completed -f head_sha=' "$release_workflow" || {

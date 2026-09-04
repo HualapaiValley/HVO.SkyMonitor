@@ -12,7 +12,9 @@ event_name="${1:-}"
 base_ref="${2:-}"
 
 baselines=(scripts/coverage/baseline.json)
+component_count=0
 while IFS= read -r component; do
+  ((component_count += 1))
   baseline="scripts/coverage/baseline.$component.json"
   if [[ ! -f "$baseline" ]]; then
     printf 'Coverage component %s has no baseline at %s\n' "$component" "$baseline" >&2
@@ -20,6 +22,18 @@ while IFS= read -r component; do
   fi
   baselines+=("$baseline")
 done < <(./scripts/coverage:component --list-components)
+
+if (( component_count == 0 )); then
+  printf 'No coverage component was listed; the baseline policy would validate nothing.\n' >&2
+  exit 1
+fi
+
+for escape in "${below_aggregate_escapes[@]}"; do
+  jq --exit-status --arg path "$escape" '.files[$path] != null' scripts/coverage/baseline.json > /dev/null || {
+    printf 'Stale below_aggregate_escapes entry: %s has no aggregate floor.\n' "$escape" >&2
+    exit 1
+  }
+done
 
 for baseline in "${baselines[@]}"; do
   jq --exit-status '
@@ -81,7 +95,7 @@ while IFS= read -r aggregate_path; do
          ($candidate.belowAggregateReason | type == "string") and
          ($candidate.belowAggregateReason | length > 0)))
     ' "scripts/coverage/baseline.$owning_component.json" > /dev/null || {
-    printf 'Component baseline %s must enforce the aggregate floor for %s or record a belowAggregateReason.\n' \
+    printf 'Component baseline %s must enforce the aggregate floor for %s, or the path must be listed in below_aggregate_escapes in this script with a belowAggregateReason on the entry.\n' \
       "scripts/coverage/baseline.$owning_component.json" "$aggregate_path" >&2
     exit 1
   }

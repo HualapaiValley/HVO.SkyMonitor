@@ -347,16 +347,19 @@ The classification rules applied to that map are:
   top-level directory or a new project fails closed rather than silently
   running a narrow plan.
 - Documentation-only pull requests stay in reduced mode only through the
-  existing allowlist, which contains no executable contract.
+  existing allowlist, and only while no allowlisted path is compiled, embedded,
+  or copied into a project. An allowlisted path that a project file includes
+  carries an executable contract, so it leaves reduced mode and selects the
+  including project's component.
 
 Seam selection is an inverse allowlist. A host path is treated as an exported
 protocol or integration seam unless it is explicitly host-private, so a new host
 directory fails closed into combined coverage. The host-private set is:
 
-- `src/HVO.SkyMonitor.CameraAgent/{Components,Properties,wwwroot}/**`, except `Components/Account/**`, which wires the identity endpoints the combined suite exercises
+- `src/HVO.SkyMonitor.CameraAgent/{Components,Properties,wwwroot}/**`, except `Components/Account/**`, which wires the identity endpoints the combined suite exercises, and `Properties/AssemblyInfo.cs`, whose `InternalsVisibleTo` grants are what let the combined suites compile
 - `src/HVO.SkyMonitor.CameraAgent.Common/{Background,Diagnostics,Frames,Gallery,Imaging,Logging,Properties,Reflection,Scheduling,SkyMap,Storage}/**`
 - `src/HVO.SkyMonitor.CameraAgent.{Modules.Zwo,Replay,ReplayRunner}/**`
-- `src/HVO.SkyMonitor.LogicHost/{Components,Properties,wwwroot}/**`, with the same `Components/Account/**` exception
+- `src/HVO.SkyMonitor.LogicHost/{Components,Properties,wwwroot}/**`, with the same `Components/Account/**` and `Properties/AssemblyInfo.cs` exceptions
 - every `tests/**` path except `tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/**`, which is the non-test fixture project both the LogicHost and combined suites compose
 
 Everything else inside a host project, including its project root files,
@@ -372,17 +375,26 @@ extracts every `HVO.SkyMonitor.CameraAgent.Common.*` and
 plain, `global`, `static`, aliased, and fully qualified alike — and fails when
 any namespace those suites reference maps to a host-private directory, so the
 list cannot drift away from what the combined lane actually guards. The check
-covers `HVO.SkyMonitor` namespaces; a host-private file that contributes to a
-combined behavior through a non-`HVO` namespace, such as an ASP.NET routing
-extension, still needs a deliberate carve-out like `Components/Account/**`.
+covers the `HVO.SkyMonitor.CameraAgent`, `HVO.SkyMonitor.CameraAgent.Common`, and
+`HVO.SkyMonitor.LogicHost` namespace roots; a host-private file that contributes
+to a combined behavior through some other namespace, such as an ASP.NET routing
+extension, still needs a deliberate carve-out like `Components/Account/**`. A
+second cross-check covers the assembly-visibility graph: any file granting
+`InternalsVisibleTo` to a combined suite must select the combined lane, which is
+why `Properties/AssemblyInfo.cs` is carved out of the host-private set.
 
-Directory ownership is not the only way a source reaches a project. A file
-compiled into another project through an MSBuild `<Compile Include>` link also
-selects the including project's component, and the classifier derives that from
-the checked-out project files rather than a list. `scripts/test:ci-classification`
-copies the real project files into its fixture repository and asserts that every
-linked source selects at least what a file in the including project selects, so a
-new link cannot narrow a plan.
+Directory ownership is not the only way a source reaches a project. A file that
+another project compiles, embeds, or copies through a relative MSBuild item —
+`<Compile Include>`, `<None Include>` with `CopyToOutputDirectory`, and the rest —
+also selects the including project's component, wherever in the repository it
+lives. `deploy/split-host/camera-modules/*.json` therefore selects the CameraAgent
+lane as well as delivery, and a `docs/**` file that a test project copies leaves
+reduced mode instead of skipping every gate. The classifier derives this from the
+checked-out project files rather than a list, and skips project references, which
+the component map already models, and wildcard includes, whose directories
+already fall to the complete matrix. `scripts/test:ci-classification` copies the
+real project files into its fixture repository and asserts that all 61 resolvable
+links select at least what a file in the including project selects.
 
 ### Exact Affected-Gate Selection
 
@@ -401,7 +413,10 @@ including reduced. The table records only what varies.
 | LogicHost seam (controllers, services, data, infrastructure) | no | logichost, combined | no |
 | `tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/**` | no | logichost, combined | no |
 | Combined fixture or combined suite | no | cameraagent, logichost, combined | no |
-| Installer, distribution, `deploy/**`, or catalog delivery script | no | delivery | yes |
+| Installer, distribution, or catalog delivery script | no | delivery | yes |
+| `deploy/split-host/camera-modules/*.json`, which `CameraAgent.Tests` copies | no | cameraagent, delivery | yes |
+| Other `deploy/**` inputs | no | delivery | yes |
+| A `docs/**` file a project copies, such as `docs/validation/*.json` | depends | the including project's lanes | no |
 | `docs/catalog/hyg-v42-attribution.md` or `hyg-v42-license.md` | no | delivery | no |
 | CameraAgent or LogicHost `Dockerfile` or host configuration sample | no | that host, combined | yes |
 | CI, classifier, coverage, package, toolchain, solution, or architecture-test input | yes | every lane claimed by the complete matrix | yes for the deployment-contract inputs; the rest run every other gate |
