@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[DoNotParallelize]
 public sealed class CameraAgentSkyMapPerformanceTests
 {
     private const int Iterations = 60;
