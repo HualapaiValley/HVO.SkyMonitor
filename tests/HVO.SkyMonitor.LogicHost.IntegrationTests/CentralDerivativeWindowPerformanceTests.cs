@@ -823,10 +823,21 @@ public sealed class CentralDerivativeWindowPerformanceTests
 
             INSERT INTO [CentralFrames]
                 ([Id], [RegistrationId], [DevicePublicId], [ObservatoryId], [AgentId], [FrameId],
-                 [CapturedAtUtc], [FirstReceivedAtUtc], [RigProfileVersion], [RigId], [CaptureSequence])
+                 [CapturedAtUtc], [FirstReceivedAtUtc], [RigProfileVersion], [RigId], [CaptureSequence],
+                 [LocationEvidenceState])
             SELECT [FrameId], NEWID(), {{devicePublicId}}, NEWID(), {{agentId}}, NEWID(),
                    DATEADD(millisecond, [Sequence], CAST('2026-01-01T00:00:00+00:00' AS datetimeoffset)),
-                   CAST('2026-01-01T00:00:00+00:00' AS datetimeoffset), 1, {{rigId}}, [Sequence]
+                   CAST('2026-01-01T00:00:00+00:00' AS datetimeoffset), 1, {{rigId}}, [Sequence],
+                   N'ReportedResolved'
+            FROM #History;
+
+            -- Reconstruction requires resolved capture-location provenance on every frame (the ingest path records
+            -- it); the harness bypasses ingest, so it seeds one stable resolved location shared by the history.
+            INSERT INTO [CentralCaptureLocations]
+                ([CentralFrameId], [DeviceDeploymentLocationVersionId], [LocationId], [Version], [Source],
+                 [HorizontalAccuracyMeters], [EffectiveFromUtc], [EffectiveUntilUtc])
+            SELECT [FrameId], NULL, {{agentId + "-location"}}, 1, N'phase10-performance', NULL,
+                   CAST('2025-12-31T00:00:00+00:00' AS datetimeoffset), NULL
             FROM #History;
 
             INSERT INTO [CentralArtifacts]
@@ -1968,9 +1979,15 @@ public sealed class CentralDerivativeWindowPerformanceTests
         var trials = new List<LeaseRetentionTrial>();
         for (var trial = 1; trial <= 5; trial++)
         {
-            var objectKey = $"performance/central-window-processing/{runId}/P4-T{trial}.raw";
+            // Retention treats every non-expired artifact that shares a storage reference as an active owner of the
+            // object, so each source owns its own object; the trial expects every source release to delete.
+            string SourceObjectKey(long sequence)
+                => $"performance/central-window-processing/{runId}/P4-T{trial}-S{sequence}.raw";
             var payload = new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 };
-            await PublishPayloadAsync(fixture, objectKey, payload).ConfigureAwait(false);
+            for (long sequence = 1; sequence <= 5; sequence++)
+            {
+                await PublishPayloadAsync(fixture, SourceObjectKey(sequence), payload).ConfigureAwait(false);
+            }
             var agentId = $"issue-101-p4-t{trial}-{runId}";
             Guid predecessorJobId;
             Guid[] sourceIds;
@@ -1979,8 +1996,10 @@ public sealed class CentralDerivativeWindowPerformanceTests
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 sourceIds = (await SeedWindowSourcesAsync(
                     db, agentId, 5, 2, 2, CameraPixelFormat.Mono16,
-                    $"s3://{ArtifactBucket}/{objectKey}", payload.LongLength,
-                    Convert.ToHexString(SHA256.HashData(payload))).ConfigureAwait(false)).Values.ToArray();
+                    $"s3://{ArtifactBucket}/{SourceObjectKey(1)}", payload.LongLength,
+                    Convert.ToHexString(SHA256.HashData(payload)),
+                    storageReferenceBySequence: sequence => $"s3://{ArtifactBucket}/{SourceObjectKey(sequence)}")
+                    .ConfigureAwait(false)).Values.ToArray();
                 predecessorJobId = (await AddJobsAsync(db, agentId, [3]).ConfigureAwait(false)).Single();
                 using var telemetry = new CentralDerivativeWorkerTelemetry();
                 await CreateResolver(db, telemetry).ResolveAsync(
@@ -2173,7 +2192,9 @@ public sealed class CentralDerivativeWindowPerformanceTests
             Assert.IsTrue(await ObjectExistsAsync(fixture, replacementStorageReference).ConfigureAwait(false));
             var releasedResults = await Task.WhenAll(sourceIds.Select(sourceId =>
                 ReleaseArtifactAsync(fixture, sourceId))).ConfigureAwait(false);
-            Assert.IsTrue(releasedResults.All(result => result == CentralArtifactRetentionResult.Released));
+            Assert.IsTrue(
+                releasedResults.All(result => result == CentralArtifactRetentionResult.Released),
+                $"Source releases: {string.Join(", ", releasedResults)}");
             Assert.IsTrue(await ObjectExistsAsync(fixture, predecessorStorageReference).ConfigureAwait(false));
             trials.Add(new LeaseRetentionTrial(
                 trial,
@@ -2221,10 +2242,13 @@ public sealed class CentralDerivativeWindowPerformanceTests
         string storageReference,
         long byteLength,
         string? checksum = null,
-        long firstSequence = 1)
+        long firstSequence = 1,
+        Func<long, string>? storageReferenceBySequence = null)
     {
         var now = DateTimeOffset.UtcNow.AddMinutes(-10);
         var devicePublicId = Guid.NewGuid();
+        var registrationId = Guid.NewGuid();
+        var observatoryId = Guid.NewGuid();
         var profileSha = HashText($"{agentId}-profiles");
         var rawOptions = CaptureContractJson.SerializeToElement(new { });
         var sources = new Dictionary<long, Guid>();
@@ -2234,16 +2258,28 @@ public sealed class CentralDerivativeWindowPerformanceTests
             var captured = now.AddMilliseconds(sequence);
             var frame = new CentralFrame
             {
-                RegistrationId = Guid.NewGuid(),
+                RegistrationId = registrationId,
                 DevicePublicId = devicePublicId,
-                ObservatoryId = Guid.NewGuid(),
+                ObservatoryId = observatoryId,
                 AgentId = agentId,
                 FrameId = Guid.NewGuid(),
                 CapturedAtUtc = captured,
                 FirstReceivedAtUtc = captured,
                 RigProfileVersion = 1,
                 RigId = $"{agentId}-rig",
-                CaptureSequence = sequence
+                CaptureSequence = sequence,
+                // Reconstruction requires resolved capture-location provenance on every frame (the ingest path records
+                // it); the harness bypasses ingest, so it seeds one stable resolved location shared by the workload.
+                LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved,
+                Location = new CentralCaptureLocation
+                {
+                    LocationId = $"{agentId}-location",
+                    Version = 1,
+                    Source = "issue-101-performance",
+                    HorizontalAccuracyMeters = null,
+                    EffectiveFromUtc = now.AddDays(-1),
+                    EffectiveUntilUtc = null
+                }
             };
             frame.Timing = new CentralCaptureTiming
             {
@@ -2286,7 +2322,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
                 MediaType = "application/x-hvo-linear-frame",
                 ByteLength = byteLength,
                 ChecksumSha256 = checksum ?? new string('0', 64),
-                StorageReference = storageReference,
+                StorageReference = storageReferenceBySequence?.Invoke(sequence) ?? storageReference,
                 ReceivedAtUtc = captured,
                 IdempotencyKey = HashText($"{agentId}-{sequence}"),
                 SourceId = "issue-101-performance",
