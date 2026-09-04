@@ -1,0 +1,210 @@
+@page "/operations/sky-map"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Sky map &amp; catalog</PageTitle>
+
+<div class="sky-map-page">
+    <PageHeader Eyebrow="Installed catalog and observing geometry" Title="Sky map &amp; catalog" Lead="The installed read-only catalog, the authoritative observer coordinates, and the visible scene this rig's calibrated optics produce for one UTC instant. Everything here is computed locally from durable state; no tiles, geocoding, browser location, or network access is used.">
+        <button class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
+    </PageHeader>
+
+    <form class="instant-picker" @onsubmit="ApplyInstantAsync" @onsubmit:preventDefault>
+        <label for="sky-map-instant">Scene instant (UTC)</label>
+        <input id="sky-map-instant" type="datetime-local" step="1" @bind="_instantInput" @bind:event="oninput" disabled="@_loading" />
+        <button type="submit" class="btn btn-outline-light" disabled="@_loading">Project</button>
+        <button type="button" class="btn btn-outline-light" disabled="@(_loading || _instantInput is null)" @onclick="UseNowAsync">Use now</button>
+        <span class="instant-hint">Accepts at most 24 hours ahead and 62 days behind the current time. Leave empty to use the current instant.</span>
+    </form>
+
+    @if (_loading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Projecting the sky map" Message="Reading the installed catalog, the active deployment location, and the active rig geometry." />
+    }
+    else if (_state is null)
+    {
+        <PageStateNotice Kind="@(_invalid ? PageStateNotice.PageStateKind.Info : PageStateNotice.PageStateKind.Error)" Title="@(_invalid ? "Instant outside the accepted window" : "Sky map unavailable")" Message="@_message">
+            <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button>
+        </PageStateNotice>
+    }
+    else
+    {
+        <p class="sky-summary" role="note">@_state.Summary</p>
+
+        <section class="sky-grid" aria-label="Sky map facts">
+            <article class="sky-card" aria-labelledby="sky-observer">
+                <header>
+                    <div><p class="eyebrow">Authoritative deployment coordinates</p><h2 id="sky-observer">Observer location</h2></div>
+                    <span class="state-chip state-chip--readonly">Read only</span>
+                </header>
+                <p class="truth-note">Coordinates are owned by the versioned startup configuration or a central acknowledgement and <strong>cannot be edited here</strong>. This page never geocodes, never reads browser location, and never writes deployment state.</p>
+                <dl class="fact-grid">
+                    <div><dt>Latitude</dt><dd>@Number(_state.Observer.LatitudeDegrees, 6)&deg;</dd></div>
+                    <div><dt>Longitude</dt><dd>@Number(_state.Observer.LongitudeDegrees, 6)&deg; east-positive</dd></div>
+                    <div><dt>Elevation</dt><dd>@Number(_state.Observer.ElevationMeters, 2) m</dd></div>
+                    <div><dt>Time zone</dt><dd>@_state.Observer.TimeZoneId</dd></div>
+                    <div><dt>Source kind</dt><dd>@Split(_state.Observer.SourceKind.ToString())</dd></div>
+                    <div><dt>Origin</dt><dd>@Split(_state.Observer.Origin.ToString())</dd></div>
+                    <div><dt>Location id</dt><dd>@_state.Observer.LocationId</dd></div>
+                    <div><dt>Version</dt><dd>@_state.Observer.Version</dd></div>
+                    <div><dt>Recorded source</dt><dd>@_state.Observer.Source</dd></div>
+                    <div><dt>Horizontal accuracy</dt><dd>@(_state.Observer.HorizontalAccuracyMeters is { } accuracy ? $"{Number(accuracy, 2)} m" : "Not recorded")</dd></div>
+                    <div><dt>Effective from</dt><dd>@_state.Observer.EffectiveFromUtc.ToString("u")</dd></div>
+                    <div><dt>Effective until</dt><dd>@(_state.Observer.EffectiveUntilUtc?.ToString("u") ?? "Open ended")</dd></div>
+                    <div><dt>Effective at instant</dt><dd>@(_state.Observer.EffectiveAtInstant ? "Yes" : "No: the scene uses coordinates outside their effective window")</dd></div>
+                    <div><dt>Staged acknowledgement</dt><dd>@(_state.Observer.StagedAcknowledgementPending ? "A central acknowledgement is staged and activates at the next start" : "None")</dd></div>
+                    <div><dt>Canonical identity</dt><dd class="mono">@_state.Observer.CanonicalSha256</dd></div>
+                </dl>
+            </article>
+
+            <article class="sky-card" aria-labelledby="sky-catalog">
+                <header><div><p class="eyebrow">Installed read-only snapshot</p><h2 id="sky-catalog">Catalog identity</h2></div></header>
+                <dl class="fact-grid">
+                    <div><dt>Name</dt><dd>@_state.Catalog.Name</dd></div>
+                    <div><dt>Version</dt><dd>@_state.Catalog.Version</dd></div>
+                    <div><dt>Schema version</dt><dd>@_state.Catalog.SchemaVersion</dd></div>
+                    <div><dt>Preprocessing version</dt><dd>@_state.Catalog.PreprocessingVersion</dd></div>
+                    <div><dt>License</dt><dd>@_state.Catalog.License</dd></div>
+                    <div><dt>Checksum</dt><dd class="mono">@_state.Catalog.ChecksumSha256</dd></div>
+                    <div><dt>Limiting magnitude</dt><dd>@Number(_state.MaximumMagnitude, 2)</dd></div>
+                    <div><dt>Algorithm version</dt><dd>@_state.AstronomyAlgorithmVersion</dd></div>
+                </dl>
+                <p class="empty-copy">The catalog is deployed as a versioned read-only snapshot. Its install location is deliberately not shown.</p>
+            </article>
+
+            <article class="sky-card" aria-labelledby="sky-geometry">
+                <header><div><p class="eyebrow">Active rig, after readout</p><h2 id="sky-geometry">Cardinal and image geometry</h2></div></header>
+                <dl class="fact-grid">
+                    <div><dt>Projection model</dt><dd>@Split(_state.Geometry.ProjectionModel)</dd></div>
+                    <div><dt>Aperture</dt><dd>@_state.Geometry.Aperture</dd></div>
+                    <div><dt>Boresight altitude</dt><dd>@Number(_state.Geometry.BoresightAltitudeDegrees, 3)&deg;</dd></div>
+                    <div><dt>Boresight azimuth</dt><dd>@Number(_state.Geometry.BoresightAzimuthDegrees, 3)&deg;</dd></div>
+                    <div><dt>Roll</dt><dd>@Number(_state.Geometry.RollDegrees, 3)&deg;</dd></div>
+                    <div><dt>Horizontal flip</dt><dd>@(_state.Geometry.HorizontalFlip ? "Applied" : "None")</dd></div>
+                    <div><dt>Field of view</dt><dd>@Number(_state.Geometry.FieldOfViewDegrees, 2)&deg;@(_state.Geometry.VerticalFieldOfViewDegrees is { } vertical ? $" x {Number(vertical, 2)}°" : string.Empty)</dd></div>
+                    <div><dt>Principal point</dt><dd>@Number(_state.Geometry.PrincipalPointX, 2), @Number(_state.Geometry.PrincipalPointY, 2) px</dd></div>
+                    <div><dt>Focal length</dt><dd>@Number(_state.Geometry.FocalLengthXPixels, 2) / @Number(_state.Geometry.FocalLengthYPixels, 2) px</dd></div>
+                    <div><dt>Image size</dt><dd>@_state.Geometry.WidthPixels x @_state.Geometry.HeightPixels px</dd></div>
+                    <div><dt>Image circle radius</dt><dd>@(_state.Geometry.ImageCircleRadiusPixels is { } radius ? $"{Number(radius, 2)} px" : "Rectangular aperture")</dd></div>
+                    <div><dt>Rig profile</dt><dd>@_state.Geometry.RigProfileVersion</dd></div>
+                    <div><dt>Calibration version</dt><dd>@_state.Geometry.ProjectionCalibrationVersion</dd></div>
+                    <div><dt>Projection algorithm</dt><dd>@_state.Geometry.ProjectionAlgorithmVersion</dd></div>
+                    <div><dt>Rig profile identity</dt><dd class="mono">@_state.Geometry.RigProfileHashSha256</dd></div>
+                </dl>
+                <h3>Cardinal directions</h3>
+                <div class="table-scroll">
+                    <table class="facts-table">
+                        <caption class="visually-hidden">Cardinal horizon directions and their projected pixels</caption>
+                        <thead><tr><th scope="col">Direction</th><th scope="col">Azimuth</th><th scope="col">Pixel X</th><th scope="col">Pixel Y</th></tr></thead>
+                        <tbody>
+                            @foreach (var cardinal in _state.Geometry.Cardinals)
+                            {
+                                <tr>
+                                    <th scope="row">@cardinal.Name</th>
+                                    <td>@Number(cardinal.AzimuthDegrees, 1)&deg;</td>
+                                    <td>@(cardinal.PixelX is { } x ? Number(x, 1) : "Not projected")</td>
+                                    <td>@(cardinal.PixelY is { } y ? Number(y, 1) : "Not projected")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </article>
+
+            <article class="sky-card sky-card--wide" aria-labelledby="sky-scene">
+                <header>
+                    <div><p class="eyebrow">Bounded visible scene</p><h2 id="sky-scene">Visible objects at @_state.AtUtc.ToString("u")</h2></div>
+                    <span class="state-chip @(_state.ObjectsAtBound ? "state-chip--bound" : "state-chip--open")">@_state.Objects.Count / @_state.MaximumObjects</span>
+                </header>
+                @if (_state.Objects.Count == 0)
+                {
+                    <p class="empty-copy">No catalog object brighter than the limiting magnitude falls inside the calibrated image at this instant.</p>
+                }
+                else
+                {
+                    <svg class="sky-dial" viewBox="0 0 200 200" role="img" aria-label="Altitude and azimuth plot of the visible objects; the outer ring is the horizon and the centre is the zenith.">
+                        <circle cx="100" cy="100" r="92" class="sky-dial__horizon" />
+                        <circle cx="100" cy="100" r="46" class="sky-dial__ring" />
+                        <line x1="100" y1="8" x2="100" y2="192" class="sky-dial__ring" />
+                        <line x1="8" y1="100" x2="192" y2="100" class="sky-dial__ring" />
+                        <text x="100" y="6" class="sky-dial__label" text-anchor="middle">N</text>
+                        <text x="196" y="103" class="sky-dial__label" text-anchor="end">E</text>
+                        <text x="100" y="199" class="sky-dial__label" text-anchor="middle">S</text>
+                        <text x="4" y="103" class="sky-dial__label" text-anchor="start">W</text>
+                        @foreach (var item in _state.Objects)
+                        {
+                            <circle cx="@Number(DialX(item.AltitudeDegrees, item.AzimuthDegrees), 2)"
+                                    cy="@Number(DialY(item.AltitudeDegrees, item.AzimuthDegrees), 2)"
+                                    r="@Number(DialRadius(item.Magnitude), 2)"
+                                    class="sky-dial__object">
+                                <title>@item.DisplayName (magnitude @Number(item.Magnitude, 2))</title>
+                            </circle>
+                        }
+                    </svg>
+                    <div class="table-scroll">
+                        <table class="facts-table">
+                            <caption class="visually-hidden">Visible catalog objects ordered by brightness then identifier</caption>
+                            <thead><tr><th scope="col">Object</th><th scope="col">Magnitude</th><th scope="col">Altitude</th><th scope="col">Azimuth</th><th scope="col">Pixel</th><th scope="col">HIP</th></tr></thead>
+                            <tbody>
+                                @foreach (var item in _state.Objects)
+                                {
+                                    <tr>
+                                        <th scope="row">@item.DisplayName</th>
+                                        <td>@Number(item.Magnitude, 2)</td>
+                                        <td>@Number(item.AltitudeDegrees, 2)&deg;</td>
+                                        <td>@Number(item.AzimuthDegrees, 2)&deg;</td>
+                                        <td>@Number(item.PixelX, 1), @Number(item.PixelY, 1)</td>
+                                        <td>@(item.HipparcosId ?? "-")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </article>
+
+            <article class="sky-card" aria-labelledby="sky-constellations">
+                <header><div><p class="eyebrow">Installed topology</p><h2 id="sky-constellations">Visible constellations</h2></div></header>
+                @if (_state.Constellations.Count == 0)
+                {
+                    <p class="empty-copy">No constellation figure has a chord inside the calibrated image at this instant.</p>
+                }
+                else
+                {
+                    <ul class="constellation-list">
+                        @foreach (var constellation in _state.Constellations)
+                        {
+                            <li><strong>@constellation.ConstellationId</strong><span>@constellation.VisibleSegmentCount chords</span></li>
+                        }
+                    </ul>
+                }
+            </article>
+
+            <article class="sky-card" aria-labelledby="sky-provenance">
+                <header><div><p class="eyebrow">Capture-time evidence</p><h2 id="sky-provenance">Latest retained scene provenance</h2></div></header>
+                @if (_state.LatestCaptureScene is not { } provenance)
+                {
+                    <p class="empty-copy">No retained capture currently carries scene provenance in the local latest-frame evidence, so capture-time scene identity is omitted rather than inferred.</p>
+                }
+                else
+                {
+                    <dl class="fact-grid">
+                        <div><dt>Scene instant</dt><dd>@(provenance.SceneUtc?.ToString("u") ?? "Not recorded")</dd></div>
+                        <div><dt>Catalog</dt><dd>@provenance.CatalogName @provenance.CatalogVersion</dd></div>
+                        <div><dt>Projection model</dt><dd>@Split(provenance.ProjectionModel)</dd></div>
+                        <div><dt>Rig profile</dt><dd>@provenance.RigProfileVersion</dd></div>
+                        <div><dt>Calibration version</dt><dd>@(provenance.ProjectionCalibrationVersion ?? "Not recorded")</dd></div>
+                        <div><dt>Scene identity</dt><dd class="mono">@provenance.SceneId</dd></div>
+                        <div><dt>Catalog checksum</dt><dd class="mono">@provenance.CatalogChecksumSha256</dd></div>
+                        <div><dt>Rig profile identity</dt><dd class="mono">@(provenance.RigProfileHashSha256 ?? "Not recorded")</dd></div>
+                        <div><dt>Stage identity</dt><dd class="mono">@(provenance.ProjectedSceneStageIdentitySha256 ?? "Not staged")</dd></div>
+                    </dl>
+                }
+            </article>
+        </section>
+    }
+</div>
