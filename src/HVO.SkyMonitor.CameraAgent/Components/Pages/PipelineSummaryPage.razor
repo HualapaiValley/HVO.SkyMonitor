@@ -1,0 +1,39 @@
+@page "/operations/pipeline"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Pipeline summary</PageTitle>
+
+<div class="pipeline-page">
+    <PageHeader Eyebrow="Versioned processing authority" Title="Pipeline summary" Lead="The desired and effective processing graph of the active revision and, when one is staged, the pending revision. Nodes are enabled or disabled from the capture schedule editor; nothing here changes durable state.">
+        <button class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
+    </PageHeader>
+
+    @if (_loading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading processing graph" Message="Reading the immutable profile revisions." />
+    }
+    else if (_state is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Pipeline summary unavailable" Message="@_message">
+            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Try again</button>
+        </PageStateNotice>
+    }
+    else
+    {
+        <p class="truth-note" role="note"><strong>Read-only graph facts:</strong> use <a href="/operations/schedule">Capture schedule</a> to preview, toggle, stage, apply, or roll back an immutable revision.</p>
+        <PipelineRevisionSummary Heading="Active revision" HeadingId="pipeline-active" RevisionNumber="_state.Active.RevisionNumber" ProfileSha256="@_state.Active.ProfileSha256" CanToggle="_state.Active.CanToggle" Plan="_state.Active.Plan" />
+        @if (_state.Pending is not null)
+        {
+            <PipelineRevisionSummary Heading="Pending revision" HeadingId="pipeline-pending" RevisionNumber="_state.Pending.RevisionNumber" ProfileSha256="@_state.Pending.ProfileSha256" CanToggle="_state.Pending.CanToggle" Plan="_state.Pending.Plan" />
+        }
+        else
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Info" Title="No pending revision" Message="A validated draft appears here after it is saved and before it is applied at a capture boundary." />
+        }
+    }
+</div>

@@ -25,6 +25,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -149,6 +150,13 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<IConstellationTopology>(),
             () => provider.GetService<IDeploymentLocationStore>()));
         services.AddSingleton<IPlanetEphemeris, AstronomyEnginePlanetEphemeris>();
+        services.AddSingleton<ICameraAgentSkyMapProjection>(provider => new CameraAgentSkyMapProjection(
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+            provider.GetRequiredService<ICelestialCatalog>(),
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetService<IConstellationTopology>(),
+            provider.GetService<IDeploymentLocationStore>(),
+            provider.GetService<ILatestFrameAccessor>()));
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();

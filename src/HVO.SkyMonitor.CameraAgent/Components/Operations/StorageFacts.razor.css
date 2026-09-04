@@ -1,0 +1,9 @@
+.storage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: .6rem; margin-top: .8rem; }
+.storage-item { min-width: 0; padding: .7rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-surface-elevated); }
+.storage-item > div { display: flex; justify-content: space-between; gap: .5rem; }
+.storage-item h3 { margin: 0; font-size: .95rem; }
+.storage-item span, .storage-item p { color: var(--hvo-muted-strong); font-size: .78rem; }
+.storage-item meter { width: 100%; margin: .5rem 0 .3rem; }
+.storage-item p { margin: 0; }
+.storage-item--pressure { border-color: var(--hvo-danger-strong); background: var(--hvo-danger-bg); }
+.empty-copy { color: var(--hvo-muted); }

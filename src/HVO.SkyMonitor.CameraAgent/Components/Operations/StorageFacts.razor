@@ -1,0 +1,24 @@
+@using HVO.SkyMonitor.CameraAgent.Common.Operations
+@using HVO.SkyMonitor.CameraAgent.Components.Pages
+
+@if (Storage.Count == 0)
+{
+    <p class="empty-copy">No storage probe has reported a validated location.</p>
+}
+else
+{
+    <div class="storage-grid">
+        @foreach (var storage in Storage)
+        {
+            <section class="storage-item @(storage.IsUnderPressure ? "storage-item--pressure" : null)">
+                <div><h3>@OperationsPage.SplitWords(storage.Alias)</h3><span>@(storage.IsUnderPressure ? "Under pressure" : storage.ProbeSucceeded ? "Normal" : "Probe unavailable")</span></div>
+                <meter min="0" max="@storage.TotalBytes" value="@(storage.TotalBytes - storage.AvailableBytes)">@OperationsPage.FormatBytes(storage.AvailableBytes) available</meter>
+                <p>@OperationsPage.FormatBytes(storage.AvailableBytes) available of @OperationsPage.FormatBytes(storage.TotalBytes) / @storage.EffectiveRetentionDays day effective retention</p>
+            </section>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<OperationsStorageState> Storage { get; set; } = [];
+}

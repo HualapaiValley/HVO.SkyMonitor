@@ -1,0 +1,55 @@
+@using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
+
+<section class="pipeline-revision" aria-labelledby="@HeadingId">
+    <header>
+        <div><p class="eyebrow">@Heading</p><h2 id="@HeadingId">Revision @RevisionNumber</h2></div>
+        <dl>
+            <div><dt>Profile SHA-256</dt><dd><code>@Short(ProfileSha256)</code></dd></div>
+            <div><dt>Desired SHA-256</dt><dd><code>@Short(Plan.DesiredSha256)</code></dd></div>
+            <div><dt>Effective SHA-256</dt><dd><code>@Short(Plan.EffectiveSha256)</code></dd></div>
+            <div><dt>Schema</dt><dd>@Plan.SchemaVersion</dd></div>
+            <div><dt>Node toggles</dt><dd>@(CanToggle ? "Available from the capture schedule" : "Requires a cameraagent-local-profile-v2 revision")</dd></div>
+        </dl>
+    </header>
+    <div class="pipeline-columns">
+        <article>
+            <h3>Desired graph</h3>
+            <p>Disabled nodes stay visible here and are absent from the effective graph.</p>
+            <ol>
+                @foreach (var node in Plan.DesiredNodes)
+                {
+                    <li class="@(node.Enabled ? null : "pipeline-node--disabled")">
+                        <strong>@node.Id</strong>
+                        <span>@node.Alias / @(node.Required ? "required" : "optional") / @(node.Enabled ? "enabled" : "disabled")</span>
+                        <small>@(node.Dependencies is null ? "Dependencies unavailable" : string.Join(" <- ", node.Dependencies))</small>
+                    </li>
+                }
+            </ol>
+        </article>
+        <article>
+            <h3>Effective graph</h3>
+            <p>Validated execution order for this revision.</p>
+            <ol>
+                @foreach (var node in Plan.EffectiveNodes)
+                {
+                    <li>
+                        <strong>@node.Id</strong>
+                        <span>@(node.OutputRole is null ? "Infrastructure" : $"{node.OutputRole}/{node.OutputVariant}")</span>
+                        <small>@(node.Dependencies is null ? "No declared dependencies" : string.Join(" <- ", node.Dependencies))</small>
+                    </li>
+                }
+            </ol>
+        </article>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public string Heading { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string HeadingId { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public long RevisionNumber { get; set; }
+    [Parameter, EditorRequired] public string ProfileSha256 { get; set; } = string.Empty;
+    [Parameter] public bool CanToggle { get; set; }
+    [Parameter, EditorRequired] public CaptureProcessingPlanPreview Plan { get; set; } = default!;
+
+    private static string Short(string value) => value.Length <= 12 ? value : value[..12];
+}
