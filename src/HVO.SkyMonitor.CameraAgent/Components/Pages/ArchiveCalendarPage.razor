@@ -1,0 +1,62 @@
+@page "/archive/calendar"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Gallery
+@using HVO.SkyMonitor.CameraAgent.Components.Shared
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Observing calendar</PageTitle>
+
+<div class="calendar-page">
+    <PageHeader Eyebrow="Bounded local history" Title="Observing calendar" Lead="Each observing night runs from local noon to the next local noon. Counts come from retained captures and durable local candidates only.">
+        <a class="btn btn-outline-light" href="/gallery">Browse captures</a>
+        <a class="btn btn-outline-light" href="/archive/products">Products</a>
+    </PageHeader>
+
+    <nav class="range-nav" aria-label="Calendar range">
+        <a class="btn btn-outline-light" href="@RangeUrl(-1)">Earlier nights</a>
+        <span class="range-label">@RangeLabel</span>
+        <a class="btn btn-outline-light" href="@RangeUrl(1)">Later nights</a>
+    </nav>
+
+    @if (_isLoading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading observing calendar" Message="Counting retained captures per observing night." />
+    }
+    else if (_errorMessage is not null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Observing calendar unavailable" Message="@_errorMessage">
+            <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button>
+        </PageStateNotice>
+    }
+    else if (_calendar is not null)
+    {
+        @if (_calendar.TimeZoneFallback)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Observing nights use UTC days" Message="No deployment time zone is configured, so nights are bounded at 12:00 UTC instead of local noon." />
+        }
+        @if (_calendar.Days.All(static day => day.CaptureCount == 0 && day.CandidateCount == 0))
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No retained evidence in this range" Message="Move to earlier nights or check that capture is running." />
+        }
+        <ol class="night-list" aria-label="Observing nights">
+            @foreach (var day in _calendar.Days.Reverse())
+            {
+                <li class="@(day.CaptureCount == 0 && day.CandidateCount == 0 ? "night night--empty" : "night")">
+                    <div class="night__date"><time datetime="@day.Day.Date.ToString("yyyy-MM-dd")">@day.Day.Date.ToString("ddd, MMM d yyyy", System.Globalization.CultureInfo.InvariantCulture)</time><span class="night__zone">@day.Day.StartUtc.ToLocalTime().ToString("HH:mm") → @day.Day.EndUtc.ToLocalTime().ToString("HH:mm")</span></div>
+                    <dl class="night__facts">
+                        <div><dt>Captures</dt><dd>@day.CaptureCount</dd></div>
+                        <div><dt>Candidates</dt><dd>@day.CandidateCount</dd></div>
+                        <div><dt>First</dt><dd>@(day.FirstExposureUtc is { } first ? first.ToLocalTime().ToString("HH:mm:ss") : "—")</dd></div>
+                        <div><dt>Last</dt><dd>@(day.LastExposureUtc is { } last ? last.ToLocalTime().ToString("HH:mm:ss") : "—")</dd></div>
+                    </dl>
+                    <div class="night__links">
+                        @if (day.CaptureCount > 0) { <a href="@CapturesUrl(day.Day)">Open captures</a> }
+                        @if (day.CandidateCount > 0) { <a href="@CandidatesUrl(day.Day)">Open candidates</a> }
+                    </div>
+                </li>
+            }
+        </ol>
+    }
+</div>

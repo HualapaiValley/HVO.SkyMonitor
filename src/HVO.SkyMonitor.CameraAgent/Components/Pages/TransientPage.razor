@@ -8,9 +8,17 @@
 
 <div class="transient-page">
     <header class="page-heading">
-        <div><p class="eyebrow">Protected local evidence</p><h1>Transient candidates</h1><p>Bounded durable candidate and event workflow state, newest first.</p></div>
-        @if (_page is not null) { <span class="result-count">@_page.Items.Count candidate@(_page.Items.Count == 1 ? string.Empty : "s")</span> }
+        <div><p class="eyebrow">Protected local evidence</p><h1>Transient candidates</h1><p>Bounded durable local candidate and event workflow state, newest first. CameraAgent records causal detections and local assessments; it never validates, correlates, or reconstructs events.</p></div>
+        <div class="heading-aside">
+            @if (_page is not null) { <span class="result-count">@_page.Items.Count candidate@(_page.Items.Count == 1 ? string.Empty : "s")</span> }
+            <a class="btn btn-outline-light" href="/archive/calendar">Calendar</a>
+        </div>
     </header>
+
+    @if (HasRange)
+    {
+        <p class="range-state" role="status">Showing candidates created between @RangeLabel. <a href="/transients">Show all candidates</a></p>
+    }
 
     @if (_isLoading)
     {

@@ -29,6 +29,9 @@ public sealed class OperatorRouteTests
             typeof(EnvironmentalPage),
             typeof(TransientPage),
             typeof(TransientDetail),
+            typeof(ArchiveCalendarPage),
+            typeof(ProductsPage),
+            typeof(ProductDetail),
             typeof(SystemStatusPage),
             typeof(DeviceBootstrap),
             typeof(FramesController)

@@ -1,0 +1,7 @@
+.page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.page-header h1 { margin: 0; font-family: Georgia, Cambria, "Times New Roman", serif; font-size: clamp(2.2rem, 5vw, 4.4rem); font-weight: 500; line-height: .95; letter-spacing: -.045em; }
+.eyebrow { margin: 0 0 .3rem; color: var(--hvo-info-fg); font-size: .68rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+.lead-copy { max-width: 50rem; margin: .7rem 0 0; color: var(--hvo-muted); }
+.page-header__aside { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; }
+@media (max-width: 680px) { .page-header { display: grid; } .page-header__aside { justify-content: flex-start; } }
+@media (max-height: 500px) and (orientation: landscape) { .page-header { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } }

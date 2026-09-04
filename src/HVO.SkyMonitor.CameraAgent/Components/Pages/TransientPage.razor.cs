@@ -19,6 +19,12 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Parameter, SupplyParameterFromQuery(Name = "cursor")] public string? Cursor { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "pageSize")] public int? PageSize { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "from")] public string? From { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "to")] public string? To { get; set; }
+
+    private bool HasRange => TryDate(From, out _) || TryDate(To, out _);
+
+    private string RangeLabel => $"{(TryDate(From, out var from) && from is { } f ? FormatTime(f) : "the beginning")} and {(TryDate(To, out var to) && to is { } t ? FormatTime(t) : "now")}";
 
     protected override Task OnParametersSetAsync() => LoadAsync();
 
@@ -36,8 +42,14 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
         _errorMessage = null;
         try
         {
+            if (!TryDate(From, out var fromUtc) || !TryDate(To, out var toUtc))
+            {
+                _page = null;
+                _errorMessage = "The candidate time range is not a valid UTC date or time.";
+                return;
+            }
             var result = await TransientService.GetPageAsync(
-                new CameraAgentTransientOperatorQuery(PageSize, Cursor), cancellation.Token);
+                new CameraAgentTransientOperatorQuery(PageSize, Cursor, fromUtc, toUtc), cancellation.Token);
             if (generation != Volatile.Read(ref _generation))
             {
                 return;
@@ -93,6 +105,21 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
         "Pending" => "stage stage--pending",
         _ => "stage stage--absent"
     };
+
+    private static bool TryDate(string? value, out DateTimeOffset? parsed)
+    {
+        parsed = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+        if (!DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var result))
+        {
+            return false;
+        }
+        parsed = result;
+        return true;
+    }
 
     internal static string FormatTime(DateTimeOffset value)
         => value.ToLocalTime().ToString("MMM d, yyyy HH:mm:ss", CultureInfo.InvariantCulture);
