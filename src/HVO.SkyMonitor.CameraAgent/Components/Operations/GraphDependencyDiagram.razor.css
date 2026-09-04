@@ -1,0 +1,11 @@
+.diagram-wrap { overflow-x: auto; padding: .5rem; border: 1px dashed var(--hvo-border-muted); background: var(--hvo-surface-elevated); }
+.diagram { display: block; min-width: 20rem; max-width: 100%; height: auto; font-family: var(--hvo-font-family); }
+.diagram-edge { fill: none; stroke: var(--hvo-muted-strong); stroke-width: 2; }
+.diagram-node rect { fill: var(--hvo-card-bg); stroke: var(--hvo-info-strong); stroke-width: 2; }
+.diagram-node text { fill: var(--hvo-body-color); font-size: 14px; font-weight: 650; }
+.diagram-node .diagram-node__meta { fill: var(--hvo-muted-strong); font-size: 11px; font-weight: 400; }
+.diagram-node--disabled rect { stroke: var(--hvo-muted); stroke-dasharray: 6 4; }
+.diagram-node--disabled text { fill: var(--hvo-muted); text-decoration: line-through; }
+.diagram-node { cursor: pointer; }
+.diagram-node:focus-visible rect { stroke: var(--hvo-warning-strong); stroke-width: 3; }
+.diagram-empty { color: var(--hvo-muted); }

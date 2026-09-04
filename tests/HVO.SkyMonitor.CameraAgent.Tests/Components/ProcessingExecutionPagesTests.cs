@@ -193,7 +193,11 @@ public sealed class ProcessingExecutionPagesTests
         public ValueTask<OperatorUiResult<CameraAgentProcessingExecutionDetailView>> GetExecutionDetailAsync(Guid executionId, CancellationToken cancellationToken)
             => ValueTask.FromResult(DetailFailure ?? OperatorUiResult<CameraAgentProcessingExecutionDetailView>.Success(Detail!));
 
+        public IReadOnlyList<string> StepAliases { get; set; } = ["preview", "telemetry", "calibration"];
         public ProcessingGraphRegistryState? Registry { get; set; }
+        public Func<CapturePipelineConfig, OperatorUiResult<CaptureProcessingPlanPreview>>? Preview { get; set; }
+        public Func<(string Name, string Revision, CapturePipelineConfig Pipeline, string Key, string? Reason), OperatorUiResult<ProcessingGraphRevisionState>>? Create { get; set; }
+        public List<(string Name, string Revision, CapturePipelineConfig Pipeline, string Key, string? Reason)> Created { get; } = [];
         public OperatorUiResult<ProcessingGraphRegistryState>? RegistryFailure { get; set; }
         public CameraAgentProcessingGraphRevisionDetail? RevisionDetail { get; set; }
         public OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>? RevisionDetailFailure { get; set; }
@@ -207,7 +211,8 @@ public sealed class ProcessingExecutionPagesTests
         public ValueTask<OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>> GetRevisionDetailAsync(string revisionId, CancellationToken cancellationToken)
             => ValueTask.FromResult(RevisionDetailFailure ?? OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>.Success(RevisionDetail!));
 
-        public ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(CapturePipelineConfig pipeline, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(CapturePipelineConfig pipeline, CancellationToken cancellationToken)
+            => ValueTask.FromResult(Preview?.Invoke(pipeline) ?? throw new NotSupportedException());
 
         public ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> ActivateAsync(string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)
             => RegistryCommand("activate", revisionId, expectedVersion, idempotencyKey, reason);
@@ -224,7 +229,11 @@ public sealed class ProcessingExecutionPagesTests
             return ValueTask.FromResult(RevisionMutation?.Invoke(revisionId) ?? OperatorUiResult<ProcessingGraphRevisionState>.Success(Registry!.Revisions.Single(revision => revision.RevisionId == revisionId)));
         }
 
-        public ValueTask<OperatorUiResult<ProcessingGraphRevisionState>> CreateRevisionAsync(string name, string revision, CapturePipelineConfig pipeline, string idempotencyKey, string? reason, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<OperatorUiResult<ProcessingGraphRevisionState>> CreateRevisionAsync(string name, string revision, CapturePipelineConfig pipeline, string idempotencyKey, string? reason, CancellationToken cancellationToken)
+        {
+            Created.Add((name, revision, pipeline, idempotencyKey, reason));
+            return ValueTask.FromResult(Create?.Invoke((name, revision, pipeline, idempotencyKey, reason)) ?? throw new NotSupportedException());
+        }
 
         private ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> RegistryCommand(string action, string revisionId, long expectedVersion, string key, string? reason)
         {

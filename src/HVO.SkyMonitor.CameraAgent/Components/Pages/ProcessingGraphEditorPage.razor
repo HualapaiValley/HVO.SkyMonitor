@@ -1,0 +1,99 @@
+@page "/operations/pipeline/graphs/new"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Draft graph</PageTitle>
+
+<div class="editor-page">
+    <PageHeader Eyebrow="New immutable draft" Title="Draft graph" Lead="Compose a processing graph as an ordered node list. Preview compiles it against this CameraAgent without writing anything; saving creates an immutable draft revision that is validated and activated from the Named graphs list. Nothing here touches the live capture path.">
+        <a class="btn btn-outline-light" href="/operations/pipeline/graphs">Back to named graphs</a>
+    </PageHeader>
+
+    @if (_loading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Preparing the draft" Message="@(_from is null ? "Starting an empty draft." : "Loading the source revision's definition.")" />
+    }
+    else
+    {
+        @if (_message is not null)
+        {
+            <section class="editor-banner @(_messageIsError ? "editor-banner--error" : null)" role="@(_messageIsError ? "alert" : "status")">@_message @if (_savedRevisionId is not null) { <a href="/operations/pipeline/graphs/@Uri.EscapeDataString(_savedRevisionId)">Open the saved draft</a> }</section>
+        }
+        @if (_model.SourceRevisionId is not null)
+        {
+            <p class="editor-note" role="note">Started from revision <code>@_model.SourceRevisionId</code>. Opaque node options carried from it stay attached to their rows and are re-emitted unchanged.</p>
+        }
+
+        <form class="editor-form" @onsubmit="PreviewAsync" @onsubmit:preventDefault>
+            <fieldset class="editor-group" disabled="@_busy">
+                <legend>Identity</legend>
+                <div class="field-grid">
+                    <label>Graph name<input class="form-control" @bind="_model.Name" @bind:after="FormChanged" /></label>
+                    <label>Revision label<input class="form-control" @bind="_model.Revision" @bind:after="FormChanged" /></label>
+                </div>
+            </fieldset>
+
+            <fieldset class="editor-group" disabled="@_busy">
+                <legend>Nodes in execution order</legend>
+                <p class="editor-note">Each node names the raw capture or nodes above it as inputs. Reorder with the move buttons; nothing depends on drag, pointer precision, or colour.</p>
+                @if (_model.Nodes.Count == 0)
+                {
+                    <p class="editor-note">No nodes yet. Add the first node below.</p>
+                }
+                <ol class="node-rows">
+                    @foreach (var node in _model.Nodes)
+                    {
+                        var index = _model.Nodes.IndexOf(node);
+                        <li class="node-row" id="@RowId(node)" tabindex="-1" @key="node">
+                            <div class="node-row__head">
+                                <label>Identifier<input class="form-control" aria-label="Node identifier" @bind="node.Id" @bind:after="FormChanged" /></label>
+                                <label>Type<select class="form-select" aria-label="Node type" @bind="node.Type" @bind:after="FormChanged">@if (!GraphService.StepAliases.Contains(node.Type, StringComparer.Ordinal)) { <option value="@node.Type">@node.Type</option> }@foreach (var alias in GraphService.StepAliases) { <option value="@alias">@alias</option> }</select></label>
+                                <label class="check"><input type="checkbox" @bind="node.Required" @bind:after="FormChanged" /> Required</label>
+                                <label class="check"><input type="checkbox" @bind="node.Enabled" @bind:after="FormChanged" /> Enabled</label>
+                                <span class="node-row__actions">
+                                    <button type="button" class="btn btn-sm btn-outline-light" aria-label="Move @node.Id up" disabled="@(index == 0)" @onclick="() => Move(node, -1)">Move up</button>
+                                    <button type="button" class="btn btn-sm btn-outline-light" aria-label="Move @node.Id down" disabled="@(index == _model.Nodes.Count - 1)" @onclick="() => Move(node, 1)">Move down</button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" aria-label="Remove @node.Id" @onclick="() => Remove(node)">Remove</button>
+                                </span>
+                            </div>
+                            <fieldset class="node-row__dependencies">
+                                <legend>Inputs of @node.Id</legend>
+                                @foreach (var candidate in _model.EligibleDependencies(node))
+                                {
+                                    var selected = node.DependsOn.Contains(candidate);
+                                    <label class="check"><input type="checkbox" checked="@selected" @onchange="args => ToggleDependency(node, candidate, args.Value is true)" /> @(candidate == ProcessingGraphDraftModel.RawInput ? "raw capture" : candidate)</label>
+                                }
+                            </fieldset>
+                            @if (node.HasOptions) { <p class="editor-note">Carries opaque options from the source revision.</p> }
+                        </li>
+                    }
+                </ol>
+                <div class="add-node">
+                    <label>Add node of type<select class="form-select" aria-label="New node type" @bind="_newType">@foreach (var alias in GraphService.StepAliases) { <option value="@alias">@alias</option> }</select></label>
+                    <button type="button" class="btn btn-outline-light" disabled="@(string.IsNullOrWhiteSpace(_newType))" @onclick="AddNode">Add node</button>
+                </div>
+            </fieldset>
+
+            <div class="editor-actions">
+                <button type="submit" class="btn btn-outline-light" disabled="@_busy">Preview plan</button>
+                <button type="button" class="btn btn-primary" disabled="@(_busy || _plan is null)" @onclick="SaveDraftAsync">Save immutable draft</button>
+                @if (_plan is null) { <span class="editor-note">Preview the plan before saving.</span> }
+            </div>
+        </form>
+
+        @if (_plan is not null)
+        {
+            <section class="editor-preview" aria-labelledby="editor-preview-heading">
+                <h2 id="editor-preview-heading">Compiled preview</h2>
+                <p class="editor-note">The diagram is a projection of the compiled plan; the list above is the editable source of truth and the diagram's text alternative.</p>
+                <GraphDependencyDiagram Nodes="_plan.DesiredNodes" NodeSelected="FocusRowAsync" />
+                <GraphPlanView Plan="_plan" />
+            </section>
+        }
+    }
+</div>

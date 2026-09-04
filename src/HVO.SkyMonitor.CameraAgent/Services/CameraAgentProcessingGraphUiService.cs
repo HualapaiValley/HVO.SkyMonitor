@@ -17,6 +17,9 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 /// </summary>
 internal interface ICameraAgentProcessingGraphUiService
 {
+    /// <summary>Registered processing step aliases this CameraAgent can execute; the only node types a draft may use.</summary>
+    IReadOnlyList<string> StepAliases { get; }
+
     ValueTask<OperatorUiResult<CameraAgentProcessingExecutionsView>> GetExecutionsAsync(
         int maximumPerClass,
         CancellationToken cancellationToken);
@@ -205,6 +208,8 @@ internal sealed class CameraAgentProcessingGraphUiService(
     TimeProvider timeProvider,
     ILogger<CameraAgentProcessingGraphUiService> logger) : ICameraAgentProcessingGraphUiService
 {
+    public IReadOnlyList<string> StepAliases => pipelineFactory.StableStepAliases;
+
     public ValueTask<OperatorUiResult<CameraAgentProcessingExecutionsView>> GetExecutionsAsync(
         int maximumPerClass,
         CancellationToken cancellationToken)

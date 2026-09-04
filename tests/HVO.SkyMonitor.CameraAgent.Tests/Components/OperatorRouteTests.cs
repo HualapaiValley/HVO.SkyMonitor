@@ -43,6 +43,7 @@ public sealed class OperatorRouteTests
             typeof(ProcessingExecutionDetailPage),
             typeof(ProcessingGraphsPage),
             typeof(ProcessingGraphDetailPage),
+            typeof(ProcessingGraphEditorPage),
             typeof(DeviceBootstrap),
             typeof(FramesController)
         })
@@ -137,6 +138,7 @@ public sealed class OperatorRouteTests
             (typeof(ProcessingExecutionDetailPage), ["/operations/pipeline/executions/{ExecutionId:guid}"]),
             (typeof(ProcessingGraphsPage), ["/operations/pipeline/graphs"]),
             (typeof(ProcessingGraphDetailPage), ["/operations/pipeline/graphs/{RevisionId}"]),
+            (typeof(ProcessingGraphEditorPage), ["/operations/pipeline/graphs/new"]),
             (typeof(DeviceBootstrap), ["/devices/bootstrap"])
         })
         {
