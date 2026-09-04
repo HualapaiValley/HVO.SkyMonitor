@@ -150,6 +150,7 @@ internal sealed partial class ExecutionEvidenceExportService(
         CancellationToken cancellationToken)
     {
         state.ResetInFlight();
+        _unclosableResync = false;
         var pressure = storagePressure.Get(root) is { IsUnderPressure: true };
         var configured = await transport.IsAvailableAsync(cancellationToken).ConfigureAwait(false);
         string? sweepReason = null;
@@ -230,6 +231,13 @@ internal sealed partial class ExecutionEvidenceExportService(
         {
             return (ExecutionEvidenceExportAvailability.Degraded, ExecutionEvidenceExportReasonCodes.Quarantined);
         }
+        if (backlog.ProjectionRejectedEvents > 0)
+        {
+            // A recorded loss stays visible for the life of the store rather than for the one cycle that observed
+            // it, because nothing will ever export those executions and an operator has to decide what that means.
+            return (ExecutionEvidenceExportAvailability.Degraded,
+                ExecutionEvidenceExportReasonCodes.ProjectionRejected);
+        }
         if (backlog.OldestPendingUtc is { } oldest &&
             timeProvider.GetUtcNow() - oldest > TimeSpan.FromHours(exportOptions.MaximumPendingAgeHours))
         {
@@ -286,18 +294,20 @@ internal sealed partial class ExecutionEvidenceExportService(
         var exportedRevisions = new HashSet<string>(StringComparer.Ordinal);
         string? rejectedReason = null;
 
-        // The sweep re-reads a bounded window below the durable cursor so an execution that became terminal long
-        // after it was accepted is still seen. Re-reading is free: enlistment is idempotent by unit key.
-        var lookbackMs = (long)TimeSpan.FromHours(exportOptions.DiscoveryLookbackHours).TotalMilliseconds;
-        var scanUnixMs = Math.Max(0, cursor.TerminalUnixMs - lookbackMs);
-        var scanExecutionId = scanUnixMs == cursor.TerminalUnixMs ? cursor.ExecutionId : string.Empty;
+        // The sweep orders by the immutable acceptance time so the delivered index can serve it, which means a
+        // forward cursor could otherwise pass an execution that is still running and miss it when it later becomes
+        // terminal. The barrier is the oldest acceptance time that has not reached a terminal status: everything
+        // strictly below it is already terminal, so the cursor can advance to it and no further without ever
+        // needing to re-read what it has already passed.
+        var barrier = await operations.ReadOldestActiveExecutionKeyAsync(cancellationToken).ConfigureAwait(false)
+            ?? long.MaxValue;
 
         for (var batch = 0; batch < exportOptions.MaximumDiscoveryBatchesPerCycle; batch++)
         {
             var started = timeProvider.GetTimestamp();
             var rows = await operations.ReadTerminalExecutionsAsync(
-                scanUnixMs,
-                scanExecutionId,
+                cursor.TerminalUnixMs,
+                cursor.ExecutionId,
                 exportOptions.DiscoveryBatchSize,
                 cancellationToken).ConfigureAwait(false);
             if (rows.Count == 0)
@@ -315,16 +325,20 @@ internal sealed partial class ExecutionEvidenceExportService(
             foreach (var row in rows)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                scanUnixMs = row.AcceptedUnixMs;
-                scanExecutionId = row.ExecutionId.ToString("N");
+                if (row.AcceptedUnixMs >= barrier)
+                {
+                    // An execution accepted at or after this key is still running, so the cursor stops here and
+                    // resumes from the same place next cycle rather than passing work that is not terminal yet.
+                    telemetry.Record("sweep", "barrier", timeProvider.GetElapsedTime(started));
+                    return rejectedReason;
+                }
                 var units = await CreateUnitsAsync(row, origin, redaction, exportedRevisions, cancellationToken)
                     .ConfigureAwait(false);
-                // The durable cursor only ever moves forward; a row inside the lookback window keeps it where it is.
-                var next = row.AcceptedUnixMs > cursor.TerminalUnixMs ||
-                    (row.AcceptedUnixMs == cursor.TerminalUnixMs &&
-                        string.CompareOrdinal(scanExecutionId, cursor.ExecutionId) > 0)
-                    ? cursor with { TerminalUnixMs = row.AcceptedUnixMs, ExecutionId = scanExecutionId }
-                    : cursor;
+                var next = cursor with
+                {
+                    TerminalUnixMs = row.AcceptedUnixMs,
+                    ExecutionId = row.ExecutionId.ToString("N")
+                };
                 if (units.Count == 0)
                 {
                     // Either the execution vanished between the sweep and the read, or a durable value could not be
@@ -627,10 +641,9 @@ internal sealed partial class ExecutionEvidenceExportService(
             if (units.Count == 0)
             {
                 // A resynchronization that finds nothing to replay cannot close the receiver's gap.
-                _unclosableResync = resync is not null;
+                _unclosableResync |= resync is not null;
                 continue;
             }
-            _unclosableResync = false;
 
             var started = timeProvider.GetTimestamp();
             var payloads = units.Select(static unit => unit.Payload.ToArray()).ToArray();

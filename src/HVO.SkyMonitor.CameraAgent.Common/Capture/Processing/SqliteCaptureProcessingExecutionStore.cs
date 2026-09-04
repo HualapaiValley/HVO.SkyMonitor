@@ -724,6 +724,40 @@ internal sealed partial class SqliteCaptureProcessingStore
     }
 
     /// <summary>
+    /// The lowest acceptance time of an execution that has not yet reached a terminal status. It is the barrier the
+    /// evidence sweep may not advance past: every execution below it is already terminal, so nothing below it can
+    /// still become terminal later and be missed by a forward acceptance-time cursor. Null means nothing is active.
+    /// </summary>
+    internal async ValueTask<long?> ReadOldestActiveExecutionKeyAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        long? oldest = null;
+        foreach (var executionClass in Enum.GetValues<ProcessingGraphExecutionClass>())
+        {
+            foreach (var status in ActiveStatuses)
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    SELECT accepted_unix_ms FROM processing_executions
+                    WHERE execution_class = $class AND status = $status
+                    ORDER BY accepted_unix_ms
+                    LIMIT 1;
+                    """;
+                command.Parameters.AddWithValue("$class", executionClass.ToString());
+                command.Parameters.AddWithValue("$status", status);
+                var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (value is not (null or DBNull))
+                {
+                    var candidate = Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+                    oldest = oldest is { } current ? Math.Min(current, candidate) : candidate;
+                }
+            }
+        }
+        return oldest;
+    }
+
+    /// <summary>
     /// The lowest acceptance time still present among terminal executions. A value above the exporter cursor proves
     /// that source retention removed executions the exporter had not yet enlisted.
     /// </summary>
@@ -756,7 +790,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         return oldest;
     }
 
-    private static readonly string[] TerminalStatuses = ["Completed", "Failed", "Cancelled", "Expired"];
+    /// <summary>
+    /// The durable <c>status</c> values that are terminal, and the ones that are not. Together they must be exactly
+    /// the set the <c>processing_executions</c> CHECK constraint admits, or the sweep would silently never see a
+    /// status outside both lists; <c>ProcessingGraphExecutionStatusCoverageTests</c> asserts that.
+    /// </summary>
+    internal static readonly string[] TerminalStatuses = ["Completed", "Failed", "Cancelled", "Expired"];
+
+    internal static readonly string[] ActiveStatuses = ["Pending", "Running"];
 
     internal async ValueTask<ProcessingGraphExecutionState?> ReadExecutionAsync(
         Guid executionId,

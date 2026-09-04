@@ -299,7 +299,7 @@ migrating it. Pragmas are `journal_mode=WAL`, `synchronous=FULL`,
 | --- | --- |
 | `execution_evidence_schema` | The pinned schema version. |
 | `execution_evidence_state` | The sweep cursor, the deferred key, and the source-pruned counter. |
-| `execution_evidence_rejections` | Executions this contract version cannot express, keyed by execution so one bounded re-read counts one loss. |
+| `execution_evidence_rejections` | The newest executions this contract version could not express, keyed by execution and bounded; the loss count itself is a monotonic counter in `execution_evidence_state`. |
 | `execution_evidence_origins` | One row per boot session, with its own `next_sequence`. |
 | `execution_evidence_units` | Sealed canonical envelope bytes, payload hash, status, attempts. |
 | `execution_evidence_audit` | Quarantine and operator disposition history; retained past the units it describes. |
@@ -334,15 +334,19 @@ blobs that precede the ordering columns in every row, which is exactly the page
 pressure this lane must not put on the capture path. The sweep is therefore one
 index-only range scan per `(execution class, status)` pair, merged and bounded.
 
-Because acceptance time is not completion time, each sweep also re-reads a
-bounded window below the cursor (`DiscoveryLookbackHours`, 48 hours by default)
-so an execution that becomes terminal long after it was accepted is still seen.
-Re-reading costs nothing: every unit is sealed deterministically from immutable
-production facts — the evidence identity is derived from the origin identity and
-the unit key, and the produced-at time is the execution's own completion time —
-so a re-read produces byte-identical bytes and enlistment is idempotent by unit
-key. A key that is already present with *different* bytes is a durable conflict,
-recorded for an operator, and the stored unit stays authoritative.
+Acceptance time is not completion time, so a forward cursor could pass an
+execution that is still running and miss it when it later becomes terminal. The
+sweep therefore reads one more indexed value first: the oldest acceptance time
+that has *not* reached a terminal status. That is the barrier. Everything
+strictly below it is already terminal, so the cursor may advance to the barrier
+and no further, and the sweep never has to re-read anything it has passed. When
+nothing is active the barrier lifts and the sweep drains to the end.
+
+Sealing is deterministic within a sweep: the evidence identity is derived from
+the origin identity and the unit key, and the produced-at time is the execution's
+own completion time, so the same offered unit always produces the same bytes. A
+unit key already present with *different* bytes is a durable conflict, recorded
+for an operator in a bounded table, and the stored unit stays authoritative.
 
 The cursor advances only past executions the exporter actually sealed, rejected,
 or explicitly deferred. When a bound refuses enlistment, the oldest refused
@@ -351,9 +355,10 @@ retention later removes everything at or below it, the exporter records a
 bounded `export.source-pruned` event and reports an explicit degraded state
 instead of skipping silently. An execution this contract version cannot express —
 a durable value with no mapping, or a sealed unit above the configured byte
-bound — is recorded once in `execution_evidence_rejections`, the cursor advances
-past it, and the lane reports `export.projection-rejected`. It is never allowed
-to fault the host or to wedge the sweep.
+bound — is counted once, sampled in `execution_evidence_rejections`, and passed
+by the cursor, and the lane reports `export.projection-rejected` for as long as
+the count is non-zero. It is never allowed to fault the host or wedge the
+sweep.
 
 With no configured sink, or after a negotiation that found no shared schema
 version, the exporter performs no sweep at all, so a standalone deployment never
@@ -383,8 +388,8 @@ retried forever; it stays durable and operator-visible.
 ### Limits, pressure, and operator surface
 
 `CameraAgent:ExecutionEvidenceExport` bounds the poll interval, discovery batch,
-batches per cycle, discovery lookback, request units and bytes, request timeout,
-retry delays and attempts, pending units, pending bytes, storage bytes, unit
+batches per cycle, request units and bytes, request timeout, retry delays and
+attempts, pending units, pending bytes, storage bytes, unit
 bytes, pending age, acknowledgement retention, and retained acknowledgements. Every bound refuses new
 enlistment or defers a send; none of them discards evidence that is already
 durable, and none can apply back pressure to acquisition, raw ingress, live

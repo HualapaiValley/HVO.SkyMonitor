@@ -342,8 +342,8 @@ public sealed class ExecutionEvidenceExportServiceTests
         Assert.AreEqual(ExecutionEvidenceExportReasonCodes.ProjectionRejected, stalled.ReasonCode);
         Assert.AreEqual(0, stalled.Backlog.PendingCount, "Nothing may ship without the canonical body it names.");
 
-        // The cursor advanced past the unexportable rows, and the bounded lookback re-reads them once the revision
-        // is persisted again, so nothing that was only transiently unexportable is lost.
+        // The cursor advanced past the unexportable rows, so a later execution still exports normally. The two
+        // skipped executions are a recorded loss rather than a stall.
         harness.Source.RevisionMissing = false;
         harness.Source.Add(ExecutionEvidenceTestFactory.CreateDetail(3));
         for (var cycle = 0; cycle < 4; cycle++)
@@ -351,16 +351,78 @@ public sealed class ExecutionEvidenceExportServiceTests
             await harness.RunCycleAsync().ConfigureAwait(false);
         }
         Assert.AreEqual(
-            7,
+            3,
             harness.Sink.AcceptedSequences.Count,
-            "One revision plus an execution and an availability unit for all three captures.");
+            "One revision plus the execution and availability unit of the capture that could be exported.");
         Assert.AreEqual(
             ExecutionEvidenceBodyKind.GraphRevision,
             harness.Sink.AcceptedEnvelopes[0].Kind,
-            "The revision must still precede the executions once it is persisted again.");
+            "The revision must still precede the execution once it is persisted again.");
+        Assert.AreEqual(2, harness.State.Snapshot.Backlog.ProjectionRejectedEvents);
+    }
+
+    [TestMethod]
+    public async Task TheSweepStopsAtTheOldestStillRunningExecutionAndResumesWhenItCompletes()
+    {
+        using var harness = new Harness();
+        harness.Seed(3);
+        // The second capture is still running, so its acceptance key is the barrier: the sweep may export the first
+        // capture and must not pass the second, even though the third is already terminal.
+        harness.Source.OldestActiveKey =
+            ExecutionEvidenceTestFactory.BaseUtc.AddSeconds(2).ToUnixTimeMilliseconds();
+
+        for (var cycle = 0; cycle < 3; cycle++)
+        {
+            await harness.RunCycleAsync().ConfigureAwait(false);
+        }
+
+        var executions = harness.Sink.AcceptedEnvelopes
+            .Where(static envelope => envelope.Kind == ExecutionEvidenceBodyKind.GraphExecution)
+            .Select(static envelope => envelope.Execution!.ExecutionId)
+            .ToArray();
+        CollectionAssert.AreEqual(new[] { ExecutionEvidenceTestFactory.ExecutionId(1) }, executions);
+
+        // Once nothing is running the barrier lifts and the sweep resumes from exactly where it stopped.
+        harness.Source.OldestActiveKey = null;
+        for (var cycle = 0; cycle < 4; cycle++)
+        {
+            await harness.RunCycleAsync().ConfigureAwait(false);
+        }
         CollectionAssert.AreEqual(
-            Enumerable.Range(1, 7).Select(static value => (long)value).ToArray(),
+            new[]
+            {
+                ExecutionEvidenceTestFactory.ExecutionId(1),
+                ExecutionEvidenceTestFactory.ExecutionId(2),
+                ExecutionEvidenceTestFactory.ExecutionId(3)
+            },
+            harness.Sink.AcceptedEnvelopes
+                .Where(static envelope => envelope.Kind == ExecutionEvidenceBodyKind.GraphExecution)
+                .Select(static envelope => envelope.Execution!.ExecutionId)
+                .ToArray());
+        CollectionAssert.AreEqual(
+            Enumerable.Range(1, harness.Sink.AcceptedSequences.Count).Select(static value => (long)value).ToArray(),
             harness.Sink.AcceptedSequences.Order().ToArray());
+    }
+
+    [TestMethod]
+    public async Task AnExecutionIsSweptExactlyOnceAndIsNeverReReadAfterTheCursorPassesIt()
+    {
+        using var harness = new Harness();
+        harness.Seed(2);
+
+        for (var cycle = 0; cycle < 4; cycle++)
+        {
+            await harness.RunCycleAsync().ConfigureAwait(false);
+        }
+        var afterDrain = harness.Source.ReadDetailCallCount;
+        await harness.RunCycleAsync().ConfigureAwait(false);
+
+        Assert.AreEqual(
+            afterDrain,
+            harness.Source.ReadDetailCallCount,
+            "A settled execution is never re-projected, so the sweep cannot manufacture conflicts or re-enlist it.");
+        Assert.AreEqual(0, harness.State.Snapshot.Backlog.ConflictCount);
+        Assert.AreEqual(5, harness.Sink.AcceptedSequences.Count);
     }
 
     [TestMethod]

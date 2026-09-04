@@ -307,14 +307,6 @@ public sealed class ExecutionEvidenceExportOptions : IValidatableObject
     [Range(1, 64)]
     public int MaximumDiscoveryBatchesPerCycle { get; init; } = 8;
 
-    /// <summary>
-    /// How far below the durable cursor each sweep re-reads. The sweep orders by the immutable acceptance time so
-    /// it can be served from the delivered index; an execution that becomes terminal long after it was accepted
-    /// would otherwise sit below the cursor and never be seen. Re-reading is free because enlistment is idempotent
-    /// by unit key, so this only has to exceed the longest time an execution can stay non-terminal.
-    /// </summary>
-    [Range(1, 168)]
-    public int DiscoveryLookbackHours { get; init; } = 48;
 
     /// <summary>Evidence units in one submission request.</summary>
     [Range(1, 256)]

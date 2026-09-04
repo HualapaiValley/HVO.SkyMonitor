@@ -349,7 +349,12 @@ internal sealed class FakeExecutionEvidenceSource : IExecutionEvidenceSource
 
     internal int ReadTerminalCallCount { get; private set; }
 
+    internal int ReadDetailCallCount { get; private set; }
+
     internal long? OldestTerminalKey { get; set; }
+
+    /// <summary>The oldest acceptance time of a still-running execution; the sweep may not advance past it.</summary>
+    internal long? OldestActiveKey { get; set; }
 
     internal ProcessingGraphRevisionSnapshot Snapshot { get; set; } = ExecutionEvidenceTestFactory.CreateSnapshot();
 
@@ -392,10 +397,16 @@ internal sealed class FakeExecutionEvidenceSource : IExecutionEvidenceSource
     public ValueTask<long?> ReadOldestTerminalExecutionKeyAsync(CancellationToken cancellationToken)
         => ValueTask.FromResult(OldestTerminalKey);
 
+    public ValueTask<long?> ReadOldestActiveExecutionKeyAsync(CancellationToken cancellationToken)
+        => ValueTask.FromResult(OldestActiveKey);
+
     public ValueTask<ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(
         Guid executionId,
         CancellationToken cancellationToken)
-        => ValueTask.FromResult(_executions.FirstOrDefault(detail => detail.Execution.ExecutionId == executionId));
+    {
+        ReadDetailCallCount++;
+        return ValueTask.FromResult(_executions.FirstOrDefault(detail => detail.Execution.ExecutionId == executionId));
+    }
 
     public ValueTask<ProcessingGraphRevisionSnapshot> ReadRevisionSnapshotAsync(
         string revisionId,

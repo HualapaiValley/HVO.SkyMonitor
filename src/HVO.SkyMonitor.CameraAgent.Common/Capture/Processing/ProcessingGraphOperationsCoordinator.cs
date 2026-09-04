@@ -459,6 +459,10 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     public ValueTask<long?> ReadOldestTerminalExecutionKeyAsync(CancellationToken cancellationToken)
         => _store.ReadOldestTerminalExecutionKeyAsync(cancellationToken);
 
+    /// <summary>The barrier the evidence sweep may not advance past; null when nothing is still active.</summary>
+    public ValueTask<long?> ReadOldestActiveExecutionKeyAsync(CancellationToken cancellationToken)
+        => _store.ReadOldestActiveExecutionKeyAsync(cancellationToken);
+
     /// <summary>Central assignment provenance for a revision, or null when the revision was compiled locally.</summary>
     public ValueTask<ExecutionEvidenceAssignmentProvenanceV1?> ReadAssignmentProvenanceAsync(
         string revisionId,

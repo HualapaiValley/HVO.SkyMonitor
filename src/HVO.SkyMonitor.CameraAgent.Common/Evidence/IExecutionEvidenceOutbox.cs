@@ -194,6 +194,8 @@ internal interface IExecutionEvidenceSource
 
     ValueTask<long?> ReadOldestTerminalExecutionKeyAsync(CancellationToken cancellationToken);
 
+    ValueTask<long?> ReadOldestActiveExecutionKeyAsync(CancellationToken cancellationToken);
+
     ValueTask<Capture.Processing.ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(
         Guid executionId,
         CancellationToken cancellationToken);
