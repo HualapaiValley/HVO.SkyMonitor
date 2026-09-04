@@ -125,10 +125,10 @@ public sealed record ProcessingGraphExecutionNodeState(
     IReadOnlyList<ProcessingGraphNodeAttemptState> Attempts,
     IReadOnlyList<ProcessingGraphExecutionOutputState> Outputs);
 
-/// <summary>One terminal execution with the ordering key the evidence exporter sweeps by.</summary>
+/// <summary>One terminal execution key and the immutable ordering value the evidence exporter sweeps by.</summary>
 internal sealed record ProcessingGraphTerminalExecution(
-    ProcessingGraphExecutionState State,
-    long TerminalUnixMs);
+    Guid ExecutionId,
+    long AcceptedUnixMs);
 
 public sealed record ProcessingGraphExecutionDetail(
     ProcessingGraphExecutionState Execution,

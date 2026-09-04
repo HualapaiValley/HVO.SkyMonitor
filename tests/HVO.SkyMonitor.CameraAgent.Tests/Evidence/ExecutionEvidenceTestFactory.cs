@@ -183,6 +183,45 @@ internal static class ExecutionEvidenceTestFactory
     private static ExecutionEvidenceSealedUnit Seal(ExecutionEvidenceEnvelopeV1 envelope)
         => new(envelope.EvidenceId, GraphExecutionEvidenceJson.Serialize(envelope), envelope.PayloadSha256);
 
+    /// <summary>
+    /// A detail with more nodes than the contract permits. Sealing it throws, which is how an unexportable durable
+    /// row is simulated without corrupting a store.
+    /// </summary>
+    internal static ProcessingGraphExecutionDetail CreateOversizedDetail(int ordinal)
+    {
+        var baseline = CreateDetail(ordinal);
+        var node = baseline.Nodes[0];
+        var nodes = Enumerable
+            .Range(0, GraphExecutionEvidenceLimits.MaximumNodeCount + 1)
+            .Select(index => node with { NodeId = $"preview-{index:D3}" })
+            .ToArray();
+        return new(baseline.Execution, nodes);
+    }
+
+    /// <summary>
+    /// A detail whose sealed execution envelope comfortably exceeds a few kilobytes, without breaching any contract
+    /// cardinality limit, so the configured byte bound can be exercised on a legally expressible unit.
+    /// </summary>
+    internal static ProcessingGraphExecutionDetail CreateLargeDetail(int ordinal, int outputCount = 64)
+    {
+        var baseline = CreateDetail(ordinal);
+        var node = baseline.Nodes[0];
+        var outputs = Enumerable
+            .Range(0, outputCount)
+            .Select(index =>
+            {
+                var identity = OutputIdentity((ordinal * 1000) + index);
+                return node.Outputs[0] with
+                {
+                    Ordinal = index,
+                    OutputIdentitySha256 = identity,
+                    ArtifactId = ProcessingIdentity.CreateArtifactId(identity)
+                };
+            })
+            .ToArray();
+        return new(baseline.Execution, [node with { Outputs = outputs }]);
+    }
+
     internal static ExecutionEvidenceEnlistmentLimits UnboundedLimits { get; } =
         new(long.MaxValue, long.MaxValue, long.MaxValue, GraphExecutionEvidenceLimits.MaximumEnvelopeBytes);
 

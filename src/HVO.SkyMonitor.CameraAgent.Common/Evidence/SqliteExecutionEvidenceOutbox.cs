@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
@@ -54,23 +55,29 @@ public sealed class SqliteExecutionEvidenceOutbox(
                 }
             }
 
-            var existed = File.Exists(DatabasePath(root));
             Directory.CreateDirectory(EvidenceDirectory(root));
             EnsureDatabaseFilesArePhysical(root);
             using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
             EnsureDatabaseFilesArePhysical(root);
-            if (!existed)
+            // Opening the connection materialises a valid but schemaless database file, so the file's existence is
+            // not evidence that the schema was ever committed. A crash between the two would otherwise leave an
+            // empty file that every later start rejects as drifted, bricking the lane permanently. The decision is
+            // therefore taken from sqlite_master inside the write transaction.
+            using (var transaction = BeginImmediate(connection))
             {
-                using var transaction = BeginImmediate(connection);
-                using var command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandText = SchemaSql;
-                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await EnsureCanonicalSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+                if (await CountSchemaObjectsAsync(connection, transaction, cancellationToken).ConfigureAwait(false) == 0)
+                {
+                    using var command = connection.CreateCommand();
+                    command.Transaction = transaction;
+                    command.CommandText = SchemaSql;
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    await EnsureCanonicalSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+                }
             }
 
             using (var integrity = connection.CreateCommand())
@@ -171,6 +178,7 @@ public sealed class SqliteExecutionEvidenceOutbox(
     public async ValueTask<ExecutionEvidenceEnlistmentResult> EnlistAsync(
         string root,
         string originIdentitySha256,
+        Guid executionId,
         IReadOnlyList<ExecutionEvidenceEnlistmentUnit> units,
         ExecutionEvidenceDiscoveryCursor cursor,
         ExecutionEvidenceEnlistmentLimits limits,
@@ -213,26 +221,62 @@ public sealed class SqliteExecutionEvidenceOutbox(
         var nextSequence = await ReadNextSequenceAsync(connection, transaction, originIdentitySha256, cancellationToken)
             .ConfigureAwait(false);
         var now = _timeProvider.GetUtcNow();
-        var enlisted = 0;
         var pendingBytes = backlog.PendingBytes;
         var highest = nextSequence - 1;
+
+        // Every unit is sealed and checked before anything is written, so a refusal in the middle of a batch can
+        // never leave a partially enlisted batch behind or strand the sequences it had already consumed.
+        var prepared = new List<(
+            string UnitKey,
+            ExecutionEvidenceBodyKind Kind,
+            long Sequence,
+            ExecutionEvidenceSealedUnit Sealed,
+            byte[] Payload)>(units.Count);
         foreach (var unit in units)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (await UnitKeyExistsAsync(connection, transaction, originIdentitySha256, unit.UnitKey, cancellationToken)
-                .ConfigureAwait(false))
+            // The key is bounded once and reused, so the existence check and the insert can never disagree about
+            // which key this unit owns.
+            var unitKey = Bound(unit.UnitKey, 128);
+            var storedUnit = await ReadUnitKeyAsync(
+                connection, transaction, originIdentitySha256, unitKey, cancellationToken).ConfigureAwait(false);
+            var sequence = storedUnit?.Sequence ?? nextSequence++;
+            ExecutionEvidenceSealedUnit sealedUnit;
+            try
             {
-                continue;
+                sealedUnit = unit.Seal(sequence);
             }
-
-            var sequence = nextSequence++;
-            var sealedUnit = unit.Seal(sequence);
+            catch (Exception exception) when (exception is ArgumentException or InvalidDataException or JsonException)
+            {
+                // A durable row that cannot be sealed into a valid unit of this contract version can never be
+                // exported. Refusing it here keeps the failure inside the export lane: the cursor still advances,
+                // the loss is counted durably, and the host is never faulted by one unexportable execution.
+                return await RejectAsync(
+                    connection, transaction, cursor, executionId, backlog.HighestSequence,
+                    GraphExecutionEvidenceReasonCodes.InvalidBody, cancellationToken).ConfigureAwait(false);
+            }
             var payload = sealedUnit.Payload.ToArray();
-            EnsureSha256(sealedUnit.PayloadSha256, nameof(unit));
+            EnsureSha256(sealedUnit.PayloadSha256, nameof(units));
             if (payload.Length > limits.MaximumUnitBytes)
             {
-                throw new InvalidDataException(
-                    $"Sealed evidence unit '{unit.UnitKey}' is {payload.Length} bytes, above the configured bound.");
+                return await RejectAsync(
+                    connection, transaction, cursor, executionId, backlog.HighestSequence,
+                    GraphExecutionEvidenceReasonCodes.PayloadTooLarge, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (storedUnit is { } existing)
+            {
+                // The key is already durable. Identical canonical bytes are idempotent; different bytes mean the
+                // projection now produces something else for a fact that was already sealed, and the stored unit
+                // stays authoritative while the disagreement is recorded for an operator.
+                if (!string.Equals(existing.PayloadSha256, sealedUnit.PayloadSha256, StringComparison.Ordinal))
+                {
+                    await InsertConflictAsync(
+                        connection, transaction, originIdentitySha256, sequence, existing.PayloadSha256,
+                        sealedUnit.PayloadSha256, GraphExecutionEvidenceReasonCodes.SequenceConflict,
+                        now, cancellationToken).ConfigureAwait(false);
+                }
+                continue;
             }
 
             pendingBytes += payload.Length;
@@ -245,6 +289,12 @@ public sealed class SqliteExecutionEvidenceOutbox(
                     ExecutionEvidenceExportReasonCodes.BacklogSaturated);
             }
 
+            prepared.Add((unitKey, unit.Kind, sequence, sealedUnit, payload));
+            highest = sequence;
+        }
+
+        foreach (var (unitKey, kind, sequence, sealedUnit, payload) in prepared)
+        {
             using var insert = connection.CreateCommand();
             insert.Transaction = transaction;
             insert.CommandText = """
@@ -258,17 +308,16 @@ public sealed class SqliteExecutionEvidenceOutbox(
             insert.Parameters.AddWithValue("$origin", originIdentitySha256);
             insert.Parameters.AddWithValue("$sequence", sequence);
             insert.Parameters.AddWithValue("$evidence", Compact(sealedUnit.EvidenceId));
-            insert.Parameters.AddWithValue("$kind", unit.Kind.ToString());
-            insert.Parameters.AddWithValue("$key", Bound(unit.UnitKey, 128));
+            insert.Parameters.AddWithValue("$kind", kind.ToString());
+            insert.Parameters.AddWithValue("$key", unitKey);
             insert.Parameters.AddWithValue("$payload", payload);
             insert.Parameters.AddWithValue("$hash", sealedUnit.PayloadSha256);
             insert.Parameters.AddWithValue("$bytes", payload.Length);
             insert.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            enlisted++;
-            highest = sequence;
         }
 
+        var enlisted = prepared.Count;
         if (enlisted > 0)
         {
             using var advance = connection.CreateCommand();
@@ -288,6 +337,67 @@ public sealed class SqliteExecutionEvidenceOutbox(
                 : ExecutionEvidenceEnlistmentDisposition.Enlisted,
             enlisted,
             highest);
+    }
+
+    /// <summary>
+    /// Commits a durable rejection: the sweep cursor advances past the unexportable execution and the count is
+    /// recorded, so nothing partially written survives and the loss stays visible in local status.
+    /// </summary>
+    private async ValueTask<ExecutionEvidenceEnlistmentResult> RejectAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ExecutionEvidenceDiscoveryCursor cursor,
+        Guid executionId,
+        long highestSequence,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            // Keyed by execution, so a bounded re-read of the same unexportable row counts one loss rather than one
+            // per sweep, while leaving the row eligible again if a later contract version can express it.
+            command.CommandText = """
+                INSERT INTO execution_evidence_rejections(execution_id, reason, observed_unix_ms)
+                VALUES ($execution, $reason, $now)
+                ON CONFLICT(execution_id) DO NOTHING;
+                """;
+            command.Parameters.AddWithValue("$execution", Compact(executionId));
+            command.Parameters.AddWithValue("$reason", Bound(reasonCode, 128));
+            command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        using (var prune = connection.CreateCommand())
+        {
+            prune.Transaction = transaction;
+            prune.CommandText = """
+                DELETE FROM execution_evidence_rejections
+                WHERE execution_id NOT IN (
+                    SELECT execution_id FROM execution_evidence_rejections
+                    ORDER BY observed_unix_ms DESC, execution_id DESC LIMIT $keep);
+                """;
+            prune.Parameters.AddWithValue("$keep", MaximumRetainedConflicts);
+            await prune.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await WriteCursorAsync(connection, transaction, cursor, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new(ExecutionEvidenceEnlistmentDisposition.Rejected, 0, highestSequence, reasonCode);
+    }
+
+    public async ValueTask RecordProjectionRejectedAsync(
+        string root,
+        ExecutionEvidenceDiscoveryCursor cursor,
+        Guid executionId,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(cursor);
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginImmediate(connection);
+        await RejectAsync(connection, transaction, cursor, executionId, 0, reasonCode, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async ValueTask RecordSourcePrunedAsync(
@@ -413,23 +523,32 @@ public sealed class SqliteExecutionEvidenceOutbox(
         string originIdentitySha256,
         IReadOnlyList<ExecutionEvidenceSequenceRangeV1> ranges,
         int maximumUnits,
+        long maximumBytes,
+        DateTimeOffset nowUtc,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(ranges);
         EnsureSha256(originIdentitySha256, nameof(originIdentitySha256));
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumUnits, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumUnits, GraphExecutionEvidenceLimits.MaximumResyncUnits);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumBytes, 1);
+        EnsureUtc(nowUtc, nameof(nowUtc));
         root = NormalizeRoot(root);
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        // One transaction, so a multi-range replay is a snapshot and its attempts are counted exactly like a normal
+        // send. A resynchronized unit must not escape the byte bound, the attempt budget, or the backoff.
+        using var transaction = BeginImmediate(connection);
         var results = new List<ExecutionEvidenceUnit>(maximumUnits);
+        long bytes = 0;
         foreach (var range in ranges.Take(GraphExecutionEvidenceLimits.MaximumResyncRanges))
         {
-            if (results.Count >= maximumUnits)
+            if (results.Count >= maximumUnits || bytes >= maximumBytes)
             {
                 break;
             }
             using var command = connection.CreateCommand();
+            command.Transaction = transaction;
             command.CommandText = UnitSelectSql + """
                  WHERE origin_identity_sha256 = $origin
                    AND origin_sequence BETWEEN $from AND $to
@@ -444,9 +563,30 @@ public sealed class SqliteExecutionEvidenceOutbox(
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                results.Add(ReadUnit(reader));
+                var unit = ReadUnit(reader);
+                if (results.Count > 0 && bytes + unit.Payload.Length > maximumBytes)
+                {
+                    break;
+                }
+                bytes += unit.Payload.Length;
+                results.Add(unit);
             }
         }
+        for (var index = 0; index < results.Count; index++)
+        {
+            using var attempt = connection.CreateCommand();
+            attempt.Transaction = transaction;
+            attempt.CommandText = """
+                UPDATE execution_evidence_units
+                SET attempt_count = attempt_count + 1, updated_unix_ms = $now
+                WHERE record_id = $record;
+                """;
+            attempt.Parameters.AddWithValue("$now", nowUtc.ToUnixTimeMilliseconds());
+            attempt.Parameters.AddWithValue("$record", results[index].RecordId);
+            await attempt.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            results[index] = results[index] with { AttemptCount = results[index].AttemptCount + 1 };
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return results;
     }
 
@@ -645,6 +785,9 @@ public sealed class SqliteExecutionEvidenceOutbox(
                 IsSha256(retainedOriginIdentitySha256) ? retainedOriginIdentitySha256! : (object)DBNull.Value);
             await origins.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+        // The audit trail and the operator receipts deliberately outlive the units they describe. Cascading them
+        // away with retention would erase the disposition history an operator is told to inspect and would turn a
+        // retried replay into a conflict instead of a detected duplicate; both are pruned by their own bound.
         using (var receipts = connection.CreateCommand())
         {
             receipts.Transaction = transaction;
@@ -656,6 +799,18 @@ public sealed class SqliteExecutionEvidenceOutbox(
                 """;
             receipts.Parameters.AddWithValue("$keep", MaximumOperationReceipts);
             await receipts.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        using (var audit = connection.CreateCommand())
+        {
+            audit.Transaction = transaction;
+            audit.CommandText = """
+                DELETE FROM execution_evidence_audit
+                WHERE audit_id NOT IN (
+                    SELECT audit_id FROM execution_evidence_audit
+                    ORDER BY audit_id DESC LIMIT $keep);
+                """;
+            audit.Parameters.AddWithValue("$keep", MaximumOperationReceipts);
+            await audit.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return removed;
@@ -923,7 +1078,7 @@ public sealed class SqliteExecutionEvidenceOutbox(
         command.Parameters.AddWithValue("$record", recordId);
         command.Parameters.AddWithValue("$action", action);
         command.Parameters.AddWithValue("$actor", actorKind);
-        command.Parameters.AddWithValue("$reason", Bound(reasonCode, 64));
+        command.Parameters.AddWithValue("$reason", Bound(reasonCode, 128));
         command.Parameters.AddWithValue("$now", occurredUnixMs);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -973,7 +1128,8 @@ public sealed class SqliteExecutionEvidenceOutbox(
         command.Transaction = transaction;
         command.CommandText = """
             SELECT discovery_terminal_unix_ms, discovery_execution_id,
-                   deferred_terminal_unix_ms, source_pruned_events
+                   deferred_terminal_unix_ms, source_pruned_events,
+                   (SELECT COUNT(*) FROM execution_evidence_rejections)
             FROM execution_evidence_state WHERE state_key = 1;
             """;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -981,7 +1137,8 @@ public sealed class SqliteExecutionEvidenceOutbox(
         {
             throw new InvalidDataException("The execution evidence outbox state row is missing.");
         }
-        return new(reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt64(3));
+        return new(
+            reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4));
     }
 
     private static async ValueTask WriteCursorAsync(
@@ -1021,7 +1178,7 @@ public sealed class SqliteExecutionEvidenceOutbox(
             : Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
-    private static async ValueTask<bool> UnitKeyExistsAsync(
+    private static async ValueTask<(long Sequence, string PayloadSha256)?> ReadUnitKeyAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         string originIdentitySha256,
@@ -1031,12 +1188,43 @@ public sealed class SqliteExecutionEvidenceOutbox(
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT 1 FROM execution_evidence_units
+            SELECT origin_sequence, payload_sha256 FROM execution_evidence_units
             WHERE origin_identity_sha256 = $origin AND unit_key = $key;
             """;
         command.Parameters.AddWithValue("$origin", originIdentitySha256);
         command.Parameters.AddWithValue("$key", unitKey);
-        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not (null or DBNull);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? (reader.GetInt64(0), reader.GetString(1))
+            : null;
+    }
+
+    private static async ValueTask InsertConflictAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string originIdentitySha256,
+        long originSequence,
+        string localPayloadSha256,
+        string observedPayloadSha256,
+        string reasonCode,
+        DateTimeOffset occurredUtc,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO execution_evidence_conflicts(
+                origin_identity_sha256, origin_sequence, local_payload_sha256, receiver_payload_sha256,
+                reason, observed_unix_ms)
+            VALUES ($origin, $sequence, $local, $observed, $reason, $now);
+            """;
+        command.Parameters.AddWithValue("$origin", originIdentitySha256);
+        command.Parameters.AddWithValue("$sequence", originSequence);
+        command.Parameters.AddWithValue("$local", localPayloadSha256);
+        command.Parameters.AddWithValue("$observed", observedPayloadSha256);
+        command.Parameters.AddWithValue("$reason", Bound(reasonCode, 128));
+        command.Parameters.AddWithValue("$now", occurredUtc.ToUnixTimeMilliseconds());
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async ValueTask<ExecutionEvidenceOriginRecord?> ReadOriginAsync(
@@ -1099,18 +1287,20 @@ public sealed class SqliteExecutionEvidenceOutbox(
                 CultureInfo.InvariantCulture);
         }
 
-        long pruned, acknowledgedThrough;
+        long pruned, acknowledgedThrough, rejected;
         using (var stateCommand = connection.CreateCommand())
         {
             stateCommand.Transaction = transaction;
             stateCommand.CommandText = """
                 SELECT (SELECT source_pruned_events FROM execution_evidence_state WHERE state_key = 1),
-                       COALESCE((SELECT MIN(acknowledged_through_sequence) FROM execution_evidence_origins), 0);
+                       COALESCE((SELECT MIN(acknowledged_through_sequence) FROM execution_evidence_origins), 0),
+                       (SELECT COUNT(*) FROM execution_evidence_rejections);
                 """;
             using var reader = await stateCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
             pruned = reader.GetInt64(0);
             acknowledgedThrough = reader.GetInt64(1);
+            rejected = reader.GetInt64(2);
         }
 
         return new(
@@ -1126,7 +1316,8 @@ public sealed class SqliteExecutionEvidenceOutbox(
             pruned,
             0,
             highest,
-            acknowledgedThrough);
+            acknowledgedThrough,
+            rejected);
     }
 
     private static ExecutionEvidenceOriginRecord ReadOriginRecord(SqliteDataReader reader)
@@ -1209,6 +1400,19 @@ public sealed class SqliteExecutionEvidenceOutbox(
             throw new InvalidDataException(
                 "The execution evidence outbox SQLite schema is not the canonical schema definition.");
         }
+    }
+
+    private static async ValueTask<long> CountSchemaObjectsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            "SELECT COUNT(*) FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%';";
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
     }
 
     private static async ValueTask<Dictionary<string, string>> ReadSchemaObjectsAsync(
@@ -1429,6 +1633,11 @@ public sealed class SqliteExecutionEvidenceOutbox(
             state_key, discovery_terminal_unix_ms, discovery_execution_id,
             deferred_terminal_unix_ms, source_pruned_events)
             VALUES (1, 0, '', 0, 0);
+        CREATE TABLE execution_evidence_rejections(
+            execution_id TEXT PRIMARY KEY CHECK(length(execution_id) = 32),
+            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 128),
+            observed_unix_ms INTEGER NOT NULL
+        ) STRICT;
         CREATE TABLE execution_evidence_origins(
             origin_identity_sha256 TEXT PRIMARY KEY CHECK(length(origin_identity_sha256) = 64),
             origin_installation_id TEXT NOT NULL CHECK(length(origin_installation_id) = 32),
@@ -1464,7 +1673,7 @@ public sealed class SqliteExecutionEvidenceOutbox(
             acknowledged_unix_ms INTEGER NULL,
             last_reason TEXT NULL CHECK(last_reason IS NULL OR length(last_reason) BETWEEN 1 AND 128),
             terminal_actor TEXT NULL CHECK(terminal_actor IS NULL OR terminal_actor IN ('owner', 'system')),
-            terminal_reason TEXT NULL CHECK(terminal_reason IS NULL OR length(terminal_reason) BETWEEN 1 AND 64),
+            terminal_reason TEXT NULL CHECK(terminal_reason IS NULL OR length(terminal_reason) BETWEEN 1 AND 128),
             terminal_unix_ms INTEGER NULL,
             CHECK((status = 'acknowledged') = (acknowledged_unix_ms IS NOT NULL)),
             CHECK((status = 'abandoned') = (terminal_unix_ms IS NOT NULL)),
@@ -1483,14 +1692,15 @@ public sealed class SqliteExecutionEvidenceOutbox(
             ON execution_evidence_units(status, record_id DESC);
         CREATE INDEX ix_execution_evidence_units_acknowledged
             ON execution_evidence_units(status, acknowledged_unix_ms, record_id);
+        CREATE INDEX ix_execution_evidence_units_totals
+            ON execution_evidence_units(status, payload_bytes, attempt_count, created_unix_ms, origin_sequence);
         CREATE TABLE execution_evidence_audit(
             audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
             record_id INTEGER NOT NULL,
             action TEXT NOT NULL CHECK(length(action) BETWEEN 1 AND 32),
             actor_kind TEXT NOT NULL CHECK(actor_kind IN ('owner', 'system')),
-            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 64),
-            occurred_unix_ms INTEGER NOT NULL,
-            FOREIGN KEY(record_id) REFERENCES execution_evidence_units(record_id) ON DELETE CASCADE
+            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 128),
+            occurred_unix_ms INTEGER NOT NULL
         ) STRICT;
         CREATE INDEX ix_execution_evidence_audit_record
             ON execution_evidence_audit(record_id, audit_id DESC);
@@ -1499,9 +1709,8 @@ public sealed class SqliteExecutionEvidenceOutbox(
             record_id INTEGER NOT NULL,
             action TEXT NOT NULL CHECK(action IN ('replay', 'abandon')),
             actor_kind TEXT NOT NULL CHECK(actor_kind IN ('owner', 'system')),
-            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 64),
-            occurred_unix_ms INTEGER NOT NULL,
-            FOREIGN KEY(record_id) REFERENCES execution_evidence_units(record_id) ON DELETE CASCADE
+            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 128),
+            occurred_unix_ms INTEGER NOT NULL
         ) STRICT;
         CREATE TABLE execution_evidence_conflicts(
             conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,

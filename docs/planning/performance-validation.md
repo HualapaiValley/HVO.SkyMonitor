@@ -212,8 +212,8 @@ runtime signals are pinned in
 Execution-evidence export evidence (#537):
 `ExecutionEvidenceExportPerformanceTests` (Manual, CameraAgent test project)
 records the `W6` capture stage twice on separate roots — once with the export
-lane absent and once with it running at saturation against a sink that refuses
-every submission — plus a drain stage that enlists a bounded backlog and drains
+lane absent and once with an export cycle running concurrently with each capture
+against a sink that negotiates and then refuses every submission — plus a drain stage that enlists a bounded backlog and drains
 it against the conformance sink. It reports per-capture median/min/max latency,
 process CPU, working set, allocated bytes, raw-ingress bytes, completed
 executions, export backlog depth and durable bytes, enlistment throughput,

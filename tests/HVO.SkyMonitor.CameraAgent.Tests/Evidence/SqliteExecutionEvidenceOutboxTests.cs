@@ -72,6 +72,7 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         var first = await outbox.EnlistAsync(
             root.Path,
             origin.IdentitySha256,
+            Guid.NewGuid(),
             [
                 ExecutionEvidenceTestFactory.RevisionUnit(origin),
                 ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)
@@ -96,6 +97,7 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         var repeat = await outbox.EnlistAsync(
             root.Path,
             origin.IdentitySha256,
+            Guid.NewGuid(),
             [
                 ExecutionEvidenceTestFactory.RevisionUnit(origin),
                 ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)
@@ -118,10 +120,12 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         {
             await outbox.EnsureOriginAsync(root.Path, origin, CancellationToken.None).ConfigureAwait(false);
             await outbox.EnlistAsync(
-                root.Path, origin.IdentitySha256, [], new(500, "0000000000000000000000000000000a", 400, 0),
+                root.Path, origin.IdentitySha256, Guid.Empty, [],
+                new(500, "0000000000000000000000000000000a", 400, 0),
                 ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () => await outbox.EnlistAsync(
-                    root.Path, origin.IdentitySha256, [], new(499, "0000000000000000000000000000000a", 0, 0),
+                    root.Path, origin.IdentitySha256, Guid.Empty, [],
+                    new(499, "0000000000000000000000000000000a", 0, 0),
                     ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false))
                 .ConfigureAwait(false);
         }
@@ -148,6 +152,7 @@ public sealed class SqliteExecutionEvidenceOutboxTests
             await outbox.EnlistAsync(
                 root.Path,
                 origin.IdentitySha256,
+                Guid.NewGuid(),
                 [ExecutionEvidenceTestFactory.ExecutionUnit(origin, ordinal)],
                 new(ordinal, ExecutionEvidenceTestFactory.ExecutionId(ordinal).ToString("N"), 0, 0),
                 ExecutionEvidenceTestFactory.UnboundedLimits,
@@ -193,7 +198,8 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         for (var ordinal = 1; ordinal <= 5; ordinal++)
         {
             await outbox.EnlistAsync(
-                root.Path, origin.IdentitySha256, [ExecutionEvidenceTestFactory.ExecutionUnit(origin, ordinal)],
+                root.Path, origin.IdentitySha256, Guid.NewGuid(),
+                [ExecutionEvidenceTestFactory.ExecutionUnit(origin, ordinal)],
                 new(ordinal, ExecutionEvidenceTestFactory.ExecutionId(ordinal).ToString("N"), 0, 0),
                 ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
         }
@@ -218,13 +224,15 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         var origin = ExecutionEvidenceTestFactory.CreateOrigin();
         await outbox.EnsureOriginAsync(root.Path, origin, CancellationToken.None).ConfigureAwait(false);
         await outbox.EnlistAsync(
-            root.Path, origin.IdentitySha256, [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)],
+            root.Path, origin.IdentitySha256, Guid.NewGuid(),
+            [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)],
             new(1, ExecutionEvidenceTestFactory.ExecutionId(1).ToString("N"), 0, 0),
             ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
 
         var saturated = await outbox.EnlistAsync(
             root.Path,
             origin.IdentitySha256,
+            Guid.NewGuid(),
             [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 2)],
             new(2, ExecutionEvidenceTestFactory.ExecutionId(2).ToString("N"), 0, 0),
             new(1, long.MaxValue, long.MaxValue, GraphExecutionEvidenceLimits.MaximumEnvelopeBytes),
@@ -240,6 +248,7 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         var storageSaturated = await outbox.EnlistAsync(
             root.Path,
             origin.IdentitySha256,
+            Guid.NewGuid(),
             [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 3)],
             new(3, ExecutionEvidenceTestFactory.ExecutionId(3).ToString("N"), 0, 0),
             new(long.MaxValue, long.MaxValue, 1, GraphExecutionEvidenceLimits.MaximumEnvelopeBytes),
@@ -256,7 +265,8 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         var origin = ExecutionEvidenceTestFactory.CreateOrigin();
         await outbox.EnsureOriginAsync(root.Path, origin, CancellationToken.None).ConfigureAwait(false);
         await outbox.EnlistAsync(
-            root.Path, origin.IdentitySha256, [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)],
+            root.Path, origin.IdentitySha256, Guid.NewGuid(),
+            [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)],
             new(1, ExecutionEvidenceTestFactory.ExecutionId(1).ToString("N"), 0, 0),
             ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
         var unit = (await outbox.ReadPendingAsync(
@@ -291,7 +301,8 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         var origin = ExecutionEvidenceTestFactory.CreateOrigin();
         await outbox.EnsureOriginAsync(root.Path, origin, CancellationToken.None).ConfigureAwait(false);
         await outbox.EnlistAsync(
-            root.Path, origin.IdentitySha256, [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)],
+            root.Path, origin.IdentitySha256, Guid.NewGuid(),
+            [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)],
             new(1, ExecutionEvidenceTestFactory.ExecutionId(1).ToString("N"), 0, 0),
             ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
 
@@ -348,7 +359,8 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         var origin = ExecutionEvidenceTestFactory.CreateOrigin();
         await outbox.EnsureOriginAsync(root.Path, origin, CancellationToken.None).ConfigureAwait(false);
         await outbox.EnlistAsync(
-            root.Path, origin.IdentitySha256, [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)],
+            root.Path, origin.IdentitySha256, Guid.NewGuid(),
+            [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)],
             new(1, ExecutionEvidenceTestFactory.ExecutionId(1).ToString("N"), 0, 0),
             ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
         var record = (await outbox.ReadOperationsPageAsync(root.Path, 10, null, CancellationToken.None)
@@ -381,7 +393,8 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         for (var ordinal = 1; ordinal <= 4; ordinal++)
         {
             await outbox.EnlistAsync(
-                root.Path, origin.IdentitySha256, [ExecutionEvidenceTestFactory.ExecutionUnit(origin, ordinal)],
+                root.Path, origin.IdentitySha256, Guid.NewGuid(),
+                [ExecutionEvidenceTestFactory.ExecutionUnit(origin, ordinal)],
                 new(ordinal, ExecutionEvidenceTestFactory.ExecutionId(ordinal).ToString("N"), 0, 0),
                 ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
         }
@@ -422,13 +435,15 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         Assert.AreNotEqual(first.IdentitySha256, second.IdentitySha256);
         await outbox.EnsureOriginAsync(root.Path, first, CancellationToken.None).ConfigureAwait(false);
         await outbox.EnlistAsync(
-            root.Path, first.IdentitySha256, [ExecutionEvidenceTestFactory.ExecutionUnit(first, 1)],
+            root.Path, first.IdentitySha256, Guid.NewGuid(),
+            [ExecutionEvidenceTestFactory.ExecutionUnit(first, 1)],
             new(1, ExecutionEvidenceTestFactory.ExecutionId(1).ToString("N"), 0, 0),
             ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
 
         await outbox.EnsureOriginAsync(root.Path, second, CancellationToken.None).ConfigureAwait(false);
         await outbox.EnlistAsync(
-            root.Path, second.IdentitySha256, [ExecutionEvidenceTestFactory.ExecutionUnit(second, 2)],
+            root.Path, second.IdentitySha256, Guid.NewGuid(),
+            [ExecutionEvidenceTestFactory.ExecutionUnit(second, 2)],
             new(2, ExecutionEvidenceTestFactory.ExecutionId(2).ToString("N"), 0, 0),
             ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
 
@@ -454,7 +469,8 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         for (var ordinal = 1; ordinal <= 6; ordinal++)
         {
             await outbox.EnlistAsync(
-                root.Path, origin.IdentitySha256, [ExecutionEvidenceTestFactory.ExecutionUnit(origin, ordinal)],
+                root.Path, origin.IdentitySha256, Guid.NewGuid(),
+                [ExecutionEvidenceTestFactory.ExecutionUnit(origin, ordinal)],
                 new(ordinal, ExecutionEvidenceTestFactory.ExecutionId(ordinal).ToString("N"), 0, 0),
                 ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
         }
@@ -465,10 +481,20 @@ public sealed class SqliteExecutionEvidenceOutboxTests
             new ExecutionEvidenceSequenceRangeV1(ExecutionEvidenceSequenceRangeV1.CurrentSchemaVersion, 5, 6)
         };
         var resynchronized = await outbox.ReadRangeAsync(
-            root.Path, origin.IdentitySha256, ranges, 3, CancellationToken.None).ConfigureAwait(false);
+            root.Path, origin.IdentitySha256, ranges, 3, 8L * 1024 * 1024, ExecutionEvidenceTestFactory.BaseUtc,
+            CancellationToken.None).ConfigureAwait(false);
         CollectionAssert.AreEqual(
             new long[] { 2, 3, 5 },
             resynchronized.Select(static unit => unit.OriginSequence).ToArray());
+        Assert.IsTrue(
+            resynchronized.All(static unit => unit.AttemptCount == 1),
+            "A resynchronized unit spends an attempt exactly like a normal send.");
+
+        // A byte budget below one unit still yields exactly one unit, and never more than the budget beyond that.
+        var bounded = await outbox.ReadRangeAsync(
+            root.Path, origin.IdentitySha256, ranges, 3, 1, ExecutionEvidenceTestFactory.BaseUtc,
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, bounded.Count);
     }
 
     [TestMethod]
@@ -506,7 +532,8 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         var origin = ExecutionEvidenceTestFactory.CreateOrigin();
         await outbox.EnsureOriginAsync(root.Path, origin, CancellationToken.None).ConfigureAwait(false);
         await outbox.EnlistAsync(
-            root.Path, origin.IdentitySha256, [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)],
+            root.Path, origin.IdentitySha256, Guid.NewGuid(),
+            [ExecutionEvidenceTestFactory.ExecutionUnit(origin, 1)],
             new(1, ExecutionEvidenceTestFactory.ExecutionId(1).ToString("N"), 0, 0),
             ExecutionEvidenceTestFactory.UnboundedLimits, CancellationToken.None).ConfigureAwait(false);
         await outbox.RecordAcknowledgedThroughAsync(root.Path, origin.IdentitySha256, 5, CancellationToken.None)

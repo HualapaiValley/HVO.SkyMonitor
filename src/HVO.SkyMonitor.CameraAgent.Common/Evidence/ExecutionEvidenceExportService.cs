@@ -46,6 +46,8 @@ internal sealed partial class ExecutionEvidenceExportService(
     private long _conflictUnits;
     private long _drainedUnits;
     private int _inFlight;
+    private DateTimeOffset? _lastAcknowledgementUtc;
+    private bool _unclosableResync;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -147,13 +149,19 @@ internal sealed partial class ExecutionEvidenceExportService(
         ExecutionEvidenceExportOptions exportOptions,
         CancellationToken cancellationToken)
     {
+        state.ResetInFlight();
         var pressure = storagePressure.Get(root) is { IsUnderPressure: true };
         var configured = await transport.IsAvailableAsync(cancellationToken).ConfigureAwait(false);
         string? sweepReason = null;
         if (configured)
         {
-            sweepReason = await SweepAsync(root, origin, exportOptions, pressure, cancellationToken)
-                .ConfigureAwait(false);
+            // A receiver that shares no schema version can never accept anything, so the lane must stop enlisting as
+            // well as stop sending; otherwise the outbox would grow to its storage bound with nowhere to drain.
+            if (!_negotiationRefused)
+            {
+                sweepReason = await SweepAsync(root, origin, exportOptions, pressure, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             if (!_negotiationRefused && _negotiatedSchemaVersion is null)
             {
                 await NegotiateAsync(origin, cancellationToken).ConfigureAwait(false);
@@ -180,7 +188,8 @@ internal sealed partial class ExecutionEvidenceExportService(
             timeProvider.GetUtcNow(),
             backlog,
             pressure,
-            _negotiatedSchemaVersion);
+            _negotiatedSchemaVersion,
+            _lastAcknowledgementUtc);
     }
 
     private (ExecutionEvidenceExportAvailability Availability, string ReasonCode) Evaluate(
@@ -205,6 +214,13 @@ internal sealed partial class ExecutionEvidenceExportService(
         if (sweepReason is not null)
         {
             return (ExecutionEvidenceExportAvailability.Degraded, sweepReason);
+        }
+        if (_unclosableResync)
+        {
+            // The receiver reports a gap over sequences this origin no longer holds, so no bounded replay can close
+            // it. That is an operator decision, not a retry, and it must not read as a drained lane.
+            return (ExecutionEvidenceExportAvailability.Degraded,
+                ExecutionEvidenceExportReasonCodes.ResyncRequested);
         }
         if (pressure)
         {
@@ -270,12 +286,18 @@ internal sealed partial class ExecutionEvidenceExportService(
         var exportedRevisions = new HashSet<string>(StringComparer.Ordinal);
         string? rejectedReason = null;
 
+        // The sweep re-reads a bounded window below the durable cursor so an execution that became terminal long
+        // after it was accepted is still seen. Re-reading is free: enlistment is idempotent by unit key.
+        var lookbackMs = (long)TimeSpan.FromHours(exportOptions.DiscoveryLookbackHours).TotalMilliseconds;
+        var scanUnixMs = Math.Max(0, cursor.TerminalUnixMs - lookbackMs);
+        var scanExecutionId = scanUnixMs == cursor.TerminalUnixMs ? cursor.ExecutionId : string.Empty;
+
         for (var batch = 0; batch < exportOptions.MaximumDiscoveryBatchesPerCycle; batch++)
         {
             var started = timeProvider.GetTimestamp();
             var rows = await operations.ReadTerminalExecutionsAsync(
-                cursor.TerminalUnixMs,
-                cursor.ExecutionId,
+                scanUnixMs,
+                scanExecutionId,
                 exportOptions.DiscoveryBatchSize,
                 cancellationToken).ConfigureAwait(false);
             if (rows.Count == 0)
@@ -293,32 +315,57 @@ internal sealed partial class ExecutionEvidenceExportService(
             foreach (var row in rows)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                scanUnixMs = row.AcceptedUnixMs;
+                scanExecutionId = row.ExecutionId.ToString("N");
                 var units = await CreateUnitsAsync(row, origin, redaction, exportedRevisions, cancellationToken)
                     .ConfigureAwait(false);
-                var next = cursor with
-                {
-                    TerminalUnixMs = row.TerminalUnixMs,
-                    ExecutionId = row.State.ExecutionId.ToString("N")
-                };
+                // The durable cursor only ever moves forward; a row inside the lookback window keeps it where it is.
+                var next = row.AcceptedUnixMs > cursor.TerminalUnixMs ||
+                    (row.AcceptedUnixMs == cursor.TerminalUnixMs &&
+                        string.CompareOrdinal(scanExecutionId, cursor.ExecutionId) > 0)
+                    ? cursor with { TerminalUnixMs = row.AcceptedUnixMs, ExecutionId = scanExecutionId }
+                    : cursor;
                 if (units.Count == 0)
                 {
                     // Either the execution vanished between the sweep and the read, or a durable value could not be
-                    // expressed in this contract version. Both are recorded and the cursor advances past the row, so
-                    // one unexportable execution never stalls the lane; the reason stays visible in local status.
+                    // expressed in this contract version. The refusal is counted durably and the cursor advances past
+                    // the row, so one unexportable execution never stalls the lane and the loss stays visible.
                     rejectedReason ??= ExecutionEvidenceExportReasonCodes.ProjectionRejected;
                     cursor = next;
-                    await DeferAsync(root, origin.IdentitySha256, cursor, cancellationToken).ConfigureAwait(false);
+                    await outbox.RecordProjectionRejectedAsync(
+                        root, cursor, row.ExecutionId, GraphExecutionEvidenceReasonCodes.InvalidBody,
+                        cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
                 var result = await outbox.EnlistAsync(
-                    root, origin.IdentitySha256, units, next, limits, cancellationToken).ConfigureAwait(false);
+                    root, origin.IdentitySha256, row.ExecutionId, units, next, limits, cancellationToken)
+                    .ConfigureAwait(false);
+                if (result.Disposition == ExecutionEvidenceEnlistmentDisposition.Rejected)
+                {
+                    // The store advanced the cursor and counted the loss durably, so the lane continues rather than
+                    // re-reading the same unexportable execution forever.
+                    Log.ProjectionRejected(
+                        logger,
+                        result.ReasonCode ?? GraphExecutionEvidenceReasonCodes.InvalidBody,
+                        $"execution:{row.ExecutionId:N}");
+                    rejectedReason ??= ExecutionEvidenceExportReasonCodes.ProjectionRejected;
+                    cursor = next;
+                    continue;
+                }
                 if (result.Disposition == ExecutionEvidenceEnlistmentDisposition.Saturated)
                 {
+                    // Only ever lower the deferred key: it must name the oldest evidence this exporter saw but did
+                    // not seal, or a second saturation further ahead would hide the first one's loss.
                     await DeferAsync(
                         root,
                         origin.IdentitySha256,
-                        cursor with { DeferredTerminalUnixMs = row.TerminalUnixMs },
+                        cursor with
+                        {
+                            DeferredTerminalUnixMs = cursor.DeferredTerminalUnixMs == 0
+                                ? row.AcceptedUnixMs
+                                : Math.Min(cursor.DeferredTerminalUnixMs, row.AcceptedUnixMs)
+                        },
                         cancellationToken).ConfigureAwait(false);
                     telemetry.Record("sweep", "saturated", timeProvider.GetElapsedTime(started));
                     Log.Saturated(logger, result.ReasonCode ?? ExecutionEvidenceExportReasonCodes.BacklogSaturated);
@@ -329,7 +376,7 @@ internal sealed partial class ExecutionEvidenceExportService(
                 if (result.EnlistedCount > 0)
                 {
                     telemetry.Record("enlist", "enlisted", TimeSpan.Zero, result.EnlistedCount);
-                    Log.Enlisted(logger, result.EnlistedCount, row.State.ExecutionId);
+                    Log.Enlisted(logger, result.EnlistedCount, row.ExecutionId);
                     wakeup.Signal();
                 }
             }
@@ -350,6 +397,7 @@ internal sealed partial class ExecutionEvidenceExportService(
         => _ = await outbox.EnlistAsync(
             root,
             originIdentitySha256,
+            Guid.Empty,
             [],
             cursor,
             new(long.MaxValue, long.MaxValue, long.MaxValue, GraphExecutionEvidenceLimits.MaximumEnvelopeBytes),
@@ -366,7 +414,7 @@ internal sealed partial class ExecutionEvidenceExportService(
         HashSet<string> exportedRevisions,
         CancellationToken cancellationToken)
     {
-        var detail = await operations.ReadExecutionDetailAsync(row.State.ExecutionId, cancellationToken)
+        var detail = await operations.ReadExecutionDetailAsync(row.ExecutionId, cancellationToken)
             .ConfigureAwait(false);
         if (detail is null)
         {
@@ -374,7 +422,7 @@ internal sealed partial class ExecutionEvidenceExportService(
         }
 
         var units = new List<ExecutionEvidenceEnlistmentUnit>(3);
-        var revisionId = row.State.GraphRevisionId;
+        var revisionId = detail.Execution.GraphRevisionId;
         // The revision is marked exported only once its unit is actually built. Marking it earlier would let a later
         // execution of the same revision ship without the canonical body it depends on.
         if (!exportedRevisions.Contains(revisionId))
@@ -401,12 +449,17 @@ internal sealed partial class ExecutionEvidenceExportService(
                 Log.ProjectionRejected(logger, revision.ReasonCode!, revision.FieldPath!);
                 return [];
             }
-            var revisionProducedUtc = timeProvider.GetUtcNow();
+            var revisionKey = $"revision:{revisionId}";
             units.Add(new(
                 ExecutionEvidenceBodyKind.GraphRevision,
-                $"revision:{revisionId}",
+                revisionKey,
                 sequence => Seal(ProcessingGraphEvidenceProjection.CreateEnvelope(
-                    origin, sequence, Guid.NewGuid(), revisionProducedUtc, revision.Value!, redaction))));
+                    origin,
+                    sequence,
+                    DeriveEvidenceId(origin.IdentitySha256, revisionKey),
+                    revision.Value!.CreatedUtc,
+                    revision.Value!,
+                    redaction))));
             exportedRevisions.Add(revisionId);
         }
 
@@ -416,14 +469,23 @@ internal sealed partial class ExecutionEvidenceExportService(
             Log.ProjectionRejected(logger, execution.ReasonCode!, execution.FieldPath!);
             return [];
         }
-        var executionProducedUtc = timeProvider.GetUtcNow();
+        // Every unit is sealed deterministically from immutable production facts. A bounded re-read of the same
+        // execution must produce byte-identical bytes, or the durable idempotency key would disagree with the
+        // payload hash on every sweep and manufacture a conflict out of nothing.
+        var producedAtUtc = execution.Value!.CompletedUtc ?? execution.Value!.AcceptedUtc;
+        var executionKey = $"execution:{row.ExecutionId:N}";
         units.Add(new(
             ExecutionEvidenceBodyKind.GraphExecution,
-            $"execution:{row.State.ExecutionId:N}",
+            executionKey,
             sequence => Seal(ProcessingGraphEvidenceProjection.CreateEnvelope(
-                origin, sequence, Guid.NewGuid(), executionProducedUtc, execution.Value!, redaction))));
+                origin,
+                sequence,
+                DeriveEvidenceId(origin.IdentitySha256, executionKey),
+                producedAtUtc,
+                execution.Value!,
+                redaction))));
 
-        var observedAtUtc = timeProvider.GetUtcNow();
+        var observedAtUtc = producedAtUtc;
         var availability = ProcessingGraphEvidenceProjection.CreateAvailabilityReport(detail, observedAtUtc);
         if (availability.Outcome == ProcessingGraphEvidenceProjectionOutcome.Rejected)
         {
@@ -432,13 +494,33 @@ internal sealed partial class ExecutionEvidenceExportService(
         }
         if (availability.Outcome == ProcessingGraphEvidenceProjectionOutcome.Projected)
         {
+            var availabilityKey = $"availability:{row.ExecutionId:N}";
             units.Add(new(
                 ExecutionEvidenceBodyKind.ArtifactAvailability,
-                $"availability:{row.State.ExecutionId:N}",
+                availabilityKey,
                 sequence => Seal(ProcessingGraphEvidenceProjection.CreateEnvelope(
-                    origin, sequence, Guid.NewGuid(), observedAtUtc, availability.Value!, redaction))));
+                    origin,
+                    sequence,
+                    DeriveEvidenceId(origin.IdentitySha256, availabilityKey),
+                    observedAtUtc,
+                    availability.Value!,
+                    redaction))));
         }
         return units;
+    }
+
+    /// <summary>
+    /// Derives a stable evidence identity from the origin and the unit key, so the same durable fact always seals to
+    /// the same bytes for the same origin and a different origin still gets a distinct identity.
+    /// </summary>
+    internal static Guid DeriveEvidenceId(string originIdentitySha256, string unitKey)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"{originIdentitySha256}\n{unitKey}"));
+        var bytes = hash.AsSpan(0, 16).ToArray();
+        bytes[6] = (byte)((bytes[6] & 0x0F) | 0x40);
+        bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);
+        return new Guid(bytes);
     }
 
     /// <summary>Serializes one sealed envelope and keeps its canonical payload hash and evidence identity together.</summary>
@@ -524,7 +606,12 @@ internal sealed partial class ExecutionEvidenceExportService(
             var identity = originRecord.IdentitySha256;
             var units = _pendingResync.Remove(identity, out var resync)
                 ? await outbox.ReadRangeAsync(
-                    root, identity, resync.Ranges, Math.Min(resync.MaximumUnits, exportOptions.MaximumRequestUnits),
+                    root,
+                    identity,
+                    resync.Ranges,
+                    Math.Min(resync.MaximumUnits, exportOptions.MaximumRequestUnits),
+                    exportOptions.MaximumRequestBytes,
+                    timeProvider.GetUtcNow(),
                     cancellationToken).ConfigureAwait(false)
                 // The contract publishes no per-submission unit cap of its own, so the negotiated bounded-replay cap
                 // is applied as the batch bound: it is the largest unit count the receiver ever asks this producer
@@ -539,8 +626,11 @@ internal sealed partial class ExecutionEvidenceExportService(
                     cancellationToken).ConfigureAwait(false);
             if (units.Count == 0)
             {
+                // A resynchronization that finds nothing to replay cannot close the receiver's gap.
+                _unclosableResync = resync is not null;
                 continue;
             }
+            _unclosableResync = false;
 
             var started = timeProvider.GetTimestamp();
             var payloads = units.Select(static unit => unit.Payload.ToArray()).ToArray();
@@ -637,6 +727,7 @@ internal sealed partial class ExecutionEvidenceExportService(
                         root, identity, sequence, acknowledged.PayloadSha256, feedback.ServerTimeUtc,
                         cancellationToken).ConfigureAwait(false);
                     _drainedUnits++;
+                    _lastAcknowledgementUtc = feedback.ServerTimeUtc;
                 }
                 catch (InvalidDataException)
                 {
@@ -736,7 +827,9 @@ internal sealed partial class ExecutionEvidenceExportService(
     }
 
     private static bool IsRecoverable(Exception exception)
-        => exception is IOException or InvalidDataException or InvalidOperationException or
+        // ArgumentException is included deliberately: the contract serializer raises it for every validation and
+        // limit failure, and no such failure may ever fault the host that is acquiring and processing frames.
+        => exception is IOException or InvalidDataException or InvalidOperationException or ArgumentException or
             UnauthorizedAccessException or System.Text.Json.JsonException or Microsoft.Data.Sqlite.SqliteException or
             KeyNotFoundException;
 

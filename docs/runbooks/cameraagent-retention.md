@@ -244,10 +244,12 @@ while CameraAgent is stopped or through a SQLite-consistent snapshot, and never
 edit those files while the host is running.
 
 The store pins schema version 1 and compares its entire `sqlite_master`
-definition against the canonical schema on every open. A drifted or newer store
-fails closed and the export lane reports `export.durable-state-unavailable`;
-capture, raw ingress, live processing, publication, artifact upload, and replay
-continue unaffected, because nothing local reads this store.
+definition against the canonical schema the first time the host opens it. A
+drifted or newer store fails closed: the lane reports
+`export.durable-state-unavailable` and stops for the lifetime of the process, so
+repairing or archiving the file requires a host restart to take effect. Capture,
+raw ingress, live processing, publication, artifact upload, and replay continue
+unaffected, because nothing local reads this store.
 
 Recovery steps for a stalled or degraded lane:
 
@@ -256,15 +258,20 @@ Recovery steps for a stalled or degraded lane:
    (standalone; nothing is enlisted and nothing accumulates),
    `export.backlog-saturated`, `export.storage-saturated`,
    `export.storage-pressure`, `export.source-pruned`,
-   `export.negotiation-rejected`, `export.authentication-blocked`, or
-   `export.acknowledgement-pending`.
+   `export.projection-rejected`, `export.quarantined`,
+   `export.negotiation-rejected`, `export.authentication-blocked`,
+   `export.resync-requested`, `export.acknowledgement-pending`, or
+   `export.cycle-failed`.
 2. For a saturation or pressure state, free space or raise the relevant
    `CameraAgent:ExecutionEvidenceExport` bound. Enlistment resumes from the
    durable cursor; nothing already enlisted was discarded.
 3. For `export.source-pruned`, source retention removed terminal executions the
    exporter had deferred and never sealed. The counter and the log entry record
    it; that evidence cannot be recovered and the operator decides whether to
-   widen retention or the export bounds so it does not recur.
+   widen retention or the export bounds so it does not recur. For
+   `export.projection-rejected`, an execution carried a durable value this
+   contract version cannot express or sealed above `MaximumUnitBytes`; it is
+   counted once per execution and the sweep continues past it.
 4. For quarantined units, list them with
    `GET /api/v1/operations/outboxes/execution-evidence`, inspect one with
    `GET /api/v1/operations/outboxes/execution-evidence/{reference}` and its
@@ -284,10 +291,13 @@ operator URLs.
 Retention removes only acknowledged units, and only those older than
 `AcknowledgementRetentionHours` or beyond `MaximumRetainedAcknowledgements`.
 Pending, retrying, quarantined, and abandoned units are retained until the
-receiver acknowledges them or an operator disposes of them. Export retention is
-independent of frame and artifact retention: this lane holds no payload path and
-pins no image file, so it neither blocks nor is blocked by the disk-pressure
-sweep.
+receiver acknowledges them or an operator disposes of them, and the audit trail
+and operator receipts outlive the units they describe so the disposition history
+above stays readable. This lane pins no image file and holds no payload path, so
+it never blocks the disk-pressure sweep and the sweep never deletes anything it
+owns; disk pressure does pause new enlistment, which is reported as
+`export.storage-pressure` and resumes from the durable cursor with nothing
+lost.
 
 ## Soak Validation
 

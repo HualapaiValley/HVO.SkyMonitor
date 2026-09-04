@@ -97,6 +97,11 @@ internal static class CameraAgentOutboxOperationsEndpoints
         {
             return InvalidQuery();
         }
+        if (!ExportEnabled(options))
+        {
+            // A disabled lane opens no durable store; reading it here must not create one.
+            return Results.Ok(new OutboxPage<ExecutionEvidenceOutboxItem>([], null));
+        }
         ExecutionEvidenceOutboxOperationsCursor? position = null;
         if (cursor is not null && !tokens.TryReadExecutionEvidenceCursor(cursor, out position))
         {
@@ -116,7 +121,7 @@ internal static class CameraAgentOutboxOperationsEndpoints
         OutboxOperationsTokenService tokens,
         CancellationToken cancellationToken)
     {
-        if (!tokens.TryReadExecutionEvidenceReference(reference, out var recordId))
+        if (!tokens.TryReadExecutionEvidenceReference(reference, out var recordId) || !ExportEnabled(options))
         {
             return Results.NotFound();
         }
@@ -135,7 +140,9 @@ internal static class CameraAgentOutboxOperationsEndpoints
         CancellationToken cancellationToken)
     {
         var size = pageSize ?? 50;
-        if (size is < 1 or > 100 || !tokens.TryReadExecutionEvidenceReference(reference, out var recordId))
+        if (size is < 1 or > 100 ||
+            !tokens.TryReadExecutionEvidenceReference(reference, out var recordId) ||
+            !ExportEnabled(options))
         {
             return size is < 1 or > 100 ? InvalidQuery() : Results.NotFound();
         }
@@ -172,6 +179,10 @@ internal static class CameraAgentOutboxOperationsEndpoints
             return Results.NotFound();
         }
         var options = context.RequestServices.GetRequiredService<IOptions<CameraAgentHostOptions>>();
+        if (!ExportEnabled(options))
+        {
+            return Results.NotFound();
+        }
         try
         {
             await outbox.ResolveOperationsAsync(
@@ -512,6 +523,10 @@ internal static class CameraAgentOutboxOperationsEndpoints
             !string.IsNullOrWhiteSpace(operationKey) && operationKey.Length <= 128 &&
             operationKey.All(static character => !char.IsControl(character));
     }
+
+    private static bool ExportEnabled(IOptions<CameraAgentHostOptions> options)
+        => options.Value.ExecutionEvidenceExport.Enabled &&
+            options.Value.CentralIntegration.Mode != CentralIntegrationMode.Disabled;
 
     private static IResult InvalidQuery() => Results.Problem(
         statusCode: StatusCodes.Status400BadRequest,

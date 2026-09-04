@@ -68,7 +68,8 @@ public sealed record ExecutionEvidenceDiscoveryCursor(
     long TerminalUnixMs,
     string ExecutionId,
     long DeferredTerminalUnixMs,
-    long SourcePrunedEvents)
+    long SourcePrunedEvents,
+    long ProjectionRejectedEvents = 0)
 {
     /// <summary>The cursor of a store that has never enlisted anything.</summary>
     public static ExecutionEvidenceDiscoveryCursor Initial { get; } = new(0, string.Empty, 0, 0);
@@ -100,7 +101,14 @@ public enum ExecutionEvidenceEnlistmentDisposition
     Duplicate,
 
     /// <summary>A bounded queue, byte, or storage limit refused the write. Nothing was enlisted and nothing dropped.</summary>
-    Saturated
+    Saturated,
+
+    /// <summary>
+    /// A durable row could not be sealed into a valid unit of this contract version, or the sealed unit exceeded the
+    /// configured byte bound. The cursor advances past it and the refusal is counted durably, so one unexportable
+    /// execution is a recorded loss rather than a permanently wedged lane or a faulted host.
+    /// </summary>
+    Rejected
 }
 
 public sealed record ExecutionEvidenceEnlistmentResult(
@@ -123,7 +131,8 @@ public sealed record ExecutionEvidenceBacklog(
     long SourcePrunedEvents,
     long DatabaseBytes,
     long HighestSequence,
-    long AcknowledgedThroughSequence)
+    long AcknowledgedThroughSequence,
+    long ProjectionRejectedEvents = 0)
 {
     public static ExecutionEvidenceBacklog Empty { get; } = new(0, 0, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 }
@@ -137,7 +146,6 @@ public static class ExecutionEvidenceExportReasonCodes
     public const string TransportUnavailable = "export.transport-unavailable";
     public const string TransportUnconfigured = "export.transport-unconfigured";
     public const string AuthenticationBlocked = "export.authentication-blocked";
-    public const string NegotiationRequired = "export.negotiation-required";
     public const string NegotiationRejected = "export.negotiation-rejected";
     public const string BacklogSaturated = "export.backlog-saturated";
     public const string StoragePressure = "export.storage-pressure";
@@ -150,10 +158,14 @@ public static class ExecutionEvidenceExportReasonCodes
     public const string AcknowledgementPending = "export.acknowledgement-pending";
     public const string ResyncRequested = "export.resync-requested";
 
-    /// <summary>Bounds a reason code to the durable and metric-safe length without inventing a new value.</summary>
+    /// <summary>
+    /// Reduces a reason code that may have come from a receiver to a bounded operator-safe token. Receiver text is
+    /// never written to a durable column, a log message, or a metric dimension in raw form.
+    /// </summary>
     public static string Bound(string? value)
-        => string.IsNullOrWhiteSpace(value) ? CycleFailed
-            : value.Length <= 128 ? value : value[..128];
+        => string.IsNullOrWhiteSpace(value)
+            ? CycleFailed
+            : Operations.OutboxOperationsReasonCodes.Sanitize(value.Length <= 128 ? value : value[..128]);
 }
 
 public enum ExecutionEvidenceTransportDisposition
@@ -313,10 +325,25 @@ public sealed class ExecutionEvidenceExportState
         });
     }
 
+    /// <summary>
+    /// Records the per-cycle high-water mark of concurrent transport requests. A live instantaneous value would read
+    /// zero at every scrape between requests, which would make the bound unobservable; the high-water mark is what
+    /// proves the single-in-flight-request bound holds.
+    /// </summary>
     internal void RecordInFlight(int inFlight)
     {
         var current = Snapshot;
-        Volatile.Write(ref _snapshot, current with { InFlightRequests = inFlight });
+        if (inFlight > current.InFlightRequests)
+        {
+            Volatile.Write(ref _snapshot, current with { InFlightRequests = inFlight });
+        }
+    }
+
+    /// <summary>Resets the in-flight high-water mark at the start of a cycle.</summary>
+    internal void ResetInFlight()
+    {
+        var current = Snapshot;
+        Volatile.Write(ref _snapshot, current with { InFlightRequests = 0 });
     }
 }
 
@@ -414,9 +441,13 @@ public sealed class ExecutionEvidenceExportTelemetry : IDisposable
             () => state.Snapshot.ResyncRequests,
             "request");
         _meter.CreateObservableGauge(
-            "hvo.cameraagent.evidence_export.in_flight",
+            "hvo.cameraagent.evidence_export.in_flight_high_water",
             () => state.Snapshot.InFlightRequests,
             "request");
+        _meter.CreateObservableGauge(
+            "hvo.cameraagent.evidence_export.projection_rejected",
+            () => state.Snapshot.Backlog.ProjectionRejectedEvents,
+            "unit");
         _meter.CreateObservableGauge(
             "hvo.cameraagent.evidence_export.storage.bytes",
             () => state.Snapshot.Backlog.DatabaseBytes,

@@ -76,6 +76,11 @@ public sealed class ExecutionEvidenceExportPerformanceTests
         Assert.AreEqual(0, drain.RemainingUnits, "A finite backlog must drain completely.");
         Assert.AreEqual(0, drain.GapCount, "The drained sequence must be contiguous.");
         Assert.IsLessThanOrEqualTo(1, drain.MaximumConcurrentRequests);
+        Assert.IsGreaterThanOrEqualTo(
+            MeasuredSubmissions,
+            drain.MeasuredSubmissions,
+            "The recorded p95 must come from at least the declared number of measured operations.");
+        Assert.IsGreaterThan(0, after.SubmissionAttempts, "The after case must actually attempt submissions.");
 
         await WriteEvidenceAsync(baseline, after, drain).ConfigureAwait(false);
     }
@@ -97,7 +102,9 @@ public sealed class ExecutionEvidenceExportPerformanceTests
         using var outbox = new SqliteExecutionEvidenceOutbox(clock);
         var state = new ExecutionEvidenceExportState();
         using var telemetry = new ExecutionEvidenceExportTelemetry(state, clock);
-        var sink = new ExecutionEvidenceConformanceSink(clock) { Mode = ConformanceSinkMode.Deny };
+        // The sink negotiates successfully and then refuses every submission, so the after case exercises the whole
+        // sweep, enlist, negotiate, submit, and settle path rather than stopping at a refused negotiation.
+        var sink = new ExecutionEvidenceConformanceSink(clock) { Mode = ConformanceSinkMode.Reject };
         var exporter = CreateExporter(root.Path, provider, outbox, sink, state, telemetry, clock, exportEnabled);
 
         var module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
@@ -120,17 +127,25 @@ public sealed class ExecutionEvidenceExportPerformanceTests
                 cpuBefore = process.TotalProcessorTime;
                 allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
             }
+            // The export cycle runs concurrently with the capture it must not delay, which is the only arrangement
+            // in which the measured capture window can observe contention at all.
+            var exportCycle = exporter is null
+                ? Task.CompletedTask
+                : Task.Run(async () => await exporter.RunCycleOnceAsync(CancellationToken.None).ConfigureAwait(false));
             var started = Stopwatch.GetTimestamp();
             rawPayloadBytes = await RunCaptureAsync(
                 module, configuration, ingress, laneStore, laneHandler, standard, operations,
                 FixtureUtc.AddMinutes(index)).ConfigureAwait(false);
-            if (exporter is not null)
-            {
-                await exporter.RunCycleOnceAsync(CancellationToken.None).ConfigureAwait(false);
-            }
             if (index >= WarmupCaptures)
             {
                 durations.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            }
+            await exportCycle.ConfigureAwait(false);
+            if (exporter is not null)
+            {
+                // A second cycle after the capture so the execution this capture just produced is swept before the
+                // next measured window opens.
+                await exporter.RunCycleOnceAsync(CancellationToken.None).ConfigureAwait(false);
             }
         }
         process.Refresh();
@@ -155,7 +170,8 @@ public sealed class ExecutionEvidenceExportPerformanceTests
             DirectoryBytes(Path.Combine(root.Path, "journal")),
             snapshot.Backlog.PendingCount + snapshot.Backlog.RetryCount,
             snapshot.Backlog.DatabaseBytes,
-            snapshot.ReasonCode);
+            snapshot.ReasonCode,
+            sink.SubmissionCount);
     }
 
     private static async Task<DrainStage> MeasureDrainStageAsync()
@@ -173,6 +189,7 @@ public sealed class ExecutionEvidenceExportPerformanceTests
             await outbox.EnlistAsync(
                 root.Path,
                 origin.IdentitySha256,
+                ExecutionEvidenceTestFactory.ExecutionId(ordinal),
                 [ExecutionEvidenceTestFactory.ExecutionUnit(origin, ordinal)],
                 new(ordinal, ExecutionEvidenceTestFactory.ExecutionId(ordinal).ToString("N"), 0, 0),
                 ExecutionEvidenceTestFactory.UnboundedLimits,
@@ -423,7 +440,8 @@ public sealed class ExecutionEvidenceExportPerformanceTests
         long RawIngressBytes,
         long ExportPendingUnits,
         long ExportDatabaseBytes,
-        string ExportReasonCode);
+        string ExportReasonCode,
+        int SubmissionAttempts);
 
     private sealed record DrainStage(
         int EnlistedUnits,

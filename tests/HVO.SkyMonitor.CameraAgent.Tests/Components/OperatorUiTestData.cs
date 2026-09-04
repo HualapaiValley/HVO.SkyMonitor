@@ -42,7 +42,8 @@ internal static class OperatorUiTestData
             Section(new OperationsHeartbeatState(heartbeat, Now.AddSeconds(-2), 0, 0, 0, 0, 0, 0, 0, null)),
             Section(new OperationsEnvironmentalDeliveryState("Available", Now.AddSeconds(-2), 0, 0, 0, 0, 0, 0, 0, 0, 0, null)),
             Section(new OperationsExecutionEvidenceExportState(
-                "Healthy", "export.drained", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, null, null, null)),
+                "Healthy", "export.drained", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, null, null,
+                null)),
             Section(new OperationsTransientWorkerState("Available", 0, 0, 32)),
             Section(new OperationsCaptureTelemetryState(
                 samples,

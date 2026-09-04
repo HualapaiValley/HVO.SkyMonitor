@@ -196,6 +196,10 @@ public sealed class OutboxOperationsEndpointTests
         var evidenceItem = evidencePage.RootElement.GetProperty("items")[0];
         Assert.AreEqual("GraphExecution", evidenceItem.GetProperty("bodyKind").GetString());
         Assert.AreEqual(7, evidenceItem.GetProperty("originSequence").GetInt64());
+        Assert.AreEqual(
+            "evidence.sequence-conflict",
+            evidenceItem.GetProperty("reasonCode").GetString(),
+            "A namespaced reason code must survive sanitization or an operator cannot tell why a unit is held.");
         var evidenceReference = evidenceItem.GetProperty("reference").GetString();
         var evidenceReplay = evidenceItem.GetProperty("allowedActions").GetProperty("replayToken").GetString();
         Assert.IsNotNull(evidenceReference);
@@ -299,7 +303,8 @@ public sealed class OutboxOperationsEndpointTests
             DateTimeOffset.Parse("2026-09-01T01:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
             DateTimeOffset.Parse("2026-09-01T01:05:00Z", System.Globalization.CultureInfo.InvariantCulture),
             DateTimeOffset.Parse("2026-09-01T01:06:00Z", System.Globalization.CultureInfo.InvariantCulture),
-            "upstream-rejected",
+            // A namespaced contract reason code, so a sanitizer that rejected the dot would be caught here.
+            "evidence.sequence-conflict",
             CanReplay: true,
             CanAbandon: true,
             new ExecutionEvidenceOutboxOperationsCursor(RecordId));
@@ -349,8 +354,14 @@ public sealed class OutboxOperationsEndpointTests
             => throw new NotSupportedException();
 
         public ValueTask<ExecutionEvidenceEnlistmentResult> EnlistAsync(
-            string root, string originIdentitySha256, IReadOnlyList<ExecutionEvidenceEnlistmentUnit> units,
+            string root, string originIdentitySha256, Guid executionId,
+            IReadOnlyList<ExecutionEvidenceEnlistmentUnit> units,
             ExecutionEvidenceDiscoveryCursor cursor, ExecutionEvidenceEnlistmentLimits limits,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask RecordProjectionRejectedAsync(
+            string root, ExecutionEvidenceDiscoveryCursor cursor, Guid executionId, string reasonCode,
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
@@ -369,7 +380,7 @@ public sealed class OutboxOperationsEndpointTests
 
         public ValueTask<IReadOnlyList<ExecutionEvidenceUnit>> ReadRangeAsync(
             string root, string originIdentitySha256, IReadOnlyList<ExecutionEvidenceSequenceRangeV1> ranges,
-            int maximumUnits, CancellationToken cancellationToken)
+            int maximumUnits, long maximumBytes, DateTimeOffset nowUtc, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
         public ValueTask AcknowledgeAsync(

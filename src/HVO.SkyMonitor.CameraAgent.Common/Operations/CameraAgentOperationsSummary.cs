@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -12,7 +13,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
-using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Operations;
 
@@ -125,6 +125,7 @@ public sealed record OperationsExecutionEvidenceExportState(
     long DrainedCount,
     long ResyncRequestCount,
     long SourcePrunedCount,
+    long ProjectionRejectedCount,
     long StorageBytes,
     long HighestSequence,
     long AcknowledgedThroughSequence,
@@ -318,6 +319,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                     centralDisabled ? 0 : evidenceExport.DrainedUnits,
                     centralDisabled ? 0 : evidenceExport.ResyncRequests,
                     centralDisabled ? 0 : evidenceExport.Backlog.SourcePrunedEvents,
+                    centralDisabled ? 0 : evidenceExport.Backlog.ProjectionRejectedEvents,
                     centralDisabled ? 0 : evidenceExport.Backlog.DatabaseBytes,
                     centralDisabled ? 0 : evidenceExport.Backlog.HighestSequence,
                     centralDisabled ? 0 : evidenceExport.Backlog.AcknowledgedThroughSequence,

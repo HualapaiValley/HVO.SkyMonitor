@@ -32,9 +32,18 @@ public interface IExecutionEvidenceOutbox
     ValueTask<ExecutionEvidenceEnlistmentResult> EnlistAsync(
         string root,
         string originIdentitySha256,
+        Guid executionId,
         IReadOnlyList<ExecutionEvidenceEnlistmentUnit> units,
         ExecutionEvidenceDiscoveryCursor cursor,
         ExecutionEvidenceEnlistmentLimits limits,
+        CancellationToken cancellationToken);
+
+    /// <summary>Advances the sweep cursor and counts one execution this contract version cannot express.</summary>
+    ValueTask RecordProjectionRejectedAsync(
+        string root,
+        ExecutionEvidenceDiscoveryCursor cursor,
+        Guid executionId,
+        string reasonCode,
         CancellationToken cancellationToken);
 
     /// <summary>Advances the sweep cursor without enlisting anything, recording a bounded source-pruned event.</summary>
@@ -66,6 +75,8 @@ public interface IExecutionEvidenceOutbox
         string originIdentitySha256,
         IReadOnlyList<ExecutionEvidenceSequenceRangeV1> ranges,
         int maximumUnits,
+        long maximumBytes,
+        DateTimeOffset nowUtc,
         CancellationToken cancellationToken);
 
     /// <summary>

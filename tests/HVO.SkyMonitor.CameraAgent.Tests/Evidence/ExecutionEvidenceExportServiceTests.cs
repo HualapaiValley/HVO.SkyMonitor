@@ -28,6 +28,10 @@ public sealed class ExecutionEvidenceExportServiceTests
         harness.Seed(3);
 
         await harness.RunCycleAsync().ConfigureAwait(false);
+        Assert.AreEqual(
+            1,
+            harness.State.Snapshot.InFlightRequests,
+            "The in-flight high-water mark for the drain cycle is exactly one request.");
         await harness.RunCycleAsync().ConfigureAwait(false);
 
         CollectionAssert.AreEqual(
@@ -44,8 +48,8 @@ public sealed class ExecutionEvidenceExportServiceTests
         Assert.AreEqual(ExecutionEvidenceExportReasonCodes.Drained, snapshot.ReasonCode);
         Assert.AreEqual(0, snapshot.Backlog.PendingCount + snapshot.Backlog.RetryCount);
         Assert.AreEqual(7, snapshot.DrainedUnits);
-        Assert.AreEqual(1, snapshot.InFlightRequests is 0 ? 1 : snapshot.InFlightRequests);
         Assert.AreEqual(1, harness.Sink.MaximumConcurrentRequests, "Exactly one request is in flight at a time.");
+        Assert.IsNotNull(snapshot.LastAcknowledgementUtc);
     }
 
     [TestMethod]
@@ -338,16 +342,83 @@ public sealed class ExecutionEvidenceExportServiceTests
         Assert.AreEqual(ExecutionEvidenceExportReasonCodes.ProjectionRejected, stalled.ReasonCode);
         Assert.AreEqual(0, stalled.Backlog.PendingCount, "Nothing may ship without the canonical body it names.");
 
-        // The cursor advanced past the unexportable rows, so a later execution still exports normally.
+        // The cursor advanced past the unexportable rows, and the bounded lookback re-reads them once the revision
+        // is persisted again, so nothing that was only transiently unexportable is lost.
         harness.Source.RevisionMissing = false;
         harness.Source.Add(ExecutionEvidenceTestFactory.CreateDetail(3));
-        await harness.RunCycleAsync().ConfigureAwait(false);
-        await harness.RunCycleAsync().ConfigureAwait(false);
-        Assert.AreEqual(3, harness.Sink.AcceptedSequences.Count);
+        for (var cycle = 0; cycle < 4; cycle++)
+        {
+            await harness.RunCycleAsync().ConfigureAwait(false);
+        }
+        Assert.AreEqual(
+            7,
+            harness.Sink.AcceptedSequences.Count,
+            "One revision plus an execution and an availability unit for all three captures.");
         Assert.AreEqual(
             ExecutionEvidenceBodyKind.GraphRevision,
             harness.Sink.AcceptedEnvelopes[0].Kind,
-            "The revision must still precede the execution once it is persisted again.");
+            "The revision must still precede the executions once it is persisted again.");
+        CollectionAssert.AreEqual(
+            Enumerable.Range(1, 7).Select(static value => (long)value).ToArray(),
+            harness.Sink.AcceptedSequences.Order().ToArray());
+    }
+
+    [TestMethod]
+    public async Task ADurableRowThatCannotBeSealedIsRecordedAsARejectionWithoutStallingTheLaneOrFaultingTheHost()
+    {
+        using var harness = new Harness();
+        harness.Source.Add(ExecutionEvidenceTestFactory.CreateOversizedDetail(1));
+        harness.Source.Add(ExecutionEvidenceTestFactory.CreateDetail(2));
+
+        // The sweep must complete: an unsealable row is a bounded refusal, never an exception out of the cycle.
+        await harness.RunCycleAsync().ConfigureAwait(false);
+        await harness.RunCycleAsync().ConfigureAwait(false);
+        await harness.RunCycleAsync().ConfigureAwait(false);
+
+        var snapshot = harness.State.Snapshot;
+        Assert.AreEqual(1, snapshot.Backlog.ProjectionRejectedEvents);
+        Assert.AreEqual(
+            ExecutionEvidenceTestFactory.ExecutionId(2),
+            harness.Sink.AcceptedEnvelopes
+                .Single(static envelope => envelope.Kind == ExecutionEvidenceBodyKind.GraphExecution)
+                .Execution!.ExecutionId,
+            "The cursor advanced past the unexportable row and the next execution exported normally.");
+    }
+
+    [TestMethod]
+    public async Task AUnitAboveTheConfiguredByteBoundIsRejectedRatherThanWedgingTheSweep()
+    {
+        using var harness = new Harness(new ExecutionEvidenceExportOptions { MaximumUnitBytes = 4096 });
+        harness.Source.Add(ExecutionEvidenceTestFactory.CreateLargeDetail(1));
+
+        await harness.RunCycleAsync().ConfigureAwait(false);
+        await harness.RunCycleAsync().ConfigureAwait(false);
+
+        var snapshot = harness.State.Snapshot;
+        Assert.AreEqual(
+            1,
+            snapshot.Backlog.ProjectionRejectedEvents,
+            "One unexportable execution counts once, not once per bounded re-read.");
+        Assert.AreEqual(ExecutionEvidenceExportReasonCodes.ProjectionRejected, snapshot.ReasonCode);
+        Assert.AreEqual(0, snapshot.Backlog.PendingCount, "Nothing above the bound is enlisted.");
+        Assert.AreEqual(0, harness.Sink.AcceptedSequences.Count);
+        Assert.IsGreaterThan(0, harness.Source.ReadTerminalCallCount);
+    }
+
+    [TestMethod]
+    public async Task AnAcknowledgementAndARejectionForTheSameSequenceSettleAsTheRejection()
+    {
+        using var harness = new Harness();
+        harness.Seed(1);
+        harness.Sink.Mode = ConformanceSinkMode.AcknowledgeThenReject;
+
+        await harness.RunCycleAsync().ConfigureAwait(false);
+        await harness.RunCycleAsync().ConfigureAwait(false);
+
+        var snapshot = harness.State.Snapshot;
+        Assert.IsGreaterThanOrEqualTo(1, snapshot.Backlog.QuarantinedCount);
+        Assert.AreEqual(0, snapshot.Backlog.AcknowledgedCount, "A rejection wins regardless of fact order.");
+        Assert.AreEqual(0, snapshot.DrainedUnits);
     }
 
     [TestMethod]
@@ -366,8 +437,9 @@ public sealed class ExecutionEvidenceExportServiceTests
         var snapshot = harness.State.Snapshot;
         Assert.AreEqual(ExecutionEvidenceExportAvailability.Healthy, snapshot.Availability);
         Assert.AreEqual(ExecutionEvidenceExportReasonCodes.TransportUnconfigured, snapshot.ReasonCode);
-        Assert.AreEqual(0, snapshot.Backlog.PendingCount + snapshot.Backlog.RetryCount);
-        Assert.AreEqual(0, snapshot.Backlog.DatabaseBytes is 0 ? 0 : 0);
+        Assert.AreEqual(
+            0,
+            snapshot.Backlog.PendingCount + snapshot.Backlog.RetryCount + snapshot.Backlog.QuarantinedCount);
         Assert.AreEqual(0, harness.Source.ReadTerminalCallCount, "A deny-sink standalone agent performs no sweep.");
         Assert.AreEqual(0, harness.Sink.SubmissionCount);
     }
@@ -439,9 +511,11 @@ public sealed class ExecutionEvidenceExportServiceTests
         }
 
         using var second = new Harness(root: root, bootSessionId: new("66666666-6666-4666-8666-666666666666"));
-        second.Seed(2);
-        for (var cycle = 0; cycle < 10 && second.State.Snapshot.Backlog.PendingCount +
-            second.State.Snapshot.Backlog.RetryCount > 0 || cycle < 3; cycle++)
+        // Executions the first boot never saw, so the restart's own origin genuinely enlists.
+        second.Source.Add(ExecutionEvidenceTestFactory.CreateDetail(3));
+        second.Source.Add(ExecutionEvidenceTestFactory.CreateDetail(4));
+        for (var cycle = 0; cycle < 12 && (second.State.Snapshot.Backlog.PendingCount +
+            second.State.Snapshot.Backlog.RetryCount > 0 || cycle < 3); cycle++)
         {
             second.Clock.Advance(TimeSpan.FromMinutes(10));
             await second.RunCycleAsync().ConfigureAwait(false);
@@ -449,7 +523,27 @@ public sealed class ExecutionEvidenceExportServiceTests
 
         // The first boot's units are still durable and drain; the restart's own units use a fresh sequence space.
         Assert.AreEqual(0, second.State.Snapshot.Backlog.PendingCount + second.State.Snapshot.Backlog.RetryCount);
-        Assert.IsGreaterThanOrEqualTo(5, second.Sink.AcceptedSequences.Count);
+        var origins = second.Sink.AcceptedEnvelopes
+            .Select(static envelope => envelope.Origin.IdentitySha256)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        Assert.AreEqual(2, origins.Length, "Each boot session exports under its own origin identity.");
+        foreach (var origin in origins)
+        {
+            var perOrigin = second.Sink.AcceptedEnvelopes
+                .Where(envelope => string.Equals(
+                    envelope.Origin.IdentitySha256, origin, StringComparison.Ordinal))
+                .OrderBy(static envelope => envelope.OriginSequence)
+                .ToArray();
+            Assert.AreEqual(1, perOrigin[0].OriginSequence, "Every origin starts its own sequence space at one.");
+            Assert.AreEqual(
+                ExecutionEvidenceBodyKind.GraphRevision,
+                perOrigin[0].Kind,
+                "The restart re-exports the canonical body under its new origin before any execution.");
+            CollectionAssert.AreEqual(
+                Enumerable.Range(1, perOrigin.Length).Select(static value => (long)value).ToArray(),
+                perOrigin.Select(static envelope => envelope.OriginSequence).ToArray());
+        }
     }
 
     [TestMethod]

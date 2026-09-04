@@ -30,7 +30,13 @@ internal enum ConformanceSinkMode
     /// Acknowledge a payload hash the producer never sent. A conformant receiver never does this; the mode exists
     /// so the producer can be proven not to release retention on evidence nothing actually accepted.
     /// </summary>
-    MisacknowledgeHash
+    MisacknowledgeHash,
+
+    /// <summary>
+    /// Emit both an <c>Acknowledged</c> and a <c>Rejected</c> fact for the same sequence, acknowledgement first.
+    /// A producer that settled positionally would acknowledge; a producer that settles by outcome quarantines.
+    /// </summary>
+    AcknowledgeThenReject
 }
 
 /// <summary>
@@ -158,6 +164,20 @@ internal sealed class ExecutionEvidenceConformanceSink : IExecutionEvidenceTrans
                     break;
             }
 
+            // A conformant receiver refuses a request above the limits it published before deserializing it.
+            if (envelopes.Count > PublishedLimits.MaximumResyncUnits)
+            {
+                return ValueTask.FromResult(new ExecutionEvidenceSubmitTransportResult(
+                    ExecutionEvidenceTransportDisposition.Rejected,
+                    GraphExecutionEvidenceReasonCodes.LimitExceeded));
+            }
+            if (envelopes.Any(envelope => envelope.Length > PublishedLimits.MaximumEnvelopeBytes))
+            {
+                return ValueTask.FromResult(new ExecutionEvidenceSubmitTransportResult(
+                    ExecutionEvidenceTransportDisposition.Rejected,
+                    GraphExecutionEvidenceReasonCodes.PayloadTooLarge));
+            }
+
             // The framing must survive a round trip byte for byte, or every payload hash would change.
             var framed = ExecutionEvidenceBatchCodec.Decode(
                 ExecutionEvidenceBatchCodec.Encode(envelopes), GraphExecutionEvidenceLimits.MaximumResyncUnits);
@@ -174,6 +194,58 @@ internal sealed class ExecutionEvidenceConformanceSink : IExecutionEvidenceTrans
                 var parsed = GraphExecutionEvidenceJson.ParseEnvelope(payload);
                 if (parsed.Value is not { } envelope)
                 {
+                    // A conformant receiver durably records the bytes and then refuses them with the validation
+                    // reason; it never silently drops a unit it could not parse.
+                    facts.Add(new(
+                        ExecutionEvidenceFactV1.CurrentSchemaVersion,
+                        ExecutionEvidenceFactKind.Received,
+                        Guid.Empty,
+                        0,
+                        GraphExecutionEvidenceJson.UnhashedPayloadSha256,
+                        now));
+                    facts.Add(new(
+                        ExecutionEvidenceFactV1.CurrentSchemaVersion,
+                        ExecutionEvidenceFactKind.Rejected,
+                        Guid.Empty,
+                        0,
+                        GraphExecutionEvidenceJson.UnhashedPayloadSha256,
+                        now,
+                        ReasonCode: parsed.Validation.ReasonCode ?? GraphExecutionEvidenceReasonCodes.InvalidJson,
+                        FieldPath: parsed.Validation.FieldPath));
+                    continue;
+                }
+                if (!string.Equals(
+                        envelope.Origin.IdentitySha256, originIdentitySha256, StringComparison.Ordinal))
+                {
+                    facts.Add(new(
+                        ExecutionEvidenceFactV1.CurrentSchemaVersion,
+                        ExecutionEvidenceFactKind.Rejected,
+                        envelope.EvidenceId,
+                        envelope.OriginSequence,
+                        envelope.PayloadSha256,
+                        now,
+                        ReasonCode: GraphExecutionEvidenceReasonCodes.InvalidOrigin,
+                        FieldPath: "origin.identitySha256"));
+                    continue;
+                }
+                if (Mode == ConformanceSinkMode.AcknowledgeThenReject)
+                {
+                    facts.Add(new(
+                        ExecutionEvidenceFactV1.CurrentSchemaVersion,
+                        ExecutionEvidenceFactKind.Acknowledged,
+                        envelope.EvidenceId,
+                        envelope.OriginSequence,
+                        envelope.PayloadSha256,
+                        now));
+                    facts.Add(new(
+                        ExecutionEvidenceFactV1.CurrentSchemaVersion,
+                        ExecutionEvidenceFactKind.Rejected,
+                        envelope.EvidenceId,
+                        envelope.OriginSequence,
+                        envelope.PayloadSha256,
+                        now,
+                        ReasonCode: GraphExecutionEvidenceReasonCodes.InvalidBody,
+                        FieldPath: "execution"));
                     continue;
                 }
                 if (_drop.Contains(envelope.OriginSequence))
@@ -299,19 +371,19 @@ internal sealed class FakeExecutionEvidenceSource : IExecutionEvidenceSource
     }
 
     public ValueTask<IReadOnlyList<ProcessingGraphTerminalExecution>> ReadTerminalExecutionsAsync(
-        long afterTerminalUnixMs,
+        long afterAcceptedUnixMs,
         string afterExecutionId,
         int maximumCount,
         CancellationToken cancellationToken)
     {
         ReadTerminalCallCount++;
         var rows = _executions
-            .Select(detail => new ProcessingGraphTerminalExecution(detail.Execution, TerminalKey(detail)))
-            .Where(row => row.TerminalUnixMs > afterTerminalUnixMs ||
-                (row.TerminalUnixMs == afterTerminalUnixMs &&
-                    string.CompareOrdinal(row.State.ExecutionId.ToString("N"), afterExecutionId) > 0))
-            .OrderBy(static row => row.TerminalUnixMs)
-            .ThenBy(static row => row.State.ExecutionId.ToString("N"), StringComparer.Ordinal)
+            .Select(detail => new ProcessingGraphTerminalExecution(detail.Execution.ExecutionId, TerminalKey(detail)))
+            .Where(row => row.AcceptedUnixMs > afterAcceptedUnixMs ||
+                (row.AcceptedUnixMs == afterAcceptedUnixMs &&
+                    string.CompareOrdinal(row.ExecutionId.ToString("N"), afterExecutionId) > 0))
+            .OrderBy(static row => row.AcceptedUnixMs)
+            .ThenBy(static row => row.ExecutionId.ToString("N"), StringComparer.Ordinal)
             .Take(maximumCount)
             .ToArray();
         return ValueTask.FromResult<IReadOnlyList<ProcessingGraphTerminalExecution>>(rows);
@@ -338,5 +410,5 @@ internal sealed class FakeExecutionEvidenceSource : IExecutionEvidenceSource
         => ValueTask.FromResult(Assignment);
 
     private static long TerminalKey(ProcessingGraphExecutionDetail detail)
-        => (detail.Execution.CompletedUtc ?? detail.Execution.AcceptedUtc).ToUnixTimeMilliseconds();
+        => detail.Execution.AcceptedUtc.ToUnixTimeMilliseconds();
 }

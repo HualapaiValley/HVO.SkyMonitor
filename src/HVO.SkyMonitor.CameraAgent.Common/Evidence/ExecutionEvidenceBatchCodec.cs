@@ -6,8 +6,9 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Evidence;
 /// <remarks>
 /// The canonical serializer never emits a raw newline (JSON escapes every control character inside a string and the
 /// canonical form carries no insignificant whitespace), so <c>0x0A</c> is an unambiguous separator and every
-/// envelope's bytes survive framing unchanged. That matters because the payload hash is taken over exactly those
-/// bytes: a framing that re-serialized would change the hash and turn every unit into a receiver conflict.
+/// envelope's bytes survive framing unchanged. That matters because the receiver recomputes the canonical payload
+/// hash from the bytes it receives: a framing that re-serialized could change them, and the recomputed hash would
+/// then disagree with the one the envelope carries, turning every unit into a conflict.
 /// </remarks>
 public static class ExecutionEvidenceBatchCodec
 {

@@ -207,11 +207,17 @@ public static class OutboxOperationsReasonCodes
             _ => false
         };
 
+    /// <summary>
+    /// Reduces a reason code to a bounded operator-safe token. The dotted form is allowed because the delivered
+    /// evidence contract's own codes are namespaced (<c>evidence.sequence-conflict</c>, <c>export.quarantined</c>);
+    /// rejecting the dot would have flattened every one of them to <c>unspecified</c> on the operator surface.
+    /// </summary>
     public static string Sanitize(string? reasonCode)
     {
-        if (string.IsNullOrWhiteSpace(reasonCode) || reasonCode.Length > 64 ||
+        if (string.IsNullOrWhiteSpace(reasonCode) || reasonCode.Length > 128 ||
             reasonCode[0] is < 'a' or > 'z' ||
-            reasonCode.Any(static character => character is not (>= 'a' and <= 'z' or >= '0' and <= '9' or '-')))
+            reasonCode.Any(static character =>
+                character is not (>= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '.')))
         {
             return "unspecified";
         }
