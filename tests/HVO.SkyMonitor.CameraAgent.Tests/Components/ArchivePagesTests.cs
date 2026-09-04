@@ -164,6 +164,8 @@ public sealed class ArchivePagesTests
         {
             Assert.AreEqual(FrameArtifactRole.Combined, observed?.Role);
             Assert.AreEqual("Available", observed?.Availability);
+            // An explicit Available in the URL maps onto the default option instead of a blank select.
+            Assert.AreEqual(string.Empty, cut.Find("#product-availability").GetAttribute("value") ?? string.Empty);
             var rows = cut.FindAll(".product-table tbody tr");
             Assert.HasCount(2, rows);
             StringAssert.Contains(rows[0].TextContent, "Combined", StringComparison.Ordinal);

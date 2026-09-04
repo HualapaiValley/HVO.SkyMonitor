@@ -33,7 +33,8 @@ public sealed partial class ProductsPage : ComponentBase, IAsyncDisposable
     {
         _draftRole = Role ?? string.Empty;
         _draftKind = Kind ?? string.Empty;
-        _draftAvailability = Availability ?? string.Empty;
+        // The default option already means available, so an explicit value maps onto it.
+        _draftAvailability = string.Equals(Availability, "Available", StringComparison.OrdinalIgnoreCase) ? string.Empty : Availability ?? string.Empty;
         return LoadAsync();
     }
 
