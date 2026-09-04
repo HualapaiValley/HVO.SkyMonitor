@@ -805,7 +805,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
             ("/operations/sky-map", "Sky map & catalog"),
             ("/operations/pipeline", "Pipeline summary"),
             ("/operations/automations", "Automations"),
-            ("/operations/data", "Data & storage")
+            ("/operations/data", "Data & storage"),
+            ("/operations/pipeline/executions", "Processing executions"),
+            ("/operations/pipeline/graphs", "Named graphs"),
+            ("/operations/pipeline/graphs/new", "Draft graph")
         })
         {
             await page.GotoAsync(route).ConfigureAwait(false);

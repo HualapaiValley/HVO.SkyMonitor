@@ -105,6 +105,11 @@
 
         <details class="technical-evidence">
         <summary>Technical evidence and downloads</summary>
+        <section class="fact-section replay-entry" aria-labelledby="replay-entry-heading">
+            <header><p class="eyebrow">Retained evidence replay</p><h2 id="replay-entry-heading">Replay this capture</h2></header>
+            <p>Re-execute this exact retained capture under a chosen immutable graph revision. Replay is a separate execution class: it never repeats acquisition, never replaces the current or latest view, and never uploads or publishes anything automatically.</p>
+            <p class="replay-entry__action"><a class="btn btn-outline-light" href="@ReplayUrl">Replay this capture</a></p>
+        </section>
         <section class="fact-section" aria-labelledby="capture-record-heading">
             <header><p class="eyebrow">Durable capture record</p><h2 id="capture-record-heading">Capture identity</h2></header>
             <dl class="capture-facts"><div><dt>Capture ID</dt><dd><code>@_capture.CaptureId</code></dd></div><div><dt>Agent</dt><dd>@_capture.AgentId</dd></div><div><dt>Rig</dt><dd>@(_capture.RigId ?? "Unspecified")</dd></div><div><dt>Sequence</dt><dd>@_capture.CaptureSequence</dd></div><div><dt>Exposure started</dt><dd><time datetime="@_capture.ExposureStartedUtc.ToString("O")">@GalleryPage.FormatCaptureTime(_capture.ExposureStartedUtc)</time></dd></div><div><dt>Durable ingress</dt><dd><time datetime="@_capture.DurableIngressUtc.ToString("O")">@GalleryPage.FormatCaptureTime(_capture.DurableIngressUtc)</time></dd></div><div><dt>Raw state</dt><dd>@OperationsPage.SplitWords(_capture.RawState)</dd></div><div><dt>Evidence origin</dt><dd>@EvidenceLabel(_capture.EvidenceOrigin)</dd></div></dl>

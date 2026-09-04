@@ -421,6 +421,20 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         CancellationToken cancellationToken)
         => _store.ReadExecutionDetailAsync(executionId, cancellationToken);
 
+    public async ValueTask<CapturePipelineConfig?> ReadRevisionPipelineAsync(
+        string revisionId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false)).Pipeline;
+        }
+        catch (KeyNotFoundException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>
     /// Read-only accessor for the immutable revision body an evidence export projects: the canonical graph
     /// definition and the frozen plan already persisted for <paramref name="revisionId"/>. It writes nothing and

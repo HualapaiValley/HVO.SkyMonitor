@@ -1,0 +1,27 @@
+.replay-submit { display: grid; gap: 1rem; min-width: 0; }
+.freeze-summary, .replay-form { padding: 1.1rem; border: 1px solid #3c5265; background: linear-gradient(145deg, #13232b, #0c151d); min-width: 0; }
+.freeze-summary > header p, .replay-form > header p { color: #aeb9c8; margin: .3rem 0 0; max-width: 68ch; }
+.freeze-summary h2, .replay-form h2 { margin: .2rem 0; font-family: Georgia, serif; }
+.freeze-summary h3 { margin: 1rem 0 .5rem; color: #8fd4be; font: 700 .72rem/1.2 ui-monospace, monospace; letter-spacing: .14em; text-transform: uppercase; }
+.freeze-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: .55rem 1rem; margin: .8rem 0 0; }
+.freeze-facts div { display: grid; gap: .15rem; min-width: 0; }
+.freeze-facts .wide { grid-column: 1 / -1; }
+.freeze-facts dt { color: #8fa0b3; font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; }
+.freeze-facts dd { margin: 0; overflow-wrap: anywhere; }
+.unavailable-state { color: #e9c986; margin: .6rem 0 0; }
+.form-row { display: grid; gap: .3rem; margin: .9rem 0 0; max-width: 44rem; }
+.form-row label { color: #aeb9c8; font-size: .8rem; }
+.form-row .form-select, .form-row .form-control { min-height: 44px; border: 1px solid #415268; background: #091017; color: #dce6f2; }
+.revision-list { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap: .5rem; }
+.revision-list li { display: grid; gap: .15rem; padding: .6rem; background: #0b131b; border: 1px solid #2c3a4a; min-width: 0; }
+.revision-list span { color: #8fa0b3; font-size: .78rem; }
+.revision-list code { color: #9baabd; font-size: .72rem; overflow-wrap: anywhere; }
+.form-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1rem; }
+.form-actions .btn { min-height: 44px; }
+.confirmation-panel { width: min(42rem, calc(100% - 2rem)); color: var(--hvo-body-color); padding: 1rem 1.2rem; border: 1px solid #e9c986; background: #292617; }
+.confirmation-panel[open] { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.confirmation-panel::backdrop { background: rgba(1, 4, 9, .78); }
+.confirmation-panel h2 { margin: 0; }
+.confirmation-panel div:last-child { display: flex; gap: .6rem; }
+.confirmation-panel .btn { min-height: 44px; }
+@media (max-width: 900px) { .confirmation-panel { align-items: stretch; flex-direction: column; } }
