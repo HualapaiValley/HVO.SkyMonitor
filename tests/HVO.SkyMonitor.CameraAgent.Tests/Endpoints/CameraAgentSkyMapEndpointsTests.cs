@@ -1,7 +1,7 @@
 using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
-using HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
+using HVO.SkyMonitor.CameraAgent.Tests.Services;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -20,7 +20,7 @@ public sealed class CameraAgentSkyMapEndpointsTests
     [TestMethod]
     public async Task GetSkyMap_MapsSuccessBoundsAndFailuresToSanitizedStatusesAsync()
     {
-        await using var app = CreateApp(new SequenceProjection());
+        using var app = CreateApp(new SequenceProjection());
 
         Assert.AreEqual(StatusCodes.Status200OK, await InvokeAsync(app).ConfigureAwait(false));
         Assert.AreEqual(StatusCodes.Status400BadRequest, await InvokeAsync(app, "?atUtc=2026-09-06T13:00:00Z").ConfigureAwait(false));
@@ -38,7 +38,7 @@ public sealed class CameraAgentSkyMapEndpointsTests
 
         var policies = endpoint.Metadata.GetOrderedMetadata<Microsoft.AspNetCore.Authorization.IAuthorizeData>().Select(static data => data.Policy).ToArray();
 
-        CollectionAssert.Contains(policies, Authorization.CameraAgentAuthorizationPolicyNames.OperationsReadV1);
+        CollectionAssert.Contains(policies, HVO.SkyMonitor.CameraAgent.Authorization.CameraAgentAuthorizationPolicyNames.OperationsReadV1);
         Assert.AreEqual("/api/v1/operations/sky-map", endpoint.RoutePattern.RawText?.TrimEnd('/'));
     }
 
@@ -82,9 +82,13 @@ public sealed class CameraAgentSkyMapEndpointsTests
         private int _calls;
 
         public ValueTask<CameraAgentSkyMapProjectionResult> ProjectAsync(DateTimeOffset? atUtc, CancellationToken cancellationToken)
-            => ++_calls == 1
-                ? ValueTask.FromResult(SkyMapTestData.Result(atUtc ?? Now))
-                : ValueTask.FromException<CameraAgentSkyMapProjectionResult>(new IOException("/secret/catalog/path"));
+        {
+            if (++_calls == 1)
+            {
+                return ValueTask.FromResult(SkyMapTestData.Result(atUtc ?? Now));
+            }
+            return ValueTask.FromException<CameraAgentSkyMapProjectionResult>(new IOException("/secret/catalog/path"));
+        }
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
