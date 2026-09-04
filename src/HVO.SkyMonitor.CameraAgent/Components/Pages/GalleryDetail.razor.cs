@@ -55,6 +55,9 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         }
     }
 
+    /// <summary>Archive-to-replay entry point; the submit page resolves and freezes the exact inputs.</summary>
+    private string ReplayUrl => $"/operations/pipeline/replays/new?captureId={CaptureId:D}";
+
     protected override Task OnParametersSetAsync() => LoadAsync();
 
     protected override async Task OnAfterRenderAsync(bool firstRender)

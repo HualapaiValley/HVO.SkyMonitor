@@ -1,0 +1,187 @@
+@page "/operations/pipeline/replays/{ExecutionId:guid}"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Replay execution</PageTitle>
+
+<div class="replay-execution">
+    <PageHeader Eyebrow="Separate replay execution"
+                Title="Replay progress and results"
+                HeadingId="replay-execution-heading"
+                Lead="This execution is separate from live acquisition. Its outputs never replace the current or latest view and are never uploaded or published automatically." />
+
+    @if (_loading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading replay execution state" />
+    }
+    else if (_execution is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error"
+                         Title="Replay execution unavailable"
+                         Message="@(_message ?? "The requested replay execution was not found.")">
+            <a class="btn btn-outline-light" href="/gallery">Return to archive</a>
+        </PageStateNotice>
+    }
+    else
+    {
+        @if (_message is not null)
+        {
+            <PageStateNotice Kind="@(_messageIsError ? PageStateNotice.PageStateKind.Error : PageStateNotice.PageStateKind.Info)"
+                             Title="@(_messageIsError ? "Replay command rejected" : "Replay command")"
+                             Message="@_message" />
+        }
+
+        <section class="execution-summary" aria-labelledby="execution-summary-heading">
+            <header>
+                <p class="eyebrow">Immutable execution identity</p>
+                <h2 id="execution-summary-heading">@OperationsPage.SplitWords(_execution.Status) @(_execution.IsTerminal ? "(terminal)" : "(in progress)")</h2>
+            </header>
+            <dl class="execution-facts">
+                <div class="wide"><dt>Execution ID</dt><dd><code>@_execution.ExecutionId</code></dd></div>
+                <div><dt>Execution class</dt><dd>@_execution.ExecutionClass</dd></div>
+                <div><dt>Status</dt><dd>@OperationsPage.SplitWords(_execution.Status)</dd></div>
+                <div><dt>Attempts</dt><dd>@_execution.AttemptCount</dd></div>
+                <div><dt>Priority</dt><dd>@_execution.Priority</dd></div>
+                <div><dt>Cancellation requested</dt><dd>@(_execution.CancellationRequested ? "Yes" : "No")</dd></div>
+                <div><dt>Trigger</dt><dd>@_execution.TriggerKind@(_execution.TriggerReference is null ? string.Empty : $" / {_execution.TriggerReference}")</dd></div>
+                <div><dt>Accepted</dt><dd><time datetime="@_execution.AcceptedUtc.ToString("O")">@_execution.AcceptedUtc.ToString("u")</time></dd></div>
+                <div><dt>Available</dt><dd><time datetime="@_execution.AvailableUtc.ToString("O")">@_execution.AvailableUtc.ToString("u")</time></dd></div>
+                <div><dt>Deadline</dt><dd><time datetime="@_execution.DeadlineUtc.ToString("O")">@_execution.DeadlineUtc.ToString("u")</time></dd></div>
+                <div><dt>Maximum age</dt><dd><time datetime="@_execution.MaximumAgeUtc.ToString("O")">@_execution.MaximumAgeUtc.ToString("u")</time></dd></div>
+                <div><dt>Started</dt><dd>@(_execution.StartedUtc is null ? "Not started" : _execution.StartedUtc.Value.ToString("u"))</dd></div>
+                <div><dt>Completed</dt><dd>@(_execution.CompletedUtc is null ? "Not completed" : _execution.CompletedUtc.Value.ToString("u"))</dd></div>
+                <div class="wide"><dt>Failure reason</dt><dd>@(_execution.FailureReason ?? "None recorded")</dd></div>
+                <div class="wide"><dt>Graph revision</dt><dd><code>@_execution.GraphRevisionId</code></dd></div>
+                <div class="wide"><dt>Definition identity SHA-256</dt><dd><code>@_execution.GraphDefinitionIdentitySha256</code></dd></div>
+                <div class="wide"><dt>Shared plan identity SHA-256</dt><dd><code>@_execution.SharedPlanIdentitySha256</code></dd></div>
+                <div class="wide"><dt>Local plan identity SHA-256</dt><dd><code>@_execution.LocalPlanIdentitySha256</code></dd></div>
+            </dl>
+            <div class="execution-actions">
+                <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+                @if (!_execution.IsTerminal)
+                {
+                    <button type="button" id="replay-cancel-trigger" class="btn btn-outline-warning" disabled="@_busy" @onclick="BeginCancel">Request cancellation</button>
+                }
+                <a class="btn btn-outline-light" href="@SourceCaptureUrl">Return to source capture</a>
+            </div>
+            @if (_execution.IsTerminal)
+            {
+                <p class="terminal-note">This execution reached a terminal state. Cancellation is no longer offered and the recorded result is immutable.</p>
+            }
+        </section>
+
+        <section class="execution-nodes" aria-labelledby="execution-nodes-heading">
+            <header>
+                <p class="eyebrow">Ordered node evidence</p>
+                <h2 id="execution-nodes-heading">Nodes, attempts, inputs, and outputs</h2>
+            </header>
+            @if (_execution.Nodes.Count == 0)
+            {
+                <p class="unavailable-state">No node state is recorded for this execution yet.</p>
+            }
+            else
+            {
+                <ol class="node-list">
+                    @foreach (var node in _execution.Nodes)
+                    {
+                        <li>
+                            <header><h3>@node.NodeId</h3><span>@OperationsPage.SplitWords(node.Status) / @(node.Required ? "required" : "optional")</span></header>
+                            <dl>
+                                <div><dt>Attempts</dt><dd>@node.AttemptCount</dd></div>
+                                <div><dt>Started</dt><dd>@(node.StartedUtc is null ? "Not started" : node.StartedUtc.Value.ToString("u"))</dd></div>
+                                <div><dt>Completed</dt><dd>@(node.CompletedUtc is null ? "Not completed" : node.CompletedUtc.Value.ToString("u"))</dd></div>
+                                <div class="wide"><dt>Reason</dt><dd>@(node.Reason ?? "None recorded")</dd></div>
+                            </dl>
+                            <h4>Attempt history</h4>
+                            @if (node.Attempts.Count == 0)
+                            {
+                                <p>No attempt is recorded.</p>
+                            }
+                            else
+                            {
+                                <ol class="attempt-list">
+                                    @foreach (var attempt in node.Attempts)
+                                    {
+                                        <li>
+                                            <span>Attempt @attempt.AttemptNumber</span>
+                                            <span>@OperationsPage.SplitWords(attempt.Status)@(attempt.Outcome is null ? string.Empty : $" / {attempt.Outcome}")</span>
+                                            <span>@attempt.StartedUtc.ToString("u")@(attempt.Duration is null ? string.Empty : $" / {attempt.Duration.Value.TotalMilliseconds.ToString("F0", System.Globalization.CultureInfo.InvariantCulture)} ms")</span>
+                                            <small>@(attempt.Reason ?? "No reason recorded")</small>
+                                        </li>
+                                    }
+                                </ol>
+                            }
+                            <h4>Ordered inputs</h4>
+                            @if (node.Inputs.Count == 0)
+                            {
+                                <p>No frozen input is recorded.</p>
+                            }
+                            else
+                            {
+                                <ol class="input-list">
+                                    @foreach (var input in node.Inputs)
+                                    {
+                                        <li>Window @input.WindowPosition / @OperationsPage.SplitWords(input.Kind) / capture <code>@input.CaptureId</code> / artifact <code>@input.ArtifactId</code></li>
+                                    }
+                                </ol>
+                            }
+                            <h4>Outputs</h4>
+                            @if (node.Outputs.Count == 0)
+                            {
+                                <p>No output is recorded.</p>
+                            }
+                            else
+                            {
+                                <ul class="output-list">
+                                    @foreach (var output in node.Outputs)
+                                    {
+                                        <li>
+                                            <div>
+                                                <strong>@OperationsPage.SplitWords(output.Role) / @output.Variant</strong>
+                                                <span>@OperationsPage.SplitWords(output.AvailabilityState)@(output.AvailabilityReason is null ? string.Empty : $" / {output.AvailabilityReason}")</span>
+                                                <code>@output.OutputIdentitySha256</code>
+                                            </div>
+                                            @if (string.Equals(output.AvailabilityState, "Available", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                <a href="@OutputContentUrl(output.ArtifactId)" aria-label="Inspect replay output @output.ArtifactId">Inspect output content</a>
+                                            }
+                                            else
+                                            {
+                                                <span class="unavailable-state">Output content is not retained.</span>
+                                            }
+                                        </li>
+                                    }
+                                </ul>
+                            }
+                        </li>
+                    }
+                </ol>
+            }
+        </section>
+
+        @if (_confirming)
+        {
+            <dialog class="confirmation-panel" aria-labelledby="cancel-confirm-heading" aria-describedby="cancel-confirm-description"
+                    @oncancel="CancelConfirmation" @ref="_confirmationDialog">
+                <div>
+                    <p class="eyebrow">Durable replay request</p>
+                    <h2 id="cancel-confirm-heading">Request cancellation?</h2>
+                    <p id="cancel-confirm-description">
+                        Cancellation is recorded once against this durable request. Retrying reuses the same
+                        command key, so a repeated request cannot produce a second cancellation.
+                    </p>
+                </div>
+                <div>
+                    <button type="button" class="btn btn-primary" disabled="@_busy" @onclick="ConfirmCancelAsync">Confirm cancellation</button>
+                    <button type="button" class="btn btn-outline-light" disabled="@_busy" autofocus @onclick="CancelConfirmation">Keep running</button>
+                </div>
+            </dialog>
+        }
+
+        <ReplayRunnerFacts Facts="_runnerFacts" HeadingId="replay-execution-runner-facts" />
+    }
+</div>

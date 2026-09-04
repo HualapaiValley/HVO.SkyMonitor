@@ -285,6 +285,7 @@ public class Program
         builder.Services.AddScoped<ICameraAgentTransientUiService, CameraAgentTransientUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
+        builder.Services.AddCameraAgentReplayFlow();
 
         builder.Services.AddOptions<CapturePreviewOptions>()
             .Bind(builder.Configuration.GetSection("CapturePreview"))

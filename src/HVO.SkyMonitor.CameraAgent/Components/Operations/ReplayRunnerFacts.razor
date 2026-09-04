@@ -1,0 +1,70 @@
+@using HVO.SkyMonitor.CameraAgent.Components.Pages
+@using HVO.SkyMonitor.CameraAgent.Services
+
+<section class="runner-facts" aria-labelledby="@HeadingId">
+    <header>
+        <p class="eyebrow">Last observed replay runner</p>
+        <h2 id="@HeadingId">Runner facts</h2>
+    </header>
+    <dl class="runner-configured">
+        <div><dt>Configured profile</dt><dd>@Facts.ConfiguredProfile</dd></div>
+        <div><dt>Configured concurrency</dt><dd>@Facts.ConfiguredMaximumConcurrency</dd></div>
+        <div><dt>Configured replay deadline</dt><dd>@Facts.ConfiguredDeadlineSeconds s</dd></div>
+    </dl>
+    @if (!Facts.CapabilitiesObserved || Facts.Capabilities is null)
+    {
+        <p class="runner-unobserved" role="status">
+            Runner capabilities have not yet been observed. These facts appear only after the
+            transport has already declared them; this page never probes the runner.
+        </p>
+    }
+    else
+    {
+        <dl class="runner-observed">
+            <div><dt>Protocol version</dt><dd>@Facts.Capabilities.ProtocolVersion</dd></div>
+            <div><dt>Operating system</dt><dd>@Facts.Capabilities.OperatingSystem</dd></div>
+            <div><dt>OS / process architecture</dt><dd>@Facts.Capabilities.OsArchitecture / @Facts.Capabilities.ProcessArchitecture</dd></div>
+            <div><dt>Runtime identifier</dt><dd>@Facts.Capabilities.RuntimeIdentifier</dd></div>
+            <div><dt>Framework</dt><dd>@Facts.Capabilities.FrameworkDescription</dd></div>
+            <div><dt>Process started</dt><dd><time datetime="@Facts.Capabilities.ProcessStartedUtc.ToString("O")">@Facts.Capabilities.ProcessStartedUtc.ToString("u")</time></dd></div>
+            <div><dt>Declared concurrency</dt><dd>@Facts.Capabilities.MaxConcurrency</dd></div>
+            <div><dt>Declared transfer ceiling</dt><dd>@OperationsPage.FormatBytes(Facts.Capabilities.MaxTransferBytes)</dd></div>
+        </dl>
+        <h3 id="@($"{HeadingId}-recipes")">Declared built-in recipes</h3>
+        <ul class="runner-recipes" aria-labelledby="@($"{HeadingId}-recipes")">
+            @foreach (var recipe in Facts.Capabilities.BuiltInRecipes)
+            {
+                <li>@recipe</li>
+            }
+        </ul>
+        <h3 id="@($"{HeadingId}-warmup")">Warmup stages</h3>
+        <ul class="runner-warmup" aria-labelledby="@($"{HeadingId}-warmup")">
+            @foreach (var stage in Facts.Capabilities.Warmup)
+            {
+                <li><strong>@stage.Name</strong> <span>@stage.Status</span> <small>@stage.Detail</small></li>
+            }
+        </ul>
+    }
+    <h3 id="@($"{HeadingId}-execution")">Last observed execution</h3>
+    @if (Facts.LastExecution is null)
+    {
+        <p class="runner-unobserved" role="status">No runner execution has been observed yet.</p>
+    }
+    else
+    {
+        <dl class="runner-execution" aria-labelledby="@($"{HeadingId}-execution")">
+            <div><dt>Recipe</dt><dd>@Facts.LastExecution.RecipeName</dd></div>
+            <div><dt>Dispatch duration</dt><dd>@Facts.LastExecution.DispatchDuration.TotalMilliseconds.ToString("F0", System.Globalization.CultureInfo.InvariantCulture) ms</dd></div>
+            <div><dt>Execution duration</dt><dd>@Facts.LastExecution.ExecutionDuration.TotalMilliseconds.ToString("F0", System.Globalization.CultureInfo.InvariantCulture) ms</dd></div>
+            <div><dt>Request transfer</dt><dd>@OperationsPage.FormatBytes(Facts.LastExecution.RequestBytes) / @Facts.LastExecution.RequestPayloadFrames frame(s)</dd></div>
+            <div><dt>Response transfer</dt><dd>@OperationsPage.FormatBytes(Facts.LastExecution.ResponseBytes) / @Facts.LastExecution.ResponsePayloadFrames frame(s)</dd></div>
+            <div><dt>Heartbeats</dt><dd>@Facts.LastExecution.HeartbeatCount</dd></div>
+        </dl>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public ReplayRunnerFactsView Facts { get; set; } = default!;
+
+    [Parameter] public string HeadingId { get; set; } = "replay-runner-facts";
+}
