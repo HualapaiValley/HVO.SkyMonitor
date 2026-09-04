@@ -12,6 +12,7 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
     private CameraAgentProductDetail? _detail;
     private string? _errorMessage;
     private bool _isLoading = true;
+    private bool _redirecting;
     private long _generation;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
@@ -57,6 +58,7 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
             }
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
+                _redirecting = true;
                 NavigationManager.NavigateTo("/Account/AccessDenied");
             }
             else if (result.IsSuccess && result.Value is not null)

@@ -45,7 +45,6 @@ public sealed class CameraAgentCurrentSkyFactsProjectorTests
         CollectionAssert.AreEqual(sources, facts.CombinedLineage.SourceArtifactIds.ToArray());
         Assert.AreEqual("rolling-mean", facts.CombinedLineage.RecipeName);
         Assert.AreEqual("ABC123", facts.CombinedLineage.RecipeIdentitySha256);
-        Assert.IsFalse(facts.CombinedLineage.SourcesTruncated);
         Assert.AreEqual("profile", facts.ProcessingProfile?.Name);
     }
 
@@ -69,17 +68,19 @@ public sealed class CameraAgentCurrentSkyFactsProjectorTests
     }
 
     [TestMethod]
-    public void Project_PrefersTheNewestCombinedArtifactAndMarksTruncatedSources()
+    public void Project_DescribesTheDisplayedCombinedArtifactAndNeverGuessesFromABoundedList()
     {
         var older = Artifact(Guid.NewGuid(), FrameArtifactRole.Combined, [Guid.NewGuid()], created: LateNight.AddMinutes(-5));
         var newer = Artifact(Guid.NewGuid(), FrameArtifactRole.Combined, [Guid.NewGuid(), Guid.NewGuid()], created: LateNight);
-        var capture = Capture(LateNight) with { Artifacts = [older, newer], ArtifactsTruncated = true };
+        var complete = Capture(LateNight) with { Artifacts = [older, newer] };
+        var bounded = complete with { ArtifactsTruncated = true };
 
-        var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, Phoenix);
-
-        Assert.AreEqual(newer.ArtifactId, facts.CombinedLineage?.ArtifactId);
-        Assert.AreEqual(2, facts.CombinedLineage?.SourceCount);
-        Assert.IsTrue(facts.CombinedLineage?.SourcesTruncated);
+        Assert.AreEqual(newer.ArtifactId, CameraAgentCurrentSkyFactsProjector.Project(complete, Phoenix).CombinedLineage?.ArtifactId);
+        Assert.AreEqual(older.ArtifactId, CameraAgentCurrentSkyFactsProjector.Project(complete, Phoenix, older.ArtifactId).CombinedLineage?.ArtifactId);
+        Assert.AreEqual(1, CameraAgentCurrentSkyFactsProjector.Project(complete, Phoenix, older.ArtifactId).CombinedLineage?.SourceCount);
+        Assert.IsNull(CameraAgentCurrentSkyFactsProjector.Project(bounded, Phoenix).CombinedLineage);
+        Assert.AreEqual(newer.ArtifactId, CameraAgentCurrentSkyFactsProjector.Project(bounded, Phoenix, newer.ArtifactId).CombinedLineage?.ArtifactId);
+        Assert.IsNull(CameraAgentCurrentSkyFactsProjector.Project(complete, Phoenix, Guid.NewGuid()).CombinedLineage);
     }
 
     private static CameraAgentGalleryCapture Capture(DateTimeOffset exposureStartedUtc) => new(

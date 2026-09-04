@@ -185,19 +185,22 @@ internal sealed record CaptureProcessingOperationalState(
 
 internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 {
-    internal const int CurrentSchemaVersion = 7;
+    internal const int CurrentSchemaVersion = 8;
     internal const int MaximumGalleryInputsPerNode = 8;
     internal const int MaximumProductQueryCount = 128;
     internal const int MaximumOutputSourceCount = LayeredPresentationJson.MaximumSourceArtifactCount;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private static readonly string LegacySchema5Sql = CreateLegacySchema5Sql();
     private static readonly string LegacySchema6Sql = CreateLegacySchema6Sql();
+    private static readonly string LegacySchema7Sql = CreateLegacySchema7Sql();
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(CreateCanonicalSchemaDefinitions);
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema5Definitions =
         new(CreateCanonicalSchema5Definitions);
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema6Definitions =
         new(CreateCanonicalSchema6Definitions);
+    private static readonly Lazy<Dictionary<string, string>> CanonicalSchema7Definitions =
+        new(CreateCanonicalSchema7Definitions);
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
@@ -211,6 +214,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     internal string StorageRoot => _root;
     internal static string LegacySchema5SqlForTests => LegacySchema5Sql;
     internal static string LegacySchema6SqlForTests => LegacySchema6Sql;
+    internal static string LegacySchema7SqlForTests => LegacySchema7Sql;
 
     public SqliteCaptureProcessingStore(
         IOptions<CameraAgentHostOptions> options,
@@ -256,7 +260,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             var initializeSchema = inspection.ProcessingObjectCount == 0;
             var migrateSchema5 = !initializeSchema && inspection.ProcessingVersion == 5;
             var migrateSchema6 = !initializeSchema && inspection.ProcessingVersion == 6;
-            if (!initializeSchema && !migrateSchema5 && !migrateSchema6 &&
+            var migrateSchema7 = !initializeSchema && inspection.ProcessingVersion == 7;
+            if (!initializeSchema && !migrateSchema5 && !migrateSchema6 && !migrateSchema7 &&
                 inspection.ProcessingVersion != CurrentSchemaVersion)
             {
                 var version = inspection.ProcessingVersion ?? 0;
@@ -307,6 +312,16 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 #pragma warning restore CA1849
                 await ValidateSchema6Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await MigrateSchema6Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (migrateSchema7)
+            {
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+                using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+                await ValidateSchema7Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await MigrateSchema7Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -2733,7 +2748,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
             actual.Keys.Any(name => !CanonicalSchemaDefinitions.Value.ContainsKey(name)))
         {
-            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 7 definition.");
+            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 8 definition.");
         }
     }
 
@@ -2776,11 +2791,12 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             .Where(static statement =>
                 !statement.StartsWith("CREATE TABLE processing_graph_delivery_", StringComparison.Ordinal) &&
                 !statement.StartsWith("CREATE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal) &&
-                !statement.StartsWith("CREATE UNIQUE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal))
+                !statement.StartsWith("CREATE UNIQUE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal) &&
+                !statement.StartsWith(CommittedIndexPrefix, StringComparison.Ordinal))
             .Select(static statement => statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
                     statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal)
-                ? statement.Replace("version = 7", "version = 6", StringComparison.Ordinal)
-                    .Replace("VALUES (1, 7)", "VALUES (1, 6)", StringComparison.Ordinal)
+                ? statement.Replace("version = 8", "version = 6", StringComparison.Ordinal)
+                    .Replace("VALUES (1, 8)", "VALUES (1, 6)", StringComparison.Ordinal)
                 : statement);
         return string.Join(";\n", statements) + ";";
     }
@@ -2804,14 +2820,15 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             "CREATE INDEX ix_processing_node_inputs_artifact"
         };
         var statements = SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(statement => selectedPrefixes.Any(prefix => statement.StartsWith(prefix, StringComparison.Ordinal)))
+            .Where(statement => selectedPrefixes.Any(prefix => statement.StartsWith(prefix, StringComparison.Ordinal)) &&
+                                !statement.StartsWith(CommittedIndexPrefix, StringComparison.Ordinal))
             .Select(statement =>
             {
                 if (statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
                     statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal))
                 {
-                    return statement.Replace("version = 7", "version = 5", StringComparison.Ordinal)
-                        .Replace("VALUES (1, 7)", "VALUES (1, 5)", StringComparison.Ordinal);
+                    return statement.Replace("version = 8", "version = 5", StringComparison.Ordinal)
+                        .Replace("VALUES (1, 8)", "VALUES (1, 5)", StringComparison.Ordinal);
                 }
                 if (statement.StartsWith("CREATE TABLE processing_outputs(", StringComparison.Ordinal))
                 {
@@ -2828,6 +2845,73 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 return statement;
             });
         return string.Join(";\n", statements) + ";";
+    }
+
+    private const string CommittedIndexPrefix = "CREATE INDEX ix_processing_outputs_committed";
+
+    // Schema 7 is schema 8 without the commit-order index the product archive
+    // reads; the migration only adds that index and advances the marker.
+    private static string CreateLegacySchema7Sql()
+    {
+        var statements = SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static statement => !statement.StartsWith(CommittedIndexPrefix, StringComparison.Ordinal))
+            .Select(static statement => statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
+                    statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal)
+                ? statement.Replace("version = 8", "version = 7", StringComparison.Ordinal)
+                    .Replace("VALUES (1, 8)", "VALUES (1, 7)", StringComparison.Ordinal)
+                : statement);
+        return string.Join(";\n", statements) + ";";
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only schema statements generated from internal constants are executed.")]
+    private static Dictionary<string, string> CreateCanonicalSchema7Definitions()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = LegacySchema7Sql;
+        command.ExecuteNonQuery();
+        return ReadSchemaDefinitions(connection);
+    }
+
+    private static async ValueTask ValidateSchema7Async(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var actual = await ReadSchemaDefinitionsAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+        if (CanonicalSchema7Definitions.Value.Any(expected =>
+                !actual.TryGetValue(expected.Key, out var definition) ||
+                !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
+            actual.Keys.Any(name => !CanonicalSchema7Definitions.Value.ContainsKey(name)))
+        {
+            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 7 definition.");
+        }
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only schema statements selected from an internal constant are executed.")]
+    private static async ValueTask MigrateSchema7Async(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using (var dropMarker = connection.CreateCommand())
+        {
+            dropMarker.Transaction = transaction;
+            dropMarker.CommandText = "DROP TABLE capture_processing_schema;";
+            await dropMarker.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        foreach (var statement in SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Where(static statement =>
+                         statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
+                         statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal) ||
+                         statement.StartsWith(CommittedIndexPrefix, StringComparison.Ordinal)))
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = statement + ";";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static async ValueTask ValidateSchema5Async(
@@ -2953,7 +3037,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                           statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal) ||
                           statement.StartsWith("CREATE TABLE processing_graph_delivery_", StringComparison.Ordinal) ||
                           statement.StartsWith("CREATE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal) ||
-                          statement.StartsWith("CREATE UNIQUE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal)))
+                          statement.StartsWith("CREATE UNIQUE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal) ||
+                          statement.StartsWith(CommittedIndexPrefix, StringComparison.Ordinal)))
         {
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
@@ -3148,9 +3233,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private const string SchemaSql = """
         CREATE TABLE capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 7)
+            version INTEGER NOT NULL CHECK(version = 8)
         ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 7);
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 8);
         CREATE TABLE processing_graph_revisions(
             revision_id TEXT PRIMARY KEY CHECK(length(revision_id) = 64),
             graph_name TEXT NOT NULL CHECK(length(graph_name) BETWEEN 1 AND 128),
@@ -3475,6 +3560,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             ON processing_outputs(committed_unix_ms, output_identity_sha256) WHERE availability_state = 'Available';
         CREATE INDEX ix_processing_outputs_retention_unavailable
             ON processing_outputs(unavailable_unix_ms, output_identity_sha256) WHERE availability_state <> 'Available';
+        CREATE INDEX ix_processing_outputs_committed
+            ON processing_outputs(committed_unix_ms DESC, output_identity_sha256 DESC);
         CREATE INDEX ix_processing_output_sources_artifact
             ON processing_output_sources(source_artifact_id, output_identity_sha256);
         CREATE INDEX ix_processing_node_inputs_artifact

@@ -35,23 +35,30 @@ public sealed record CameraAgentCombinedLineage(
     int SourceCount,
     IReadOnlyList<Guid> SourceArtifactIds,
     string? RecipeName,
-    string? RecipeIdentitySha256,
-    bool SourcesTruncated);
+    string? RecipeIdentitySha256);
 
 public static class CameraAgentCurrentSkyFactsProjector
 {
     public const string CombinedMethodLabel = "Unregistered causal arithmetic mean";
 
-    public static CameraAgentCurrentSkyFacts Project(CameraAgentGalleryCapture capture, ObservingDayCalendar calendar)
+    // The lineage describes the combined artifact the presentation displays.
+    // Without that identity, the newest combined artifact is described only
+    // when the artifact list is complete; a bounded list could hide it.
+    public static CameraAgentCurrentSkyFacts Project(
+        CameraAgentGalleryCapture capture,
+        ObservingDayCalendar calendar,
+        Guid? combinedArtifactId = null)
     {
         ArgumentNullException.ThrowIfNull(capture);
         ArgumentNullException.ThrowIfNull(calendar);
         var detail = capture.Detail;
         var cloud = detail?.CloudAssessment;
-        var combined = capture.Artifacts
-            .Where(static artifact => artifact.Role == FrameArtifactRole.Combined)
-            .OrderByDescending(static artifact => artifact.CreatedUtc ?? DateTimeOffset.MinValue)
-            .FirstOrDefault();
+        var combinedArtifacts = capture.Artifacts.Where(static artifact => artifact.Role == FrameArtifactRole.Combined);
+        var combined = combinedArtifactId is { } displayed
+            ? combinedArtifacts.FirstOrDefault(artifact => artifact.ArtifactId == displayed)
+            : capture.ArtifactsTruncated
+                ? null
+                : combinedArtifacts.OrderByDescending(static artifact => artifact.CreatedUtc ?? DateTimeOffset.MinValue).FirstOrDefault();
         return new CameraAgentCurrentSkyFacts(
             capture.CaptureId,
             capture.CaptureSequence,
@@ -77,8 +84,7 @@ public static class CameraAgentCurrentSkyFactsProjector
                     combined.SourceArtifactIds.Count,
                     combined.SourceArtifactIds,
                     combined.Recipe?.Name,
-                    combined.Recipe?.IdentitySha256,
-                    capture.ArtifactsTruncated),
+                    combined.Recipe?.IdentitySha256),
             detail?.ProcessingProfile);
     }
 }

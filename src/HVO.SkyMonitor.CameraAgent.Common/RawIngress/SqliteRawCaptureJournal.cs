@@ -59,6 +59,7 @@ internal sealed class SqliteRawCaptureJournal(
         "ix_processing_outputs_product",
         "ix_processing_outputs_retention_available",
         "ix_processing_outputs_retention_unavailable",
+        "ix_processing_outputs_committed",
         "ix_processing_output_sources_artifact",
         "ix_processing_node_inputs_artifact",
         "ix_processing_graph_revisions_active",

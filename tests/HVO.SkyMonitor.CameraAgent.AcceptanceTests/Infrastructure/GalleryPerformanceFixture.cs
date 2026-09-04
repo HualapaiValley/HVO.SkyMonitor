@@ -131,7 +131,10 @@ internal sealed class GalleryPerformanceFixture : IDisposable
                 1 => GalleryEvidenceOrigin.DeveloperFixture,
                 _ => GalleryEvidenceOrigin.Unknown
             };
-            var started = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddSeconds(index);
+            // Captures spread evenly across 62 days so calendar and time-range
+            // reads exercise a populated retention window, not one night.
+            var started = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
+                .AddSeconds(index * (62d * 24 * 3600 / captureCount));
             var rawManifest = CreateManifest(
                 captureId,
                 rawArtifactId,

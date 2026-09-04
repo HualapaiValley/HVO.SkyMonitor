@@ -10,12 +10,14 @@
 
 <div class="product-detail">
     <nav class="breadcrumb" aria-label="Breadcrumb"><a href="@BackUrl">Products</a><span>/</span><span aria-current="page">Product detail</span></nav>
-    @if (_isLoading)
+    @if (_isLoading || _redirecting)
     {
+        <PageHeader Eyebrow="Retained output" Title="Product" />
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading product" Message="Reading the durable output record and its lineage." />
     }
     else if (_errorMessage is not null || _detail is null)
     {
+        <PageHeader Eyebrow="Retained output" Title="Product" />
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Product unavailable" Message="@(_errorMessage ?? "The requested product was not found.")">
             <a class="btn btn-outline-light" href="@BackUrl">Return to products</a>
         </PageStateNotice>

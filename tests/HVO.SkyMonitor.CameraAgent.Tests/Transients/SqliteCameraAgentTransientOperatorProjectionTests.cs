@@ -123,6 +123,21 @@ public sealed class SqliteCameraAgentTransientOperatorProjectionTests
 
         CollectionAssert.AreEqual(new[] { inside }, page.Items.Select(static item => item.CandidateId).ToArray());
         Assert.IsNull(page.NextCursor);
+
+        var ranged = new CameraAgentTransientOperatorQuery(1, FromUtc: DateTimeOffset.FromUnixTimeMilliseconds(500));
+        var firstRanged = await fixture.Projection.GetPageAsync(ranged, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(firstRanged.NextCursor);
+        var continued = await fixture.Projection.GetPageAsync(ranged with { Cursor = firstRanged.NextCursor }, CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEqual(new[] { inside }, continued.Items.Select(static item => item.CandidateId).ToArray());
+        // A cursor issued under one range is refused under another instead of skipping rows silently.
+        await Assert.ThrowsExactlyAsync<CameraAgentTransientOperatorQueryException>(async () =>
+            await fixture.Projection.GetPageAsync(
+                new CameraAgentTransientOperatorQuery(1, firstRanged.NextCursor, FromUtc: DateTimeOffset.FromUnixTimeMilliseconds(1_500)),
+                CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<CameraAgentTransientOperatorQueryException>(async () =>
+            await fixture.Projection.GetPageAsync(
+                new CameraAgentTransientOperatorQuery(1, firstRanged.NextCursor),
+                CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<CameraAgentTransientOperatorQueryException>(async () =>
             await fixture.Projection.GetPageAsync(
                 new CameraAgentTransientOperatorQuery(

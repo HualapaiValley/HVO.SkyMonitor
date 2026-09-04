@@ -32,7 +32,7 @@
                 <ol class="source-list">
                     @foreach (var source in _detail.Sources)
                     {
-                        <li><a href="/gallery/@source.CaptureId.ToString("D")">Capture #@source.CaptureSequence</a> <span class="source-meta">@(source.Role?.ToString() ?? "Unknown role") · observed @TransientPage.FormatTime(source.ObservationStartedUtc) to @source.ObservationEndedUtc.ToLocalTime().ToString("HH:mm:ss")</span></li>
+                        <li><a href="/gallery/@source.CaptureId.ToString("D")">Capture #@source.CaptureSequence</a> <span class="source-meta">@(source.Role?.ToString() ?? "Unknown role") · observed @TransientPage.FormatTime(source.ObservationStartedUtc) to @source.ObservationEndedUtc.ToLocalTime().ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)</span></li>
                     }
                 </ol>
             }

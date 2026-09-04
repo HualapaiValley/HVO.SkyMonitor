@@ -93,7 +93,7 @@
                 {
                     <p class="lineage" aria-label="Combined stage lineage">
                         <strong>Combined stage</strong>
-                        @CameraAgentCurrentSkyFactsProjector.CombinedMethodLabel of @lineage.SourceCount source frame@(lineage.SourceCount == 1 ? string.Empty : "s")@(lineage.SourcesTruncated ? " (list bounded)" : string.Empty)@(lineage.RecipeName is null ? string.Empty : $", recipe {lineage.RecipeName}").
+                        @CameraAgentCurrentSkyFactsProjector.CombinedMethodLabel of @lineage.SourceCount source frame@(lineage.SourceCount == 1 ? string.Empty : "s")@(lineage.RecipeName is null ? string.Empty : $", recipe {lineage.RecipeName}").
                     </p>
                 }
                 @if (_factsUnavailableReason is not null)

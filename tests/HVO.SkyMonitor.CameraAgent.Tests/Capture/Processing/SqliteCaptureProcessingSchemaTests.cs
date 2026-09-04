@@ -16,7 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed class SqliteCaptureProcessingSchemaTests
 {
     [TestMethod]
-    public async Task FreshSharedDatabaseCreatesCanonicalSchema7AndRestarts()
+    public async Task FreshSharedDatabaseCreatesCanonicalSchema8AndRestarts()
     {
         using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
 
@@ -54,13 +54,16 @@ public sealed class SqliteCaptureProcessingSchemaTests
         }
 
         using var connection = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(7L, await ScalarAsync(
+        Assert.AreEqual(8L, await ScalarAsync(
             connection,
             "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(
             connection,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ix_processing_outputs_committed';").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(
+            connection,
             "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'retained-wal';").ConfigureAwait(false));
-        Assert.AreEqual(46L, await ScalarAsync(connection, """
+        Assert.AreEqual(47L, await ScalarAsync(connection, """
             SELECT COUNT(*) FROM sqlite_schema
             WHERE name = 'capture_processing_schema'
                OR name LIKE 'processing_%'
@@ -87,7 +90,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
     [TestMethod]
     [DataRow(0)]
     [DataRow(4)]
-    [DataRow(8)]
+    [DataRow(9)]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Schema versions are fixed integer test data rows.")]
     public async Task UnsupportedPopulatedSchemaIsRejectedWithoutMutation(int version)
     {
@@ -163,7 +166,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(7L, await ScalarAsync(
+        Assert.AreEqual(8L, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(
             verify, "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'migrated-node';").ConfigureAwait(false));
@@ -173,7 +176,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
 
     [TestMethod]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query combines fixed test schema and insert SQL only.")]
-    public async Task CanonicalSchema6GraphIdentitySurvivesSchema7Migration()
+    public async Task CanonicalSchema6GraphIdentitySurvivesSchema8Migration()
     {
         using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
         var definition = new ProcessingGraphDefinition(
@@ -218,8 +221,10 @@ public sealed class SqliteCaptureProcessingSchemaTests
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(7L, await ScalarAsync(
+        Assert.AreEqual(8L, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(
+            verify, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ix_processing_outputs_committed';").ConfigureAwait(false));
         using var read = verify.CreateCommand();
         read.CommandText = """
             SELECT definition_identity_sha256, definition_json
@@ -234,6 +239,57 @@ public sealed class SqliteCaptureProcessingSchemaTests
         Assert.IsTrue(parsed.IsValid, string.Join(Environment.NewLine, parsed.Diagnostics));
         Assert.AreEqual(plan.DefinitionIdentitySha256,
             ProcessingGraphCompiler.Compile(parsed.Definition!).Plan!.DefinitionIdentitySha256);
+    }
+
+    [TestMethod]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The statement is a fixed legacy schema constant plus literal seed rows.")]
+    public async Task CanonicalSchema7OutputsSurviveSchema8MigrationWithTheCommitIndex()
+    {
+        using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
+        using (var connection = await fixture.OpenAsync().ConfigureAwait(false))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = SqliteCaptureProcessingStore.LegacySchema7SqlForTests + """
+                INSERT INTO processing_nodes(
+                    capture_id, node_id, required, dependencies_json, recipe_name, output_role,
+                    output_variant, plan_sha256, status, reason, attempt, completed_unix_ms)
+                VALUES('10000000000000000000000000000007', 'preview', 1, '[]', 'schema-seven', 'Preview', 'default',
+                       'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'Completed', NULL, 1, 7000);
+                INSERT INTO processing_outputs(
+                    output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
+                    payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
+                    algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, committed_unix_ms)
+                VALUES('BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', '10000000000000000000000000000007',
+                       'agent-seven', 'preview', '20000000000000000000000000000007', 'Preview', 'default',
+                       'products/seven.png', 'products/seven.json', x'7B7D', 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC',
+                       x'5B5D', x'7B7D', 10000000, 7, 7000);
+                """;
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        using (var verifySeven = await fixture.OpenAsync().ConfigureAwait(false))
+        {
+            Assert.AreEqual(7L, await ScalarAsync(
+                verifySeven, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(
+                verifySeven, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ix_processing_outputs_committed';").ConfigureAwait(false));
+        }
+
+        using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+        {
+            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        using var verify = await fixture.OpenAsync().ConfigureAwait(false);
+        Assert.AreEqual(8L, await ScalarAsync(
+            verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(
+            verify, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ix_processing_outputs_committed';").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(
+            verify, "SELECT COUNT(*) FROM processing_outputs WHERE committed_unix_ms = 7000;").ConfigureAwait(false));
+        using (var restarted = new SqliteCaptureProcessingStore(fixture.Options))
+        {
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     [TestMethod]
@@ -349,7 +405,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
         using var retried = new SqliteCaptureProcessingStore(fixture.Options);
         await retried.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(7L, await ScalarAsync(
+        Assert.AreEqual(8L, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
     }
 

@@ -1025,7 +1025,8 @@ public sealed class SqliteCameraAgentGalleryTests
         using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
         // Phoenix (UTC-7): 19:00Z on 3 September is local noon, the start of observing day 2026-09-03.
         var lateNight = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 2, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
-        var beforeNoon = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 18, 30, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        // Half a second before local noon: counted for the 3rd and reachable from its day link.
+        var beforeNoon = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 18, 59, 59, 500, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
         var afterNoon = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 19, 30, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
         var archive = fixture.OpenArchive(ObservingDayCalendar.Create("America/Phoenix"));
 
@@ -1179,6 +1180,8 @@ public sealed class SqliteCameraAgentGalleryTests
         using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
         var raw = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 2, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
         var preview = await fixture.AddProcessingOutputAsync(raw, "Preview", DurableProcessingNodeStatus.Completed, encodedWidth: 2, encodedHeight: 2).ConfigureAwait(false);
+        var unretained = Guid.NewGuid();
+        await fixture.AddOutputSourcesAsync(preview.Artifact.ArtifactId, raw.Descriptor.Artifact.ArtifactId, unretained).ConfigureAwait(false);
         var archive = fixture.OpenArchive(ObservingDayCalendar.Create("America/Phoenix"));
 
         var detail = await archive.GetProductAsync(preview.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
@@ -1196,6 +1199,16 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.AreEqual(2, detail.Node?.Attempt);
         Assert.AreEqual(0, detail.Predecessors.Count);
         Assert.IsFalse(detail.SourcesTruncated);
+        Assert.AreEqual(2, detail.Sources.Count);
+        Assert.AreEqual(0, detail.Sources[0].Ordinal);
+        Assert.AreEqual(raw.Descriptor.Artifact.ArtifactId, detail.Sources[0].ArtifactId);
+        Assert.AreEqual(FrameArtifactRole.Raw, detail.Sources[0].Role);
+        Assert.AreEqual(raw.Descriptor.Capture.CaptureId, detail.Sources[0].CaptureId);
+        Assert.AreEqual(raw.Descriptor.Capture.CaptureSequence, detail.Sources[0].CaptureSequence);
+        Assert.AreEqual(1, detail.Sources[1].Ordinal);
+        Assert.AreEqual(unretained, detail.Sources[1].ArtifactId);
+        Assert.IsNull(detail.Sources[1].CaptureId);
+        Assert.IsNull(detail.Sources[1].Role);
         Assert.IsNull(await archive.GetProductAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false));
         Assert.IsNull(await archive.GetProductAsync(raw.Descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false));
     }
@@ -1251,6 +1264,23 @@ public sealed class SqliteCameraAgentGalleryTests
             {
                 SecondaryRoot = secondaryRoot
             };
+        }
+
+        internal async Task AddOutputSourcesAsync(Guid outputArtifactId, params Guid[] sourceArtifactIds)
+        {
+            using var connection = await OpenAsync().ConfigureAwait(false);
+            for (var ordinal = 0; ordinal < sourceArtifactIds.Length; ordinal++)
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO processing_output_sources(output_identity_sha256, source_ordinal, source_artifact_id)
+                    SELECT output_identity_sha256, $ordinal, $source FROM processing_outputs WHERE artifact_id = $artifact;
+                    """;
+                command.Parameters.AddWithValue("$ordinal", ordinal);
+                command.Parameters.AddWithValue("$source", sourceArtifactIds[ordinal].ToString("N"));
+                command.Parameters.AddWithValue("$artifact", outputArtifactId.ToString("N"));
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
         }
 
         internal SqliteCameraAgentGallery OpenArchive(ObservingDayCalendar calendar)

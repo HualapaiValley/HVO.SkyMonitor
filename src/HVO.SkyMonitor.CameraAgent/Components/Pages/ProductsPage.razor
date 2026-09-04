@@ -16,7 +16,7 @@
     </PageHeader>
 
     <form class="product-filters" @onsubmit="ApplyFilters" @onsubmit:preventDefault aria-label="Product filters">
-        <div><label for="product-role">Role</label><select id="product-role" class="form-select" @bind="_draftRole"><option value="">Any role</option>@foreach (var role in Enum.GetValues<FrameArtifactRole>()) { <option value="@role">@OperationsPage.SplitWords(role.ToString())</option> }</select></div>
+        <div><label for="product-role">Role</label><select id="product-role" class="form-select" @bind="_draftRole"><option value="">Any role</option>@foreach (var role in Enum.GetValues<FrameArtifactRole>().Where(static role => role != FrameArtifactRole.Raw)) { <option value="@role">@OperationsPage.SplitWords(role.ToString())</option> }</select></div>
         <div><label for="product-kind">Kind</label><select id="product-kind" class="form-select" @bind="_draftKind"><option value="">Any kind</option><option value="PixelData">Pixel data</option><option value="Metadata">Metadata</option></select></div>
         <div><label for="product-availability">Availability</label><select id="product-availability" class="form-select" @bind="_draftAvailability"><option value="">Any</option><option value="Available">Available</option><option value="Missing">Missing</option><option value="Quarantined">Quarantined</option></select></div>
         <div class="filter-actions"><button type="submit" class="btn btn-primary">Apply</button><button type="button" class="btn btn-outline-light" @onclick="ClearFilters">Clear</button></div>
@@ -39,6 +39,7 @@
     else
     {
         @if (_page.NextCursor is not null) { <p class="bounded-state" role="status">This bounded page omits older products.</p> }
+        @if (_page.SkippedCount > 0) { <p class="bounded-state" role="status">@_page.SkippedCount product record@(_page.SkippedCount == 1 ? string.Empty : "s") on this page could not be read and @(_page.SkippedCount == 1 ? "is" : "are") omitted.</p> }
         <div class="table-wrap">
             <table class="product-table">
                 <thead><tr><th scope="col">Committed</th><th scope="col">Product</th><th scope="col">Capture</th><th scope="col">Recipe</th><th scope="col">Availability</th><th scope="col">Origin</th></tr></thead>

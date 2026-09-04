@@ -15,7 +15,7 @@ public sealed class ArchivePagesTests
 {
     private static readonly ObservingDayCalendar Phoenix = ObservingDayCalendar.Create("America/Phoenix");
     // Words that would imply authority CameraAgent does not have over local candidates.
-    private static readonly string[] ForbiddenCandidateClaims = ["fireball", "ground track", "impact", "reconstruct", "validated event", "correlat", "publish"];
+    private static readonly string[] ForbiddenCandidateClaims = ["fireball", "ground track", "impact", "reconstruct", "validated event", "correlat", "publish", "speed", "altitude", "multi-site"];
 
     [TestMethod]
     public void Calendar_ListsObservingNightsWithCountsAndDayLinks()
@@ -35,6 +35,8 @@ public sealed class ArchivePagesTests
             ])));
         };
 
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo("/archive/calendar?to=2026-07-23");
         var cut = context.Render<ArchiveCalendarPage>();
 
         cut.WaitForAssertion(() =>
@@ -51,12 +53,61 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(nights[1].TextContent, "Candidates1", StringComparison.Ordinal);
             var links = nights[1].QuerySelectorAll(".night__links a").Select(link => link.GetAttribute("href")).ToArray();
             Assert.HasCount(2, links);
-            Assert.AreEqual("/gallery?from=2026-07-21T19:00:00&to=2026-07-22T18:59:59", links[0]);
-            Assert.AreEqual("/transients?from=2026-07-21T19:00:00&to=2026-07-22T18:59:59", links[1]);
+            // Millisecond precision keeps the linked day identical to the counted day.
+            Assert.AreEqual("/gallery?from=2026-07-21T19:00:00.000&to=2026-07-22T18:59:59.999", links[0]);
+            Assert.AreEqual("/transients?from=2026-07-21T19:00:00.000&to=2026-07-22T18:59:59.999", links[1]);
+            StringAssert.Contains(nights[1].QuerySelector(".night__zone")!.TextContent, "12:00:00 → 12:00:00 America/Phoenix", StringComparison.Ordinal);
             Assert.IsEmpty(nights[0].QuerySelectorAll(".night__links a"));
             Assert.IsFalse(cut.Markup.Contains("UTC days", StringComparison.Ordinal));
         });
         StringAssert.Contains(cut.FindAll(".range-nav a")[0].GetAttribute("href"), "to=2026-06-22", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Calendar_DefaultsToTheCurrentObservingNightAndClampsTheRange()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        CameraAgentGalleryCalendarQuery? observed = null;
+        service.CalendarHandler = (query, _) =>
+        {
+            observed = query;
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Success(new("America/Phoenix", false, [])));
+        };
+
+        var cut = context.Render<ArchiveCalendarPage>();
+        // Now is 12:00 UTC on 23 July, 05:00 in Phoenix, inside the night that began at noon on the 22nd.
+        cut.WaitForAssertion(() => Assert.AreEqual(new DateOnly(2026, 7, 22), observed?.ToDate));
+
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/archive/calendar?to=0001-01-05");
+        var clamped = context.Render<ArchiveCalendarPage>();
+        clamped.WaitForAssertion(() =>
+        {
+            Assert.IsTrue(observed?.FromDate >= DateOnly.MinValue);
+            Assert.IsNotNull(clamped.Find(".range-nav"));
+        });
+    }
+
+    [TestMethod]
+    public void NewPages_RedirectToAccessDeniedWhenUnauthorized()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CalendarHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Failure(OperatorUiResultKind.Unauthorized, "denied"));
+        service.ProductPageHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductPage>.Failure(OperatorUiResultKind.Unauthorized, "denied"));
+        service.ProductDetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Failure(OperatorUiResultKind.Unauthorized, "denied"));
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+
+        context.Render<ArchiveCalendarPage>();
+        navigation.NavigateTo("/archive/products");
+        context.Render<ProductsPage>();
+        var detail = context.Render<ProductDetail>(parameters => parameters.Add(page => page.ArtifactId, Guid.NewGuid()));
+
+        detail.WaitForAssertion(() =>
+        {
+            StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal);
+            Assert.IsEmpty(detail.FindAll("[role='alert']"));
+        });
     }
 
     [TestMethod]
@@ -190,6 +241,10 @@ public sealed class ArchivePagesTests
             Assert.AreEqual(new DateTimeOffset(2026, 7, 21, 19, 0, 0, TimeSpan.Zero), transient.LastQuery?.FromUtc);
             Assert.AreEqual(new DateTimeOffset(2026, 7, 22, 18, 59, 59, TimeSpan.Zero), transient.LastQuery?.ToUtc);
             StringAssert.Contains(list.Find(".range-state").TextContent, "Showing candidates created between", StringComparison.Ordinal);
+            foreach (var forbidden in ForbiddenCandidateClaims)
+            {
+                Assert.IsFalse(list.Markup.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
+            }
         });
 
         navigation.NavigateTo("/transients?from=not-a-date");
@@ -222,6 +277,7 @@ public sealed class ArchivePagesTests
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(Phoenix));
         return service;
     }
 

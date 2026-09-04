@@ -17,11 +17,37 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
+    [Inject] internal IObservingDayCalendarProvider ObservingDays { get; set; } = default!;
     [Parameter, SupplyParameterFromQuery(Name = "to")] public string? To { get; set; }
 
-    private DateOnly ToDate => DateOnly.TryParseExact(To, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
-        ? parsed
-        : DateOnly.FromDateTime(TimeProvider.GetUtcNow().UtcDateTime);
+    // The range ends on the requested date, clamped so range arithmetic never
+    // leaves the calendar, and defaults to the current observing night.
+    private DateOnly ToDate
+    {
+        get
+        {
+            var date = DateOnly.TryParseExact(To, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+                ? parsed
+                : ObservingDays.Current.Resolve(TimeProvider.GetUtcNow()).Date;
+            var minimum = DateOnly.MinValue.AddDays(RangeDays * 2);
+            var maximum = DateOnly.MaxValue.AddDays(-RangeDays * 2);
+            return date < minimum ? minimum : date > maximum ? maximum : date;
+        }
+    }
+
+    // Boundaries display in the observing calendar's own zone, not the host's.
+    private string LocalTime(DateTimeOffset utc)
+    {
+        try
+        {
+            return TimeZoneInfo.ConvertTimeBySystemTimeZoneId(utc, _calendar?.TimeZoneId ?? TimeZoneInfo.Utc.Id)
+                .ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+        }
+        catch (Exception exception) when (exception is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            return utc.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+        }
+    }
 
     private DateOnly FromDate => ToDate.AddDays(-(RangeDays - 1));
 
@@ -87,7 +113,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     internal static string CandidatesUrl(ObservingDay day) => NavigationUrl("/transients", day);
 
     private static string NavigationUrl(string path, ObservingDay day) => FormattableString.Invariant(
-        $"{path}?from={day.StartUtc.UtcDateTime:yyyy-MM-ddTHH:mm:ss}&to={day.EndUtc.AddMilliseconds(-1).UtcDateTime:yyyy-MM-ddTHH:mm:ss}");
+        $"{path}?from={day.StartUtc.UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}&to={day.EndUtc.AddMilliseconds(-1).UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}");
 
     public async ValueTask DisposeAsync()
     {

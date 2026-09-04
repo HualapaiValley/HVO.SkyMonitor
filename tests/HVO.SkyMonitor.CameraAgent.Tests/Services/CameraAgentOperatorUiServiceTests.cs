@@ -65,8 +65,19 @@ public sealed class CameraAgentOperatorUiServiceTests
         var ownership = await service.BindTransientRuntimeOwnershipAsync(
             "reference-token", "d331-0821084607", new string('D', 64), true,
             CancellationToken.None).ConfigureAwait(false);
+        var currentSky = await service.GetCurrentSkyViewAsync(CancellationToken.None).ConfigureAwait(false);
+        var calendar = await service.GetArchiveCalendarAsync(
+            new CameraAgentGalleryCalendarQuery(new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 3)), CancellationToken.None).ConfigureAwait(false);
+        var neighbours = await service.GetGalleryNeighboursAsync(Guid.NewGuid(), new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+        var products = await service.GetProductPageAsync(new CameraAgentProductQuery(), CancellationToken.None).ConfigureAwait(false);
+        var product = await service.GetProductDetailAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(11, authentication.ReadCount);
+        Assert.AreEqual(16, authentication.ReadCount);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, currentSky.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, calendar.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, neighbours.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, products.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, product.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, operations.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, gallery.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, current.Kind);
@@ -81,7 +92,7 @@ public sealed class CameraAgentOperatorUiServiceTests
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,
-            CameraAgentAuthorizationPolicyNames.OperationsReadV1), Times.Exactly(7));
+            CameraAgentAuthorizationPolicyNames.OperationsReadV1), Times.Exactly(12));
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,

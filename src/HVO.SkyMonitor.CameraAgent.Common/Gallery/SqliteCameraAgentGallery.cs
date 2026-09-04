@@ -531,6 +531,10 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         var normalized = Normalize(filters);
         await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        // One deferred read transaction gives every day the same WAL snapshot.
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes deferred transactions only through the synchronous overload.
+        using var snapshot = connection.BeginTransaction(deferred: true);
+#pragma warning restore CA1849
         var result = new CameraAgentGalleryCalendarDay[days.Count];
         for (var index = 0; index < days.Count; index++)
         {
@@ -542,9 +546,12 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             DateTimeOffset? last = null;
             using (var command = connection.CreateCommand())
             {
+                command.Transaction = snapshot;
+                // The exposure-time index is pinned so a leading-equality filter
+                // index cannot win the plan and scan the whole state set per day.
                 var sql = new StringBuilder("SELECT COUNT(*), MIN(raw.exposure_started_unix_ms), MAX(raw.exposure_started_unix_ms)")
                     .AppendLine()
-                    .AppendLine("FROM raw_captures raw")
+                    .AppendLine("FROM raw_captures raw INDEXED BY ix_raw_captures_gallery_time")
                     .AppendLine("WHERE raw.exposure_started_unix_ms >= $day_start AND raw.exposure_started_unix_ms < $day_end");
                 command.Parameters.AddWithValue("$day_start", start);
                 command.Parameters.AddWithValue("$day_end", end);
@@ -562,6 +569,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             long candidates;
             using (var command = connection.CreateCommand())
             {
+                command.Transaction = snapshot;
                 command.CommandText = "SELECT COUNT(*) FROM transient_candidates WHERE created_unix_ms >= $day_start AND created_unix_ms < $day_end;";
                 command.Parameters.AddWithValue("$day_start", start);
                 command.Parameters.AddWithValue("$day_end", end);
@@ -646,12 +654,24 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
                           AND association.published_flag = 1))
         """;
 
-    private const string ProductRowSelectSql = """
+    private const string ProductRowColumnsSql = """
         SELECT output.output_identity_sha256, output.committed_unix_ms,
                (SELECT execution.execution_class FROM processing_execution_outputs association
                 JOIN processing_executions execution ON execution.execution_id = association.execution_id
                 WHERE association.output_identity_sha256 = output.output_identity_sha256
-                ORDER BY association.published_flag DESC LIMIT 1)
+                ORDER BY association.published_flag DESC, execution.execution_id DESC LIMIT 1)
+        """;
+
+    // The page walks the commit-order index so every page costs one bounded
+    // index range regardless of history size; the detail lookup keys on the
+    // unique artifact id instead.
+    private const string ProductPageSelectSql = ProductRowColumnsSql + """
+
+        FROM processing_outputs output INDEXED BY ix_processing_outputs_committed
+        """;
+
+    private const string ProductRowSelectSql = ProductRowColumnsSql + """
+
         FROM processing_outputs output
         """;
 
@@ -667,7 +687,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         var keys = new List<ProductKey>(normalized.PageSize + 1);
         using (var command = connection.CreateCommand())
         {
-            var sql = new StringBuilder(ProductRowSelectSql).AppendLine().AppendLine("WHERE 1 = 1").Append(ProductVisibilitySql).AppendLine();
+            var sql = new StringBuilder(ProductPageSelectSql).AppendLine().AppendLine("WHERE 1 = 1").Append(ProductVisibilitySql).AppendLine();
             AppendProductFilterClauses(sql, command, normalized);
             if (cursor is not null)
             {
@@ -698,7 +718,9 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         }
         var products = await HydrateProductsAsync(connection, keys, cancellationToken).ConfigureAwait(false);
         var nextCursor = hasMore && keys.Count > 0 ? EncodeProductCursor(keys[^1], normalized.FilterHash) : null;
-        return new CameraAgentProductPage(products, nextCursor);
+        // A durable record the reader cannot decode is omitted, and the page
+        // says so rather than shrinking silently.
+        return new CameraAgentProductPage(products, nextCursor, keys.Count - products.Count);
     }
 
     public async ValueTask<CameraAgentProductDetail?> GetProductAsync(
@@ -744,19 +766,24 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         var node = await _processingStore.ReadNodeAsync(product.CaptureId, product.NodeId, cancellationToken).ConfigureAwait(false);
         var predecessors = await ReadProductPredecessorsAsync(connection, product, cancellationToken).ConfigureAwait(false);
         DateTimeOffset exposureStartedUtc;
-        string? rigId = null;
+        string? rigId;
         using (var command = connection.CreateCommand())
         {
-            command.CommandText = "SELECT exposure_started_unix_ms, manifest_json FROM raw_captures WHERE capture_id = $capture_id LIMIT 1;";
+            command.CommandText = $"""
+                {RawSelectSql}
+                WHERE raw.capture_id = $capture_id
+                LIMIT 1;
+                """;
             command.Parameters.AddWithValue("$capture_id", product.CaptureId.ToString("N"));
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 return null;
             }
-            exposureStartedUtc = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(0));
-            var manifest = CaptureContractJson.ParseManifest(await reader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false));
-            rigId = manifest.Document?.Manifest?.Descriptor.Capture.RigId;
+            var row = await ReadRawRowAsync(reader, cancellationToken).ConfigureAwait(false);
+            exposureStartedUtc = DateTimeOffset.FromUnixTimeMilliseconds(row.ExposureUnixMilliseconds);
+            // Only a manifest that verifies against the journal row is trusted for facts.
+            rigId = TryReadTrustedManifest(row)?.Descriptor.Capture.RigId;
         }
         return new CameraAgentProductDetail(
             product,
@@ -852,6 +879,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         return products;
     }
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Generated placeholders contain only bounded ordinals; artifact identities remain parameterized.")]
     private async Task<(IReadOnlyList<CameraAgentProductSource> Sources, bool Truncated)> ReadProductSourcesAsync(
         SqliteConnection connection,
         string outputIdentitySha256,
@@ -860,31 +888,40 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         var durable = await _processingStore.ReadOutputSourcesAsync(
             outputIdentitySha256, SqliteCaptureProcessingStore.MaximumOutputSourceCount, cancellationToken).ConfigureAwait(false);
         var truncated = durable.Count >= SqliteCaptureProcessingStore.MaximumOutputSourceCount;
+        var resolved = new Dictionary<Guid, (Guid CaptureId, long CaptureSequence, FrameArtifactRole? Role)>();
+        // One batched lookup resolves every source against the raw captures and
+        // the earlier outputs; both artifact-id columns are unique indexes.
+        for (var offset = 0; offset < durable.Count; offset += 64)
+        {
+            var batch = durable.Skip(offset).Take(64).ToArray();
+            using var command = connection.CreateCommand();
+            var placeholders = new string[batch.Length];
+            for (var index = 0; index < batch.Length; index++)
+            {
+                placeholders[index] = $"$artifact{index}";
+                command.Parameters.AddWithValue(placeholders[index], batch[index].ArtifactId.ToString("N"));
+            }
+            var list = string.Join(", ", placeholders);
+            command.CommandText = $"""
+                SELECT raw_artifact_id, capture_id, capture_sequence, 'Raw' FROM raw_captures WHERE raw_artifact_id IN ({list})
+                UNION ALL
+                SELECT artifact_id, capture_id, capture_sequence, role FROM processing_outputs WHERE artifact_id IN ({list});
+                """;
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                resolved.TryAdd(
+                    Guid.ParseExact(reader.GetString(0), "N"),
+                    (Guid.ParseExact(reader.GetString(1), "N"), reader.GetInt64(2),
+                        Enum.TryParse<FrameArtifactRole>(reader.GetString(3), out var role) ? role : null));
+            }
+        }
         var sources = new List<CameraAgentProductSource>(durable.Count);
         foreach (var source in durable)
         {
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                SELECT capture_id, capture_sequence, 'Raw' FROM raw_captures WHERE raw_artifact_id = $artifact_id
-                UNION ALL
-                SELECT capture_id, capture_sequence, role FROM processing_outputs WHERE artifact_id = $artifact_id
-                LIMIT 1;
-                """;
-            command.Parameters.AddWithValue("$artifact_id", source.ArtifactId.ToString("N"));
-            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                sources.Add(new CameraAgentProductSource(
-                    source.Ordinal,
-                    source.ArtifactId,
-                    Enum.TryParse<FrameArtifactRole>(reader.GetString(2), out var role) ? role : null,
-                    Guid.ParseExact(reader.GetString(0), "N"),
-                    reader.GetInt64(1)));
-            }
-            else
-            {
-                sources.Add(new CameraAgentProductSource(source.Ordinal, source.ArtifactId, null, null, null));
-            }
+            sources.Add(resolved.TryGetValue(source.ArtifactId, out var match)
+                ? new CameraAgentProductSource(source.Ordinal, source.ArtifactId, match.Role, match.CaptureId, match.CaptureSequence)
+                : new CameraAgentProductSource(source.Ordinal, source.ArtifactId, null, null, null));
         }
         return (sources, truncated);
     }

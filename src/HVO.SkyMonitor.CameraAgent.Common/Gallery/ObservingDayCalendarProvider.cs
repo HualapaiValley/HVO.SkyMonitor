@@ -16,6 +16,7 @@ public sealed class DeploymentObservingDayCalendarProvider(IDeploymentLocationSt
     private readonly object _gate = new();
     private ObservingDayCalendar _calendar = ObservingDayCalendar.Create(null);
     private string? _timeZoneId;
+    private bool _resolved;
 
     public ObservingDayCalendar Current
     {
@@ -24,8 +25,11 @@ public sealed class DeploymentObservingDayCalendarProvider(IDeploymentLocationSt
             var timeZoneId = deploymentLocation?.Active?.TimeZoneId;
             lock (_gate)
             {
-                if (!string.Equals(timeZoneId, _timeZoneId, StringComparison.Ordinal) || _calendar.TimeZoneFallback && timeZoneId is not null)
+                // Recompute only when the configured identifier changes; an
+                // identifier this host cannot resolve stays cached as a fallback.
+                if (!_resolved || !string.Equals(timeZoneId, _timeZoneId, StringComparison.Ordinal))
                 {
+                    _resolved = true;
                     _calendar = ObservingDayCalendar.Create(timeZoneId);
                     _timeZoneId = timeZoneId;
                 }

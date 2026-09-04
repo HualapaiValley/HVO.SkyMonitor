@@ -43,13 +43,13 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
             throw new CameraAgentTransientOperatorQueryException(
                 $"Page size must be between 1 and {MaximumPageSize}.");
         }
-        var cursor = DecodeCursor(query.Cursor);
         var from = query.FromUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
         var to = query.ToUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
         if (from > to)
         {
             throw new CameraAgentTransientOperatorQueryException("The time range is invalid.");
         }
+        var cursor = DecodeCursor(query.Cursor, from, to);
         await _rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
         var hasRuntime = await RuntimeTableExistsAsync(connection, cancellationToken).ConfigureAwait(false);
@@ -69,7 +69,7 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
         }
         return new CameraAgentTransientOperatorPage(
             rows.Select(static row => row.Candidate).ToArray(),
-            hasMore && rows.Count > 0 ? EncodeCursor(rows[^1]) : null);
+            hasMore && rows.Count > 0 ? EncodeCursor(rows[^1], from, to) : null);
     }
 
     public async ValueTask<CameraAgentTransientOperatorDetail?> GetCandidateAsync(
@@ -109,15 +109,22 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
 
     // Sources join the candidate journal to the raw-ingress captures in the
     // same database; a journal without the source schema yields no links.
-    private static async ValueTask<IReadOnlyList<CameraAgentTransientOperatorSource>> ReadSourcesAsync(
+    private bool _sourceSchemaPresent;
+
+    private async ValueTask<IReadOnlyList<CameraAgentTransientOperatorSource>> ReadSourcesAsync(
         SqliteConnection connection,
         Guid candidateId,
         CancellationToken cancellationToken)
     {
-        if (!await TableExistsAsync(connection, "transient_candidate_sources", cancellationToken).ConfigureAwait(false) ||
-            !await TableExistsAsync(connection, "raw_captures", cancellationToken).ConfigureAwait(false))
+        // The source schema cannot disappear once seen, so only its absence is re-probed.
+        if (!Volatile.Read(ref _sourceSchemaPresent))
         {
-            return [];
+            if (!await TableExistsAsync(connection, "transient_candidate_sources", cancellationToken).ConfigureAwait(false) ||
+                !await TableExistsAsync(connection, "raw_captures", cancellationToken).ConfigureAwait(false))
+            {
+                return [];
+            }
+            Volatile.Write(ref _sourceSchemaPresent, true);
         }
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -579,18 +586,22 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
         }
     }
 
-    private static string EncodeCursor(SummaryRow row)
+    // The cursor carries the created-time range it was issued under so a
+    // keyset position is never applied to a different range.
+    private static string EncodeCursor(SummaryRow row, long? fromUnixMilliseconds, long? toUnixMilliseconds)
         => Convert.ToBase64String(Encoding.UTF8.GetBytes(
-            $"{row.CreatedUtc.ToUnixTimeMilliseconds()}:{row.CandidateId:N}"))
+            $"{row.CreatedUtc.ToUnixTimeMilliseconds()}:{row.CandidateId:N}:{RangeToken(fromUnixMilliseconds)}:{RangeToken(toUnixMilliseconds)}"))
             .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
-    private static Cursor? DecodeCursor(string? value)
+    private static string RangeToken(long? value) => value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-";
+
+    private static Cursor? DecodeCursor(string? value, long? fromUnixMilliseconds, long? toUnixMilliseconds)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
             return null;
         }
-        if (value.Length > 128)
+        if (value.Length > 160)
         {
             throw new CameraAgentTransientOperatorQueryException("The cursor is invalid.");
         }
@@ -599,16 +610,21 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
             var normalized = value.Replace('-', '+').Replace('_', '/');
             normalized = normalized.PadRight(normalized.Length + (4 - normalized.Length % 4) % 4, '=');
             var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(normalized));
-            var separator = decoded.IndexOf(':', StringComparison.Ordinal);
-            if (separator < 1 || !long.TryParse(
-                    decoded.AsSpan(0, separator),
+            var parts = decoded.Split(':');
+            if (parts.Length != 4 || !long.TryParse(
+                    parts[0],
                     System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture,
                     out var created) ||
-                !Guid.TryParseExact(decoded[(separator + 1)..], "N", out var candidateId) ||
+                !Guid.TryParseExact(parts[1], "N", out var candidateId) ||
                 candidateId == Guid.Empty)
             {
                 throw new CameraAgentTransientOperatorQueryException("The cursor is invalid.");
+            }
+            if (!string.Equals(parts[2], RangeToken(fromUnixMilliseconds), StringComparison.Ordinal) ||
+                !string.Equals(parts[3], RangeToken(toUnixMilliseconds), StringComparison.Ordinal))
+            {
+                throw new CameraAgentTransientOperatorQueryException("The cursor does not match the requested range.");
             }
             _ = DateTimeOffset.FromUnixTimeMilliseconds(created);
             return new(created, candidateId.ToString("N"));

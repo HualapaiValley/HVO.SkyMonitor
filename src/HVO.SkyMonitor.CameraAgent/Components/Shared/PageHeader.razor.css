@@ -4,4 +4,4 @@
 .lead-copy { max-width: 50rem; margin: .7rem 0 0; color: var(--hvo-muted); }
 .page-header__aside { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; }
 @media (max-width: 680px) { .page-header { display: grid; } .page-header__aside { justify-content: flex-start; } }
-@media (max-height: 500px) and (orientation: landscape) { .page-header { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } }
+@media (max-height: 500px) and (orientation: landscape) { .page-header { margin-bottom: .5rem; } .page-header > div:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } }

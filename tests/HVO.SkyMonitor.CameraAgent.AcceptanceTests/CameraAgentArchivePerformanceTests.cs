@@ -43,10 +43,24 @@ public sealed class CameraAgentArchivePerformanceTests
             Assert.AreEqual(ObservingDayCalendar.MaximumRangeDays, firstCalendar.Days.Count);
             Assert.IsGreaterThan(0, firstCalendar.Days.Sum(static day => day.CaptureCount));
             Assert.IsLessThanOrEqualTo(captureCount, firstCalendar.Days.Sum(static day => day.CaptureCount));
+            // The seeded history spans 62 days, so most nights in the range are populated.
+            Assert.IsGreaterThan(ObservingDayCalendar.MaximumRangeDays / 2, firstCalendar.Days.Count(static day => day.CaptureCount > 0));
+            foreach (var (name, sql) in new[]
+            {
+                ("products-page", "SELECT output.output_identity_sha256 FROM processing_outputs output INDEXED BY ix_processing_outputs_committed WHERE 1 = 1 ORDER BY output.committed_unix_ms DESC, output.output_identity_sha256 DESC LIMIT 51;"),
+                ("calendar-day", "SELECT COUNT(*) FROM raw_captures raw INDEXED BY ix_raw_captures_gallery_time WHERE raw.exposure_started_unix_ms >= 0 AND raw.exposure_started_unix_ms < 1 AND raw.state = 'committed';")
+            })
+            {
+                var plan = await fixture.ExplainAsync(sql).ConfigureAwait(false);
+                Assert.IsFalse(plan.Any(static detail => detail.Contains("USE TEMP B-TREE", StringComparison.OrdinalIgnoreCase)), $"{name}: {string.Join(" | ", plan)}");
+                Assert.IsFalse(plan.Any(static detail => detail.StartsWith("SCAN raw", StringComparison.OrdinalIgnoreCase) || detail.StartsWith("SCAN output", StringComparison.OrdinalIgnoreCase)), $"{name}: {string.Join(" | ", plan)}");
+            }
             measurements.Add(await MeasureAsync("calendar-62-days", captureCount, async () =>
                 (await archive.GetCalendarAsync(calendarQuery, CancellationToken.None).ConfigureAwait(false)).Days.Count).ConfigureAwait(false));
 
             var firstProducts = await archive.GetProductPageAsync(new CameraAgentProductQuery(PageSize: PageSize), CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(PageSize, firstProducts.Items);
+            Assert.AreEqual(0, firstProducts.SkippedCount);
             measurements.Add(await MeasureAsync("products-first", captureCount, async () =>
                 (await archive.GetProductPageAsync(new CameraAgentProductQuery(PageSize: PageSize), CancellationToken.None).ConfigureAwait(false)).Items.Count).ConfigureAwait(false));
             var cursor = firstProducts.NextCursor;
@@ -69,6 +83,9 @@ public sealed class CameraAgentArchivePerformanceTests
 
             var middle = await fixture.Gallery.GetPageAsync(new CameraAgentGalleryQuery(PageSize: PageSize, Cursor: null), CancellationToken.None).ConfigureAwait(false);
             var middleId = middle.Items[middle.Items.Count / 2].CaptureId;
+            Assert.IsNotNull(await archive.GetNeighboursAsync(middleId, new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false));
+            // The fixture seeds every third capture as a developer fixture, so the filtered read is a real filtered walk.
+            Assert.IsNotNull(await archive.GetNeighboursAsync(middleId, new CameraAgentGalleryQuery(EvidenceOrigin: GalleryEvidenceOrigin.DeveloperFixture), CancellationToken.None).ConfigureAwait(false));
             measurements.Add(await MeasureAsync("neighbours-unfiltered", captureCount, async () =>
                 (await archive.GetNeighboursAsync(middleId, new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false)) is null ? 0 : 2).ConfigureAwait(false));
             measurements.Add(await MeasureAsync("neighbours-origin-filter", captureCount, async () =>
@@ -84,10 +101,9 @@ public sealed class CameraAgentArchivePerformanceTests
         foreach (var scenario in measurements.Select(static measurement => measurement.Scenario).Distinct())
         {
             var byCount = measurements.Where(measurement => measurement.Scenario == scenario).OrderBy(static measurement => measurement.CaptureCount).ToArray();
-            if (byCount.Length == 2 && byCount[0].MedianMilliseconds >= 1)
-            {
-                Assert.IsLessThanOrEqualTo(4d, byCount[1].MedianMilliseconds / byCount[0].MedianMilliseconds, scenario);
-            }
+            // Sub-millisecond medians compare against a one-millisecond floor instead of being skipped.
+            Assert.HasCount(2, byCount, scenario);
+            Assert.IsLessThanOrEqualTo(4d, Math.Max(byCount[1].MedianMilliseconds, 1d) / Math.Max(byCount[0].MedianMilliseconds, 1d), scenario);
         }
         var evidence = new
         {

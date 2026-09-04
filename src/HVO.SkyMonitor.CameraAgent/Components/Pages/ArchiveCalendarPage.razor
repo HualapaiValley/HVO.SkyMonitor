@@ -44,12 +44,12 @@
             @foreach (var day in _calendar.Days.Reverse())
             {
                 <li class="@(day.CaptureCount == 0 && day.CandidateCount == 0 ? "night night--empty" : "night")">
-                    <div class="night__date"><time datetime="@day.Day.Date.ToString("yyyy-MM-dd")">@day.Day.Date.ToString("ddd, MMM d yyyy", System.Globalization.CultureInfo.InvariantCulture)</time><span class="night__zone">@day.Day.StartUtc.ToLocalTime().ToString("HH:mm") → @day.Day.EndUtc.ToLocalTime().ToString("HH:mm")</span></div>
+                    <div class="night__date"><time datetime="@day.Day.Date.ToString("yyyy-MM-dd")">@day.Day.Date.ToString("ddd, MMM d yyyy", System.Globalization.CultureInfo.InvariantCulture)</time><span class="night__zone">@LocalTime(day.Day.StartUtc) → @LocalTime(day.Day.EndUtc) @(_calendar.TimeZoneFallback ? "UTC" : _calendar.TimeZoneId)</span></div>
                     <dl class="night__facts">
                         <div><dt>Captures</dt><dd>@day.CaptureCount</dd></div>
                         <div><dt>Candidates</dt><dd>@day.CandidateCount</dd></div>
-                        <div><dt>First</dt><dd>@(day.FirstExposureUtc is { } first ? first.ToLocalTime().ToString("HH:mm:ss") : "—")</dd></div>
-                        <div><dt>Last</dt><dd>@(day.LastExposureUtc is { } last ? last.ToLocalTime().ToString("HH:mm:ss") : "—")</dd></div>
+                        <div><dt>First</dt><dd>@(day.FirstExposureUtc is { } first ? LocalTime(first) : "—")</dd></div>
+                        <div><dt>Last</dt><dd>@(day.LastExposureUtc is { } last ? LocalTime(last) : "—")</dd></div>
                     </dl>
                     <div class="night__links">
                         @if (day.CaptureCount > 0) { <a href="@CapturesUrl(day.Day)">Open captures</a> }

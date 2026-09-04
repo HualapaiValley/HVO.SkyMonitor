@@ -265,7 +265,8 @@ public sealed record CameraAgentProductQuery(
 
 public sealed record CameraAgentProductPage(
     IReadOnlyList<CameraAgentProduct> Items,
-    string? NextCursor);
+    string? NextCursor,
+    int SkippedCount = 0);
 
 public sealed record CameraAgentProduct(
     Guid ArtifactId,
