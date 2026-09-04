@@ -39,3 +39,19 @@ dd { margin: .15rem 0 0; overflow-wrap: anywhere; font-weight: 650; }
 @media (max-width: 767.98px) {
     .sky-grid { grid-template-columns: minmax(0, 1fr); }
 }
+.coordinate-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .8rem; margin: 1rem 0 0; padding: 0; border: 0; }
+.coordinate-field { display: flex; flex-direction: column; gap: .25rem; min-width: 0; }
+.coordinate-field--wide { grid-column: 1 / -1; }
+.coordinate-field label { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
+.coordinate-field input { min-width: 0; max-width: 100%; min-height: 44px; padding: .3rem .5rem; border: 1px solid var(--hvo-border-stronger); border-radius: var(--hvo-border-radius-lg); background: var(--hvo-card-bg); color: var(--hvo-body-color); color-scheme: dark; }
+.coordinate-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .8rem; }
+.coordinate-actions .btn { min-height: 44px; }
+.manual-error { border-color: var(--hvo-danger-fg); color: var(--hvo-danger-fg); background: var(--hvo-danger-bg); }
+.manual-ok { border-color: var(--hvo-success-fg); color: var(--hvo-success-fg); background: var(--hvo-success-bg); }
+.confirmation-panel { width: min(42rem, calc(100% - 2rem)); padding: 1rem 1.2rem; border: 1px solid var(--hvo-border-stronger); background: var(--hvo-surface-elevated); color: var(--hvo-body-color); }
+.confirmation-panel[open] { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between; }
+.confirmation-panel::backdrop { background: rgba(1, 4, 9, .78); }
+.confirmation-panel h2 { margin: 0; font-size: 1.08rem; }
+.confirmation-panel p { margin: .3rem 0 0; color: var(--hvo-muted-strong); font-size: .85rem; }
+.confirmation-panel div:last-child { display: flex; gap: .6rem; }
+.confirmation-panel .btn { min-height: 44px; }

@@ -6,14 +6,17 @@
   "activitySource": "HVO.SkyMonitor.CameraAgent.DeploymentLocation",
   "logs": [
     { "eventId": 7301, "level": "Information", "fields": ["LocationId", "Version"] },
-    { "eventId": 7302, "level": "Information", "fields": ["LocationId", "Version"] }
+    { "eventId": 7302, "level": "Information", "fields": ["LocationId", "Version"] },
+    { "eventId": 7305, "level": "Information", "fields": ["LocationId", "Version"] },
+    { "eventId": 7306, "level": "Warning", "fields": ["LocationId"] }
   ],
   "metrics": [
-    { "name": "skymonitor.cameraagent.deployment_location.operations", "unit": "{operation}", "labels": { "operation": ["initialize", "load", "change"], "outcome": ["applied", "existing", "failed"] } },
-    { "name": "skymonitor.cameraagent.deployment_location.duration", "unit": "ms", "labels": { "operation": ["initialize", "load", "change"], "outcome": ["applied", "existing", "failed"] } }
+    { "name": "skymonitor.cameraagent.deployment_location.operations", "unit": "{operation}", "labels": { "operation": ["initialize", "load", "change", "manual"], "outcome": ["applied", "existing", "replayed", "unchanged", "conflict", "invalid", "failed"] } },
+    { "name": "skymonitor.cameraagent.deployment_location.duration", "unit": "ms", "labels": { "operation": ["initialize", "load", "change", "manual"], "outcome": ["applied", "existing", "replayed", "unchanged", "conflict", "invalid", "failed"] } }
   ],
   "spans": [
-    { "name": "deployment-location.initialize", "kind": "Internal", "tags": ["operation", "outcome"] }
+    { "name": "deployment-location.initialize", "kind": "Internal", "tags": ["operation", "outcome"] },
+    { "name": "deployment-location.manual", "kind": "Internal", "tags": ["operation", "outcome"] }
   ],
   "health": {
     "check": "deployment-location",
@@ -23,8 +26,8 @@
     "fields": ["locationId", "version"]
   },
   "privacy": {
-    "forbidden": ["latitude", "longitude", "elevation", "timezone", "protected payload", "Data Protection key material"],
-    "identifiers": "LocationId and version may appear in authenticated configuration and structured logs; the coordinate-derived canonical hash remains protected, and hashes and location identifiers are never metric labels or trace tags."
+    "forbidden": ["latitude", "longitude", "elevation", "timezone", "protected payload", "Data Protection key material", "operator actor identifier"],
+    "identifiers": "LocationId and version may appear in authenticated configuration and structured logs; the coordinate-derived canonical hash remains protected, and hashes, location identifiers, and operator actor identifiers are never metric labels or trace tags."
   },
   "collection": {
     "focusedCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --filter FullyQualifiedName~DeploymentLocation",

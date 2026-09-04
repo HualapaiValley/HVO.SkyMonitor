@@ -502,6 +502,9 @@ public sealed class OwnerAuthorizationTests
         using var anonymousSkyMap = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/sky-map", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousSkyMap.StatusCode);
+        using var anonymousManualLocation = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/deployment-location/manual", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousManualLocation.StatusCode);
 
         using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
@@ -523,6 +526,14 @@ public sealed class OwnerAuthorizationTests
         using var nonOwnerSkyMap = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/sky-map", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerSkyMap.StatusCode);
+        using var nonOwnerManualLocation = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/deployment-location/manual", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerManualLocation.StatusCode);
+        using var nonOwnerManualMutation = await nonOwnerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/deployment-location/manual", UriKind.Relative),
+            new { latitudeDegrees = 10, longitudeDegrees = 20, elevationMeters = 30, timeZoneId = "UTC", expectedVersion = 1 })
+            .ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerManualMutation.StatusCode);
         using var nonOwnerMutation = await nonOwnerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/capture/resume", UriKind.Relative),
             new { reason = "test" }).ConfigureAwait(false);
@@ -554,6 +565,13 @@ public sealed class OwnerAuthorizationTests
         using var ownerSkyMapOutOfRange = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/sky-map?atUtc=2000-01-01T00:00:00Z", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, ownerSkyMapOutOfRange.StatusCode);
+        using var ownerManualLocation = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/deployment-location/manual", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerManualLocation.StatusCode);
+        var manualLocationJson = await ownerManualLocation.Content.ReadAsStringAsync().ConfigureAwait(false);
+        StringAssert.Contains(manualLocationJson, "knownVersion", StringComparison.Ordinal);
+        Assert.IsFalse(manualLocationJson.Contains(
+            AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
         using var ownerPipeline = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/pipeline", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, ownerPipeline.StatusCode);
@@ -599,6 +617,11 @@ public sealed class OwnerAuthorizationTests
             new Uri("/api/v1/operations/environmental/sources/missing/acquisitions", UriKind.Relative),
             new { reason = "test" }).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, missingEnvironmentalAntiforgery.StatusCode);
+        using var missingManualLocationAntiforgery = await ownerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/deployment-location/manual", UriKind.Relative),
+            new { latitudeDegrees = 10, longitudeDegrees = 20, elevationMeters = 30, timeZoneId = "UTC", expectedVersion = 1 })
+            .ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, missingManualLocationAntiforgery.StatusCode);
 
         var token = await GetAntiforgeryTokenAsync(ownerClient).ConfigureAwait(false);
         using (var missingEnvironmentalRequest = new HttpRequestMessage(
@@ -625,6 +648,44 @@ public sealed class OwnerAuthorizationTests
             using var invalidCalibration = await ownerClient.SendAsync(invalidCalibrationIdempotency)
                 .ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.BadRequest, invalidCalibration.StatusCode);
+        }
+        using (var missingManualVersionRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/deployment-location/manual", UriKind.Relative)))
+        {
+            missingManualVersionRequest.Headers.Add("Idempotency-Key", $"manual-location-{Guid.NewGuid():N}");
+            missingManualVersionRequest.Headers.Add("RequestVerificationToken", token);
+            missingManualVersionRequest.Content = JsonContent.Create(new
+            {
+                latitudeDegrees = 10,
+                longitudeDegrees = 20,
+                elevationMeters = 30,
+                timeZoneId = "UTC",
+                reason = "missing concurrency version"
+            });
+            using var missingManualVersion = await ownerClient.SendAsync(missingManualVersionRequest)
+                .ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, missingManualVersion.StatusCode);
+        }
+        using (var staleManualVersionRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/deployment-location/manual", UriKind.Relative)))
+        {
+            staleManualVersionRequest.Headers.Add("Idempotency-Key", $"manual-location-{Guid.NewGuid():N}");
+            staleManualVersionRequest.Headers.Add("RequestVerificationToken", token);
+            staleManualVersionRequest.Content = JsonContent.Create(new
+            {
+                latitudeDegrees = 10,
+                longitudeDegrees = 20,
+                elevationMeters = 30,
+                timeZoneId = "UTC",
+                expectedVersion = 999_999L,
+                reason = "stale expected version"
+            });
+            using var staleManualVersion = await ownerClient.SendAsync(staleManualVersionRequest)
+                .ConfigureAwait(false);
+            // A stale expected version is rejected without appending a deployment version.
+            Assert.AreEqual(HttpStatusCode.Conflict, staleManualVersion.StatusCode);
         }
         using (var scheduleDocument = JsonDocument.Parse(scheduleJson))
         using (var missingVersionRequest = new HttpRequestMessage(

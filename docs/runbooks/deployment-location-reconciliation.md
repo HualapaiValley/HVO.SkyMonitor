@@ -17,6 +17,54 @@ central disposition never changes local geometry or stops acquisition.
   previously acknowledged deployments to `Pending` for owner review. Historical
   frame facts remain unchanged.
 
+## Manual Local Coordinates
+
+An owner can enter observer coordinates locally in the Operations **Sky map &
+catalog** section, or through `POST /api/v1/operations/deployment-location/manual`.
+The command is owner-only, antiforgery-protected, carries an `Idempotency-Key`
+header and an `expectedVersion` body field, and records the actor and reason. It
+is completely offline: no geocoding, tiles, browser location, or network request
+takes part in it.
+
+- **Where it is stored.** The entry is written to its own protected file,
+  `<RawIngressRoot>/.location/manual-deployment-location.v1.protected`, next to
+  the protected history. The history document keeps schema `1` and its exact
+  property set, so a deployment rolled back to an earlier image can still open
+  it; that baseline simply ignores the sidecar. Both files are Data Protection
+  encrypted, written through a temporary file with `fsync` and rename, and
+  restricted to the owning user.
+- **When it takes effect.** The command never moves the active snapshot. It
+  records the governing local seed, and the next startup reconciliation appends
+  the new immutable version exactly as a changed startup seed would.
+  Consequently every capture recorded by the running process keeps the
+  deployment version it was already stamped with, and captures after the restart
+  carry the new version. Earlier versions, their effective intervals, and the
+  captures bound to them are never rewritten.
+- **Precedence.** While the startup configuration seed is unchanged, the manual
+  entry outranks it, so restarts do not silently revert the operator. Changing
+  the configured seed itself supersedes the manual entry: the next startup marks
+  the record superseded, keeps its audit history, and appends a configured
+  version. A superseded record never governs again.
+- **Central acknowledgement.** With `CentralIntegration:Mode=Enabled` the manual
+  version becomes the protected local candidate instead of activating. The
+  reconciliation worker proposes it, LogicHost acknowledges or rejects it, and an
+  acknowledged version is staged and activated at the following restart.
+  LogicHost never replaces local coordinates with its own; it can only
+  acknowledge or reject the exact local proposal. If a central acknowledgement is
+  already staged when the entry is made, that staged version activates first and
+  the manual entry is then proposed as its successor.
+- **Validation.** Latitude, longitude, the portable IANA time zone, and the
+  canonical hash are validated by the deployment-location contract; elevation is
+  additionally bounded to -500 m to 9000 m for a manual entry. Coordinates equal
+  to the ones already governing return `Unchanged` and create no version. A
+  replayed `Idempotency-Key` with the same coordinates returns `Replayed`; the
+  same key with different coordinates returns `409`. A stale `expectedVersion`
+  returns `409` without writing anything.
+- **Rollback.** A rollback to a baseline image discards the manual override
+  because the baseline does not read the sidecar. The protected history stays
+  valid, so the baseline starts, appends a configured version, and the versions
+  recorded while the manual entry was active remain intact with their captures.
+
 ## Owner API
 
 Owner reads require cookie, read-capable API key, or owner bearer credentials.
@@ -66,7 +114,8 @@ location or Observatory assignment and submit a new location version instead.
 - Meter `HVO.SkyMonitor.LogicHost.DeploymentLocation` reports bounded operation,
   duration, pending-count, oldest-age, and backfill instruments.
 - Meter `HVO.SkyMonitor.CameraAgent.DeploymentLocation` reports bounded local and
-  reconciliation outcomes.
+  reconciliation outcomes, including the `manual` operation with `applied`,
+  `replayed`, `unchanged`, `conflict`, `invalid`, and `failed` outcomes.
 - Deployment-location authority logs, metrics, and spans never include
   coordinates, hashes, credentials, protected payloads, owner reasons, or entity
   IDs. General bootstrap audit logs retain bounded device and registration IDs.
