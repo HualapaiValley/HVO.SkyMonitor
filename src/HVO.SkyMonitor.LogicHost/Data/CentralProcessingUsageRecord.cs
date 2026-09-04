@@ -37,7 +37,4 @@ internal sealed class CentralProcessingUsageRecord
     public long RecipeDurationTicks { get; set; }
 
     public DateTimeOffset RecordedAtUtc { get; set; }
-
-    /// <summary>When the row was consumed into the completion and usage metrics (exactly once across replicas); null until then.</summary>
-    public DateTimeOffset? SignaledAtUtc { get; set; }
 }

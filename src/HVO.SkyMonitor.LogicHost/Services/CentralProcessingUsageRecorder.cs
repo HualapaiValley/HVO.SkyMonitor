@@ -2,7 +2,6 @@ using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
@@ -14,7 +13,7 @@ namespace HVO.SkyMonitor.LogicHost.Services;
 /// site calls it, <see cref="CentralProcessingUsageInterceptor"/> covers attempts terminalized through tracked
 /// entities, and <see cref="RecordMissingAsync"/> is the periodic safety net for any path that slipped through.
 /// </summary>
-internal sealed record CentralProcessingUsageSignal(Guid ObservatoryId, string ResourceClass, string Outcome, long InputBytes, long OutputBytes);
+internal sealed record CentralProcessingUsageTotal(Guid ObservatoryId, string ResourceClass, string Outcome, long Attempts, long InputBytes, long OutputBytes);
 
 internal static class CentralProcessingUsageRecorder
 {
@@ -75,52 +74,33 @@ internal static class CentralProcessingUsageRecorder
     }
 
     /// <summary>
-    /// Takes up to <paramref name="limit"/> usage rows that no replica has signaled yet, marking them signaled in the
-    /// same statement, so committed usage rows feed the completion and byte metrics once across any number of
-    /// LogicHost replicas (READPAST lets concurrent replicas take disjoint rows without blocking). Callers run it in
-    /// a transaction they commit only after emitting the metrics, so an interrupted pass leaves the rows for the next.
+    /// Aggregates committed usage rows by observatory, class, and outcome: every row when <paramref name="since"/>
+    /// is null, otherwise the rows recorded in (<paramref name="since"/>, <paramref name="until"/>]. The worker feeds
+    /// the cumulative completion and byte counters from these totals, so the counters are a durable global fact
+    /// that survives restarts and unscraped intervals and reads the same on every replica.
     /// </summary>
-    public static async Task<IReadOnlyList<CentralProcessingUsageSignal>> TakeUnsignaledAsync(
+    public static async Task<IReadOnlyList<CentralProcessingUsageTotal>> AggregateAsync(
         ApplicationDbContext dbContext,
-        int limit,
+        DateTimeOffset? since,
+        DateTimeOffset until,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(dbContext);
-        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        var connection = dbContext.Database.GetDbConnection();
-        var opened = false;
-        if (connection.State != System.Data.ConnectionState.Open)
+        var query = dbContext.CentralProcessingUsageRecords.AsNoTracking().Where(record => record.RecordedAtUtc <= until);
+        if (since is { } from)
         {
-            await dbContext.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-            opened = true;
+            query = query.Where(record => record.RecordedAtUtc > from);
         }
-        try
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = """
-                UPDATE TOP(@limit) usage SET [SignaledAtUtc] = SYSDATETIMEOFFSET()
-                OUTPUT inserted.[ObservatoryId], inserted.[ResourceClass], inserted.[Outcome], inserted.[InputBytes], inserted.[OutputBytes]
-                FROM [CentralProcessingUsageRecords] AS usage WITH (READPAST)
-                WHERE usage.[SignaledAtUtc] IS NULL
-                """;
-            command.Transaction = dbContext.Database.CurrentTransaction?.GetDbTransaction();
-            command.Parameters.Add(new SqlParameter("@limit", limit));
-            var signals = new List<CentralProcessingUsageSignal>();
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                signals.Add(new CentralProcessingUsageSignal(
-                    reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3), reader.GetInt64(4)));
-            }
-            return signals;
-        }
-        finally
-        {
-            if (opened)
-            {
-                await dbContext.Database.CloseConnectionAsync().ConfigureAwait(false);
-            }
-        }
+        return await query
+            .GroupBy(record => new { record.ObservatoryId, record.ResourceClass, record.Outcome })
+            .Select(group => new CentralProcessingUsageTotal(
+                group.Key.ObservatoryId,
+                group.Key.ResourceClass,
+                group.Key.Outcome.ToString(),
+                group.LongCount(),
+                group.Sum(record => record.InputBytes),
+                group.Sum(record => record.OutputBytes)))
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static SqlParameter Classes(CentralProcessingEntitlementOptions? entitlements)

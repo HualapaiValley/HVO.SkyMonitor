@@ -2576,9 +2576,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
-                    b.Property<DateTimeOffset?>("SignaledAtUtc")
-                        .HasColumnType("datetimeoffset");
-
                     b.Property<string>("WorkerId")
                         .IsRequired()
                         .HasMaxLength(256)
@@ -2587,9 +2584,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("RecordedAtUtc");
-
-                    b.HasIndex("SignaledAtUtc")
-                        .HasFilter("[SignaledAtUtc] IS NULL");
 
                     b.HasIndex("CentralDerivativeJobId", "AttemptNumber")
                         .IsUnique();

@@ -5527,8 +5527,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     InputBytes = table.Column<long>(type: "bigint", nullable: false),
                     OutputBytes = table.Column<long>(type: "bigint", nullable: false),
                     RecipeDurationTicks = table.Column<long>(type: "bigint", nullable: false),
-                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    SignaledAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true)
+                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -5557,12 +5556,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "IX_CentralProcessingUsageRecords_RecordedAtUtc",
                 table: "CentralProcessingUsageRecords",
                 column: "RecordedAtUtc");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingUsageRecords_SignaledAtUtc",
-                table: "CentralProcessingUsageRecords",
-                column: "SignaledAtUtc",
-                filter: "[SignaledAtUtc] IS NULL");
 
             BaselineTriggerSql.CreateAll(migrationBuilder);
         }

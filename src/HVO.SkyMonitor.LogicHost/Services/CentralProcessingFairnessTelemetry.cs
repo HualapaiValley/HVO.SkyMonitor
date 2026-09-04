@@ -17,15 +17,16 @@ internal sealed class CentralProcessingFairnessTelemetry : IDisposable
     public const string MeterName = "HVO.SkyMonitor.LogicHost.ProcessingFairness";
     private readonly Meter _meter = new(MeterName);
     private readonly Counter<long> _throttled;
-    private readonly Counter<long> _completions;
-    private readonly Counter<long> _usageBytes;
     private readonly ConcurrentDictionary<Guid, CentralObservatoryQueueMeasurement> _queues = new();
+    private readonly ConcurrentDictionary<(Guid ObservatoryId, string ResourceClass, string Outcome), (long Attempts, long InputBytes, long OutputBytes)> _usage = new();
 
     public CentralProcessingFairnessTelemetry()
     {
         _throttled = _meter.CreateCounter<long>("skymonitor.central.fairness.throttled", "{claim}");
-        _completions = _meter.CreateCounter<long>("skymonitor.central.fairness.completions", "{attempt}");
-        _usageBytes = _meter.CreateCounter<long>("skymonitor.central.fairness.usage.bytes", "By");
+        // Completions and usage bytes are cumulative totals read from CentralProcessingUsageRecords (a durable global
+        // fact, identical on every replica), so nothing is lost when a process exits between scrapes.
+        _meter.CreateObservableCounter("skymonitor.central.fairness.completions", ObserveCompletions, "{attempt}");
+        _meter.CreateObservableCounter("skymonitor.central.fairness.usage.bytes", ObserveUsageBytes, "By");
         _meter.CreateObservableGauge("skymonitor.central.fairness.queue", ObserveQueue, "{job}");
         _meter.CreateObservableGauge("skymonitor.central.fairness.queue.oldest_age", ObserveOldestAge, "s");
         _meter.CreateObservableGauge("skymonitor.central.fairness.active", ObserveActive, "{job}");
@@ -38,26 +39,52 @@ internal sealed class CentralProcessingFairnessTelemetry : IDisposable
             new KeyValuePair<string, object?>("observatory", observatoryId.ToString("D")),
             new KeyValuePair<string, object?>("reason", reason));
 
-    /// <summary>
-    /// Adds committed usage rows to the completion and byte counters. Called by the worker's sampling with the rows
-    /// recorded since its previous sample, so the counters only ever reflect durable, committed attempts.
-    /// </summary>
-    public void RecordCommittedUsage(Guid observatoryId, string resourceClass, string outcome, long attempts, long inputBytes, long outputBytes)
+    /// <summary>Replaces the cumulative usage totals (a full aggregate of the usage table).</summary>
+    public void ReplaceUsageTotals(IEnumerable<CentralProcessingUsageTotal> totals)
     {
-        var observatory = new KeyValuePair<string, object?>("observatory", observatoryId.ToString("D"));
-        if (attempts > 0)
+        ArgumentNullException.ThrowIfNull(totals);
+        var replacement = new Dictionary<(Guid, string, string), (long, long, long)>();
+        foreach (var total in totals)
         {
-            _completions.Add(attempts, observatory,
-                new KeyValuePair<string, object?>("class", resourceClass),
-                new KeyValuePair<string, object?>("outcome", outcome));
+            replacement[(total.ObservatoryId, total.ResourceClass, total.Outcome.ToLowerInvariant())] = (total.Attempts, total.InputBytes, total.OutputBytes);
         }
-        if (inputBytes > 0)
+        foreach (var key in _usage.Keys.Where(key => !replacement.ContainsKey(key)).ToArray())
         {
-            _usageBytes.Add(inputBytes, observatory, new KeyValuePair<string, object?>("direction", "input"));
+            _usage.TryRemove(key, out _);
         }
-        if (outputBytes > 0)
+        foreach (var pair in replacement)
         {
-            _usageBytes.Add(outputBytes, observatory, new KeyValuePair<string, object?>("direction", "output"));
+            _usage[pair.Key] = pair.Value;
+        }
+    }
+
+    /// <summary>Adds the totals of usage rows recorded since the previous sample.</summary>
+    public void AddUsageTotals(IEnumerable<CentralProcessingUsageTotal> totals)
+    {
+        ArgumentNullException.ThrowIfNull(totals);
+        foreach (var total in totals)
+        {
+            _usage.AddOrUpdate(
+                (total.ObservatoryId, total.ResourceClass, total.Outcome.ToLowerInvariant()),
+                (total.Attempts, total.InputBytes, total.OutputBytes),
+                (_, current) => (current.Attempts + total.Attempts, current.InputBytes + total.InputBytes, current.OutputBytes + total.OutputBytes));
+        }
+    }
+
+    private IEnumerable<Measurement<long>> ObserveCompletions()
+        => _usage.Select(pair => new Measurement<long>(
+            pair.Value.Attempts,
+            new KeyValuePair<string, object?>("observatory", pair.Key.ObservatoryId.ToString("D")),
+            new KeyValuePair<string, object?>("class", pair.Key.ResourceClass),
+            new KeyValuePair<string, object?>("outcome", pair.Key.Outcome)));
+
+    private IEnumerable<Measurement<long>> ObserveUsageBytes()
+    {
+        foreach (var group in _usage.GroupBy(pair => pair.Key.ObservatoryId))
+        {
+            var observatory = new KeyValuePair<string, object?>("observatory", group.Key.ToString("D"));
+            yield return new Measurement<long>(group.Sum(pair => pair.Value.InputBytes), observatory, new KeyValuePair<string, object?>("direction", "input"));
+            yield return new Measurement<long>(group.Sum(pair => pair.Value.OutputBytes), observatory, new KeyValuePair<string, object?>("direction", "output"));
         }
     }
 

@@ -205,7 +205,8 @@ internal sealed class CentralProcessingEntitlementOptions
         error = null;
         if (DefaultActiveJobs < 0 || DefaultActiveJobsPerCamera < 0 || DefaultWeight <= 0 || !double.IsFinite(DefaultWeight)
             || StarvationAge <= TimeSpan.Zero || StarvationAge > MaximumStarvationAge || AdmissionPendingLimit < 0
-            || BacklogDegradedAfter <= TimeSpan.Zero || FairShareWindow <= TimeSpan.Zero || FairShareWindow > MaximumStarvationAge)
+            || BacklogDegradedAfter <= TimeSpan.Zero || BacklogDegradedAfter > MaximumStarvationAge
+            || FairShareWindow <= TimeSpan.Zero || FairShareWindow > MaximumStarvationAge)
         {
             error = "ProcessingEntitlements defaults are invalid.";
             return false;

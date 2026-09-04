@@ -492,15 +492,18 @@ internal sealed partial class CentralDerivativeWorker(
     }
 
     /// <summary>
-    /// Feeds the completion and byte counters from committed usage rows: rows are taken by marking them signaled in
-    /// the same statement (so replicas never replay each other's rows) inside a transaction that commits only after
-    /// the counters were emitted, so a process that stops in between leaves the rows unsignaled for the next pass
-    /// (at-least-once emission; the usage table stays the durable source of truth). The safety-net sweep first
-    /// records any terminal attempt of the last <see cref="UsageSweepWindow"/> that still lacks a usage row.
+    /// Keeps the cumulative completion and byte counters equal to the usage table's totals: a full aggregate at start
+    /// and every <see cref="UsageTotalsRefreshInterval"/> (which also absorbs rows committed late by long
+    /// transactions), incremental aggregates of rows recorded since the previous sample in between (behind a short
+    /// lag so a row's commit precedes the watermark passing it). The counters are therefore a durable global fact:
+    /// every replica reports the same totals, a restart or an unscraped interval loses nothing, and no row is ever
+    /// consumed or marked. The safety-net sweep first records any terminal attempt of the last
+    /// <see cref="UsageSweepWindow"/> that still lacks a usage row.
     /// </summary>
     private async Task SampleCommittedUsageAsync(
         ApplicationDbContext dbContext,
         CentralProcessingEntitlementOptions? entitlements,
+        DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         if (fairnessTelemetry is null)
@@ -509,21 +512,30 @@ internal sealed partial class CentralDerivativeWorker(
         }
         await CentralProcessingUsageRecorder.RecordMissingAsync(dbContext, entitlements, UsageSweepLimit, UsageSweepWindow, cancellationToken)
             .ConfigureAwait(false);
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        var signals = await CentralProcessingUsageRecorder.TakeUnsignaledAsync(dbContext, UsageSignalLimit, cancellationToken)
-            .ConfigureAwait(false);
-        foreach (var usage in signals.GroupBy(signal => (signal.ObservatoryId, signal.ResourceClass, signal.Outcome)))
+        var upTo = now - UsageWatermarkLag;
+        if (_usageTotalsRefreshedAtUtc is null || now - _usageTotalsRefreshedAtUtc.Value >= UsageTotalsRefreshInterval)
         {
-            fairnessTelemetry.RecordCommittedUsage(
-                usage.Key.ObservatoryId, usage.Key.ResourceClass, usage.Key.Outcome.ToLowerInvariant(),
-                usage.Count(), usage.Sum(signal => signal.InputBytes), usage.Sum(signal => signal.OutputBytes));
+            fairnessTelemetry.ReplaceUsageTotals(
+                await CentralProcessingUsageRecorder.AggregateAsync(dbContext, null, upTo, cancellationToken).ConfigureAwait(false));
+            _usageTotalsRefreshedAtUtc = now;
+            _usageWatermarkUtc = upTo;
+            return;
         }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (upTo <= _usageWatermarkUtc)
+        {
+            return;
+        }
+        fairnessTelemetry.AddUsageTotals(
+            await CentralProcessingUsageRecorder.AggregateAsync(dbContext, _usageWatermarkUtc, upTo, cancellationToken).ConfigureAwait(false));
+        _usageWatermarkUtc = upTo;
     }
 
     internal const int UsageSweepLimit = 500;
-    internal const int UsageSignalLimit = 5000;
     internal static readonly TimeSpan UsageSweepWindow = TimeSpan.FromHours(1);
+    internal static readonly TimeSpan UsageWatermarkLag = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan UsageTotalsRefreshInterval = TimeSpan.FromMinutes(10);
+    private DateTimeOffset? _usageTotalsRefreshedAtUtc;
+    private DateTimeOffset? _usageWatermarkUtc;
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Design",
@@ -579,7 +591,7 @@ internal sealed partial class CentralDerivativeWorker(
                     item.Waiting,
                     item.OldestPending is { } oldestPending ? (long)Math.Max(0, (now - oldestPending).TotalSeconds) : 0,
                     entitlements is { Enabled: true } ? entitlements.ResolveActiveJobs(item.ObservatoryId) : 0)).ToArray());
-                await SampleCommittedUsageAsync(dbContext, entitlements, cancellationToken).ConfigureAwait(false);
+                await SampleCommittedUsageAsync(dbContext, entitlements, now, cancellationToken).ConfigureAwait(false);
             }
             telemetry.UpdateQueueSnapshot(
                 snapshot.Select(item => new CentralDerivativeQueueMeasurement(

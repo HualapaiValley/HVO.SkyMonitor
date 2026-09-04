@@ -3,6 +3,8 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
+using Microsoft.Data.SqlClient;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.LogicHost.HealthChecks;
 
@@ -45,30 +47,54 @@ internal sealed class CentralProcessingEntitlementHealthCheck(
                     .Min(job => job.AvailableAtUtc)
             })
             .ToListAsync(cancellationToken).ConfigureAwait(false);
-        var leasedBytesByRecipe = await dbContext.CentralDerivativeJobInputs.AsNoTracking()
-            .Where(input => input.Job!.Status == CentralDerivativeJobStatus.Leased && input.Job.LeaseExpiresAtUtc > now)
-            .GroupBy(input => input.Job!.RecipeName)
-            .Select(group => new { RecipeName = group.Key, Bytes = group.Sum(input => input.ByteLength) })
-            .ToDictionaryAsync(item => item.RecipeName, item => item.Bytes, cancellationToken).ConfigureAwait(false);
-        var leasedBytesByClass = leasedBytesByRecipe
-            .GroupBy(pair => settings.ResolveResourceClass(pair.Key))
-            .ToDictionary(group => group.Key, group => group.Sum(pair => pair.Value));
         var threshold = settings.BacklogDegradedAfter;
+        var oldPendingBefore = CentralProcessingEntitlementOptions.StarvationThreshold(now, threshold);
         // Byte budgets throttle a pending job whenever it does not fit the remaining capacity (the claim rejects
-        // `active + candidate > budget`), so byte saturation is judged per old pending job, not only at a full budget.
-        var oldPendingBefore = now - threshold;
-        var oldPendingByObservatoryClass = (await dbContext.CentralDerivativeJobs.AsNoTracking()
-                .Where(job => pendingStatuses.Contains(job.Status) && job.AvailableAtUtc != null && job.AvailableAtUtc < oldPendingBefore)
-                .Select(job => new
-                {
-                    job.SourceArtifact!.Frame!.ObservatoryId,
-                    job.RecipeName,
-                    Bytes = job.Inputs.Sum(input => input.ByteLength)
-                })
+        // `active + candidate > budget`), so byte saturation is judged by the largest old pending job of each
+        // budgeted class in each observatory; a supply of smaller work cannot mask a stranded larger job. Both
+        // aggregates run server-side and only when some class carries a byte budget.
+        var byteBudgetClasses = settings.ResourceClasses.Where(pair => pair.Value.ActiveInputBytes > 0).Select(pair => pair.Key).ToArray();
+        var leasedBytesByClass = new Dictionary<string, long>(StringComparer.Ordinal);
+        var largestOldPendingBytes = new Dictionary<(Guid ObservatoryId, string Class), long>();
+        if (byteBudgetClasses.Length != 0)
+        {
+            var classes = new SqlParameter("@classes", System.Data.SqlDbType.NVarChar, -1) { Value = settings.CreateRecipeClassesJson() };
+            var budgeted = new SqlParameter("@budgeted", System.Data.SqlDbType.NVarChar, -1) { Value = JsonSerializer.Serialize(byteBudgetClasses) };
+            foreach (var row in await dbContext.Database.SqlQueryRaw<ClassBytesRow>("""
+                    SELECT COALESCE(rc.[cls], N'image') AS [ResourceClass], COALESCE(SUM(a.[ByteLength]), 0) AS [Bytes]
+                    FROM [CentralDerivativeJobs] AS job
+                    INNER JOIN [CentralDerivativeJobInputs] AS i ON i.[CentralDerivativeJobId] = job.[Id]
+                    INNER JOIN [CentralArtifacts] AS a ON a.[Id] = i.[CentralArtifactId]
+                    LEFT JOIN OPENJSON(@classes) WITH ([r] nvarchar(128) '$.r', [cls] nvarchar(64) '$.cls') AS rc ON rc.[r] = job.[RecipeName]
+                    WHERE job.[Status] = N'Leased' AND job.[LeaseExpiresAtUtc] > @now
+                      AND COALESCE(rc.[cls], N'image') IN (SELECT [value] FROM OPENJSON(@budgeted))
+                    GROUP BY COALESCE(rc.[cls], N'image')
+                    """, classes, budgeted, new SqlParameter("@now", now))
                 .ToListAsync(cancellationToken).ConfigureAwait(false))
-            .GroupBy(job => (job.ObservatoryId, Class: settings.ResolveResourceClass(job.RecipeName)))
-            .ToDictionary(group => group.Key, group => group.Min(job => job.Bytes));
-        bool OldBacklog(DateTimeOffset? oldest) => oldest is { } value && now - value > threshold;
+            {
+                leasedBytesByClass[row.ResourceClass] = row.Bytes;
+            }
+            foreach (var row in await dbContext.Database.SqlQueryRaw<OldPendingBytesRow>("""
+                    SELECT frame.[ObservatoryId] AS [ObservatoryId], COALESCE(rc.[cls], N'image') AS [ResourceClass], MAX(sized.[Bytes]) AS [Bytes]
+                    FROM [CentralDerivativeJobs] AS job
+                    INNER JOIN [CentralArtifacts] AS source ON source.[Id] = job.[SourceCentralArtifactId]
+                    INNER JOIN [CentralFrames] AS frame ON frame.[Id] = source.[CentralFrameId]
+                    LEFT JOIN OPENJSON(@classes) WITH ([r] nvarchar(128) '$.r', [cls] nvarchar(64) '$.cls') AS rc ON rc.[r] = job.[RecipeName]
+                    CROSS APPLY (SELECT COALESCE(SUM(a.[ByteLength]), 0) AS [Bytes]
+                                 FROM [CentralDerivativeJobInputs] AS i INNER JOIN [CentralArtifacts] AS a ON a.[Id] = i.[CentralArtifactId]
+                                 WHERE i.[CentralDerivativeJobId] = job.[Id]) AS sized
+                    WHERE job.[Status] IN (N'Pending', N'RetryableFailure') AND job.[AvailableAtUtc] < @before
+                      AND COALESCE(rc.[cls], N'image') IN (SELECT [value] FROM OPENJSON(@budgeted))
+                    GROUP BY frame.[ObservatoryId], COALESCE(rc.[cls], N'image')
+                    """, new SqlParameter("@classes", System.Data.SqlDbType.NVarChar, -1) { Value = settings.CreateRecipeClassesJson() },
+                    new SqlParameter("@budgeted", System.Data.SqlDbType.NVarChar, -1) { Value = JsonSerializer.Serialize(byteBudgetClasses) },
+                    new SqlParameter("@before", oldPendingBefore))
+                .ToListAsync(cancellationToken).ConfigureAwait(false))
+            {
+                largestOldPendingBytes[(row.ObservatoryId, row.ResourceClass)] = row.Bytes;
+            }
+        }
+        bool OldBacklog(DateTimeOffset? oldest) => oldest is { } value && value < oldPendingBefore;
         var byObservatory = groups.GroupBy(item => item.ObservatoryId).ToList();
         var byClass = groups.GroupBy(item => settings.ResolveResourceClass(item.RecipeName))
             .ToDictionary(group => group.Key, group => (Leased: group.Sum(item => item.Leased), OldBacklog: group.Any(item => OldBacklog(item.Oldest))));
@@ -112,8 +138,8 @@ internal sealed class CentralProcessingEntitlementHealthCheck(
                 dimensions.Add("class");
             }
             if (perClass.Any(item => settings.ResourceClasses.TryGetValue(item.Class, out var budget) && budget.ActiveInputBytes > 0
-                    && oldPendingByObservatoryClass.TryGetValue((id, item.Class), out var smallestOldPendingBytes)
-                    && (leasedBytesByClass.TryGetValue(item.Class, out var classBytes) ? classBytes : 0) + smallestOldPendingBytes > budget.ActiveInputBytes))
+                    && largestOldPendingBytes.TryGetValue((id, item.Class), out var largestOldPending)
+                    && (leasedBytesByClass.TryGetValue(item.Class, out var classBytes) ? classBytes : 0) + largestOldPending > budget.ActiveInputBytes))
             {
                 dimensions.Add("class-bytes");
             }
@@ -145,4 +171,8 @@ internal sealed class CentralProcessingEntitlementHealthCheck(
         }
         return HealthCheckResult.Healthy("Processing entitlements are within limits.", data);
     }
+
+    private sealed record ClassBytesRow(string ResourceClass, long Bytes);
+
+    private sealed record OldPendingBytesRow(Guid ObservatoryId, string ResourceClass, long Bytes);
 }

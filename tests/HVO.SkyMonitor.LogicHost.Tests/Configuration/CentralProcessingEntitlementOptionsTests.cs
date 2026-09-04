@@ -168,6 +168,7 @@ public sealed class CentralProcessingEntitlementOptionsTests
         Assert.IsFalse(options.Validate(out var error));
         Assert.IsNotNull(error);
         Assert.IsFalse(new CentralProcessingEntitlementOptions { Enabled = true, FairShareWindow = TimeSpan.Zero }.Validate(out _));
+        Assert.IsFalse(new CentralProcessingEntitlementOptions { Enabled = true, BacklogDegradedAfter = TimeSpan.MaxValue }.Validate(out _));
         Assert.IsTrue(new CentralProcessingEntitlementOptions { Enabled = true, StarvationAge = CentralProcessingEntitlementOptions.MaximumStarvationAge }.Validate(out _));
         var now = new DateTimeOffset(2026, 9, 4, 0, 0, 0, TimeSpan.Zero);
         Assert.AreEqual(now.AddMinutes(-10), CentralProcessingEntitlementOptions.StarvationThreshold(now, TimeSpan.FromMinutes(10)));

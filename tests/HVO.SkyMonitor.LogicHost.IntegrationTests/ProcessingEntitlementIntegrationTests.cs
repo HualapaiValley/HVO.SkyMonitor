@@ -200,12 +200,15 @@ public sealed class ProcessingEntitlementIntegrationTests
         (await CentralProcessingUsageRecorder.RecordMissingAsync(db, null, 100, TimeSpan.FromHours(1), CancellationToken.None).ConfigureAwait(false))
             .Should().Be(0, "the sweep is idempotent");
 
-        // Metrics consume each usage row exactly once: a second take returns nothing for the rows already signaled.
-        var signals = await CentralProcessingUsageRecorder.TakeUnsignaledAsync(db, 1000, CancellationToken.None).ConfigureAwait(false);
-        signals.Should().Contain(signal => signal.ObservatoryId == observatory && signal.Outcome == "Skipped");
-        (await CentralProcessingUsageRecorder.TakeUnsignaledAsync(db, 1000, CancellationToken.None).ConfigureAwait(false)).Should().BeEmpty();
-        (await db.CentralProcessingUsageRecords.AsNoTracking().CountAsync(record => record.ObservatoryId == observatory && record.SignaledAtUtc == null).ConfigureAwait(false))
-            .Should().Be(0);
+        // The metrics are cumulative totals of the table: a full aggregate and an incremental one over the same
+        // window agree, and every row of this observatory is represented.
+        var until = DateTimeOffset.UtcNow.AddSeconds(1);
+        var totals = await CentralProcessingUsageRecorder.AggregateAsync(db, null, until, CancellationToken.None).ConfigureAwait(false);
+        totals.Where(total => total.ObservatoryId == observatory).Sum(total => total.Attempts)
+            .Should().Be(await db.CentralProcessingUsageRecords.AsNoTracking().CountAsync(record => record.ObservatoryId == observatory).ConfigureAwait(false));
+        totals.Should().Contain(total => total.ObservatoryId == observatory && total.Outcome == "Skipped" && total.Attempts == 1);
+        (await CentralProcessingUsageRecorder.AggregateAsync(db, until, until.AddMinutes(1), CancellationToken.None).ConfigureAwait(false))
+            .Where(total => total.ObservatoryId == observatory).Should().BeEmpty("nothing was recorded after the window");
     }
 
     [TestMethod]
@@ -222,8 +225,8 @@ public sealed class ProcessingEntitlementIntegrationTests
                 .FirstAsync().ConfigureAwait(false);
         }
         // Every class budget is one and a half single-input jobs: the first lease of any class leaves capacity below
-        // the budget, yet the next old pending job of that class no longer fits (the claim rejects active + candidate
-        // > budget), which is what the health check must report.
+        // the budget, yet the next old pending job of that class (judged by the largest old pending job) no longer
+        // fits (the claim rejects active + candidate > budget), which is what the health check must report.
         using var factory = CreateFactory(CentralProcessingEntitlementOptions.KnownClasses
             .Select(cls => ($"ProcessingEntitlements:ResourceClasses:{cls}:ActiveInputBytes", (singleInputBytes * 3 / 2).ToString(System.Globalization.CultureInfo.InvariantCulture)))
             .Append(("ProcessingEntitlements:BacklogDegradedAfter", "00:01:00"))

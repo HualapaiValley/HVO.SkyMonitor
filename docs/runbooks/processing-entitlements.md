@@ -99,12 +99,12 @@ directly, a `SaveChanges` interceptor records attempts terminalized through
 tracked entities (graph cancellation, source invalidation, location
 quarantine), and the worker's queue sampling sweeps any terminal attempt of
 the last hour that still lacks a row (an `EndedAtUtc` index bounds the
-sweep). The completion and byte metrics are derived from committed rows:
-each sampling pass marks rows `SignaledAtUtc` in the same statement that
-reads them, inside a transaction committed only after the counters are
-emitted, so rows are counted once across any number of LogicHost replicas
-and a pass interrupted before commit leaves them for the next pass (the
-table, not the counters, is the durable record). Aggregate by
+sweep). The completion and byte metrics are cumulative totals of that table
+(a full aggregate at start and every ten minutes, incremental aggregates
+of newly recorded rows in between): every LogicHost replica reports the same
+global totals, nothing is consumed or marked, and a restart or an unscraped
+interval loses nothing. Aggregate the metric across replicas with `max`, not
+`sum`; the table itself is the auditable record. Aggregate by
 observatory or camera for billing-ready reporting; no payment provider is
 involved.
 
@@ -117,10 +117,11 @@ saturation, throttled claims, completions, and usage bytes
 refused and derivative scheduling continues under overload; the
 `processing-entitlements` health check degrades when an observatory's pending
 work exceeds `AdmissionPendingLimit` or when an observatory saturated on any
-enforced dimension (observatory, camera, class jobs, class bytes when an
-old pending job no longer fits the remaining budget, observatory-class;
-reported as `saturatedDimensions`) carries backlog older than
-`BacklogDegradedAfter`. That is the admission behavior:
+enforced dimension (observatory, camera, class jobs, class bytes when the
+largest old pending job of a budgeted class no longer fits the remaining
+budget, observatory-class; reported as `saturatedDimensions`) carries backlog
+older than `BacklogDegradedAfter`. The byte aggregates run server-side and
+only when some class carries a byte budget. That is the admission behavior:
 bounded by entitlements, visible, never lossy.
 
 ## Capacity guidance
