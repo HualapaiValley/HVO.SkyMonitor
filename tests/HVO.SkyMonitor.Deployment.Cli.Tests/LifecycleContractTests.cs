@@ -1522,10 +1522,7 @@ public sealed class LifecycleContractTests
             return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
         }
 
-        public Task<LifecycleContinuity> ConfirmDrainedAsync(
-            Guid operationId,
-            string verificationToken,
-            CancellationToken cancellationToken)
+        public Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken)
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             ConfirmCount++;

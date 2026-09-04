@@ -464,7 +464,7 @@ internal sealed class CameraAgentLifecycleManager
                     operation with { ExpectedOwnerBootstrapState = expectedOwnerState },
                     cancellationToken).ConfigureAwait(false);
             }
-            var postMutation = await candidateLifecycle.ConfirmDrainedAsync(operation.OperationId, lifecycleControlToken, cancellationToken)
+            var postMutation = await candidateLifecycle.ConfirmDrainedAsync(lifecycleControlToken, cancellationToken)
                 .ConfigureAwait(false);
             EnsureContinuity(operation.PreMutationContinuity, postMutation);
             operation = await RecordAsync(paths, operation with

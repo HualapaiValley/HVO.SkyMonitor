@@ -273,7 +273,7 @@ internal static class CatalogLifecycleManager
                 LastLifecycleOperationId = operation.OperationId,
                 UpdatedUtc = DateTimeOffset.UtcNow
             };
-            var postMutation = await lifecycle.ConfirmDrainedAsync(operation.OperationId, lifecycleControlToken, cancellationToken)
+            var postMutation = await lifecycle.ConfirmDrainedAsync(lifecycleControlToken, cancellationToken)
                 .ConfigureAwait(false);
             if (operation.PreMutationContinuity is null || postMutation.CaptureSequence < operation.PreMutationContinuity.CaptureSequence)
                 throw new InstallerException("Catalog selection did not preserve the durable capture-sequence boundary.");

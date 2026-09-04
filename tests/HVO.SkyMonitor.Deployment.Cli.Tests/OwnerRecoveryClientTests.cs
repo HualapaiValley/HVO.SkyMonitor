@@ -185,19 +185,4 @@ public sealed class OwnerRecoveryClientTests
 
     private static HttpResponseMessage Bytes(byte[] value)
         => new(HttpStatusCode.OK) { Content = new ByteArrayContent(value) };
-
-    private sealed class ScriptedHandler(
-        Func<HttpRequestMessage, int, CancellationToken, Task<HttpResponseMessage>> responseFactory)
-        : HttpMessageHandler
-    {
-        internal int RequestCount { get; private set; }
-
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
-        {
-            RequestCount++;
-            return responseFactory(request, RequestCount, cancellationToken);
-        }
-    }
 }
