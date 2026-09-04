@@ -188,7 +188,7 @@ internal sealed class CameraAgentLifecycleClient(
             remaining = deadline - DateTimeOffset.UtcNow;
             if (remaining > TimeSpan.Zero)
             {
-                await Task.Delay(remaining < _budgets.DrainPollInterval ? remaining : _budgets.DrainPollInterval, cancellationToken)
+                await Task.Delay(WholeMilliseconds(remaining < _budgets.DrainPollInterval ? remaining : _budgets.DrainPollInterval), cancellationToken)
                     .ConfigureAwait(false);
             }
         }
@@ -212,13 +212,20 @@ internal sealed class CameraAgentLifecycleClient(
         => $"last observed capture control '{state.CaptureState}' (initialized: {state.CaptureInitialized}, " +
             $"leased raw/lane/processing/outbox {state.RawLeased}/{state.LaneLeased}/{state.ProcessingLeased}/{state.OutboxLeased})";
 
+    // Timers resolve to whole milliseconds and truncate, so a budget or delay
+    // that ends a fraction of a millisecond before the deadline would wake the
+    // loop early and issue a read with no budget left; rounding up crosses the
+    // deadline instead.
+    private static TimeSpan WholeMilliseconds(TimeSpan value)
+        => TimeSpan.FromMilliseconds(Math.Ceiling(value.TotalMilliseconds));
+
     private static async Task<T> WithBudgetAsync<T>(
         TimeSpan budget,
         Func<CancellationToken, Task<T>> work,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(budget > TimeSpan.Zero ? budget : TimeSpan.Zero);
+        timeout.CancelAfter(budget > TimeSpan.Zero ? WholeMilliseconds(budget) : TimeSpan.Zero);
         try
         {
             return await work(timeout.Token).ConfigureAwait(false);

@@ -329,6 +329,8 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.PauseAndDrainAsync(operationId, "lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "the last state read failed: CameraAgent did not report its lifecycle state within its budget", StringComparison.Ordinal);
+        // The pause and the single floor-granted read are the only requests.
+        Assert.AreEqual(2, handler.RequestCount);
     }
 
     [TestMethod]
