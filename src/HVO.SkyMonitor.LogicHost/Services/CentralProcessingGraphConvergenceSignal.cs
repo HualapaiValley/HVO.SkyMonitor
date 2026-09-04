@@ -21,8 +21,6 @@ internal sealed class CentralProcessingGraphConvergenceSignal
 
     public bool TryRead(out Guid executionId) => _channel.Reader.TryRead(out executionId);
 
-    public bool HasPending => !_channel.Reader.CanCount || _channel.Reader.Count > 0;
-
     public async Task WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
         using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

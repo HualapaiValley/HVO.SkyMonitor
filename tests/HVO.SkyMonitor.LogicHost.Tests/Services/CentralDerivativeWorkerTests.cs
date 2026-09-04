@@ -309,6 +309,71 @@ public sealed class CentralDerivativeWorkerTests
         harness.Telemetry.ActiveCount.Should().Be(0);
     }
 
+    /// <summary>
+    /// The health check reports <c>window-overdue</c> as soon as a Waiting job's resolution deadline passes, and only
+    /// <c>ResolveWaitingAsync</c> advances such a job. Both it and retrospective transient scheduling used to run only
+    /// between slot-0 claims, so a single long recipe on a single-slot worker starved them exactly as it once starved
+    /// graph recovery. They must keep their cadence while the only slot is still executing.
+    /// </summary>
+    [TestMethod]
+    public async Task WindowResolutionAndRetrospectiveSchedulingContinueWhileTheOnlySlotExecutesALongRecipeAsync()
+    {
+        var gate = new BlockingExecutor();
+        var jobs = new ScriptedJobService
+        {
+            Claim = (attempt, _) => Task.FromResult(attempt == 1 ? CreateLease() : null)
+        };
+        var resolver = new CountingWindowResolver();
+        var retrospective = new CountingRetrospectiveScheduler();
+        await using var harness = CreateHarness(
+            jobs,
+            _ => gate,
+            windowResolver: resolver,
+            retrospectiveScheduler: retrospective);
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        var resolvedAtEntry = resolver.WaitingResolutions;
+        var scheduledAtEntry = retrospective.Batches;
+        await WaitUntilAsync(
+            () => resolver.WaitingResolutions >= resolvedAtEntry + 3 && retrospective.Batches >= scheduledAtEntry + 3,
+            TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        gate.Released.Should().BeFalse("the recipe is still executing while maintenance kept its cadence");
+        gate.Release();
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        resolver.WaitingResolutions.Should().BeGreaterThanOrEqualTo(resolvedAtEntry + 3);
+        retrospective.Batches.Should().BeGreaterThanOrEqualTo(scheduledAtEntry + 3);
+        harness.Telemetry.ActiveCount.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Each maintenance duty is guarded independently: a graph scheduler whose dependency chain cannot even be
+    /// constructed must not stop waiting-window resolution or retrospective scheduling from running.
+    /// </summary>
+    [TestMethod]
+    public async Task FailingGraphSchedulerActivationDoesNotStarveOtherMaintenanceDutiesAsync()
+    {
+        var jobs = new ScriptedJobService();
+        var resolver = new CountingWindowResolver();
+        var retrospective = new CountingRetrospectiveScheduler();
+        await using var harness = CreateHarness(
+            jobs,
+            _ => new ImmediateExecutor(),
+            graphSchedulerFactory: _ => throw new InvalidOperationException("object storage credentials unavailable"),
+            windowResolver: resolver,
+            retrospectiveScheduler: retrospective);
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await WaitUntilAsync(
+            () => resolver.WaitingResolutions >= 3 && retrospective.Batches >= 3, TimeSpan.FromSeconds(5))
+            .ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        harness.Telemetry.HasRecentDependencyFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse("an activation failure is not a database dependency failure");
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
@@ -332,17 +397,28 @@ public sealed class CentralDerivativeWorkerTests
         TimeSpan? renewalInterval = null,
         ICentralProcessingGraphScheduler? graphScheduler = null,
         CentralProcessingGraphConvergenceSignal? signal = null,
-        TimeSpan? queueSampleInterval = null)
+        TimeSpan? queueSampleInterval = null,
+        ICentralDerivativeWindowResolver? windowResolver = null,
+        ICentralTransientRetrospectiveScheduler? retrospectiveScheduler = null,
+        Func<IServiceProvider, ICentralProcessingGraphScheduler>? graphSchedulerFactory = null)
     {
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(builder =>
             builder.UseInMemoryDatabase(Guid.NewGuid().ToString()));
         services.AddScoped<ICentralDerivativeJobService>(_ => jobs);
-        services.AddScoped<ICentralDerivativeWindowResolver>(_ => new NoopWindowResolver());
+        services.AddScoped(_ => windowResolver ?? new NoopWindowResolver());
         services.AddScoped(executor);
         if (graphScheduler is not null)
         {
             services.AddScoped(_ => graphScheduler);
+        }
+        if (graphSchedulerFactory is not null)
+        {
+            services.AddScoped(graphSchedulerFactory);
+        }
+        if (retrospectiveScheduler is not null)
+        {
+            services.AddScoped(_ => retrospectiveScheduler);
         }
         var provider = services.BuildServiceProvider();
         var telemetry = new CentralDerivativeWorkerTelemetry();
@@ -615,6 +691,39 @@ public sealed class CentralDerivativeWorkerTests
             string reasonCode,
             bool quarantine,
             CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class CountingWindowResolver : ICentralDerivativeWindowResolver
+    {
+        private int _waitingResolutions;
+
+        public int WaitingResolutions => Volatile.Read(ref _waitingResolutions);
+
+        public Task ResolveAffectedAsync(
+            CentralArtifact artifact,
+            DateTimeOffset now,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task ResolveWaitingAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _waitingResolutions);
+            return Task.CompletedTask;
+        }
+
+        public Task ResolveAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class CountingRetrospectiveScheduler : ICentralTransientRetrospectiveScheduler
+    {
+        private int _batches;
+
+        public int Batches => Volatile.Read(ref _batches);
+
+        public Task ScheduleBatchAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _batches);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class NoopWindowResolver : ICentralDerivativeWindowResolver
