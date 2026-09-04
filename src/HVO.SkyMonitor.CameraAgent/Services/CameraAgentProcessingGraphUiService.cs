@@ -3,6 +3,7 @@ using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -25,6 +26,15 @@ internal interface ICameraAgentProcessingGraphUiService
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> GetRegistryAsync(CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>> GetRevisionDetailAsync(
+        string revisionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>Compiles a candidate pipeline against the current configuration without writing anything.</summary>
+    ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(
+        CapturePipelineConfig pipeline,
+        CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> ActivateAsync(
         string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken);
@@ -119,6 +129,13 @@ internal sealed record CameraAgentProcessingExecutionDetailView(
     string LocalPlanIdentitySha256,
     IReadOnlyList<CameraAgentProcessingNodeView> Nodes);
 
+/// <summary>A stored graph revision with its immutable definition and the plan it compiles to today.</summary>
+internal sealed record CameraAgentProcessingGraphRevisionDetail(
+    ProcessingGraphRevisionState State,
+    CapturePipelineConfig Pipeline,
+    CaptureProcessingPlanPreview? Plan,
+    string? PlanFailure);
+
 internal static class CameraAgentProcessingExecutionProjection
 {
     internal const int MaximumPerClass = 50;
@@ -183,6 +200,8 @@ internal sealed class CameraAgentProcessingGraphUiService(
     AuthenticationStateProvider authenticationStateProvider,
     IAuthorizationService authorizationService,
     IProcessingGraphOperations operations,
+    ICaptureProcessingPipelineFactory pipelineFactory,
+    ICameraAgentConfigurationAccessor configurationAccessor,
     TimeProvider timeProvider,
     ILogger<CameraAgentProcessingGraphUiService> logger) : ICameraAgentProcessingGraphUiService
 {
@@ -212,6 +231,63 @@ internal sealed class CameraAgentProcessingGraphUiService(
 
     public ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> GetRegistryAsync(CancellationToken cancellationToken)
         => ReadAsync(async token => await operations.GetRegistryAsync(token).ConfigureAwait(false), "Current graph registry data is unavailable.", cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>> GetRevisionDetailAsync(
+        string revisionId,
+        CancellationToken cancellationToken)
+        => ReadAsync(async token =>
+        {
+            var registry = await operations.GetRegistryAsync(token).ConfigureAwait(false);
+            var state = registry.Revisions.FirstOrDefault(revision => string.Equals(revision.RevisionId, revisionId, StringComparison.Ordinal));
+            var pipeline = state is null ? null : await operations.ReadRevisionPipelineAsync(revisionId, token).ConfigureAwait(false);
+            if (state is null || pipeline is null)
+            {
+                return null;
+            }
+            var (plan, failure) = await CompileAsync(pipeline, token).ConfigureAwait(false);
+            return new CameraAgentProcessingGraphRevisionDetail(state, pipeline, plan, failure);
+        }, "The graph revision could not be read.", cancellationToken, "The graph revision was not found.");
+
+    public async ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(
+        CapturePipelineConfig pipeline,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(pipeline);
+        if (await GetAuthorizedPrincipalAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false) is null)
+        {
+            return Denied<CaptureProcessingPlanPreview>();
+        }
+        var (plan, failure) = await CompileAsync(pipeline, cancellationToken).ConfigureAwait(false);
+        return plan is null
+            ? OperatorUiResult<CaptureProcessingPlanPreview>.Failure(OperatorUiResultKind.Invalid, failure ?? "The graph definition is invalid.")
+            : OperatorUiResult<CaptureProcessingPlanPreview>.Success(plan);
+    }
+
+    // Compiles the candidate against the current configuration; no durable state is touched and
+    // validation text is sanitized through the same allowlist as the profile editor.
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Compilation failures are mapped to a sanitized message for the operator.")]
+    private async ValueTask<(CaptureProcessingPlanPreview? Plan, string? Failure)> CompileAsync(
+        CapturePipelineConfig pipeline,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var configuration = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            return (pipelineFactory.PreviewPlan(configuration with { Pipeline = pipeline }), null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogInformation(exception, "CameraAgent processing graph preview rejected.");
+            return (null, exception is InvalidOperationException invalid
+                ? CameraAgentPipelineOperatorProjection.SanitizeValidationFailure(invalid)
+                : "The graph definition is invalid for this CameraAgent.");
+        }
+    }
 
     public ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> ActivateAsync(
         string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)

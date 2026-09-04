@@ -1,0 +1,13 @@
+.plan-identity { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, max-content)); gap: .5rem 1.25rem; margin: 0; }
+.plan-identity dt { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
+.plan-identity dd { margin: .1rem 0 0; overflow-wrap: anywhere; }
+.plan-identity code { color: #e9c986; }
+.plan-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
+.plan-columns article { min-width: 0; }
+.plan-columns h3 { margin: 0; font-size: .95rem; }
+.plan-columns p { margin: .25rem 0 .5rem; color: var(--hvo-muted-strong); font-size: .85rem; }
+.plan-columns ol { margin: 0; padding-left: 1.25rem; }
+.plan-columns li { display: grid; padding: .35rem 0; border-top: 1px solid var(--hvo-border-muted); }
+.plan-columns li span, .plan-columns li small { color: var(--hvo-muted-strong); }
+.plan-node--disabled strong { text-decoration: line-through; color: var(--hvo-muted); }
+@media (max-width: 767.98px) { .plan-columns { grid-template-columns: minmax(0, 1fr); } }

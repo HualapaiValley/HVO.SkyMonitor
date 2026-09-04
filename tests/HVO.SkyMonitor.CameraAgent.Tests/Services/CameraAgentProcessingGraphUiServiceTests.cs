@@ -113,7 +113,44 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, denied.Kind);
     }
 
-    private static CameraAgentProcessingGraphUiService CreateService(IProcessingGraphOperations operations, bool authorized)
+    [TestMethod]
+    public async Task RevisionDetailAndPreview_CompileAgainstTheCurrentConfigurationWithoutWritingAsync()
+    {
+        var registry = ProcessingGraphPagesTests.Registry();
+        var pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig("Preview", "preview", 10, null, ["$raw"], Enabled: true)]);
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.GetRegistryAsync(It.IsAny<CancellationToken>())).ReturnsAsync(registry);
+        operations.Setup(value => value.ReadRevisionPipelineAsync("rev-validated", It.IsAny<CancellationToken>())).ReturnsAsync(pipeline);
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        CameraModuleConfig? compiled = null;
+        factory.Setup(value => value.PreviewPlan(It.IsAny<CameraModuleConfig>()))
+            .Returns<CameraModuleConfig>(config =>
+            {
+                compiled = config;
+                return new CaptureProcessingPlanPreview(config.Pipeline.SchemaVersion, config.Pipeline.DependencyPolicy, new string('D', 64), new string('E', 64), [], []);
+            });
+        var service = CreateService(operations.Object, authorized: true, factory.Object);
+
+        var detail = await service.GetRevisionDetailAsync("rev-validated", CancellationToken.None).ConfigureAwait(false);
+        var missing = await service.GetRevisionDetailAsync("rev-missing", CancellationToken.None).ConfigureAwait(false);
+        var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(detail.IsSuccess, detail.Message);
+        Assert.AreSame(pipeline, detail.Value!.Pipeline);
+        Assert.IsNotNull(detail.Value.Plan);
+        Assert.AreSame(pipeline, compiled!.Pipeline);
+        Assert.AreEqual("test-agent", compiled.AgentId);
+        Assert.AreEqual(OperatorUiResultKind.NotFound, missing.Kind);
+        Assert.IsTrue(preview.IsSuccess);
+        operations.Verify(value => value.CreateRevisionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CapturePipelineConfig>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        factory.Setup(value => value.PreviewPlan(It.IsAny<CameraModuleConfig>())).Throws(new InvalidOperationException("dependency cycle at /private/path"));
+        var invalid = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorUiResultKind.Invalid, invalid.Kind);
+        Assert.AreEqual("The desired graph contains a dependency cycle.", invalid.Message);
+    }
+
+    private static CameraAgentProcessingGraphUiService CreateService(IProcessingGraphOperations operations, bool authorized, ICaptureProcessingPipelineFactory? factory = null)
     {
         var user = new ClaimsPrincipal(new ClaimsIdentity(
         [
@@ -123,10 +160,19 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
         authorization.Setup(service => service.AuthorizeAsync(user, null, It.IsAny<string>()))
             .ReturnsAsync(authorized ? AuthorizationResult.Success() : AuthorizationResult.Failed());
+        var profile = SchedulePageTests.Profile();
+        var accessor = new HVO.SkyMonitor.CameraAgent.Common.Configuration.CameraAgentConfigurationAccessor();
+        accessor.SetConfiguration(new CameraModuleConfig(
+            new ObservatoryLocation(0, 0, 0, "UTC"), profile.Module, profile.Rig, CapturePipelineConfig.Empty, AgentId: "test-agent")
+        {
+            Schedule = profile.Schedule
+        });
         return new CameraAgentProcessingGraphUiService(
             new StubAuthenticationStateProvider(user),
             authorization.Object,
             operations,
+            factory ?? Mock.Of<ICaptureProcessingPipelineFactory>(),
+            accessor,
             new ProcessingExecutionPagesTests.FixedTimeProvider(Now),
             NullLogger<CameraAgentProcessingGraphUiService>.Instance);
     }

@@ -1,0 +1,38 @@
+@using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
+
+<div class="plan-view">
+    <dl class="plan-identity">
+        <div><dt>Desired SHA-256</dt><dd><code>@Short(Plan.DesiredSha256)</code></dd></div>
+        <div><dt>Effective SHA-256</dt><dd><code>@Short(Plan.EffectiveSha256)</code></dd></div>
+        <div><dt>Schema</dt><dd>@Plan.SchemaVersion</dd></div>
+        <div><dt>Dependency policy</dt><dd>@Plan.DependencyPolicy</dd></div>
+    </dl>
+    <div class="plan-columns">
+        <article>
+            <h3>Desired graph</h3>
+            <p>Disabled nodes stay visible here and are absent from the effective graph.</p>
+            <ol>
+                @foreach (var node in Plan.DesiredNodes)
+                {
+                    <li class="@(node.Enabled ? null : "plan-node--disabled")"><strong>@node.Id</strong><span>@node.Alias / @(node.Required ? "required" : "optional") / @(node.Enabled ? "enabled" : "disabled")</span><small>@(node.Dependencies is null ? "Dependencies unavailable" : node.Dependencies.Count == 0 ? "No declared dependencies" : $"depends on {string.Join(", ", node.Dependencies)}")</small></li>
+                }
+            </ol>
+        </article>
+        <article>
+            <h3>Effective graph</h3>
+            <p>Validated execution order.</p>
+            <ol>
+                @foreach (var node in Plan.EffectiveNodes)
+                {
+                    <li><strong>@node.Id</strong><span>@(node.OutputRole is null ? "Infrastructure" : $"{node.OutputRole}/{node.OutputVariant}")</span><small>@(node.Dependencies is null || node.Dependencies.Count == 0 ? "No declared dependencies" : $"depends on {string.Join(", ", node.Dependencies)}")</small></li>
+                }
+            </ol>
+        </article>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public CaptureProcessingPlanPreview Plan { get; set; } = default!;
+
+    private static string Short(string value) => value.Length <= 12 ? value : value[..12];
+}
