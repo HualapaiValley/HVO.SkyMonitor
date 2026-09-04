@@ -12,8 +12,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Operations;
+
+
 
 public sealed record OperationsSection<T>(
     string Source,
@@ -103,6 +106,34 @@ public sealed record OperationsEnvironmentalDeliveryState(
     long OverflowCount,
     DateTimeOffset? OldestPendingUtc);
 
+/// <summary>
+/// Bounded sanitized status for the durable graph-execution evidence export lane. Every member is a counter, a
+/// bounded reason code, or a state name; no identity, payload, path, or credential is exposed.
+/// </summary>
+public sealed record OperationsExecutionEvidenceExportState(
+    string Availability,
+    string ReasonCode,
+    long PendingCount,
+    long PendingBytes,
+    long RetryCount,
+    long QuarantineCount,
+    long AbandonedCount,
+    long AcknowledgedCount,
+    long TotalAttempts,
+    long ConflictCount,
+    long RejectCount,
+    long DrainedCount,
+    long ResyncRequestCount,
+    long SourcePrunedCount,
+    long StorageBytes,
+    long HighestSequence,
+    long AcknowledgedThroughSequence,
+    int InFlightRequests,
+    bool StoragePressure,
+    string? NegotiatedSchemaVersion,
+    DateTimeOffset? LastAcknowledgementUtc,
+    DateTimeOffset? OldestPendingUtc);
+
 public sealed record OperationsTransientWorkerState(
     string Availability,
     long PendingFrames,
@@ -148,6 +179,7 @@ public sealed record CameraAgentOperationsSummary(
     OperationsSection<OperationsCaptureRuntimeState> CaptureRuntime,
     OperationsSection<OperationsHeartbeatState> Heartbeat,
     OperationsSection<OperationsEnvironmentalDeliveryState> EnvironmentalDelivery,
+    OperationsSection<OperationsExecutionEvidenceExportState> ExecutionEvidenceExport,
     OperationsSection<OperationsTransientWorkerState> TransientWorker,
     OperationsSection<OperationsCaptureTelemetryState> CaptureTelemetry,
     OperationsSection<OperationsConfigurationState> Configuration);
@@ -164,6 +196,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
     FleetRuntimeState fleetRuntime,
     FleetHeartbeatState heartbeat,
     EnvironmentalObservationDeliveryState environmentalDelivery,
+    ExecutionEvidenceExportState executionEvidenceExport,
     TransientWorkerState transientWorker,
     ICaptureTelemetryProvider captureTelemetry,
     ICameraAgentConfigurationAccessor configurationAccessor,
@@ -185,6 +218,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
         var runtime = fleetRuntime.Snapshot;
         var heartbeatSnapshot = heartbeat.Snapshot;
         var environmental = environmentalDelivery.Snapshot;
+        var evidenceExport = executionEvidenceExport.Snapshot;
         var transient = transientWorker.Snapshot;
         var telemetry = captureTelemetry.GetSnapshot();
         var latest = telemetry.Samples.Count == 0 ? null : telemetry.Samples[^1];
@@ -268,6 +302,30 @@ public sealed class CameraAgentOperationsSummaryProvider(
                     centralDisabled ? 0 : environmental.Outbox?.TerminalCount ?? 0,
                     centralDisabled ? 0 : environmental.Outbox?.OverflowCount ?? 0,
                     centralDisabled ? null : environmental.Outbox?.OldestPendingUtc)),
+            Section("execution-evidence-export-state", evidenceExport.EvaluatedUtc, now,
+                new OperationsExecutionEvidenceExportState(
+                    centralDisabled ? "Disabled" : evidenceExport.Availability.ToString(),
+                    centralDisabled ? ExecutionEvidenceExportReasonCodes.Disabled : evidenceExport.ReasonCode,
+                    centralDisabled ? 0 : evidenceExport.Backlog.PendingCount,
+                    centralDisabled ? 0 : evidenceExport.Backlog.PendingBytes,
+                    centralDisabled ? 0 : evidenceExport.Backlog.RetryCount,
+                    centralDisabled ? 0 : evidenceExport.Backlog.QuarantinedCount,
+                    centralDisabled ? 0 : evidenceExport.Backlog.AbandonedCount,
+                    centralDisabled ? 0 : evidenceExport.Backlog.AcknowledgedCount,
+                    centralDisabled ? 0 : evidenceExport.Backlog.TotalAttempts,
+                    centralDisabled ? 0 : evidenceExport.ConflictUnits,
+                    centralDisabled ? 0 : evidenceExport.RejectedUnits,
+                    centralDisabled ? 0 : evidenceExport.DrainedUnits,
+                    centralDisabled ? 0 : evidenceExport.ResyncRequests,
+                    centralDisabled ? 0 : evidenceExport.Backlog.SourcePrunedEvents,
+                    centralDisabled ? 0 : evidenceExport.Backlog.DatabaseBytes,
+                    centralDisabled ? 0 : evidenceExport.Backlog.HighestSequence,
+                    centralDisabled ? 0 : evidenceExport.Backlog.AcknowledgedThroughSequence,
+                    centralDisabled ? 0 : evidenceExport.InFlightRequests,
+                    !centralDisabled && evidenceExport.StoragePressure,
+                    centralDisabled ? null : evidenceExport.NegotiatedSchemaVersion,
+                    centralDisabled ? null : evidenceExport.LastAcknowledgementUtc,
+                    centralDisabled ? null : evidenceExport.Backlog.OldestPendingUtc)),
             Section("transient-worker-state", transient.UpdatedUtc, now, new OperationsTransientWorkerState(
                 transient.Availability.ToString(), transient.PendingFrames, transient.PendingCandidates,
                 TransientCandidateExtractionProfiles.EdgeV1.MaximumCandidates)),

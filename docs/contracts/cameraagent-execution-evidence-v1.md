@@ -270,6 +270,112 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
   --filter "FullyQualifiedName~GraphExecutionEvidencePayloadMeasurementTests"
 ```
 
+## CameraAgent exporter
+
+Issue #537 adds the CameraAgent half: a durable source outbox that seals evidence
+once and retains it until a terminal acknowledgement or an explicit operator
+disposition. It is entirely separate from the fleet heartbeat and from the
+manifest-v2 artifact upload lane, and an acknowledgement here never means a
+receiver holds artifact bytes.
+
+### Durable store
+
+The outbox lives in its own SQLite WAL database at
+`<RawIngressRoot>/evidence/execution-evidence-outbox.db`, not inside
+`raw-ingress.db`. That is deliberate: the installer campaign's rollback contract
+lets an operator return to a baseline image, and a forward-only schema change to
+a store the baseline opens would break that rollback. A separate file is simply
+never opened by a baseline image, and no schema this milestone already shipped
+changes shape. `SqliteExecutionEvidenceOutbox` pins schema version 1, compares
+the whole `sqlite_master` definition against a canonical in-memory build on every
+open, runs `PRAGMA integrity_check`, and refuses a drifted store rather than
+migrating it. Pragmas are `journal_mode=WAL`, `synchronous=FULL`,
+`foreign_keys=ON`, and a configured `busy_timeout`; every mutation runs in one
+`BEGIN IMMEDIATE` transaction.
+
+| Table | Holds |
+| --- | --- |
+| `execution_evidence_schema` | The pinned schema version. |
+| `execution_evidence_state` | The sweep cursor, the deferred key, and the source-pruned counter. |
+| `execution_evidence_origins` | One row per boot session, with its own `next_sequence`. |
+| `execution_evidence_units` | Sealed canonical envelope bytes, payload hash, status, attempts. |
+| `execution_evidence_audit` | Quarantine and operator disposition history. |
+| `execution_evidence_operations` | Operation-key receipts, so a repeated request is a detected duplicate. |
+| `execution_evidence_conflicts` | Bounded receiver sequence conflicts with both hashes. |
+
+### Origin, sequencing, and restart
+
+`origin.identitySha256` is the canonical hash over every origin member including
+`bootSessionId`, so each boot session is its own origin with its own sequence
+space starting at one. A restart therefore never renumbers or rewrites evidence
+already sealed: earlier origins keep their rows and drain alongside the new one,
+and the exporter re-exports the active revision under the new origin so a
+receiver can still resolve the plan identity from a lower sequence. Origin rows
+are removed only when they hold no unit and are not the live boot session.
+
+`origin_sequence` is allocated inside the enlistment transaction from the
+origin's `next_sequence`, in the order units are offered, so a graph revision
+always receives a lower sequence than the executions that depend on it.
+`payload_sha256` stores the contract's canonical envelope hash — the value the
+receiver acknowledges — not a hash of the transport bytes.
+
+### Discovery
+
+A bounded forward sweep reads terminal executions from the delivered durable
+store ordered by `(COALESCE(completed_unix_ms, accepted_unix_ms), execution_id)`
+from a durable cursor. The cursor advances only past executions the exporter
+actually sealed or explicitly deferred. When a bound refuses enlistment, the
+oldest refused ordering key is persisted as the deferred key; if source retention
+later removes everything at or below it, the exporter records a bounded
+`export.source-pruned` event and reports an explicit degraded state instead of
+skipping silently.
+
+With no configured sink the exporter performs no sweep at all, so a standalone
+deployment never accumulates evidence it has nowhere to send and stays healthy
+indefinitely.
+
+### Sending, retry, conflict, and resynchronization
+
+Version negotiation runs before anything is sent, and the producer applies the
+minimum of the published and its own local value for every negotiated limit. An
+`Unsupported` disposition stops sending for the process rather than retrying.
+
+Each submission carries one origin's units in ascending sequence order, framed as
+newline-delimited canonical JSON under
+`application/x-hvo-execution-evidence-v1`; the canonical serializer never emits a
+raw newline, so framing preserves every envelope byte for byte and therefore its
+hash. Exactly one request is in flight at a time, which both bounds concurrency
+and preserves per-origin order.
+
+Feedback is applied per unit: `Acknowledged` settles it against its exact stored
+hash, `Rejected` quarantines it with the receiver's reason, a
+`evidence.sequence-conflict` additionally records both hashes, and any unit
+without a terminal fact is deferred and offered again. Reported missing ranges
+produce a bounded `ExecutionEvidenceResyncRequestV1` that is replayed on the next
+cycle. A unit that spends its bounded attempt budget is quarantined rather than
+retried forever; it stays durable and operator-visible.
+
+### Limits, pressure, and operator surface
+
+`CameraAgent:ExecutionEvidenceExport` bounds the poll interval, discovery batch
+and batches per cycle, request units and bytes, request timeout, retry delays and
+attempts, pending units, pending bytes, storage bytes, unit bytes, pending age,
+acknowledgement retention, and retained acknowledgements. Every bound refuses new
+enlistment or defers a send; none of them discards evidence that is already
+durable, and none can apply back pressure to acquisition, raw ingress, live
+execution, publication, artifact upload, or replay. Storage pressure on the
+raw-ingress root pauses enlistment with an explicit `export.storage-pressure`
+state.
+
+The `execution-evidence-export-state` operations-summary section publishes a
+bounded sanitized snapshot, and
+`/api/v1/operations/outboxes/execution-evidence` exposes owner-only paging,
+detail, audit, replay, and abandon in the delivered outbox style. Metrics under
+`hvo.cameraagent.evidence_export.*` are tagged only by bounded operation and
+outcome values and expose depth, bytes, oldest age, attempts, throughput,
+rejects, conflicts, drain, resynchronization, in-flight requests, and durable
+size.
+
 ## Redaction
 
 `ExecutionEvidenceRedactionPolicyV1` travels with every envelope and says which

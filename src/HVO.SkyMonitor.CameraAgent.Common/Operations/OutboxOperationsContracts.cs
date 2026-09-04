@@ -75,6 +75,27 @@ public sealed record EnvironmentalOutboxOperationsPage(
     IReadOnlyList<EnvironmentalOutboxOperationsRecord> Items,
     EnvironmentalOutboxOperationsCursor? NextCursor);
 
+public sealed record ExecutionEvidenceOutboxOperationsCursor(long RecordId);
+
+public sealed record ExecutionEvidenceOutboxOperationsRecord(
+    long RecordId,
+    string BodyKind,
+    long OriginSequence,
+    string Status,
+    int AttemptCount,
+    long PayloadBytes,
+    DateTimeOffset CreatedUtc,
+    DateTimeOffset UpdatedUtc,
+    DateTimeOffset NextAttemptUtc,
+    string? ReasonCode,
+    bool CanReplay,
+    bool CanAbandon,
+    ExecutionEvidenceOutboxOperationsCursor Cursor);
+
+public sealed record ExecutionEvidenceOutboxOperationsPage(
+    IReadOnlyList<ExecutionEvidenceOutboxOperationsRecord> Items,
+    ExecutionEvidenceOutboxOperationsCursor? NextCursor);
+
 public sealed record OutboxOperationsAuditCursor(long Sequence);
 
 public sealed record OutboxOperationsAuditRecord(

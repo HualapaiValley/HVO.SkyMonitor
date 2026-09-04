@@ -10,19 +10,61 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 /// schema, and never reads artifact payload bytes: it maps immutable production facts that the store already
 /// holds. The durable outbox, sender, retry, and retention behavior belong to the exporter issue, not here.
 /// </summary>
+internal enum ProcessingGraphEvidenceProjectionOutcome
+{
+    /// <summary>The body was projected and <c>Value</c> is populated.</summary>
+    Projected,
+
+    /// <summary>The source carried nothing to report; this is not a failure and no unit is enlisted.</summary>
+    Empty,
+
+    /// <summary>
+    /// The durable row carries a value this contract version cannot express. The exporter quarantines the unit with
+    /// the reason and field path instead of failing the export loop, so one unmappable row never stalls the lane.
+    /// </summary>
+    Rejected
+}
+
+internal sealed record ProcessingGraphEvidenceProjectionResult<T>(
+    ProcessingGraphEvidenceProjectionOutcome Outcome,
+    T? Value,
+    string? ReasonCode,
+    string? FieldPath)
+    where T : class
+{
+    internal static ProcessingGraphEvidenceProjectionResult<T> Projected(T value)
+        => new(ProcessingGraphEvidenceProjectionOutcome.Projected, value, null, null);
+
+    internal static ProcessingGraphEvidenceProjectionResult<T> Empty { get; } =
+        new(ProcessingGraphEvidenceProjectionOutcome.Empty, null, null, null);
+
+    internal static ProcessingGraphEvidenceProjectionResult<T> Rejected(string reasonCode, string fieldPath)
+        => new(ProcessingGraphEvidenceProjectionOutcome.Rejected, null, reasonCode, fieldPath);
+}
+
 internal static class ProcessingGraphEvidenceProjection
 {
     /// <summary>
     /// Projects one persisted graph revision. <paramref name="assignment"/> is supplied by the caller from the
     /// delivery store; when it is null the revision is exported as locally compiled.
     /// </summary>
-    internal static GraphRevisionEvidenceV1 CreateRevisionEvidence(
+    internal static ProcessingGraphEvidenceProjectionResult<GraphRevisionEvidenceV1> CreateRevisionEvidence(
         ProcessingGraphRevisionSnapshot revision,
         ExecutionEvidenceAssignmentProvenanceV1? assignment)
     {
         ArgumentNullException.ThrowIfNull(revision);
         var state = revision.State;
-        return new(
+        if (!TryParseDocument(revision.DefinitionJson, out var definition))
+        {
+            return ProcessingGraphEvidenceProjectionResult<GraphRevisionEvidenceV1>.Rejected(
+                GraphExecutionEvidenceReasonCodes.InvalidJson, "graphRevision.canonicalDefinition");
+        }
+        if (!TryParseDocument(revision.FrozenPlanJson, out var frozenPlan))
+        {
+            return ProcessingGraphEvidenceProjectionResult<GraphRevisionEvidenceV1>.Rejected(
+                GraphExecutionEvidenceReasonCodes.InvalidJson, "graphRevision.frozenPlan");
+        }
+        return ProcessingGraphEvidenceProjectionResult<GraphRevisionEvidenceV1>.Projected(new(
             GraphRevisionEvidenceV1.CurrentSchemaVersion,
             state.RevisionId,
             state.Name,
@@ -33,25 +75,58 @@ internal static class ProcessingGraphEvidenceProjection
             state.DefinitionIdentitySha256,
             state.SharedPlanIdentitySha256,
             state.LocalPlanIdentitySha256,
-            ParseDocument(revision.DefinitionJson),
-            ParseDocument(revision.FrozenPlanJson),
+            definition,
+            frozenPlan,
             state.CreatedUtc,
             state.ValidatedUtc,
             state.ActivatedUtc,
             state.RetiredUtc,
-            assignment);
+            assignment));
     }
 
     /// <summary>Projects one execution's immutable production facts. Availability is reported separately.</summary>
-    internal static GraphExecutionEvidenceV1 CreateExecutionEvidence(ProcessingGraphExecutionDetail detail)
+    internal static ProcessingGraphEvidenceProjectionResult<GraphExecutionEvidenceV1> CreateExecutionEvidence(
+        ProcessingGraphExecutionDetail detail)
     {
         ArgumentNullException.ThrowIfNull(detail);
         var execution = detail.Execution;
-        return new(
+        if (MapExecutionClass(execution.ExecutionClass) is not { } executionClass)
+        {
+            return Reject<GraphExecutionEvidenceV1>(
+                GraphExecutionEvidenceReasonCodes.InvalidBody, "execution.executionClass");
+        }
+        if (MapStatus(execution.Status) is not { } status)
+        {
+            return Reject<GraphExecutionEvidenceV1>(
+                GraphExecutionEvidenceReasonCodes.InvalidBody, "execution.status");
+        }
+        var nodes = new ExecutionEvidenceNodeV1[detail.Nodes.Count];
+        for (var index = 0; index < detail.Nodes.Count; index++)
+        {
+            var node = detail.Nodes[index];
+            if (MapNodeStatus(node.Status) is not { } nodeStatus)
+            {
+                return Reject<GraphExecutionEvidenceV1>(
+                    GraphExecutionEvidenceReasonCodes.InvalidNode, $"execution.nodes[{index}].status");
+            }
+            var attempts = new ExecutionEvidenceAttemptV1[node.Attempts.Count];
+            for (var attempt = 0; attempt < node.Attempts.Count; attempt++)
+            {
+                if (MapAttemptStatus(node.Attempts[attempt].Status) is not { } attemptStatus)
+                {
+                    return Reject<GraphExecutionEvidenceV1>(
+                        GraphExecutionEvidenceReasonCodes.InvalidAttempt,
+                        $"execution.nodes[{index}].attempts[{attempt}].status");
+                }
+                attempts[attempt] = CreateAttempt(node.Attempts[attempt], attemptStatus);
+            }
+            nodes[index] = CreateNode(node, nodeStatus, attempts, execution.CaptureId);
+        }
+        return ProcessingGraphEvidenceProjectionResult<GraphExecutionEvidenceV1>.Projected(new(
             GraphExecutionEvidenceV1.CurrentSchemaVersion,
             execution.ExecutionId,
-            MapExecutionClass(execution.ExecutionClass),
-            MapStatus(execution.Status),
+            executionClass,
+            status,
             execution.CaptureId,
             execution.PrimaryArtifactId,
             execution.GraphRevisionId,
@@ -59,7 +134,7 @@ internal static class ProcessingGraphEvidenceProjection
             execution.SharedPlanIdentitySha256,
             execution.LocalPlanIdentitySha256,
             execution.TriggerKind,
-            [.. detail.Nodes.Select(node => CreateNode(node, execution.CaptureId))],
+            [.. nodes],
             execution.AcceptedUtc,
             execution.AvailableUtc,
             execution.DeadlineUtc,
@@ -70,39 +145,52 @@ internal static class ProcessingGraphEvidenceProjection
             execution.Priority,
             execution.StartedUtc,
             execution.CompletedUtc,
-            execution.FailureReason);
+            execution.FailureReason));
     }
 
     /// <summary>
     /// Projects the current availability of every artifact this execution produced. Returns null when the
     /// execution produced no output, because an empty observation batch carries no information.
     /// </summary>
-    internal static ArtifactAvailabilityReportV1? CreateAvailabilityReport(
+    internal static ProcessingGraphEvidenceProjectionResult<ArtifactAvailabilityReportV1> CreateAvailabilityReport(
         ProcessingGraphExecutionDetail detail,
         DateTimeOffset observedAtUtc)
     {
         ArgumentNullException.ThrowIfNull(detail);
-        var observations = detail.Nodes
-            .SelectMany(node => node.Outputs)
+        var outputs = detail.Nodes
+            .SelectMany(static node => node.Outputs)
             .DistinctBy(static output => output.ArtifactId)
-            .Select(output => new ArtifactAvailabilityObservationV1(
+            .ToArray();
+        var observations = new ArtifactAvailabilityObservationV1[outputs.Length];
+        for (var index = 0; index < outputs.Length; index++)
+        {
+            var output = outputs[index];
+            if (MapAvailability(output.AvailabilityState) is not { } state)
+            {
+                return Reject<ArtifactAvailabilityReportV1>(
+                    GraphExecutionEvidenceReasonCodes.InvalidAvailability,
+                    $"availability.observations[{index}].state");
+            }
+            observations[index] = new(
                 ArtifactAvailabilityObservationV1.CurrentSchemaVersion,
                 CreateOutputArtifact(output, detail.Execution.CaptureId),
-                MapAvailability(output.AvailabilityState),
+                state,
                 observedAtUtc,
                 // The durable schema does not couple state and reason, but the contract reserves a reason for a
                 // non-available observation, so an 'Available' row's reason is dropped rather than exported.
-                MapAvailability(output.AvailabilityState) == ExecutionEvidenceAvailabilityState.Available
-                    ? null
-                    : output.AvailabilityReason))
-            .ToImmutableArray();
-        return observations.IsEmpty
-            ? null
-            : new(
+                state == ExecutionEvidenceAvailabilityState.Available ? null : output.AvailabilityReason);
+        }
+        return observations.Length == 0
+            ? ProcessingGraphEvidenceProjectionResult<ArtifactAvailabilityReportV1>.Empty
+            : ProcessingGraphEvidenceProjectionResult<ArtifactAvailabilityReportV1>.Projected(new(
                 ArtifactAvailabilityReportV1.CurrentSchemaVersion,
                 detail.Execution.ExecutionId,
-                observations);
+                [.. observations]));
     }
+
+    private static ProcessingGraphEvidenceProjectionResult<T> Reject<T>(string reasonCode, string fieldPath)
+        where T : class
+        => ProcessingGraphEvidenceProjectionResult<T>.Rejected(reasonCode, fieldPath);
 
     /// <summary>
     /// Wraps one projected revision in a sealed, sequenced envelope. The declared policy is stamped without a
@@ -183,15 +271,17 @@ internal static class ProcessingGraphEvidenceProjection
     /// </remarks>
     private static ExecutionEvidenceNodeV1 CreateNode(
         ProcessingGraphExecutionNodeState node,
+        ExecutionEvidenceNodeStatus status,
+        IReadOnlyList<ExecutionEvidenceAttemptV1> attempts,
         Guid executionCaptureId)
         => new(
             ExecutionEvidenceNodeV1.CurrentSchemaVersion,
             node.NodeId,
             node.Required,
             node.PlanSha256,
-            MapNodeStatus(node.Status),
+            status,
             [.. node.Inputs.Select(CreateInput)],
-            [.. node.Attempts.Select(CreateAttempt)],
+            [.. attempts],
             [.. node.Outputs.Select(output => new ExecutionEvidenceOutputV1(
                 ExecutionEvidenceOutputV1.CurrentSchemaVersion,
                 output.Ordinal,
@@ -222,11 +312,13 @@ internal static class ProcessingGraphEvidenceProjection
                 null,
                 input.DescriptorSha256));
 
-    private static ExecutionEvidenceAttemptV1 CreateAttempt(ProcessingGraphNodeAttemptState attempt)
+    private static ExecutionEvidenceAttemptV1 CreateAttempt(
+        ProcessingGraphNodeAttemptState attempt,
+        ExecutionEvidenceAttemptStatus status)
         => new(
             ExecutionEvidenceAttemptV1.CurrentSchemaVersion,
             attempt.AttemptNumber,
-            MapAttemptStatus(attempt.Status),
+            status,
             attempt.StartedUtc,
             attempt.CompletedUtc,
             attempt.Outcome,
@@ -245,17 +337,19 @@ internal static class ProcessingGraphEvidenceProjection
             output.Role,
             output.Variant);
 
-    // The durable enums and strings are mapped explicitly rather than by name, so a future durable member is a
-    // compile-time or explicit-failure decision here instead of a silent name coincidence at export time.
-    private static ExecutionEvidenceExecutionClass MapExecutionClass(ProcessingGraphExecutionClass value)
+    // The durable enums and strings are mapped explicitly rather than by name, so a future durable member is an
+    // explicit bounded rejection here instead of a silent name coincidence at export time. Returning null rather
+    // than throwing keeps one unmappable durable row from stalling the whole export lane: the exporter quarantines
+    // that unit and continues.
+    private static ExecutionEvidenceExecutionClass? MapExecutionClass(ProcessingGraphExecutionClass value)
         => value switch
         {
             ProcessingGraphExecutionClass.Live => ExecutionEvidenceExecutionClass.Live,
             ProcessingGraphExecutionClass.Replay => ExecutionEvidenceExecutionClass.Replay,
-            _ => throw new InvalidDataException($"Unmapped durable execution class '{value}'.")
+            _ => null
         };
 
-    private static ExecutionEvidenceExecutionStatus MapStatus(ProcessingGraphExecutionStatus value)
+    private static ExecutionEvidenceExecutionStatus? MapStatus(ProcessingGraphExecutionStatus value)
         => value switch
         {
             ProcessingGraphExecutionStatus.Pending => ExecutionEvidenceExecutionStatus.Pending,
@@ -264,10 +358,10 @@ internal static class ProcessingGraphEvidenceProjection
             ProcessingGraphExecutionStatus.Failed => ExecutionEvidenceExecutionStatus.Failed,
             ProcessingGraphExecutionStatus.Cancelled => ExecutionEvidenceExecutionStatus.Cancelled,
             ProcessingGraphExecutionStatus.Expired => ExecutionEvidenceExecutionStatus.Expired,
-            _ => throw new InvalidDataException($"Unmapped durable execution status '{value}'.")
+            _ => null
         };
 
-    private static ExecutionEvidenceNodeStatus MapNodeStatus(string value)
+    private static ExecutionEvidenceNodeStatus? MapNodeStatus(string value)
         => value switch
         {
             "Pending" => ExecutionEvidenceNodeStatus.Pending,
@@ -276,10 +370,10 @@ internal static class ProcessingGraphEvidenceProjection
             "Skipped" => ExecutionEvidenceNodeStatus.Skipped,
             "RetryableFailure" => ExecutionEvidenceNodeStatus.RetryableFailure,
             "TerminalFailure" => ExecutionEvidenceNodeStatus.TerminalFailure,
-            _ => throw new InvalidDataException($"Unmapped durable node status '{value}'.")
+            _ => null
         };
 
-    private static ExecutionEvidenceAttemptStatus MapAttemptStatus(string value)
+    private static ExecutionEvidenceAttemptStatus? MapAttemptStatus(string value)
         => value switch
         {
             "Running" => ExecutionEvidenceAttemptStatus.Running,
@@ -288,21 +382,30 @@ internal static class ProcessingGraphEvidenceProjection
             "RetryableFailure" => ExecutionEvidenceAttemptStatus.RetryableFailure,
             "TerminalFailure" => ExecutionEvidenceAttemptStatus.TerminalFailure,
             "Interrupted" => ExecutionEvidenceAttemptStatus.Interrupted,
-            _ => throw new InvalidDataException($"Unmapped durable attempt status '{value}'.")
+            _ => null
         };
 
-    private static ExecutionEvidenceAvailabilityState MapAvailability(string value)
+    private static ExecutionEvidenceAvailabilityState? MapAvailability(string value)
         => value switch
         {
             "Available" => ExecutionEvidenceAvailabilityState.Available,
             "Missing" => ExecutionEvidenceAvailabilityState.Missing,
             "Quarantined" => ExecutionEvidenceAvailabilityState.Quarantined,
-            _ => throw new InvalidDataException($"Unmapped durable availability state '{value}'.")
+            _ => null
         };
 
-    private static JsonElement ParseDocument(byte[] utf8Json)
+    private static bool TryParseDocument(byte[] utf8Json, out JsonElement value)
     {
-        using var document = JsonDocument.Parse(utf8Json);
-        return document.RootElement.Clone();
+        try
+        {
+            using var document = JsonDocument.Parse(utf8Json);
+            value = document.RootElement.Clone();
+            return true;
+        }
+        catch (JsonException)
+        {
+            value = default;
+            return false;
+        }
     }
 }

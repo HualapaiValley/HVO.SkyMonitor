@@ -648,6 +648,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = ExecutionSelectSql + " " + """
+            FROM processing_executions
             WHERE ($class IS NULL OR execution_class = $class)
             ORDER BY accepted_unix_ms DESC, execution_id DESC
             LIMIT $limit;
@@ -658,6 +659,61 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) results.Add(ReadExecutionState(reader));
         return results;
+    }
+
+    /// <summary>
+    /// Reads terminal executions in ascending <c>(terminal time, execution id)</c> order from an exclusive cursor.
+    /// The evidence exporter needs a forward, resumable sweep; the delivered <see cref="ReadExecutionsAsync"/> window
+    /// is a newest-first operator view capped at 256 rows and cannot express one.
+    /// </summary>
+    internal async ValueTask<IReadOnlyList<ProcessingGraphTerminalExecution>> ReadTerminalExecutionsAsync(
+        long afterTerminalUnixMs,
+        string afterExecutionId,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(afterExecutionId);
+        ArgumentOutOfRangeException.ThrowIfNegative(afterTerminalUnixMs);
+        if (maximumCount is < 1 or > 256) throw new ArgumentOutOfRangeException(nameof(maximumCount));
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = ExecutionSelectSql + ", " + TerminalOrderExpression + " " + """
+            FROM processing_executions
+            WHERE status IN ('Completed', 'Failed', 'Cancelled', 'Expired')
+              AND (COALESCE(completed_unix_ms, accepted_unix_ms) > $ms
+                   OR (COALESCE(completed_unix_ms, accepted_unix_ms) = $ms AND execution_id > $execution))
+            ORDER BY COALESCE(completed_unix_ms, accepted_unix_ms), execution_id
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$ms", afterTerminalUnixMs);
+        command.Parameters.AddWithValue("$execution", afterExecutionId);
+        command.Parameters.AddWithValue("$limit", maximumCount);
+        var results = new List<ProcessingGraphTerminalExecution>(maximumCount);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            results.Add(new(ReadExecutionState(reader), reader.GetInt64(21)));
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// The lowest terminal ordering key still present. A value above the exporter cursor proves that source retention
+    /// removed executions the exporter had not yet enlisted, which is reported explicitly rather than skipped.
+    /// </summary>
+    internal async ValueTask<long?> ReadOldestTerminalExecutionKeyAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT MIN(COALESCE(completed_unix_ms, accepted_unix_ms))
+            FROM processing_executions
+            WHERE status IN ('Completed', 'Failed', 'Cancelled', 'Expired');
+            """;
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is null or DBNull ? null : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     internal async ValueTask<ProcessingGraphExecutionState?> ReadExecutionAsync(
@@ -1187,7 +1243,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = ExecutionSelectSql + " WHERE execution_id = $execution;";
+        command.CommandText = ExecutionSelectSql + " FROM processing_executions WHERE execution_id = $execution;";
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadExecutionState(reader) : null;
@@ -1269,6 +1325,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                accepted_unix_ms, available_unix_ms, deadline_unix_ms, maximum_age_unix_ms,
                started_unix_ms, completed_unix_ms, failure_reason, cancellation_requested,
                attempt_count
-        FROM processing_executions
         """;
+
+    private const string TerminalOrderExpression = "COALESCE(completed_unix_ms, accepted_unix_ms)";
 }

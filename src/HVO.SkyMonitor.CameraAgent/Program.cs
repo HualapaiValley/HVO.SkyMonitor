@@ -257,6 +257,8 @@ public class Program
         builder.Services.AddSingleton<IFleetHeartbeatTransport, CameraAgentFleetHeartbeatTransport>();
         builder.Services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.IProcessingGraphDeliveryTransport,
             CameraAgentProcessingGraphDeliveryTransport>();
+        builder.Services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.Evidence.IExecutionEvidenceTransport,
+            CameraAgentExecutionEvidenceTransport>();
         builder.Services.AddSingleton<ITransientCandidateTransport, CameraAgentTransientCandidateTransport>();
         builder.Services.AddSingleton<DeploymentLocationReconciliationState>();
         builder.Services.AddHostedService<DeploymentLocationReconciliationWorker>();

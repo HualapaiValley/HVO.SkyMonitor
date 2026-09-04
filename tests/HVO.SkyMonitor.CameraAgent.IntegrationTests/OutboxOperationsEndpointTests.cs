@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -28,12 +29,15 @@ public sealed class OutboxOperationsEndpointTests
     {
         var artifactOutbox = new OperationalArtifactOutbox();
         var environmentalOutbox = new OperationalEnvironmentalOutbox();
+        var evidenceOutbox = new OperationalExecutionEvidenceOutbox();
         using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
         {
             services.RemoveAll<IArtifactOutbox>();
             services.AddSingleton<IArtifactOutbox>(artifactOutbox);
             services.RemoveAll<IEnvironmentalObservationOutbox>();
             services.AddSingleton<IEnvironmentalObservationOutbox>(environmentalOutbox);
+            services.RemoveAll<IExecutionEvidenceOutbox>();
+            services.AddSingleton<IExecutionEvidenceOutbox>(evidenceOutbox);
             services.RemoveAll<CameraAgentStorageResolver>();
             services.AddSingleton(provider => new CameraAgentStorageResolver(
                 provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
@@ -169,6 +173,69 @@ public sealed class OutboxOperationsEndpointTests
             environmentalReplay, "upstream-recovered", antiforgery).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.NoContent, environmentalReplayResponse.StatusCode);
         await wake.ConfigureAwait(false);
+
+        using var evidenceAnonymous = await anonymous.GetAsync(
+            new Uri("/api/v1/operations/outboxes/execution-evidence", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, evidenceAnonymous.StatusCode);
+        using var evidenceNonOwner = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/outboxes/execution-evidence", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, evidenceNonOwner.StatusCode);
+
+        using var evidencePageResponse = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/outboxes/execution-evidence?pageSize=1", UriKind.Relative))
+            .ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, evidencePageResponse.StatusCode);
+        var evidenceJson = await evidencePageResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+        AssertNonDisclosure(evidenceJson);
+        // The origin identity, the payload hash, and the SQLite row id never travel in an operator response.
+        Assert.IsFalse(evidenceJson.Contains(
+            OperationalExecutionEvidenceOutbox.OriginIdentity, StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(evidenceJson.Contains("payloadSha256", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(evidenceJson.Contains("\"recordId\"", StringComparison.OrdinalIgnoreCase));
+        using var evidencePage = JsonDocument.Parse(evidenceJson);
+        var evidenceItem = evidencePage.RootElement.GetProperty("items")[0];
+        Assert.AreEqual("GraphExecution", evidenceItem.GetProperty("bodyKind").GetString());
+        Assert.AreEqual(7, evidenceItem.GetProperty("originSequence").GetInt64());
+        var evidenceReference = evidenceItem.GetProperty("reference").GetString();
+        var evidenceReplay = evidenceItem.GetProperty("allowedActions").GetProperty("replayToken").GetString();
+        Assert.IsNotNull(evidenceReference);
+        Assert.IsNotNull(evidenceReplay);
+
+        using var evidenceCrossKind = await ownerClient.GetAsync(
+            new Uri($"/api/v1/operations/outboxes/environmental/{Uri.EscapeDataString(evidenceReference)}", UriKind.Relative))
+            .ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, evidenceCrossKind.StatusCode);
+
+        using var evidenceWrongAction = await SendMutationAsync(
+            ownerClient, "/api/v1/operations/outboxes/execution-evidence/abandon", "evidence-http-operation-0",
+            evidenceReplay, "operator-approved-loss", antiforgery).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, evidenceWrongAction.StatusCode);
+
+        var evidenceWakeup = factory.Services.GetRequiredService<ExecutionEvidenceExportWakeup>();
+        using var evidenceWakeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var evidenceWake = evidenceWakeup
+            .WaitAsync(TimeSpan.FromMinutes(1), TimeProvider.System, evidenceWakeTimeout.Token).AsTask();
+        using var evidenceReplayResponse = await SendMutationAsync(
+            ownerClient, "/api/v1/operations/outboxes/execution-evidence/replay", "evidence-http-operation-1",
+            evidenceReplay, "evidence-restored", antiforgery).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NoContent, evidenceReplayResponse.StatusCode);
+        await evidenceWake.ConfigureAwait(false);
+
+        using var evidenceDuplicate = await SendMutationAsync(
+            ownerClient, "/api/v1/operations/outboxes/execution-evidence/replay", "evidence-http-operation-1",
+            evidenceReplay, "evidence-restored", antiforgery).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NoContent, evidenceDuplicate.StatusCode);
+        using var evidenceCollision = await SendMutationAsync(
+            ownerClient, "/api/v1/operations/outboxes/execution-evidence/replay", "evidence-http-operation-1",
+            evidenceReplay, "configuration-corrected", antiforgery).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Conflict, evidenceCollision.StatusCode);
+        AssertNonDisclosure(await evidenceCollision.Content.ReadAsStringAsync().ConfigureAwait(false));
+
+        using var evidenceAudit = await ownerClient.GetAsync(
+            new Uri($"/api/v1/operations/outboxes/execution-evidence/{Uri.EscapeDataString(evidenceReference)}/audit",
+                UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, evidenceAudit.StatusCode);
+        AssertNonDisclosure(await evidenceAudit.Content.ReadAsStringAsync().ConfigureAwait(false));
     }
 
     private static async Task<HttpResponseMessage> SendMutationAsync(
@@ -210,6 +277,134 @@ public sealed class OutboxOperationsEndpointTests
         Assert.IsFalse(content.Contains("leaseToken", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(content.Contains("acknowledgement", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(content.Contains("exception", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// A bounded stand-in for the durable evidence outbox. Only the operator surface is implemented; every other
+    /// member throws, which proves the endpoints read nothing else.
+    /// </summary>
+    private sealed class OperationalExecutionEvidenceOutbox : IExecutionEvidenceOutbox
+    {
+        internal const string OriginIdentity =
+            "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20";
+        private const long RecordId = 4242;
+        private readonly Dictionary<string, OperationRequest> _operations = new(StringComparer.Ordinal);
+        private static readonly ExecutionEvidenceOutboxOperationsRecord Record = new(
+            RecordId,
+            nameof(ExecutionEvidenceBodyKind.GraphExecution),
+            7,
+            nameof(ExecutionEvidenceUnitStatus.Quarantined),
+            4,
+            9347,
+            DateTimeOffset.Parse("2026-09-01T01:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            DateTimeOffset.Parse("2026-09-01T01:05:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            DateTimeOffset.Parse("2026-09-01T01:06:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            "upstream-rejected",
+            CanReplay: true,
+            CanAbandon: true,
+            new ExecutionEvidenceOutboxOperationsCursor(RecordId));
+
+        public ValueTask<ExecutionEvidenceOutboxOperationsPage> ReadOperationsPageAsync(
+            string root, int pageSize, ExecutionEvidenceOutboxOperationsCursor? cursor,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(new ExecutionEvidenceOutboxOperationsPage([Record], null));
+
+        public ValueTask<ExecutionEvidenceOutboxOperationsRecord?> ReadOperationsDetailAsync(
+            string root, long recordId, CancellationToken cancellationToken)
+            => ValueTask.FromResult<ExecutionEvidenceOutboxOperationsRecord?>(
+                recordId == RecordId ? Record : null);
+
+        public ValueTask<OutboxOperationsAuditPage> ReadOperationsAuditAsync(
+            string root, long recordId, int pageSize, OutboxOperationsAuditCursor? cursor,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(new OutboxOperationsAuditPage(
+                [new OutboxOperationsAuditRecord(1, "replay", "owner", "evidence-restored", DateTimeOffset.UtcNow)],
+                null));
+
+        public ValueTask<OutboxOperationDisposition> ResolveOperationsAsync(
+            string root, long recordId, OutboxOperationAction action, string operationKey, string actorKind,
+            string reasonCode, CancellationToken cancellationToken)
+        {
+            var request = new OperationRequest(
+                recordId.ToString(System.Globalization.CultureInfo.InvariantCulture), action, actorKind, reasonCode);
+            if (_operations.TryGetValue(operationKey, out var existing))
+            {
+                return existing == request
+                    ? ValueTask.FromResult(OutboxOperationDisposition.Duplicate)
+                    : throw new OutboxOperationCollisionException("operation key reuse");
+            }
+            _operations[operationKey] = request;
+            return ValueTask.FromResult(OutboxOperationDisposition.Applied);
+        }
+
+        public ValueTask InitializeAsync(string root, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<ExecutionEvidenceOriginRecord> EnsureOriginAsync(
+            string root, ExecutionEvidenceOriginV1 origin, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<ExecutionEvidenceDiscoveryCursor> ReadDiscoveryCursorAsync(
+            string root, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<ExecutionEvidenceEnlistmentResult> EnlistAsync(
+            string root, string originIdentitySha256, IReadOnlyList<ExecutionEvidenceEnlistmentUnit> units,
+            ExecutionEvidenceDiscoveryCursor cursor, ExecutionEvidenceEnlistmentLimits limits,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask RecordSourcePrunedAsync(
+            string root, ExecutionEvidenceDiscoveryCursor cursor, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<IReadOnlyList<ExecutionEvidenceOriginRecord>> ReadOriginsWithWorkAsync(
+            string root, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<IReadOnlyList<ExecutionEvidenceUnit>> ReadPendingAsync(
+            string root, string originIdentitySha256, int maximumUnits, long maximumBytes, DateTimeOffset nowUtc,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<IReadOnlyList<ExecutionEvidenceUnit>> ReadRangeAsync(
+            string root, string originIdentitySha256, IReadOnlyList<ExecutionEvidenceSequenceRangeV1> ranges,
+            int maximumUnits, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask AcknowledgeAsync(
+            string root, string originIdentitySha256, long originSequence, string payloadSha256,
+            DateTimeOffset acknowledgedUtc, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask RetryAsync(
+            string root, string originIdentitySha256, long originSequence, DateTimeOffset nextAttemptUtc,
+            string reasonCode, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask QuarantineAsync(
+            string root, string originIdentitySha256, long originSequence, string reasonCode,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask RecordAcknowledgedThroughAsync(
+            string root, string originIdentitySha256, long acknowledgedThroughSequence,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask RecordConflictAsync(
+            string root, string originIdentitySha256, long originSequence, string localPayloadSha256,
+            string? receiverPayloadSha256, string reasonCode, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<ExecutionEvidenceBacklog> ReadBacklogAsync(
+            string root, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<int> RetainAsync(
+            string root, TimeSpan acknowledgementRetention, int maximumRetainedAcknowledgements,
+            string? retainedOriginIdentitySha256, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
     }
 
     private sealed class OperationalArtifactOutbox : IArtifactOutbox
