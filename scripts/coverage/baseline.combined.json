@@ -1,0 +1,29 @@
+{
+  "aggregate": {
+    "line": 0.3225,
+    "branch": 0.186,
+    "tolerancePercentagePoints": 0.01
+  },
+  "files": {
+    "HVO.SkyMonitor.AgentCore/ArtifactManifestV2.cs": {
+      "line": 0.83,
+      "branch": 0.56
+    },
+    "HVO.SkyMonitor.AgentCore/ArtifactUploadAcknowledgement.cs": {
+      "line": 0.94,
+      "branch": 0.49
+    },
+    "HVO.SkyMonitor.AgentCore/CaptureContractJson.cs": {
+      "line": 0.94,
+      "branch": 0.75
+    },
+    "HVO.SkyMonitor.AgentCore/DeploymentLocationContracts.cs": {
+      "line": 0.79,
+      "branch": 0.51
+    },
+    "HVO.SkyMonitor.Fleet.Contracts/FleetStatusContracts.cs": {
+      "line": 0.9,
+      "branch": 0.48
+    }
+  }
+}

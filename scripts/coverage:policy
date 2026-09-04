@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Reject any pull request that weakens an aggregate or component coverage
+# baseline relative to its merge target, and require every classifier component
+# to own a baseline.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+event_name="${1:-}"
+base_ref="${2:-}"
+
+baselines=(scripts/coverage/baseline.json)
+while IFS= read -r component; do
+  baseline="scripts/coverage/baseline.$component.json"
+  if [[ ! -f "$baseline" ]]; then
+    printf 'Coverage component %s has no baseline at %s\n' "$component" "$baseline" >&2
+    exit 1
+  fi
+  baselines+=("$baseline")
+done < <(./scripts/coverage:component --list-components)
+
+for baseline in "${baselines[@]}"; do
+  jq --exit-status '
+    (.aggregate.line | type == "number" and . > 0 and . <= 1) and
+    (.aggregate.branch | type == "number" and . > 0 and . <= 1) and
+    (.aggregate.tolerancePercentagePoints | type == "number" and . >= 0 and . <= 1) and
+    (.files | type == "object") and
+    all(.files[]; (.line | type == "number") and (.branch | type == "number"))
+  ' "$baseline" > /dev/null || {
+    printf 'Coverage baseline is malformed: %s\n' "$baseline" >&2
+    exit 1
+  }
+done
+
+if [[ "$event_name" != "pull_request" ]]; then
+  printf 'Coverage policy validated %s baselines; non-pull-request events have no merge target.\n' \
+    "${#baselines[@]}"
+  exit 0
+fi
+
+if [[ -z "$base_ref" ]]; then
+  printf 'A pull request coverage policy check requires a base ref.\n' >&2
+  exit 1
+fi
+
+comparison_dir="$(mktemp -d)"
+trap 'rm -rf "$comparison_dir"' EXIT
+
+for baseline in "${baselines[@]}"; do
+  if ! git cat-file -e "origin/$base_ref:$baseline" 2>/dev/null; then
+    printf 'New coverage baseline introduced by this pull request: %s\n' "$baseline"
+    continue
+  fi
+
+  git show "origin/$base_ref:$baseline" > "$comparison_dir/base.json"
+  jq --exit-status --slurpfile base "$comparison_dir/base.json" '
+    . as $candidate |
+    $candidate.aggregate.line >= $base[0].aggregate.line and
+    $candidate.aggregate.branch >= $base[0].aggregate.branch and
+    $candidate.aggregate.tolerancePercentagePoints <= $base[0].aggregate.tolerancePercentagePoints and
+    all($base[0].files | to_entries[];
+      $candidate.files[.key] != null and
+      $candidate.files[.key].line >= .value.line and
+      $candidate.files[.key].branch >= .value.branch)
+  ' "$baseline" > /dev/null || {
+    printf 'Coverage baseline %s is weaker than origin/%s.\n' "$baseline" "$base_ref" >&2
+    exit 1
+  }
+  printf 'Coverage baseline %s is at or above origin/%s.\n' "$baseline" "$base_ref"
+done
+
+printf 'Coverage policy accepted %s baselines.\n' "${#baselines[@]}"

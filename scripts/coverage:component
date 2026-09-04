@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Merge and enforce one component's coverage slots. Every selected lane owns a
+# closed slot list, so a lane can neither borrow an unselected lane's report nor
+# silently lose one of its own.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/coverage:component <shared|cameraagent|logichost|combined|delivery>
+       scripts/coverage:component --list-slots <component>
+       scripts/coverage:component --list-components
+USAGE
+  exit 2
+}
+
+component_slots() {
+  case "$1" in
+    shared)
+      # TestResults/unit/processing-runner is intentionally absent: the aggregate
+      # rollup has never counted it, and changing the aggregate slot set is not
+      # part of component gating.
+      printf '%s\n' \
+        'TestResults/unit/astronomy' \
+        'TestResults/unit/imaging' \
+        'TestResults/unit/processing' \
+        'TestResults/unit/catalog-sqlite' \
+        'TestResults/unit/agent-core' \
+        'TestResults/unit/common' \
+        'TestResults/unit/fleet-contracts' \
+        'TestResults/unit/test-support' \
+        'TestResults/integration/astronomy'
+      ;;
+    cameraagent)
+      printf '%s\n' \
+        'TestResults/unit/cameraagent' \
+        'TestResults/unit/cameraagent-acceptance' \
+        'TestResults/integration/cameraagent-storage' \
+        'TestResults/integration/cameraagent-standalone' \
+        'TestResults/integration/cameraagent'
+      ;;
+    logichost)
+      printf '%s\n' \
+        'TestResults/unit/logichost' \
+        'TestResults/integration/logichost'
+      ;;
+    combined)
+      printf '%s\n' \
+        'TestResults/unit/cameraagent-logichost' \
+        'TestResults/integration/cameraagent-logichost'
+      ;;
+    delivery)
+      printf '%s\n' \
+        'TestResults/unit/deployment-cli' \
+        'TestResults/unit/deployment-distribution'
+      ;;
+    *)
+      printf 'Unknown coverage component: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+}
+
+case "${1:-}" in
+  --list-components)
+    printf '%s\n' shared cameraagent logichost combined delivery
+    exit 0
+    ;;
+  --list-slots)
+    [[ "$#" -eq 2 ]] || usage
+    component_slots "$2"
+    exit 0
+    ;;
+  '' | -*)
+    usage
+    ;;
+esac
+
+[[ "$#" -eq 1 ]] || usage
+component="$1"
+
+mapfile -t slots < <(component_slots "$component")
+reports=()
+for slot in "${slots[@]}"; do
+  mapfile -t matches < <(compgen -G "$slot/*/coverage.cobertura.xml" || true)
+  if [[ "${#matches[@]}" -ne 1 ]]; then
+    printf 'Expected one %s coverage report for %s, found %s\n' \
+      "$component" "$slot" "${#matches[@]}" >&2
+    exit 1
+  fi
+  reports+=("${matches[0]}")
+done
+
+printf 'Enforcing %s component coverage across %s expected reports.\n' "$component" "${#reports[@]}"
+target_dir="coverage-report/$component"
+dotnet reportgenerator \
+  "-reports:$(IFS=';'; echo "${reports[*]}")" \
+  "-targetdir:$target_dir" \
+  -reporttypes:"Html;TextSummary;MarkdownSummaryGithub;Cobertura"
+"$repo_root/scripts/coverage:enforce" \
+  --baseline "$repo_root/scripts/coverage/baseline.$component.json" \
+  --merged "$target_dir/Cobertura.xml"
+
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  printf '### %s component coverage\n\n' "$component" >> "$GITHUB_STEP_SUMMARY"
+  cat "$target_dir/SummaryGithub.md" >> "$GITHUB_STEP_SUMMARY"
+fi

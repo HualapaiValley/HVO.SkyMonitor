@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Publish one component's shipping outputs from its own project roots and retain
+# a checksum manifest so a component lane produces its own delivery evidence.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+component="${1:-}"
+evidence_root="TestResults/publish/component"
+
+publish_project() {
+  local project="$1" name="$2" runtime="${3:-}"
+  local output="$evidence_root/$name"
+
+  rm -rf "$output"
+  mkdir -p "$output"
+  if [[ -n "$runtime" ]]; then
+    dotnet publish "$project" --configuration Release --runtime "$runtime" --output "$output"
+  else
+    dotnet publish "$project" --configuration Release --output "$output"
+  fi
+
+  (cd "$output" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$evidence_root/$name.sha256"
+  local files bytes
+  files="$(find "$output" -type f | wc -l)"
+  bytes="$(find "$output" -type f -printf '%s\n' | awk '{total += $1} END {print total + 0}')"
+  printf '%s files=%s bytes=%s\n' "$name" "$files" "$bytes" >> "$evidence_root/summary.txt"
+}
+
+mkdir -p "$evidence_root"
+: > "$evidence_root/summary.txt"
+
+case "$component" in
+  shared)
+    publish_project src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj processing-runner-linux-x64 linux-x64
+    publish_project src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj processing-runner-linux-arm64 linux-arm64
+    test -x "$evidence_root/processing-runner-linux-x64/HVO.SkyMonitor.ProcessingRunner"
+    test -x "$evidence_root/processing-runner-linux-arm64/HVO.SkyMonitor.ProcessingRunner"
+    file "$evidence_root/processing-runner-linux-arm64/HVO.SkyMonitor.ProcessingRunner" | grep -q 'ARM aarch64'
+    ;;
+  cameraagent)
+    publish_project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj cameraagent
+    publish_project src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj replay-runner-linux-x64 linux-x64
+    publish_project src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj replay-runner-linux-arm64 linux-arm64
+    test -f "$evidence_root/cameraagent/HVO.SkyMonitor.CameraAgent.dll"
+    test ! -e "$evidence_root/cameraagent/HVO.SkyMonitor.LogicHost.dll"
+    test -x "$evidence_root/replay-runner-linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner"
+    file "$evidence_root/replay-runner-linux-arm64/HVO.SkyMonitor.CameraAgent.ReplayRunner" | grep -q 'ARM aarch64'
+    ;;
+  logichost)
+    publish_project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj logichost
+    test -f "$evidence_root/logichost/HVO.SkyMonitor.LogicHost.dll"
+    test ! -e "$evidence_root/logichost/HVO.SkyMonitor.CameraAgent.dll"
+    ;;
+  delivery)
+    publish_project src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj installer-linux-x64 linux-x64
+    publish_project src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj installer-linux-arm64 linux-arm64
+    test -x "$evidence_root/installer-linux-x64/HVO.SkyMonitor.Deployment.Cli"
+    test -x "$evidence_root/installer-linux-arm64/HVO.SkyMonitor.Deployment.Cli"
+    file "$evidence_root/installer-linux-arm64/HVO.SkyMonitor.Deployment.Cli" | grep -q 'ARM aarch64'
+    ;;
+  *)
+    printf 'Usage: scripts/ci:component-publish <shared|cameraagent|logichost|delivery>\n' >&2
+    exit 2
+    ;;
+esac
+
+printf 'Published %s component evidence:\n' "$component"
+cat "$evidence_root/summary.txt"
