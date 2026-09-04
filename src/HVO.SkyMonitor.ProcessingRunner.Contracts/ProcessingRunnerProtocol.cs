@@ -106,6 +106,7 @@ public static partial class ProcessingRunnerProtocol
 /// convention: only <see cref="CentralRecipe"/> is claimable through LogicHost, <see cref="CameraAgentArchivedReplay"/>
 /// is reserved for the CameraAgent adoption of this protocol, and <see cref="CameraAgentLive"/> can never be claimed.
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter<ProcessingRunnerJobClass>))]
 public enum ProcessingRunnerJobClass
 {
     CentralRecipe,
@@ -113,6 +114,7 @@ public enum ProcessingRunnerJobClass
     CameraAgentLive
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter<ProcessingRunnerWarmState>))]
 public enum ProcessingRunnerWarmState
 {
     Cold,
@@ -121,6 +123,7 @@ public enum ProcessingRunnerWarmState
     Degraded
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter<ProcessingRunnerRegistrationStatus>))]
 public enum ProcessingRunnerRegistrationStatus
 {
     Active,

@@ -1,9 +1,11 @@
 using System.Diagnostics;
+using System.Text.Json.Serialization;
 using System.Runtime.InteropServices;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.ProcessingRunner.Contracts;
 
+[JsonConverter(typeof(JsonStringEnumConverter<ProcessingRunnerWarmupStatus>))]
 public enum ProcessingRunnerWarmupStatus
 {
     Completed,
