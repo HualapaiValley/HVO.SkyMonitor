@@ -83,7 +83,7 @@ public interface IExecutionEvidenceOutbox
     /// Settles one unit as terminally acknowledged. The stored payload hash must equal the acknowledged hash, so an
     /// acknowledgement that names different bytes never releases the local retention of the unit it did not accept.
     /// </summary>
-    ValueTask AcknowledgeAsync(
+    ValueTask<ExecutionEvidenceAcknowledgementDisposition> AcknowledgeAsync(
         string root,
         string originIdentitySha256,
         long originSequence,

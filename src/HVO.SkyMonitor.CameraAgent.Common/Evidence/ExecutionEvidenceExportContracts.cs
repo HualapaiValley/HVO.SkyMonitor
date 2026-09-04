@@ -111,6 +111,31 @@ public enum ExecutionEvidenceEnlistmentDisposition
     Rejected
 }
 
+/// <summary>How one acknowledgement settled against the durable unit it named.</summary>
+public enum ExecutionEvidenceAcknowledgementDisposition
+{
+    /// <summary>The unit moved from pending or retry to acknowledged.</summary>
+    Settled,
+
+    /// <summary>The unit was already acknowledged with this exact payload hash; the repeat is a no-op.</summary>
+    Duplicate,
+
+    /// <summary>The unit is no longer present, having been acknowledged and pruned by retention.</summary>
+    Unknown,
+
+    /// <summary>
+    /// The acknowledgement named a payload hash this origin sequence does not carry. Retention must not be
+    /// released, because nothing has accepted the bytes this origin actually sent.
+    /// </summary>
+    HashMismatch,
+
+    /// <summary>
+    /// The unit already settled terminally by local operator disposition. The acknowledgement is late rather than
+    /// wrong, so it is neither honoured nor recorded as a conflict.
+    /// </summary>
+    AlreadyTerminal
+}
+
 public sealed record ExecutionEvidenceEnlistmentResult(
     ExecutionEvidenceEnlistmentDisposition Disposition,
     int EnlistedCount,

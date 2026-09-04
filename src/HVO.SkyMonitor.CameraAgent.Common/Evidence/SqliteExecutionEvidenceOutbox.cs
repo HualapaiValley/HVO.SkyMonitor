@@ -590,7 +590,7 @@ public sealed class SqliteExecutionEvidenceOutbox(
         return results;
     }
 
-    public async ValueTask AcknowledgeAsync(
+    public async ValueTask<ExecutionEvidenceAcknowledgementDisposition> AcknowledgeAsync(
         string root,
         string originIdentitySha256,
         long originSequence,
@@ -606,6 +606,7 @@ public sealed class SqliteExecutionEvidenceOutbox(
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
+        ExecutionEvidenceAcknowledgementDisposition disposition;
         using (var command = connection.CreateCommand())
         {
             command.Transaction = transaction;
@@ -619,14 +620,14 @@ public sealed class SqliteExecutionEvidenceOutbox(
             command.Parameters.AddWithValue("$origin", originIdentitySha256);
             command.Parameters.AddWithValue("$sequence", originSequence);
             command.Parameters.AddWithValue("$hash", payloadSha256);
-            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-            {
-                await EnsureIdempotentAcknowledgementAsync(
+            disposition = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1
+                ? ExecutionEvidenceAcknowledgementDisposition.Settled
+                : await ClassifyAcknowledgementAsync(
                     connection, transaction, originIdentitySha256, originSequence, payloadSha256, cancellationToken)
                     .ConfigureAwait(false);
-            }
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return disposition;
     }
 
     public ValueTask RetryAsync(
@@ -1083,7 +1084,7 @@ public sealed class SqliteExecutionEvidenceOutbox(
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask EnsureIdempotentAcknowledgementAsync(
+    private static async ValueTask<ExecutionEvidenceAcknowledgementDisposition> ClassifyAcknowledgementAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         string originIdentitySha256,
@@ -1102,21 +1103,15 @@ public sealed class SqliteExecutionEvidenceOutbox(
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            // The unit was already acknowledged and pruned by retention; a repeated acknowledgement is harmless.
-            return;
+            return ExecutionEvidenceAcknowledgementDisposition.Unknown;
         }
         var status = reader.GetString(0);
         var storedHash = reader.GetString(1);
-        if (!string.Equals(storedHash, payloadSha256, StringComparison.Ordinal))
-        {
-            throw new InvalidDataException(
-                "An acknowledgement named a payload hash the local evidence unit does not carry.");
-        }
-        if (!string.Equals(status, "acknowledged", StringComparison.Ordinal))
-        {
-            throw new InvalidDataException(
-                $"An acknowledgement arrived for an evidence unit in terminal state '{status}'.");
-        }
+        return !string.Equals(storedHash, payloadSha256, StringComparison.Ordinal)
+            ? ExecutionEvidenceAcknowledgementDisposition.HashMismatch
+            : string.Equals(status, "acknowledged", StringComparison.Ordinal)
+                ? ExecutionEvidenceAcknowledgementDisposition.Duplicate
+                : ExecutionEvidenceAcknowledgementDisposition.AlreadyTerminal;
     }
 
     private static async ValueTask<ExecutionEvidenceDiscoveryCursor> ReadCursorAsync(

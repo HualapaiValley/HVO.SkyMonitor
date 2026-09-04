@@ -721,19 +721,14 @@ internal sealed partial class ExecutionEvidenceExportService(
             }
             if (acknowledged is not null)
             {
-                try
-                {
-                    await outbox.AcknowledgeAsync(
-                        root, identity, sequence, acknowledged.PayloadSha256, feedback.ServerTimeUtc,
-                        cancellationToken).ConfigureAwait(false);
-                    _drainedUnits++;
-                    _lastAcknowledgementUtc = feedback.ServerTimeUtc;
-                }
-                catch (InvalidDataException)
+                var disposition = await outbox.AcknowledgeAsync(
+                    root, identity, sequence, acknowledged.PayloadSha256, feedback.ServerTimeUtc, cancellationToken)
+                    .ConfigureAwait(false);
+                if (disposition == ExecutionEvidenceAcknowledgementDisposition.HashMismatch)
                 {
                     // The receiver acknowledged a payload hash this origin sequence does not carry. Releasing the
-                    // local retention on that word would discard evidence nothing has actually accepted, so the unit
-                    // is quarantined for an operator instead, and one bad acknowledgement never stalls the lane.
+                    // local retention would discard evidence nothing actually accepted, so the unit is quarantined
+                    // for an operator instead, and one bad acknowledgement never stalls the lane.
                     await outbox.RecordConflictAsync(
                         root, identity, sequence, unit.PayloadSha256, acknowledged.PayloadSha256,
                         GraphExecutionEvidenceReasonCodes.InvalidHash, cancellationToken).ConfigureAwait(false);
@@ -744,6 +739,14 @@ internal sealed partial class ExecutionEvidenceExportService(
                     _rejectedUnits++;
                     Log.Quarantined(logger, sequence, GraphExecutionEvidenceReasonCodes.InvalidHash);
                 }
+                else if (disposition == ExecutionEvidenceAcknowledgementDisposition.Settled)
+                {
+                    _drainedUnits++;
+                    _lastAcknowledgementUtc = feedback.ServerTimeUtc;
+                }
+
+                // A duplicate, an unknown pruned unit, and a unit an operator already abandoned are all late rather
+                // than wrong: none of them is a conflict and none of them is re-offered.
                 settled.Add(sequence);
             }
         }

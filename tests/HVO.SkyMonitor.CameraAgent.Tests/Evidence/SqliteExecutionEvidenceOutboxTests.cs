@@ -274,19 +274,24 @@ public sealed class SqliteExecutionEvidenceOutboxTests
             CancellationToken.None).ConfigureAwait(false))[0];
 
         var other = new string('A', 64);
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await outbox.AcknowledgeAsync(
+        Assert.AreEqual(
+            ExecutionEvidenceAcknowledgementDisposition.HashMismatch,
+            await outbox.AcknowledgeAsync(
                 root.Path, origin.IdentitySha256, unit.OriginSequence, other, ExecutionEvidenceTestFactory.BaseUtc,
-                CancellationToken.None).ConfigureAwait(false))
-            .ConfigureAwait(false);
+                CancellationToken.None).ConfigureAwait(false));
         var stillPending = await outbox.ReadBacklogAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(1, stillPending.PendingCount);
 
-        await outbox.AcknowledgeAsync(
-            root.Path, origin.IdentitySha256, unit.OriginSequence, unit.PayloadSha256,
-            ExecutionEvidenceTestFactory.BaseUtc, CancellationToken.None).ConfigureAwait(false);
-        await outbox.AcknowledgeAsync(
-            root.Path, origin.IdentitySha256, unit.OriginSequence, unit.PayloadSha256,
-            ExecutionEvidenceTestFactory.BaseUtc, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(
+            ExecutionEvidenceAcknowledgementDisposition.Settled,
+            await outbox.AcknowledgeAsync(
+                root.Path, origin.IdentitySha256, unit.OriginSequence, unit.PayloadSha256,
+                ExecutionEvidenceTestFactory.BaseUtc, CancellationToken.None).ConfigureAwait(false));
+        Assert.AreEqual(
+            ExecutionEvidenceAcknowledgementDisposition.Duplicate,
+            await outbox.AcknowledgeAsync(
+                root.Path, origin.IdentitySha256, unit.OriginSequence, unit.PayloadSha256,
+                ExecutionEvidenceTestFactory.BaseUtc, CancellationToken.None).ConfigureAwait(false));
         var backlog = await outbox.ReadBacklogAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(1, backlog.AcknowledgedCount);
         Assert.AreEqual(0, backlog.PendingCount);
@@ -380,6 +385,23 @@ public sealed class SqliteExecutionEvidenceOutboxTests
         var backlog = await outbox.ReadBacklogAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(1, backlog.AbandonedCount);
         Assert.AreEqual(0, backlog.QuarantinedCount);
+
+        // A late acknowledgement for a unit the operator already abandoned is neither honoured nor a conflict.
+        Assert.AreEqual(
+            ExecutionEvidenceAcknowledgementDisposition.AlreadyTerminal,
+            await outbox.AcknowledgeAsync(
+                root.Path,
+                origin.IdentitySha256,
+                1,
+                (await outbox.ReadOperationsDetailAsync(root.Path, record.RecordId, CancellationToken.None)
+                    .ConfigureAwait(false)) is null
+                    ? new string('A', 64)
+                    : await ReadPayloadHashAsync(root.Path, record.RecordId).ConfigureAwait(false),
+                ExecutionEvidenceTestFactory.BaseUtc,
+                CancellationToken.None).ConfigureAwait(false));
+        var after = await outbox.ReadBacklogAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(0, after.ConflictCount);
+        Assert.AreEqual(1, after.AbandonedCount);
     }
 
     [TestMethod]
@@ -542,6 +564,15 @@ public sealed class SqliteExecutionEvidenceOutboxTests
             .ConfigureAwait(false);
         var backlog = await outbox.ReadBacklogAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(5, backlog.AcknowledgedThroughSequence);
+    }
+
+    private static async Task<string> ReadPayloadHashAsync(string root, long recordId)
+    {
+        using var connection = OpenDatabase(root);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT payload_sha256 FROM execution_evidence_units WHERE record_id = $record;";
+        command.Parameters.AddWithValue("$record", recordId);
+        return (string)(await command.ExecuteScalarAsync(CancellationToken.None).ConfigureAwait(false))!;
     }
 
     private static SqliteConnection OpenDatabase(string root)
