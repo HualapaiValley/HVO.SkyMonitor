@@ -148,7 +148,8 @@ public sealed partial class ReplayExecutionPage : ComponentBase, IAsyncDisposabl
 
     private void StartPolling()
     {
-        if (_execution is null || _execution.IsTerminal || _pollCancellation is not null)
+        // Never start a poller once the component lifetime has ended; it would touch the disposed gate.
+        if (_lifetime.IsCancellationRequested || _execution is null || _execution.IsTerminal || _pollCancellation is not null)
         {
             return;
         }

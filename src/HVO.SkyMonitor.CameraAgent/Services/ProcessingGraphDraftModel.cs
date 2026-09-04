@@ -101,7 +101,7 @@ internal sealed class ProcessingGraphDraftModel
     {
         ArgumentNullException.ThrowIfNull(node);
         var index = Nodes.IndexOf(node);
-        return [RawInput, .. Nodes.Take(Math.Max(index, 0)).Select(static row => row.Id)];
+        return [RawInput, .. Nodes.Take(Math.Max(index, 0)).Select(static row => row.Id.Trim()).Where(static id => id.Length > 0)];
     }
 
     public bool TryBuild(out CapturePipelineConfig pipeline, out IReadOnlyList<string> errors)

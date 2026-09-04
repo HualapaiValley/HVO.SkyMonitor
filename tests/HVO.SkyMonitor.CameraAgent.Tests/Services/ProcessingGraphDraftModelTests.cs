@@ -52,6 +52,10 @@ public sealed class ProcessingGraphDraftModelTests
 
         CollectionAssert.AreEqual(AddedIds, model.Nodes.Select(static node => node.Id).ToArray());
         CollectionAssert.AreEqual(EligibleForThird, model.EligibleDependencies(model.Nodes[2]).ToArray());
+        model.Nodes[1].Id = "   ";
+        CollectionAssert.DoesNotContain(model.EligibleDependencies(model.Nodes[2]).ToArray(), "   ");
+        Assert.IsFalse(model.EligibleDependencies(model.Nodes[2]).Any(static id => id.Length == 0));
+        model.Nodes[1].Id = "preview-2";
         model.Nodes[2].ToggleDependency("preview", selected: true);
         model.Move(model.Nodes[2], -1);
         CollectionAssert.AreEqual(MovedIds, model.Nodes.Select(static node => node.Id).ToArray());
