@@ -200,6 +200,14 @@ reference as an active owner. Phase 10 and issue-116 evidence generated before
 that change is not comparable for the P4 `RetentionReleased` field and must be
 regenerated from a clean candidate head; all such evidence lives under the
 ignored `TestResults/` tree, so no committed document changes.
+Processing runner evidence (#428): `ProcessingRunnerPerformanceEvidenceTests`
+(Manual, LogicHost integration project) records cold and warm start stages,
+registration and claim latency, input/product transfer bytes, and W1
+`encoded-preview` throughput in process versus through `processing-runner-v1`,
+plus the runner-placed backlog observed with no runner. Output is
+revision-scoped under `TestResults/processing-runner/<revision>/` and the
+runtime signals are pinned in
+`docs/validation/central-runner-runtime-signals.json`.
 
 ## 6. Output and Runtime Correlation
 

@@ -250,6 +250,7 @@ jobs:
           dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/astronomy --logger "trx;LogFileName=unit-astronomy.trx"
           dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/imaging --logger "trx;LogFileName=unit-imaging.trx"
           dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/processing --logger "trx;LogFileName=unit-processing.trx"
+          dotnet test tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/processing-runner --logger "trx;LogFileName=unit-processing-runner.trx"
           dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/catalog-sqlite --logger "trx;LogFileName=unit-catalog-sqlite.trx"
           dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/deployment-cli --logger "trx;LogFileName=unit-deployment-cli.trx"
           dotnet test tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/deployment-distribution --logger "trx;LogFileName=unit-deployment-distribution.trx"
@@ -338,6 +339,8 @@ jobs:
           dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/installer/linux-arm64
           dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj --no-restore --configuration Release --runtime linux-x64 --output TestResults/publish/replay-runner/linux-x64
           dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/replay-runner/linux-arm64
+          dotnet publish src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj --no-restore --configuration Release --runtime linux-x64 --output TestResults/publish/processing-runner/linux-x64
+          dotnet publish src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/processing-runner/linux-arm64
           mv TestResults/publish/installer/linux-x64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-x64/hvo-skymonitor
           mv TestResults/publish/installer/linux-arm64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-arm64/hvo-skymonitor
           test -x TestResults/publish/installer/linux-x64/hvo-skymonitor
@@ -348,6 +351,12 @@ jobs:
           grep -q '"protocolVersion":1' TestResults/publish/replay-runner-linux-x64-capabilities.json
           grep -q '"status":"Completed"' TestResults/publish/replay-runner-linux-x64-capabilities.json
           file TestResults/publish/replay-runner/linux-arm64/HVO.SkyMonitor.CameraAgent.ReplayRunner | grep -q 'ARM aarch64'
+          test -x TestResults/publish/processing-runner/linux-x64/HVO.SkyMonitor.ProcessingRunner
+          test -x TestResults/publish/processing-runner/linux-arm64/HVO.SkyMonitor.ProcessingRunner
+          TestResults/publish/processing-runner/linux-x64/HVO.SkyMonitor.ProcessingRunner --capabilities > TestResults/publish/processing-runner-linux-x64-capabilities.json
+          grep -q '"protocolVersion":1' TestResults/publish/processing-runner-linux-x64-capabilities.json
+          grep -q '"warmState":"Warm"' TestResults/publish/processing-runner-linux-x64-capabilities.json
+          file TestResults/publish/processing-runner/linux-arm64/HVO.SkyMonitor.ProcessingRunner | grep -q 'ARM aarch64'
       - name: Create retained publish manifests
         run: |
           (cd TestResults/publish/cameraagent && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../cameraagent.sha256)
@@ -356,6 +365,8 @@ jobs:
           (cd TestResults/publish/installer/linux-arm64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../installer-linux-arm64.sha256)
           (cd TestResults/publish/replay-runner/linux-x64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../replay-runner-linux-x64.sha256)
           (cd TestResults/publish/replay-runner/linux-arm64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../replay-runner-linux-arm64.sha256)
+          (cd TestResults/publish/processing-runner/linux-x64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../processing-runner-linux-x64.sha256)
+          (cd TestResults/publish/processing-runner/linux-arm64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../processing-runner-linux-arm64.sha256)
           cameraagent_files=$(find TestResults/publish/cameraagent -type f | wc -l)
           cameraagent_bytes=$(find TestResults/publish/cameraagent -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           cameraagent_dependencies=$(find TestResults/publish/cameraagent -maxdepth 1 -type f -name '*.dll' | wc -l)
@@ -366,11 +377,14 @@ jobs:
           installer_arm64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-arm64/hvo-skymonitor)
           replay_runner_x64_bytes=$(find TestResults/publish/replay-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           replay_runner_arm64_bytes=$(find TestResults/publish/replay-runner/linux-arm64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
-          printf 'CameraAgent files=%s bytes=%s dependencies=%s\nLogicHost files=%s bytes=%s dependencies=%s\nInstaller linux-x64 bytes=%s\nInstaller linux-arm64 bytes=%s\nReplayRunner linux-x64 bytes=%s\nReplayRunner linux-arm64 bytes=%s\n' \
+          processing_runner_x64_bytes=$(find TestResults/publish/processing-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
+          processing_runner_arm64_bytes=$(find TestResults/publish/processing-runner/linux-arm64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
+          printf 'CameraAgent files=%s bytes=%s dependencies=%s\nLogicHost files=%s bytes=%s dependencies=%s\nInstaller linux-x64 bytes=%s\nInstaller linux-arm64 bytes=%s\nReplayRunner linux-x64 bytes=%s\nReplayRunner linux-arm64 bytes=%s\nProcessingRunner linux-x64 bytes=%s\nProcessingRunner linux-arm64 bytes=%s\n' \
             "$cameraagent_files" "$cameraagent_bytes" "$cameraagent_dependencies" \
             "$logichost_files" "$logichost_bytes" "$logichost_dependencies" \
             "$installer_x64_bytes" "$installer_arm64_bytes" \
             "$replay_runner_x64_bytes" "$replay_runner_arm64_bytes" \
+            "$processing_runner_x64_bytes" "$processing_runner_arm64_bytes" \
             > TestResults/publish/summary.txt
       - name: Upload architecture coverage
         if: always()

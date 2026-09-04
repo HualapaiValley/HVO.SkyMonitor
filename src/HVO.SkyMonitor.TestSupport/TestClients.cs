@@ -28,6 +28,17 @@ public static class TestClients
     }
 
     /// <summary>
+    /// System client for self-hosted processing runners (processing-runner-v1).
+    /// </summary>
+    public static class SystemProcessingRunner
+    {
+        public const string ClientId = "system-processing-runner";
+        public const string ClientSecret = "test-processing-runner-secret-do-not-use-in-production";
+        public const string DisplayName = "Processing Runner System Client";
+        public static readonly string[] Scopes = ["api.runner", "api.artifacts.read"];
+    }
+
+    /// <summary>
     /// Web UI client for browser-based authentication (Authorization Code + PKCE).
     /// </summary>
     public static class WebUI

@@ -131,6 +131,14 @@ dotnet_diagnostic.MSTEST0003.severity = none
 dotnet_diagnostic.MSTEST0008.severity = none
 dotnet_diagnostic.MSTEST0009.severity = none
 
+# Processing runner unit tests intentionally have public types and own their disposable fakes
+[tests/HVO.SkyMonitor.ProcessingRunner.Tests/**.cs]
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1812.severity = none
+
 # CameraAgent unit tests follow MSTest naming conventions (underscores) and require public types
 # The tests intentionally construct disposable services without disposing because each test owns the instance scope
 [tests/HVO.SkyMonitor.CameraAgent.Tests/**.cs]

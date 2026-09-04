@@ -64,7 +64,8 @@ internal sealed partial class CentralArtifactRetrievalService(
     TimeProvider timeProvider,
     CentralArtifactRetrievalTelemetry telemetry,
     ILogger<CentralArtifactRetrievalService> logger,
-    OperatorUiTelemetry? operatorUiTelemetry = null) : ICentralArtifactRetrievalService
+    OperatorUiTelemetry? operatorUiTelemetry = null,
+    ICentralProcessingRunnerRegistry? runnerRegistry = null) : ICentralArtifactRetrievalService
 {
     public async Task<CentralArtifactLookup> FindAsync(
         Guid devicePublicId,
@@ -363,8 +364,23 @@ internal sealed partial class CentralArtifactRetrievalService(
         CentralArtifactWorkerAccess? access,
         CancellationToken cancellationToken)
     {
-        if (!CentralArtifactCredentialAccess.HasScope(principal, "api.artifacts.read") || access is null
-            || !string.Equals(CentralArtifactCredentialAccess.GetSubject(principal), access.WorkerId, StringComparison.Ordinal))
+        if (!CentralArtifactCredentialAccess.HasScope(principal, "api.artifacts.read") || access is null)
+        {
+            return false;
+        }
+        var subject = CentralArtifactCredentialAccess.GetSubject(principal);
+        if (access.RunnerId is { } runnerId)
+        {
+            // A runner reads under its registered identity: the lease owner is the runner id and the credential
+            // subject must own that registration, so one runner credential cannot read another runner's job inputs.
+            if (runnerRegistry is null || string.IsNullOrWhiteSpace(subject)
+                || !string.Equals(runnerId, access.WorkerId, StringComparison.Ordinal)
+                || !await runnerRegistry.IsOwnedAsync(subject, runnerId, cancellationToken).ConfigureAwait(false))
+            {
+                return false;
+            }
+        }
+        else if (!string.Equals(subject, access.WorkerId, StringComparison.Ordinal))
         {
             return false;
         }
@@ -433,7 +449,11 @@ internal sealed record CentralArtifactLookup(
     CentralArtifact? Artifact,
     string CallerKind);
 
-internal sealed record CentralArtifactWorkerAccess(Guid JobId, string WorkerId, Guid LeaseToken);
+/// <summary>
+/// Job-scoped worker access. <see cref="WorkerId"/> is the lease owner: the credential subject for the in-process
+/// worker, or the registered runner id when <see cref="RunnerId"/> is supplied and owned by the credential subject.
+/// </summary>
+internal sealed record CentralArtifactWorkerAccess(Guid JobId, string WorkerId, Guid LeaseToken, string? RunnerId = null);
 
 internal enum CentralArtifactLookupStatus
 {

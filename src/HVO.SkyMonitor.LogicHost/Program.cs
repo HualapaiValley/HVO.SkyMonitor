@@ -132,6 +132,10 @@ public sealed partial class Program
                     && options.BacklogDegradedAfter > TimeSpan.Zero,
                 "CentralDerivativeWorker timing values are invalid.")
             .ValidateOnStart();
+        builder.Services.AddOptions<CentralProcessingRunnerOptions>()
+            .Bind(builder.Configuration.GetSection(CentralProcessingRunnerOptions.SectionName))
+            .Validate(options => options.Validate(out _), "ProcessingRunners configuration is invalid.")
+            .ValidateOnStart();
         builder.Services.AddOptions<CentralTransientOptions>()
             .Bind(builder.Configuration.GetSection(CentralTransientOptions.SectionName))
             .ValidateDataAnnotations()
@@ -194,6 +198,7 @@ public sealed partial class Program
             .AddCheck<CentralArtifactConsistencyHealthCheck>("artifact-consistency", tags: ["consistency"])
             .AddCheck<CentralArtifactRetentionHealthCheck>("artifact-retention", tags: ["worker"])
             .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"])
+            .AddCheck<CentralProcessingRunnerHealthCheck>("processing-runners", tags: ["worker"])
             .AddCheck<ProcessingGraphCatalogHealthCheck>("processing-graph-catalog", tags: ["consistency"])
             .AddCheck<CentralTransientLifecycleHealthCheck>("central-transient-lifecycle", tags: ["worker"])
             .AddCheck<FleetStatusHealthCheck>("fleet-status", tags: ["worker"])
@@ -250,6 +255,7 @@ public sealed partial class Program
                 metrics.AddMeter(CentralPresentationTelemetry.MeterName);
                 metrics.AddMeter(CentralArtifactRetentionTelemetry.MeterName);
                 metrics.AddMeter(CentralDerivativeWorkerTelemetry.MeterName);
+                metrics.AddMeter(CentralProcessingRunnerTelemetry.MeterName);
                 metrics.AddMeter(CentralTransientLifecycleTelemetry.MeterName);
                 metrics.AddMeter(FleetStatusTelemetry.MeterName);
                 metrics.AddMeter(EnvironmentalObservationTelemetry.MeterName);
@@ -527,6 +533,7 @@ public sealed partial class Program
                     "api.frames",
                     "api.images",
                     "api.owner.write",
+                    "api.runner",
                     "api.viewer",
                     "api.webhooks");
 
@@ -732,6 +739,14 @@ public sealed partial class Program
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context => HasArtifactRetrievalCredential(context.User));
             });
+            options.AddPolicy("ProcessingRunner", policy =>
+            {
+                AddCredentialAuthenticationSchemes(policy);
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                    CentralArtifactCredentialAccess.IsSystem(context.User)
+                    && CentralArtifactCredentialAccess.HasScope(context.User, "api.runner"));
+            });
             options.AddPolicy("TransientEventsRead", policy =>
             {
                 AddCredentialAuthenticationSchemes(policy);
@@ -846,10 +861,25 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralProcessingGraphExecutionService, CentralProcessingGraphExecutionService>();
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
         builder.Services.AddScoped<ICentralDerivativeWindowResolver, CentralDerivativeWindowResolver>();
-        builder.Services.AddScoped<ICentralDerivativeJobService, CentralDerivativeJobService>();
-        builder.Services.AddScoped<ICentralDerivativeJobInputReader, CentralDerivativeJobInputReader>();
+        builder.Services.AddScoped<CentralDerivativeJobService>();
+        builder.Services.AddScoped<ICentralDerivativeJobService>(
+            provider => provider.GetRequiredService<CentralDerivativeJobService>());
+        builder.Services.AddScoped<ICentralDerivativeRunnerLeaseService>(
+            provider => provider.GetRequiredService<CentralDerivativeJobService>());
+        builder.Services.AddScoped<CentralDerivativeJobInputReader>();
+        builder.Services.AddScoped<ICentralDerivativeJobInputReader>(
+            provider => provider.GetRequiredService<CentralDerivativeJobInputReader>());
+        builder.Services.AddScoped<ICentralDerivativeJobInputDescriber>(
+            provider => provider.GetRequiredService<CentralDerivativeJobInputReader>());
         builder.Services.AddScoped<ICentralDerivativeOutputWriter, CentralDerivativeOutputWriter>();
-        builder.Services.AddScoped<ICentralDerivativeJobExecutor, CentralDerivativeJobExecutor>();
+        builder.Services.AddScoped<CentralDerivativeJobExecutor>();
+        builder.Services.AddScoped<ICentralDerivativeJobExecutor>(
+            provider => provider.GetRequiredService<CentralDerivativeJobExecutor>());
+        builder.Services.AddScoped<ICentralDerivativeExecutionPipeline>(
+            provider => provider.GetRequiredService<CentralDerivativeJobExecutor>());
+        builder.Services.AddSingleton<CentralProcessingRunnerTelemetry>();
+        builder.Services.AddScoped<ICentralProcessingRunnerRegistry, CentralProcessingRunnerRegistry>();
+        builder.Services.AddScoped<ICentralProcessingRunnerJobService, CentralProcessingRunnerJobService>();
         builder.Services.AddScoped<ICentralDerivativeJobOperationsService, CentralDerivativeJobOperationsService>();
         builder.Services.AddSingleton<CentralDerivativeWorkerTelemetry>();
         builder.Services.AddSingleton<CentralProcessingGraphConvergenceSignal>();
