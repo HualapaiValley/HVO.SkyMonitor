@@ -693,8 +693,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var viewerButton = firstCard.GetByRole(AriaRole.Button, new() { Name = "View large image" });
         await VisibleAsync(image).ConfigureAwait(false);
         Assert.AreEqual("lazy", await image.GetAttributeAsync("loading").ConfigureAwait(false));
-        Assert.IsTrue(await image.EvaluateAsync<bool>(
-            "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0").ConfigureAwait(false));
+        // A lazy image can be visible before it has decoded; wait for the decode instead of sampling it once.
+        await page.WaitForFunctionAsync(
+            "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0",
+            await image.ElementHandleAsync().ConfigureAwait(false)).ConfigureAwait(false);
         StringAssert.Contains(await firstCard.Locator(".capture-card__summary").InnerTextAsync().ConfigureAwait(false), "Processed", StringComparison.Ordinal);
         Assert.IsTrue(await firstCard.EvaluateAsync<bool>(
             "card => (card.querySelector('.capture-card__image-link').compareDocumentPosition(card.querySelector('button')) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0")
