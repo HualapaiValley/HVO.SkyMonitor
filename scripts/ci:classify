@@ -250,6 +250,9 @@ is_host_private_path() {
     src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/* | src/HVO.SkyMonitor.CameraAgent.Replay/* | src/HVO.SkyMonitor.CameraAgent.ReplayRunner/*)
       return 0
       ;;
+    src/HVO.SkyMonitor.CameraAgent/Components/Account/* | src/HVO.SkyMonitor.LogicHost/Components/Account/*)
+      return 1
+      ;;
     src/HVO.SkyMonitor.CameraAgent/Components/* | src/HVO.SkyMonitor.CameraAgent/Properties/* | src/HVO.SkyMonitor.CameraAgent/wwwroot/*)
       return 0
       ;;
@@ -290,6 +293,55 @@ select_shared_component() {
   delivery="true"
 }
 
+# A source can be compiled into a project outside its own directory through an
+# MSBuild <Compile Include> link. The including project's component is derived
+# from the checked-out project files rather than a hand-maintained list, so a new
+# link cannot narrow the plan.
+apply_linked_project() {
+  local project="$1"
+
+  if contains_project "$project" "${shared_projects[@]}"; then
+    select_shared_component
+  elif contains_project "$project" "${cameraagent_projects[@]}"; then
+    cameraagent="true"
+  elif contains_project "$project" "${logichost_projects[@]}"; then
+    logichost="true"
+  elif contains_project "$project" "${combined_projects[@]}"; then
+    combined="true"
+    cameraagent="true"
+    logichost="true"
+  elif contains_project "$project" "${delivery_projects[@]}"; then
+    delivery="true"
+  else
+    complete_reason="a linked source is compiled by a project outside every component boundary"
+    select_complete_matrix
+  fi
+}
+
+select_linked_components() {
+  local path="$1" top rest project relative include_windows include_posix csproj including_project
+
+  top="${path%%/*}"
+  case "$top" in
+    src | tests | tools) ;;
+    *) return 0 ;;
+  esac
+  rest="${path#"$top"/}"
+  [[ "$rest" == */* ]] || return 0
+  project="${rest%%/*}"
+  relative="${rest#"$project"/}"
+  include_windows="Include=\"..\\${project}\\${relative//\//\\}\""
+  include_posix="Include=\"../${project}/${relative}\""
+
+  while IFS= read -r csproj; do
+    [[ -n "$csproj" ]] || continue
+    including_project="${csproj#*/}"
+    including_project="${including_project%%/*}"
+    [[ "$including_project" != "$project" ]] || continue
+    apply_linked_project "$including_project"
+  done < <(grep -rlF --include='*.csproj' -e "$include_windows" -e "$include_posix" src tests tools 2>/dev/null)
+}
+
 select_components() {
   local path="$1" top rest project
 
@@ -300,6 +352,8 @@ select_components() {
       return 0
       ;;
   esac
+
+  select_linked_components "$path"
 
   top="${path%%/*}"
   rest="${path#"$top"/}"

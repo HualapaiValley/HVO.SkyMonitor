@@ -39,8 +39,20 @@ done
 # Every aggregate file floor must also be enforced by the component lane that a
 # change to that file selects, so a component plan cannot silently drop a risk
 # floor the complete matrix enforces. A component floor may sit below the
-# aggregate only when the lane provably cannot reach it and the entry records a
-# `belowAggregateReason`.
+# aggregate only for a path pinned here, and only when its entry also records a
+# `belowAggregateReason`. Adding an escape is a change to this gate, not to data.
+below_aggregate_escapes=(
+  'HVO.SkyMonitor.AgentCore/ArtifactManifestV2.cs'
+)
+
+is_below_aggregate_escape() {
+  local candidate="$1" escape
+  for escape in "${below_aggregate_escapes[@]}"; do
+    [[ "$escape" != "$candidate" ]] || return 0
+  done
+  return 1
+}
+
 component_of() {
   case "$1" in
     tools/* | HVO.SkyMonitor.Deployment.*) printf 'delivery\n' ;;
@@ -55,14 +67,18 @@ while IFS= read -r aggregate_path; do
   [[ "$source_path" == tools/* ]] || source_path="src/$source_path"
   [[ -f "$source_path" ]] || continue
   owning_component="$(component_of "$aggregate_path")"
+  escape_allowed=false
+  ! is_below_aggregate_escape "$aggregate_path" || escape_allowed=true
   jq --exit-status \
     --arg path "$aggregate_path" \
+    --argjson escapeAllowed "$escape_allowed" \
     --slurpfile aggregate scripts/coverage/baseline.json '
       ($aggregate[0].files[$path]) as $required |
       (.files[$path]) as $candidate |
       $candidate != null and
       ((($candidate.line >= $required.line) and ($candidate.branch >= $required.branch)) or
-        (($candidate.belowAggregateReason | type == "string") and
+        ($escapeAllowed and
+         ($candidate.belowAggregateReason | type == "string") and
          ($candidate.belowAggregateReason | length > 0)))
     ' "scripts/coverage/baseline.$owning_component.json" > /dev/null || {
     printf 'Component baseline %s must enforce the aggregate floor for %s or record a belowAggregateReason.\n' \

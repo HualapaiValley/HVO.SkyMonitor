@@ -355,6 +355,7 @@ jobs:
           mv TestResults/publish/installer/linux-arm64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-arm64/hvo-skymonitor
           test -x TestResults/publish/installer/linux-x64/hvo-skymonitor
           test -x TestResults/publish/installer/linux-arm64/hvo-skymonitor
+          file TestResults/publish/installer/linux-arm64/hvo-skymonitor | grep -q 'ARM aarch64'
           test -x TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner
           test -x TestResults/publish/replay-runner/linux-arm64/HVO.SkyMonitor.CameraAgent.ReplayRunner
           TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner --capabilities > TestResults/publish/replay-runner-linux-x64-capabilities.json

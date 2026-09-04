@@ -125,14 +125,19 @@ if [[ "${plan[complete]}" == "true" && "${plan[mode]}" != "full" ]]; then
   reject "the complete matrix requires mode=full"
 fi
 
-# The classifier's shared fan-out rule is part of the plan contract: a shared
-# contract change must claim every consuming lane. A plan that drops one of those
-# lanes is rejected rather than aggregated. A host seam change legitimately claims
-# combined without the opposite host, so combined carries no such invariant.
+# The classifier's fan-out rules are part of the plan contract. A shared contract
+# change must claim every consuming lane. Combined coverage is only ever selected
+# by a host seam, a combined fixture, or the shared fan-out, so it must claim at
+# least one host lane; requiring both would reject a correct host-seam plan.
 if [[ "${plan[shared]}" == "true" ]]; then
   for key in cameraagent logichost combined delivery; do
     [[ "${plan[$key]}" == "true" ]] || reject "a shared plan must claim every consuming lane, missing '$key'"
   done
+fi
+
+if [[ "${plan[combined]}" == "true" ]] \
+  && [[ "${plan[cameraagent]}" != "true" && "${plan[logichost]}" != "true" ]]; then
+  reject "a combined plan must claim at least one host lane"
 fi
 
 expected_when() {

@@ -353,10 +353,10 @@ Seam selection is an inverse allowlist. A host path is treated as an exported
 protocol or integration seam unless it is explicitly host-private, so a new host
 directory fails closed into combined coverage. The host-private set is:
 
-- `src/HVO.SkyMonitor.CameraAgent/{Components,Properties,wwwroot}/**`
+- `src/HVO.SkyMonitor.CameraAgent/{Components,Properties,wwwroot}/**`, except `Components/Account/**`, which wires the identity endpoints the combined suite exercises
 - `src/HVO.SkyMonitor.CameraAgent.Common/{Background,Diagnostics,Frames,Gallery,Imaging,Logging,Properties,Reflection,Scheduling,SkyMap,Storage}/**`
 - `src/HVO.SkyMonitor.CameraAgent.{Modules.Zwo,Replay,ReplayRunner}/**`
-- `src/HVO.SkyMonitor.LogicHost/{Components,Properties,wwwroot}/**`
+- `src/HVO.SkyMonitor.LogicHost/{Components,Properties,wwwroot}/**`, with the same `Components/Account/**` exception
 - every `tests/**` path except `tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/**`, which is the non-test fixture project both the LogicHost and combined suites compose
 
 Everything else inside a host project, including its project root files,
@@ -368,23 +368,34 @@ Everything else inside a host project, including its project root files,
 
 The host-private set is not merely asserted. `scripts/test:ci-classification`
 extracts every `HVO.SkyMonitor.CameraAgent.Common.*` and
-`HVO.SkyMonitor.LogicHost.*` `using` directive from the two combined test
-projects and fails when any namespace those suites compile against maps to a
-host-private directory, so the list cannot drift away from what the combined
-lane actually guards.
+`HVO.SkyMonitor.LogicHost.*` reference from the two combined test projects —
+plain, `global`, `static`, aliased, and fully qualified alike — and fails when
+any namespace those suites reference maps to a host-private directory, so the
+list cannot drift away from what the combined lane actually guards. The check
+covers `HVO.SkyMonitor` namespaces; a host-private file that contributes to a
+combined behavior through a non-`HVO` namespace, such as an ASP.NET routing
+extension, still needs a deliberate carve-out like `Components/Account/**`.
+
+Directory ownership is not the only way a source reaches a project. A file
+compiled into another project through an MSBuild `<Compile Include>` link also
+selects the including project's component, and the classifier derives that from
+the checked-out project files rather than a list. `scripts/test:ci-classification`
+copies the real project files into its fixture repository and asserts that every
+linked source selects at least what a file in the including project selects, so a
+new link cannot narrow a plan.
 
 ### Exact Affected-Gate Selection
 
 Every full-mode row below additionally runs the six never-component-scoped
-gates: Catalog Contracts, Quality, Build, Architecture & Publish, Coverage
-Policy, CameraAgent Migrations, and LogicHost Migrations. The table records only
-what varies.
+gates: Catalog Contracts, Build, Architecture & Publish, Coverage Policy,
+CameraAgent Migrations, and LogicHost Migrations. Quality runs in every mode,
+including reduced. The table records only what varies.
 
 | Change | Complete | Lanes | Deployment Contracts |
 | --- | --- | --- | --- |
 | Allowlisted documentation only | no | none | no — and every full-mode gate above is skipped too; only Quality and Required CI run |
 | Shared library or shared test | no | shared, cameraagent, logichost, combined, delivery | no |
-| CameraAgent UI, imaging, module, storage, or replay code | no | cameraagent | no |
+| CameraAgent UI, imaging, `Modules.Zwo`, storage, gallery, scheduling, or replay code | no | cameraagent | no |
 | CameraAgent seam (`Capture`, `Environmental`, `Transients`, `Modules`, `Fleet`, `Upload`, controllers, identity, configuration) | no | cameraagent, combined | no |
 | LogicHost UI code | no | logichost | no |
 | LogicHost seam (controllers, services, data, infrastructure) | no | logichost, combined | no |

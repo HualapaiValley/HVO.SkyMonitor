@@ -220,9 +220,10 @@ verify_component_plan "docs/catalog/hyg-v42-license.md"                         
 verify_component_plan "scripts/deploy/product-layout.sh"                               full true  false false false false false true
 verify_component_plan "scripts/catalog/install-hyg-v42.sh"                             full true  false false false false false true
 
-# Every namespace the combined suites compile against must reach the combined
-# lane. This is checked against the real `using` directives rather than a
-# hand-maintained list, so a host directory cannot silently become host-private.
+# Every host namespace the combined suites reference must reach the combined
+# lane. This is checked against the real sources rather than a hand-maintained
+# list, and it matches plain, global, static, aliased, and fully qualified
+# references, so a host directory cannot silently become host-private.
 expect_combined_probe() {
   local probe="$1" probe_base probe_head output
   probe_base="$(git -C "$work_root" rev-parse HEAD)"
@@ -252,16 +253,71 @@ while IFS= read -r combined_namespace; do
   [[ -d "$repo_root/$seam_project/$seam_segment" ]] || continue
   ((combined_namespace_count += 1))
   expect_combined_probe "$seam_project/$seam_segment/CombinedSeamProbe.cs"
-done < <(grep -rhoE '^using HVO\.SkyMonitor\.(CameraAgent\.Common|LogicHost)\.[A-Za-z0-9_]+' \
+done < <(grep -rhoE 'HVO\.SkyMonitor\.(CameraAgent\.Common|LogicHost)\.[A-Za-z0-9_]+' \
   --include='*.cs' \
   "$repo_root/tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests" \
   "$repo_root/tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests" \
-  | sed 's/^using //' | sort -u)
+  | sort -u)
 
 if (( combined_namespace_count == 0 )); then
   printf 'No combined host namespace was discovered; the seam cross-check is not exercising anything.\n' >&2
   exit 1
 fi
+
+# A source compiled into another project through an MSBuild <Compile Include>
+# link must select at least everything a file in the including project selects.
+# The real project files are copied into the fixture repository so the classifier
+# resolves the same links CI resolves.
+while IFS= read -r linked_csproj; do
+  mkdir -p "$work_root/$(dirname "$linked_csproj")"
+  cp "$repo_root/$linked_csproj" "$work_root/$linked_csproj"
+done < <(cd "$repo_root" && git ls-files 'src/*/*.csproj' 'tests/*/*.csproj' 'tools/*/*.csproj')
+git -C "$work_root" add --all
+git -C "$work_root" commit --quiet -m "Add real project files for link classification"
+
+plan_flags() {
+  local probe="$1" marker="$2" flag_base flag_head
+  flag_base="$(git -C "$work_root" rev-parse HEAD)"
+  mkdir -p "$work_root/$(dirname "$probe")"
+  printf 'link classification fixture %s\n' "$marker" > "$work_root/$probe"
+  git -C "$work_root" add -- "$probe"
+  git -C "$work_root" commit --quiet -m "Probe $probe $marker"
+  flag_head="$(git -C "$work_root" rev-parse HEAD)"
+  (cd "$work_root" && "$classifier" pull_request "$flag_base" "$flag_head") \
+    | grep -E '^(complete|shared|cameraagent|logichost|combined|delivery)='
+}
+
+mapfile -t link_records < <(cd "$repo_root" && git ls-files 'tests/*/*.csproj' | while IFS= read -r csproj; do
+  including="$(basename "$(dirname "$csproj")")"
+  { grep -oE 'Include="\.\.\\[^"]+\.cs"' "$csproj" 2>/dev/null || true; } | while IFS= read -r include; do
+    include="${include#Include=\"..\\}"
+    include="${include%\"}"
+    printf '%s|tests/%s\n' "$including" "${include//\\//}"
+  done
+done | sort -u)
+
+if (( ${#link_records[@]} == 0 )); then
+  printf 'No linked source was discovered; the link ownership cross-check is not exercising anything.\n' >&2
+  exit 1
+fi
+
+link_probe_index=0
+for link_record in "${link_records[@]}"; do
+  including_project="${link_record%%|*}"
+  linked_source="${link_record#*|}"
+  [[ -n "$including_project" && -n "$linked_source" ]] || continue
+  ((link_probe_index += 1))
+  including_flags="$(plan_flags "tests/$including_project/LinkOwnerProbe.cs" "owner-$link_probe_index")"
+  linked_flags="$(plan_flags "$linked_source" "linked-$link_probe_index")"
+  while IFS= read -r flag; do
+    [[ "$flag" == *=true ]] || continue
+    grep -Fxq "$flag" <<< "$linked_flags" || {
+      printf 'Linked source %s does not select %s, which its including project %s requires.\n' \
+        "$linked_source" "$flag" "$including_project" >&2
+      exit 1
+    }
+  done <<< "$including_flags"
+done
 
 # Every real project directory must be claimed by a component, except the
 # intentionally cross-cutting ones. A new project therefore cannot slip into a
@@ -559,6 +615,8 @@ shared_success="$(results changes=success quality=success catalog-contracts=succ
 expect_required_accept "shared contract component plan" pull_request "$shared_plan" "$shared_success"
 
 combined_plan="$(plan full false false true true true false false)"
+expect_required_reject "combined plan without a host lane" pull_request \
+  "$(plan full false false false false true false false)" "$complete_success"
 combined_success="$(results changes=success quality=success catalog-contracts=success \
   build=success architecture=success coverage-policy=success \
   migrations-cameraagent=success migrations-logichost=success \
