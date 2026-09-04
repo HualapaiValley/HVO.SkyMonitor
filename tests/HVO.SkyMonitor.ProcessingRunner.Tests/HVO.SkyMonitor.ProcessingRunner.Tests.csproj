@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="MSTest" />
+    <PackageReference Include="coverlet.collector"><PrivateAssets>all</PrivateAssets></PackageReference>
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.ProcessingRunner\HVO.SkyMonitor.ProcessingRunner.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.ProcessingRunner.Contracts\HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
+  </ItemGroup>
+</Project>

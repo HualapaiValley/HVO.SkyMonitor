@@ -21,6 +21,8 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.LogicHost\HVO.SkyMonitor.LogicHost.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.ProcessingRunner\HVO.SkyMonitor.ProcessingRunner.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.ProcessingRunner.Contracts\HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.LogicHost.TestInfrastructure\HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj" />
   </ItemGroup>

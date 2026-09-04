@@ -1,0 +1,36 @@
+# Example self-hosted processing runner (processing-runner-v1) for a LAN LogicHost.
+# Build: docker build -f src/HVO.SkyMonitor.ProcessingRunner/Dockerfile -t hvo-processing-runner:<revision> .
+# Run:   docker compose -f deploy/split-host/compose.processing-runner.yml up -d
+# The runner needs only the LogicHost URL and its own OAuth client credentials; LogicHost must have
+# ProcessingRunners:Enabled=true and at least one recipe placed on runners (ProcessingRunners:Placement).
+services:
+  processing-runner:
+    image: hvo-processing-runner:${HVO_SKYMONITOR_REVISION:?set the source revision tag}
+    container_name: hvo-processing-runner-01
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp
+    environment:
+      HVO_RUNNER_LOGICHOST_URL: ${HVO_RUNNER_LOGICHOST_URL:?https URL of the LogicHost}
+      HVO_RUNNER_ID: ${HVO_RUNNER_ID:-runner-01}
+      HVO_RUNNER_DISPLAY_NAME: ${HVO_RUNNER_DISPLAY_NAME:-Lab runner 01}
+      HVO_RUNNER_CLIENT_ID: ${HVO_RUNNER_CLIENT_ID:-system-processing-runner}
+      HVO_RUNNER_CLIENT_SECRET_FILE: /run/secrets/processing-runner-client-secret
+      HVO_RUNNER_MAX_CONCURRENCY: ${HVO_RUNNER_MAX_CONCURRENCY:-1}
+      HVO_RUNNER_RESOURCE_CLASS: ${HVO_RUNNER_RESOURCE_CLASS:-standard}
+      HVO_RUNNER_LATENCY_CLASS: ${HVO_RUNNER_LATENCY_CLASS:-background}
+      HVO_RUNNER_LABELS: ${HVO_RUNNER_LABELS:-}
+    secrets:
+      - processing-runner-client-secret
+    deploy:
+      resources:
+        limits:
+          cpus: "${HVO_RUNNER_CPUS:-2}"
+          memory: ${HVO_RUNNER_MEMORY:-2g}
+    pids_limit: 256
+secrets:
+  processing-runner-client-secret:
+    file: ${HVO_RUNNER_CLIENT_SECRET_PATH:?path to a file containing the runner client secret}

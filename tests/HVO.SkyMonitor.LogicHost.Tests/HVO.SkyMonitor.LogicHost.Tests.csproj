@@ -12,6 +12,7 @@
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.LogicHost\HVO.SkyMonitor.LogicHost.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.ProcessingRunner.Contracts\HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
     <Compile Include="..\TestSettings\MSTestSettings.cs" Link="MSTestSettings.cs" />
     <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\LogicHostProcessingConformanceTests.cs" Link="Services\LogicHostProcessingConformanceTests.cs" />

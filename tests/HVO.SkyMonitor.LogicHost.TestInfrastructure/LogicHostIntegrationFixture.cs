@@ -472,6 +472,8 @@ public sealed class IntegrationTestFixture : IDisposable
 
         AddConfidentialClient(0, TestClients.SystemInternal.ClientId, TestClients.SystemInternal.ClientSecret,
             TestClients.SystemInternal.DisplayName, TestClients.SystemInternal.Scopes);
+        AddConfidentialClient(1, TestClients.SystemProcessingRunner.ClientId, TestClients.SystemProcessingRunner.ClientSecret,
+            TestClients.SystemProcessingRunner.DisplayName, TestClients.SystemProcessingRunner.Scopes);
 
         AddPublicClient(0, TestClients.WebUI.ClientId, TestClients.WebUI.DisplayName, TestClients.WebUI.Scopes,
             ["https://localhost:5001/signin-oidc", "http://localhost:5000/signin-oidc"],

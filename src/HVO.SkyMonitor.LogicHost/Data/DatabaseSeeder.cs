@@ -524,6 +524,7 @@ internal static class DatabaseSeeder
         {
             new { Name = "api.camera", DisplayName = "Camera Control", Description = "Access to camera control endpoints" },
             new { Name = "api.artifacts.read", DisplayName = "Artifact Retrieval", Description = "Job-bound access to central artifact content" },
+            new { Name = "api.runner", DisplayName = "Processing Runner", Description = "Self-hosted processing runner registration, claims, and job-scoped completion" },
             new { Name = "api.frames", DisplayName = "Frame APIs", Description = "Access to frame ingestion endpoints" },
             new { Name = "api.images", DisplayName = "Image APIs", Description = "Access to image processing endpoints" },
             new { Name = "api.admin", DisplayName = "Administrative Access", Description = "Full administrative access" },
