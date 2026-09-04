@@ -606,18 +606,25 @@ internal static class CentralArtifactRetentionLock
 
     /// <summary>
     /// Takes the update lock retention reserves under on one artifact row for the rest of the caller's transaction.
-    /// Returns 1 when the row exists. The hint is SQL Server specific; other providers (unit-test in-memory, SQLite)
-    /// have no equivalent row-level fence, so the call is a no-op there and callers revalidate state as they always do.
+    /// Returns 1 when the row exists and 0 when it does not, on every provider: the lock hint is SQL Server specific,
+    /// so other providers (unit-test in-memory, SQLite) keep only the existence semantics that callers rely on for
+    /// their missing-row guards, and revalidate state afterwards as they always do.
     /// </summary>
-    public static Task<int> AcquireAsync(
+    public static async Task<int> AcquireAsync(
         ApplicationDbContext dbContext,
         Guid centralArtifactId,
         CancellationToken cancellationToken)
-        => dbContext.Database.IsSqlServer()
-            ? dbContext.Database.SqlQuery<int>(
+    {
+        ArgumentNullException.ThrowIfNull(dbContext);
+        if (dbContext.Database.IsSqlServer())
+        {
+            return await dbContext.Database.SqlQuery<int>(
                     $"SELECT CAST(1 AS int) AS [Value] FROM [CentralArtifacts] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = {centralArtifactId}")
-                .SingleOrDefaultAsync(cancellationToken)
-            : Task.FromResult(1);
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        }
+        return await dbContext.CentralArtifacts.AsNoTracking()
+            .AnyAsync(item => item.Id == centralArtifactId, cancellationToken).ConfigureAwait(false) ? 1 : 0;
+    }
 
     public static Task<int> AcquireDispositionAsync(
         ApplicationDbContext dbContext,

@@ -12,8 +12,8 @@ public sealed class CentralArtifactRetentionLockTests
 {
     /// <summary>
     /// The row-lock hint is SQL Server specific. Every fence site revalidates durable state after acquiring it, so on
-    /// a provider without that fence the helper must degrade to a no-op read rather than fail with raw SQL, and the
-    /// shared fence must still return the rows it was asked about.
+    /// a provider without that fence the helper must degrade to an existence read (1 present, 0 missing) rather than
+    /// fail with raw SQL, and the shared fence must still return the rows it was asked about.
     /// </summary>
     [TestMethod]
     public async Task AcquireAndFenceDegradeToReadsOnAProviderWithoutRowLocks()
@@ -38,10 +38,13 @@ public sealed class CentralArtifactRetentionLockTests
 
         var acquired = await CentralArtifactRetentionLock.AcquireAsync(context, available.Id, CancellationToken.None)
             .ConfigureAwait(false);
+        var acquiredMissing = await CentralArtifactRetentionLock.AcquireAsync(context, missing, CancellationToken.None)
+            .ConfigureAwait(false);
         var fenced = await CentralArtifactRetentionLock.FenceAsync(
             context, [expired.Id, missing, available.Id, available.Id], CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(1, acquired);
+        Assert.AreEqual(0, acquiredMissing, "callers guard missing rows with the acquire result on every provider");
         Assert.HasCount(2, fenced);
         Assert.AreEqual(CentralArtifactObjectState.Available, fenced[available.Id].ObjectState);
         Assert.AreEqual(CentralArtifactObjectState.Expired, fenced[expired.Id].ObjectState);
