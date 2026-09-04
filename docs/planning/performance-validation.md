@@ -191,6 +191,16 @@ recording a baseline.
 | 14: E2E/readiness | Normal, outage, each fault, recovery | Stage and end-to-end latency, exact bytes/counts, per-host CPU/RSS/LOH, backlog age/drain, trace coverage, metric cardinality | Every fault converges; no acknowledged loss/duplicate logical output; recovery drains finite backlog; no unexplained regression |
 | `RM-016`: S3 replacement | `W1`, `W2`, `W3M`, `W3P`, `W4`; one non-seekable 100 MiB conformance upload | Put/stat/conditional-get/copy/delete/list requests and bytes, application/provider CPU and RSS, managed allocations, median/p95 latency, throughput, active streams, backlog count/bytes/age/drain, restart time, and restore time | Exact lengths/SHA-256 and strong visibility pass; memory follows stream buffers and concurrency rather than object size; listings have no gaps or duplicates; no unexplained material regression |
 
+Phase 10 harness note (#553): the `CentralDerivativeWindowPerformanceTests`
+Manual harnesses seed frames without going through ingest, so they now seed the
+resolved capture-location provenance that reconstruction requires, and the P4
+lease/retention trials give each of the five window sources its own object
+because retention treats every non-expired artifact sharing a storage
+reference as an active owner. Phase 10 and issue-116 evidence generated before
+that change is not comparable for the P4 `RetentionReleased` field and must be
+regenerated from a clean candidate head; all such evidence lives under the
+ignored `TestResults/` tree, so no committed document changes.
+
 ## 6. Output and Runtime Correlation
 
 Performance evidence is valid only when the same run or fixture also checks the
