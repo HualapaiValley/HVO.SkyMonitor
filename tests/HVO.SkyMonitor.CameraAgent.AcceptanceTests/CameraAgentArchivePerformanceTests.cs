@@ -53,7 +53,8 @@ public sealed class CameraAgentArchivePerformanceTests
             {
                 var plan = await fixture.ExplainAsync(sql).ConfigureAwait(false);
                 Assert.IsFalse(plan.Any(static detail => detail.Contains("USE TEMP B-TREE", StringComparison.OrdinalIgnoreCase)), $"{name}: {string.Join(" | ", plan)}");
-                Assert.IsFalse(plan.Any(static detail => detail.StartsWith("SCAN raw", StringComparison.OrdinalIgnoreCase) || detail.StartsWith("SCAN output", StringComparison.OrdinalIgnoreCase)), $"{name}: {string.Join(" | ", plan)}");
+                // An ordered walk of an index reports as "SCAN ... USING [COVERING] INDEX"; only an index-less table scan is a regression.
+                Assert.IsFalse(plan.Any(static detail => detail.StartsWith("SCAN ", StringComparison.OrdinalIgnoreCase) && !detail.Contains(" INDEX ", StringComparison.OrdinalIgnoreCase)), $"{name}: {string.Join(" | ", plan)}");
             }
             measurements.Add(await MeasureAsync("calendar-62-days", captureCount, async () =>
                 (await archive.GetCalendarAsync(calendarQuery, CancellationToken.None).ConfigureAwait(false)).Days.Count).ConfigureAwait(false));
