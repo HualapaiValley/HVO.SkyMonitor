@@ -224,7 +224,10 @@ public static class CameraAgentServiceCollectionExtensions
         services.TryAddSingleton<IProcessingGraphDeliveryTransport>(NullProcessingGraphDeliveryTransport.Instance);
         services.AddSingleton<ProcessingGraphDeliveryState>();
         services.AddSingleton<ProcessingGraphDeliveryTelemetry>();
-        services.AddSingleton<ICameraAgentGallery, SqliteCameraAgentGallery>();
+        services.AddSingleton<IObservingDayCalendarProvider, DeploymentObservingDayCalendarProvider>();
+        services.AddSingleton<SqliteCameraAgentGallery>();
+        services.AddSingleton<ICameraAgentGallery>(provider => provider.GetRequiredService<SqliteCameraAgentGallery>());
+        services.AddSingleton<ICameraAgentArchive>(provider => provider.GetRequiredService<SqliteCameraAgentGallery>());
         services.AddSingleton<ICameraAgentCapturePresentationProjector, CameraAgentCapturePresentationProjector>();
         services.AddSingleton<ICameraAgentPresentationRuntime, CameraAgentPresentationRuntime>();
         services.AddSingleton<ICameraAgentStructuredLayerAvailability, CameraAgentStructuredLayerAvailability>();

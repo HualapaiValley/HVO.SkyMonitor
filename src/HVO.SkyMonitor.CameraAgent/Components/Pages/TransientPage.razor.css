@@ -22,3 +22,8 @@ dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 .stage--pending { border-color: rgba(255,191,122,.35); color: #ffbf7a; }
 .detail-link { justify-self: end; }
 @media (max-width: 680px) { .page-heading { align-items: flex-start; flex-direction: column; }.stage-strip { grid-template-columns: repeat(2, 1fr); }.cursor-nav { align-items: stretch; flex-direction: column; }.cursor-nav button { width: 100%; } }
+
+.heading-aside { display: flex; align-items: center; gap: .5rem; }
+.heading-aside .btn { min-height: 44px; }
+.range-state { margin: 0 0 1rem; padding: .65rem .8rem; border-left: 3px solid var(--hvo-info-strong); color: var(--hvo-info-fg); background: var(--hvo-info-bg); }
+.range-state a { color: inherit; }

@@ -748,6 +748,107 @@ public sealed class CameraAgentBrowserAcceptanceTests
     }
 
     [TestMethod]
+    public async Task OwnerArchiveCalendarProductsAndCandidatesAcceptanceAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        if (!File.Exists(playwright.Chromium.ExecutablePath))
+        {
+            Assert.Inconclusive(
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
+        }
+
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true
+        }).ConfigureAwait(false);
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+            ColorScheme = ColorScheme.Dark,
+            ReducedMotion = ReducedMotion.Reduce
+        }).ConfigureAwait(false);
+        context.SetDefaultTimeout(DefaultTimeoutMilliseconds);
+        context.SetDefaultNavigationTimeout(DefaultTimeoutMilliseconds);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        var browserErrors = new List<string>();
+        page.PageError += (_, error) => browserErrors.Add(error);
+
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword)
+            .ConfigureAwait(false);
+        await WaitForGalleryCapturesAsync(page, minimumCards: 1).ConfigureAwait(false);
+
+        // Calendar: the current night carries the seeded captures and links into the filtered archive.
+        await page.GotoAsync("/archive/calendar").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Observing calendar", Level = 1 })).ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".night").First).ConfigureAwait(false);
+        var populated = page.Locator(".night:not(.night--empty)").First;
+        await VisibleAsync(populated).ConfigureAwait(false);
+        var capturesLink = populated.GetByRole(AriaRole.Link, new() { Name = "Open captures" });
+        var dayUrl = await capturesLink.GetAttributeAsync("href").ConfigureAwait(false);
+        Assert.IsNotNull(dayUrl);
+        StringAssert.StartsWith(dayUrl, "/gallery?from=", StringComparison.Ordinal);
+        await AssertPageStructureAsync(page, "/archive/calendar").ConfigureAwait(false);
+        await capturesLink.ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/gallery" && new Uri(url).Query.Contains("from=", StringComparison.Ordinal)).ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".capture-card").First).ConfigureAwait(false);
+
+        // Products: retained outputs list, a detail page, and its capture link.
+        await page.GotoAsync("/archive/products").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Products", Level = 1 })).ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".product-table tbody tr").First).ConfigureAwait(false);
+        await AssertPageStructureAsync(page, "/archive/products").ConfigureAwait(false);
+        await page.GetByLabel("Role").SelectOptionAsync("Metadata").ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Apply", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).Query.Contains("role=Metadata", StringComparison.Ordinal)).ConfigureAwait(false);
+        await page.GotoAsync("/archive/products").ConfigureAwait(false);
+        var firstProduct = page.Locator(".product-table tbody tr").First.Locator("a").First;
+        await VisibleAsync(firstProduct).ConfigureAwait(false);
+        await firstProduct.ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).AbsolutePath.StartsWith("/archive/products/", StringComparison.Ordinal)).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Link, new() { Name = "Open capture" })).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Sources", Level = 2 })).ConfigureAwait(false);
+        await AssertPageStructureAsync(page, "/archive/products/detail").ConfigureAwait(false);
+        var missingProduct = await context.NewPageAsync().ConfigureAwait(false);
+        await missingProduct.GotoAsync($"/archive/products/{Guid.NewGuid():D}").ConfigureAwait(false);
+        await VisibleAsync(missingProduct.GetByRole(AriaRole.Alert)).ConfigureAwait(false);
+        await missingProduct.CloseAsync().ConfigureAwait(false);
+
+        // Candidates: the list accepts the calendar range and never claims event authority.
+        await page.GotoAsync("/transients?from=2000-01-01T00:00:00&to=2000-01-02T00:00:00").ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".range-state")).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Transient candidates", Level = 1 })).ConfigureAwait(false);
+        var candidateText = await page.Locator("main").InnerTextAsync().ConfigureAwait(false);
+        foreach (var forbidden in new[] { "ground track", "impact location", "validated event" })
+        {
+            Assert.IsFalse(candidateText.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
+        }
+        await AssertPageStructureAsync(page, "/transients").ConfigureAwait(false);
+
+        foreach (var route in new[] { "/archive/calendar", "/archive/products", "/transients" })
+        {
+            foreach (var viewport in new[]
+            {
+                new ViewportSize { Width = 1440, Height = 900 },
+                new ViewportSize { Width = 390, Height = 844 },
+                new ViewportSize { Width = 844, Height = 390 }
+            })
+            {
+                await page.SetViewportSizeAsync(viewport.Width, viewport.Height).ConfigureAwait(false);
+                await page.GotoAsync(route).ConfigureAwait(false);
+                await VisibleAsync(page.Locator("main h1")).ConfigureAwait(false);
+                Assert.IsFalse(await page.EvaluateAsync<bool>(
+                    "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
+                    $"{route} overflowed at {viewport.Width}x{viewport.Height}");
+                await AssertComputedContrastAsync(page, route, viewport).ConfigureAwait(false);
+            }
+        }
+
+        Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
+    }
+
+    [TestMethod]
     public async Task OwnerCaptureDetailPresentationAcceptanceAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);

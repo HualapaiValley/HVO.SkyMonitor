@@ -26,6 +26,24 @@ internal static class CameraAgentGalleryEndpoints
             .Produces<CameraAgentCurrentImagePresentation>()
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status403Forbidden);
+        gallery.MapGet("/calendar", GetCalendarAsync)
+            .WithName("GetCameraAgentGalleryCalendar")
+            .Produces<CameraAgentGalleryCalendar>()
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
+        gallery.MapGet("/products", GetProductPageAsync)
+            .WithName("GetCameraAgentProductPage")
+            .Produces<CameraAgentProductPage>()
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
+        gallery.MapGet("/products/{artifactId:guid}", GetProductAsync)
+            .WithName("GetCameraAgentProduct")
+            .Produces<CameraAgentProductDetail>()
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
         gallery.MapGet("/{captureId:guid}", GetCaptureAsync)
             .WithName("GetCameraAgentGalleryCapture")
             .Produces<CameraAgentGalleryCapture>()
@@ -85,6 +103,71 @@ internal static class CameraAgentGalleryEndpoints
                 statusCode: StatusCodes.Status400BadRequest,
                 title: "The gallery query is invalid.");
         }
+    }
+
+    // The calendar takes observing-day dates; other gallery filters apply
+    // within each day and the range is bounded by the read model.
+    private static async Task<IResult> GetCalendarAsync(
+        [FromQuery(Name = "from")] DateOnly? fromDate,
+        [FromQuery(Name = "to")] DateOnly? toDate,
+        [AsParameters] CameraAgentGalleryEndpointQuery filters,
+        ICameraAgentArchive archive,
+        CancellationToken cancellationToken)
+    {
+        if (fromDate is null || toDate is null)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "The calendar range requires from and to dates.");
+        }
+        try
+        {
+            var calendar = await archive.GetCalendarAsync(new CameraAgentGalleryCalendarQuery(
+                fromDate.Value,
+                toDate.Value,
+                new CameraAgentGalleryQuery(
+                    RawState: filters.RawState,
+                    EvidenceOrigin: filters.EvidenceOrigin,
+                    ProcessingRole: filters.ProcessingRole,
+                    Recipe: filters.Recipe,
+                    ProcessingStatus: filters.ProcessingStatus)), cancellationToken).ConfigureAwait(false);
+            return Results.Ok(calendar);
+        }
+        catch (CameraAgentGalleryQueryException)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "The calendar query is invalid.");
+        }
+    }
+
+    private static async Task<IResult> GetProductPageAsync(
+        [FromQuery(Name = "pageSize")] int? pageSize,
+        [FromQuery(Name = "cursor")] string? cursor,
+        [FromQuery(Name = "role")] FrameArtifactRole? role,
+        [FromQuery(Name = "kind")] string? kind,
+        [FromQuery(Name = "recipe")] string? recipe,
+        [FromQuery(Name = "availability")] string? availability,
+        [FromQuery(Name = "from")] DateTimeOffset? fromUtc,
+        [FromQuery(Name = "to")] DateTimeOffset? toUtc,
+        ICameraAgentArchive archive,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var page = await archive.GetProductPageAsync(
+                new CameraAgentProductQuery(pageSize, cursor, role, kind, recipe, availability, fromUtc, toUtc), cancellationToken).ConfigureAwait(false);
+            return Results.Ok(page);
+        }
+        catch (CameraAgentGalleryQueryException)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "The product query is invalid.");
+        }
+    }
+
+    private static async Task<IResult> GetProductAsync(
+        Guid artifactId,
+        ICameraAgentArchive archive,
+        CancellationToken cancellationToken)
+    {
+        var product = await archive.GetProductAsync(artifactId, cancellationToken).ConfigureAwait(false);
+        return product is null ? Results.NotFound() : Results.Ok(product);
     }
 
     private static async Task<IResult> GetCurrentAsync(

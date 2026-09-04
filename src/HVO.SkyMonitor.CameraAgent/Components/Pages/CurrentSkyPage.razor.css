@@ -10,7 +10,10 @@
 .stage-status { min-height: 1.5rem; margin: .45rem 0 0; color: var(--hvo-muted); font-size: .78rem; }
 .current-sky-summary { min-width: 0; padding: 1rem; border: 1px solid var(--hvo-border-muted); border-radius: 1rem; background: linear-gradient(160deg, rgba(18, 42, 62, .72), var(--hvo-card-bg)); box-shadow: var(--hvo-panel-shadow); }
 .current-sky-summary h2 { margin: .2rem 0 .5rem; font-family: Georgia, Cambria, "Times New Roman", serif; font-size: clamp(1.6rem, 3vw, 2.4rem); font-weight: 500; }
-.summary-copy, .next-transition { color: var(--hvo-muted); }
+.summary-copy, .next-transition, .facts-unavailable { color: var(--hvo-muted); }
+.lineage { margin: .9rem 0 0; padding: .6rem .75rem; border-left: 3px solid var(--hvo-info-strong); color: var(--hvo-muted); background: var(--hvo-info-bg); font-size: .85rem; }
+.lineage strong { display: block; margin-bottom: .2rem; color: var(--hvo-body-color); }
+.layers-link { display: inline-flex; align-items: center; min-height: 44px; margin-top: .5rem; color: var(--hvo-info-fg); text-decoration: underline; text-underline-offset: .2rem; }
 .status-chips { display: flex; flex-wrap: wrap; gap: .45rem; margin-bottom: 1.25rem; }
 .status-chip { display: inline-flex; align-items: center; min-height: 1.8rem; padding: .2rem .65rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; font-size: .66rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
 .status-chip--current { color: var(--hvo-success-fg); background: var(--hvo-success-bg); }

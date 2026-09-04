@@ -267,6 +267,31 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         var hasSelected = stages.Any(slot => slot.Stage == selected && slot.Availability == CameraAgentPresentationSlotAvailability.Available);
         return new CameraAgentCapturePresentation(hasSelected ? selected : null, stages);
     }
+    internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>>>? CurrentSkyHandler { get; set; }
+    internal Func<CameraAgentGalleryCalendarQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>>> CalendarHandler { get; set; } =
+        (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Success(new(TimeZoneInfo.Utc.Id, true, [])));
+    internal Func<Guid, CameraAgentGalleryQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryNeighbours>>> NeighboursHandler { get; set; } =
+        (captureId, _, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryNeighbours>.Success(new(captureId, null, null)));
+    internal Func<CameraAgentProductQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentProductPage>>> ProductPageHandler { get; set; } =
+        (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductPage>.Success(new([], null)));
+    internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentProductDetail>>> ProductDetailHandler { get; set; } =
+        (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Failure(OperatorUiResultKind.NotFound, "The requested product was not found."));
+
+    public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
+    {
+        if (CurrentSkyHandler is not null)
+        {
+            return await CurrentSkyHandler(cancellationToken).ConfigureAwait(false);
+        }
+        var presentation = await CurrentImageHandler(cancellationToken).ConfigureAwait(false);
+        return presentation.IsSuccess && presentation.Value is not null
+            ? OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null))
+            : OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "unavailable");
+    }
+    public ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>> GetArchiveCalendarAsync(CameraAgentGalleryCalendarQuery query, CancellationToken cancellationToken) => CalendarHandler(query, cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentGalleryNeighbours>> GetGalleryNeighboursAsync(Guid captureId, CameraAgentGalleryQuery filters, CancellationToken cancellationToken) => NeighboursHandler(captureId, filters, cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentProductPage>> GetProductPageAsync(CameraAgentProductQuery query, CancellationToken cancellationToken) => ProductPageHandler(query, cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentProductDetail>> GetProductDetailAsync(Guid artifactId, CancellationToken cancellationToken) => ProductDetailHandler(artifactId, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(Guid captureId, CancellationToken cancellationToken) => PresentationHandler(captureId, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(Guid captureId, IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken) => MaterializationHandler(captureId, enabledLayerIdentitySha256, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(string kind, string? storageAlias, string? cursor, int pageSize, CancellationToken cancellationToken) => QuarantineHandler(kind, storageAlias, cursor, pageSize, cancellationToken);

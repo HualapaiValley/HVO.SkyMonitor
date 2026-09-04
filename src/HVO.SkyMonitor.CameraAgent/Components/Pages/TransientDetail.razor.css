@@ -19,3 +19,9 @@ dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 .wide { flex-direction: column; }.wide dd { text-align: left; }
 .stage-absence { margin-top: .85rem; }
 @media (max-width: 760px) { .detail-heading, .detail-state { align-items: flex-start; flex-direction: column; }.stage-grid { grid-template-columns: 1fr; }dl div { align-items: flex-start; flex-direction: column; gap: .15rem; }dd { text-align: left; } }
+
+.source-card { margin-bottom: 1rem; padding: 1rem; border: 1px solid var(--hvo-border-muted); border-radius: .9rem; background: var(--hvo-card-bg); }
+.source-card h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+.source-list { display: grid; gap: .35rem; margin: 0; padding-left: 1.2rem; }
+.source-list a { color: var(--hvo-info-fg); }
+.source-meta { color: var(--hvo-muted-weak); font-size: .8rem; }

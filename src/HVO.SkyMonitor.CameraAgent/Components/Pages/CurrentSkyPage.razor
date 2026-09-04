@@ -78,7 +78,36 @@
                     <div><dt>Image age</dt><dd>@FormatDuration(capture.AgeSeconds)</dd></div>
                     <div><dt>Stage</dt><dd>@(SelectedSlot?.Label ?? "Unavailable")</dd></div>
                     <div><dt>Evidence</dt><dd>@EvidenceLabel(capture.EvidenceOrigin)</dd></div>
+                    <div><dt>Observing night</dt><dd>@ObservingNightLabel</dd></div>
+                    @if (_facts is { } facts)
+                    {
+                        <div><dt>Rig</dt><dd>@(facts.RigId ?? "Unavailable")</dd></div>
+                        <div><dt>Exposure</dt><dd>@FormatExposure(facts.ExposureMilliseconds)</dd></div>
+                        <div><dt>Gain</dt><dd>@(facts.Gain?.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) ?? "Unavailable")</dd></div>
+                        <div><dt>Sensor</dt><dd>@(facts.SensorTemperatureC is { } temperature ? FormattableString.Invariant($"{temperature:0.#} °C") : "Unavailable")</dd></div>
+                        <div><dt>Frame</dt><dd>@(facts.Width is { } width && facts.Height is { } height ? $"{width} × {height}" : "Unavailable")</dd></div>
+                        <div><dt>Cloud</dt><dd>@FormatCloud(facts.Cloud)</dd></div>
+                    }
                 </dl>
+                @if (_facts?.CombinedLineage is { } lineage)
+                {
+                    <p class="lineage" aria-label="Combined stage lineage">
+                        <strong>Combined stage</strong>
+                        @CameraAgentCurrentSkyFactsProjector.CombinedMethodLabel of @lineage.SourceCount source frame@(lineage.SourceCount == 1 ? string.Empty : "s")@(lineage.RecipeName is null ? string.Empty : $", recipe {lineage.RecipeName}").
+                    </p>
+                }
+                @if (_facts?.CombinedLineageUnavailable == true)
+                {
+                    <p class="facts-unavailable" role="status">Combined stage lineage is not available in this bounded view.</p>
+                }
+                @if (_factsUnavailableReason is not null)
+                {
+                    <p class="facts-unavailable" role="status">@_factsUnavailableReason</p>
+                }
+                @if (_presentation?.StructuredLayersAvailable == true)
+                {
+                    <a class="layers-link" href="@DetailUrl">Open retained layer controls</a>
+                }
             }
             @if (_presentation?.System.NextTransitionUtc is { } nextTransition)
             {

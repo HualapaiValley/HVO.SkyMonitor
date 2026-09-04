@@ -11,10 +11,14 @@
 <div class="gallery-page">
     <header class="gallery-heading">
         <div><p class="eyebrow">Bounded local history</p><h1>Archive</h1><p>Browse the sky visually. Capture facts and technical filters remain available when needed.</p></div>
-        @if (_page is not null)
-        {
-            <span class="result-count">@_page.Items.Count result@(_page.Items.Count == 1 ? string.Empty : "s")</span>
-        }
+        <div class="heading-aside">
+            @if (_page is not null)
+            {
+                <span class="result-count">@_page.Items.Count result@(_page.Items.Count == 1 ? string.Empty : "s")</span>
+            }
+            <a class="btn btn-outline-light" href="/archive/calendar">Calendar</a>
+            <a class="btn btn-outline-light" href="/archive/products">Products</a>
+        </div>
     </header>
 
     <form class="archive-browse" @onsubmit="ApplyFiltersAsync" @onsubmit:preventDefault aria-label="Archive browsing controls">
