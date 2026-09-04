@@ -651,6 +651,9 @@ public sealed class LifecycleContractTests
             fixture.Uid, fixture.Gid, CancellationToken.None);
 
         Assert.AreEqual("completed", result.Outcome);
+        // One durable pause per operation; the post-mutation boundary only confirms it.
+        Assert.AreEqual(1, lifecycle.PauseCount);
+        Assert.AreEqual(1, lifecycle.ConfirmCount);
         retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
         Assert.AreEqual(LifecycleOperationPhase.Completed, retained!.Phase);
         Assert.IsFalse(retained.MutationStarted);
@@ -1507,6 +1510,7 @@ public sealed class LifecycleContractTests
     {
         public bool RejectNextResume { get; set; }
         public int PauseCount { get; private set; }
+        public int ConfirmCount { get; private set; }
 
         public Task<LifecycleContinuity> PauseAndDrainAsync(
             Guid operationId,
@@ -1515,6 +1519,16 @@ public sealed class LifecycleContractTests
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             PauseCount++;
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
+        }
+
+        public Task<LifecycleContinuity> ConfirmDrainedAsync(
+            Guid operationId,
+            string verificationToken,
+            CancellationToken cancellationToken)
+        {
+            Assert.AreEqual("lifecycle-token", verificationToken);
+            ConfirmCount++;
             return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
         }
 
