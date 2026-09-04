@@ -749,6 +749,9 @@ public sealed class OwnerAuthorizationTests
             (Path: "/operations/automations", Expected: "Automations"),
             (Path: "/operations/data", Expected: "Data &amp; storage"),
             (Path: "/operations/sky-map", Expected: "Sky map &amp; catalog"),
+            (Path: "/operations/pipeline/executions", Expected: "Processing executions"),
+            (Path: "/operations/pipeline/graphs", Expected: "Named graphs"),
+            (Path: "/operations/pipeline/graphs/new", Expected: "Draft graph"),
             (Path: "/devices/bootstrap", Expected: "Device Bootstrap")
         })
         {

@@ -1724,7 +1724,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         {
             "/", "/operations", "/operations/quarantine?kind=Artifact", "/gallery?pageSize=24", detailUrl,
             "/schedule", "/calibration", "/system", "/operations/camera", "/operations/pipeline",
-            "/operations/automations", "/operations/data", "/operations/sky-map", "/Account/Login", "/Account/Recovery",
+            "/operations/automations", "/operations/data", "/operations/sky-map", "/operations/pipeline/executions",
+            "/operations/pipeline/graphs", "/operations/pipeline/graphs/new", "/Account/Login", "/Account/Recovery",
             "/Account/Manage", "/Account/Manage/Email", "/Account/Manage/ChangePassword"
         };
         foreach (var viewport in viewports)
@@ -1774,7 +1775,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static readonly HashSet<string> WorkspaceFormRoutes = new(StringComparer.Ordinal)
     {
-        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/data", "/operations/sky-map"
+        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/data", "/operations/sky-map",
+        "/operations/pipeline/executions", "/operations/pipeline/graphs", "/operations/pipeline/graphs/new"
     };
 
     private static async Task AssertOperationsWorkspaceAsync(IPage page)
