@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -24,22 +25,38 @@ internal static class CameraAgentSkyMapEndpoints
         return endpoints;
     }
 
+    // The group policy is the authorization boundary for HTTP callers; the Blazor UI service
+    // adds the circuit's authentication state check and is not usable outside a circuit.
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The endpoint returns a fixed sanitized 503 for every projection failure.")]
     private static async Task<IResult> GetSkyMapAsync(
         [FromQuery(Name = "atUtc")] DateTimeOffset? atUtc,
-        ICameraAgentSkyMapUiService skyMap,
+        ICameraAgentSkyMapProjection projection,
+        TimeProvider timeProvider,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
-        var result = await skyMap.GetSkyMapAsync(atUtc, cancellationToken).ConfigureAwait(false);
-        return result.Kind switch
+        if (atUtc is { } requested &&
+            !CameraAgentSkyMapInstantBounds.IsWithinBounds(requested, timeProvider.GetUtcNow()))
         {
-            OperatorUiResultKind.Success => Results.Ok(result.Value),
-            OperatorUiResultKind.Invalid => Results.Problem(
+            return Results.Problem(
                 statusCode: StatusCodes.Status400BadRequest,
-                title: result.Message ?? CameraAgentSkyMapInstantBounds.RejectionMessage),
-            OperatorUiResultKind.Unauthorized => Results.Forbid(),
-            _ => Results.Problem(
+                title: CameraAgentSkyMapInstantBounds.RejectionMessage);
+        }
+        try
+        {
+            return Results.Ok(await projection.ProjectAsync(atUtc, cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            loggerFactory.CreateLogger(typeof(CameraAgentSkyMapEndpoints)).LogWarning(exception, "CameraAgent sky map endpoint read failed.");
+            return Results.Problem(
                 statusCode: StatusCodes.Status503ServiceUnavailable,
-                title: result.Message ?? "The sky map projection is unavailable.")
-        };
+                title: "The sky map projection is unavailable.");
+        }
     }
 }
