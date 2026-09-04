@@ -694,8 +694,9 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             // The partial retention index covers the common "available only" page exactly.
             var availableOnly = normalized.Availability == "Available" && normalized.Role is null && normalized.ProductKind is null && normalized.Recipe is null;
+            // The filter clauses emit the literal Available predicate that implies the partial index.
             var sql = new StringBuilder(availableOnly ? ProductAvailablePageSelectSql : ProductPageSelectSql)
-                .AppendLine().AppendLine(availableOnly ? "WHERE output.availability_state = 'Available'" : "WHERE 1 = 1").Append(ProductVisibilitySql).AppendLine();
+                .AppendLine().AppendLine("WHERE 1 = 1").Append(ProductVisibilitySql).AppendLine();
             AppendProductFilterClauses(sql, command, normalized);
             if (cursor is not null)
             {

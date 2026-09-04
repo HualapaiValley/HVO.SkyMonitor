@@ -87,7 +87,8 @@ public static class CameraAgentCurrentSkyFactsProjector
                     combined.Recipe?.Name,
                     combined.Recipe?.IdentitySha256),
             detail?.ProcessingProfile,
-            // Lineage exists but the bounded artifact list did not carry it.
+            // Combined lineage could not be described: the bounded artifact list
+            // either hid the displayed artifact or leaves the newest one unknowable.
             combined is null && capture.ArtifactsTruncated && (combinedArtifactId is not null || combinedArtifacts.Length > 0));
     }
 }
