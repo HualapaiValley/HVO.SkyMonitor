@@ -25,7 +25,7 @@
     }
     else
     {
-        <p class="truth-note" role="note"><strong>Read-only graph facts:</strong> use <a href="/operations/schedule">Capture schedule</a> to preview, toggle, stage, apply, or roll back an immutable revision.</p>
+        <p class="truth-note" role="note"><strong>Read-only graph facts:</strong> use <a href="/operations/schedule">Capture schedule</a> to preview, toggle, stage, apply, or roll back the local profile's graph. Named graph revisions live under <a href="/operations/pipeline/graphs">Named graphs</a>, and every live or replay run is listed under <a href="/operations/pipeline/executions">Processing executions</a>.</p>
         <PipelineRevisionSummary Heading="Active revision" HeadingId="pipeline-active" RevisionNumber="_state.Active.RevisionNumber" ProfileSha256="@_state.Active.ProfileSha256" CanToggle="_state.Active.CanToggle" Plan="_state.Active.Plan" />
         @if (_state.Pending is not null)
         {

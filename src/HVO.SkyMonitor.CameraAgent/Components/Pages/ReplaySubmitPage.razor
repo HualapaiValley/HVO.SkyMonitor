@@ -1,0 +1,163 @@
+@page "/operations/pipeline/replays/new"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Submit archived replay</PageTitle>
+
+<div class="replay-submit">
+    <PageHeader Eyebrow="Archived evidence replay"
+                Title="Submit this capture for replay"
+                HeadingId="replay-submit-heading"
+                Lead="Replay re-executes retained evidence in a separate execution class. It never repeats acquisition, never changes the current or latest view, and never uploads or publishes anything automatically." />
+
+    @if (_loading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading the replay freeze summary" />
+    }
+    else if (_candidate is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error"
+                         Title="Replay candidate unavailable"
+                         Message="@(_message ?? "The requested capture could not be prepared for replay.")">
+            <a class="btn btn-outline-light" href="@SourceCaptureUrl">Return to source capture</a>
+        </PageStateNotice>
+    }
+    else
+    {
+        @if (_outcome is not null)
+        {
+            <PageStateNotice Kind="@OutcomeKind" Title="@OutcomeTitle" Message="@_message">
+                @if (_submittedExecutionId is { } submitted)
+                {
+                    <a class="btn btn-primary" href="@($"/operations/pipeline/replays/{submitted:D}")">Open replay progress</a>
+                }
+                <a class="btn btn-outline-light" href="@SourceCaptureUrl">Return to source capture</a>
+            </PageStateNotice>
+        }
+        else if (_message is not null)
+        {
+            <PageStateNotice Kind="@(_messageIsError ? PageStateNotice.PageStateKind.Error : PageStateNotice.PageStateKind.Info)"
+                             Title="@(_messageIsError ? "Replay request rejected" : "Replay request")"
+                             Message="@_message" />
+        }
+
+        <section class="freeze-summary" aria-labelledby="freeze-heading">
+            <header>
+                <p class="eyebrow">Resolved at submission</p>
+                <h2 id="freeze-heading">Inputs this request will freeze</h2>
+                <p>
+                    These facts are read now for review only. The durable store resolves the exact
+                    capture, artifact, ordered window inputs, and retention pins again inside the
+                    submission itself, so a value that changes before you confirm is rejected as a
+                    conflict rather than silently substituted.
+                </p>
+            </header>
+            <dl class="freeze-facts">
+                <div><dt>Capture ID</dt><dd><code>@_candidate.CaptureId</code></dd></div>
+                <div><dt>Agent</dt><dd>@_candidate.AgentId</dd></div>
+                <div><dt>Rig</dt><dd>@(_candidate.RigId ?? "Unspecified")</dd></div>
+                <div><dt>Sequence</dt><dd>@_candidate.CaptureSequence</dd></div>
+                <div><dt>Exposure started</dt><dd><time datetime="@_candidate.ExposureStartedUtc.ToString("O")">@_candidate.ExposureStartedUtc.ToString("u")</time></dd></div>
+                <div><dt>Durable ingress</dt><dd><time datetime="@_candidate.DurableIngressUtc.ToString("O")">@_candidate.DurableIngressUtc.ToString("u")</time></dd></div>
+                <div><dt>Raw state</dt><dd>@OperationsPage.SplitWords(_candidate.RawState)</dd></div>
+                <div><dt>Evidence availability</dt><dd>@OperationsPage.SplitWords(_candidate.EvidenceAvailability)</dd></div>
+                <div><dt>Raw retention hold</dt><dd>@(_candidate.RawRetentionHold is null ? "Unavailable" : _candidate.RawRetentionHold.Value ? "Held" : "Not held")</dd></div>
+            </dl>
+
+            <h3 id="primary-artifact-heading">Primary retained artifact</h3>
+            @if (_candidate.PrimaryArtifact is null)
+            {
+                <p class="unavailable-state">No retained artifact is recorded for this capture. Replay cannot resolve an exact input.</p>
+            }
+            else
+            {
+                <dl class="freeze-facts" aria-labelledby="primary-artifact-heading">
+                    <div><dt>Artifact ID</dt><dd><code>@_candidate.PrimaryArtifact.ArtifactId</code></dd></div>
+                    <div><dt>Role / variant</dt><dd>@OperationsPage.SplitWords(_candidate.PrimaryArtifact.Role) / @(_candidate.PrimaryArtifact.Variant ?? "Unspecified")</dd></div>
+                    <div class="wide"><dt>SHA-256</dt><dd><code>@_candidate.PrimaryArtifact.ChecksumSha256</code></dd></div>
+                    <div><dt>Byte length</dt><dd>@OperationsPage.FormatBytes(_candidate.PrimaryArtifact.ByteLength)</dd></div>
+                    <div><dt>Availability</dt><dd>@OperationsPage.SplitWords(_candidate.PrimaryArtifact.Availability)</dd></div>
+                    <div><dt>Retention</dt><dd>@OperationsPage.SplitWords(_candidate.PrimaryArtifact.RetentionState)</dd></div>
+                    <div><dt>Delivery availability</dt><dd>@OperationsPage.SplitWords(_candidate.PrimaryArtifact.DeliveryAvailability)</dd></div>
+                </dl>
+            }
+
+            <h3 id="capacity-heading">Configured replay execution facts</h3>
+            <dl class="freeze-facts" aria-labelledby="capacity-heading">
+                <div><dt>Replay profile</dt><dd>@OperationsPage.SplitWords(_candidate.Capacity.ReplayProfile)</dd></div>
+                <div><dt>Maximum concurrency</dt><dd>@_candidate.Capacity.MaximumConcurrency</dd></div>
+                <div><dt>Maximum pending requests</dt><dd>@_candidate.Capacity.MaximumPendingCount</dd></div>
+                <div><dt>Replay deadline</dt><dd>@_candidate.Capacity.DeadlineSeconds s</dd></div>
+                <div><dt>Maximum queue age</dt><dd>@_candidate.Capacity.MaximumQueueAgeSeconds s</dd></div>
+            </dl>
+        </section>
+
+        <section class="replay-form" aria-labelledby="replay-form-heading">
+            <header>
+                <p class="eyebrow">Immutable graph revision</p>
+                <h2 id="replay-form-heading">Choose the graph revision</h2>
+                <p>Only validated or active revisions can execute a replay. Registry state version @_candidate.RegistryStateVersion / @OperationsPage.SplitWords(_candidate.RegistryMode) mode.</p>
+            </header>
+            @if (_candidate.EligibleRevisions.Count == 0)
+            {
+                <p class="unavailable-state">No validated or active graph revision is available for replay.</p>
+            }
+            else
+            {
+                <div class="form-row">
+                    <label for="replay-revision">Graph revision</label>
+                    <select id="replay-revision" class="form-select" disabled="@_busy" value="@_revisionId" @onchange="RevisionChanged">
+                        @foreach (var revision in _candidate.EligibleRevisions)
+                        {
+                            <option value="@revision.RevisionId">@revision.Name / @revision.Revision / @revision.Lifecycle@(revision.IsActive ? " (active)" : string.Empty)</option>
+                        }
+                    </select>
+                </div>
+                <ol class="revision-list">
+                    @foreach (var revision in _candidate.EligibleRevisions)
+                    {
+                        <li>
+                            <strong>@revision.Name / @revision.Revision</strong>
+                            <span>@revision.Lifecycle@(revision.IsActive ? " / active live graph" : string.Empty)</span>
+                            <code>@revision.DefinitionIdentitySha256</code>
+                        </li>
+                    }
+                </ol>
+                <div class="form-row">
+                    <label for="replay-reason">Reason (recorded with the durable request)</label>
+                    <textarea id="replay-reason" class="form-control" rows="2" maxlength="240" disabled="@_busy" @bind="_reason" @bind:after="ReasonChanged"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="button" id="replay-submit-trigger" class="btn btn-primary" disabled="@(_busy || _revisionId is null || _submittedExecutionId is not null)" @onclick="BeginSubmit">Submit replay request</button>
+                    <a class="btn btn-outline-light" href="@SourceCaptureUrl">Return to source capture</a>
+                </div>
+            }
+        </section>
+
+        @if (_confirming)
+        {
+            <dialog class="confirmation-panel" aria-labelledby="replay-confirm-heading" aria-describedby="replay-confirm-description"
+                    @oncancel="CancelConfirmation" @ref="_confirmationDialog">
+                <div>
+                    <p class="eyebrow">Separate replay execution</p>
+                    <h2 id="replay-confirm-heading">Submit this replay request?</h2>
+                    <p id="replay-confirm-description">
+                        The durable store freezes the exact capture, artifact, ordered inputs, and retention
+                        pins at submission. Replay results stay separate from the current and latest view and
+                        are never uploaded or published automatically.
+                    </p>
+                </div>
+                <div>
+                    <button type="button" class="btn btn-primary" disabled="@_busy" @onclick="ConfirmSubmitAsync">Confirm replay request</button>
+                    <button type="button" class="btn btn-outline-light" disabled="@_busy" autofocus @onclick="CancelConfirmation">Cancel</button>
+                </div>
+            </dialog>
+        }
+
+        <ReplayRunnerFacts Facts="_runnerFacts" HeadingId="replay-submit-runner-facts" />
+    }
+</div>

@@ -693,8 +693,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var viewerButton = firstCard.GetByRole(AriaRole.Button, new() { Name = "View large image" });
         await VisibleAsync(image).ConfigureAwait(false);
         Assert.AreEqual("lazy", await image.GetAttributeAsync("loading").ConfigureAwait(false));
-        Assert.IsTrue(await image.EvaluateAsync<bool>(
-            "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0").ConfigureAwait(false));
+        // A lazy image can be visible before it has decoded; wait for the decode instead of sampling it once.
+        await page.WaitForFunctionAsync(
+            "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0",
+            await image.ElementHandleAsync().ConfigureAwait(false)).ConfigureAwait(false);
         StringAssert.Contains(await firstCard.Locator(".capture-card__summary").InnerTextAsync().ConfigureAwait(false), "Processed", StringComparison.Ordinal);
         Assert.IsTrue(await firstCard.EvaluateAsync<bool>(
             "card => (card.querySelector('.capture-card__image-link').compareDocumentPosition(card.querySelector('button')) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0")
@@ -1724,7 +1726,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         {
             "/", "/operations", "/operations/quarantine?kind=Artifact", "/gallery?pageSize=24", detailUrl,
             "/schedule", "/calibration", "/system", "/operations/camera", "/operations/pipeline",
-            "/operations/automations", "/operations/data", "/operations/sky-map", "/Account/Login", "/Account/Recovery",
+            "/operations/automations", "/operations/data", "/operations/sky-map", "/operations/pipeline/executions",
+            "/operations/pipeline/graphs", "/operations/pipeline/graphs/new", "/Account/Login", "/Account/Recovery",
             "/Account/Manage", "/Account/Manage/Email", "/Account/Manage/ChangePassword"
         };
         foreach (var viewport in viewports)
@@ -1774,8 +1777,104 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static readonly HashSet<string> WorkspaceFormRoutes = new(StringComparer.Ordinal)
     {
-        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/data", "/operations/sky-map"
+        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/data", "/operations/sky-map",
+        "/operations/pipeline/executions", "/operations/pipeline/graphs", "/operations/pipeline/graphs/new"
     };
+
+    [TestMethod]
+    [TestCategory("Manual")]
+    public async Task OwnerGraphEditorIsKeyboardOperableEndToEndAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        if (!File.Exists(playwright.Chromium.ExecutablePath))
+        {
+            Assert.Inconclusive(
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
+        }
+
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1280, Height = 720 }
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+
+        // Draft: name and revision, one node of a registered type, preview, and the diagram's keyboard path.
+        await page.GotoAsync("/operations/pipeline/graphs/new").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Draft graph", Level = 1 })).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await TabToAsync(page, "input", "Graph name").ConfigureAwait(false);
+        await page.Keyboard.TypeAsync("keyboard-graph").ConfigureAwait(false);
+        await TabToAsync(page, "input", "Revision label").ConfigureAwait(false);
+        await page.Keyboard.TypeAsync("1").ConfigureAwait(false);
+        // Pick the preview step by typeahead on the focused select, then add it.
+        await TabToAsync(page, "select", "New node type").ConfigureAwait(false);
+        await page.Keyboard.TypeAsync("Preview").ConfigureAwait(false);
+        await TabToAsync(page, "button", "Add node").ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".node-row").First).ConfigureAwait(false);
+        await TabToAsync(page, "button", "Preview plan").ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        var diagram = page.Locator("svg[role='group']");
+        await page.Locator("svg[role='group'], .editor-banner").First.WaitForAsync().ConfigureAwait(false);
+        var banners = string.Join(" | ", await page.Locator(".editor-banner").AllInnerTextsAsync().ConfigureAwait(false));
+        var rows = await page.Locator(".node-row").CountAsync().ConfigureAwait(false);
+        var nodeTypes = await page.EvaluateAsync<string>("() => [...document.querySelectorAll('.node-row select[aria-label=\"Node type\"]')].map(select => select.value).join(',')").ConfigureAwait(false);
+        Assert.IsGreaterThan(0, await diagram.CountAsync().ConfigureAwait(false), $"Preview did not render a diagram: {banners}; rows={rows}; types={nodeTypes}");
+        await VisibleAsync(diagram).ConfigureAwait(false);
+        Assert.IsGreaterThan(0, await page.Locator("svg desc").CountAsync().ConfigureAwait(false));
+        Assert.IsFalse(await page.GetByRole(AriaRole.Button, new() { Name = "Save immutable draft" }).IsDisabledAsync().ConfigureAwait(false));
+
+        // A diagram node is reachable by Tab and Enter moves focus to its editable row.
+        await TabToAsync(page, "g", null).ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => (document.activeElement?.id || '').startsWith('graph-node-')").ConfigureAwait(false);
+
+        // Save the draft; it appears on the named graphs list with a validate action reachable by keyboard.
+        await page.GetByRole(AriaRole.Button, new() { Name = "Save immutable draft" }).FocusAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("saved as an immutable revision")).ConfigureAwait(false);
+        await page.GotoAsync("/operations/pipeline/graphs").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Named graphs", Level = 1 })).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var validate = page.Locator("button[id^='graph-VALIDATE-']").First;
+        await VisibleAsync(validate).ConfigureAwait(false);
+        await validate.FocusAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        var dialog = page.Locator("dialog.confirmation-panel");
+        await VisibleAsync(dialog).ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "element => element.contains(document.activeElement)", await dialog.ElementHandleAsync().ConfigureAwait(false))
+            .ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
+        await dialog.WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => (document.activeElement?.id || '').startsWith('graph-VALIDATE-')").ConfigureAwait(false);
+    }
+
+    private static async Task TabToAsync(IPage page, string tagName, string? accessibleName)
+    {
+        for (var step = 0; step < 80; step++)
+        {
+            await page.Keyboard.PressAsync("Tab").ConfigureAwait(false);
+            var matched = await page.EvaluateAsync<bool>("""
+                ([tag, name]) => {
+                  const element = document.activeElement;
+                  if (!element || element.tagName.toLowerCase() !== tag) { return false; }
+                  if (name === null) { return true; }
+                  const label = element.getAttribute('aria-label') || element.labels?.[0]?.textContent || element.textContent || '';
+                  return label.trim().startsWith(name);
+                }
+                """, new object?[] { tagName, accessibleName }).ConfigureAwait(false);
+            if (matched)
+            {
+                return;
+            }
+        }
+        Assert.Fail($"No {tagName} named '{accessibleName}' was reachable by Tab.");
+    }
 
     private static async Task AssertOperationsWorkspaceAsync(IPage page)
     {

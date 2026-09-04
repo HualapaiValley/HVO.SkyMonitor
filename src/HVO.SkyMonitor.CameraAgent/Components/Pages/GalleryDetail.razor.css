@@ -87,3 +87,6 @@ code { color: var(--hvo-info-fg); overflow-wrap: anywhere; }
 @media (max-width: 440px) { .capture-navigation { grid-template-columns: 1fr 1fr; } .capture-navigation__archive { grid-column: 1 / -1; grid-row: 2; } .artifact-list dl, .recipe dl, .node-grid dl, .evidence-facts, .cloud-facts { grid-template-columns: 1fr; } .artifact-list .wide, .recipe .wide, .cloud-facts .wide { grid-column: auto; } .artifact-list article > header { display: grid; } }
 @media (max-height: 500px) and (orientation: landscape) { .detail-hero { grid-template-columns: minmax(0, 1.35fr) minmax(15rem, .65fr); gap: .65rem; } .capture-summary { max-height: calc(100dvh - 5rem); overflow-y: auto; } .layered-canvas img { max-height: 64vh; } }
 @media (pointer: coarse) { .capture-navigation__control, .capture-navigation__archive, .capture-image__button { min-height: 44px; } }
+.replay-entry p { color: #aeb9c8; max-width: 68ch; }
+.replay-entry__action { margin-top: .7rem; }
+.replay-entry__action .btn { min-height: 44px; }

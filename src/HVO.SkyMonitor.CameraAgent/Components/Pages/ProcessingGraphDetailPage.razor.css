@@ -1,0 +1,20 @@
+.graph-page { display: flex; flex-direction: column; gap: 1rem; }
+.graph-links { display: flex; flex-wrap: wrap; gap: .5rem; }
+.graph-links a { display: inline-flex; align-items: center; min-height: 44px; padding: .4rem .85rem; border: 1px solid var(--hvo-border-muted); border-radius: 999px; color: var(--hvo-muted-strong); background: var(--hvo-nav-badge-bg); text-decoration: none; }
+.graph-card { padding: 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-card-bg); box-shadow: var(--hvo-panel-shadow); }
+.graph-card h2 { margin: 0 0 .4rem; font-size: 1.08rem; }
+.graph-note { margin: 0 0 .6rem; color: var(--hvo-muted-strong); font-size: .85rem; }
+.fact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0 1rem; margin: .8rem 0 0; }
+.fact-grid > div { min-width: 0; padding: .45rem 0; border-top: 1px solid var(--hvo-border-muted); }
+dt { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
+dd { margin: .1rem 0 0; overflow-wrap: anywhere; }
+code { color: #e9c986; overflow-wrap: anywhere; }
+.definition-list { margin: 0; padding-left: 1.25rem; }
+.definition-list li { display: grid; padding: .4rem 0; border-top: 1px solid var(--hvo-border-muted); }
+.definition-list span, .definition-list small { color: var(--hvo-muted-strong); }
+.definition-node--disabled strong { text-decoration: line-through; color: var(--hvo-muted); }
+.state-chip { display: inline-flex; align-items: center; min-height: 1.7rem; padding: .2rem .65rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+.state-chip--active { color: var(--hvo-success-fg); background: var(--hvo-success-bg); }
+.state-chip--validated { color: var(--hvo-info-fg); background: var(--hvo-info-bg); }
+.state-chip--draft { color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
+.state-chip--retired { color: var(--hvo-muted); background: var(--hvo-nav-badge-bg); }

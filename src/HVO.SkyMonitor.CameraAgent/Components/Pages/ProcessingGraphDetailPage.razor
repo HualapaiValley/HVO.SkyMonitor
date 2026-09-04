@@ -1,0 +1,81 @@
+@page "/operations/pipeline/graphs/{RevisionId}"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Graph revision</PageTitle>
+
+<div class="graph-page">
+    <PageHeader Eyebrow="Immutable graph revision" Title="@(_detail is null ? "Graph revision" : $"{_detail.State.Name} {_detail.State.Revision}")" Lead="The stored definition of one graph revision, its immutable identities, and the plan it compiles to against this CameraAgent's current configuration. Nothing here changes durable state.">
+        <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
+    </PageHeader>
+
+    <nav class="graph-links" aria-label="Graph navigation">
+        <a href="/operations/pipeline/graphs">All graphs</a>
+        <a href="/operations/pipeline/executions">Processing executions</a>
+        @if (_detail is not null)
+        {
+            <a href="/operations/pipeline/graphs/new?from=@Uri.EscapeDataString(_detail.State.RevisionId)">Draft a new revision from this one</a>
+        }
+    </nav>
+
+    @if (_loading && _detail is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading graph revision" Message="Reading the immutable definition and compiling its plan." />
+    }
+    else if (_detail is null)
+    {
+        <PageStateNotice Kind="@(_notFound ? PageStateNotice.PageStateKind.Info : PageStateNotice.PageStateKind.Error)" Title="@(_notFound ? "Graph revision not found" : "Graph revision unavailable")" Message="@_message">
+            @if (!_notFound) { <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Try again</button> }
+        </PageStateNotice>
+    }
+    else
+    {
+        <section class="graph-card" aria-label="Revision identity">
+            <div class="graph-status"><span class="state-chip @ProcessingGraphsPage.LifecycleClass(_detail.State.Lifecycle)">@_detail.State.Lifecycle</span></div>
+            <dl class="fact-grid">
+                <div><dt>Revision ID</dt><dd><code>@_detail.State.RevisionId</code></dd></div>
+                <div><dt>Definition SHA-256</dt><dd><code>@_detail.State.DefinitionIdentitySha256</code></dd></div>
+                <div><dt>Shared plan SHA-256</dt><dd><code>@_detail.State.SharedPlanIdentitySha256</code></dd></div>
+                <div><dt>Local plan SHA-256</dt><dd><code>@_detail.State.LocalPlanIdentitySha256</code></dd></div>
+                <div><dt>Schema</dt><dd>@_detail.Pipeline.SchemaVersion</dd></div>
+                <div><dt>Dependency policy</dt><dd>@_detail.Pipeline.DependencyPolicy</dd></div>
+                <div><dt>Created</dt><dd>@_detail.State.CreatedUtc.ToString("u")</dd></div>
+                <div><dt>Validated</dt><dd>@(_detail.State.ValidatedUtc?.ToString("u") ?? "-")</dd></div>
+                <div><dt>Activated</dt><dd>@(_detail.State.ActivatedUtc?.ToString("u") ?? "-")</dd></div>
+                <div><dt>Retired</dt><dd>@(_detail.State.RetiredUtc?.ToString("u") ?? "-")</dd></div>
+            </dl>
+        </section>
+
+        <section class="graph-card" aria-labelledby="graph-definition-heading">
+            <h2 id="graph-definition-heading">Stored definition</h2>
+            <p class="graph-note">Ordered node list of the immutable definition. Dependencies are listed by node identifier so the structure reads without the diagram.</p>
+            <ol class="definition-list">
+                @foreach (var step in _detail.Pipeline.Steps)
+                {
+                    <li class="@(step.Enabled == false ? "definition-node--disabled" : null)">
+                        <strong>@(step.Id ?? step.Type)</strong>
+                        <span>@step.Type / @(step.Required ? "required" : "optional") / @(step.Enabled == false ? "disabled" : "enabled")@(step.Order is { } order ? $" / order {order}" : "")</span>
+                        <small>@(step.DependsOn is { Count: > 0 } ? $"depends on {string.Join(", ", step.DependsOn)}" : "no declared dependencies")</small>
+                    </li>
+                }
+            </ol>
+        </section>
+
+        <section class="graph-card" aria-labelledby="graph-plan-heading">
+            <h2 id="graph-plan-heading">Compiled plan against the current configuration</h2>
+            @if (_detail.Plan is null)
+            {
+                <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="This revision does not compile today" Message="@(_detail.PlanFailure ?? "The stored definition is not valid for the current configuration.")" />
+            }
+            else
+            {
+                <GraphPlanView Plan="_detail.Plan" />
+            }
+        </section>
+    }
+</div>

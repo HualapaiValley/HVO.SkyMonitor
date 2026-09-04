@@ -1,0 +1,88 @@
+@page "/operations/pipeline/executions"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Processing executions</PageTitle>
+
+<div class="executions-page">
+    <PageHeader Eyebrow="Durable execution journal" Title="Processing executions" Lead="Live runs stay on the ordered in-process path; replays run separately against retained evidence. This page reads the durable journal at a bounded size and never touches the live slot.">
+        <span class="executions-refresh" aria-live="polite">
+            @if (_view is not null) { <span>Read <time datetime="@_view.ReadUtc.ToString("O")">@_view.ReadUtc.ToString("HH:mm:ss")</time> UTC@(_polling ? ", refreshing every 5 s while work is active" : "")</span> }
+            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="RefreshNowAsync">Refresh</button>
+        </span>
+    </PageHeader>
+
+    <nav class="executions-links" aria-label="Pipeline sections">
+        <a href="/operations/pipeline">Pipeline summary</a>
+        <a href="/operations/pipeline/graphs">Named graphs</a>
+    </nav>
+
+    @if (_loading && _view is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading executions" Message="Reading the durable execution journal." />
+    }
+    else if (_view is null)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Executions unavailable" Message="@_message">
+            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="RefreshNowAsync">Try again</button>
+        </PageStateNotice>
+    }
+    else
+    {
+        @if (_message is not null)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Showing last valid data" Message="@_message" />
+        }
+        <section class="execution-class" aria-labelledby="executions-live">
+            <header>
+                <div><p class="eyebrow">Ordered in-process path</p><h2 id="executions-live">Live executions</h2></div>
+                <dl class="class-facts"><div><dt>Pending</dt><dd>@_view.Pending(ProcessingGraphExecutionClass.Live)</dd></div><div><dt>Running</dt><dd>@_view.Running(ProcessingGraphExecutionClass.Live)</dd></div><div><dt>Shown</dt><dd>@_view.Live.Count of at most @_view.MaximumPerClass</dd></div></dl>
+            </header>
+            @ExecutionTable(("live", _view.Live))
+        </section>
+        <section class="execution-class" aria-labelledby="executions-replay">
+            <header>
+                <div><p class="eyebrow">Retained-evidence path</p><h2 id="executions-replay">Replay executions</h2></div>
+                <dl class="class-facts"><div><dt>Pending</dt><dd>@_view.Pending(ProcessingGraphExecutionClass.Replay)</dd></div><div><dt>Running</dt><dd>@_view.Running(ProcessingGraphExecutionClass.Replay)</dd></div><div><dt>Shown</dt><dd>@_view.Replay.Count of at most @_view.MaximumPerClass</dd></div></dl>
+            </header>
+            @ExecutionTable(("replay", _view.Replay))
+        </section>
+    }
+</div>
+
+@code {
+    private RenderFragment<(string Slug, IReadOnlyList<CameraAgentProcessingExecutionSummary> Items)> ExecutionTable => context =>
+        @<div class="execution-table-wrap">
+            @if (context.Items.Count == 0)
+            {
+                <p class="empty-copy">No @context.Slug executions are recorded in the bounded window.</p>
+            }
+            else
+            {
+                <table class="execution-table">
+                    <caption class="visually-hidden">@context.Slug executions, newest first</caption>
+                    <thead><tr><th scope="col">Execution</th><th scope="col">Status</th><th scope="col">Graph revision</th><th scope="col">Trigger</th><th scope="col">Accepted</th><th scope="col">Age</th><th scope="col">Attempts</th><th scope="col">Duration</th></tr></thead>
+                    <tbody>
+                        @foreach (var execution in context.Items)
+                        {
+                            <tr class="@(execution.IsTerminal ? null : "execution-row--active")">
+                                <td><a href="/operations/pipeline/executions/@execution.ExecutionId">@Short(execution.ExecutionId)</a></td>
+                                <td><span class="state-chip @StatusClass(execution.Status)">@execution.Status</span>@if (execution.CancellationRequested && !execution.IsTerminal) { <span class="muted"> cancelling</span> }</td>
+                                <td><code>@execution.GraphRevisionId</code></td>
+                                <td>@execution.TriggerKind@(execution.TriggerReference is null ? "" : $" / {execution.TriggerReference}")</td>
+                                <td><time datetime="@execution.AcceptedUtc.ToString("O")">@execution.AcceptedUtc.ToString("u")</time></td>
+                                <td>@FormatAge(execution.Age(_view!.ReadUtc))</td>
+                                <td>@execution.AttemptCount</td>
+                                <td>@FormatDuration(execution.Duration)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>;
+}
