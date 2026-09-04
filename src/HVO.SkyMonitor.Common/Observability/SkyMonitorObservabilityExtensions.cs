@@ -121,6 +121,7 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Ingest");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Retrieval");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.DerivativeWorker");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.ProcessingRunner");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.EnvironmentalObservations");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.DeploymentLocation");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery");
@@ -134,6 +135,7 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Outbox");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.DerivativeWorker");
+            options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.ProcessingRunner");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.EnvironmentalObservations");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.DeploymentLocation");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery");
@@ -159,6 +161,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.LogicHost.Ingest")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Retrieval")
                     .AddMeter("HVO.SkyMonitor.LogicHost.DerivativeWorker")
+                    .AddMeter("HVO.SkyMonitor.LogicHost.ProcessingRunner")
                     .AddMeter("HVO.SkyMonitor.LogicHost.EnvironmentalObservations")
                     .AddMeter("HVO.SkyMonitor.LogicHost.DeploymentLocation")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery")

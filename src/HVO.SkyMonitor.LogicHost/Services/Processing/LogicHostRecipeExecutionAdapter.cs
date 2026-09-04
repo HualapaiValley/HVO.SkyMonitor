@@ -46,6 +46,28 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
         IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null,
         CancellationToken cancellationToken = default)
     {
+        var (request, failure) = CreateRequest(
+            inputs, recipeName, options, selector, outputVariant, annotation, auxiliaryInputs, reconstructPayloads: true);
+        return failure is not null
+            ? ValueTask.FromResult(failure)
+            : _executor.ExecuteAsync(request!, cancellationToken);
+    }
+
+    /// <summary>
+    /// Builds the exact execution request the in-process path executes. With <paramref name="reconstructPayloads"/>
+    /// the descriptor inputs are reconstructed and validated against their payloads; without it the request is
+    /// payload-less so a remote runner can attach the payloads it fetches and execute the identical request.
+    /// </summary>
+    internal static (ProcessingExecutionRequest? Request, ProcessingOutcome? Failure) CreateRequest(
+        IReadOnlyList<LogicHostProcessingInput> inputs,
+        string recipeName,
+        JsonElement options,
+        ProcessingInputSelector selector,
+        string outputVariant,
+        ProcessingAnnotationInput? annotation,
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs,
+        bool reconstructPayloads)
+    {
         ArgumentNullException.ThrowIfNull(inputs);
         var artifacts = new List<ProcessingArtifact>(inputs.Count);
         foreach (var input in inputs)
@@ -59,30 +81,17 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             {
                 var descriptor = input.Descriptor ?? throw new ArgumentException(
                     "A processing input must provide a reconstruction descriptor or processing artifact.", nameof(inputs));
-                var reconstruction = FrameReconstructor.TryReconstruct(descriptor, input.Payload, out _);
-                if (!reconstruction.IsValid)
+                if (reconstructPayloads)
                 {
-                    return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
-                        MapReconstructionReason(reconstruction.ReasonCode),
-                        reconstruction.FieldPath));
+                    var reconstruction = FrameReconstructor.TryReconstruct(descriptor, input.Payload, out _);
+                    if (!reconstruction.IsValid)
+                    {
+                        return (null, ProcessingOutcome.TerminalFailure(
+                            MapReconstructionReason(reconstruction.ReasonCode),
+                            reconstruction.FieldPath));
+                    }
                 }
-                var observation = ResolveObservationBounds(descriptor);
-                artifacts.Add(new ProcessingArtifact(
-                    descriptor.Artifact.ArtifactId,
-                    descriptor.Artifact.Role,
-                    descriptor.Artifact.Variant,
-                    ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
-                    descriptor.Artifact.MediaType,
-                    descriptor.Layout,
-                    input.Payload,
-                    observation.StartedUtc,
-                    descriptor.Controls.EffectiveExposure,
-                    CreateCompatibility(descriptor),
-                    descriptor.Capture.CaptureSequence,
-                    descriptor.Artifact.SourceArtifactIds,
-                    observation.StartedUtc,
-                    observation.EndedUtc,
-                    CreateConditions(descriptor)));
+                artifacts.Add(CreateArtifact(descriptor) with { Payload = input.Payload });
             }
         }
         var artifactAuxiliaryInputs = inputs
@@ -100,7 +109,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             .ToArray();
         var primaryInputs = inputs.Where(static input =>
             ResolveBindingKind(input) == ProcessingGraphInputBindingKind.PrimaryArtifact).ToArray();
-        return _executor.ExecuteAsync(new ProcessingExecutionRequest(
+        return (new ProcessingExecutionRequest(
             recipeName,
             options,
             selector,
@@ -110,7 +119,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             auxiliaryInputs,
             primaryInputs.Length == 1
                 ? ResolveArtifact(primaryInputs[0]).ArtifactId
-                : null), cancellationToken);
+                : null), null);
     }
 
     private static ProcessingArtifact ResolveArtifact(LogicHostProcessingInput input)

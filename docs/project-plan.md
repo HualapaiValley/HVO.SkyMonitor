@@ -159,7 +159,10 @@ Processing + CameraAgent.Replay --> CameraAgent.ReplayRunner
 AgentCore + Astronomy + Imaging + Processing + Fleet.Contracts + CameraAgent.Replay
   +--> CameraAgent.Common --> CameraAgent
 
-AgentCore + Astronomy + Imaging + Processing + Fleet.Contracts
+AgentCore + Processing --> ProcessingRunner.Contracts
+AgentCore + Processing + ProcessingRunner.Contracts --> ProcessingRunner
+
+AgentCore + Astronomy + Imaging + Processing + ProcessingRunner.Contracts + Fleet.Contracts
   +--> LogicHost
 
 AgentCore --> CameraAgent.Modules.Zwo --> CameraAgent
@@ -197,6 +200,22 @@ fault evidence, and a supplemental LocalRunner W1/W2/W6-sized single-recipe
 campaign. It did not run the canonical 14-node W6 graph under LocalRunner; #535
 owns that remaining release-evidence profile alongside the canonical InProcess
 control. This evidence handoff does not reopen the delivered #425 implementation.
+
+The delivered LogicHost self-hosted processing runner protocol
+(`processing-runner-v1`, #428) retains these normative requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `RUNNER-001` | Only `central-recipe` jobs whose recipe the host placed on runners are claimable by a runner; `cameraagent-live` is never claimable and `cameraagent-archived-replay` is reserved for the CameraAgent adoption of the protocol. Eligibility is enforced by contract and authorization, not convention. |
+| `RUNNER-002` | In-process execution remains supported. Placement is host configuration; a runner-placed recipe is never executed in process and a missing, cold, stale, saturated, or capability-mismatched runner creates backlog rather than a silent fallback. Transient runtime recipes are never runner-capable. |
+| `RUNNER-003` | Runners register once per process with platform, resource class, GPU, latency class, labels, exact recipe versions, concurrency, transfer limit, and separately measured warm-up stages; LogicHost matches jobs only to version-identical recipes whose configured requirement the runner satisfies. |
+| `RUNNER-004` | The transport is authenticated HTTP on the LAN or loopback; runners hold only their own confidential client credential, read inputs under job-scoped lease credentials bound to their registered identity, and upload products to LogicHost. No database, object-store, identity, or filesystem credential ever leaves LogicHost. |
+| `RUNNER-005` | Claims carry immutable references, lengths, and SHA-256 checksums with payload-less metadata; payload bytes travel only by job-scoped fetch and multipart upload, and both directions verify length and checksum. |
+| `RUNNER-006` | LogicHost remains authoritative for jobs, leases, attempts, cancellation, deadlines, validation, publication, lineage, and downstream scheduling. Lease loss, stale or duplicate completion, cancellation, expiry, crash, disconnect, and restart are fenced by the shared lease filters and recover idempotently through the existing output writer. |
+| `RUNNER-007` | In-process and runner execution build the identical execution request and publish through the identical validation path, so output identity, role, recipe identity, ordered lineage, layout, checksum, and provenance are equivalent for the same frozen plan. |
+| `RUNNER-008` | The runner runs at below-normal priority with explicit concurrency, transfer, timeout, idle-shutdown, and shutdown-grace limits, and the container image is read-only with all capabilities dropped. |
+| `RUNNER-009` | Registration, heartbeat, staleness, claim, renewal, completion, failure, transfer bytes, and backlog are observable through the pinned meter, log events 2200-2210, and the `processing-runners` health check. |
+| `RUNNER-010` | Release evidence covers linux-x64/linux-arm64 publish and capability probes, cold/warm start stages, claim latency, transfer bytes, in-process versus runner throughput, and backlog with no runner (`ProcessingRunnerPerformanceEvidenceTests`). |
 
 ### 3.3 Acquisition and raw evidence
 

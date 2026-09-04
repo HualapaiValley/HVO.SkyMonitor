@@ -1,0 +1,529 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Net;
+using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.ProcessingRunner.Contracts;
+
+namespace HVO.SkyMonitor.ProcessingRunner;
+
+/// <summary>
+/// The runner loop: register, heartbeat, and run one claim/execute slot per unit of concurrency. Every durable
+/// decision stays on LogicHost; the runner only fetches inputs under the job lease, executes the recipe kernel,
+/// renews the lease while it runs, and uploads products or reports a failure.
+/// </summary>
+internal sealed class RunnerHost(
+    ProcessingRunnerClient client,
+    IProcessingRecipeExecutor executor,
+    RunnerHostOptions options,
+    RunnerLog log,
+    TimeProvider? timeProvider = null)
+{
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _activeJobs = new();
+    private ProcessingRunnerRegistrationResponse? _registration;
+    private long _lastWorkTimestamp;
+    private int _availableSlots;
+
+    public int ActiveJobCount => _activeJobs.Count;
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "Every task that observes the linked source is awaited before the using scope ends.")]
+    public async Task<int> RunAsync(CancellationToken cancellationToken)
+    {
+        _lastWorkTimestamp = _timeProvider.GetTimestamp();
+        _availableSlots = options.MaxConcurrency;
+        _registration = await RegisterUntilAcceptedAsync(cancellationToken).ConfigureAwait(false);
+        if (_registration is null)
+        {
+            return 0;
+        }
+        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var heartbeat = HeartbeatLoopAsync(stopping.Token);
+        var slots = Enumerable.Range(0, options.MaxConcurrency)
+            .Select(slot => SlotLoopAsync(slot, stopping.Token))
+            .ToArray();
+        var idle = IdleWatchAsync(stopping);
+        try
+        {
+            await Task.WhenAll(slots).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        await stopping.CancelAsync().ConfigureAwait(false);
+        try
+        {
+            await Task.WhenAll(heartbeat, idle).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        await DrainAsync().ConfigureAwait(false);
+        await RetireAsync().ConfigureAwait(false);
+        return 0;
+    }
+
+    private async Task<ProcessingRunnerRegistrationResponse?> RegisterUntilAcceptedAsync(CancellationToken cancellationToken)
+    {
+        var request = new ProcessingRunnerRegistrationRequest(
+            options.RunnerId,
+            options.DisplayName,
+            options.Capabilities,
+            Environment.ProcessId,
+            ProcessingRunnerProcessInfo.GetProcessStartedUtc());
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var registration = await client.RegisterAsync(request, cancellationToken).ConfigureAwait(false);
+                log.Info("registered",
+                    $"Registered with LogicHost; eligible recipes: {(registration.EligibleRecipes.Count == 0 ? "none" : string.Join(',', registration.EligibleRecipes))}; heartbeat {registration.HeartbeatInterval.TotalSeconds:0}s; lease {registration.LeaseDuration.TotalSeconds:0}s.");
+                if (registration.EligibleRecipes.Count == 0)
+                {
+                    log.Warning("no-eligible-recipes",
+                        "LogicHost placed no recipes on this runner; it will heartbeat and wait for a placement change.");
+                }
+                return registration;
+            }
+            catch (ProcessingRunnerClientException exception) when (!exception.IsAuthorizationFailure
+                || options.RetryAuthorizationFailures)
+            {
+                log.Warning("registration-retry", $"Registration failed ({exception.Message}); retrying in {options.RegistrationRetry.TotalSeconds:0}s.");
+            }
+            catch (HttpRequestException exception)
+            {
+                log.Warning("registration-retry", $"LogicHost unreachable ({exception.Message}); retrying in {options.RegistrationRetry.TotalSeconds:0}s.");
+            }
+            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                log.Warning("registration-retry", "Registration timed out; retrying.");
+            }
+            try
+            {
+                await Task.Delay(options.RegistrationRetry, _timeProvider, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)
+    {
+        var interval = _registration!.HeartbeatInterval;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(interval, _timeProvider, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            try
+            {
+                var response = await client.HeartbeatAsync(
+                    new ProcessingRunnerHeartbeatRequest(
+                        options.Capabilities.WarmState,
+                        Volatile.Read(ref _availableSlots),
+                        _activeJobs.Keys.Take(ProcessingRunnerProtocol.MaximumActiveJobReport).ToArray()),
+                    cancellationToken).ConfigureAwait(false);
+                foreach (var jobId in response.CancelRequestedJobIds.Concat(response.StaleJobIds))
+                {
+                    if (_activeJobs.TryGetValue(jobId, out var cancellation))
+                    {
+                        log.Info("job-cancel-requested", "LogicHost requested cancellation or reported a stale lease; stopping execution.", jobId);
+                        await cancellation.CancelAsync().ConfigureAwait(false);
+                    }
+                }
+            }
+            catch (ProcessingRunnerClientException exception) when (exception.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
+            {
+                log.Warning("registration-lost", $"LogicHost no longer recognizes this runner ({exception.Message}); re-registering.");
+                var registration = await RegisterUntilAcceptedAsync(cancellationToken).ConfigureAwait(false);
+                if (registration is not null)
+                {
+                    _registration = registration;
+                    interval = registration.HeartbeatInterval;
+                }
+            }
+            catch (ProcessingRunnerClientException exception)
+            {
+                log.Warning("heartbeat-failed", exception.Message);
+            }
+            catch (HttpRequestException exception)
+            {
+                log.Warning("heartbeat-failed", exception.Message);
+            }
+            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                log.Warning("heartbeat-failed", "Heartbeat timed out.");
+            }
+        }
+    }
+
+    private async Task IdleWatchAsync(CancellationTokenSource stopping)
+    {
+        if (options.IdleShutdown <= TimeSpan.Zero)
+        {
+            return;
+        }
+        while (!stopping.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, stopping.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            if (_activeJobs.IsEmpty
+                && _timeProvider.GetElapsedTime(Volatile.Read(ref _lastWorkTimestamp)) >= options.IdleShutdown)
+            {
+                log.Info("idle-shutdown", $"No work for {options.IdleShutdown.TotalSeconds:0}s; shutting down.");
+                await stopping.CancelAsync().ConfigureAwait(false);
+                return;
+            }
+        }
+    }
+
+    private async Task SlotLoopAsync(int slot, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var registration = _registration!;
+            if (registration.EligibleRecipes.Count == 0)
+            {
+                await DelayAsync(registration.ClaimBackoff, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            ProcessingRunnerClaim? claim;
+            try
+            {
+                claim = await client.ClaimAsync(
+                    new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, slot), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (ProcessingRunnerClientException exception)
+            {
+                log.Warning("claim-failed", exception.Message);
+                await DelayAsync(Backoff(registration.ClaimBackoff, exception), cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            catch (HttpRequestException exception)
+            {
+                log.Warning("claim-failed", exception.Message);
+                await DelayAsync(registration.ClaimBackoff, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                log.Warning("claim-failed", "Claim timed out.");
+                await DelayAsync(registration.ClaimBackoff, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            if (claim is null)
+            {
+                await DelayAsync(registration.ClaimBackoff, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            Volatile.Write(ref _lastWorkTimestamp, _timeProvider.GetTimestamp());
+            Interlocked.Decrement(ref _availableSlots);
+            try
+            {
+                await ExecuteClaimAsync(claim, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Increment(ref _availableSlots);
+                Volatile.Write(ref _lastWorkTimestamp, _timeProvider.GetTimestamp());
+            }
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "A recipe or transfer failure must be reported to LogicHost and must never stop the slot.")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The renewal task is awaited in the finally block before the job cancellation source is disposed.")]
+    private async Task ExecuteClaimAsync(ProcessingRunnerClaim claim, CancellationToken stoppingToken)
+    {
+        using var jobCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        _activeJobs[claim.JobId] = jobCancellation;
+        var renewal = RenewLoopAsync(claim, jobCancellation);
+        try
+        {
+            var execution = await RunnerJobExecution.ExecuteAsync(
+                client, executor, claim, options.MaxTransferBytes, _timeProvider, jobCancellation.Token)
+                .ConfigureAwait(false);
+            if (execution.Outcome is { } outcome)
+            {
+                var (request, payloads) = ProcessingRunnerProjection.ProjectOutcome(
+                    claim.LeaseToken, outcome, execution.InputBytes, execution.Duration);
+                var response = await client.CompleteAsync(claim.JobId, request, payloads, stoppingToken).ConfigureAwait(false);
+                log.Info("job-completed",
+                    $"Recipe {claim.RecipeName} attempt {claim.AttemptCount} finished {response.Status} ({response.ReasonCode ?? "no-reason"}) in {execution.Duration.TotalMilliseconds:0} ms with {payloads.Sum(static payload => (long)payload.Length)} product bytes.",
+                    claim.JobId);
+            }
+            else
+            {
+                await client.FailAsync(claim.JobId, execution.Failure!, stoppingToken).ConfigureAwait(false);
+                log.Warning("job-failed",
+                    $"Recipe {claim.RecipeName} attempt {claim.AttemptCount} reported {execution.Failure!.ReasonCode} ({(execution.Failure.Retryable ? "retryable" : "terminal")}): {execution.Failure.Message}",
+                    claim.JobId);
+            }
+        }
+        catch (OperationCanceledException) when (jobCancellation.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+        {
+            log.Info("job-canceled", "Execution stopped because the lease was canceled or lost.", claim.JobId);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            log.Warning("job-abandoned", "Execution abandoned during shutdown; LogicHost will expire the lease.", claim.JobId);
+        }
+        catch (ProcessingRunnerClientException exception) when (exception.IsLeaseStale || exception.IsLeaseCanceled)
+        {
+            log.Warning("job-lease-lost", $"LogicHost rejected the result: {exception.Message}", claim.JobId);
+        }
+        catch (Exception exception)
+        {
+            log.Error("job-unexpected", $"Unexpected failure: {exception.Message}", claim.JobId);
+            await TryFailAsync(claim, ProcessingRunnerReasonCodes.Unavailable, retryable: true, exception.Message).ConfigureAwait(false);
+        }
+        finally
+        {
+            await jobCancellation.CancelAsync().ConfigureAwait(false);
+            _activeJobs.TryRemove(claim.JobId, out _);
+            try
+            {
+                await renewal.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+    }
+
+    private async Task RenewLoopAsync(ProcessingRunnerClaim claim, CancellationTokenSource jobCancellation)
+    {
+        var token = jobCancellation.Token;
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(claim.RenewalInterval, _timeProvider, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            try
+            {
+                await client.RenewAsync(claim.JobId, claim.LeaseToken, token).ConfigureAwait(false);
+            }
+            catch (ProcessingRunnerClientException exception) when (exception.IsLeaseStale || exception.IsLeaseCanceled)
+            {
+                log.Warning("lease-lost", $"Lease renewal refused ({exception.ReasonCode ?? exception.StatusCode.ToString()}); stopping execution.", claim.JobId);
+                await jobCancellation.CancelAsync().ConfigureAwait(false);
+                return;
+            }
+            catch (ProcessingRunnerClientException exception)
+            {
+                log.Warning("lease-renewal-failed", exception.Message, claim.JobId);
+            }
+            catch (HttpRequestException exception)
+            {
+                log.Warning("lease-renewal-failed", exception.Message, claim.JobId);
+            }
+            catch (TaskCanceledException) when (!token.IsCancellationRequested)
+            {
+                log.Warning("lease-renewal-failed", "Lease renewal timed out.", claim.JobId);
+            }
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "A best-effort failure report must not mask the original failure.")]
+    private async Task TryFailAsync(ProcessingRunnerClaim claim, string reasonCode, bool retryable, string message)
+    {
+        try
+        {
+            await client.FailAsync(
+                claim.JobId,
+                new ProcessingRunnerFailureRequest(claim.LeaseToken, reasonCode, retryable, Truncate(message)),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            log.Warning("job-failure-report-failed", exception.Message, claim.JobId);
+        }
+    }
+
+    private async Task DrainAsync()
+    {
+        if (_activeJobs.IsEmpty)
+        {
+            return;
+        }
+        log.Info("draining", $"Waiting up to {options.ShutdownGrace.TotalSeconds:0}s for {_activeJobs.Count} active job(s).");
+        var deadline = _timeProvider.GetTimestamp();
+        while (!_activeJobs.IsEmpty && _timeProvider.GetElapsedTime(deadline) < options.ShutdownGrace)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(250), _timeProvider).ConfigureAwait(false);
+        }
+        foreach (var cancellation in _activeJobs.Values)
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "Retirement is best effort during shutdown.")]
+    private async Task RetireAsync()
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await client.RetireAsync(timeout.Token).ConfigureAwait(false);
+            log.Info("retired", "Retired the runner registration.");
+        }
+        catch (Exception exception)
+        {
+            log.Warning("retire-failed", exception.Message);
+        }
+    }
+
+    private async Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(delay, _timeProvider, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static TimeSpan Backoff(TimeSpan claimBackoff, ProcessingRunnerClientException exception)
+        => exception.IsUnavailable || exception.IsAuthorizationFailure
+            ? TimeSpan.FromTicks(Math.Min(claimBackoff.Ticks * 5, TimeSpan.FromMinutes(1).Ticks))
+            : claimBackoff;
+
+    private static string Truncate(string value)
+        => value.Length <= 512 ? value : value[..512];
+}
+
+internal sealed record RunnerHostOptions(
+    string RunnerId,
+    string DisplayName,
+    ProcessingRunnerCapabilities Capabilities,
+    int MaxConcurrency,
+    long MaxTransferBytes,
+    TimeSpan IdleShutdown,
+    TimeSpan ShutdownGrace,
+    TimeSpan RegistrationRetry,
+    bool RetryAuthorizationFailures = false);
+
+internal sealed record RunnerJobExecutionResult(
+    ProcessingOutcome? Outcome,
+    ProcessingRunnerFailureRequest? Failure,
+    long InputBytes,
+    TimeSpan Duration);
+
+/// <summary>Fetches and verifies inputs, rebuilds the request, and runs the recipe kernel for one claim.</summary>
+internal static class RunnerJobExecution
+{
+    public static async Task<RunnerJobExecutionResult> ExecuteAsync(
+        ProcessingRunnerClient client,
+        IProcessingRecipeExecutor executor,
+        ProcessingRunnerClaim claim,
+        long maxTransferBytes,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(claim);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        if (claim.ProtocolVersion != ProcessingRunnerProtocol.Version)
+        {
+            return Failure(claim, ProcessingRunnerReasonCodes.InvalidCompletion, false, "Unsupported claim protocol version.");
+        }
+        long total = 0;
+        foreach (var input in claim.Inputs)
+        {
+            total = checked(total + input.PayloadLength);
+        }
+        if (total > maxTransferBytes)
+        {
+            return Failure(claim, ProcessingRunnerReasonCodes.TransferTooLarge, true, "Claimed inputs exceed the runner transfer limit.");
+        }
+        var payloads = new ReadOnlyMemory<byte>[claim.Inputs.Count];
+        for (var index = 0; index < payloads.Length; index++)
+        {
+            var input = claim.Inputs[index];
+            try
+            {
+                payloads[index] = await client.DownloadInputAsync(claim, input, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ProcessingRunnerClientException exception) when (exception.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
+            {
+                return Failure(claim, "object.missing", true, $"Input {input.ArtifactId:D} is not available: {exception.Message}", input.ArtifactId);
+            }
+            catch (ProcessingRunnerClientException exception) when (exception.StatusCode == HttpStatusCode.Conflict)
+            {
+                return Failure(claim, ProcessingRunnerReasonCodes.InputUnavailable, true, $"Input {input.ArtifactId:D} is pending: {exception.Message}", input.ArtifactId);
+            }
+            catch (ProcessingRunnerProtocolException exception)
+            {
+                var reason = exception.ReasonCode == ProcessingRunnerReasonCodes.PayloadChecksumMismatch
+                    ? "object.checksum-mismatch"
+                    : exception.ReasonCode == ProcessingRunnerReasonCodes.PayloadLengthMismatch
+                        ? "object.length-mismatch"
+                        : exception.ReasonCode;
+                return Failure(claim, reason, true, exception.Message, input.ArtifactId);
+            }
+        }
+        ProcessingExecutionRequest request;
+        try
+        {
+            request = ProcessingRunnerProjection.ReconstructRequest(claim, payloads);
+        }
+        catch (ProcessingRunnerProtocolException exception)
+        {
+            return Failure(claim, exception.ReasonCode, false, exception.Message);
+        }
+        var started = timeProvider.GetTimestamp();
+        var outcome = await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        return new RunnerJobExecutionResult(outcome, null, total, timeProvider.GetElapsedTime(started));
+    }
+
+    private static RunnerJobExecutionResult Failure(
+        ProcessingRunnerClaim claim,
+        string reasonCode,
+        bool retryable,
+        string message,
+        Guid? unavailableArtifactId = null)
+        => new(
+            null,
+            new ProcessingRunnerFailureRequest(claim.LeaseToken, reasonCode, retryable, message, unavailableArtifactId),
+            0,
+            TimeSpan.Zero);
+}

@@ -15,10 +15,45 @@ internal sealed record CentralDerivativeExecutionResult(
     Guid? ArtifactId,
     string? ReasonCode);
 
+/// <summary>
+/// The outcome of the pre-execution checks shared by the in-process slot and the runner claim path. When
+/// <see cref="Resolved"/> is set the job already reached a durable state (integrity failure, recovered output, skip)
+/// and nothing must execute; when <see cref="InProcessOnly"/> is set the recipe needs LogicHost state and cannot leave
+/// the process.
+/// </summary>
+internal sealed record CentralDerivativeExecutionPreparation(
+    CentralDerivativeExecutionResult? Resolved,
+    bool InProcessOnly,
+    ProcessingInputSelector? Selector,
+    JsonElement Options,
+    ProcessingAnnotationInput? Annotation,
+    IReadOnlyList<ProcessingAuxiliaryInput>? CanonicalInputs);
+
 internal interface ICentralDerivativeJobExecutor
 {
     Task<CentralDerivativeExecutionResult> ExecuteAsync(
         CentralDerivativeJobLease lease,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// The two durable halves of derivative execution shared by the in-process slot and the runner protocol: the checks
+/// that run before any recipe executes and the validation/publication that runs after. A remote runner only ever
+/// executes the recipe kernel between them.
+/// </summary>
+internal interface ICentralDerivativeExecutionPipeline
+{
+    /// <summary>Runs the durable pre-execution checks (frozen plan, identities, canonical inputs, recovery, annotation).</summary>
+    Task<CentralDerivativeExecutionPreparation> PrepareAsync(
+        CentralDerivativeJobLease lease,
+        CancellationToken cancellationToken);
+
+    /// <summary>Validates and publishes a recipe outcome under the lease exactly as the in-process path does.</summary>
+    Task<CentralDerivativeExecutionResult> PublishAsync(
+        CentralDerivativeJobLease lease,
+        ProcessingOutcome outcome,
+        long inputBytes,
+        TimeSpan recipeDuration,
         CancellationToken cancellationToken);
 }
 
@@ -32,7 +67,7 @@ internal sealed class CentralDerivativeJobExecutor(
     ICentralTransientDerivativeExecutor transientDerivativeExecutor,
     ICentralTransientReprocessingExecutor transientReprocessingExecutor,
     CentralDerivativeWorkerTelemetry telemetry,
-    TimeProvider timeProvider) : ICentralDerivativeJobExecutor
+    TimeProvider timeProvider) : ICentralDerivativeJobExecutor, ICentralDerivativeExecutionPipeline
 {
     private const double MaximumLabelMagnitude = 2.5;
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
@@ -42,24 +77,58 @@ internal sealed class CentralDerivativeJobExecutor(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
+        var preparation = await PrepareAsync(lease, cancellationToken).ConfigureAwait(false);
+        if (preparation.Resolved is { } resolved)
+        {
+            return resolved;
+        }
+        if (preparation.InProcessOnly)
+        {
+            if (string.Equals(lease.RecipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal))
+            {
+                return await transientExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
+            }
+            if (string.Equals(lease.RecipeName, CentralTransientDerivativeRuntime.RecipeName, StringComparison.Ordinal))
+            {
+                return await transientDerivativeExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
+            }
+            return await transientReprocessingExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
+        }
+        var input = await inputReader.ReadAsync(lease, cancellationToken).ConfigureAwait(false);
+        var started = timeProvider.GetTimestamp();
+        ProcessingOutcome outcome;
+        using (telemetry.StartStage("execute", lease.RecipeName))
+        {
+            outcome = await recipeAdapter.ExecuteAsync(
+                input.ProcessingInputs,
+                lease.RecipeName,
+                preparation.Options,
+                preparation.Selector!,
+                lease.TargetVariant,
+                preparation.Annotation,
+                preparation.CanonicalInputs,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        var duration = timeProvider.GetElapsedTime(started);
+        telemetry.RecordStage("execute", lease.RecipeName, GetOutcome(outcome.Status), duration);
+        return await PublishAsync(lease, outcome, input.ByteLength, duration, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<CentralDerivativeExecutionPreparation> PrepareAsync(
+        CentralDerivativeJobLease lease,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
         if (!HasValidFrozenGraphPlan(lease))
         {
             const string reason = "processing.graph.frozen-plan-integrity-failed";
             await jobService.FailAsync(
                 lease.JobId, lease.LeaseToken, reason, retryable: false, cancellationToken).ConfigureAwait(false);
-            return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason);
+            return Resolved(new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason));
         }
-        if (string.Equals(lease.RecipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal))
+        if (IsInProcessOnlyRecipe(lease.RecipeName))
         {
-            return await transientExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
-        }
-        if (string.Equals(lease.RecipeName, CentralTransientDerivativeRuntime.RecipeName, StringComparison.Ordinal))
-        {
-            return await transientDerivativeExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
-        }
-        if (string.Equals(lease.RecipeName, CentralTransientReprocessingRuntime.RecipeName, StringComparison.Ordinal))
-        {
-            return await transientReprocessingExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
+            return new CentralDerivativeExecutionPreparation(null, true, null, default, null, null);
         }
         using var optionsDocument = JsonDocument.Parse(lease.RecipeOptionsJson);
         var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(lease.InputSelectorJson, SerializerOptions)
@@ -77,7 +146,7 @@ internal sealed class CentralDerivativeJobExecutor(
             await jobService.FailAsync(
                 lease.JobId, lease.LeaseToken, reason, retryable: false, cancellationToken).ConfigureAwait(false);
             RecordPinRelease(lease, "terminal");
-            return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason);
+            return Resolved(new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason));
         }
         var canonicalInputs = CreateCanonicalInputs(lease);
         if (canonicalInputs is null)
@@ -86,7 +155,7 @@ internal sealed class CentralDerivativeJobExecutor(
             await jobService.FailAsync(
                 lease.JobId, lease.LeaseToken, reason, retryable: false, cancellationToken).ConfigureAwait(false);
             RecordPinRelease(lease, "terminal");
-            return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason);
+            return Resolved(new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason));
         }
         IReadOnlyList<Guid>? recoveredArtifactIds;
         var recoveryStarted = timeProvider.GetTimestamp();
@@ -108,10 +177,9 @@ internal sealed class CentralDerivativeJobExecutor(
             telemetry.RecordStage(
                 "recover", lease.RecipeName, "adopted", timeProvider.GetElapsedTime(recoveryStarted));
             telemetry.RecordRecovery("adopted");
-            return new CentralDerivativeExecutionResult(
-                ProcessingOutcomeStatus.Produced, recoveredArtifactIds[0], "derivative.output-recovered");
+            return Resolved(new CentralDerivativeExecutionResult(
+                ProcessingOutcomeStatus.Produced, recoveredArtifactIds[0], "derivative.output-recovered"));
         }
-        var input = await inputReader.ReadAsync(lease, cancellationToken).ConfigureAwait(false);
         telemetry.RecordStage(
             "recover", lease.RecipeName, "empty", timeProvider.GetElapsedTime(recoveryStarted));
         var annotation = string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
@@ -124,26 +192,22 @@ internal sealed class CentralDerivativeJobExecutor(
                 lease.JobId, lease.LeaseToken, ProcessingReasonCodes.MissingAnnotation, cancellationToken)
                 .ConfigureAwait(false);
             RecordPinRelease(lease, "skipped");
-            return new CentralDerivativeExecutionResult(
-                ProcessingOutcomeStatus.Skipped, null, ProcessingReasonCodes.MissingAnnotation);
+            return Resolved(new CentralDerivativeExecutionResult(
+                ProcessingOutcomeStatus.Skipped, null, ProcessingReasonCodes.MissingAnnotation));
         }
+        return new CentralDerivativeExecutionPreparation(
+            null, false, selector, optionsDocument.RootElement.Clone(), annotation, canonicalInputs);
+    }
 
-        var started = timeProvider.GetTimestamp();
-        ProcessingOutcome outcome;
-        using (telemetry.StartStage("execute", lease.RecipeName))
-        {
-            outcome = await recipeAdapter.ExecuteAsync(
-                input.ProcessingInputs,
-                lease.RecipeName,
-                optionsDocument.RootElement.Clone(),
-                selector,
-                lease.TargetVariant,
-                annotation,
-                canonicalInputs,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-        }
-        var duration = timeProvider.GetElapsedTime(started);
-        telemetry.RecordStage("execute", lease.RecipeName, GetOutcome(outcome.Status), duration);
+    public async Task<CentralDerivativeExecutionResult> PublishAsync(
+        CentralDerivativeJobLease lease,
+        ProcessingOutcome outcome,
+        long inputBytes,
+        TimeSpan recipeDuration,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        ArgumentNullException.ThrowIfNull(outcome);
         switch (outcome.Status)
         {
             case ProcessingOutcomeStatus.Produced:
@@ -167,7 +231,7 @@ internal sealed class CentralDerivativeJobExecutor(
                 using (telemetry.StartStage("publish", lease.RecipeName))
                 {
                     artifactIds = await outputWriter.PersistSetAsync(
-                        lease, outcome.Products, input.ByteLength, duration, cancellationToken).ConfigureAwait(false);
+                        lease, outcome.Products, inputBytes, recipeDuration, cancellationToken).ConfigureAwait(false);
                 }
                 foreach (var artifactId in artifactIds)
                 {
@@ -204,6 +268,15 @@ internal sealed class CentralDerivativeJobExecutor(
                 throw new InvalidOperationException("The processing outcome status is unsupported.");
         }
     }
+
+    /// <summary>Transient runtime recipes read and write LogicHost transient state and never leave the process.</summary>
+    internal static bool IsInProcessOnlyRecipe(string recipeName)
+        => string.Equals(recipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal)
+            || string.Equals(recipeName, CentralTransientDerivativeRuntime.RecipeName, StringComparison.Ordinal)
+            || string.Equals(recipeName, CentralTransientReprocessingRuntime.RecipeName, StringComparison.Ordinal);
+
+    private static CentralDerivativeExecutionPreparation Resolved(CentralDerivativeExecutionResult result)
+        => new(result, false, null, default, null, null);
 
     private static List<ProcessingAuxiliaryInput>? CreateCanonicalInputs(CentralDerivativeJobLease lease)
     {

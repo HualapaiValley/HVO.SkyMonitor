@@ -18,6 +18,7 @@ internal sealed partial class ArtifactRetrievalController(
     internal const string JobIdHeader = "X-HVO-Job-Id";
     internal const string LeaseTokenHeader = "X-HVO-Lease-Token";
     internal const string ChecksumHeader = "X-Artifact-SHA256";
+    internal const string RunnerIdHeader = "X-HVO-Runner-Id";
     private const string DownloadAuthorizationCookie = "HVO.RawDownloadAuthorization";
 
     [HttpGet]
@@ -256,6 +257,11 @@ internal sealed partial class ArtifactRetrievalController(
             || !Guid.TryParse(Request.Headers[LeaseTokenHeader], out var leaseToken))
         {
             return null;
+        }
+        var runnerId = Request.Headers[RunnerIdHeader].ToString();
+        if (!string.IsNullOrWhiteSpace(runnerId))
+        {
+            return runnerId.Length > 128 ? null : new CentralArtifactWorkerAccess(jobId, runnerId, leaseToken, runnerId);
         }
         var workerId = CentralArtifactCredentialAccess.GetSubject(User);
         return string.IsNullOrWhiteSpace(workerId) || workerId.Length > 256

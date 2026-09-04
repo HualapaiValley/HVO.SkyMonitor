@@ -10,6 +10,8 @@
     <Project Path="src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj" />
     <Project Path="src/HVO.SkyMonitor.Fleet.Contracts/HVO.SkyMonitor.Fleet.Contracts.csproj" />
     <Project Path="src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj" />
+    <Project Path="src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj" />
+    <Project Path="src/HVO.SkyMonitor.ProcessingRunner.Contracts/HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
     <Project Path="src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj" />
     <Project Path="src/HVO.SkyMonitor.Deployment.Contracts/HVO.SkyMonitor.Deployment.Contracts.csproj" />
     <Project Path="src/HVO.SkyMonitor.Deployment.Distribution/HVO.SkyMonitor.Deployment.Distribution.csproj" />
@@ -36,6 +38,7 @@
         <Project Path="tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj" />
         <Project Path="tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj" />
+        <Project Path="tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj" />
         <Project Path="tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj" />
     </Folder>
     <Folder Name="/Tools/">

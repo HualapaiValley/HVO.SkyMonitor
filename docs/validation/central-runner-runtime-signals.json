@@ -1,0 +1,40 @@
+{
+  "schema": "hvo-runtime-signal-manifest-v1",
+  "issue": 428,
+  "component": "LogicHost processing-runner-v1 protocol",
+  "meter": "HVO.SkyMonitor.LogicHost.ProcessingRunner",
+  "activitySource": "HVO.SkyMonitor.LogicHost.ProcessingRunner",
+  "logs": [
+    { "eventId": 2200, "level": "Information", "fields": ["RunnerId", "Outcome", "Architecture", "ResourceClass", "LatencyClass", "WarmState", "Concurrency", "EligibleRecipes"] },
+    { "eventId": 2201, "level": "Warning", "fields": ["Count", "StaleAfter"] },
+    { "eventId": 2202, "level": "Information", "fields": ["RunnerId"] },
+    { "eventId": 2203, "level": "Information", "fields": ["RunnerId"] },
+    { "eventId": 2204, "level": "Information", "fields": ["RunnerId", "JobId", "Attempt", "Recipe", "Inputs", "InputBytes"] },
+    { "eventId": 2205, "level": "Warning", "fields": ["RunnerId", "JobClass"] },
+    { "eventId": 2206, "level": "Information", "fields": ["RunnerId", "JobId", "Recipe", "Status", "Reason"] },
+    { "eventId": 2207, "level": "Warning", "fields": ["RunnerId", "JobId", "Recipe"] },
+    { "eventId": 2208, "level": "Warning", "fields": ["RunnerId", "JobId", "Recipe", "InputBytes", "Limit"] },
+    { "eventId": 2209, "level": "Information", "fields": ["RunnerId", "JobId", "Attempt", "Recipe", "Outcome", "Reason", "ProductBytes", "ExecutionMilliseconds"] },
+    { "eventId": 2210, "level": "Warning", "fields": ["RunnerId", "JobId", "Attempt", "Recipe", "Reason", "Disposition", "Message"] }
+  ],
+  "metrics": [
+    { "name": "skymonitor.central.runner.registrations", "unit": "{registration}", "labels": { "outcome": ["registered", "re-registered", "rejected", "retired"] } },
+    { "name": "skymonitor.central.runner.heartbeats", "unit": "{heartbeat}", "labels": { "outcome": ["accepted", "recovered", "rejected"] } },
+    { "name": "skymonitor.central.runner.claims", "unit": "{claim}", "labels": { "outcome": ["claimed", "empty", "resolved", "ineligible", "rejected"], "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "cloud-assessment", "weather-cloud-overlay", "linear-normalization", "jpeg-encoding", "no-op-analyzer", "reference-calibration", "projected-scene", "none"] } },
+    { "name": "skymonitor.central.runner.lease.renewals", "unit": "{renewal}", "labels": { "outcome": ["renewed", "stale", "canceled"] } },
+    { "name": "skymonitor.central.runner.completions", "unit": "{completion}", "labels": { "outcome": ["produced", "skipped", "retryablefailure", "terminalfailure", "invalid"], "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "cloud-assessment", "weather-cloud-overlay", "linear-normalization", "jpeg-encoding", "no-op-analyzer", "reference-calibration", "projected-scene"] } },
+    { "name": "skymonitor.central.runner.failures", "unit": "{failure}", "labels": { "reason": ["object.missing", "object.checksum-mismatch", "object.length-mismatch", "runner.transfer-too-large", "runner.unavailable", "processing.*"], "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "cloud-assessment", "weather-cloud-overlay", "linear-normalization", "jpeg-encoding", "no-op-analyzer", "reference-calibration", "projected-scene"] } },
+    { "name": "skymonitor.central.runner.bytes", "unit": "By", "labels": { "direction": ["input", "product"] } },
+    { "name": "skymonitor.central.runner.duration", "unit": "ms", "labels": { "stage": ["claim", "complete"], "outcome": ["claimed", "empty", "resolved", "produced", "skipped", "retryablefailure", "terminalfailure", "invalid"] } },
+    { "name": "skymonitor.central.runner.registered", "unit": "{runner}", "labels": { "status": ["active", "stale", "retired"] } }
+  ],
+  "healthChecks": [
+    { "name": "processing-runners", "tags": ["worker"], "data": ["enabled", "activeRunners", "staleRunners", "retiredRunners", "runnerPlacedRecipes", "pendingRunnerJobs", "oldestPendingRunnerJobAgeSeconds"] }
+  ],
+  "collection": [
+    "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --filter \"FullyQualifiedName~ProcessingRunnerProtocolIntegrationTests\"",
+    "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --filter \"FullyQualifiedName~ProcessingRunnerPerformanceEvidenceTests\""
+  ],
+  "privacy": ["No credentials, tokens, or payload bytes are logged; runner ids and job ids are the only identifiers."],
+  "evidence": ["TestResults/processing-runner/<revision>/processing-runner-evidence.json"]
+}

@@ -10,6 +10,20 @@ internal sealed record CentralDerivativeJobInputs(
     IReadOnlyList<LogicHostProcessingInput> ProcessingInputs,
     long ByteLength);
 
+/// <summary>An immutable reference to a verified-at-claim input a runner fetches under the job lease.</summary>
+internal sealed record CentralDerivativeJobInputReference(
+    Guid CentralArtifactId,
+    Guid ArtifactId,
+    Guid DevicePublicId,
+    long ByteLength,
+    string ChecksumSha256);
+
+/// <summary>Payload-less inputs plus their content references, in lease ordinal order.</summary>
+internal sealed record CentralDerivativeJobInputDescriptions(
+    IReadOnlyList<LogicHostProcessingInput> ProcessingInputs,
+    IReadOnlyList<CentralDerivativeJobInputReference> References,
+    long ByteLength);
+
 internal sealed class CentralDerivativeInputRejectedException : Exception
 {
     public CentralDerivativeInputRejectedException()
@@ -33,12 +47,20 @@ internal interface ICentralDerivativeJobInputReader
         CancellationToken cancellationToken);
 }
 
+/// <summary>Describes lease inputs without loading payloads so a runner can fetch them under the lease.</summary>
+internal interface ICentralDerivativeJobInputDescriber
+{
+    Task<CentralDerivativeJobInputDescriptions> DescribeAsync(
+        CentralDerivativeJobLease lease,
+        CancellationToken cancellationToken);
+}
+
 internal sealed class CentralDerivativeJobInputReader(
     ApplicationDbContext dbContext,
     ICentralArtifactObjectReader objectReader,
     ICentralDerivativeJobService jobService,
     CentralDerivativeWorkerTelemetry telemetry,
-    TimeProvider timeProvider) : ICentralDerivativeJobInputReader
+    TimeProvider timeProvider) : ICentralDerivativeJobInputReader, ICentralDerivativeJobInputDescriber
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
@@ -63,6 +85,48 @@ internal sealed class CentralDerivativeJobInputReader(
         }
         return new CentralDerivativeJobInputs(processingInputs, totalBytes);
     }
+
+    public async Task<CentralDerivativeJobInputDescriptions> DescribeAsync(
+        CentralDerivativeJobLease lease,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        var leaseInputs = ResolveLeaseInputs(lease);
+        var processingInputs = new List<LogicHostProcessingInput>(leaseInputs.Count);
+        var references = new List<CentralDerivativeJobInputReference>(leaseInputs.Count);
+        long totalBytes = 0;
+        foreach (var leaseInput in leaseInputs.OrderBy(input => input.Ordinal))
+        {
+            var artifact = await LoadAuthorizedSourceAsync(lease, leaseInput, cancellationToken).ConfigureAwait(false);
+            if (artifact.ByteLength is < 0 or > int.MaxValue)
+            {
+                throw new CentralDerivativeInputRejectedException(
+                    "The derivative source is too large for shared recipe execution.");
+            }
+            processingInputs.Add(await CreateProcessingInputAsync(
+                leaseInput, artifact, ReadOnlyMemory<byte>.Empty, cancellationToken).ConfigureAwait(false));
+            references.Add(new CentralDerivativeJobInputReference(
+                artifact.Id,
+                artifact.ArtifactId,
+                artifact.Frame!.DevicePublicId,
+                artifact.ByteLength,
+                artifact.ChecksumSha256));
+            totalBytes = checked(totalBytes + artifact.ByteLength);
+        }
+        if (!await IsLeaseCurrentAsync(lease, cancellationToken).ConfigureAwait(false))
+        {
+            throw new CentralDerivativeJobStateException("The derivative job lease became stale while describing inputs.");
+        }
+        return new CentralDerivativeJobInputDescriptions(processingInputs, references, totalBytes);
+    }
+
+    private static IReadOnlyList<CentralDerivativeJobLeaseInput> ResolveLeaseInputs(CentralDerivativeJobLease lease)
+        => lease.Inputs is { Count: > 0 }
+            ? lease.Inputs
+            : [new CentralDerivativeJobLeaseInput(
+                0, Guid.Empty, lease.SourceDevicePublicId, lease.SourceArtifactId, lease.SourceRole,
+                lease.SourceRecipeVersion, lease.SourceChecksumSha256, lease.SourceMediaType, 0,
+                lease.FrameId, lease.AgentId, null, lease.CapturedAtUtc, string.Empty)];
 
     private async Task<LogicHostProcessingInput> ReadArtifactAsync(
         CentralDerivativeJobLease lease,
@@ -157,6 +221,15 @@ internal sealed class CentralDerivativeJobInputReader(
         {
             throw new CentralDerivativeJobStateException("The derivative job lease became stale while loading input.");
         }
+        return await CreateProcessingInputAsync(leaseInput, artifact, payload, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<LogicHostProcessingInput> CreateProcessingInputAsync(
+        CentralDerivativeJobLeaseInput leaseInput,
+        CentralArtifact artifact,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken)
+    {
         if (artifact.Layout is null)
         {
             var evidence = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()

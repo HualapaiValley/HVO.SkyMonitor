@@ -20,6 +20,8 @@ public sealed class ArchitectureBoundaryTests
     private const string CameraAgentZwo = "HVO.SkyMonitor.CameraAgent.Modules.Zwo";
     private const string CameraAgentReplay = "HVO.SkyMonitor.CameraAgent.Replay";
     private const string CameraAgentReplayRunner = "HVO.SkyMonitor.CameraAgent.ReplayRunner";
+    private const string ProcessingRunnerContracts = "HVO.SkyMonitor.ProcessingRunner.Contracts";
+    private const string ProcessingRunner = "HVO.SkyMonitor.ProcessingRunner";
     private const string CameraAgent = "HVO.SkyMonitor.CameraAgent";
     private const string LogicHost = "HVO.SkyMonitor.LogicHost";
     private const string DeploymentContracts = "HVO.SkyMonitor.Deployment.Contracts";
@@ -61,8 +63,10 @@ public sealed class ArchitectureBoundaryTests
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
             [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),
+            [ProcessingRunnerContracts] = Set(AgentCore, Processing),
+            [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
-            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts, Catalog, Common),
+            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, ProcessingRunnerContracts, FleetContracts, Catalog, Common),
             [DeploymentContracts] = Set(),
             [DeploymentDistribution] = Set(DeploymentContracts),
             [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts, DeploymentDistribution)
@@ -80,6 +84,7 @@ public sealed class ArchitectureBoundaryTests
         "HVO.SkyMonitor.Fleet.Contracts.Tests",
         "HVO.SkyMonitor.Imaging.Tests",
         "HVO.SkyMonitor.Processing.Tests",
+        "HVO.SkyMonitor.ProcessingRunner.Tests",
         "HVO.SkyMonitor.TestSupport.Tests");
 
     private static readonly IReadOnlySet<string> CameraAgentTestProjects = Set(
@@ -288,7 +293,7 @@ public sealed class ArchitectureBoundaryTests
             .Select(project => project.AssemblyName)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var hostName in new[] { CameraAgent, LogicHost, CameraAgentReplayRunner })
+        foreach (var hostName in new[] { CameraAgent, LogicHost, CameraAgentReplayRunner, ProcessingRunner })
         {
             var output = string.IsNullOrWhiteSpace(evidenceRoot)
                 ? Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-{hostName}-{Guid.NewGuid():N}")
@@ -296,6 +301,7 @@ public sealed class ArchitectureBoundaryTests
                 {
                     CameraAgent => Path.Combine(evidenceRoot, "cameraagent"),
                     LogicHost => Path.Combine(evidenceRoot, "logichost"),
+                    ProcessingRunner => Path.Combine(evidenceRoot, "processing-runner", "linux-x64"),
                     _ => Path.Combine(evidenceRoot, "replay-runner", "linux-x64")
                 };
             if (Directory.Exists(output))
@@ -310,9 +316,9 @@ public sealed class ArchitectureBoundaryTests
                     repository.Root,
                     repository.Projects[hostName].Path,
                     output,
-                    hostName == CameraAgentReplayRunner ? "linux-x64" : null).ConfigureAwait(false);
+                    hostName is CameraAgentReplayRunner or ProcessingRunner ? "linux-x64" : null).ConfigureAwait(false);
                 var forbiddenAssemblies = testAssemblies.ToHashSet(StringComparer.OrdinalIgnoreCase);
-                foreach (var forbiddenHost in new[] { CameraAgent, LogicHost, CameraAgentReplayRunner }.Where(
+                foreach (var forbiddenHost in new[] { CameraAgent, LogicHost, CameraAgentReplayRunner, ProcessingRunner }.Where(
                     candidate => candidate != hostName))
                 {
                     forbiddenAssemblies.Add(repository.Projects[forbiddenHost].AssemblyName);

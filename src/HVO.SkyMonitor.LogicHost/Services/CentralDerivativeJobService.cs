@@ -1,8 +1,10 @@
+using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -34,20 +36,64 @@ internal interface ICentralDerivativeJobService
         CancellationToken cancellationToken);
 }
 
+/// <summary>Restricts a claim to (or away from) a recipe set; names must be built-in recipe names.</summary>
+internal sealed record CentralDerivativeClaimScope(IReadOnlySet<string> Recipes, bool Include)
+{
+    public static CentralDerivativeClaimScope Only(IEnumerable<string> recipes)
+        => new(recipes.ToHashSet(StringComparer.Ordinal), true);
+
+    public static CentralDerivativeClaimScope Excluding(IEnumerable<string> recipes)
+        => new(recipes.ToHashSet(StringComparer.Ordinal), false);
+}
+
+/// <summary>Lease operations used by the runner protocol; the in-process worker keeps <see cref="ICentralDerivativeJobService"/>.</summary>
+internal interface ICentralDerivativeRunnerLeaseService
+{
+    Task<CentralDerivativeJobLease?> ClaimNextAsync(
+        string workerId,
+        TimeSpan leaseDuration,
+        CentralDerivativeClaimScope? scope,
+        CancellationToken cancellationToken);
+
+    /// <summary>Loads the current lease when it is held by <paramref name="workerId"/> with <paramref name="leaseToken"/>.</summary>
+    Task<CentralDerivativeJobLease> GetLeaseAsync(
+        Guid jobId,
+        Guid leaseToken,
+        string workerId,
+        CancellationToken cancellationToken);
+}
+
 internal sealed class CentralDerivativeJobService(
     ApplicationDbContext dbContext,
     TimeProvider timeProvider,
     CentralDerivativeWorkerTelemetry? telemetry = null,
-    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : ICentralDerivativeJobService
+    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null,
+    IOptions<CentralProcessingRunnerOptions>? runnerOptions = null)
+    : ICentralDerivativeJobService, ICentralDerivativeRunnerLeaseService
 {
     internal static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(10);
     internal static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan MinimumLeaseDuration = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumLeaseDuration = TimeSpan.FromHours(1);
 
+    /// <summary>
+    /// The in-process claim. Recipes placed on runners by <see cref="CentralProcessingRunnerOptions"/> are excluded so
+    /// a missing runner creates backlog instead of a silent in-process fallback.
+    /// </summary>
+    public Task<CentralDerivativeJobLease?> ClaimNextAsync(
+        string workerId,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken)
+    {
+        var runnerPlaced = runnerOptions?.Value.ResolveRunnerPlacedRecipes();
+        var scope = runnerPlaced is { Count: > 0 } ? CentralDerivativeClaimScope.Excluding(runnerPlaced) : null;
+        return ClaimNextAsync(workerId, leaseDuration, scope, cancellationToken);
+    }
+
     public async Task<CentralDerivativeJobLease?> ClaimNextAsync(
         string workerId,
         TimeSpan leaseDuration,
+        CentralDerivativeClaimScope? scope,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workerId);
@@ -56,11 +102,16 @@ internal sealed class CentralDerivativeJobService(
             throw new ArgumentOutOfRangeException(nameof(workerId));
         }
         ValidateLeaseDuration(leaseDuration);
+        if (scope is not null && (scope.Recipes.Count == 0
+                || scope.Recipes.Any(static recipe => !BuiltInProcessingRecipes.TryGetDefinition(recipe, out _))))
+        {
+            throw new ArgumentException("A claim scope must name built-in recipes.", nameof(scope));
+        }
         for (var deadlockRetry = 0; deadlockRetry < 100; deadlockRetry++)
         {
             try
             {
-                return await ClaimNextCoreAsync(workerId, leaseDuration, cancellationToken).ConfigureAwait(false);
+                return await ClaimNextCoreAsync(workerId, leaseDuration, scope, cancellationToken).ConfigureAwait(false);
             }
             catch (SqlException exception) when (exception.Number == 1205)
             {
@@ -85,11 +136,35 @@ internal sealed class CentralDerivativeJobService(
             "Unable to claim a derivative job because SQL deadlocks persisted after bounded retry.");
     }
 
+    public async Task<CentralDerivativeJobLease> GetLeaseAsync(
+        Guid jobId,
+        Guid leaseToken,
+        string workerId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workerId);
+        var now = timeProvider.GetUtcNow();
+        var held = await dbContext.CentralDerivativeJobs.AsNoTracking().AnyAsync(job =>
+            job.Id == jobId
+            && job.Status == CentralDerivativeJobStatus.Leased
+            && job.LeaseToken == leaseToken
+            && job.LeaseOwner == workerId
+            && job.LeaseExpiresAtUtc > now, cancellationToken).ConfigureAwait(false);
+        if (!held)
+        {
+            throw new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
+        }
+        return CreateLease(await LoadJobAsync(jobId, cancellationToken).ConfigureAwait(false));
+    }
+
     private async Task<CentralDerivativeJobLease?> ClaimNextCoreAsync(
         string workerId,
         TimeSpan leaseDuration,
+        CentralDerivativeClaimScope? scope,
         CancellationToken cancellationToken)
     {
+        var includeRecipes = scope is { Include: true } ? string.Join(',', scope.Recipes.Order(StringComparer.Ordinal)) : string.Empty;
+        var excludeRecipes = scope is { Include: false } ? string.Join(',', scope.Recipes.Order(StringComparer.Ordinal)) : string.Empty;
         for (var collision = 0; collision < 100; collision++)
         {
             var now = timeProvider.GetUtcNow();
@@ -99,7 +174,9 @@ internal sealed class CentralDerivativeJobService(
                     SELECT TOP(1) job.*
                     FROM [CentralDerivativeJobs] AS job WITH (UPDLOCK, READPAST, READCOMMITTEDLOCK, ROWLOCK)
                     WHERE
-                        (job.[GraphExecutionId] IS NULL OR EXISTS (
+                        ({includeRecipes} = N'' OR job.[RecipeName] IN (SELECT [value] FROM STRING_SPLIT({includeRecipes}, ',')))
+                        AND ({excludeRecipes} = N'' OR job.[RecipeName] NOT IN (SELECT [value] FROM STRING_SPLIT({excludeRecipes}, ',')))
+                        AND ((job.[GraphExecutionId] IS NULL OR EXISTS (
                             SELECT 1
                             FROM [CentralProcessingGraphExecutions] AS execution
                             WHERE execution.[Id] = job.[GraphExecutionId]
@@ -139,7 +216,7 @@ internal sealed class CentralDerivativeJobService(
                                         OR source.[ReconstructionState] <> N'Complete'))
                             OR (job.[Status] = N'Leased'
                             AND job.[LeaseExpiresAtUtc] <= {now}
-                            AND job.[AttemptCount] >= job.[MaxAttempts]))
+                            AND job.[AttemptCount] >= job.[MaxAttempts])))
                     ORDER BY
                         CASE WHEN job.[Status] = N'Leased' THEN job.[LeaseExpiresAtUtc] ELSE job.[AvailableAtUtc] END,
                         job.[CreatedAtUtc],
