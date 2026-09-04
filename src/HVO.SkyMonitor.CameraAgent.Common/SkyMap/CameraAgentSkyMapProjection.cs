@@ -82,7 +82,8 @@ public sealed class CameraAgentSkyMapProjection(
             instant,
             new ObserverLocation(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters),
             projection,
-            new CatalogQuery(MaximumMagnitude, MaximumObjects),
+            // One past the bound so truncation is observed rather than inferred from an exact count.
+            new CatalogQuery(MaximumMagnitude, MaximumObjects + 1),
             metadata,
             horizonPolicy: HorizonPolicy.GeometricHorizon,
             projectionVersion: config.Rig.Optics.CalibrationVersion,
@@ -94,6 +95,7 @@ public sealed class CameraAgentSkyMapProjection(
         var objects = scene.Objects
             .OrderBy(static item => item.Magnitude)
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
+            .Take(MaximumObjects)
             .Select(static item => new CameraAgentSkyMapObject(
                 item.Id,
                 item.DisplayName,
@@ -126,7 +128,7 @@ public sealed class CameraAgentSkyMapProjection(
             objects,
             constellations,
             MaximumObjects,
-            objects.Length >= MaximumObjects,
+            scene.Objects.Count > MaximumObjects,
             MaximumMagnitude,
             AstronomyAlgorithmVersion,
             CreateSummary(objects.Length, constellations.Length, constellationIds.Length, latestScene),

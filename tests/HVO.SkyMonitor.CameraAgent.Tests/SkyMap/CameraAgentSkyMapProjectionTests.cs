@@ -26,6 +26,7 @@ public sealed class CameraAgentSkyMapProjectionTests
         Assert.AreEqual(Instant, first.AtUtc);
         Assert.AreEqual("fixture-catalog", first.Catalog.Name);
         Assert.AreEqual(CameraAgentSkyMapProjection.MaximumObjects, first.MaximumObjects);
+        Assert.IsFalse(first.ObjectsAtBound, "a sky below the bound must not be reported as truncated");
         Assert.AreEqual(CameraAgentSkyMapProjection.AstronomyAlgorithmVersion, first.AstronomyAlgorithmVersion);
     }
 
