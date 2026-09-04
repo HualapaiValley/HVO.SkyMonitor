@@ -421,6 +421,16 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         CancellationToken cancellationToken)
         => _store.ReadExecutionDetailAsync(executionId, cancellationToken);
 
+    /// <summary>
+    /// Read-only accessor for the immutable revision body an evidence export projects: the canonical graph
+    /// definition and the frozen plan already persisted for <paramref name="revisionId"/>. It writes nothing and
+    /// changes no durable state.
+    /// </summary>
+    internal ValueTask<ProcessingGraphRevisionSnapshot> ReadRevisionSnapshotAsync(
+        string revisionId,
+        CancellationToken cancellationToken)
+        => _store.ReadRevisionAsync(revisionId, cancellationToken);
+
     public ValueTask<ProcessingGraphExecutionState> CancelReplayAsync(
         Guid executionId,
         string idempotencyKey,
