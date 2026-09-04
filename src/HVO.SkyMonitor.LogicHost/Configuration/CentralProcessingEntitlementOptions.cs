@@ -218,7 +218,7 @@ internal sealed class CentralProcessingEntitlementOptions
                 || (entitlement.Pool is not null && !IsValidPool(entitlement.Pool))
                 || entitlement.ResourceClassActiveJobs.Any(pair => pair.Value < 0 || !IsValidClass(pair.Key)))
             {
-                error = $"ProcessingEntitlements:Observatories:{observatoryId} is invalid.";
+                error = $"ProcessingEntitlements:Observatories:{key} is invalid.";
                 return false;
             }
         }

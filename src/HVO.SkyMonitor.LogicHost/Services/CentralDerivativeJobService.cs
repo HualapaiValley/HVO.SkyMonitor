@@ -38,7 +38,6 @@ internal interface ICentralDerivativeJobService
         CancellationToken cancellationToken);
 }
 
-/// <summary>Restricts a claim to (or away from) a recipe set; names must be built-in recipe names.</summary>
 /// <summary>How a claimer relates to observatory runner pools (#429).</summary>
 internal enum CentralDerivativeClaimPoolMode
 {
@@ -52,6 +51,7 @@ internal enum CentralDerivativeClaimPoolMode
     Dedicated
 }
 
+/// <summary>Restricts a claim to (or away from) a recipe set; names must be built-in recipe names.</summary>
 internal sealed record CentralDerivativeClaimScope(
     IReadOnlySet<string> Recipes,
     bool Include,
@@ -1262,7 +1262,7 @@ internal sealed partial class CentralDerivativeJobService(
                 new SqlParameter("@observatoryId", identity.ObservatoryId),
                 new SqlParameter("@deviceId", identity.DevicePublicId),
                 new SqlParameter("@now", now),
-                new SqlParameter("@classes", classes),
+                new SqlParameter("@classes", System.Data.SqlDbType.NVarChar, -1) { Value = classes },
                 new SqlParameter("@jobId", candidate.Id),
                 new SqlParameter("@recipe", candidate.RecipeName))
             .SingleAsync(cancellationToken).ConfigureAwait(false);
