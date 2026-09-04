@@ -29,6 +29,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralDerivativeJobInput> CentralDerivativeJobInputs => Set<CentralDerivativeJobInput>();
     internal DbSet<CentralDerivativeJobCanonicalInput> CentralDerivativeJobCanonicalInputs => Set<CentralDerivativeJobCanonicalInput>();
     internal DbSet<CentralProcessingGraphExecution> CentralProcessingGraphExecutions => Set<CentralProcessingGraphExecution>();
+    internal DbSet<CentralProcessingRunner> CentralProcessingRunners => Set<CentralProcessingRunner>();
     internal DbSet<CentralProcessingGraphExecutionSource> CentralProcessingGraphExecutionSources =>
         Set<CentralProcessingGraphExecutionSource>();
     internal DbSet<CentralDerivativeJobDependency> CentralDerivativeJobDependencies => Set<CentralDerivativeJobDependency>();
@@ -138,6 +139,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.ApplyConfiguration(new CentralArtifactDownloadAuthorizationConfiguration());
         CentralProcessingOverrideConfiguration.Configure(builder);
         builder.ApplyConfiguration(new CentralDerivativeJobConfiguration());
+        builder.ApplyConfiguration(new CentralProcessingRunnerConfiguration());
         CentralProcessingGraphExecutionConfiguration.Configure(builder);
         CentralDerivativeExecutionConfiguration.Configure(builder);
         CentralDerivativeWindowConfiguration.Configure(builder);

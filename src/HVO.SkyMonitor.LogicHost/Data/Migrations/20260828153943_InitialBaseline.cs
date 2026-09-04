@@ -5444,6 +5444,65 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 table: "RegisteredUserTransientEventBookmarks",
                 columns: new[] { "UserId", "CreatedUtc", "CentralTransientEventId" });
 
+            migrationBuilder.CreateTable(
+                name: "CentralProcessingRunners",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    RunnerId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ClientSubject = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    DisplayName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    OperatingSystem = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    OsArchitecture = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ProcessArchitecture = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    RuntimeIdentifier = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    FrameworkDescription = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ProcessorCount = table.Column<int>(type: "int", nullable: false),
+                    TotalMemoryBytes = table.Column<long>(type: "bigint", nullable: false),
+                    ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    GpuAvailable = table.Column<bool>(type: "bit", nullable: false),
+                    LatencyClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    CapabilitiesJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    EligibleRecipesJson = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
+                    MaxConcurrency = table.Column<int>(type: "int", nullable: false),
+                    MaxTransferBytes = table.Column<long>(type: "bigint", nullable: false),
+                    WarmState = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    Status = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    ProcessId = table.Column<int>(type: "int", nullable: false),
+                    ProcessStartedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    Generation = table.Column<int>(type: "int", nullable: false),
+                    AvailableSlots = table.Column<int>(type: "int", nullable: false),
+                    RegisteredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    LastHeartbeatAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    RetiredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    RowVersion = table.Column<byte[]>(type: "rowversion", rowVersion: true, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingRunners", x => x.Id);
+                    table.CheckConstraint("CK_CentralProcessingRunners_Capacity", "[MaxConcurrency] >= 1 AND [MaxConcurrency] <= 32 AND [AvailableSlots] >= 0 AND [AvailableSlots] <= [MaxConcurrency] AND [MaxTransferBytes] >= 1 AND [ProcessorCount] >= 1 AND [TotalMemoryBytes] >= 0 AND [Generation] >= 1");
+                    table.CheckConstraint("CK_CentralProcessingRunners_Status", "[Status] IN (N'Active', N'Stale', N'Retired')");
+                    table.CheckConstraint("CK_CentralProcessingRunners_Timestamps", "[UpdatedAtUtc] >= [RegisteredAtUtc] AND [LastHeartbeatAtUtc] >= [RegisteredAtUtc] AND (([Status] = N'Retired' AND [RetiredAtUtc] IS NOT NULL) OR ([Status] <> N'Retired' AND [RetiredAtUtc] IS NULL))");
+                    table.CheckConstraint("CK_CentralProcessingRunners_WarmState", "[WarmState] IN (N'Cold', N'Warming', N'Warm', N'Degraded')");
+                });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingRunners_ClientSubject",
+                table: "CentralProcessingRunners",
+                column: "ClientSubject");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingRunners_RunnerId",
+                table: "CentralProcessingRunners",
+                column: "RunnerId",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingRunners_Status_LastHeartbeatAtUtc",
+                table: "CentralProcessingRunners",
+                columns: new[] { "Status", "LastHeartbeatAtUtc" });
+
             BaselineTriggerSql.CreateAll(migrationBuilder);
         }
 
@@ -5451,6 +5510,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             ArgumentNullException.ThrowIfNull(migrationBuilder);
+
+            migrationBuilder.DropTable(
+                name: "CentralProcessingRunners");
+
 
             migrationBuilder.DropTable(
                 name: "CentralProcessingGraphDeliveryFacts");

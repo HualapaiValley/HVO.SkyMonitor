@@ -26,6 +26,7 @@
     <ProjectReference Include="..\HVO.SkyMonitor.Imaging\HVO.SkyMonitor.Imaging.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Fleet.Contracts\HVO.SkyMonitor.Fleet.Contracts.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.ProcessingRunner.Contracts\HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

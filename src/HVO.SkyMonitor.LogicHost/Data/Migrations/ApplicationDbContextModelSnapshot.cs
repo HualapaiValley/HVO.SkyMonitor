@@ -2377,6 +2377,148 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingRunner", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AvailableSlots")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CapabilitiesJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ClientSubject")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("EligibleRecipesJson")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("FrameworkDescription")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<int>("Generation")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("GpuAvailable")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset>("LastHeartbeatAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("LatencyClass")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("MaxConcurrency")
+                        .HasColumnType("int");
+
+                    b.Property<long>("MaxTransferBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("OperatingSystem")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("OsArchitecture")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("ProcessArchitecture")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int>("ProcessId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("ProcessStartedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("ProcessorCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("RegisteredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ResourceClass")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTimeOffset?>("RetiredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("RunnerId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<string>("RuntimeIdentifier")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<long>("TotalMemoryBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("WarmState")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClientSubject");
+
+                    b.HasIndex("RunnerId")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "LastHeartbeatAtUtc");
+
+                    b.ToTable("CentralProcessingRunners", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_CentralProcessingRunners_Capacity", "[MaxConcurrency] >= 1 AND [MaxConcurrency] <= 32 AND [AvailableSlots] >= 0 AND [AvailableSlots] <= [MaxConcurrency] AND [MaxTransferBytes] >= 1 AND [ProcessorCount] >= 1 AND [TotalMemoryBytes] >= 0 AND [Generation] >= 1");
+
+                            t.HasCheckConstraint("CK_CentralProcessingRunners_Status", "[Status] IN (N'Active', N'Stale', N'Retired')");
+
+                            t.HasCheckConstraint("CK_CentralProcessingRunners_Timestamps", "[UpdatedAtUtc] >= [RegisteredAtUtc] AND [LastHeartbeatAtUtc] >= [RegisteredAtUtc] AND (([Status] = N'Retired' AND [RetiredAtUtc] IS NOT NULL) OR ([Status] <> N'Retired' AND [RetiredAtUtc] IS NULL))");
+
+                            t.HasCheckConstraint("CK_CentralProcessingRunners_WarmState", "[WarmState] IN (N'Cold', N'Warming', N'Warm', N'Degraded')");
+                        });
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralRecoveryCheckpoint", b =>
                 {
                     b.Property<int>("Id")
