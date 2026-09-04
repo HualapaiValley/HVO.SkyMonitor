@@ -28,10 +28,25 @@ public sealed record ProcessingRunnerHeartbeatRequest(
     IReadOnlyList<Guid> ActiveJobIds,
     ProcessingRunnerWarmupStages? Warmup = null);
 
+/// <summary>
+/// Heartbeat acknowledgement. <see cref="EligibleRecipes"/> is recomputed from the current host placement on every
+/// heartbeat so a placement change reaches a registered runner without re-registration.
+/// </summary>
 public sealed record ProcessingRunnerHeartbeatResponse(
     ProcessingRunnerRegistrationStatus Status,
     IReadOnlyList<Guid> CancelRequestedJobIds,
     IReadOnlyList<Guid> StaleJobIds,
+    IReadOnlyList<string> EligibleRecipes,
+    DateTimeOffset ServerTimeUtc);
+
+/// <summary>Non-mutating registration status for probes; never refreshes the heartbeat.</summary>
+public sealed record ProcessingRunnerStatusResponse(
+    string RunnerId,
+    ProcessingRunnerRegistrationStatus Status,
+    ProcessingRunnerWarmState WarmState,
+    IReadOnlyList<string> EligibleRecipes,
+    int ActiveLeases,
+    DateTimeOffset LastHeartbeatUtc,
     DateTimeOffset ServerTimeUtc);
 
 public sealed record ProcessingRunnerClaimRequest(

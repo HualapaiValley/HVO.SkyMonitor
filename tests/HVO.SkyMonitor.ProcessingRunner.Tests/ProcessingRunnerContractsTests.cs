@@ -139,10 +139,14 @@ public sealed class ProcessingRunnerContractsTests
         Assert.AreEqual(artifact.CaptureId, rebuilt.CaptureId);
         CollectionAssert.AreEqual(payload, rebuilt.Payload.ToArray());
 
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(
+            RecipeIdentityDescriptor.Create("encoded-preview", "1.0.0", "impl", JsonSerializer.SerializeToElement(new { })));
         var product = new ProcessingProduct(
-            FrameArtifactRole.Preview, "native", new string('c', 64), "image/jpeg", null, payload,
+            FrameArtifactRole.Preview, "native",
+            ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Preview, "native", recipe.IdentitySha256, [artifact.ArtifactId]),
+            "image/jpeg", null, payload,
             ProcessingIdentity.ComputePayloadSha256(payload),
-            new ProcessingRecipeIdentity(new RecipeIdentityDescriptor("encoded-preview", "1.0.0", "impl", JsonSerializer.SerializeToElement(new { }), new string('d', 64)), new string('e', 64)),
+            recipe,
             [new ProcessingAlgorithmIdentity("jpeg", "1")], [artifact.ArtifactId], TimeSpan.FromSeconds(1),
             artifact.Compatibility);
         var (request, payloads) = ProcessingRunnerProjection.ProjectOutcome(
@@ -163,6 +167,40 @@ public sealed class ProcessingRunnerContractsTests
         var shortFailure = Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() =>
             ProcessingRunnerProjection.ReconstructOutcome(request, [new byte[] { 1 }]));
         Assert.AreEqual(ProcessingRunnerReasonCodes.PayloadLengthMismatch, shortFailure.ReasonCode);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void ProductIdentitiesAreRecomputedFromProvenanceBeforeAcceptance()
+    {
+        var payload = new byte[] { 5, 6, 7 };
+        var source = Guid.NewGuid();
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(
+            RecipeIdentityDescriptor.Create("encoded-preview", "1.0.0", "impl", JsonSerializer.SerializeToElement(new { })));
+        var metadata = new ProcessingRunnerProductMetadata(
+            FrameArtifactRole.Preview, "native",
+            ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Preview, "native", recipe.IdentitySha256, [source]),
+            "image/jpeg", null, 0, payload.Length, ProcessingRunnerProtocol.ComputeSha256(payload),
+            ProcessingIdentity.ComputePayloadSha256(payload), recipe, [], [source], TimeSpan.Zero,
+            new ProcessingCompatibilityIdentity("r", "o", "c", "m", "s", "p", "pp"), ProcessingProductKind.PixelData, null, null);
+
+        _ = ProcessingRunnerProjection.ReconstructProduct(metadata, payload);
+
+        var forgedOutput = metadata with { OutputIdentitySha256 = new string('f', 64) };
+        Assert.AreEqual(
+            ProcessingRunnerReasonCodes.OutputIdentityMismatch,
+            Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() =>
+                ProcessingRunnerProjection.ReconstructProduct(forgedOutput, payload)).ReasonCode);
+        var forgedSources = metadata with { SourceArtifactIds = [Guid.NewGuid()] };
+        Assert.AreEqual(
+            ProcessingRunnerReasonCodes.OutputIdentityMismatch,
+            Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() =>
+                ProcessingRunnerProjection.ReconstructProduct(forgedSources, payload)).ReasonCode);
+        var forgedRecipe = metadata with { Recipe = recipe with { IdentitySha256 = new string('a', 64) } };
+        Assert.AreEqual(
+            ProcessingRunnerReasonCodes.RecipeIdentityMismatch,
+            Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() =>
+                ProcessingRunnerProjection.ReconstructProduct(forgedRecipe, payload)).ReasonCode);
     }
 
     [TestMethod]

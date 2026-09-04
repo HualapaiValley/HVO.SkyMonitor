@@ -214,7 +214,7 @@ The delivered LogicHost self-hosted processing runner protocol
 | `RUNNER-006` | LogicHost remains authoritative for jobs, leases, attempts, cancellation, deadlines, validation, publication, lineage, and downstream scheduling. Lease loss, stale or duplicate completion, cancellation, expiry, crash, disconnect, and restart are fenced by the shared lease filters and recover idempotently through the existing output writer. |
 | `RUNNER-007` | In-process and runner execution build the identical execution request and publish through the identical validation path, so output identity, role, recipe identity, ordered lineage, layout, checksum, and provenance are equivalent for the same frozen plan. |
 | `RUNNER-008` | The runner runs at below-normal priority with explicit concurrency, transfer, timeout, idle-shutdown, and shutdown-grace limits, and the container image is read-only with all capabilities dropped. |
-| `RUNNER-009` | Registration, heartbeat, staleness, claim, renewal, completion, failure, transfer bytes, and backlog are observable through the pinned meter, log events 2200-2210, and the `processing-runners` health check. |
+| `RUNNER-009` | Registration, heartbeat, staleness, claim, renewal, completion, failure, transfer bytes, and backlog are observable through the pinned meter, log events 2200-2212, and the `processing-runners` health check. |
 | `RUNNER-010` | Release evidence covers linux-x64/linux-arm64 publish and capability probes, cold/warm start stages, claim latency, transfer bytes, in-process versus runner throughput, and backlog with no runner (`ProcessingRunnerPerformanceEvidenceTests`). |
 
 ### 3.3 Acquisition and raw evidence

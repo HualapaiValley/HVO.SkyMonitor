@@ -38,6 +38,12 @@ internal sealed class RunnerOptions
 
     public bool AllowInsecureHttp { get; init; }
 
+    public string LivenessFile { get; init; } = DefaultLivenessFile;
+
+    public TimeSpan ProbeMaxAge { get; init; } = TimeSpan.FromSeconds(90);
+
+    public const string DefaultLivenessFile = "/tmp/hvo-processing-runner.alive";
+
     public static RunnerOptions Load()
     {
         var address = ReadString("HVO_RUNNER_LOGICHOST_URL", null)
@@ -71,7 +77,9 @@ internal sealed class RunnerOptions
             IdleShutdown = TimeSpan.FromSeconds(ReadDouble("HVO_RUNNER_IDLE_SHUTDOWN_SECONDS", 0)),
             ShutdownGrace = TimeSpan.FromSeconds(ReadDouble("HVO_RUNNER_SHUTDOWN_GRACE_SECONDS", 30)),
             RegistrationRetry = TimeSpan.FromSeconds(ReadDouble("HVO_RUNNER_REGISTRATION_RETRY_SECONDS", 5)),
-            AllowInsecureHttp = ReadBoolean("HVO_RUNNER_ALLOW_INSECURE_HTTP", false)
+            AllowInsecureHttp = ReadBoolean("HVO_RUNNER_ALLOW_INSECURE_HTTP", false),
+            LivenessFile = ReadString("HVO_RUNNER_LIVENESS_FILE", DefaultLivenessFile)!,
+            ProbeMaxAge = TimeSpan.FromSeconds(ReadDouble("HVO_RUNNER_PROBE_MAX_AGE_SECONDS", 90))
         };
         options.Validate();
         return options;
@@ -103,7 +111,7 @@ internal sealed class RunnerOptions
             throw new InvalidOperationException("HVO_RUNNER_MAX_TRANSFER_BYTES is out of range.");
         }
         if (RequestTimeout <= TimeSpan.Zero || IdleShutdown < TimeSpan.Zero || ShutdownGrace <= TimeSpan.Zero
-            || RegistrationRetry <= TimeSpan.Zero)
+            || RegistrationRetry <= TimeSpan.Zero || ProbeMaxAge <= TimeSpan.Zero)
         {
             throw new InvalidOperationException("Runner timing values are invalid.");
         }

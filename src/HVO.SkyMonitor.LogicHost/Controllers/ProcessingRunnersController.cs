@@ -191,6 +191,24 @@ internal sealed class ProcessingRunnersController(
         }
     }
 
+    [HttpGet]
+    public async Task<IActionResult> GetStatusAsync(string runnerId, CancellationToken cancellationToken)
+    {
+        var subject = Subject();
+        if (subject is null)
+        {
+            return Forbid();
+        }
+        try
+        {
+            return Json(await registry.GetStatusAsync(subject, runnerId, cancellationToken).ConfigureAwait(false));
+        }
+        catch (CentralProcessingRunnerRejectedException exception)
+        {
+            return Problem(exception);
+        }
+    }
+
     [HttpDelete]
     public async Task<IActionResult> RetireAsync(string runnerId, CancellationToken cancellationToken)
     {
@@ -349,7 +367,8 @@ internal sealed class ProcessingRunnersController(
             ProcessingRunnerReasonCodes.RegistrationRequired => HttpStatusCode.NotFound,
             ProcessingRunnerReasonCodes.RegistrationNotOwned or ProcessingRunnerReasonCodes.JobClassNotClaimable
                 or ProcessingRunnerReasonCodes.CapabilityMismatch => HttpStatusCode.Forbidden,
-            ProcessingRunnerReasonCodes.RegistrationRetired => HttpStatusCode.Gone,
+            ProcessingRunnerReasonCodes.RegistrationRetired or ProcessingRunnerReasonCodes.RegistrationStale
+                => HttpStatusCode.Gone,
             ProcessingRunnerReasonCodes.LeaseStale => HttpStatusCode.Conflict,
             ProcessingRunnerReasonCodes.LeaseCanceled => HttpStatusCode.Gone,
             ProcessingRunnerReasonCodes.TransferTooLarge => HttpStatusCode.RequestEntityTooLarge,

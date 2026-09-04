@@ -44,6 +44,7 @@ internal interface ICentralProcessingRunnerJobService
 /// </summary>
 internal sealed partial class CentralProcessingRunnerJobService(
     ApplicationDbContext dbContext,
+    ICentralProcessingRunnerRegistry registry,
     ICentralDerivativeRunnerLeaseService leaseService,
     ICentralDerivativeJobService jobService,
     ICentralDerivativeExecutionPipeline pipeline,
@@ -70,17 +71,37 @@ internal sealed partial class CentralProcessingRunnerJobService(
                 ProcessingRunnerReasonCodes.JobClassNotClaimable,
                 $"Job class '{request.JobClass}' is not claimable through LogicHost.");
         }
-        if (runner.Runner.Status != CentralProcessingRunnerStatus.Active)
+        // Staleness is enforced on the claim path itself, not only when health is polled.
+        if (await registry.EnforceStalenessAsync(runner.Runner, cancellationToken).ConfigureAwait(false)
+            != CentralProcessingRunnerStatus.Active)
         {
+            telemetry.RecordClaim("stale", "none", TimeSpan.Zero);
             throw CentralProcessingRunnerRejectedException.Create(
-                ProcessingRunnerReasonCodes.RegistrationRetired, "The runner must heartbeat before claiming.");
+                ProcessingRunnerReasonCodes.RegistrationStale, "The runner must heartbeat before claiming.");
         }
         if (runner.EligibleRecipes.Count == 0)
         {
             telemetry.RecordClaim("ineligible", "none", TimeSpan.Zero);
             return null;
         }
-        var scope = CentralDerivativeClaimScope.Only(runner.EligibleRecipes);
+        // Inputs larger than the runner's transfer limit are excluded before leasing so an incompatible runner never
+        // consumes an attempt on work another runner could execute.
+        var scope = CentralDerivativeClaimScope.Only(runner.EligibleRecipes, runner.Capabilities.MaxTransferBytes);
+        // A session lock per runner id makes the advertised concurrency an atomic bound across concurrent claim
+        // requests, including two processes that reuse one runner id.
+        await using var capacityLock = await CentralObjectApplicationLock.AcquireAsync(
+            dbContext, $"processing-runner-claim/{runner.Runner.RunnerId}", cancellationToken).ConfigureAwait(false);
+        var now = timeProvider.GetUtcNow();
+        var activeLeases = await dbContext.CentralDerivativeJobs.AsNoTracking().CountAsync(job =>
+            job.Status == CentralDerivativeJobStatus.Leased
+            && job.LeaseOwner == runner.Runner.RunnerId
+            && job.LeaseExpiresAtUtc > now, cancellationToken).ConfigureAwait(false);
+        if (activeLeases >= runner.Runner.MaxConcurrency)
+        {
+            telemetry.RecordClaim("saturated", "none", TimeSpan.Zero);
+            Log.Saturated(logger, runner.Runner.RunnerId, activeLeases, runner.Runner.MaxConcurrency);
+            return null;
+        }
         for (var candidate = 0; candidate < _options.MaximumClaimCandidatesPerRequest; candidate++)
         {
             var started = timeProvider.GetTimestamp();
@@ -286,6 +307,7 @@ internal sealed partial class CentralProcessingRunnerJobService(
         }
         if (descriptions.ByteLength > runner.Capabilities.MaxTransferBytes)
         {
+            // Unreachable when the claim scope excluded oversized inputs; kept as a defensive invariant.
             await jobService.FailAsync(
                 lease.JobId, lease.LeaseToken, ProcessingRunnerReasonCodes.TransferTooLarge, retryable: true,
                 cancellationToken).ConfigureAwait(false);
@@ -379,6 +401,10 @@ internal sealed partial class CentralProcessingRunnerJobService(
         public static partial void Completed(
             ILogger logger, string runnerId, Guid jobId, int attempt, string recipe, string outcome, string? reason,
             long productBytes, double executionMilliseconds);
+
+        [LoggerMessage(2212, LogLevel.Information,
+            "Processing runner claim refused at capacity: RunnerId={RunnerId}, ActiveLeases={ActiveLeases}, MaxConcurrency={MaxConcurrency}")]
+        public static partial void Saturated(ILogger logger, string runnerId, int activeLeases, int maxConcurrency);
 
         [LoggerMessage(2210, LogLevel.Warning,
             "Processing runner failure: RunnerId={RunnerId}, JobId={JobId}, Attempt={Attempt}, Recipe={Recipe}, Reason={Reason}, Disposition={Disposition}, Message={Message}")]

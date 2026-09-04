@@ -28,6 +28,13 @@ public sealed class ProcessingRunnerPerformanceEvidenceTests
     private const int Width = 1936;
     private const int Height = 1216;
     private const int Trials = 10;
+
+    /// <summary>
+    /// Runner-placed jobs seeded here stay pending for the shared in-process worker of other test classes; retire
+    /// them (and this class's runners) so unrelated claim-order tests never observe them.
+    /// </summary>
+    [TestCleanup]
+    public Task CleanupAsync() => DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory);
     private static readonly JsonSerializerOptions EvidenceSerializerOptions = new() { WriteIndented = true };
 
     [TestMethod]

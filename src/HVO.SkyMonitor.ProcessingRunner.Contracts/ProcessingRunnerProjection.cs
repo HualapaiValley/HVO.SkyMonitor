@@ -185,12 +185,32 @@ public static class ProcessingRunnerProjection
             product.ContentIdentitySha256);
     }
 
+    /// <summary>
+    /// Rebuilds a product and re-derives its identities: the recipe identity from its descriptor and the output identity
+    /// from role, variant, recipe identity, and ordered sources. A runner-supplied identity that does not match its
+    /// provenance is rejected before anything durable can be keyed by it.
+    /// </summary>
     public static ProcessingProduct ReconstructProduct(
         ProcessingRunnerProductMetadata metadata,
         ReadOnlyMemory<byte> payload)
     {
         ArgumentNullException.ThrowIfNull(metadata);
         VerifyPayload(payload.Span, metadata.PayloadLength, metadata.PayloadSha256, $"product {metadata.OutputIdentitySha256}");
+        var derivedRecipe = ProcessingIdentity.CreateRecipeIdentity(metadata.Recipe.Descriptor);
+        if (!ProcessingRunnerProtocol.ChecksumEquals(derivedRecipe.IdentitySha256, metadata.Recipe.IdentitySha256))
+        {
+            throw new ProcessingRunnerProtocolException(
+                ProcessingRunnerReasonCodes.RecipeIdentityMismatch,
+                "The product recipe identity does not match its recipe descriptor.");
+        }
+        var derivedOutput = ProcessingIdentity.CreateOutputIdentity(
+            metadata.Role, metadata.Variant, metadata.Recipe.IdentitySha256, metadata.SourceArtifactIds);
+        if (!ProcessingRunnerProtocol.ChecksumEquals(derivedOutput, metadata.OutputIdentitySha256))
+        {
+            throw new ProcessingRunnerProtocolException(
+                ProcessingRunnerReasonCodes.OutputIdentityMismatch,
+                "The product output identity does not match its role, variant, recipe, and sources.");
+        }
         return new ProcessingProduct(
             metadata.Role,
             metadata.Variant,

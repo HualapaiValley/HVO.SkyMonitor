@@ -16,10 +16,11 @@ internal sealed class RunnerHost(
     IProcessingRecipeExecutor executor,
     RunnerHostOptions options,
     RunnerLog log,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null) : IDisposable
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _activeJobs = new();
+    private readonly CancellationTokenSource _lifetime = new();
     private ProcessingRunnerRegistrationResponse? _registration;
     private long _lastWorkTimestamp;
     private int _availableSlots;
@@ -39,20 +40,25 @@ internal sealed class RunnerHost(
         {
             return 0;
         }
-        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var heartbeat = HeartbeatLoopAsync(stopping.Token);
+        // External cancellation (SIGTERM) only stops claiming. Heartbeats, renewals, and in-flight executions keep
+        // the runner lifetime token until the grace period has drained active jobs, so a deployment restart does not
+        // abandon work that could still complete.
+        using var claimStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var heartbeat = HeartbeatLoopAsync(_lifetime.Token);
         var slots = Enumerable.Range(0, options.MaxConcurrency)
-            .Select(slot => SlotLoopAsync(slot, stopping.Token))
+            .Select(slot => SlotLoopAsync(slot, claimStop.Token))
             .ToArray();
-        var idle = IdleWatchAsync(stopping);
+        var idle = IdleWatchAsync(claimStop);
+        var slotsTask = Task.WhenAll(slots);
         try
         {
-            await Task.WhenAll(slots).ConfigureAwait(false);
+            await slotsTask.WaitAsync(claimStop.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
         }
-        await stopping.CancelAsync().ConfigureAwait(false);
+        await DrainAsync(slotsTask).ConfigureAwait(false);
+        await _lifetime.CancelAsync().ConfigureAwait(false);
         try
         {
             await Task.WhenAll(heartbeat, idle).ConfigureAwait(false);
@@ -60,7 +66,6 @@ internal sealed class RunnerHost(
         catch (OperationCanceledException)
         {
         }
-        await DrainAsync().ConfigureAwait(false);
         await RetireAsync().ConfigureAwait(false);
         return 0;
     }
@@ -133,6 +138,13 @@ internal sealed class RunnerHost(
                         Volatile.Read(ref _availableSlots),
                         _activeJobs.Keys.Take(ProcessingRunnerProtocol.MaximumActiveJobReport).ToArray()),
                     cancellationToken).ConfigureAwait(false);
+                if (!response.EligibleRecipes.SequenceEqual(_registration!.EligibleRecipes, StringComparer.Ordinal))
+                {
+                    log.Info("eligibility-changed",
+                        $"LogicHost placement changed; eligible recipes: {(response.EligibleRecipes.Count == 0 ? "none" : string.Join(',', response.EligibleRecipes))}.");
+                    _registration = _registration with { EligibleRecipes = response.EligibleRecipes };
+                }
+                TouchLiveness();
                 foreach (var jobId in response.CancelRequestedJobIds.Concat(response.StaleJobIds))
                 {
                     if (_activeJobs.TryGetValue(jobId, out var cancellation))
@@ -167,17 +179,17 @@ internal sealed class RunnerHost(
         }
     }
 
-    private async Task IdleWatchAsync(CancellationTokenSource stopping)
+    private async Task IdleWatchAsync(CancellationTokenSource claimStop)
     {
         if (options.IdleShutdown <= TimeSpan.Zero)
         {
             return;
         }
-        while (!stopping.IsCancellationRequested)
+        while (!claimStop.IsCancellationRequested && !_lifetime.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, stopping.Token).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, _lifetime.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -187,7 +199,7 @@ internal sealed class RunnerHost(
                 && _timeProvider.GetElapsedTime(Volatile.Read(ref _lastWorkTimestamp)) >= options.IdleShutdown)
             {
                 log.Info("idle-shutdown", $"No work for {options.IdleShutdown.TotalSeconds:0}s; shutting down.");
-                await stopping.CancelAsync().ConfigureAwait(false);
+                await claimStop.CancelAsync().ConfigureAwait(false);
                 return;
             }
         }
@@ -259,8 +271,10 @@ internal sealed class RunnerHost(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
         Justification = "The renewal task is awaited in the finally block before the job cancellation source is disposed.")]
-    private async Task ExecuteClaimAsync(ProcessingRunnerClaim claim, CancellationToken stoppingToken)
+    private async Task ExecuteClaimAsync(ProcessingRunnerClaim claim, CancellationToken claimStopToken)
     {
+        _ = claimStopToken;
+        var stoppingToken = _lifetime.Token;
         using var jobCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         _activeJobs[claim.JobId] = jobCancellation;
         var renewal = RenewLoopAsync(claim, jobCancellation);
@@ -292,7 +306,7 @@ internal sealed class RunnerHost(
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            log.Warning("job-abandoned", "Execution abandoned during shutdown; LogicHost will expire the lease.", claim.JobId);
+            log.Warning("job-abandoned", "Execution abandoned after the shutdown grace period; LogicHost will expire the lease.", claim.JobId);
         }
         catch (ProcessingRunnerClientException exception) when (exception.IsLeaseStale || exception.IsLeaseCanceled)
         {
@@ -374,21 +388,57 @@ internal sealed class RunnerHost(
         }
     }
 
-    private async Task DrainAsync()
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "Slot failures were already reported by the slots; drain only sequences shutdown.")]
+    private async Task DrainAsync(Task slotsTask)
     {
-        if (_activeJobs.IsEmpty)
+        if (!slotsTask.IsCompleted)
+        {
+            log.Info("draining", $"Claiming stopped; waiting up to {options.ShutdownGrace.TotalSeconds:0}s for {_activeJobs.Count} active job(s) to complete.");
+            try
+            {
+                await slotsTask.WaitAsync(options.ShutdownGrace, _timeProvider).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                log.Warning("drain-timeout", $"{_activeJobs.Count} job(s) still active after the grace period; canceling.");
+                foreach (var cancellation in _activeJobs.Values)
+                {
+                    await cancellation.CancelAsync().ConfigureAwait(false);
+                }
+            }
+            catch (Exception)
+            {
+            }
+        }
+        try
+        {
+            await slotsTask.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "The liveness file is best effort; a probe failure must not stop the runner.")]
+    private void TouchLiveness()
+    {
+        if (string.IsNullOrWhiteSpace(options.LivenessFile))
         {
             return;
         }
-        log.Info("draining", $"Waiting up to {options.ShutdownGrace.TotalSeconds:0}s for {_activeJobs.Count} active job(s).");
-        var deadline = _timeProvider.GetTimestamp();
-        while (!_activeJobs.IsEmpty && _timeProvider.GetElapsedTime(deadline) < options.ShutdownGrace)
+        try
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(250), _timeProvider).ConfigureAwait(false);
+            File.WriteAllText(options.LivenessFile, _timeProvider.GetUtcNow().ToString("O", System.Globalization.CultureInfo.InvariantCulture));
         }
-        foreach (var cancellation in _activeJobs.Values)
+        catch (Exception exception)
         {
-            await cancellation.CancelAsync().ConfigureAwait(false);
+            log.Warning("liveness-write-failed", exception.Message);
         }
     }
 
@@ -421,6 +471,8 @@ internal sealed class RunnerHost(
         }
     }
 
+    public void Dispose() => _lifetime.Dispose();
+
     private static TimeSpan Backoff(TimeSpan claimBackoff, ProcessingRunnerClientException exception)
         => exception.IsUnavailable || exception.IsAuthorizationFailure
             ? TimeSpan.FromTicks(Math.Min(claimBackoff.Ticks * 5, TimeSpan.FromMinutes(1).Ticks))
@@ -439,7 +491,8 @@ internal sealed record RunnerHostOptions(
     TimeSpan IdleShutdown,
     TimeSpan ShutdownGrace,
     TimeSpan RegistrationRetry,
-    bool RetryAuthorizationFailures = false);
+    bool RetryAuthorizationFailures = false,
+    string? LivenessFile = null);
 
 internal sealed record RunnerJobExecutionResult(
     ProcessingOutcome? Outcome,

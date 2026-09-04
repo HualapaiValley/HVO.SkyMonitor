@@ -55,11 +55,22 @@ internal static class Program
             });
             if (probeOnly)
             {
-                var probe = await client.HeartbeatAsync(
-                    new ProcessingRunnerHeartbeatRequest(ProcessingRunnerWarmState.Warm, 0, []), cancellation.Token)
-                    .ConfigureAwait(false);
-                log.Info("probe", $"LogicHost reports registration status {probe.Status}.");
-                return probe.Status == ProcessingRunnerRegistrationStatus.Active ? 0 : 1;
+                // The probe never heartbeats: a hung runner loop must fail the probe, not be revived by it. It checks
+                // the local liveness file written by the real heartbeat loop and LogicHost's non-mutating status.
+                if (!File.Exists(options.LivenessFile))
+                {
+                    log.Error("probe", $"Liveness file {options.LivenessFile} is missing; the runner loop has not heartbeated.");
+                    return 1;
+                }
+                var age = DateTimeOffset.UtcNow - File.GetLastWriteTimeUtc(options.LivenessFile);
+                if (age > options.ProbeMaxAge)
+                {
+                    log.Error("probe", $"Liveness file is {age.TotalSeconds:0}s old (limit {options.ProbeMaxAge.TotalSeconds:0}s); the runner loop is stalled.");
+                    return 1;
+                }
+                var status = await client.GetStatusAsync(cancellation.Token).ConfigureAwait(false);
+                log.Info("probe", $"Runner loop heartbeated {age.TotalSeconds:0}s ago; LogicHost reports {status.Status} with {status.ActiveLeases} active lease(s).");
+                return status.Status == ProcessingRunnerRegistrationStatus.Active ? 0 : 1;
             }
             var warmup = await RunnerWarmup.ExecuteAsync(cancellation.Token).ConfigureAwait(false);
             var capabilities = ProcessingRunnerCapabilities.CreateForCurrentProcess(
@@ -76,7 +87,7 @@ internal static class Program
             }
             log.Info("starting",
                 $"Processing runner starting: concurrency {options.MaxConcurrency}, {capabilities.ProcessArchitecture}, resource class {capabilities.ResourceClass}, latency class {capabilities.LatencyClass}, warm-up {warmup.Stages.RuntimeJit.Elapsed.TotalMilliseconds + warmup.Stages.NativeLibraries.Elapsed.TotalMilliseconds:0} ms.");
-            var host = new RunnerHost(
+            using var host = new RunnerHost(
                 client,
                 warmup.Executor,
                 new RunnerHostOptions(
@@ -87,7 +98,8 @@ internal static class Program
                     options.MaxTransferBytes,
                     options.IdleShutdown,
                     options.ShutdownGrace,
-                    options.RegistrationRetry),
+                    options.RegistrationRetry,
+                    LivenessFile: options.LivenessFile),
                 log);
             var exit = await host.RunAsync(cancellation.Token).ConfigureAwait(false);
             log.Info("stopped", "Processing runner stopped gracefully.");

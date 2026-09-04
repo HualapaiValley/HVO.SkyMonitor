@@ -261,6 +261,14 @@ public sealed class ProcessingRunnerClient : IDisposable
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Reads registration status without touching the heartbeat; used by liveness probes.</summary>
+    public async Task<ProcessingRunnerStatusResponse> GetStatusAsync(CancellationToken cancellationToken)
+    {
+        using var message = await CreateRequestAsync(HttpMethod.Get, RunnerPath(), cancellationToken).ConfigureAwait(false);
+        using var response = await _http.SendAsync(message, cancellationToken).ConfigureAwait(false);
+        return await ReadAsync<ProcessingRunnerStatusResponse>(response, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task RetireAsync(CancellationToken cancellationToken)
     {
         using var message = await CreateRequestAsync(HttpMethod.Delete, RunnerPath(), cancellationToken).ConfigureAwait(false);

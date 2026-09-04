@@ -37,10 +37,13 @@ internal interface ICentralDerivativeJobService
 }
 
 /// <summary>Restricts a claim to (or away from) a recipe set; names must be built-in recipe names.</summary>
-internal sealed record CentralDerivativeClaimScope(IReadOnlySet<string> Recipes, bool Include)
+internal sealed record CentralDerivativeClaimScope(
+    IReadOnlySet<string> Recipes,
+    bool Include,
+    long? MaximumInputBytes = null)
 {
-    public static CentralDerivativeClaimScope Only(IEnumerable<string> recipes)
-        => new(recipes.ToHashSet(StringComparer.Ordinal), true);
+    public static CentralDerivativeClaimScope Only(IEnumerable<string> recipes, long? maximumInputBytes = null)
+        => new(recipes.ToHashSet(StringComparer.Ordinal), true, maximumInputBytes);
 
     public static CentralDerivativeClaimScope Excluding(IEnumerable<string> recipes)
         => new(recipes.ToHashSet(StringComparer.Ordinal), false);
@@ -143,18 +146,27 @@ internal sealed class CentralDerivativeJobService(
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workerId);
-        var now = timeProvider.GetUtcNow();
-        var held = await dbContext.CentralDerivativeJobs.AsNoTracking().AnyAsync(job =>
-            job.Id == jobId
-            && job.Status == CentralDerivativeJobStatus.Leased
-            && job.LeaseToken == leaseToken
-            && job.LeaseOwner == workerId
-            && job.LeaseExpiresAtUtc > now, cancellationToken).ConfigureAwait(false);
-        if (!held)
+        CentralDerivativeJob job;
+        try
+        {
+            job = await LoadJobAsync(jobId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CentralDerivativeJobStateException)
         {
             throw new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
         }
-        return CreateLease(await LoadJobAsync(jobId, cancellationToken).ConfigureAwait(false));
+        // Validate the loaded row itself so a lease reclaimed between a check and the load can never be returned
+        // under the old owner's token.
+        var now = timeProvider.GetUtcNow();
+        if (job.Status != CentralDerivativeJobStatus.Leased
+            || job.LeaseToken != leaseToken
+            || !string.Equals(job.LeaseOwner, workerId, StringComparison.Ordinal)
+            || job.LeaseExpiresAtUtc is null
+            || job.LeaseExpiresAtUtc <= now)
+        {
+            throw new CentralDerivativeJobStateException("The derivative job lease is stale or invalid.");
+        }
+        return CreateLease(job);
     }
 
     private async Task<CentralDerivativeJobLease?> ClaimNextCoreAsync(
@@ -165,6 +177,7 @@ internal sealed class CentralDerivativeJobService(
     {
         var includeRecipes = scope is { Include: true } ? string.Join(',', scope.Recipes.Order(StringComparer.Ordinal)) : string.Empty;
         var excludeRecipes = scope is { Include: false } ? string.Join(',', scope.Recipes.Order(StringComparer.Ordinal)) : string.Empty;
+        var maximumInputBytes = scope?.MaximumInputBytes ?? long.MaxValue;
         for (var collision = 0; collision < 100; collision++)
         {
             var now = timeProvider.GetUtcNow();
@@ -176,6 +189,10 @@ internal sealed class CentralDerivativeJobService(
                     WHERE
                         ({includeRecipes} = N'' OR job.[RecipeName] IN (SELECT [value] FROM STRING_SPLIT({includeRecipes}, ',')))
                         AND ({excludeRecipes} = N'' OR job.[RecipeName] NOT IN (SELECT [value] FROM STRING_SPLIT({excludeRecipes}, ',')))
+                        AND ((SELECT COALESCE(SUM(sized.[ByteLength]), 0)
+                              FROM [CentralDerivativeJobInputs] AS sizedInput
+                              INNER JOIN [CentralArtifacts] AS sized ON sized.[Id] = sizedInput.[CentralArtifactId]
+                              WHERE sizedInput.[CentralDerivativeJobId] = job.[Id]) <= {maximumInputBytes})
                         AND ((job.[GraphExecutionId] IS NULL OR EXISTS (
                             SELECT 1
                             FROM [CentralProcessingGraphExecutions] AS execution

@@ -49,6 +49,12 @@ internal interface ICentralProcessingRunnerRegistry
 
     Task RetireAsync(string clientSubject, string runnerId, CancellationToken cancellationToken);
 
+    /// <summary>Non-mutating status for probes: effective status by heartbeat age, never refreshing the heartbeat.</summary>
+    Task<ProcessingRunnerStatusResponse> GetStatusAsync(string clientSubject, string runnerId, CancellationToken cancellationToken);
+
+    /// <summary>Marks one runner stale when its heartbeat is older than the staleness window; returns the effective status.</summary>
+    Task<CentralProcessingRunnerStatus> EnforceStalenessAsync(CentralProcessingRunner runner, CancellationToken cancellationToken);
+
     /// <summary>Resolves an active runner owned by the subject; throws a rejection otherwise.</summary>
     Task<CentralProcessingRunnerContext> ResolveOwnedAsync(
         string clientSubject,
@@ -172,10 +178,18 @@ internal sealed partial class CentralProcessingRunnerRegistry(
         runner.WarmState = (CentralProcessingRunnerWarmState)request.WarmState;
         var wasStale = runner.Status == CentralProcessingRunnerStatus.Stale;
         runner.Status = CentralProcessingRunnerStatus.Active;
+        var capabilities = context.Capabilities;
         if (request.Warmup is not null)
         {
-            var capabilities = context.Capabilities with { Warmup = request.Warmup, WarmState = request.WarmState };
+            capabilities = capabilities with { Warmup = request.Warmup, WarmState = request.WarmState };
             runner.CapabilitiesJson = JsonSerializer.Serialize(capabilities, ProcessingRunnerProtocol.SerializerOptions);
+        }
+        // Placement is host configuration and may change while a runner stays registered; re-resolve on every heartbeat.
+        var eligible = _options.ResolveEligibleRecipes(capabilities);
+        if (!eligible.SequenceEqual(context.EligibleRecipes, StringComparer.Ordinal))
+        {
+            runner.EligibleRecipesJson = JsonSerializer.Serialize(eligible);
+            Log.EligibilityChanged(logger, runner.RunnerId, string.Join(',', eligible));
         }
         var activeJobIds = request.ActiveJobIds.Distinct().ToArray();
         var cancelRequested = new List<Guid>();
@@ -219,7 +233,49 @@ internal sealed partial class CentralProcessingRunnerRegistry(
             Log.Recovered(logger, runner.RunnerId);
         }
         return new ProcessingRunnerHeartbeatResponse(
-            ProcessingRunnerRegistrationStatus.Active, cancelRequested, stale, now);
+            ProcessingRunnerRegistrationStatus.Active, cancelRequested, stale, eligible, now);
+    }
+
+    public async Task<ProcessingRunnerStatusResponse> GetStatusAsync(
+        string clientSubject,
+        string runnerId,
+        CancellationToken cancellationToken)
+    {
+        var context = await ResolveOwnedAsync(clientSubject, runnerId, allowStale: true, cancellationToken).ConfigureAwait(false);
+        var now = timeProvider.GetUtcNow();
+        var effective = context.Runner.Status == CentralProcessingRunnerStatus.Active
+            && context.Runner.LastHeartbeatAtUtc < now - _options.StaleAfter
+                ? CentralProcessingRunnerStatus.Stale
+                : context.Runner.Status;
+        var activeLeases = await dbContext.CentralDerivativeJobs.AsNoTracking().CountAsync(job =>
+            job.Status == CentralDerivativeJobStatus.Leased
+            && job.LeaseOwner == runnerId
+            && job.LeaseExpiresAtUtc > now, cancellationToken).ConfigureAwait(false);
+        return new ProcessingRunnerStatusResponse(
+            runnerId,
+            (ProcessingRunnerRegistrationStatus)effective,
+            (ProcessingRunnerWarmState)context.Runner.WarmState,
+            context.EligibleRecipes,
+            activeLeases,
+            context.Runner.LastHeartbeatAtUtc,
+            now);
+    }
+
+    public async Task<CentralProcessingRunnerStatus> EnforceStalenessAsync(
+        CentralProcessingRunner runner,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(runner);
+        var now = timeProvider.GetUtcNow();
+        if (runner.Status == CentralProcessingRunnerStatus.Active && runner.LastHeartbeatAtUtc < now - _options.StaleAfter)
+        {
+            runner.Status = CentralProcessingRunnerStatus.Stale;
+            runner.AvailableSlots = 0;
+            runner.UpdatedAtUtc = now;
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            Log.Staled(logger, 1, _options.StaleAfter);
+        }
+        return runner.Status;
     }
 
     public async Task RetireAsync(string clientSubject, string runnerId, CancellationToken cancellationToken)
@@ -382,5 +438,9 @@ internal sealed partial class CentralProcessingRunnerRegistry(
 
         [LoggerMessage(2203, LogLevel.Information, "Processing runner retired: RunnerId={RunnerId}")]
         public static partial void Retired(ILogger logger, string runnerId);
+
+        [LoggerMessage(2211, LogLevel.Information,
+            "Processing runner eligibility changed: RunnerId={RunnerId}, EligibleRecipes={EligibleRecipes}")]
+        public static partial void EligibilityChanged(ILogger logger, string runnerId, string eligibleRecipes);
     }
 }

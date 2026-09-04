@@ -32,6 +32,13 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
 {
     private static readonly byte[] SourcePayload = [1, 0, 2, 0, 3, 0, 4, 0];
 
+    /// <summary>
+    /// Runner-placed jobs seeded here stay pending for the shared in-process worker of other test classes; retire
+    /// them (and this class's runners) so unrelated claim-order tests never observe them.
+    /// </summary>
+    [TestCleanup]
+    public Task CleanupAsync() => DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory);
+
     [TestMethod]
     public async Task Runner_ClaimsFetchesExecutesAndCompletesARunnerPlacedJob()
     {
@@ -272,9 +279,13 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
             .Should().ThrowAsync<ProcessingRunnerClientException>().ConfigureAwait(false);
         canceled.Which.IsLeaseCanceled.Should().BeTrue();
 
-        // Lease expiry lets the job be reclaimed; the expired lease can no longer complete or fail it.
+        // The cancel-requested lease still occupies runner 01's single slot until it lapses, so the expiry scenario
+        // uses a second runner. Lease expiry lets the job be reclaimed; the expired lease can no longer complete or
+        // fail it.
+        using var expiryClient = CreateRunnerClient(http, "runner-recovery-02");
+        await expiryClient.RegisterAsync(CreateRegistration("runner-recovery-02"), CancellationToken.None).ConfigureAwait(false);
         await SeedPreviewJobAsync("runner-recovery-expiry").ConfigureAwait(false);
-        var second = (await client.ClaimAsync(
+        var second = (await expiryClient.ClaimAsync(
             new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0), CancellationToken.None)
             .ConfigureAwait(false))!;
         second.JobId.Should().NotBe(first.JobId);
@@ -290,7 +301,7 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
                 .ExecuteUpdateAsync(setters => setters.SetProperty(attempt => attempt.LeaseExpiresAtUtc, expired))
                 .ConfigureAwait(false);
         }
-        var reclaimed = await client.ClaimAsync(
+        var reclaimed = await expiryClient.ClaimAsync(
             new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0), CancellationToken.None)
             .ConfigureAwait(false);
         if (reclaimed is null)
@@ -306,11 +317,11 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
         reclaimed!.JobId.Should().Be(second.JobId);
         reclaimed.AttemptCount.Should().Be(second.AttemptCount + 1);
         reclaimed.LeaseToken.Should().NotBe(second.LeaseToken);
-        var stale = await client.Invoking(item => item.FailAsync(
+        var stale = await expiryClient.Invoking(item => item.FailAsync(
                 second.JobId, new ProcessingRunnerFailureRequest(second.LeaseToken, "runner.test", true), CancellationToken.None))
             .Should().ThrowAsync<ProcessingRunnerClientException>().ConfigureAwait(false);
         stale.Which.IsLeaseStale.Should().BeTrue();
-        await client.FailAsync(
+        await expiryClient.FailAsync(
             reclaimed.JobId, new ProcessingRunnerFailureRequest(reclaimed.LeaseToken, "object.missing", true, null, reclaimed.Inputs[0].ArtifactId),
             CancellationToken.None).ConfigureAwait(false);
         await using (var scope = factory.Services.CreateAsyncScope())
@@ -349,6 +360,73 @@ public sealed class ProcessingRunnerProtocolIntegrationTests
                 new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0), CancellationToken.None))
             .Should().ThrowAsync<ProcessingRunnerClientException>().ConfigureAwait(false);
         retired.Which.StatusCode.Should().Be(HttpStatusCode.Gone);
+    }
+
+    [TestMethod]
+    public async Task Runner_ClaimsAreBoundedByConcurrencyStalenessAndTransferLimit()
+    {
+        using var factory = CreateFactory();
+        await DisableClaimableJobsAsync(factory).ConfigureAwait(false);
+        await SeedPreviewJobAsync("runner-bounds-a").ConfigureAwait(false);
+        await SeedPreviewJobAsync("runner-bounds-b").ConfigureAwait(false);
+        using var http = factory.CreateClient();
+
+        // A runner whose transfer limit is smaller than the job inputs never leases (and never spends an attempt).
+        using var small = CreateRunnerClient(http, "runner-bounds-small");
+        var smallRegistration = CreateRegistration("runner-bounds-small");
+        await small.RegisterAsync(smallRegistration with
+        {
+            Capabilities = smallRegistration.Capabilities with { MaxTransferBytes = SourcePayload.Length - 1 }
+        }, CancellationToken.None).ConfigureAwait(false);
+        (await small.ClaimAsync(new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0), CancellationToken.None)
+            .ConfigureAwait(false)).Should().BeNull();
+
+        // Concurrency 1: the second claim while the first lease is active returns nothing.
+        using var client = CreateRunnerClient(http, "runner-bounds-01");
+        await client.RegisterAsync(CreateRegistration("runner-bounds-01"), CancellationToken.None).ConfigureAwait(false);
+        var first = await client.ClaimAsync(new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0), CancellationToken.None)
+            .ConfigureAwait(false);
+        first.Should().NotBeNull();
+        first!.AttemptCount.Should().Be(1);
+        (await client.ClaimAsync(new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0), CancellationToken.None)
+            .ConfigureAwait(false)).Should().BeNull();
+        var status = await client.GetStatusAsync(CancellationToken.None).ConfigureAwait(false);
+        status.Status.Should().Be(ProcessingRunnerRegistrationStatus.Active);
+        status.ActiveLeases.Should().Be(1);
+        await client.FailAsync(first.JobId, new ProcessingRunnerFailureRequest(first.LeaseToken, "runner.test", true), CancellationToken.None)
+            .ConfigureAwait(false);
+
+        // Heartbeat loss is enforced on the claim path itself; the status probe reports it without refreshing anything.
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var silentSince = DateTimeOffset.UtcNow.AddMinutes(-10);
+            await db.CentralProcessingRunners.Where(runner => runner.RunnerId == "runner-bounds-01")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(runner => runner.RegisteredAtUtc, silentSince)
+                    .SetProperty(runner => runner.LastHeartbeatAtUtc, silentSince))
+                .ConfigureAwait(false);
+        }
+        (await client.GetStatusAsync(CancellationToken.None).ConfigureAwait(false)).Status
+            .Should().Be(ProcessingRunnerRegistrationStatus.Stale);
+        var stale = await client.Invoking(item => item.ClaimAsync(
+                new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0), CancellationToken.None))
+            .Should().ThrowAsync<ProcessingRunnerClientException>().ConfigureAwait(false);
+        stale.Which.StatusCode.Should().Be(HttpStatusCode.Gone);
+        stale.Which.ReasonCode.Should().Be(ProcessingRunnerReasonCodes.RegistrationStale);
+        (await client.GetStatusAsync(CancellationToken.None).ConfigureAwait(false)).Status
+            .Should().Be(ProcessingRunnerRegistrationStatus.Stale);
+        var heartbeat = await client.HeartbeatAsync(
+            new ProcessingRunnerHeartbeatRequest(ProcessingRunnerWarmState.Warm, 1, []), CancellationToken.None).ConfigureAwait(false);
+        heartbeat.Status.Should().Be(ProcessingRunnerRegistrationStatus.Active);
+        heartbeat.EligibleRecipes.Should().Equal(BuiltInProcessingRecipes.EncodedPreview);
+        (await client.ClaimAsync(new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0), CancellationToken.None)
+            .ConfigureAwait(false)).Should().NotBeNull();
+
+        await using var verify = factory.Services.CreateAsyncScope();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await verifyDb.CentralDerivativeJobAttempts.AsNoTracking()
+            .CountAsync(attempt => attempt.WorkerId == "runner-bounds-small").ConfigureAwait(false)).Should().Be(0);
     }
 
     [TestMethod]

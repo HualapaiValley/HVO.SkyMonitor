@@ -134,6 +134,9 @@ public static class ProcessingRunnerReasonCodes
     public const string RegistrationRequired = "runner.registration-required";
     public const string RegistrationNotOwned = "runner.registration-not-owned";
     public const string RegistrationRetired = "runner.registration-retired";
+    public const string RegistrationStale = "runner.registration-stale";
+    public const string OutputIdentityMismatch = "runner.output-identity-mismatch";
+    public const string RecipeIdentityMismatch = "runner.recipe-identity-mismatch";
     public const string CapabilityMismatch = "runner.capability-mismatch";
     public const string RecipeVersionMismatch = "runner.recipe-version-mismatch";
     public const string InvalidRunnerId = "runner.invalid-runner-id";

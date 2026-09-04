@@ -95,6 +95,16 @@ internal sealed class CentralDerivativeJobExecutor(
             return await transientReprocessingExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
         }
         var input = await inputReader.ReadAsync(lease, cancellationToken).ConfigureAwait(false);
+        if (string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
+            && preparation.Annotation is null)
+        {
+            await jobService.SkipAsync(
+                lease.JobId, lease.LeaseToken, ProcessingReasonCodes.MissingAnnotation, cancellationToken)
+                .ConfigureAwait(false);
+            RecordPinRelease(lease, "skipped");
+            return new CentralDerivativeExecutionResult(
+                ProcessingOutcomeStatus.Skipped, null, ProcessingReasonCodes.MissingAnnotation);
+        }
         var started = timeProvider.GetTimestamp();
         ProcessingOutcome outcome;
         using (telemetry.StartStage("execute", lease.RecipeName))
@@ -182,19 +192,12 @@ internal sealed class CentralDerivativeJobExecutor(
         }
         telemetry.RecordStage(
             "recover", lease.RecipeName, "empty", timeProvider.GetElapsedTime(recoveryStarted));
+        // A missing annotation is decided only after the inputs were read (in process) or fetched (runner), so an
+        // unavailable input is surfaced and suspends the job before the recipe can skip; the kernel skips a null
+        // annotation on the runner path with the same reason code.
         var annotation = string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
             ? CreateAnnotation(lease.SceneProvenanceJson)
             : null;
-        if (string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
-            && annotation is null)
-        {
-            await jobService.SkipAsync(
-                lease.JobId, lease.LeaseToken, ProcessingReasonCodes.MissingAnnotation, cancellationToken)
-                .ConfigureAwait(false);
-            RecordPinRelease(lease, "skipped");
-            return Resolved(new CentralDerivativeExecutionResult(
-                ProcessingOutcomeStatus.Skipped, null, ProcessingReasonCodes.MissingAnnotation));
-        }
         return new CentralDerivativeExecutionPreparation(
             null, false, selector, optionsDocument.RootElement.Clone(), annotation, canonicalInputs);
     }
