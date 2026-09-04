@@ -35,5 +35,5 @@ fi
 dotnet test "$PROJECT" \
     --no-build \
     --configuration "$CONFIGURATION" \
-    --filter "FullyQualifiedName~CameraAgentBrowserAcceptanceTests|FullyQualifiedName~CameraAgentGalleryPerformanceTests" \
+    --filter "FullyQualifiedName~CameraAgentBrowserAcceptanceTests|FullyQualifiedName~CameraAgentGalleryPerformanceTests|FullyQualifiedName~CameraAgentArchivePerformanceTests" \
     --logger "console;verbosity=normal"

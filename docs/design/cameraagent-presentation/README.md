@@ -67,6 +67,13 @@ assumption and does not adopt its calendar, events, time-lapse, keogram,
 dewarping, product scheduling, configuration, or runtime-supervisor proposals.
 Those broader concepts have no authority in #440.
 
+Issue #514 later authorized a bounded subset on its own terms: an observing
+calendar of local-noon-to-noon nights with retained capture and local
+candidate counts, day detail through the existing capture filters, product
+list and detail views over outputs CameraAgent actually retains, and local
+candidate list, calendar, and detail views. Time-lapse, keogram, registered
+stacking, product scheduling, and any new generation remain unauthorized.
+
 ## Image Hierarchy
 
 Presentation labels select only artifacts that actually exist and can be safely
