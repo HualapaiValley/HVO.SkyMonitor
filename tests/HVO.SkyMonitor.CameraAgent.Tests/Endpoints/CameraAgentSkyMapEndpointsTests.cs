@@ -27,7 +27,7 @@ public sealed class CameraAgentSkyMapEndpointsTests
         StringAssert.Contains(success.Body, "catalog", StringComparison.Ordinal);
         // Exactly at both bounds is accepted; one second beyond either is rejected before projection.
         Assert.AreEqual(StatusCodes.Status400BadRequest, (await InvokeAsync(app, "?atUtc=2026-09-05T12:00:01Z").ConfigureAwait(false)).Status);
-        Assert.AreEqual(StatusCodes.Status400BadRequest, (await InvokeAsync(app, "?atUtc=2026-07-03T11:59:59Z").ConfigureAwait(false)).Status);
+        Assert.AreEqual(StatusCodes.Status400BadRequest, (await InvokeAsync(app, "?atUtc=2026-07-04T11:59:59Z").ConfigureAwait(false)).Status);
         var failure = await InvokeAsync(app, "?atUtc=2026-09-05T12:00:00Z").ConfigureAwait(false);
         Assert.AreEqual(StatusCodes.Status503ServiceUnavailable, failure.Status);
         StringAssert.Contains(failure.Body, "The sky map projection is unavailable.", StringComparison.Ordinal);
