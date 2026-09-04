@@ -122,8 +122,8 @@ internal static class GraphExecutionEvidenceFixtures
                     BaseUtc.AddSeconds(30))));
 
     /// <summary>
-    /// A completed live execution: a required node that produced after one retryable attempt, and an optional
-    /// node that skipped with a reason.
+    /// A completed live execution: a required node that produced two outputs after one retryable attempt, and an
+    /// optional node that ends in a terminal failure without failing the execution.
     /// </summary>
     internal static ExecutionEvidenceEnvelopeV1 CreateLiveExecutionEnvelope()
         => Seal(

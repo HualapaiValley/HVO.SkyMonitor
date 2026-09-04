@@ -50,9 +50,7 @@ internal static class ProcessingGraphEvidenceProjection
         return new(
             GraphExecutionEvidenceV1.CurrentSchemaVersion,
             execution.ExecutionId,
-            execution.ExecutionClass == ProcessingGraphExecutionClass.Replay
-                ? ExecutionEvidenceExecutionClass.Replay
-                : ExecutionEvidenceExecutionClass.Live,
+            MapExecutionClass(execution.ExecutionClass),
             MapStatus(execution.Status),
             execution.CaptureId,
             execution.PrimaryArtifactId,
@@ -249,6 +247,14 @@ internal static class ProcessingGraphEvidenceProjection
 
     // The durable enums and strings are mapped explicitly rather than by name, so a future durable member is a
     // compile-time or explicit-failure decision here instead of a silent name coincidence at export time.
+    private static ExecutionEvidenceExecutionClass MapExecutionClass(ProcessingGraphExecutionClass value)
+        => value switch
+        {
+            ProcessingGraphExecutionClass.Live => ExecutionEvidenceExecutionClass.Live,
+            ProcessingGraphExecutionClass.Replay => ExecutionEvidenceExecutionClass.Replay,
+            _ => throw new InvalidDataException($"Unmapped durable execution class '{value}'.")
+        };
+
     private static ExecutionEvidenceExecutionStatus MapStatus(ProcessingGraphExecutionStatus value)
         => value switch
         {

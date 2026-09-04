@@ -303,8 +303,8 @@ canonical bytes (each file ends with one trailing newline that tests strip):
 | --- | --- |
 | `revision-local-v1` | Local-only graph revision. |
 | `revision-assigned-v1` | Centrally assigned revision with #426 provenance. |
-| `execution-live-v1` | Live execution, required node with a retry, optional node skipped. |
-| `execution-replay-v1` | Replay execution, cancellation, interrupted then terminal attempt. |
+| `execution-live-v1` | Live execution; a required node that produced two outputs after one retryable attempt, and an optional node that ends in a terminal failure while the execution still completes. |
+| `execution-replay-v1` | Replay execution; cancellation, a required node whose interrupted attempt is followed by a terminal one, a skipped optional node, and optional artifact media type and payload length. |
 | `correction-v1` | Append-only correction of the live execution. |
 | `availability-v1` | Available, missing, and quarantined artifacts. |
 | `feedback-v1` | Every fact kind, a duplicate, a conflict, gaps, retention. |

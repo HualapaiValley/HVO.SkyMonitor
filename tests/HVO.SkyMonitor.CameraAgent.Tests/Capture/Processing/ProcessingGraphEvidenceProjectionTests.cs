@@ -130,6 +130,27 @@ public sealed class ProcessingGraphEvidenceProjectionTests
     }
 
     [TestMethod]
+    public void EveryDurableExecutionClassMapsAndAnUnknownOneFailsLoudly()
+    {
+        var detail = CreateDetail();
+        foreach (var durable in Enum.GetValues<ProcessingGraphExecutionClass>())
+        {
+            var projected = ProcessingGraphEvidenceProjection.CreateExecutionEvidence(
+                new(detail.Execution with { ExecutionClass = durable }, detail.Nodes));
+            Assert.AreEqual(
+                Enum.Parse<ExecutionEvidenceExecutionClass>(durable.ToString()),
+                projected.ExecutionClass,
+                durable.ToString());
+        }
+
+        // A future durable member must fail loudly rather than be silently exported as Live.
+        var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
+            ProcessingGraphEvidenceProjection.CreateExecutionEvidence(
+                new(detail.Execution with { ExecutionClass = (ProcessingGraphExecutionClass)99 }, detail.Nodes)));
+        StringAssert.Contains(exception.Message, "execution class", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void ProjectedExecutionCarriesNoAvailabilityAndAvailabilityIsSequencedSeparately()
     {
         var detail = CreateDetail();
