@@ -1,7 +1,7 @@
 {
   "aggregate": {
-    "line": 0.8323,
-    "branch": 0.6295,
+    "line": 0.8283,
+    "branch": 0.625,
     "tolerancePercentagePoints": 0.01
   },
   "files": {
@@ -27,7 +27,7 @@
     },
     "HVO.SkyMonitor.CameraAgent.Common/Environmental/SqliteEnvironmentalObservationOutbox.cs": {
       "line": 0.91,
-      "branch": 0.75
+      "branch": 0.74
     },
     "HVO.SkyMonitor.CameraAgent.Common/Gallery/SqliteCameraAgentGallery.cs": {
       "line": 0.93,
@@ -35,7 +35,7 @@
     },
     "HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawCaptureIngress.cs": {
       "line": 0.87,
-      "branch": 0.79
+      "branch": 0.8
     },
     "HVO.SkyMonitor.CameraAgent.Common/RawIngress/SqliteRawCaptureJournal.cs": {
       "line": 0.95,

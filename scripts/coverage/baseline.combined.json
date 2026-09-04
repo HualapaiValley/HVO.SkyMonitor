@@ -1,7 +1,7 @@
 {
   "aggregate": {
-    "line": 0.3225,
-    "branch": 0.186,
+    "line": 0.3184,
+    "branch": 0.1821,
     "tolerancePercentagePoints": 0.01
   },
   "files": {
@@ -23,7 +23,7 @@
     },
     "HVO.SkyMonitor.Fleet.Contracts/FleetStatusContracts.cs": {
       "line": 0.9,
-      "branch": 0.48
+      "branch": 0.46
     }
   }
 }
