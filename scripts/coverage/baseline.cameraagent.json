@@ -1,0 +1,81 @@
+{
+  "aggregate": {
+    "line": 0.8283,
+    "branch": 0.625,
+    "tolerancePercentagePoints": 0.01
+  },
+  "files": {
+    "HVO.SkyMonitor.CameraAgent.Common/Capture/CameraModuleRunner.cs": {
+      "line": 0.92,
+      "branch": 0.79
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Capture/Calibration/SqliteCalibrationLibraryStore.cs": {
+      "line": 0.89,
+      "branch": 0.69
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Capture/Distribution/SqliteCaptureLaneStore.cs": {
+      "line": 0.95,
+      "branch": 0.86
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/SqliteCaptureProcessingStore.cs": {
+      "line": 0.9,
+      "branch": 0.79
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationStore.cs": {
+      "line": 0.92,
+      "branch": 0.79
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Environmental/SqliteEnvironmentalObservationOutbox.cs": {
+      "line": 0.91,
+      "branch": 0.74
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Gallery/SqliteCameraAgentGallery.cs": {
+      "line": 0.93,
+      "branch": 0.79
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawCaptureIngress.cs": {
+      "line": 0.87,
+      "branch": 0.8
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/RawIngress/SqliteRawCaptureJournal.cs": {
+      "line": 0.95,
+      "branch": 0.81
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Scheduling/SqliteCaptureScheduleStore.cs": {
+      "line": 0.87,
+      "branch": 0.68
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Transients/SqliteTransientCandidateJournal.cs": {
+      "line": 0.87,
+      "branch": 0.75
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Transients/SqliteTransientRuntimeStore.cs": {
+      "line": 0.92,
+      "branch": 0.76
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Upload/SqliteArtifactOutbox.cs": {
+      "line": 0.92,
+      "branch": 0.75
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactUploadClient.cs": {
+      "line": 0.76,
+      "branch": 0.76
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactOutboxDrainService.cs": {
+      "line": 0.69,
+      "branch": 0.65
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawIngressFileStore.cs": {
+      "line": 0.88,
+      "branch": 0.62
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawIngressReconciler.cs": {
+      "line": 0.85,
+      "branch": 0.71
+    },
+    "HVO.SkyMonitor.CameraAgent.Common/Fleet/SqliteFleetStatusOutbox.cs": {
+      "line": 0.88,
+      "branch": 0.83
+    }
+  }
+}

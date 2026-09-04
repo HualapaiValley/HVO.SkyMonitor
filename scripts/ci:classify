@@ -13,6 +13,13 @@ deployment_reason="non-pull-request events always run deployment contracts"
 deployment_catalog="true"
 deployment_shards="true"
 deployment_installer="true"
+complete="true"
+complete_reason="non-pull-request events always run the complete solution matrix"
+shared="true"
+cameraagent="true"
+logichost="true"
+combined="true"
+delivery="true"
 path_count=0
 
 write_summary_header() {
@@ -27,15 +34,18 @@ write_summary_path() {
 
 finish() {
   if [[ -n "$summary_file" ]]; then
-    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nPath count: %s\n' \
+    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nLogicHost: **%s**  \nCombined: **%s**  \nDelivery: **%s**  \nPath count: %s\n' \
       "$mode" "$reason" "$deployment" "$deployment_reason" "$deployment_catalog" \
-      "$deployment_shards" "$deployment_installer" "$path_count" >> "$summary_file"
+      "$deployment_shards" "$deployment_installer" "$complete" "$complete_reason" \
+      "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$path_count" >> "$summary_file"
   fi
 
-  printf 'CI classification: mode=%s deployment=%s reason=%s deployment-reason=%s paths=%s\n' \
-    "$mode" "$deployment" "$reason" "$deployment_reason" "$path_count" >&2
-  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_shards=%s\ndeployment_installer=%s\n' \
-    "$mode" "$deployment" "$deployment_catalog" "$deployment_shards" "$deployment_installer"
+  printf 'CI classification: mode=%s deployment=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s reason=%s deployment-reason=%s complete-reason=%s paths=%s\n' \
+    "$mode" "$deployment" "$complete" "$shared" "$cameraagent" "$logichost" "$combined" \
+    "$delivery" "$reason" "$deployment_reason" "$complete_reason" "$path_count" >&2
+  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_shards=%s\ndeployment_installer=%s\ncomplete=%s\nshared=%s\ncameraagent=%s\nlogichost=%s\ncombined=%s\ndelivery=%s\n' \
+    "$mode" "$deployment" "$deployment_catalog" "$deployment_shards" "$deployment_installer" \
+    "$complete" "$shared" "$cameraagent" "$logichost" "$combined" "$delivery"
 }
 
 is_reduced_path() {
@@ -78,7 +88,7 @@ is_deployment_path() {
     .github/workflows/ci.yml | .github/workflows/release.yml | .dockerignore | .env.template | docker-compose.apps.yml | global.json)
       return 0
       ;;
-    scripts/ci:classify | scripts/ci:require | scripts/test:ci-classification)
+    scripts/ci:* | scripts/test:ci-classification)
       return 0
       ;;
     scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-skymonitor.sh)
@@ -117,7 +127,7 @@ select_deployment_suites() {
   local path="$1"
 
   case "$path" in
-    .github/workflows/ci.yml | global.json | scripts/ci:classify | scripts/ci:require | scripts/test:ci-classification)
+    .github/workflows/ci.yml | global.json | scripts/ci:* | scripts/test:ci-classification)
       deployment_catalog="true"
       deployment_shards="true"
       deployment_installer="true"
@@ -160,6 +170,259 @@ select_all_deployment_suites() {
   deployment_installer="true"
 }
 
+# Component ownership is keyed on the exact project directory segment so that
+# sibling names such as HVO.SkyMonitor.CameraAgent.Tests and
+# HVO.SkyMonitor.CameraAgent.LogicHost.Tests can never match by prefix.
+shared_projects=(
+  HVO.SkyMonitor.AgentCore
+  HVO.SkyMonitor.Astronomy
+  HVO.SkyMonitor.Catalog.Sqlite
+  HVO.SkyMonitor.Common
+  HVO.SkyMonitor.Fleet.Contracts
+  HVO.SkyMonitor.Imaging
+  HVO.SkyMonitor.Processing
+  HVO.SkyMonitor.ProcessingRunner
+  HVO.SkyMonitor.ProcessingRunner.Contracts
+  HVO.SkyMonitor.TestSupport
+  HVO.SkyMonitor.AgentCore.Tests
+  HVO.SkyMonitor.Astronomy.Tests
+  HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests
+  HVO.SkyMonitor.Catalog.Sqlite.Tests
+  HVO.SkyMonitor.Common.Tests
+  HVO.SkyMonitor.Fleet.Contracts.Tests
+  HVO.SkyMonitor.Imaging.Tests
+  HVO.SkyMonitor.Processing.Tests
+  HVO.SkyMonitor.ProcessingRunner.Tests
+  HVO.SkyMonitor.TestSupport.Tests
+)
+
+cameraagent_projects=(
+  HVO.SkyMonitor.CameraAgent
+  HVO.SkyMonitor.CameraAgent.Common
+  HVO.SkyMonitor.CameraAgent.Modules.Zwo
+  HVO.SkyMonitor.CameraAgent.Replay
+  HVO.SkyMonitor.CameraAgent.ReplayRunner
+  HVO.SkyMonitor.CameraAgent.AcceptanceTests
+  HVO.SkyMonitor.CameraAgent.IntegrationTests
+  HVO.SkyMonitor.CameraAgent.Tests
+)
+
+logichost_projects=(
+  HVO.SkyMonitor.LogicHost
+  HVO.SkyMonitor.LogicHost.IntegrationTests
+  HVO.SkyMonitor.LogicHost.TestInfrastructure
+  HVO.SkyMonitor.LogicHost.Tests
+)
+
+combined_projects=(
+  HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests
+  HVO.SkyMonitor.CameraAgent.LogicHost.Tests
+)
+
+delivery_projects=(
+  HVO.SkyMonitor.Deployment.Cli
+  HVO.SkyMonitor.Deployment.Contracts
+  HVO.SkyMonitor.Deployment.Distribution
+  HVO.SkyMonitor.Deployment.ReleaseTool
+  HVO.SkyMonitor.Deployment.Cli.Tests
+  HVO.SkyMonitor.Deployment.Distribution.Tests
+)
+
+contains_project() {
+  local candidate="$1"
+  shift
+  local project
+  for project in "$@"; do
+    [[ "$project" != "$candidate" ]] || return 0
+  done
+  return 1
+}
+
+# Host paths default to being an exported protocol or integration seam. Only the
+# explicitly listed host-private areas skip the combined lane, so a new host
+# directory fails closed into combined coverage. A directory is host-private only
+# when no combined suite compiles against it; scripts/test:ci-classification
+# rechecks that against the combined projects' actual using directives.
+is_host_private_path() {
+  local path="$1"
+
+  case "$path" in
+    src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/* | src/HVO.SkyMonitor.CameraAgent.Replay/* | src/HVO.SkyMonitor.CameraAgent.ReplayRunner/*)
+      return 0
+      ;;
+    src/HVO.SkyMonitor.CameraAgent/Components/Account/* | src/HVO.SkyMonitor.LogicHost/Components/Account/*)
+      return 1
+      ;;
+    src/*/Properties/AssemblyInfo.cs)
+      return 1
+      ;;
+    src/HVO.SkyMonitor.CameraAgent/Components/* | src/HVO.SkyMonitor.CameraAgent/Properties/* | src/HVO.SkyMonitor.CameraAgent/wwwroot/*)
+      return 0
+      ;;
+    src/HVO.SkyMonitor.CameraAgent.Common/Background/* | src/HVO.SkyMonitor.CameraAgent.Common/Diagnostics/* | src/HVO.SkyMonitor.CameraAgent.Common/Frames/* | src/HVO.SkyMonitor.CameraAgent.Common/Gallery/*)
+      return 0
+      ;;
+    src/HVO.SkyMonitor.CameraAgent.Common/Imaging/* | src/HVO.SkyMonitor.CameraAgent.Common/Logging/* | src/HVO.SkyMonitor.CameraAgent.Common/Properties/* | src/HVO.SkyMonitor.CameraAgent.Common/Reflection/* | src/HVO.SkyMonitor.CameraAgent.Common/Scheduling/* | src/HVO.SkyMonitor.CameraAgent.Common/SkyMap/* | src/HVO.SkyMonitor.CameraAgent.Common/Storage/*)
+      return 0
+      ;;
+    src/HVO.SkyMonitor.LogicHost/Components/* | src/HVO.SkyMonitor.LogicHost/Properties/* | src/HVO.SkyMonitor.LogicHost/wwwroot/*)
+      return 0
+      ;;
+    tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/*)
+      return 1
+      ;;
+    tests/*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+select_complete_matrix() {
+  complete="true"
+  shared="true"
+  cameraagent="true"
+  logichost="true"
+  combined="true"
+  delivery="true"
+}
+
+select_shared_component() {
+  shared="true"
+  cameraagent="true"
+  logichost="true"
+  combined="true"
+  delivery="true"
+}
+
+# A source can be compiled into a project outside its own directory through an
+# MSBuild <Compile Include> link. The including project's component is derived
+# from the checked-out project files rather than a hand-maintained list, so a new
+# link cannot narrow the plan.
+apply_linked_project() {
+  local project="$1"
+
+  # A host application project that compiles a source from elsewhere composes it
+  # into that host's exported surface, so it selects combined coverage the same
+  # way a direct seam change does. A test project keeps the narrow selection.
+  case "$project" in
+    HVO.SkyMonitor.CameraAgent | HVO.SkyMonitor.CameraAgent.Common | HVO.SkyMonitor.LogicHost)
+      combined="true"
+      ;;
+  esac
+
+  if contains_project "$project" "${shared_projects[@]}"; then
+    select_shared_component
+  elif contains_project "$project" "${cameraagent_projects[@]}"; then
+    cameraagent="true"
+  elif contains_project "$project" "${logichost_projects[@]}"; then
+    logichost="true"
+  elif contains_project "$project" "${combined_projects[@]}"; then
+    combined="true"
+    cameraagent="true"
+    logichost="true"
+  elif contains_project "$project" "${delivery_projects[@]}"; then
+    delivery="true"
+  else
+    complete_reason="a linked source is compiled by a project outside every component boundary"
+    select_complete_matrix
+  fi
+}
+
+# List every project directory, other than the path's own, whose project file
+# includes the path through a relative MSBuild item. Every project file in this
+# repository lives at <top>/<project>/<name>.csproj, so a repository path is
+# always reachable as ../../<path> and, for a sibling project, as
+# ../<project>/<relative>. Both separators and every item type are matched, so a
+# Compile link, a copied fixture, and an embedded resource all count.
+list_linked_projects() {
+  local path="$1" top rest project relative csproj including_project
+  local patterns=()
+
+  # A project reference is a component-graph relationship, not a link: it is
+  # already modelled by the component map and the seam rules.
+  [[ "$path" != *.csproj ]] || return 0
+
+  patterns+=(-e "Include=\"../../${path}\"")
+  patterns+=(-e "Include=\"..\\..\\${path//\//\\}\"")
+
+  top="${path%%/*}"
+  project=""
+  case "$top" in
+    src | tests | tools)
+      rest="${path#"$top"/}"
+      if [[ "$rest" == */* ]]; then
+        project="${rest%%/*}"
+        relative="${rest#"$project"/}"
+        patterns+=(-e "Include=\"../${project}/${relative}\"")
+        patterns+=(-e "Include=\"..\\${project}\\${relative//\//\\}\"")
+      fi
+      ;;
+  esac
+
+  while IFS= read -r csproj; do
+    [[ -n "$csproj" ]] || continue
+    including_project="${csproj#*/}"
+    including_project="${including_project%%/*}"
+    [[ -z "$project" || "$including_project" != "$project" ]] || continue
+    printf '%s\n' "$including_project"
+  done < <(grep -rlF --include='*.csproj' "${patterns[@]}" src tests tools scripts 2>/dev/null) | sort -u
+}
+
+select_components() {
+  local path="$1" linked_projects="${2:-}" top rest project linked_project
+
+  # A source that another project compiles or copies also selects that project's
+  # component, wherever the source itself lives.
+  while IFS= read -r linked_project; do
+    [[ -n "$linked_project" ]] || continue
+    apply_linked_project "$linked_project"
+  done <<< "$linked_projects"
+
+  # Deployment inputs that are not .NET project directories are intentionally not
+  # mapped to the delivery component. Test code reads several of them from the
+  # repository root at run time, which no project file records, so narrowing them
+  # would silently drop the suites that assert them. They keep their independent
+  # deployment-contract selection and otherwise fall through to the complete
+  # matrix, exactly as before component scoping.
+
+  top="${path%%/*}"
+  rest="${path#"$top"/}"
+  # A path outside every project directory always selects the complete matrix.
+  # Test code reads repository-root files that no project file records, so link
+  # derivation can widen such a path's plan but must never narrow it.
+  if [[ "$top" != "src" && "$top" != "tests" && "$top" != "tools" ]] || [[ "$rest" != */* ]]; then
+    complete_reason="at least one path is outside every component boundary"
+    select_complete_matrix
+    return 0
+  fi
+
+  project="${rest%%/*}"
+  if contains_project "$project" "${shared_projects[@]}"; then
+    select_shared_component
+  elif contains_project "$project" "${cameraagent_projects[@]}"; then
+    cameraagent="true"
+    if ! is_host_private_path "$path"; then
+      combined="true"
+    fi
+  elif contains_project "$project" "${logichost_projects[@]}"; then
+    logichost="true"
+    if ! is_host_private_path "$path"; then
+      combined="true"
+    fi
+  elif contains_project "$project" "${combined_projects[@]}"; then
+    combined="true"
+    cameraagent="true"
+    logichost="true"
+  elif contains_project "$project" "${delivery_projects[@]}"; then
+    delivery="true"
+  else
+    complete_reason="at least one path is outside every component boundary"
+    select_complete_matrix
+  fi
+}
+
 if [[ "$event_name" != "pull_request" ]]; then
   finish
   exit 0
@@ -171,13 +434,22 @@ deployment_reason="pull request does not change deployment-contract inputs"
 deployment_catalog="false"
 deployment_shards="false"
 deployment_installer="false"
+complete="false"
+complete_reason="pull request changes only component-scoped paths"
+shared="false"
+cameraagent="false"
+logichost="false"
+combined="false"
+delivery="false"
 
 if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null \
   || ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
   deployment="true"
   select_all_deployment_suites
+  select_complete_matrix
   reason="base or head commit is unavailable"
   deployment_reason="base or head commit is unavailable"
+  complete_reason="base or head commit is unavailable"
   finish
   exit 0
 fi
@@ -188,8 +460,10 @@ trap 'rm -f "$diff_file"' EXIT
 if ! git diff --name-status --no-renames -z "${base_sha}...${head_sha}" -- > "$diff_file"; then
   deployment="true"
   select_all_deployment_suites
+  select_complete_matrix
   reason="git diff failed"
   deployment_reason="git diff failed"
+  complete_reason="git diff failed"
   finish
   exit 0
 fi
@@ -202,8 +476,10 @@ while IFS= read -r -d '' status; do
     mode="full"
     deployment="true"
     select_all_deployment_suites
+    select_complete_matrix
     reason="git diff returned malformed name-status data"
     deployment_reason="git diff returned malformed name-status data"
+    complete_reason="git diff returned malformed name-status data"
     break
   fi
 
@@ -214,18 +490,28 @@ while IFS= read -r -d '' status; do
   if [[ "$status" != "A" && "$status" != "M" ]]; then
     mode="full"
     deployment="true"
+    select_complete_matrix
     reason="deleted, renamed, or type-changed paths require the full matrix"
     deployment_reason="deleted, renamed, or type-changed paths require deployment contracts"
+    complete_reason="deleted, renamed, or type-changed paths require the complete solution matrix"
   elif ! tree_entry="$(git ls-tree "$head_sha" -- ":(literal)$path")" \
     || [[ "${tree_entry%% *}" != "100644" && "${tree_entry%% *}" != "100755" ]]; then
     mode="full"
     deployment="true"
+    select_complete_matrix
     reason="missing or non-regular paths require the full matrix"
     deployment_reason="missing or non-regular paths require deployment contracts"
+    complete_reason="missing or non-regular paths require the complete solution matrix"
   else
-    if ! is_reduced_path "$path"; then
+    linked_projects="$(list_linked_projects "$path")"
+    if [[ -n "$linked_projects" ]] || ! is_reduced_path "$path"; then
       mode="full"
-      reason="at least one path is outside the reduced-mode allowlist"
+      if [[ -n "$linked_projects" ]] && is_reduced_path "$path"; then
+        reason="at least one otherwise-allowlisted path is compiled or copied into a project"
+      else
+        reason="at least one path is outside the reduced-mode allowlist"
+      fi
+      select_components "$path" "$linked_projects"
     fi
     if is_deployment_path "$path"; then
       mode="full"
@@ -240,8 +526,16 @@ if [[ "$path_count" -eq 0 ]]; then
   mode="full"
   deployment="true"
   select_all_deployment_suites
+  select_complete_matrix
   reason="empty change sets require the full matrix"
   deployment_reason="empty change sets require deployment contracts"
+  complete_reason="empty change sets require the complete solution matrix"
+fi
+
+if [[ "$mode" == "full" && "$complete" == "false" ]] \
+  && [[ "$shared" == "false" && "$cameraagent" == "false" && "$logichost" == "false" && "$combined" == "false" && "$delivery" == "false" ]]; then
+  complete_reason="full mode selected no component lane"
+  select_complete_matrix
 fi
 
 finish

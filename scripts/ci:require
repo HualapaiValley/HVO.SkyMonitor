@@ -1,74 +1,195 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mode="${1:-}"
-deployment_plan="${2:-}"
-event_name="${3:-}"
-classification="${4:-}"
-quality="${5:-}"
-deployment="${6:-}"
-build="${7:-}"
-unit="${8:-}"
-integration="${9:-}"
-architecture="${10:-}"
-migrations="${11:-}"
-coverage="${12:-}"
+# Required CI aggregation. The expected result of every gate is derived from the
+# validated classifier plan, so a plan that silently drops an affected gate is a
+# rejected plan rather than a green merge.
 
-results="classification=$classification quality=$quality deployment-plan=$deployment_plan deployment=$deployment build=$build unit=$unit integration=$integration architecture=$architecture migrations=$migrations coverage=$coverage"
+# Plan and result values are split on whitespace; disable pathname expansion so a
+# value can never glob against the runner workspace.
+set -f
 
-if [[ "$classification" != "success" || "$quality" != "success" ]]; then
-  printf 'Required gate results: mode=%s event=%s %s\n' "$mode" "$event_name" "$results" >&2
+event_name="${1:-}"
+plan_input="${2:-}"
+result_input="${3:-}"
+
+declare -A plan=()
+declare -A result=()
+
+plan_keys=(mode complete shared cameraagent logichost combined delivery deployment)
+result_keys=(
+  changes
+  quality
+  catalog-contracts
+  deployment-contracts
+  build
+  architecture
+  coverage-policy
+  migrations-cameraagent
+  migrations-logichost
+  unit
+  integration
+  coverage
+  shared-libraries
+  cameraagent-component
+  logichost-component
+  combined-integration
+  delivery-component
+)
+
+reject() {
+  printf 'Required CI rejected the current head: %s\n' "$1" >&2
+  printf 'Event: %s\nPlan: %s\nResults: %s\n' "$event_name" "$plan_input" "$result_input" >&2
   exit 1
-fi
+}
 
-if [[ "$event_name" != "pull_request" && ( "$mode" != "full" || "$deployment_plan" != "true" ) ]]; then
-  printf 'Non-pull-request CI requires mode=full and deployment-plan=true: mode=%s event=%s deployment-plan=%s\n' \
-    "$mode" "$event_name" "$deployment_plan" >&2
-  exit 1
-fi
+parse_pairs() {
+  local -n target="$1"
+  local input="$2"
+  local kind="$3"
+  local pair key value
+  for pair in $input; do
+    [[ "$pair" == *=* ]] || reject "malformed $kind entry '$pair'"
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    [[ -n "$key" ]] || reject "malformed $kind entry '$pair'"
+    [[ -z "${target[$key]+set}" ]] || reject "duplicate $kind entry '$key'"
+    target["$key"]="$value"
+  done
+}
 
-case "$deployment_plan" in
-  true) expected_deployment="success" ;;
-  false) expected_deployment="skipped" ;;
-  *)
-    printf 'Unknown or missing deployment classification: deployment-plan=%s\n' "$deployment_plan" >&2
-    exit 1
-    ;;
+parse_pairs plan "$plan_input" plan
+parse_pairs result "$result_input" result
+
+for key in "${plan_keys[@]}"; do
+  [[ -n "${plan[$key]+set}" ]] || reject "plan is missing '$key'"
+done
+for key in "${!plan[@]}"; do
+  printf '%s\n' "${plan_keys[@]}" | grep -Fxq -- "$key" || reject "plan contains unknown key '$key'"
+done
+for key in "${result_keys[@]}"; do
+  [[ -n "${result[$key]+set}" ]] || reject "results are missing '$key'"
+  case "${result[$key]}" in
+    success | failure | cancelled | skipped) ;;
+    *) reject "job '$key' reported an unusable result '${result[$key]}'" ;;
+  esac
+done
+for key in "${!result[@]}"; do
+  printf '%s\n' "${result_keys[@]}" | grep -Fxq -- "$key" || reject "results contain unknown job '$key'"
+done
+
+case "${plan[mode]}" in
+  full | reduced) ;;
+  *) reject "unknown or missing CI classification mode '${plan[mode]}'" ;;
 esac
 
-if [[ "$deployment" != "$expected_deployment" ]]; then
-  printf 'Required gate results: mode=%s event=%s expected-deployment=%s %s\n' \
-    "$mode" "$event_name" "$expected_deployment" "$results" >&2
-  exit 1
-fi
+for key in complete shared cameraagent logichost combined delivery deployment; do
+  case "${plan[$key]}" in
+    true | false) ;;
+    *) reject "plan flag '$key' is not a boolean: '${plan[$key]}'" ;;
+  esac
+done
 
-case "$mode" in
-  full)
-    expected="success"
-    ;;
-  reduced)
-    if [[ "$event_name" != "pull_request" ]]; then
-      printf 'Reduced CI is valid only for pull requests: event=%s\n' "$event_name" >&2
-      exit 1
-    fi
-    if [[ "$deployment_plan" != "false" ]]; then
-      printf 'Reduced pull-request CI requires deployment-plan=false: deployment-plan=%s\n' "$deployment_plan" >&2
-      exit 1
-    fi
-    expected="skipped"
-    ;;
-  *)
-    printf 'Unknown or missing CI classification: mode=%s\n' "$mode" >&2
-    exit 1
-    ;;
-esac
-
-for result in "$build" "$unit" "$integration" "$architecture" "$migrations" "$coverage"; do
-  if [[ "$result" != "$expected" ]]; then
-    printf 'Required gate results: mode=%s event=%s expected-expensive=%s %s\n' \
-      "$mode" "$event_name" "$expected" "$results" >&2
-    exit 1
+components=(shared cameraagent logichost combined delivery)
+any_component="false"
+every_component="true"
+for key in "${components[@]}"; do
+  if [[ "${plan[$key]}" == "true" ]]; then
+    any_component="true"
+  else
+    every_component="false"
   fi
 done
 
-printf 'Required gate results: mode=%s event=%s %s\n' "$mode" "$event_name" "$results"
+if [[ "$event_name" != "pull_request" ]]; then
+  [[ "${plan[mode]}" == "full" ]] || reject "non-pull-request CI requires mode=full"
+  [[ "${plan[complete]}" == "true" ]] || reject "non-pull-request CI requires complete=true"
+  [[ "${plan[deployment]}" == "true" ]] || reject "non-pull-request CI requires deployment=true"
+  [[ "$every_component" == "true" ]] || reject "non-pull-request CI requires every component lane"
+fi
+
+if [[ "${plan[mode]}" == "reduced" ]]; then
+  [[ "$event_name" == "pull_request" ]] || reject "reduced CI is valid only for pull requests"
+  [[ "${plan[deployment]}" == "false" ]] || reject "reduced CI requires deployment=false"
+  [[ "${plan[complete]}" == "false" ]] || reject "reduced CI requires complete=false"
+  [[ "$any_component" == "false" ]] || reject "reduced CI must select no component lane"
+else
+  [[ "${plan[complete]}" == "true" || "$any_component" == "true" ]] \
+    || reject "full CI must select the complete matrix or at least one component lane"
+  if [[ "${plan[complete]}" == "true" && "$every_component" != "true" ]]; then
+    reject "the complete matrix must claim every component lane"
+  fi
+fi
+
+if [[ "${plan[complete]}" == "true" && "${plan[mode]}" != "full" ]]; then
+  reject "the complete matrix requires mode=full"
+fi
+
+# The classifier's fan-out rules are part of the plan contract. A shared contract
+# change must claim every consuming lane. Combined coverage is only ever selected
+# by a host seam, a combined fixture, or the shared fan-out, so it must claim at
+# least one host lane; requiring both would reject a correct host-seam plan.
+if [[ "${plan[shared]}" == "true" ]]; then
+  for key in cameraagent logichost combined delivery; do
+    [[ "${plan[$key]}" == "true" ]] || reject "a shared plan must claim every consuming lane, missing '$key'"
+  done
+fi
+
+if [[ "${plan[combined]}" == "true" ]] \
+  && [[ "${plan[cameraagent]}" != "true" && "${plan[logichost]}" != "true" ]]; then
+  reject "a combined plan must claim at least one host lane"
+fi
+
+expected_when() {
+  if [[ "$1" == "true" ]]; then
+    printf 'success\n'
+  else
+    printf 'skipped\n'
+  fi
+}
+
+full_mode="false"
+[[ "${plan[mode]}" != "full" ]] || full_mode="true"
+
+component_lane() {
+  # A component lane runs only when the complete solution matrix does not
+  # already cover it, so the two plans never duplicate the same evidence.
+  if [[ "${plan[complete]}" == "false" && "${plan[$1]}" == "true" ]]; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
+}
+
+declare -A expected=()
+expected[changes]="success"
+expected[quality]="success"
+expected[catalog-contracts]="$(expected_when "$full_mode")"
+expected[build]="$(expected_when "$full_mode")"
+expected[architecture]="$(expected_when "$full_mode")"
+expected[coverage-policy]="$(expected_when "$full_mode")"
+expected[deployment-contracts]="$(expected_when "${plan[deployment]}")"
+expected[migrations-cameraagent]="$(expected_when "$full_mode")"
+expected[migrations-logichost]="$(expected_when "$full_mode")"
+expected[unit]="$(expected_when "${plan[complete]}")"
+expected[integration]="$(expected_when "${plan[complete]}")"
+expected[coverage]="$(expected_when "${plan[complete]}")"
+expected[shared-libraries]="$(expected_when "$(component_lane shared)")"
+expected[cameraagent-component]="$(expected_when "$(component_lane cameraagent)")"
+expected[logichost-component]="$(expected_when "$(component_lane logichost)")"
+expected[combined-integration]="$(expected_when "$(component_lane combined)")"
+expected[delivery-component]="$(expected_when "$(component_lane delivery)")"
+
+report=""
+failed="false"
+for key in "${result_keys[@]}"; do
+  report+="$key=${result[$key]}(expected ${expected[$key]}) "
+  [[ "${result[$key]}" == "${expected[$key]}" ]] || failed="true"
+done
+
+if [[ "$failed" == "true" ]]; then
+  reject "at least one gate did not match its planned result: ${report% }"
+fi
+
+printf 'Required CI accepted the current head: event=%s plan=%s\n' "$event_name" "$plan_input"
+printf 'Gate results: %s\n' "${report% }"

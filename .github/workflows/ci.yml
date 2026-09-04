@@ -31,6 +31,12 @@ jobs:
       deployment_catalog: ${{ steps.classify.outputs.deployment_catalog }}
       deployment_shards: ${{ steps.classify.outputs.deployment_shards }}
       deployment_installer: ${{ steps.classify.outputs.deployment_installer }}
+      complete: ${{ steps.classify.outputs.complete }}
+      shared: ${{ steps.classify.outputs.shared }}
+      cameraagent: ${{ steps.classify.outputs.cameraagent }}
+      logichost: ${{ steps.classify.outputs.logichost }}
+      combined: ${{ steps.classify.outputs.combined }}
+      delivery: ${{ steps.classify.outputs.delivery }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,7 +107,7 @@ jobs:
           /tmp/actionlint .github/workflows/*.yml
       - name: Run static and lightweight contract checks
         run: |
-          bash -n .devcontainer/*.sh .devcontainer/opencode-host.conf scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/deploy:environment scripts/deploy/*.sh deploy/split-host/provision-sql.sh deploy/split-host/provision-minio.sh scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:deploy-environment scripts/test:deploy-environment-cli scripts/test:opencode scripts/test:cameraagent-ui scripts/test:logichost-ui scripts/test:cameraagent-standalone-production-smoke scripts/test:cameraagent-arm64-ci scripts/test:cameraagent-dual-standalone-smoke scripts/test:deployment-logichost-outage-contract scripts/test:deployment-normal-flow-contract scripts/ci:classify scripts/ci:require scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/install-hvo-skymonitor.sh scripts/opencode:connect scripts/opencode:enable scripts/opencode:disable
+          bash -n .devcontainer/*.sh .devcontainer/opencode-host.conf scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/deploy:environment scripts/deploy/*.sh deploy/split-host/provision-sql.sh deploy/split-host/provision-minio.sh scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:deploy-environment scripts/test:deploy-environment-cli scripts/test:opencode scripts/test:cameraagent-ui scripts/test:logichost-ui scripts/test:cameraagent-standalone-production-smoke scripts/test:cameraagent-arm64-ci scripts/test:cameraagent-dual-standalone-smoke scripts/test:deployment-logichost-outage-contract scripts/test:deployment-normal-flow-contract scripts/ci:classify scripts/ci:require scripts/ci:canonical-migration scripts/ci:component-build scripts/ci:component-publish scripts/coverage:enforce scripts/coverage:component scripts/coverage:policy scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/install-hvo-skymonitor.sh scripts/opencode:connect scripts/opencode:enable scripts/opencode:disable
           ./scripts/docs:audit-operations
           ./scripts/test:infra
           ./scripts/test:smoke-env
@@ -215,7 +221,7 @@ jobs:
   unit:
     name: Unit Tests
     needs: [changes, catalog-contracts]
-    if: needs.changes.outputs.mode == 'full'
+    if: needs.changes.outputs.complete == 'true'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 20
     env:
@@ -275,7 +281,7 @@ jobs:
   integration:
     name: Integration Tests
     needs: changes
-    if: needs.changes.outputs.mode == 'full'
+    if: needs.changes.outputs.complete == 'true'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 35
     env:
@@ -330,6 +336,10 @@ jobs:
           dotnet restore HVO.SkyMonitor.v9.slnx
           dotnet clean HVO.SkyMonitor.v9.slnx --configuration Release
           dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+      - name: Validate architecture unit contracts
+        env:
+          UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+        run: dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/architecture-unit --logger "trx;LogFileName=architecture-unit.trx"
       - name: Validate architecture graph and publish outputs
         env:
           HVO_PUBLISH_EVIDENCE_ROOT: ${{ github.workspace }}/TestResults/publish
@@ -345,6 +355,7 @@ jobs:
           mv TestResults/publish/installer/linux-arm64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-arm64/hvo-skymonitor
           test -x TestResults/publish/installer/linux-x64/hvo-skymonitor
           test -x TestResults/publish/installer/linux-arm64/hvo-skymonitor
+          file TestResults/publish/installer/linux-arm64/hvo-skymonitor | grep -q 'ARM aarch64'
           test -x TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner
           test -x TestResults/publish/replay-runner/linux-arm64/HVO.SkyMonitor.CameraAgent.ReplayRunner
           TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner --capabilities > TestResults/publish/replay-runner-linux-x64-capabilities.json
@@ -386,6 +397,14 @@ jobs:
             "$replay_runner_x64_bytes" "$replay_runner_arm64_bytes" \
             "$processing_runner_x64_bytes" "$processing_runner_arm64_bytes" \
             > TestResults/publish/summary.txt
+      - name: Upload architecture unit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: architecture-unit-evidence
+          path: TestResults/architecture-unit/
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload architecture coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -406,8 +425,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  migrations:
-    name: Migrations
+  migrations-cameraagent:
+    name: CameraAgent Migrations
     needs: changes
     if: needs.changes.outputs.mode == 'full'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
@@ -421,40 +440,317 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
-      - name: Restore tools and build Release
+      - name: Restore tools and build the CameraAgent project root
         run: |
           dotnet tool restore
-          dotnet restore HVO.SkyMonitor.v9.slnx
-          dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
-      - name: Enforce one canonical migration per EF context
-        run: |
-          shopt -s nullglob
-          cameraagent_migrations=()
-          for path in src/HVO.SkyMonitor.CameraAgent/Data/Migrations/20*_*.cs; do
-            [[ "$path" == *.Designer.cs ]] || cameraagent_migrations+=("$path")
-          done
-          logichost_migrations=()
-          for path in src/HVO.SkyMonitor.LogicHost/Data/Migrations/20*_*.cs; do
-            [[ "$path" == *.Designer.cs ]] || logichost_migrations+=("$path")
-          done
-          if (( ${#cameraagent_migrations[@]} != 1 || ${#logichost_migrations[@]} != 1 )); then
-            printf 'Expected one canonical migration per EF context; CameraAgent=%s LogicHost=%s\n' \
-              "${#cameraagent_migrations[@]}" "${#logichost_migrations[@]}" >&2
-            exit 1
-          fi
+          dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
+          dotnet build src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --no-restore --configuration Release
+      - name: Enforce one canonical CameraAgent migration
+        run: ./scripts/ci:canonical-migration cameraagent
       - name: Reject pending CameraAgent model changes
         run: dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --startup-project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build
+
+  migrations-logichost:
+    name: LogicHost Migrations
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore tools and build the LogicHost project root
+        run: |
+          dotnet tool restore
+          dotnet restore src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+          dotnet build src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --no-restore --configuration Release
+      - name: Enforce one canonical LogicHost migration
+        run: ./scripts/ci:canonical-migration logichost
       - name: Reject pending LogicHost model changes
         env:
           ConnectionStrings__skymonitordb: Server=127.0.0.1,1433;Database=ModelCheck;User Id=sa;Password=Model_check1!;TrustServerCertificate=True
         run: dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --startup-project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --context HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext --configuration Release --no-build
+
+  coverage-policy:
+    name: Coverage Policy
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject weakened aggregate or component coverage thresholds
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"
+
+  shared-libraries:
+    name: Shared Libraries
+    needs: changes
+    if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.shared == 'true'
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 45
+    env:
+      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+      INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore and build shared project roots
+        run: ./scripts/ci:component-build shared
+      - name: Run shared Unit suites
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
+        run: |
+          dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/astronomy --logger "trx;LogFileName=unit-astronomy.trx"
+          dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/imaging --logger "trx;LogFileName=unit-imaging.trx"
+          dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/processing --logger "trx;LogFileName=unit-processing.trx"
+          dotnet test tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/processing-runner --logger "trx;LogFileName=unit-processing-runner.trx"
+          dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/catalog-sqlite --logger "trx;LogFileName=unit-catalog-sqlite.trx"
+          dotnet test tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/agent-core --logger "trx;LogFileName=unit-agent-core.trx"
+          dotnet test tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/common --logger "trx;LogFileName=unit-common.trx"
+          dotnet test tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/fleet-contracts --logger "trx;LogFileName=unit-fleet-contracts.trx"
+          dotnet test tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/test-support --logger "trx;LogFileName=unit-test-support.trx"
+      - name: Run shared Integration suites
+        run: |
+          dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/astronomy --logger "trx;LogFileName=integration-astronomy.trx"
+      - name: Publish shared runner outputs
+        run: ./scripts/ci:component-publish shared
+      - name: Restore coverage tool
+        run: dotnet tool restore
+      - name: Enforce shared component coverage
+        run: ./scripts/coverage:component shared
+      - name: Upload shared component evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: shared-component-evidence
+          path: |
+            TestResults/unit/
+            TestResults/integration/
+            TestResults/publish/component/
+            coverage-report/shared/
+          if-no-files-found: error
+          retention-days: 30
+
+  cameraagent-component:
+    name: CameraAgent Component
+    needs: changes
+    if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.cameraagent == 'true'
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 45
+    env:
+      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+      INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore and build CameraAgent project roots
+        run: ./scripts/ci:component-build cameraagent
+      - name: Run CameraAgent Unit suites
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
+        run: |
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-acceptance --logger "trx;LogFileName=unit-cameraagent-acceptance.trx"
+      - name: Run CameraAgent Integration suites
+        run: |
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx"
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-standalone --logger "trx;LogFileName=integration-cameraagent-standalone.trx"
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent --logger "trx;LogFileName=integration-cameraagent.trx"
+      - name: Publish CameraAgent outputs
+        run: ./scripts/ci:component-publish cameraagent
+      - name: Restore coverage tool
+        run: dotnet tool restore
+      - name: Enforce CameraAgent component coverage
+        run: ./scripts/coverage:component cameraagent
+      - name: Upload CameraAgent component evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cameraagent-component-evidence
+          path: |
+            TestResults/unit/
+            TestResults/integration/
+            TestResults/publish/component/
+            coverage-report/cameraagent/
+          if-no-files-found: error
+          retention-days: 30
+
+  logichost-component:
+    name: LogicHost Component
+    needs: changes
+    if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.logichost == 'true'
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 45
+    env:
+      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+      INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore and build LogicHost project roots
+        run: ./scripts/ci:component-build logichost
+      - name: Run LogicHost Unit suites
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
+        run: |
+          dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/logichost --logger "trx;LogFileName=unit-logichost.trx"
+      - name: Run LogicHost Integration suites
+        run: |
+          dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx"
+      - name: Publish LogicHost outputs
+        run: ./scripts/ci:component-publish logichost
+      - name: Restore coverage tool
+        run: dotnet tool restore
+      - name: Enforce LogicHost component coverage
+        run: ./scripts/coverage:component logichost
+      - name: Upload LogicHost component evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: logichost-component-evidence
+          path: |
+            TestResults/unit/
+            TestResults/integration/
+            TestResults/publish/component/
+            coverage-report/logichost/
+          if-no-files-found: error
+          retention-days: 30
+
+  combined-integration:
+    name: Combined Protocol & Integration
+    needs: changes
+    if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.combined == 'true'
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 45
+    env:
+      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+      INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore and build combined project roots
+        run: ./scripts/ci:component-build combined
+      - name: Run combined protocol Unit suites
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
+        run: |
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-logichost --logger "trx;LogFileName=unit-cameraagent-logichost.trx"
+      - name: Run combined Integration suites
+        run: |
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-logichost --logger "trx;LogFileName=integration-cameraagent-logichost.trx"
+      - name: Restore coverage tool
+        run: dotnet tool restore
+      - name: Enforce combined component coverage
+        run: ./scripts/coverage:component combined
+      - name: Upload combined component evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: combined-component-evidence
+          path: |
+            TestResults/unit/
+            TestResults/integration/
+            coverage-report/combined/
+          if-no-files-found: error
+          retention-days: 30
+
+  delivery-component:
+    name: Delivery Component
+    needs: [changes, catalog-contracts]
+    if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.delivery == 'true'
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 30
+    env:
+      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download exact production catalog contracts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hyg-v42-contracts
+          path: ${{ runner.temp }}/hyg-v42-contract-artifact
+      - name: Restore exact production catalog contract
+        run: |
+          catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
+          mkdir -m 700 "$catalog_root"
+          tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact/hyg-v42-contracts.tar.gz" -C "$catalog_root"
+          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s/build/hyg-v4.2-p3-s2-r1.bundle\n' "$catalog_root" >> "$GITHUB_ENV"
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore and build delivery project roots
+        run: ./scripts/ci:component-build delivery
+      - name: Run delivery Unit suites
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
+        run: |
+          dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/deployment-cli --logger "trx;LogFileName=unit-deployment-cli.trx"
+          dotnet test tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/deployment-distribution --logger "trx;LogFileName=unit-deployment-distribution.trx"
+      - name: Publish delivery outputs
+        run: ./scripts/ci:component-publish delivery
+      - name: Restore coverage tool
+        run: dotnet tool restore
+      - name: Enforce delivery component coverage
+        run: ./scripts/coverage:component delivery
+      - name: Upload delivery component evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: delivery-component-evidence
+          path: |
+            TestResults/unit/
+            TestResults/publish/component/
+            coverage-report/delivery/
+          if-no-files-found: error
+          retention-days: 30
 
   coverage:
     name: Coverage
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 10
     needs: [changes, unit, integration, architecture]
-    if: needs.changes.outputs.mode == 'full'
+    if: needs.changes.outputs.complete == 'true'
     outputs:
       line: ${{ steps.coverage-metrics.outputs.line }}
       branch: ${{ steps.coverage-metrics.outputs.branch }}
@@ -485,24 +781,6 @@ jobs:
         with:
           name: architecture-test-evidence
           path: TestResults/architecture
-      - name: Reject weakened coverage thresholds
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          if git cat-file -e "origin/$BASE_REF:scripts/coverage/baseline.json" 2>/dev/null; then
-            git show "origin/$BASE_REF:scripts/coverage/baseline.json" > /tmp/base-coverage.json
-            jq --exit-status --slurpfile base /tmp/base-coverage.json '
-              . as $candidate |
-              $candidate.aggregate.line >= $base[0].aggregate.line and
-              $candidate.aggregate.branch >= $base[0].aggregate.branch and
-              $candidate.aggregate.tolerancePercentagePoints <= $base[0].aggregate.tolerancePercentagePoints and
-              all($base[0].files | to_entries[];
-                $candidate.files[.key] != null and
-                $candidate.files[.key].line >= .value.line and
-                $candidate.files[.key].branch >= .value.branch)
-            ' scripts/coverage/baseline.json
-          fi
       - name: Enforce exact-path coverage baseline
         run: |
           patterns=(
@@ -592,7 +870,7 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [changes, quality, deployment-contracts, build, unit, integration, architecture, migrations, coverage]
+    needs: [changes, quality, catalog-contracts, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, migrations-logichost, unit, integration, coverage, shared-libraries, cameraagent-component, logichost-component, combined-integration, delivery-component]
     steps:
       - name: Block merge while review is in progress
         if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
@@ -607,16 +885,32 @@ jobs:
       - name: Require every current-head gate
         if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
         env:
-          MODE: ${{ needs.changes.outputs.mode }}
-          DEPLOYMENT_PLAN: ${{ needs.changes.outputs.deployment }}
           EVENT_NAME: ${{ github.event_name }}
-          CLASSIFICATION: ${{ needs.changes.result }}
-          QUALITY: ${{ needs.quality.result }}
-          DEPLOYMENT: ${{ needs.deployment-contracts.result }}
-          BUILD: ${{ needs.build.result }}
-          UNIT: ${{ needs.unit.result }}
-          INTEGRATION: ${{ needs.integration.result }}
-          ARCHITECTURE: ${{ needs.architecture.result }}
-          MIGRATIONS: ${{ needs.migrations.result }}
-          COVERAGE: ${{ needs.coverage.result }}
-        run: ./scripts/ci:require "$MODE" "$DEPLOYMENT_PLAN" "$EVENT_NAME" "$CLASSIFICATION" "$QUALITY" "$DEPLOYMENT" "$BUILD" "$UNIT" "$INTEGRATION" "$ARCHITECTURE" "$MIGRATIONS" "$COVERAGE"
+          PLAN: >-
+            mode=${{ needs.changes.outputs.mode }}
+            complete=${{ needs.changes.outputs.complete }}
+            shared=${{ needs.changes.outputs.shared }}
+            cameraagent=${{ needs.changes.outputs.cameraagent }}
+            logichost=${{ needs.changes.outputs.logichost }}
+            combined=${{ needs.changes.outputs.combined }}
+            delivery=${{ needs.changes.outputs.delivery }}
+            deployment=${{ needs.changes.outputs.deployment }}
+          RESULTS: >-
+            changes=${{ needs.changes.result }}
+            quality=${{ needs.quality.result }}
+            catalog-contracts=${{ needs.catalog-contracts.result }}
+            deployment-contracts=${{ needs.deployment-contracts.result }}
+            build=${{ needs.build.result }}
+            architecture=${{ needs.architecture.result }}
+            coverage-policy=${{ needs.coverage-policy.result }}
+            migrations-cameraagent=${{ needs.migrations-cameraagent.result }}
+            migrations-logichost=${{ needs.migrations-logichost.result }}
+            unit=${{ needs.unit.result }}
+            integration=${{ needs.integration.result }}
+            coverage=${{ needs.coverage.result }}
+            shared-libraries=${{ needs.shared-libraries.result }}
+            cameraagent-component=${{ needs.cameraagent-component.result }}
+            logichost-component=${{ needs.logichost-component.result }}
+            combined-integration=${{ needs.combined-integration.result }}
+            delivery-component=${{ needs.delivery-component.result }}
+        run: ./scripts/ci:require "$EVENT_NAME" "$PLAN" "$RESULTS"

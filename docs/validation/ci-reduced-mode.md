@@ -7,11 +7,13 @@ introduced by issue #163 and PR #164.
 
 Pull requests containing only added or modified paths from the reviewed
 documentation/developer-environment allowlist run Change Classification,
-Quality, and Required CI. Deployment Contracts, Build, Unit Tests, Integration
-Tests, Architecture & Publish, Migrations, and Coverage are expected to report
+Quality, and Required CI. Catalog Contracts, Deployment Contracts, Build, Unit
+Tests, Integration Tests, Architecture & Publish, Coverage Policy, both split
+migration checks, every component lane, and Coverage are expected to report
 `skipped`; Required CI rejects any other result combination for those inputs.
-Catalog Contracts also skips in reduced mode but is not currently aggregated by
-Required CI. Deployment selection is independent: ordinary full-mode application
+Issue #533 added the component lanes and made Catalog Contracts part of the
+aggregate; reduced mode still selects neither the complete solution matrix nor
+any component lane. Deployment selection is independent: ordinary full-mode application
 pull requests skip Deployment Contracts, deployment-relevant pull requests run
 the lightweight deployment contracts, and main/release/manual runs execute the
 complete matrix including exhaustive deployment rehearsal.
