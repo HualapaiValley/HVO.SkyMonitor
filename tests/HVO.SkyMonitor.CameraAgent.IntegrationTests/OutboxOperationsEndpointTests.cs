@@ -345,6 +345,9 @@ public sealed class OutboxOperationsEndpointTests
         public ValueTask InitializeAsync(string root, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
+        public ValueTask<bool> ExistsAsync(string root, CancellationToken cancellationToken)
+            => ValueTask.FromResult(true);
+
         public ValueTask<ExecutionEvidenceOriginRecord> EnsureOriginAsync(
             string root, ExecutionEvidenceOriginV1 origin, CancellationToken cancellationToken)
             => throw new NotSupportedException();

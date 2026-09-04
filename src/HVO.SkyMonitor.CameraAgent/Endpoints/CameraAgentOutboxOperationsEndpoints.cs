@@ -97,9 +97,9 @@ internal static class CameraAgentOutboxOperationsEndpoints
         {
             return InvalidQuery();
         }
-        if (!ExportEnabled(options))
+        if (!await outbox.ExistsAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false))
         {
-            // A disabled lane opens no durable store; reading it here must not create one.
+            // A lane that has never run has no durable store; reading it here must not create one.
             return Results.Ok(new OutboxPage<ExecutionEvidenceOutboxItem>([], null));
         }
         ExecutionEvidenceOutboxOperationsCursor? position = null;
@@ -121,7 +121,8 @@ internal static class CameraAgentOutboxOperationsEndpoints
         OutboxOperationsTokenService tokens,
         CancellationToken cancellationToken)
     {
-        if (!tokens.TryReadExecutionEvidenceReference(reference, out var recordId) || !ExportEnabled(options))
+        if (!tokens.TryReadExecutionEvidenceReference(reference, out var recordId) ||
+            !await outbox.ExistsAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false))
         {
             return Results.NotFound();
         }
@@ -142,7 +143,7 @@ internal static class CameraAgentOutboxOperationsEndpoints
         var size = pageSize ?? 50;
         if (size is < 1 or > 100 ||
             !tokens.TryReadExecutionEvidenceReference(reference, out var recordId) ||
-            !ExportEnabled(options))
+            !await outbox.ExistsAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false))
         {
             return size is < 1 or > 100 ? InvalidQuery() : Results.NotFound();
         }
@@ -179,7 +180,7 @@ internal static class CameraAgentOutboxOperationsEndpoints
             return Results.NotFound();
         }
         var options = context.RequestServices.GetRequiredService<IOptions<CameraAgentHostOptions>>();
-        if (!ExportEnabled(options))
+        if (!await outbox.ExistsAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false))
         {
             return Results.NotFound();
         }
@@ -523,10 +524,6 @@ internal static class CameraAgentOutboxOperationsEndpoints
             !string.IsNullOrWhiteSpace(operationKey) && operationKey.Length <= 128 &&
             operationKey.All(static character => !char.IsControl(character));
     }
-
-    private static bool ExportEnabled(IOptions<CameraAgentHostOptions> options)
-        => options.Value.ExecutionEvidenceExport.Enabled &&
-            options.Value.CentralIntegration.Mode != CentralIntegrationMode.Disabled;
 
     private static IResult InvalidQuery() => Results.Problem(
         statusCode: StatusCodes.Status400BadRequest,

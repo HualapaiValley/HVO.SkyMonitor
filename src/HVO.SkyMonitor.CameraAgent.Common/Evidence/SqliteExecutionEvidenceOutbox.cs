@@ -104,6 +104,9 @@ public sealed class SqliteExecutionEvidenceOutbox(
         }
     }
 
+    public ValueTask<bool> ExistsAsync(string root, CancellationToken cancellationToken)
+        => ValueTask.FromResult(File.Exists(DatabasePath(NormalizeRoot(root))));
+
     public async ValueTask<ExecutionEvidenceOriginRecord> EnsureOriginAsync(
         string root,
         ExecutionEvidenceOriginV1 origin,

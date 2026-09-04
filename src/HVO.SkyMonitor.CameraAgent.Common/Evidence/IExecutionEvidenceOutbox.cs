@@ -13,6 +13,12 @@ public interface IExecutionEvidenceOutbox
     /// <summary>Creates or validates the durable store beneath <paramref name="root"/>. Idempotent per root.</summary>
     ValueTask InitializeAsync(string root, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Whether the durable store already exists, without creating it. A read-only operator surface uses this so
+    /// looking at a lane that has never run does not bring its database into being.
+    /// </summary>
+    ValueTask<bool> ExistsAsync(string root, CancellationToken cancellationToken);
+
     /// <summary>Registers this boot session's origin, or returns the row already stored for the same identity.</summary>
     ValueTask<ExecutionEvidenceOriginRecord> EnsureOriginAsync(
         string root,
