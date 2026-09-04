@@ -630,6 +630,428 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         return value is string text ? Guid.ParseExact(text, "N") : null;
     }
 
+    internal const string MaterializationNodePrefix = "gallery-materialization-";
+    private const int ProductCursorVersion = 1;
+    private const int MaximumProductPredecessors = 8;
+    private static readonly HashSet<string> ProductAvailabilities = new(StringComparer.Ordinal) { "Available", "Missing", "Quarantined" };
+    private static readonly HashSet<string> ProductKinds = new(StringComparer.Ordinal) { "PixelData", "Metadata" };
+
+    // Outputs of an unpublished replay execution stay invisible, exactly as in
+    // the capture gallery, so a product never appears before it is published.
+    private const string ProductVisibilitySql = """
+        AND (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association
+                         WHERE association.output_identity_sha256 = output.output_identity_sha256)
+             OR EXISTS (SELECT 1 FROM processing_execution_outputs association
+                        WHERE association.output_identity_sha256 = output.output_identity_sha256
+                          AND association.published_flag = 1))
+        """;
+
+    private const string ProductRowSelectSql = """
+        SELECT output.output_identity_sha256, output.committed_unix_ms,
+               (SELECT execution.execution_class FROM processing_execution_outputs association
+                JOIN processing_executions execution ON execution.execution_id = association.execution_id
+                WHERE association.output_identity_sha256 = output.output_identity_sha256
+                ORDER BY association.published_flag DESC LIMIT 1)
+        FROM processing_outputs output
+        """;
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "All appended SQL clauses are fixed statements selected by normalized filters; values remain parameterized.")]
+    public async ValueTask<CameraAgentProductPage> GetProductPageAsync(
+        CameraAgentProductQuery query,
+        CancellationToken cancellationToken)
+    {
+        var normalized = NormalizeProducts(query);
+        var cursor = DecodeProductCursor(normalized.Cursor, normalized.FilterHash);
+        await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        var keys = new List<ProductKey>(normalized.PageSize + 1);
+        using (var command = connection.CreateCommand())
+        {
+            var sql = new StringBuilder(ProductRowSelectSql).AppendLine().AppendLine("WHERE 1 = 1").Append(ProductVisibilitySql).AppendLine();
+            AppendProductFilterClauses(sql, command, normalized);
+            if (cursor is not null)
+            {
+                sql.AppendLine("""
+                    AND (output.committed_unix_ms < $cursor_committed
+                         OR (output.committed_unix_ms = $cursor_committed AND output.output_identity_sha256 < $cursor_identity))
+                    """);
+                command.Parameters.AddWithValue("$cursor_committed", cursor.CommittedUnixMilliseconds);
+                command.Parameters.AddWithValue("$cursor_identity", cursor.OutputIdentitySha256);
+            }
+            sql.AppendLine("ORDER BY output.committed_unix_ms DESC, output.output_identity_sha256 DESC");
+            sql.AppendLine("LIMIT $limit;");
+            command.Parameters.AddWithValue("$limit", normalized.PageSize + 1);
+            command.CommandText = sql.ToString();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                keys.Add(new ProductKey(
+                    reader.GetString(0),
+                    reader.GetInt64(1),
+                    await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? "Unassociated" : reader.GetString(2)));
+            }
+        }
+        var hasMore = keys.Count > normalized.PageSize;
+        if (hasMore)
+        {
+            keys.RemoveAt(keys.Count - 1);
+        }
+        var products = await HydrateProductsAsync(connection, keys, cancellationToken).ConfigureAwait(false);
+        var nextCursor = hasMore && keys.Count > 0 ? EncodeProductCursor(keys[^1], normalized.FilterHash) : null;
+        return new CameraAgentProductPage(products, nextCursor);
+    }
+
+    public async ValueTask<CameraAgentProductDetail?> GetProductAsync(
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+        if (artifactId == Guid.Empty)
+        {
+            return null;
+        }
+        await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        ProductKey? key = null;
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = $"""
+                {ProductRowSelectSql}
+                WHERE output.artifact_id = $artifact_id
+                {ProductVisibilitySql}
+                LIMIT 1;
+                """;
+            command.Parameters.AddWithValue("$artifact_id", artifactId.ToString("N"));
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                key = new ProductKey(
+                    reader.GetString(0),
+                    reader.GetInt64(1),
+                    await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? "Unassociated" : reader.GetString(2));
+            }
+        }
+        if (key is null)
+        {
+            return null;
+        }
+        var products = await HydrateProductsAsync(connection, [key], cancellationToken).ConfigureAwait(false);
+        if (products.Count == 0)
+        {
+            return null;
+        }
+        var product = products[0];
+        var sources = await ReadProductSourcesAsync(connection, product.OutputIdentitySha256, cancellationToken).ConfigureAwait(false);
+        var node = await _processingStore.ReadNodeAsync(product.CaptureId, product.NodeId, cancellationToken).ConfigureAwait(false);
+        var predecessors = await ReadProductPredecessorsAsync(connection, product, cancellationToken).ConfigureAwait(false);
+        DateTimeOffset exposureStartedUtc;
+        string? rigId = null;
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT exposure_started_unix_ms, manifest_json FROM raw_captures WHERE capture_id = $capture_id LIMIT 1;";
+            command.Parameters.AddWithValue("$capture_id", product.CaptureId.ToString("N"));
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return null;
+            }
+            exposureStartedUtc = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(0));
+            var manifest = CaptureContractJson.ParseManifest(await reader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false));
+            rigId = manifest.Document?.Manifest?.Descriptor.Capture.RigId;
+        }
+        return new CameraAgentProductDetail(
+            product,
+            exposureStartedUtc,
+            _observingDays.Current.Resolve(exposureStartedUtc),
+            rigId,
+            sources.Sources,
+            sources.Truncated,
+            node is null
+                ? null
+                : new CameraAgentProductNode(
+                    node.NodeId,
+                    node.Status.ToString(),
+                    node.Attempt,
+                    node.StartedUtc,
+                    node.CompletedUtc,
+                    node.Duration is { } duration ? (long)duration.TotalMilliseconds : null,
+                    node.Outcome?.ToString()),
+            predecessors);
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Generated placeholders contain only bounded ordinals; identities remain parameterized.")]
+    private static async Task<IReadOnlyList<CameraAgentProduct>> HydrateProductsAsync(
+        SqliteConnection connection,
+        IReadOnlyList<ProductKey> keys,
+        CancellationToken cancellationToken)
+    {
+        if (keys.Count == 0)
+        {
+            return [];
+        }
+        using var command = connection.CreateCommand();
+        var placeholders = new string[keys.Count];
+        for (var index = 0; index < keys.Count; index++)
+        {
+            placeholders[index] = $"$identity{index}";
+            command.Parameters.AddWithValue(placeholders[index], keys[index].OutputIdentitySha256);
+        }
+        command.CommandText = $"""
+            SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
+                   descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
+                   algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
+                   product_kind, product_schema_version, content_identity_sha256,
+                   availability_state, availability_reason, frame_artifact_recipe_version
+            FROM processing_outputs
+            WHERE output_identity_sha256 IN ({string.Join(", ", placeholders)});
+            """;
+        var rows = await SqliteCaptureProcessingStore.ReadOutputRowsAsync(command, cancellationToken, skipInvalid: true).ConfigureAwait(false);
+        var byIdentity = rows.ToDictionary(static row => row.Output.OutputIdentitySha256, StringComparer.Ordinal);
+        var products = new List<CameraAgentProduct>(keys.Count);
+        foreach (var key in keys)
+        {
+            if (!byIdentity.TryGetValue(key.OutputIdentitySha256, out var row))
+            {
+                continue;
+            }
+            var output = row.Output;
+            var artifact = output.Artifact;
+            var encoded = output.ProductManifest as DurableEncodedProductManifestV2;
+            products.Add(new CameraAgentProduct(
+                artifact.ArtifactId,
+                output.OutputIdentitySha256,
+                row.CaptureId,
+                output.CaptureSequence,
+                output.Capture.AgentId,
+                row.NodeId,
+                artifact.Role,
+                artifact.Variant,
+                DateTimeOffset.FromUnixTimeMilliseconds(key.CommittedUnixMilliseconds),
+                artifact.CreatedUtc,
+                artifact.MediaType,
+                artifact.ChecksumSha256,
+                output.Descriptor?.Layout.ByteLength ?? output.ProductManifest?.ByteLength,
+                new CameraAgentGalleryRecipe(
+                    artifact.Recipe.Name,
+                    artifact.Recipe.SemanticVersion,
+                    artifact.Recipe.ImplementationVersion,
+                    artifact.Recipe.OptionsSha256,
+                    output.RecipeIdentitySha256),
+                output.Algorithms.Select(static algorithm => new CameraAgentGalleryAlgorithm(algorithm.Name, algorithm.Version)).ToArray(),
+                output.ProductKind?.ToString(),
+                output.ProductSchemaVersion,
+                output.ContentIdentitySha256,
+                output.AvailabilityState,
+                output.AvailabilityReason,
+                output.TotalIntegration,
+                artifact.SourceArtifactIds.Count,
+                encoded?.EncodedWidth,
+                encoded?.EncodedHeight,
+                key.ExecutionClass,
+                row.NodeId.StartsWith(MaterializationNodePrefix, StringComparison.Ordinal)));
+        }
+        return products;
+    }
+
+    private async Task<(IReadOnlyList<CameraAgentProductSource> Sources, bool Truncated)> ReadProductSourcesAsync(
+        SqliteConnection connection,
+        string outputIdentitySha256,
+        CancellationToken cancellationToken)
+    {
+        var durable = await _processingStore.ReadOutputSourcesAsync(
+            outputIdentitySha256, SqliteCaptureProcessingStore.MaximumOutputSourceCount, cancellationToken).ConfigureAwait(false);
+        var truncated = durable.Count >= SqliteCaptureProcessingStore.MaximumOutputSourceCount;
+        var sources = new List<CameraAgentProductSource>(durable.Count);
+        foreach (var source in durable)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT capture_id, capture_sequence, 'Raw' FROM raw_captures WHERE raw_artifact_id = $artifact_id
+                UNION ALL
+                SELECT capture_id, capture_sequence, role FROM processing_outputs WHERE artifact_id = $artifact_id
+                LIMIT 1;
+                """;
+            command.Parameters.AddWithValue("$artifact_id", source.ArtifactId.ToString("N"));
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                sources.Add(new CameraAgentProductSource(
+                    source.Ordinal,
+                    source.ArtifactId,
+                    Enum.TryParse<FrameArtifactRole>(reader.GetString(2), out var role) ? role : null,
+                    Guid.ParseExact(reader.GetString(0), "N"),
+                    reader.GetInt64(1)));
+            }
+            else
+            {
+                sources.Add(new CameraAgentProductSource(source.Ordinal, source.ArtifactId, null, null, null));
+            }
+        }
+        return (sources, truncated);
+    }
+
+    private static async Task<IReadOnlyList<CameraAgentProductPredecessor>> ReadProductPredecessorsAsync(
+        SqliteConnection connection,
+        CameraAgentProduct product,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT output.artifact_id, output.output_identity_sha256, output.committed_unix_ms, output.availability_state
+            FROM processing_outputs output
+            WHERE output.capture_id = $capture_id AND output.node_id = $node_id
+              AND output.output_identity_sha256 <> $identity
+              {ProductVisibilitySql}
+            ORDER BY output.committed_unix_ms DESC, output.output_identity_sha256 DESC
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$capture_id", product.CaptureId.ToString("N"));
+        command.Parameters.AddWithValue("$node_id", product.NodeId);
+        command.Parameters.AddWithValue("$identity", product.OutputIdentitySha256);
+        command.Parameters.AddWithValue("$limit", MaximumProductPredecessors);
+        var predecessors = new List<CameraAgentProductPredecessor>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            predecessors.Add(new CameraAgentProductPredecessor(
+                Guid.ParseExact(reader.GetString(0), "N"),
+                reader.GetString(1),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
+                reader.GetString(3)));
+        }
+        return predecessors;
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "All appended SQL clauses are fixed statements selected by normalized filters; values remain parameterized.")]
+    private static void AppendProductFilterClauses(StringBuilder sql, SqliteCommand command, NormalizedProductQuery query)
+    {
+        if (query.Role is { } role)
+        {
+            sql.AppendLine("AND output.role = $role");
+            command.Parameters.AddWithValue("$role", role.ToString());
+        }
+        if (query.ProductKind is not null)
+        {
+            sql.AppendLine("AND output.product_kind = $product_kind");
+            command.Parameters.AddWithValue("$product_kind", query.ProductKind);
+        }
+        if (query.Recipe is not null)
+        {
+            sql.AppendLine("AND output.recipe_identity_sha256 = $recipe_identity");
+            command.Parameters.AddWithValue("$recipe_identity", query.Recipe);
+        }
+        if (query.Availability is not null)
+        {
+            sql.AppendLine("AND output.availability_state = $availability");
+            command.Parameters.AddWithValue("$availability", query.Availability);
+        }
+        if (query.FromUnixMilliseconds is { } from)
+        {
+            sql.AppendLine("AND output.committed_unix_ms >= $from");
+            command.Parameters.AddWithValue("$from", from);
+        }
+        if (query.ToUnixMilliseconds is { } to)
+        {
+            sql.AppendLine("AND output.committed_unix_ms <= $to");
+            command.Parameters.AddWithValue("$to", to);
+        }
+    }
+
+    private static NormalizedProductQuery NormalizeProducts(CameraAgentProductQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        var pageSize = query.PageSize ?? DefaultPageSize;
+        if (pageSize is < 1 or > MaximumPageSize)
+        {
+            throw new CameraAgentGalleryQueryException($"Page size must be between 1 and {MaximumPageSize}.");
+        }
+        var from = query.FromUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
+        var to = query.ToUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
+        if (from > to)
+        {
+            throw new CameraAgentGalleryQueryException("The time range is invalid.");
+        }
+        var productKind = string.IsNullOrWhiteSpace(query.ProductKind) ? null : query.ProductKind.Trim();
+        if (productKind is not null && !ProductKinds.Contains(productKind))
+        {
+            throw new CameraAgentGalleryQueryException("The product kind filter is invalid.");
+        }
+        var availability = string.IsNullOrWhiteSpace(query.Availability) ? null : query.Availability.Trim();
+        if (availability is not null && !ProductAvailabilities.Contains(availability))
+        {
+            throw new CameraAgentGalleryQueryException("The availability filter is invalid.");
+        }
+        var recipe = string.IsNullOrWhiteSpace(query.Recipe) ? null : query.Recipe.Trim().ToUpperInvariant();
+        if (recipe is not null && (recipe.Length != 64 || !recipe.All(Uri.IsHexDigit)))
+        {
+            throw new CameraAgentGalleryQueryException("The recipe filter must be a recipe identity.");
+        }
+        var filterBytes = JsonSerializer.SerializeToUtf8Bytes(new { query.Role, productKind, recipe, availability, from, to }, SerializerOptions);
+        return new NormalizedProductQuery(
+            pageSize,
+            query.Cursor,
+            query.Role,
+            productKind,
+            recipe,
+            availability,
+            from,
+            to,
+            Convert.ToHexString(SHA256.HashData(filterBytes)));
+    }
+
+    private static string EncodeProductCursor(ProductKey key, string filterHash)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(
+            new ProductCursor(ProductCursorVersion, filterHash, key.CommittedUnixMilliseconds, key.OutputIdentitySha256), SerializerOptions);
+        return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    private static ProductCursor? DecodeProductCursor(string? value, string filterHash)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+        if (value.Length > 512)
+        {
+            throw new CameraAgentGalleryQueryException("The cursor is invalid.");
+        }
+        try
+        {
+            var normalized = value.Replace('-', '+').Replace('_', '/');
+            normalized = normalized.PadRight(normalized.Length + (4 - normalized.Length % 4) % 4, '=');
+            var cursor = JsonSerializer.Deserialize<ProductCursor>(Convert.FromBase64String(normalized), SerializerOptions);
+            if (cursor is null || cursor.Version != ProductCursorVersion || cursor.OutputIdentitySha256 is not { Length: 64 } ||
+                !cursor.OutputIdentitySha256.All(Uri.IsHexDigit) || !string.Equals(cursor.FilterHash, filterHash, StringComparison.Ordinal))
+            {
+                throw new CameraAgentGalleryQueryException("The cursor does not match the requested filters.");
+            }
+            return cursor;
+        }
+        catch (CameraAgentGalleryQueryException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is FormatException or JsonException or NotSupportedException)
+        {
+            throw new CameraAgentGalleryQueryException("The cursor is invalid.");
+        }
+    }
+
+    private sealed record ProductKey(string OutputIdentitySha256, long CommittedUnixMilliseconds, string ExecutionClass);
+
+    private sealed record ProductCursor(int Version, string FilterHash, long CommittedUnixMilliseconds, string OutputIdentitySha256);
+
+    private sealed record NormalizedProductQuery(
+        int PageSize,
+        string? Cursor,
+        FrameArtifactRole? Role,
+        string? ProductKind,
+        string? Recipe,
+        string? Availability,
+        long? FromUnixMilliseconds,
+        long? ToUnixMilliseconds,
+        string FilterHash);
+
     private async Task<IReadOnlyList<CameraAgentGalleryCapture>> ProjectAsync(
         IReadOnlyList<RawGalleryRow> rows,
         CancellationToken cancellationToken)

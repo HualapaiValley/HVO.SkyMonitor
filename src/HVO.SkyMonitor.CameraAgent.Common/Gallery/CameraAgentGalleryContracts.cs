@@ -240,4 +240,89 @@ public interface ICameraAgentArchive
         Guid captureId,
         CameraAgentGalleryQuery filters,
         CancellationToken cancellationToken);
+
+    ValueTask<CameraAgentProductPage> GetProductPageAsync(
+        CameraAgentProductQuery query,
+        CancellationToken cancellationToken);
+
+    ValueTask<CameraAgentProductDetail?> GetProductAsync(
+        Guid artifactId,
+        CancellationToken cancellationToken);
 }
+
+// Products are the processing outputs CameraAgent actually retains for a
+// capture: calibrated, combined, preview, annotated, metadata products, and
+// saved layered materializations. Unsupported product types are absent.
+public sealed record CameraAgentProductQuery(
+    int? PageSize = null,
+    string? Cursor = null,
+    FrameArtifactRole? Role = null,
+    string? ProductKind = null,
+    string? Recipe = null,
+    string? Availability = null,
+    DateTimeOffset? FromUtc = null,
+    DateTimeOffset? ToUtc = null);
+
+public sealed record CameraAgentProductPage(
+    IReadOnlyList<CameraAgentProduct> Items,
+    string? NextCursor);
+
+public sealed record CameraAgentProduct(
+    Guid ArtifactId,
+    string OutputIdentitySha256,
+    Guid CaptureId,
+    long CaptureSequence,
+    string AgentId,
+    string NodeId,
+    FrameArtifactRole Role,
+    string? Variant,
+    DateTimeOffset CommittedUtc,
+    DateTimeOffset? CreatedUtc,
+    string? MediaType,
+    string ChecksumSha256,
+    long? ByteLength,
+    CameraAgentGalleryRecipe Recipe,
+    IReadOnlyList<CameraAgentGalleryAlgorithm> Algorithms,
+    string? ProductKind,
+    string? ProductSchemaVersion,
+    string? ContentIdentitySha256,
+    string Availability,
+    string? AvailabilityReason,
+    TimeSpan TotalIntegration,
+    int SourceCount,
+    int? EncodedWidth,
+    int? EncodedHeight,
+    string ExecutionClass,
+    bool IsMaterialization);
+
+public sealed record CameraAgentProductSource(
+    int Ordinal,
+    Guid ArtifactId,
+    FrameArtifactRole? Role,
+    Guid? CaptureId,
+    long? CaptureSequence);
+
+public sealed record CameraAgentProductNode(
+    string NodeId,
+    string Status,
+    int Attempt,
+    DateTimeOffset? StartedUtc,
+    DateTimeOffset CompletedUtc,
+    long? DurationMilliseconds,
+    string? Outcome);
+
+public sealed record CameraAgentProductPredecessor(
+    Guid ArtifactId,
+    string OutputIdentitySha256,
+    DateTimeOffset CommittedUtc,
+    string Availability);
+
+public sealed record CameraAgentProductDetail(
+    CameraAgentProduct Product,
+    DateTimeOffset CaptureExposureStartedUtc,
+    ObservingDay ObservingDay,
+    string? RigId,
+    IReadOnlyList<CameraAgentProductSource> Sources,
+    bool SourcesTruncated,
+    CameraAgentProductNode? Node,
+    IReadOnlyList<CameraAgentProductPredecessor> Predecessors);

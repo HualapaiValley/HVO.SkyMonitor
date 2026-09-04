@@ -1129,6 +1129,77 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.IsNull(missing);
     }
 
+    [TestMethod]
+    public async Task GetProductPageAsync_PagesRetainedOutputsNewestFirstWithFilters()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var older = await fixture.AddRawAsync(Utc(1), "Physical", null).ConfigureAwait(false);
+        var newer = await fixture.AddRawAsync(Utc(1).AddHours(1), "Physical", null).ConfigureAwait(false);
+        var olderPreview = await fixture.AddProcessingOutputAsync(older, "Preview", DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
+        var newerPreview = await fixture.AddProcessingOutputAsync(newer, "Preview", DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
+        var newerCombined = await fixture.AddProcessingOutputAsync(newer, "Combined", DurableProcessingNodeStatus.Completed, role: FrameArtifactRole.Combined).ConfigureAwait(false);
+        var archive = fixture.Gallery;
+
+        var first = await archive.GetProductPageAsync(new CameraAgentProductQuery(PageSize: 2), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(2, first.Items.Count);
+        Assert.IsNotNull(first.NextCursor);
+        CollectionAssert.AreEquivalent(
+            new[] { newerPreview.Artifact.ArtifactId, newerCombined.Artifact.ArtifactId },
+            first.Items.Select(static item => item.ArtifactId).ToArray());
+        Assert.IsTrue(first.Items.All(item => item.CaptureId == newer.Descriptor.Capture.CaptureId));
+        Assert.IsTrue(first.Items.All(static item => item.ExecutionClass == "Unassociated"));
+        Assert.IsTrue(first.Items.All(static item => !item.IsMaterialization && item.SourceCount == 1 && item.Availability == "Available"));
+
+        var second = await archive.GetProductPageAsync(new CameraAgentProductQuery(PageSize: 2, Cursor: first.NextCursor), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, second.Items.Count);
+        Assert.AreEqual(olderPreview.Artifact.ArtifactId, second.Items[0].ArtifactId);
+        Assert.IsNull(second.NextCursor);
+        Assert.IsTrue(first.Items.Min(static item => item.CommittedUtc) >= second.Items[0].CommittedUtc);
+
+        var combined = await archive.GetProductPageAsync(new CameraAgentProductQuery(Role: FrameArtifactRole.Combined), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, combined.Items.Count);
+        Assert.AreEqual(newerCombined.Artifact.ArtifactId, combined.Items[0].ArtifactId);
+        Assert.AreEqual(FrameArtifactRole.Combined, combined.Items[0].Role);
+
+        var byRecipe = await archive.GetProductPageAsync(new CameraAgentProductQuery(Recipe: combined.Items[0].Recipe.IdentitySha256), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(3, byRecipe.Items.Count);
+
+        await Assert.ThrowsExactlyAsync<CameraAgentGalleryQueryException>(async () => await archive.GetProductPageAsync(
+            new CameraAgentProductQuery(Cursor: first.NextCursor, Role: FrameArtifactRole.Combined), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<CameraAgentGalleryQueryException>(async () => await archive.GetProductPageAsync(
+            new CameraAgentProductQuery(ProductKind: "Timelapse"), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        var unsupported = await archive.GetProductPageAsync(new CameraAgentProductQuery(Role: FrameArtifactRole.Metadata), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(0, unsupported.Items.Count);
+        Assert.IsNull(unsupported.NextCursor);
+    }
+
+    [TestMethod]
+    public async Task GetProductAsync_ResolvesSourcesNodeAndObservingDay()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 2, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        var preview = await fixture.AddProcessingOutputAsync(raw, "Preview", DurableProcessingNodeStatus.Completed, encodedWidth: 2, encodedHeight: 2).ConfigureAwait(false);
+        var archive = fixture.OpenArchive(ObservingDayCalendar.Create("America/Phoenix"));
+
+        var detail = await archive.GetProductAsync(preview.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(detail);
+        Assert.AreEqual(preview.Artifact.ArtifactId, detail.Product.ArtifactId);
+        Assert.AreEqual(raw.Descriptor.Capture.CaptureId, detail.Product.CaptureId);
+        Assert.AreEqual("rig-gallery", detail.RigId);
+        Assert.AreEqual(raw.Descriptor.Timing.ExposureStartedUtc, detail.CaptureExposureStartedUtc);
+        Assert.AreEqual(new DateOnly(2026, 9, 3), detail.ObservingDay.Date);
+        Assert.AreEqual(2, detail.Product.EncodedWidth);
+        Assert.IsNull(detail.Product.ProductKind);
+        Assert.AreEqual("preview", detail.Node?.NodeId);
+        Assert.AreEqual("Completed", detail.Node?.Status);
+        Assert.AreEqual(2, detail.Node?.Attempt);
+        Assert.AreEqual(0, detail.Predecessors.Count);
+        Assert.IsFalse(detail.SourcesTruncated);
+        Assert.IsNull(await archive.GetProductAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false));
+        Assert.IsNull(await archive.GetProductAsync(raw.Descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false));
+    }
+
     private sealed class GalleryFixture : IDisposable
     {
         private readonly SqliteRawCaptureJournal _journal;
