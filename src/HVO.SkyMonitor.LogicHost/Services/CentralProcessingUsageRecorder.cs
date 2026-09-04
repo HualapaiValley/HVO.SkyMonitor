@@ -2,6 +2,7 @@ using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
@@ -13,8 +14,6 @@ namespace HVO.SkyMonitor.LogicHost.Services;
 /// site calls it, <see cref="CentralProcessingUsageInterceptor"/> covers attempts terminalized through tracked
 /// entities, and <see cref="RecordMissingAsync"/> is the periodic safety net for any path that slipped through.
 /// </summary>
-internal sealed record CentralProcessingUsageTotal(Guid ObservatoryId, string ResourceClass, string Outcome, long Attempts, long InputBytes, long OutputBytes);
-
 internal static class CentralProcessingUsageRecorder
 {
     public static Task<int> RecordAsync(
@@ -41,7 +40,7 @@ internal static class CentralProcessingUsageRecorder
         var recorded = 0;
         foreach (var (jobId, attemptNumber) in attempts.Distinct())
         {
-            recorded += await dbContext.Database.ExecuteSqlRawAsync(
+            recorded += await ExecuteRecordAsync(dbContext,
                     InsertSql("AND attempt.[CentralDerivativeJobId] = @jobId AND attempt.[AttemptNumber] = @attemptNumber", string.Empty),
                     [Classes(entitlements), new SqlParameter("@jobId", jobId), new SqlParameter("@attemptNumber", attemptNumber)],
                     cancellationToken)
@@ -66,41 +65,46 @@ internal static class CentralProcessingUsageRecorder
         ArgumentNullException.ThrowIfNull(dbContext);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         var since = window is { } span && span > TimeSpan.Zero ? DateTimeOffset.UtcNow - span : DateTimeOffset.MinValue;
-        return await dbContext.Database.ExecuteSqlRawAsync(
+        return await ExecuteRecordAsync(dbContext,
                 InsertSql("AND attempt.[EndedAtUtc] > @since", "TOP(@limit)"),
                 [Classes(entitlements), new SqlParameter("@limit", limit), new SqlParameter("@since", since)],
                 cancellationToken)
             .ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Aggregates committed usage rows by observatory, class, and outcome: every row when <paramref name="since"/>
-    /// is null, otherwise the rows recorded in (<paramref name="since"/>, <paramref name="until"/>]. The worker feeds
-    /// the cumulative completion and byte counters from these totals, so the counters are a durable global fact
-    /// that survives restarts and unscraped intervals and reads the same on every replica.
-    /// </summary>
-    public static async Task<IReadOnlyList<CentralProcessingUsageTotal>> AggregateAsync(
-        ApplicationDbContext dbContext,
-        DateTimeOffset? since,
-        DateTimeOffset until,
-        CancellationToken cancellationToken)
+    /// <summary>Runs the record batch on the caller's connection and transaction and returns the number of usage rows written.</summary>
+    private static async Task<int> ExecuteRecordAsync(
+        ApplicationDbContext dbContext, string sql, SqlParameter[] parameters, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(dbContext);
-        var query = dbContext.CentralProcessingUsageRecords.AsNoTracking().Where(record => record.RecordedAtUtc <= until);
-        if (since is { } from)
+        var connection = dbContext.Database.GetDbConnection();
+        var opened = false;
+        if (connection.State != System.Data.ConnectionState.Open)
         {
-            query = query.Where(record => record.RecordedAtUtc > from);
+            await dbContext.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            opened = true;
         }
-        return await query
-            .GroupBy(record => new { record.ObservatoryId, record.ResourceClass, record.Outcome })
-            .Select(group => new CentralProcessingUsageTotal(
-                group.Key.ObservatoryId,
-                group.Key.ResourceClass,
-                group.Key.Outcome.ToString(),
-                group.LongCount(),
-                group.Sum(record => record.InputBytes),
-                group.Sum(record => record.OutputBytes)))
-            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var command = connection.CreateCommand();
+#pragma warning disable CA2100 // The text is a constant template; every runtime value is a SqlParameter.
+            command.CommandText = sql;
+#pragma warning restore CA2100
+            command.Transaction = dbContext.Database.CurrentTransaction?.GetDbTransaction();
+            command.CommandTimeout = dbContext.Database.GetCommandTimeout() ?? command.CommandTimeout;
+            foreach (var parameter in parameters)
+            {
+                command.Parameters.Add(parameter);
+            }
+            var result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            return result is int count ? count : 0;
+        }
+        finally
+        {
+            if (opened)
+            {
+                await dbContext.Database.CloseConnectionAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     private static SqlParameter Classes(CentralProcessingEntitlementOptions? entitlements)
@@ -111,12 +115,16 @@ internal static class CentralProcessingUsageRecorder
 
     // A lease whose end time was recorded before this claim waited on locks can precede its own lease start; the
     // usage end is clamped to the lease acquisition so the check constraint holds and durations never go negative.
+    // The rollup is maintained in the same batch (and therefore the caller's transaction) as the usage rows it
+    // summarizes, so the metrics read from it are exact and never require aggregating the ledger.
     private static string InsertSql(string targetFilter, string top)
         => $"""
+            DECLARE @recorded TABLE ([ObservatoryId] uniqueidentifier, [ResourceClass] nvarchar(64), [Outcome] nvarchar(32), [InputBytes] bigint, [OutputBytes] bigint);
             INSERT INTO [CentralProcessingUsageRecords]
                 ([Id], [ObservatoryId], [DevicePublicId], [CentralDerivativeJobId], [AttemptNumber], [RecipeName],
                  [ResourceClass], [WorkerId], [Outcome], [ReasonCode], [LeaseAcquiredAtUtc], [EndedAtUtc],
                  [InputBytes], [OutputBytes], [RecipeDurationTicks], [RecordedAtUtc])
+            OUTPUT inserted.[ObservatoryId], inserted.[ResourceClass], inserted.[Outcome], inserted.[InputBytes], inserted.[OutputBytes] INTO @recorded
             SELECT {top} NEWID(), frame.[ObservatoryId], frame.[DevicePublicId], attempt.[CentralDerivativeJobId], attempt.[AttemptNumber],
                    job.[RecipeName], COALESCE(rc.[cls], N'image'), attempt.[WorkerId], attempt.[Outcome], LEFT(attempt.[ReasonCode], 256),
                    attempt.[LeaseAcquiredAtUtc],
@@ -133,6 +141,18 @@ internal static class CentralProcessingUsageRecorder
               AND NOT EXISTS (SELECT 1 FROM [CentralProcessingUsageRecords] AS existing
                               WHERE existing.[CentralDerivativeJobId] = attempt.[CentralDerivativeJobId]
                                 AND existing.[AttemptNumber] = attempt.[AttemptNumber])
-            ORDER BY attempt.[EndedAtUtc], attempt.[CentralDerivativeJobId], attempt.[AttemptNumber]
+            ORDER BY attempt.[EndedAtUtc], attempt.[CentralDerivativeJobId], attempt.[AttemptNumber];
+            MERGE [CentralProcessingUsageRollups] WITH (HOLDLOCK) AS rollup
+            USING (SELECT [ObservatoryId], [ResourceClass], [Outcome], COUNT(*) AS [Attempts], SUM([InputBytes]) AS [InputBytes], SUM([OutputBytes]) AS [OutputBytes]
+                   FROM @recorded GROUP BY [ObservatoryId], [ResourceClass], [Outcome]) AS delta
+                ON rollup.[ObservatoryId] = delta.[ObservatoryId] AND rollup.[ResourceClass] = delta.[ResourceClass] AND rollup.[Outcome] = delta.[Outcome]
+            WHEN MATCHED THEN UPDATE SET
+                [Attempts] = rollup.[Attempts] + delta.[Attempts],
+                [InputBytes] = rollup.[InputBytes] + delta.[InputBytes],
+                [OutputBytes] = rollup.[OutputBytes] + delta.[OutputBytes],
+                [UpdatedAtUtc] = SYSDATETIMEOFFSET()
+            WHEN NOT MATCHED THEN INSERT ([ObservatoryId], [ResourceClass], [Outcome], [Attempts], [InputBytes], [OutputBytes], [UpdatedAtUtc])
+                VALUES (delta.[ObservatoryId], delta.[ResourceClass], delta.[Outcome], delta.[Attempts], delta.[InputBytes], delta.[OutputBytes], SYSDATETIMEOFFSET());
+            SELECT COUNT(*) FROM @recorded;
             """;
 }

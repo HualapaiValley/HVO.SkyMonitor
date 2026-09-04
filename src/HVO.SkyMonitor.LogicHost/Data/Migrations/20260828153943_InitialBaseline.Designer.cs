@@ -2601,6 +2601,36 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                             t.HasCheckConstraint("CK_CentralProcessingUsageRecords_Outcome", "[Outcome] IN (N'Completed', N'RetryableFailure', N'TerminalFailure', N'LeaseExpired', N'Canceled', N'Skipped', N'Quarantined', N'Superseded')");
                         });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingUsageRollup", b =>
+                {
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ResourceClass")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Outcome")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<long>("Attempts")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("InputBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("OutputBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("ObservatoryId", "ResourceClass", "Outcome");
+
+                    b.ToTable("CentralProcessingUsageRollups", (string)null);
+                });
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralRecoveryCheckpoint", b =>

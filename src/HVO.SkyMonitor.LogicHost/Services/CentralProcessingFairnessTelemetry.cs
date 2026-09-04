@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.LogicHost.Data;
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 
@@ -23,8 +24,8 @@ internal sealed class CentralProcessingFairnessTelemetry : IDisposable
     public CentralProcessingFairnessTelemetry()
     {
         _throttled = _meter.CreateCounter<long>("skymonitor.central.fairness.throttled", "{claim}");
-        // Completions and usage bytes are cumulative totals read from CentralProcessingUsageRecords (a durable global
-        // fact, identical on every replica), so nothing is lost when a process exits between scrapes.
+        // Completions and usage bytes are cumulative totals read from the persisted CentralProcessingUsageRollups (a
+        // durable global fact, identical on every replica), so nothing is lost when a process exits between scrapes.
         _meter.CreateObservableCounter("skymonitor.central.fairness.completions", ObserveCompletions, "{attempt}");
         _meter.CreateObservableCounter("skymonitor.central.fairness.usage.bytes", ObserveUsageBytes, "By");
         _meter.CreateObservableGauge("skymonitor.central.fairness.queue", ObserveQueue, "{job}");
@@ -39,14 +40,14 @@ internal sealed class CentralProcessingFairnessTelemetry : IDisposable
             new KeyValuePair<string, object?>("observatory", observatoryId.ToString("D")),
             new KeyValuePair<string, object?>("reason", reason));
 
-    /// <summary>Replaces the cumulative usage totals (a full aggregate of the usage table).</summary>
-    public void ReplaceUsageTotals(IEnumerable<CentralProcessingUsageTotal> totals)
+    /// <summary>Replaces the cumulative usage totals with the persisted rollup rows.</summary>
+    public void ReplaceUsageTotals(IEnumerable<CentralProcessingUsageRollup> rollups)
     {
-        ArgumentNullException.ThrowIfNull(totals);
+        ArgumentNullException.ThrowIfNull(rollups);
         var replacement = new Dictionary<(Guid, string, string), (long, long, long)>();
-        foreach (var total in totals)
+        foreach (var rollup in rollups)
         {
-            replacement[(total.ObservatoryId, total.ResourceClass, total.Outcome.ToLowerInvariant())] = (total.Attempts, total.InputBytes, total.OutputBytes);
+            replacement[(rollup.ObservatoryId, rollup.ResourceClass, rollup.Outcome.ToLowerInvariant())] = (rollup.Attempts, rollup.InputBytes, rollup.OutputBytes);
         }
         foreach (var key in _usage.Keys.Where(key => !replacement.ContainsKey(key)).ToArray())
         {
@@ -55,19 +56,6 @@ internal sealed class CentralProcessingFairnessTelemetry : IDisposable
         foreach (var pair in replacement)
         {
             _usage[pair.Key] = pair.Value;
-        }
-    }
-
-    /// <summary>Adds the totals of usage rows recorded since the previous sample.</summary>
-    public void AddUsageTotals(IEnumerable<CentralProcessingUsageTotal> totals)
-    {
-        ArgumentNullException.ThrowIfNull(totals);
-        foreach (var total in totals)
-        {
-            _usage.AddOrUpdate(
-                (total.ObservatoryId, total.ResourceClass, total.Outcome.ToLowerInvariant()),
-                (total.Attempts, total.InputBytes, total.OutputBytes),
-                (_, current) => (current.Attempts + total.Attempts, current.InputBytes + total.InputBytes, current.OutputBytes + total.OutputBytes));
         }
     }
 

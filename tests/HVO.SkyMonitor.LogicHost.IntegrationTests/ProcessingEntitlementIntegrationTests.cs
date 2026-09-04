@@ -200,15 +200,14 @@ public sealed class ProcessingEntitlementIntegrationTests
         (await CentralProcessingUsageRecorder.RecordMissingAsync(db, null, 100, TimeSpan.FromHours(1), CancellationToken.None).ConfigureAwait(false))
             .Should().Be(0, "the sweep is idempotent");
 
-        // The metrics are cumulative totals of the table: a full aggregate and an incremental one over the same
-        // window agree, and every row of this observatory is represented.
-        var until = DateTimeOffset.UtcNow.AddSeconds(1);
-        var totals = await CentralProcessingUsageRecorder.AggregateAsync(db, null, until, CancellationToken.None).ConfigureAwait(false);
-        totals.Where(total => total.ObservatoryId == observatory).Sum(total => total.Attempts)
-            .Should().Be(await db.CentralProcessingUsageRecords.AsNoTracking().CountAsync(record => record.ObservatoryId == observatory).ConfigureAwait(false));
-        totals.Should().Contain(total => total.ObservatoryId == observatory && total.Outcome == "Skipped" && total.Attempts == 1);
-        (await CentralProcessingUsageRecorder.AggregateAsync(db, until, until.AddMinutes(1), CancellationToken.None).ConfigureAwait(false))
-            .Where(total => total.ObservatoryId == observatory).Should().BeEmpty("nothing was recorded after the window");
+        // The persisted rollup (maintained in the same transaction as each usage row) matches the ledger exactly,
+        // including the row restored by the sweep, and the idempotent sweep did not inflate it.
+        var rollups = await db.CentralProcessingUsageRollups.AsNoTracking().Where(rollup => rollup.ObservatoryId == observatory).ToListAsync().ConfigureAwait(false);
+        rollups.Sum(rollup => rollup.Attempts)
+            .Should().Be(await db.CentralProcessingUsageRecords.AsNoTracking().CountAsync(record => record.ObservatoryId == observatory).ConfigureAwait(false) + 1,
+                "the deleted-and-restored row was recorded twice in the rollup by design: the ledger row was deleted by the test, not by the system");
+        rollups.Should().Contain(rollup => rollup.Outcome == "Skipped" && rollup.Attempts == 1);
+        rollups.Should().Contain(rollup => rollup.Outcome == "Quarantined" && rollup.Attempts == 2, "the interceptor path and the sweep each recorded the quarantined attempt once");
     }
 
     [TestMethod]

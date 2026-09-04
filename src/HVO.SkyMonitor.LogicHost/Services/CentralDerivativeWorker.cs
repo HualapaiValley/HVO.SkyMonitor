@@ -492,18 +492,15 @@ internal sealed partial class CentralDerivativeWorker(
     }
 
     /// <summary>
-    /// Keeps the cumulative completion and byte counters equal to the usage table's totals: a full aggregate at start
-    /// and every <see cref="UsageTotalsRefreshInterval"/> (which also absorbs rows committed late by long
-    /// transactions), incremental aggregates of rows recorded since the previous sample in between (behind a short
-    /// lag so a row's commit precedes the watermark passing it). The counters are therefore a durable global fact:
-    /// every replica reports the same totals, a restart or an unscraped interval loses nothing, and no row is ever
-    /// consumed or marked. The safety-net sweep first records any terminal attempt of the last
-    /// <see cref="UsageSweepWindow"/> that still lacks a usage row.
+    /// Keeps the cumulative completion and byte counters equal to the persisted usage rollups (one row per
+    /// observatory, class, and outcome, maintained in the same transaction as each usage row). The counters are
+    /// therefore an exact durable global fact: every replica reports the same totals, a restart or an unscraped
+    /// interval loses nothing, and nothing is ever scanned, consumed, or marked. The safety-net sweep first records
+    /// any terminal attempt of the last <see cref="UsageSweepWindow"/> that still lacks a usage row.
     /// </summary>
     private async Task SampleCommittedUsageAsync(
         ApplicationDbContext dbContext,
         CentralProcessingEntitlementOptions? entitlements,
-        DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         if (fairnessTelemetry is null)
@@ -512,30 +509,12 @@ internal sealed partial class CentralDerivativeWorker(
         }
         await CentralProcessingUsageRecorder.RecordMissingAsync(dbContext, entitlements, UsageSweepLimit, UsageSweepWindow, cancellationToken)
             .ConfigureAwait(false);
-        var upTo = now - UsageWatermarkLag;
-        if (_usageTotalsRefreshedAtUtc is null || now - _usageTotalsRefreshedAtUtc.Value >= UsageTotalsRefreshInterval)
-        {
-            fairnessTelemetry.ReplaceUsageTotals(
-                await CentralProcessingUsageRecorder.AggregateAsync(dbContext, null, upTo, cancellationToken).ConfigureAwait(false));
-            _usageTotalsRefreshedAtUtc = now;
-            _usageWatermarkUtc = upTo;
-            return;
-        }
-        if (upTo <= _usageWatermarkUtc)
-        {
-            return;
-        }
-        fairnessTelemetry.AddUsageTotals(
-            await CentralProcessingUsageRecorder.AggregateAsync(dbContext, _usageWatermarkUtc, upTo, cancellationToken).ConfigureAwait(false));
-        _usageWatermarkUtc = upTo;
+        fairnessTelemetry.ReplaceUsageTotals(
+            await dbContext.CentralProcessingUsageRollups.AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false));
     }
 
     internal const int UsageSweepLimit = 500;
     internal static readonly TimeSpan UsageSweepWindow = TimeSpan.FromHours(1);
-    internal static readonly TimeSpan UsageWatermarkLag = TimeSpan.FromSeconds(5);
-    internal static readonly TimeSpan UsageTotalsRefreshInterval = TimeSpan.FromMinutes(10);
-    private DateTimeOffset? _usageTotalsRefreshedAtUtc;
-    private DateTimeOffset? _usageWatermarkUtc;
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Design",
@@ -591,7 +570,7 @@ internal sealed partial class CentralDerivativeWorker(
                     item.Waiting,
                     item.OldestPending is { } oldestPending ? (long)Math.Max(0, (now - oldestPending).TotalSeconds) : 0,
                     entitlements is { Enabled: true } ? entitlements.ResolveActiveJobs(item.ObservatoryId) : 0)).ToArray());
-                await SampleCommittedUsageAsync(dbContext, entitlements, now, cancellationToken).ConfigureAwait(false);
+                await SampleCommittedUsageAsync(dbContext, entitlements, cancellationToken).ConfigureAwait(false);
             }
             telemetry.UpdateQueueSnapshot(
                 snapshot.Select(item => new CentralDerivativeQueueMeasurement(

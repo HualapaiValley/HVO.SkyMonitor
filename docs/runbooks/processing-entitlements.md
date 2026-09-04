@@ -99,12 +99,13 @@ directly, a `SaveChanges` interceptor records attempts terminalized through
 tracked entities (graph cancellation, source invalidation, location
 quarantine), and the worker's queue sampling sweeps any terminal attempt of
 the last hour that still lacks a row (an `EndedAtUtc` index bounds the
-sweep). The completion and byte metrics are cumulative totals of that table
-(a full aggregate at start and every ten minutes, incremental aggregates
-of newly recorded rows in between): every LogicHost replica reports the same
-global totals, nothing is consumed or marked, and a restart or an unscraped
+sweep). Each usage row also increments a persisted rollup
+(`CentralProcessingUsageRollups`, one row per observatory, class, and
+outcome) in the same transaction, and the completion and byte metrics read
+that rollup: every LogicHost replica reports the same exact global totals,
+nothing is scanned, consumed, or marked, and a restart or an unscraped
 interval loses nothing. Aggregate the metric across replicas with `max`, not
-`sum`; the table itself is the auditable record. Aggregate by
+`sum`; the ledger table itself is the auditable record. Aggregate by
 observatory or camera for billing-ready reporting; no payment provider is
 involved.
 

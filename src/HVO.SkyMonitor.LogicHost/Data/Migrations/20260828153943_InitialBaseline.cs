@@ -5536,6 +5536,23 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     table.CheckConstraint("CK_CentralProcessingUsageRecords_Outcome", "[Outcome] IN (N'Completed', N'RetryableFailure', N'TerminalFailure', N'LeaseExpired', N'Canceled', N'Skipped', N'Quarantined', N'Superseded')");
                 });
 
+            migrationBuilder.CreateTable(
+                name: "CentralProcessingUsageRollups",
+                columns: table => new
+                {
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    Outcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    Attempts = table.Column<long>(type: "bigint", nullable: false),
+                    InputBytes = table.Column<long>(type: "bigint", nullable: false),
+                    OutputBytes = table.Column<long>(type: "bigint", nullable: false),
+                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingUsageRollups", x => new { x.ObservatoryId, x.ResourceClass, x.Outcome });
+                });
+
             migrationBuilder.CreateIndex(
                 name: "IX_CentralProcessingUsageRecords_CentralDerivativeJobId_AttemptNumber",
                 table: "CentralProcessingUsageRecords",
@@ -5567,6 +5584,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             migrationBuilder.DropTable(
                 name: "CentralProcessingUsageRecords");
+
+            migrationBuilder.DropTable(
+                name: "CentralProcessingUsageRollups");
 
 
             migrationBuilder.DropTable(
