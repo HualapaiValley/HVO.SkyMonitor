@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -35,7 +36,9 @@ internal sealed partial class CentralDerivativeWorker(
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider,
     ILogger<CentralDerivativeWorker> logger,
-    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : BackgroundService
+    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null,
+    CentralProcessingFairnessTelemetry? fairnessTelemetry = null,
+    IOptions<CentralProcessingEntitlementOptions>? entitlementOptions = null) : BackgroundService
 {
     private const int MaximumSignaledConvergencesPerPass = 64;
     private readonly CentralDerivativeWorkerOptions _options = options.Value;
@@ -518,6 +521,31 @@ internal sealed partial class CentralDerivativeWorker(
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
             var oldest = snapshot.Count == 0 ? 0 : (long)Math.Max(0, (now - snapshot.Min(item => item.Oldest)).TotalSeconds);
+            if (fairnessTelemetry is not null)
+            {
+                var pendingStatuses = new[] { CentralDerivativeJobStatus.Pending, CentralDerivativeJobStatus.RetryableFailure };
+                var observatories = await dbContext.CentralDerivativeJobs.AsNoTracking()
+                    .Where(job => statuses.Contains(job.Status))
+                    .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
+                    .Select(group => new
+                    {
+                        ObservatoryId = group.Key,
+                        Pending = group.LongCount(job => pendingStatuses.Contains(job.Status)),
+                        Leased = group.LongCount(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc > now),
+                        Waiting = group.LongCount(job => job.Status == CentralDerivativeJobStatus.Waiting),
+                        OldestPending = group.Where(job => pendingStatuses.Contains(job.Status))
+                            .Min(job => job.AvailableAtUtc ?? job.CreatedAtUtc)
+                    })
+                    .ToListAsync(cancellationToken).ConfigureAwait(false);
+                var entitlements = entitlementOptions?.Value;
+                fairnessTelemetry.UpdateQueueSnapshot(observatories.Select(item => new CentralObservatoryQueueMeasurement(
+                    item.ObservatoryId,
+                    item.Pending,
+                    item.Leased,
+                    item.Waiting,
+                    item.OldestPending is { } oldestPending ? (long)Math.Max(0, (now - oldestPending).TotalSeconds) : 0,
+                    entitlements is { Enabled: true } ? entitlements.ResolveActiveJobs(item.ObservatoryId) : 0)).ToArray());
+            }
             telemetry.UpdateQueueSnapshot(
                 snapshot.Select(item => new CentralDerivativeQueueMeasurement(
                     item.Status switch

@@ -1,0 +1,29 @@
+{
+  "schema": "hvo-runtime-signal-manifest-v1",
+  "issue": 429,
+  "component": "LogicHost fair scheduling and entitlements",
+  "meter": "HVO.SkyMonitor.LogicHost.ProcessingFairness",
+  "activitySource": "HVO.SkyMonitor.LogicHost.DerivativeWorker",
+  "logs": [
+    { "eventId": 2220, "level": "Information", "fields": ["Worker", "JobId", "Observatory", "Reason", "Active", "Limit"] }
+  ],
+  "metrics": [
+    { "name": "skymonitor.central.fairness.queue", "unit": "{job}", "labels": { "observatory": ["<observatory id>"], "status": ["pending", "leased", "waiting"] } },
+    { "name": "skymonitor.central.fairness.queue.oldest_age", "unit": "s", "labels": { "observatory": ["<observatory id>"] } },
+    { "name": "skymonitor.central.fairness.active", "unit": "{job}", "labels": { "observatory": ["<observatory id>"] } },
+    { "name": "skymonitor.central.fairness.entitlement", "unit": "{job}", "labels": { "observatory": ["<observatory id>"] } },
+    { "name": "skymonitor.central.fairness.saturation", "unit": "1", "labels": { "observatory": ["<observatory id>"] } },
+    { "name": "skymonitor.central.fairness.throttled", "unit": "{claim}", "labels": { "observatory": ["<observatory id>"], "reason": ["observatory", "camera", "class", "class-bytes", "observatory-class"] } },
+    { "name": "skymonitor.central.fairness.completions", "unit": "{attempt}", "labels": { "observatory": ["<observatory id>"], "class": ["structured-analysis", "presentation", "composition", "encoding", "image"], "outcome": ["completed", "retryablefailure", "terminalfailure", "leaseexpired", "canceled", "skipped", "quarantined", "superseded"] } },
+    { "name": "skymonitor.central.fairness.usage.bytes", "unit": "By", "labels": { "observatory": ["<observatory id>"], "direction": ["input", "output"] } }
+  ],
+  "healthChecks": [
+    { "name": "processing-entitlements", "tags": ["worker"], "data": ["enabled", "observatoriesWithWork", "pendingJobs", "activeLeases", "overAdmissionLimit", "saturatedWithOldBacklog"] }
+  ],
+  "collection": [
+    "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --filter \"FullyQualifiedName~ProcessingEntitlementIntegrationTests\"",
+    "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --filter \"FullyQualifiedName~ProcessingFairnessPerformanceEvidenceTests\""
+  ],
+  "privacy": ["Observatory ids are the only identifiers; no owner, credential, or payload data is emitted."],
+  "evidence": ["TestResults/processing-fairness/<revision>/processing-fairness-evidence.json"]
+}

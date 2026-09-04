@@ -86,7 +86,9 @@ internal sealed partial class CentralProcessingRunnerJobService(
         }
         // Inputs larger than the runner's transfer limit are excluded before leasing so an incompatible runner never
         // consumes an attempt on work another runner could execute.
-        var scope = CentralDerivativeClaimScope.Only(runner.EligibleRecipes, runner.Capabilities.MaxTransferBytes);
+        var (pool, poolMode) = ResolvePool(runner.Capabilities.Labels);
+        var scope = CentralDerivativeClaimScope.Only(
+            runner.EligibleRecipes, runner.Capabilities.MaxTransferBytes, pool, poolMode);
         // A session lock per runner id makes the advertised concurrency an atomic bound across concurrent claim
         // requests, including two processes that reuse one runner id.
         await using var capacityLock = await CentralObjectApplicationLock.AcquireAsync(
@@ -280,6 +282,22 @@ internal sealed partial class CentralProcessingRunnerJobService(
         telemetry.RecordFailure(request.ReasonCode, lease.RecipeName);
         Log.Failed(logger, runner.Runner.RunnerId, lease.JobId, lease.AttemptCount, lease.RecipeName,
             request.ReasonCode, request.Retryable ? "retryable" : "terminal", request.Message);
+    }
+
+    /// <summary>
+    /// A runner joins a pool with the <c>pool:&lt;name&gt;</c> label (dedicated unless <c>pool-mode:reserved</c> is
+    /// also present); without a pool label it serves the shared pool only.
+    /// </summary>
+    internal static (string? Pool, CentralDerivativeClaimPoolMode Mode) ResolvePool(IReadOnlyList<string> labels)
+    {
+        ArgumentNullException.ThrowIfNull(labels);
+        var pool = labels.FirstOrDefault(label => label.StartsWith("pool:", StringComparison.Ordinal))?["pool:".Length..];
+        if (string.IsNullOrWhiteSpace(pool) || !CentralProcessingEntitlementOptions.IsValidPool(pool))
+        {
+            return (null, CentralDerivativeClaimPoolMode.Shared);
+        }
+        var reserved = labels.Contains("pool-mode:reserved", StringComparer.Ordinal);
+        return (pool, reserved ? CentralDerivativeClaimPoolMode.Reserved : CentralDerivativeClaimPoolMode.Dedicated);
     }
 
     private async Task<string> ResolveExpectedProductIdentityAsync(

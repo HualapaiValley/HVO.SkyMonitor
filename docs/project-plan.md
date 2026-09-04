@@ -217,6 +217,22 @@ The delivered LogicHost self-hosted processing runner protocol
 | `RUNNER-009` | Registration, heartbeat, staleness, claim, renewal, completion, failure, transfer bytes, and backlog are observable through the pinned meter, log events 2200-2212, and the `processing-runners` health check. |
 | `RUNNER-010` | Release evidence covers linux-x64/linux-arm64 publish and capability probes, cold/warm start stages, claim latency, transfer bytes, in-process versus runner throughput, and backlog with no runner (`ProcessingRunnerPerformanceEvidenceTests`). |
 
+The delivered fair scheduling and entitlement policy (#429) retains these
+normative requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `SCHED-001` | Per-observatory (and optional per-camera and per-resource-class) active-lease entitlements are enforced atomically inside the claim: the candidate query filters on unexpired leases and a transaction-scoped per-observatory lock re-checks the counts before leasing, so concurrent claims from any number of workers or runners never exceed an entitlement. |
+| `SCHED-002` | Claimable work is ordered by starvation age first, then observatory priority, then weighted fair share `(active + 1) / weight`, then availability, so a large old backlog from one observatory cannot starve another eligible observatory. |
+| `SCHED-003` | Capability and class filtering happen before ordering: runner scope, transfer limits, and resource-class budgets exclude incompatible work instead of blocking compatible work behind it. |
+| `SCHED-004` | Runner pools are shared, reserved, or dedicated: an observatory names its pool, dedicated runners serve only that pool, reserved runners serve it first, and the in-process worker and unpooled runners serve only unpooled observatories. |
+| `SCHED-005` | Resource classes follow the layered-product contract (`structured-analysis`, `presentation`, `composition`, `encoding`, `image`) with global active-job and active-input-byte budgets and per-observatory class limits. |
+| `SCHED-006` | Window-waiting jobs stay outside active quotas; retained bytes and pins remain accounted in the window metrics. |
+| `SCHED-007` | Per-observatory queue depth, oldest age, active leases, entitlement, saturation, throttling, completion, and usage-byte signals are exposed under the pinned meter, and the `processing-entitlements` health check reports admission-limit and saturated-backlog conditions. |
+| `SCHED-008` | Every terminal attempt writes an auditable usage record (observatory, camera, job, attempt, recipe, class, worker, outcome, timestamps, bytes, duration) in the same transaction, suitable for future billing without a payment provider. |
+| `SCHED-009` | Admission and backpressure: raw ingest is never refused and scheduling continues; overload is bounded by entitlements and surfaced by health and throttling signals. |
+| `SCHED-010` | Entitlements and fairness are host configuration, disabled by default, and work identically in a single-machine deployment; capacity guidance derives from the measured graph mix, frame size, and cadence in the fairness evidence harness rather than camera count alone. |
+
 ### 3.3 Acquisition and raw evidence
 
 - Camera modules only acquire frames and report capabilities.
