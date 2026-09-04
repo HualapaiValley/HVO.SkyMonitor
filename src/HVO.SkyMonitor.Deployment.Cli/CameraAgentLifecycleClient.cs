@@ -31,84 +31,83 @@ internal sealed class CameraAgentLifecycleClient(Uri baseAddress, HttpMessageHan
     private static readonly TimeSpan DrainDeadline = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan DrainPollInterval = TimeSpan.FromSeconds(2);
 
-    // The CameraAgent keys every lifecycle command on the request's operation id and
-    // rejects a replay whose payload differs, while a command that already matches
-    // the durable state completes as a no-op. Each command therefore carries a fresh
-    // command id and records the lifecycle operation in its reason, so a retried or
-    // lost-acknowledgement command converges on the durable state and 409 only ever
-    // means a concurrent capture-control change.
+    // Lifecycle commands target a durable capture-control state rather than a
+    // capture-control version: the operation journal is the transactional
+    // authority, the CameraAgent completes a command that already matches its
+    // durable state as a no-op, and the drained-boundary poll verifies the
+    // outcome. Each command carries a fresh command id so a retried or
+    // lost-acknowledgement command never collides with an earlier idempotency
+    // record, and names its lifecycle operation in the recorded reason.
     public async Task<LifecycleContinuity> PauseAndDrainAsync(
         Guid operationId,
         string verificationToken,
         CancellationToken cancellationToken)
     {
-        using var client = CreateClient(verificationToken, ReadTimeout);
-        var before = await ReadAsync(client, cancellationToken).ConfigureAwait(false);
-        // The pause response is held until in-flight captures drain, so it may exceed
-        // one exposure; the durable boundary is confirmed by polling afterwards.
-        using var pauseClient = CreateClient(verificationToken, DrainDeadline);
-        using var response = await pauseClient.PostAsJsonAsync(
-            new Uri("/api/internal/deployment/lifecycle/pause", UriKind.Relative),
-            new
-            {
-                operationId = Guid.NewGuid(),
-                expectedVersion = before.CaptureVersion,
-                reason = $"transactional lifecycle operation {operationId:D}"
-            },
-            cancellationToken).ConfigureAwait(false);
-        EnsureAccepted(response, "pause");
-        return await WaitForDrainedBoundaryAsync(client, null, cancellationToken).ConfigureAwait(false);
+        using var client = CreateClient(verificationToken);
+        await PostCommandAsync(client, "pause", operationId, cancellationToken).ConfigureAwait(false);
+        return await WaitForDrainedBoundaryAsync(client, cancellationToken).ConfigureAwait(false);
     }
 
-    // A post-mutation boundary reuses the durable pause that the same operation
+    // A post-mutation boundary reuses the durable pause that the operation
     // recorded before mutation; it only confirms that the restarted CameraAgent
     // honours that boundary instead of issuing another pause command.
     public async Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken)
     {
-        using var client = CreateClient(verificationToken, ReadTimeout);
-        return await WaitForDrainedBoundaryAsync(client, null, cancellationToken).ConfigureAwait(false);
+        using var client = CreateClient(verificationToken);
+        return await WaitForDrainedBoundaryAsync(client, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken)
     {
-        using var client = CreateClient(verificationToken, ReadTimeout);
-        var state = await ReadAsync(client, cancellationToken).ConfigureAwait(false);
-        using var response = await client.PostAsJsonAsync(
-            new Uri("/api/internal/deployment/lifecycle/resume", UriKind.Relative),
-            new
-            {
-                operationId = Guid.NewGuid(),
-                expectedVersion = state.CaptureVersion,
-                reason = $"transactional lifecycle operation {operationId:D} completed"
-            },
-            cancellationToken).ConfigureAwait(false);
-        EnsureAccepted(response, "resume");
+        using var client = CreateClient(verificationToken);
+        await PostCommandAsync(client, "resume", operationId, cancellationToken).ConfigureAwait(false);
     }
 
-    private static void EnsureAccepted(HttpResponseMessage response, string action)
+    // The CameraAgent holds a command until any in-flight drain completes, so a
+    // command shares the drain deadline instead of the read timeout.
+    private static async Task PostCommandAsync(
+        HttpClient client,
+        string action,
+        Guid operationId,
+        CancellationToken cancellationToken)
     {
-        if (response.StatusCode == HttpStatusCode.Conflict)
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(DrainDeadline);
+        try
         {
-            throw new InstallerException(
-                $"CameraAgent rejected the lifecycle {action} because its capture control state changed concurrently.");
+            using var response = await client.PostAsJsonAsync(
+                new Uri($"/api/internal/deployment/lifecycle/{action}", UriKind.Relative),
+                new
+                {
+                    operationId = Guid.NewGuid(),
+                    reason = $"transactional lifecycle operation {operationId:D} {action}"
+                },
+                timeout.Token).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.Conflict)
+            {
+                throw new InstallerException($"CameraAgent rejected the lifecycle {action} command.");
+            }
+            response.EnsureSuccessStatusCode();
         }
-        response.EnsureSuccessStatusCode();
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InstallerException($"CameraAgent did not acknowledge the lifecycle {action} before the drain deadline.");
+        }
     }
 
     // A restarted CameraAgent reports "Initializing" until it loads the durable
-    // capture-control snapshot, so only an observed "Running" proves the pause was lost.
-    private static async Task<LifecycleContinuity> WaitForDrainedBoundaryAsync(
-        HttpClient client,
-        LifecycleContinuity? initial,
-        CancellationToken cancellationToken)
+    // capture-control snapshot; only "Running" or "Unavailable" proves the pause
+    // is not in effect.
+    private static async Task<LifecycleContinuity> WaitForDrainedBoundaryAsync(HttpClient client, CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + DrainDeadline;
-        var state = initial ?? await ReadAsync(client, cancellationToken).ConfigureAwait(false);
         while (true)
         {
-            if (state.CaptureState == "Running")
+            var state = await ReadAsync(client, cancellationToken).ConfigureAwait(false);
+            if (state.CaptureState is "Running" or "Unavailable")
             {
-                throw new InstallerException("CameraAgent did not preserve the durable lifecycle pause across the mutation boundary.");
+                throw new InstallerException(
+                    $"CameraAgent reported capture control '{state.CaptureState}' instead of the durable lifecycle pause.");
             }
             if (state.CaptureState == "Paused" && state.RawLeased == 0 && state.LaneLeased == 0 &&
                 state.ProcessingLeased == 0 && state.OutboxLeased == 0)
@@ -121,12 +120,11 @@ internal sealed class CameraAgentLifecycleClient(Uri baseAddress, HttpMessageHan
                 throw new InstallerException("CameraAgent did not reach a durable drained boundary before the lifecycle deadline.");
             }
             await Task.Delay(remaining < DrainPollInterval ? remaining : DrainPollInterval, cancellationToken).ConfigureAwait(false);
-            state = await ReadAsync(client, cancellationToken).ConfigureAwait(false);
         }
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned HttpClient owns the handler and the caller disposes the client.")]
-    private HttpClient CreateClient(string verificationToken, TimeSpan timeout)
+    private HttpClient CreateClient(string verificationToken)
     {
         var client = new HttpClient(
             handler ?? new HttpClientHandler
@@ -138,7 +136,7 @@ internal sealed class CameraAgentLifecycleClient(Uri baseAddress, HttpMessageHan
             disposeHandler: handler is null)
         {
             BaseAddress = baseAddress,
-            Timeout = timeout
+            Timeout = Timeout.InfiniteTimeSpan
         };
         client.DefaultRequestHeaders.Add("X-HVO-Installation-Token", verificationToken);
         return client;
@@ -146,28 +144,37 @@ internal sealed class CameraAgentLifecycleClient(Uri baseAddress, HttpMessageHan
 
     internal static async Task<LifecycleContinuity> ReadAsync(HttpClient client, CancellationToken cancellationToken)
     {
-        using var response = await client.GetAsync(
-            new Uri("/api/internal/deployment/lifecycle/state", UriKind.Relative), cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        using var document = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
-        var root = document.RootElement;
-        var control = Value(root, "captureControl");
-        var raw = Value(root, "rawIngress");
-        var lanes = Value(root, "captureLanes");
-        var processing = Value(root, "captureProcessing");
-        var outbox = Value(root, "artifactOutbox");
-        return new LifecycleContinuity(
-            control.GetProperty("state").GetString() ?? string.Empty,
-            control.GetProperty("version").GetInt64(),
-            root.GetProperty("captureSequence").GetInt64(),
-            raw.GetProperty("pendingCount").GetInt64(),
-            raw.GetProperty("leasedCount").GetInt64(),
-            lanes.GetProperty("pendingCount").GetInt64(),
-            lanes.GetProperty("leasedCount").GetInt64(),
-            processing.GetProperty("pendingCount").GetInt64(),
-            processing.GetProperty("leasedCount").GetInt64(),
-            outbox.GetProperty("pendingCount").GetInt64(),
-            outbox.GetProperty("leasedCount").GetInt64());
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(ReadTimeout);
+        try
+        {
+            using var response = await client.GetAsync(
+                new Uri("/api/internal/deployment/lifecycle/state", UriKind.Relative), timeout.Token).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false));
+            var root = document.RootElement;
+            var control = Value(root, "captureControl");
+            var raw = Value(root, "rawIngress");
+            var lanes = Value(root, "captureLanes");
+            var processing = Value(root, "captureProcessing");
+            var outbox = Value(root, "artifactOutbox");
+            return new LifecycleContinuity(
+                control.GetProperty("state").GetString() ?? string.Empty,
+                control.GetProperty("version").GetInt64(),
+                root.GetProperty("captureSequence").GetInt64(),
+                raw.GetProperty("pendingCount").GetInt64(),
+                raw.GetProperty("leasedCount").GetInt64(),
+                lanes.GetProperty("pendingCount").GetInt64(),
+                lanes.GetProperty("leasedCount").GetInt64(),
+                processing.GetProperty("pendingCount").GetInt64(),
+                processing.GetProperty("leasedCount").GetInt64(),
+                outbox.GetProperty("pendingCount").GetInt64(),
+                outbox.GetProperty("leasedCount").GetInt64());
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InstallerException("CameraAgent did not report its lifecycle state before the read timeout.");
+        }
     }
 
     private static JsonElement Value(JsonElement root, string name) => root.GetProperty(name).GetProperty("value");
