@@ -137,6 +137,20 @@ public sealed class CaptureProfileFormModelTests
     }
 
     [TestMethod]
+    public void OutOfRangeDurations_AreReportedInsteadOfSaturating()
+    {
+        var basis = RichProfile();
+        var model = CaptureProfileFormModel.FromProfile(basis);
+        model.CaptureIntervalSeconds = "1e18";
+        model.WeeklyWindows[0].Start.OffsetMinutes = "-1e17";
+
+        Assert.IsFalse(model.TryApply(basis, out _, out var errors));
+
+        CollectionAssert.Contains(errors.ToArray(), "Capture interval is out of range.");
+        CollectionAssert.Contains(errors.ToArray(), "Window 'weekly-night' start offset is out of range.");
+    }
+
+    [TestMethod]
     public void AddRows_UseUniqueIdentifiersAndTheFirstSetpoint()
     {
         var model = CaptureProfileFormModel.FromProfile(RichProfile());

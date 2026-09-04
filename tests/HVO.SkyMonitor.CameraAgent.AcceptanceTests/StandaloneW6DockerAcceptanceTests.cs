@@ -813,6 +813,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 .WaitForAsync().ConfigureAwait(false);
             await page.Locator(".page-state[role='status'] .spinner-border")
                 .WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+            Assert.AreEqual(0, await page.Locator(".page-state--error").CountAsync().ConfigureAwait(false), $"{route} rendered an error notice.");
+            Assert.IsGreaterThan(0, await page.Locator("main h2").CountAsync().ConfigureAwait(false), $"{route} rendered no section content.");
         }
     }
 

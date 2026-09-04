@@ -335,10 +335,25 @@ internal sealed class CaptureProfileFormModel
     }
 
     private static TimeSpan Milliseconds(string value, string label, List<string> problems)
-        => TimeSpan.FromTicks((long)Math.Round(ParseDouble(value, label, problems) * TimeSpan.TicksPerMillisecond));
+        => Ticks(ParseDouble(value, label, problems), TimeSpan.TicksPerMillisecond, label, problems);
 
     private static TimeSpan Seconds(string value, string label, List<string> problems)
-        => TimeSpan.FromTicks((long)Math.Round(ParseDouble(value, label, problems) * TimeSpan.TicksPerSecond));
+        => Ticks(ParseDouble(value, label, problems), TimeSpan.TicksPerSecond, label, problems);
+
+    private static TimeSpan Minutes(string value, string label, List<string> problems)
+        => Ticks(ParseDouble(value, label, problems), TimeSpan.TicksPerMinute, label, problems);
+
+    // Tick-exact conversion; values beyond the representable range are reported, never saturated.
+    private static TimeSpan Ticks(double units, long ticksPerUnit, string label, List<string> problems)
+    {
+        var ticks = Math.Round(units * ticksPerUnit);
+        if (ticks < long.MinValue || ticks > long.MaxValue)
+        {
+            problems.Add($"{label} is out of range.");
+            return TimeSpan.Zero;
+        }
+        return TimeSpan.FromTicks((long)ticks);
+    }
 
     private static TEnum ParseEnum<TEnum>(string value, string label, List<string> problems)
         where TEnum : struct, Enum
@@ -437,7 +452,7 @@ internal sealed class CaptureProfileFormModel
             }
             var offset = string.IsNullOrWhiteSpace(OffsetMinutes)
                 ? TimeSpan.Zero
-                : TimeSpan.FromMinutes(ParseDouble(OffsetMinutes, $"{label} offset", problems));
+                : Minutes(OffsetMinutes, $"{label} offset", problems);
             return new CaptureScheduleBoundary(
                 kind,
                 localTime,
