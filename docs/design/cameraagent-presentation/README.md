@@ -14,8 +14,12 @@ publication decision.
 - `/gallery/{captureId}` leads with the image, stage availability, acquisition
   story, and previous/next navigation. Existing lineage and diagnostics remain
   available in a technical disclosure.
-- `/operations` retains the existing technical dashboard and links to schedule,
-  calibration, environment, transients, system, device, and quarantine tools.
+- `/operations` is the overview of the Operations workspace (#517): a grouped
+  section sidebar reaches camera and rig, sky map and catalog, device
+  registration, capture schedule, calibration, environment, pipeline summary,
+  automations, data and storage, quarantine and recovery, and system. The
+  retained `/schedule`, `/calibration`, `/environmental`, and `/system` routes
+  alias their workspace sections. Transients live under the archive.
 - Opening capture details and opening the large-image viewer are separate,
   explicitly labeled actions.
 - The latest valid image remains visible during daylight, delay, staleness, or

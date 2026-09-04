@@ -43,6 +43,7 @@ public sealed class OperationsPageTests
             StringAssert.Contains(cut.Markup, "LogicHost connectivity is unavailable", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Storage or lane pressure detected", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Critical pressure", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("_view.Summary", StringComparison.Ordinal));
             StringAssert.Contains(cut.Markup, "Fresh", StringComparison.Ordinal);
         });
     }

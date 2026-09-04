@@ -1,0 +1,38 @@
+@using HVO.SkyMonitor.CameraAgent.Common.Operations
+@using HVO.SkyMonitor.CameraAgent.Components.Pages
+
+@if (Lanes.Lanes.Count == 0)
+{
+    <p class="empty-copy">No capture lanes have reported state.</p>
+}
+else
+{
+    <div class="lane-grid">
+        @foreach (var lane in Lanes.Lanes)
+        {
+            <section class="lane @PressureClass(lane.PressureLevel)" aria-label="@lane.Name lane">
+                <header><h3>@OperationsPage.SplitWords(lane.Name)</h3><span>@(lane.Required ? "Required" : "Optional")</span></header>
+                <dl><div><dt>Pending</dt><dd>@lane.PendingCount</dd></div><div><dt>Size</dt><dd>@OperationsPage.FormatBytes(lane.PendingBytes)</dd></div><div><dt>Leased</dt><dd>@lane.LeasedCount</dd></div><div><dt>Quarantine</dt><dd>@lane.QuarantineCount</dd></div></dl>
+                <p>@PressureText(lane.PressureLevel)</p>
+            </section>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public OperationsCaptureLanesState Lanes { get; set; } = default!;
+
+    internal static string PressureClass(int level) => level switch
+    {
+        >= 2 => "lane--critical",
+        1 => "lane--warning",
+        _ => string.Empty
+    };
+
+    internal static string PressureText(int level) => level switch
+    {
+        >= 2 => "Critical pressure",
+        1 => "Pressure warning",
+        _ => "Normal pressure"
+    };
+}

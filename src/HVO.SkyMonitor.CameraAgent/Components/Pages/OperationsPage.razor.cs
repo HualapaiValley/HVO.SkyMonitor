@@ -458,19 +458,7 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         _ => "state-chip--pressure"
     };
 
-    private static string PressureClass(int level) => level switch
-    {
-        >= 2 => "lane--critical",
-        1 => "lane--warning",
-        _ => string.Empty
-    };
 
-    private static string PressureText(int level) => level switch
-    {
-        >= 2 => "Critical pressure",
-        1 => "Pressure warning",
-        _ => "Normal pressure"
-    };
 
     private static string YesNo(bool value) => value ? "Yes" : "No";
 

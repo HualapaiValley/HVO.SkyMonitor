@@ -15,6 +15,9 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     private CaptureSchedulePreview? _preview;
     private CaptureProcessingPlanPreview? _pipelinePlan;
     private string _editorJson = string.Empty;
+    private CaptureProfileFormModel? _model;
+    private LocalCaptureProfileDefinition? _basisProfile;
+    private bool _jsonIsTruth;
     private string _overrideMode = "ForceClosed";
     private string _overrideStart = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
     private string _overrideEnd = DateTimeOffset.UtcNow.AddHours(1).ToString("O", CultureInfo.InvariantCulture);
@@ -87,7 +90,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
             {
                 _state = result.Value;
                 var editorRevision = _state.PendingRevision ?? _state.ActiveRevision;
-                _editorJson = CameraAgentScheduleUiService.SerializeProfile(editorRevision.Profile);
+                LoadEditor(editorRevision.Profile);
                 _editorBasisRevisionId = editorRevision.RevisionId;
                 var pipelineResult = await ScheduleService.GetPipelineAsync(CancellationToken.None).ConfigureAwait(false);
                 if (pipelineResult.IsSuccess && pipelineResult.Value is { } pipelineState)
@@ -122,11 +125,10 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     private async Task PreviewAsync()
     {
-        if (_editorBasisRevisionId is null)
+        if (_editorBasisRevisionId is null || !TryResolveEditorJson(out var editorJson))
         {
             return;
         }
-        var editorJson = _editorJson;
         var basisRevisionId = _editorBasisRevisionId;
         _busy = true;
         OperatorUiResult<CaptureSchedulePreview> result;
@@ -173,12 +175,11 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     private async Task TogglePipelineAsync(string nodeId, bool enabled)
     {
-        if (_editorBasisRevisionId is null)
+        if (_editorBasisRevisionId is null || !TryResolveEditorJson(out var editorJson))
         {
             return;
         }
         var basisRevisionId = _editorBasisRevisionId;
-        var editorJson = _editorJson;
         _busy = true;
         OperatorUiResult<CameraAgentPipelineProfilePreview> result;
         try
@@ -201,7 +202,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         }
         if (result.IsSuccess && result.Value is { } preview)
         {
-            _editorJson = preview.ProfileJson;
+            LoadEditor(CameraAgentScheduleUiService.ParseProfile(preview.ProfileJson));
             _pipelinePlan = preview.Plan;
             _preview = null;
             SetMessage("Desired graph updated in the editor. Save the immutable draft to persist it.", error: false);
@@ -214,11 +215,11 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     private async Task StageAsync()
     {
-        if (_state is null || _editorBasisRevisionId is null)
+        if (_state is null || _editorBasisRevisionId is null || !TryResolveEditorJson(out var editorJson))
         {
             return;
         }
-        var stageSignature = string.Concat(_editorBasisRevisionId, "\n", _editorJson);
+        var stageSignature = string.Concat(_editorBasisRevisionId, "\n", editorJson);
         if (!string.Equals(_stagePayload, stageSignature, StringComparison.Ordinal))
         {
             _stagePayload = stageSignature;
@@ -227,7 +228,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         }
         _busy = true;
         var result = await ScheduleService.StageAsync(
-            _editorJson,
+            editorJson,
             _editorBasisRevisionId,
             _stageExpectedVersion,
             _stageKey!,
@@ -412,6 +413,66 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         _preview = null;
         _pipelinePlan = null;
         _message = null;
+    }
+
+    private void FormChanged()
+    {
+        _jsonIsTruth = false;
+        EditorChanged();
+        // Keep the advanced view showing exactly what a command would send.
+        if (_model is not null && _basisProfile is not null && _model.TryApply(_basisProfile, out var profile, out _))
+        {
+            _editorJson = CameraAgentScheduleUiService.SerializeProfile(profile);
+        }
+    }
+
+    private void JsonChanged()
+    {
+        _jsonIsTruth = true;
+        EditorChanged();
+    }
+
+    private void AddSetpoint() { _model?.AddSetpoint(); FormChanged(); }
+
+    private void AddWindow() { _model?.AddWeeklyWindow(); FormChanged(); }
+
+    private void AddBlackout() { _model?.AddBlackout(); FormChanged(); }
+
+    private void RemoveSetpoint(CaptureProfileFormModel.SetpointProfileRow row) { _model?.Setpoints.Remove(row); FormChanged(); }
+
+    private void RemoveWindow(CaptureProfileFormModel.WeeklyWindowRow row) { _model?.WeeklyWindows.Remove(row); FormChanged(); }
+
+    private void RemoveBlackout(CaptureProfileFormModel.BlackoutRow row) { _model?.Blackouts.Remove(row); FormChanged(); }
+
+    /// <summary>Loads a sanitized profile into both the typed form and the canonical JSON view.</summary>
+    private void LoadEditor(LocalCaptureProfileDefinition profile)
+    {
+        _basisProfile = profile;
+        _model = CaptureProfileFormModel.FromProfile(profile);
+        _editorJson = CameraAgentScheduleUiService.SerializeProfile(profile);
+        _jsonIsTruth = false;
+    }
+
+    /// <summary>
+    /// Produces the JSON the service receives: the advanced editor text when it was edited last,
+    /// otherwise the typed fields rewritten onto the basis profile. Parse errors stop the command.
+    /// </summary>
+    private bool TryResolveEditorJson(out string editorJson)
+    {
+        if (_jsonIsTruth || _model is null || _basisProfile is null)
+        {
+            editorJson = _editorJson;
+            return true;
+        }
+        if (!_model.TryApply(_basisProfile, out var profile, out var errors))
+        {
+            SetMessage(string.Join(' ', errors), error: true);
+            editorJson = string.Empty;
+            return false;
+        }
+        editorJson = CameraAgentScheduleUiService.SerializeProfile(profile);
+        _editorJson = editorJson;
+        return true;
     }
 
     private static string NewKey() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
