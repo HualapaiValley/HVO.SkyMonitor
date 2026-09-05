@@ -12,6 +12,8 @@ archive="$root/cameraagent.tar"
 baseline_revision="${HVO_INSTALLER_BASELINE_REVISION:-}"
 install_tag="hvo-skymonitor-cameraagent:installer-contract-$$"
 candidate_tag=""
+signed_loaded_images=()
+signed_source_worktrees=()
 port=55415
 instance_id="$(tr -d '\n' </proc/sys/kernel/random/uuid)"
 
@@ -24,10 +26,10 @@ cleanup() {
     docker rm --force "hvo-skymonitor-${signed_instance_id//-/}-replay" >/dev/null 2>&1 || true
     docker network rm "hvo-skymonitor-${signed_instance_id//-/}_default" >/dev/null 2>&1 || true
   fi
-  for signed_image in ${signed_loaded_images:-}; do
+  for signed_image in "${signed_loaded_images[@]}"; do
     docker image rm --force "$signed_image" >/dev/null 2>&1 || true
   done
-  for signed_worktree in ${signed_source_worktrees:-}; do
+  for signed_worktree in "${signed_source_worktrees[@]}"; do
     git worktree remove --force "$signed_worktree" >/dev/null 2>&1 || true
   done
   docker image rm --force "$install_tag" >/dev/null 2>&1 || true
@@ -546,8 +548,6 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     sha256sum | cut -d ' ' -f 1)"
   test "$signed_untrusted_key_id" != "$signed_key_id"
 
-  signed_source_worktrees=""
-  signed_loaded_images=""
   # `git worktree prune` deregisters every worktree whose directory is momentarily absent, including other agents'
   # checkouts of this repository, so the throwaway source worktrees are always removed through git itself.
   remove_signed_worktree() {
@@ -562,7 +562,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   register_signed_images() {
     local manifest="$1" identity
     for identity in offlineArchiveImageId manifestDigest; do
-      signed_loaded_images="$signed_loaded_images $(signed_amd64_identity "$manifest" "$identity")"
+      signed_loaded_images+=("$(signed_amd64_identity "$manifest" "$identity")")
     done
   }
   build_signed_release() {
@@ -577,7 +577,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     rm -rf "$signed_workspace/release-$slot"
     remove_signed_worktree "$source_worktree"
     git worktree add --detach "$source_worktree" "$revision" >/dev/null
-    signed_source_worktrees="$signed_source_worktrees $source_worktree"
+    signed_source_worktrees+=("$source_worktree")
     "$source_worktree/scripts/release:cameraagent-image" \
       --version "$version" \
       --revision "$revision" \
@@ -585,8 +585,8 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
       --arm64-builder "$signed_arm64_builder" \
       --sign-key "$signed_workspace/signing.pem"
     register_signed_images "$manifest"
+    # The cleanup trap tolerates an already-removed worktree, so the entry is left in place rather than trimmed.
     remove_signed_worktree "$source_worktree"
-    signed_source_worktrees="${signed_source_worktrees%" $source_worktree"}"
   }
   signed_amd64_identity() {
     jq -er --arg field "$2" \

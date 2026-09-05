@@ -178,7 +178,7 @@ installer campaign have run, so treat an arm64 installation as unqualified end
 to end. The signed-release installer campaign
 ([#598](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/598)) proves the
 signed lifecycle on `linux/amd64`: both architectures of both candidates are
-built, identity-derived, scanned, and signed, and the amd64 archive is the one an
+built, identity-derived, scanned, and signed, and the amd64 archive is the one that an
 installation consumes and runs. The arm64 archive of each candidate is published
 and verifiable but is never installed, so arm64 remains unqualified end to end
 and no open issue currently tracks qualifying it; open one before treating an
