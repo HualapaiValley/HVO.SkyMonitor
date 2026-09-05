@@ -68,7 +68,8 @@ internal static class ElasticScalingPolicy
         if (warmMissing > 0 && warmShortfall == 0 && input.Running - input.WarmInstances > 0)
         {
             // At capacity with too few warm instances: retire one excess (self-terminating) instance so the next sample
-            // can provision its warm replacement instead of waiting for the excess instance to exit on its own.
+            // can provision its warm replacement instead of waiting for the excess instance to exit on its own. The
+            // autoscaler applies this only to an excess instance with no work in flight, so busy work is never cut.
             return new ElasticScalingDecision(0, 1, ReasonWarmMinimum);
         }
         if (desired > active || warmShortfall > 0)

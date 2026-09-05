@@ -3,6 +3,7 @@ using FluentAssertions;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
+using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.LogicHost.Services.Elastic;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.ProcessingRunner.Contracts;
@@ -14,6 +15,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.IntegrationTests;
@@ -168,6 +170,255 @@ public sealed class ElasticProviderIntegrationTests
         await autoscaler.StopAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
+    [TestMethod]
+    public async Task AReservedRetirementLeftByAPreviousHostIsCompletedNotOrphaned()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        await using var host = await ElasticHost.StartAsync(maxInstances: 1, scaleToZeroAfter: TimeSpan.FromMinutes(10)).ConfigureAwait(false);
+        await SeedPreviewJobAsync("elastic-resume").ConfigureAwait(false);
+        (await host.Autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false)).Provision.Should().Be(1);
+        var instance = await host.SingleInstanceAsync().ConfigureAwait(false);
+        var instanceId = instance.InstanceId;
+        await host.SampleUntilAsync(async () => (await host.InstanceAsync(instanceId).ConfigureAwait(false)).State == nameof(ElasticRunnerInstanceState.Running), CompletionTimeout).ConfigureAwait(false);
+
+        // The host exits after the retirement reservation committed but before the drain request went out.
+        await using (var scope = host.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await db.CentralElasticRunnerInstances.Where(row => row.InstanceId == instanceId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(row => row.State, nameof(ElasticRunnerInstanceState.Stopping)))
+                .ConfigureAwait(false);
+        }
+        ProcessIsAlive(instance.ProcessId!.Value).Should().BeTrue("the reserved runner is still running when the next host process starts");
+
+        // A fresh host process (new provider tracking, nothing adopted yet) re-adopts the reserved retirement and completes it.
+        var services = host.Factory.Services;
+        using var restartedProvider = new LocalProcessElasticRunnerProvider(
+            services.GetRequiredService<IOptions<CentralElasticProviderOptions>>(), TimeProvider.System,
+            services.GetRequiredService<ILogger<LocalProcessElasticRunnerProvider>>());
+        var restarted = CreateAutoscaler(services, restartedProvider, services.GetRequiredService<IOptions<CentralElasticProviderOptions>>().Value, restartedProvider);
+        await restarted.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+
+        instance = await host.InstanceAsync(instanceId).ConfigureAwait(false);
+        instance.State.Should().Be(nameof(ElasticRunnerInstanceState.Stopped), "the reserved retirement is completed, not orphaned");
+        instance.Reason.Should().Be(ElasticRunnerAutoscaler.ReasonRetirementResumed);
+        ProcessIsAlive(instance.ProcessId!.Value).Should().BeFalse("the drain request that never went out is sent by the new host");
+        await using (var scope = host.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            (await db.CentralProcessingRunners.AsNoTracking().SingleAsync(runner => runner.RunnerId == instance.RunnerId).ConfigureAwait(false))
+                .Status.Should().Be(CentralProcessingRunnerStatus.Retired, "a completed retirement leaves no registration to revive");
+        }
+    }
+
+    [TestMethod]
+    public async Task ALaunchWhoseRecordCannotBeSavedRetiresTheProcessAndClosesItsIntent()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        // Host shutdown lands between the process start and the save of its record.
+        using var shutdown = new CancellationTokenSource();
+        var provider = new ScriptedProvider(_ => shutdown.Cancel());
+        var autoscaler = CreateAutoscaler(factory.Services, provider, WarmOptions());
+
+        var sample = () => autoscaler.SampleAsync(shutdown.Token);
+        await sample.Should().ThrowAsync<OperationCanceledException>().ConfigureAwait(false);
+
+        provider.Provisioned.Should().HaveCount(1);
+        var instanceId = provider.Provisioned[0].InstanceId;
+        provider.Retired.Should().Equal(instanceId, "a process without a record is retired");
+        var row = await ScriptedInstanceAsync(factory, instanceId).ConfigureAwait(false);
+        row.State.Should().Be(nameof(ElasticRunnerInstanceState.Stopped), "the interrupted intent is closed, so no replica counts it until owner-stale cleanup");
+        row.Reason.Should().Be("launch-aborted");
+        // The capacity is free again at once: the next sample provisions the warm instance.
+        (await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false)).Provision.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task ReRegistrationIsSerializedBehindAnInFlightAbandonmentAndDenied()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var instanceId = Guid.NewGuid().ToString("N")[..16];
+        var runnerId = $"elastic-scripted-{instanceId}";
+        var request = ScriptedRegistration(runnerId);
+        await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: "host-that-died", keepWarm: true).ConfigureAwait(false);
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, request, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        // Another replica is abandoning the instance: it holds the per-runner lock with the abandonment not yet committed.
+        await using var abandoning = factory.Services.CreateAsyncScope();
+        var abandoningDb = abandoning.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await using var abandonment = await abandoningDb.Database.BeginTransactionAsync().ConfigureAwait(false);
+        await ElasticRunnerRegistrationLock.AcquireAsync(abandoningDb, runnerId, CancellationToken.None).ConfigureAwait(false);
+
+        // The runner re-registers concurrently; nothing but the lock can hold it back yet.
+        var registration = Task.Run(async () =>
+        {
+            await using var scope = factory.Services.CreateAsyncScope();
+            return await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, request, CancellationToken.None).ConfigureAwait(false);
+        });
+        await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+        registration.IsCompleted.Should().BeFalse("registration waits behind the in-flight abandonment instead of racing its check against it");
+
+        var now = DateTimeOffset.UtcNow;
+        var row = await abandoningDb.CentralElasticRunnerInstances.SingleAsync(candidate => candidate.InstanceId == instanceId).ConfigureAwait(false);
+        row.State = nameof(ElasticRunnerInstanceState.Abandoned);
+        row.Reason = "owner-lost";
+        row.StoppedAtUtc = now;
+        row.UpdatedAtUtc = now;
+        await abandoningDb.SaveChangesAsync().ConfigureAwait(false);
+        await abandoningDb.CentralProcessingRunners.Where(runner => runner.RunnerId == runnerId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(runner => runner.Status, CentralProcessingRunnerStatus.Retired)
+                .SetProperty(runner => runner.RetiredAtUtc, now)
+                .SetProperty(runner => runner.UpdatedAtUtc, now))
+            .ConfigureAwait(false);
+        await abandonment.CommitAsync().ConfigureAwait(false);
+
+        var awaitRegistration = async () => await registration.ConfigureAwait(false);
+        (await awaitRegistration.Should().ThrowAsync<CentralProcessingRunnerRejectedException>().ConfigureAwait(false))
+            .Which.ReasonCode.Should().Be(ProcessingRunnerReasonCodes.RegistrationDenied, "the registration that waited sees the committed abandonment");
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            (await db.CentralProcessingRunners.AsNoTracking().SingleAsync(runner => runner.RunnerId == runnerId).ConfigureAwait(false))
+                .Status.Should().Be(CentralProcessingRunnerStatus.Retired, "the retired registration is never revived");
+        }
+    }
+
+    [TestMethod]
+    public async Task WarmReplacementWaitsForAnExcessInstanceWithNoWorkInFlight()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var instanceId = Guid.NewGuid().ToString("N")[..16];
+        var runnerId = $"elastic-scripted-{instanceId}";
+        var provider = new ScriptedProvider();
+        provider.MarkAlive(instanceId, runnerId);
+        // One excess (non-warm) instance fills the pool and is busy with a job.
+        await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId), CancellationToken.None).ConfigureAwait(false);
+        }
+        await SetAvailableSlotsAsync(factory, runnerId, 0).ConfigureAwait(false);
+        var autoscaler = CreateAutoscaler(factory.Services, provider, WarmOptions());
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Reason.Should().Be(ElasticScalingPolicy.ReasonWarmMinimum);
+        decision.Retire.Should().Be(1, "the policy asks for one excess instance to make room for the warm replacement");
+        provider.Retired.Should().BeEmpty("busy work is never force-terminated to restore the warm designation");
+        (await ScriptedInstanceAsync(factory, instanceId).ConfigureAwait(false)).State.Should().Be(nameof(ElasticRunnerInstanceState.Running));
+
+        // Once the excess instance has nothing in flight it is retired and the warm replacement follows.
+        await SetAvailableSlotsAsync(factory, runnerId, 1).ConfigureAwait(false);
+        await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        provider.Retired.Should().Equal(instanceId);
+        var row = await ScriptedInstanceAsync(factory, instanceId).ConfigureAwait(false);
+        row.State.Should().Be(nameof(ElasticRunnerInstanceState.Stopped));
+        row.Reason.Should().Be(ElasticScalingPolicy.ReasonWarmMinimum);
+        decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Provision.Should().Be(1);
+        provider.Provisioned.Single().KeepWarm.Should().BeTrue("the replacement carries the warm designation");
+    }
+
+    private const string ScriptedSubject = "scripted-runner-subject";
+
+    private static WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> RunnerEnabledFactory()
+        => AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("ProcessingRunners:Enabled", "true");
+            builder.UseSetting($"ProcessingRunners:Placement:{BuiltInProcessingRecipes.EncodedPreview}", "Runner");
+        });
+
+    /// <summary>Warm minimum of one within a pool of one: the shape every scripted scenario reasons about.</summary>
+    private static CentralElasticProviderOptions WarmOptions() => new()
+    {
+        Enabled = true,
+        Provider = CentralElasticProviderKind.LocalProcess,
+        MaxInstances = 1,
+        MinWarmInstances = 1,
+        MaxConcurrencyPerInstance = 1,
+        ScaleToZeroAfter = TimeSpan.FromMinutes(10),
+        SampleInterval = TimeSpan.FromHours(1),
+        RetireGrace = TimeSpan.FromSeconds(1)
+    };
+
+    /// <summary>An autoscaler as a fresh host process would construct it: nothing adopted, the given provider in front.</summary>
+    private static ElasticRunnerAutoscaler CreateAutoscaler(
+        IServiceProvider services, IElasticRunnerProvider provider, CentralElasticProviderOptions settings, LocalProcessElasticRunnerProvider? localProcessProvider = null)
+        => new(
+            services.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(settings),
+            services.GetRequiredService<IOptions<CentralProcessingRunnerOptions>>(),
+            services.GetRequiredService<IOptions<CentralProcessingEntitlementOptions>>(),
+            provider,
+            localProcessProvider ?? services.GetRequiredService<LocalProcessElasticRunnerProvider>(),
+            services.GetRequiredService<ElasticProviderTelemetry>(),
+            TimeProvider.System,
+            services.GetRequiredService<ILogger<ElasticRunnerAutoscaler>>());
+
+    private static ProcessingRunnerRegistrationRequest ScriptedRegistration(string runnerId)
+        => new(runnerId, "Scripted elastic runner",
+            ProcessingRunnerCapabilities.CreateForCurrentProcess(1, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, null, null),
+            Environment.ProcessId, DateTimeOffset.UtcNow.AddMinutes(-1));
+
+    private static async Task SeedScriptedInstanceAsync(
+        WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory, string instanceId, string runnerId, string hostName, bool keepWarm)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        db.CentralElasticRunnerInstances.Add(new CentralElasticRunnerInstance
+        {
+            Provider = ScriptedProvider.ProviderName,
+            HostName = hostName,
+            InstanceId = instanceId,
+            RunnerId = runnerId,
+            KeepWarm = keepWarm,
+            OwnerHeartbeatAtUtc = now,
+            ProcessArchitecture = "x64",
+            RuntimeImage = "test",
+            State = nameof(ElasticRunnerInstanceState.Running),
+            StartedAtUtc = now.AddHours(-1),
+            RegisteredAtUtc = now.AddHours(-1),
+            UpdatedAtUtc = now
+        });
+        await db.SaveChangesAsync().ConfigureAwait(false);
+    }
+
+    private static async Task SetAvailableSlotsAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory, string runnerId, int availableSlots)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await db.CentralProcessingRunners.Where(runner => runner.RunnerId == runnerId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(runner => runner.AvailableSlots, availableSlots))
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<CentralElasticRunnerInstance> ScriptedInstanceAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory, string instanceId)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        return await db.CentralElasticRunnerInstances.AsNoTracking().SingleAsync(instance => instance.InstanceId == instanceId).ConfigureAwait(false);
+    }
+
+    private static async Task ClearScriptedRowsAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await db.CentralElasticRunnerInstances.Where(instance => instance.Provider == ScriptedProvider.ProviderName).ExecuteDeleteAsync().ConfigureAwait(false);
+    }
+
     private static async Task<Guid> SeedPreviewJobAsync(string scenario)
     {
         var suffix = Guid.NewGuid().ToString("N")[..8];
@@ -216,6 +467,40 @@ public sealed class ElasticProviderIntegrationTests
         public Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken) { Calls++; throw new InvalidOperationException(); }
         public Task RetireAsync(string instanceId, TimeSpan grace, CancellationToken cancellationToken) { Calls++; return Task.CompletedTask; }
         public Task<IReadOnlyList<ElasticRunnerInstance>> ListAsync(CancellationToken cancellationToken) { Calls++; return Task.FromResult<IReadOnlyList<ElasticRunnerInstance>>([]); }
+    }
+
+    /// <summary>An in-memory provider whose instances live only in the test: provisions succeed, retirements are recorded.</summary>
+    private sealed class ScriptedProvider(Action<ElasticRunnerProvisionRequest>? onProvisioned = null) : IElasticRunnerProvider
+    {
+        public const string ProviderName = "scripted";
+        private readonly Dictionary<string, ElasticRunnerInstance> _alive = new(StringComparer.Ordinal);
+        public List<ElasticRunnerProvisionRequest> Provisioned { get; } = [];
+        public List<string> Retired { get; } = [];
+        public string Name => ProviderName;
+        public ElasticProviderCapabilities Capabilities { get; } = new(ProviderName, "x64", "test", true, []);
+        public TimeSpan EstimateStartup() => TimeSpan.Zero;
+
+        public void MarkAlive(string instanceId, string runnerId)
+            => _alive[instanceId] = new ElasticRunnerInstance(instanceId, runnerId, ElasticRunnerInstanceState.Running, DateTimeOffset.UtcNow.AddHours(-1), null);
+
+        public Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken)
+        {
+            Provisioned.Add(request);
+            var instance = new ElasticRunnerInstance(request.InstanceId, request.RunnerId, ElasticRunnerInstanceState.Starting, DateTimeOffset.UtcNow, null);
+            _alive[request.InstanceId] = instance;
+            onProvisioned?.Invoke(request);
+            return Task.FromResult(instance);
+        }
+
+        public Task RetireAsync(string instanceId, TimeSpan grace, CancellationToken cancellationToken)
+        {
+            Retired.Add(instanceId);
+            _alive.Remove(instanceId);
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<ElasticRunnerInstance>> ListAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<ElasticRunnerInstance>>(_alive.Values.ToList());
     }
 
     /// <summary>A Kestrel-hosted LogicHost with the local-process adapter enabled against the real runner binary in the test output.</summary>

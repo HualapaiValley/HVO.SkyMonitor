@@ -63,7 +63,8 @@ logged). Idle instances above the warm minimum are retired after
 `ScaleToZeroAfter`. Instances whose process is gone are marked orphaned and
 their registration retired; instances whose registration went stale or never
 arrived within `RegistrationTimeout` are retired. Instances recorded by a
-previous host process are re-adopted when still alive.
+previous host process are re-adopted when still alive, and a retirement
+reserved by a previous host process is completed rather than orphaned.
 
 ## Local-first guarantees
 

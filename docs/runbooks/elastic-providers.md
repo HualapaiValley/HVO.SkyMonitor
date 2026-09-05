@@ -89,11 +89,16 @@ processes on the host on demand. Absent and disabled by default.
   in-flight work on every replica's instances counts toward demand;
   retirements are reserved as `Stopping` under the same lock, and a warm
   instance lost while the pool is at `MaxInstances` is replaced by retiring
-  one excess instance first. Intents that could not be launched (a failed
-  launch, or host shutdown mid-batch) are closed immediately as
-  `launch-aborted`. Abandonment closes the instance row and retires the
-  registration in one transaction, and an abandoned runner's heartbeat is
-  refused as well as its re-registration. `SampleInterval` and `RetireGrace` are validated even
+  one excess instance that has no work in flight first; when every excess
+  instance is busy the replacement waits for one to go idle, because the warm
+  designation never force-terminates active work. Intents that could not be
+  launched (a failed launch, host shutdown mid-batch, or a process that
+  started but whose record could not be saved and is retired again) are
+  closed immediately as `launch-aborted`. Abandonment closes the instance row
+  and retires the registration in one transaction under a per-runner
+  database lock that registration also takes, so a re-registration racing
+  the abandonment is denied instead of reviving the retired registration; an
+  abandoned runner's heartbeat is refused as well as its re-registration. `SampleInterval` and `RetireGrace` are validated even
   while disabled because that cleanup consumes them.
 - The entitlement bound is each backlogged observatory's remaining headroom
   (its limit minus its unexpired leases from any worker) plus the work
@@ -103,7 +108,10 @@ processes on the host on demand. Absent and disabled by default.
   follows the live count of warm instances: a lost warm instance is replaced
   by a warm one even while excess capacity runs. A retirement interrupted by
   host shutdown leaves the instance tracked and its stop file in place so the
-  runner still drains and the next host reconciles it.
+  runner still drains and the next host reconciles it; a retirement reserved
+  as `Stopping` whose drain request never went out is re-adopted by the next
+  host process and completed as `retirement-resumed` (event 2241) rather than
+  orphaned while its process keeps running.
 
 ## Behavior
 
@@ -115,7 +123,8 @@ taken only when it can still serve the oldest backlog within `QueueDeadline`;
 otherwise the work stays local and the rejection is counted. Idle instances
 above the warm minimum are retired after `ScaleToZeroAfter`; retirement asks
 the runner to drain and forces it after `RetireGrace`. Instances recorded by a
-previous host process are re-adopted when their process is still alive.
+previous host process are re-adopted when their process is still alive,
+reserved retirements included, which are then completed.
 
 ## Signals
 
@@ -128,7 +137,7 @@ retains backlog, when startup cannot meet the deadline past the deadline,
 when orphans were cleaned in the last sample, or when no sample has
 completed within three intervals of startup, and unhealthy after three
 consecutive sampling failures (for example an executable that cannot start).
-Log events 2230-2237.
+Log events 2230-2241.
 
 ## Operations
 
