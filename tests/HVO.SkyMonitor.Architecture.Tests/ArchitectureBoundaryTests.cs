@@ -153,7 +153,7 @@ public sealed class ArchitectureBoundaryTests
             Path.Combine("src", "HVO.SkyMonitor.Catalog.Sqlite", "CatalogSnapshotResolver.cs"),
         ];
         var importPattern = new System.Text.RegularExpressions.Regex(
-            """"libc"[^;]*EntryPoint\s*=\s*"open(at)?"|LibraryImport\("libc"\)[^;]*\bopen(at)?\s*\("""",
+            """"libc"[^;]*(EntryPoint\s*=\s*"open(at)?"|\bopen(at)?\s*\()"""",
             System.Text.RegularExpressions.RegexOptions.Singleline);
         // The flag values in every spelling a caller might reach for, checked only on lines that talk about open
         // flags so that a 64 KiB buffer constant elsewhere in the file is not mistaken for one.
@@ -161,7 +161,7 @@ public sealed class ArchitectureBoundaryTests
             """\b(0x0*(10000|20000|A0000)|65536|131072|655360)\b""",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var flagContextPattern = new System.Text.RegularExpressions.Regex(
-            """O_|open|flag|nofollow|directory""",
+            """O_|open|flag|nofollow|directory|architecture""",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var violations = new List<string>();
         var callers = 0;

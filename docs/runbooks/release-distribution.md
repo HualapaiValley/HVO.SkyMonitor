@@ -174,7 +174,7 @@ values that x86-64 uses). The advisory native arm64 workflow
 (`.github/workflows/cameraagent-arm64.yml`) runs the CameraAgent, acceptance,
 catalog, and deployment CLI Unit suites on aarch64 and smoke-tests a natively
 built image there. No smoke of a *published* arm64 release image and no arm64
-installer campaign has run, so treat an arm64 installation as unqualified end
+installer campaign have run, so treat an arm64 installation as unqualified end
 to end until #598 and #599 close.
 
 A published image release must carry a vulnerability scan. The release tool

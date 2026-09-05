@@ -85,7 +85,7 @@ acknowledgement may still be applied.
 > `linux/arm64` installation is no longer refused (the `open(2)` flag defect,
 > [#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603), is fixed
 > and the advisory arm64 workflow runs this CLI's Unit suite natively), but no
-> arm64 installer campaign and no smoke of a published arm64 release image has
+> arm64 installer campaign and no smoke of a published arm64 release image have
 > run yet; treat an arm64 installation as unqualified end to end until #598 and
 > #599 close.
 
