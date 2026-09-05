@@ -977,39 +977,10 @@ internal sealed class SqliteRawCaptureJournal(
             insertNode.Parameters.AddWithValue("$window", (object?)node.WindowJson ?? DBNull.Value);
             await insertNode.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
+            // A live execution's derived window depends on outputs that later captures have not produced
+            // yet at acceptance, so it is resolved and pinned when the consuming node executes.
             if (!node.DependenciesJson.Contains("$raw", StringComparison.Ordinal))
             {
-                if (node.WindowJson is { } outputWindowJson &&
-                    ProcessingOutputWindowSelector.ReadFirstProducerId(node.DependenciesJson) is { } producerId)
-                {
-                    var requirement = JsonSerializer.Deserialize<ProcessingGraphWindowRequirement>(
-                        outputWindowJson, ProcessingSerializerOptions)
-                        ?? throw new InvalidDataException($"Processing graph node '{node.NodeId}' has an invalid window.");
-                    var frozenOutputs = await ProcessingOutputWindowSelector.SelectAsync(
-                        connection, transaction, currentDescriptor, producerId,
-                        execution.Revision.State.RevisionId,
-                        execution.Revision.Nodes.Single(candidate => string.Equals(
-                            candidate.NodeId, producerId, StringComparison.OrdinalIgnoreCase)).PlanSha256,
-                        node.InputsJson,
-                        requirement, 128, includeUnpublishedRevisionOutputs: false, cancellationToken).ConfigureAwait(false);
-                    for (var ordinal = 0; ordinal < frozenOutputs.Count; ordinal++)
-                    {
-                        using var outputPin = connection.CreateCommand();
-                        outputPin.Transaction = transaction;
-                        outputPin.CommandText = """
-                            INSERT INTO processing_execution_output_input_pins(
-                                execution_id, node_id, input_ordinal, window_position,
-                                output_identity_sha256, released_flag)
-                            VALUES ($execution, $node, $ordinal, $position, $output, 0);
-                            """;
-                        outputPin.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
-                        outputPin.Parameters.AddWithValue("$node", node.NodeId);
-                        outputPin.Parameters.AddWithValue("$ordinal", ordinal);
-                        outputPin.Parameters.AddWithValue("$position", frozenOutputs[ordinal].WindowPosition);
-                        outputPin.Parameters.AddWithValue("$output", frozenOutputs[ordinal].OutputIdentitySha256);
-                        await outputPin.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                    }
-                }
                 continue;
             }
             var frozenInputs = node.WindowJson is null

@@ -106,11 +106,78 @@ No byte ever travels through this contract.
 not the durable `output_ordinal` column; order is preserved because the store
 reads outputs ordered by the durable ordinal.
 
-`inputs[].windowPosition` is the input's position relative to the execution's
-own capture, as the durable window selector records it: `0` is this capture and
-a negative value is that many captures earlier in a trailing window. It is a
-signed integer with no contract-level bound, because the durable column has
-none.
+`inputs[].windowPosition` is the input's dense rank among the window members the
+execution actually selected, as the durable window selector records it: `0` is
+this capture and `-1` the nearest earlier selected input. It is not the
+capture-sequence delta, because an ineligible capture is skipped over rather
+than leaving a hole (see below). It is a signed integer with no contract-level
+bound, because the durable column has none.
+
+### When a derived window is resolved
+
+A raw window is resolved when the execution is created, because every raw
+capture it can name is already committed. A derived window - one whose inputs
+are another node's outputs - is resolved differently by execution class:
+
+- A **replay** execution resolves and pins its derived window when it is
+  submitted, and consumes exactly those pins. Re-running a replay never
+  reselects.
+- A **live** execution is created while its own raw capture is accepted, before
+  the earlier captures of a trailing window have finished processing. It
+  therefore resolves and pins its derived window when the consuming node runs,
+  under the execution lease, replacing that node's unreleased pins. The pins are
+  the window the attempt resolved, and the retention hold covers those outputs
+  from that moment until the execution completes. A node's recorded sources can
+  still be a subset of its pins, because a step or recipe may drop an offered
+  input - the rolling combination, for example, stops at the first incompatible
+  layout and honours its own maximum integration and age limits. Retrying a node
+  replaces the window evidence of the previous attempt; the schema keeps one
+  input set per node, not one per attempt.
+
+A derived window's members are compared for compatibility against **this capture's
+own output from the same producer**, not against its raw capture. A producer
+deliberately changes compatibility axes - reference calibration rewrites the
+calibration and mask profiles - so comparing a calibrated candidate against the
+raw identity would reject every earlier capture and collapse the window to the
+current one. The revision- and plan-scoped output is preferred, so a replay of
+this capture under another revision cannot become the identity every candidate
+is measured against; a replay whose own revision never produced this capture
+falls back to the archived output for the same capture and node. A replay
+resolves its window when it is submitted, so a first replay under a new revision
+always takes that fallback and is measured against the archived identity: its
+window then comes up short or empty rather than wrong. When this capture has
+produced nothing that the consuming node's input contract accepts - a window
+probed before the capture is processed - the raw identity is used. For a live execution that
+cannot normally happen, because the window is resolved after the producing node
+commits its output, so a live window that still comes up short is reported by
+event 2085 rather than failing the capture.
+
+A pinned window member is read back by identity, not by availability: a replay
+consumes the outputs pinned when it was submitted even if one of them is later
+marked unavailable, because the pin is what holds their retention.
+
+A live derived window is always trailing; centered windows are replay-only. For a
+live execution, only an earlier capture whose execution has completed and
+published the producing node's output is eligible (an output from pre-execution
+legacy processing is also eligible on a completed node with the same plan hash;
+replay additionally admits unpublished outputs of its own revision). So an
+earlier capture that failed, was skipped, or is still running is **excluded,
+never waited for**: the node neither blocks on a peer capture nor is skipped
+because of one. The selector then takes the most recent eligible outputs up to
+the window's maximum input count, so an excluded capture is skipped over and an
+older eligible capture takes its place rather than leaving a hole. That maximum
+is the smaller of the node's configured window size and
+`CameraAgent:ProcessingGraphs:MaximumWindowInputs`, which live and replay share.
+Ineligible captures are filtered before any limit applies, so skipping past them
+is unbounded; what is bounded is how many eligible-but-incompatible candidates
+the selector can look past, by its candidate limit of
+`min(512, 4 x MaximumWindowInputs)`. A trailing window
+is still allowed to be shorter than its maximum - a freshly started agent has no
+history - and the combination records only the sources it actually used, with
+`stackCount` reporting that count. A live node that resolves fewer inputs than
+its effective window logs event 2085 with the resolved and effective counts, so
+a persistently short stack is visible to an operator. Replay does not log it: a
+frozen window is short only because the archive was.
 
 ## Sequencing, idempotency, conflict, and acknowledgement
 
