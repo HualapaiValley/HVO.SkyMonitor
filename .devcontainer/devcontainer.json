@@ -133,7 +133,7 @@
     },
     {
       "type": "bind",
-      "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.microsoft/usersecrets",
+      "source": "${localEnv:HOME}/.microsoft/usersecrets",
       "target": "/home/vscode/.microsoft/usersecrets"
     },
     {
