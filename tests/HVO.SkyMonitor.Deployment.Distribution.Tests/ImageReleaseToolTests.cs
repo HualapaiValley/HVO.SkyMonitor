@@ -530,4 +530,45 @@ public sealed class ImageReleaseToolTests
 
         await AssertRejectedAsync(arguments, "lists an invalid scanned subject");
     }
+
+    /// <summary>
+    /// A present-but-non-array <c>files</c> member must be refused rather than treated as absent, or a malformed
+    /// document would skip the per-file rule entirely by declaring files in the wrong shape.
+    /// </summary>
+    [TestMethod]
+    public async Task CreateImage_InventoryWhoseFilesMemberIsNotAnArray_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var malformed = fixture.WriteComponentInventory(
+            "files-not-array.spdx.json",
+            fixture.ImageIdFor("amd64"),
+            ImageReleaseFixture.InventoryComponents,
+            filesNotAnArray: true);
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-amd64") + 1] = malformed;
+
+        await AssertRejectedAsync(arguments, "declares a 'files' member that is not an array");
+    }
+
+    /// <summary>
+    /// A subject object with no usable image ID must be refused, not filtered out: filtering would let junk sit
+    /// alongside the correct entries and still satisfy the "covers exactly the published images" rule.
+    /// </summary>
+    [TestMethod]
+    public async Task CreateImage_ScanReportSubjectWithoutAUsableImageId_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var malformed = Path.Combine(fixture.Root, "empty-subject-scan.json");
+        var report = await File.ReadAllTextAsync(fixture.ScanReport);
+        var opening = report.IndexOf("\"subjects\":[", StringComparison.Ordinal);
+        Assert.IsTrue(opening >= 0, report);
+        await File.WriteAllTextAsync(
+            malformed,
+            report.Insert(opening + "\"subjects\":[".Length, "{\"architecture\":\"amd64\"},"),
+            new UTF8Encoding(false));
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--scan-report") + 1] = malformed;
+
+        await AssertRejectedAsync(arguments, "lists an invalid scanned subject");
+    }
 }

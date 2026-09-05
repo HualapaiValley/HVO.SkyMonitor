@@ -87,7 +87,8 @@ internal sealed class ImageReleaseFixture : IDisposable
         int components,
         string spdxVersion = "SPDX-2.3",
         string? additionalImageId = null,
-        bool includeFileWithoutSha1 = false)
+        bool includeFileWithoutSha1 = false,
+        bool filesNotAnArray = false)
     {
         var packages = new List<object>
         {
@@ -157,35 +158,36 @@ internal sealed class ImageReleaseFixture : IDisposable
                 }
             });
         }
-        var path = Path.Combine(Root, name);
-        File.WriteAllText(
-            path,
-            JsonSerializer.Serialize(new
+        // The scanner's container-image output omits "files" entirely, so the fixture omits it too unless a test
+        // is exercising that member. Emitting it as null would not reproduce any document the release can receive.
+        var document = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["spdxVersion"] = spdxVersion,
+            ["dataLicense"] = "CC0-1.0",
+            ["SPDXID"] = "SPDXRef-DOCUMENT",
+            ["name"] = "/scan/cameraagent-image.tar",
+            ["documentNamespace"] = "http://trivy.dev/container_image/cameraagent",
+            ["creationInfo"] = new { creators = InventoryCreators, created = "2026-08-24T04:29:18Z" },
+            ["packages"] = packages
+        };
+        if (filesNotAnArray)
+        {
+            document["files"] = "not-an-array";
+        }
+        else if (includeFileWithoutSha1)
+        {
+            document["files"] = new[]
             {
-                spdxVersion,
-                dataLicense = "CC0-1.0",
-                SPDXID = "SPDXRef-DOCUMENT",
-                name = "/scan/cameraagent-image.tar",
-                documentNamespace = "http://trivy.dev/container_image/cameraagent",
-                creationInfo = new
+                new
                 {
-                    creators = InventoryCreators,
-                    created = "2026-08-24T04:29:18Z"
-                },
-                packages,
-                files = includeFileWithoutSha1
-                    ? new[]
-                    {
-                        new
-                        {
-                            fileName = "./app/HVO.SkyMonitor.CameraAgent.dll",
-                            SPDXID = "SPDXRef-File-1",
-                            checksums = new[] { new { algorithm = "SHA256", checksumValue = new string('a', 64) } }
-                        }
-                    }
-                    : null
-            }),
-            new UTF8Encoding(false));
+                    fileName = "./app/HVO.SkyMonitor.CameraAgent.dll",
+                    SPDXID = "SPDXRef-File-1",
+                    checksums = new[] { new { algorithm = "SHA256", checksumValue = new string('a', 64) } }
+                }
+            };
+        }
+        var path = Path.Combine(Root, name);
+        File.WriteAllText(path, JsonSerializer.Serialize(document), new UTF8Encoding(false));
         return path;
     }
 

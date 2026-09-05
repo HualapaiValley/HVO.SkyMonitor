@@ -577,9 +577,14 @@ internal static partial class Program
     /// </summary>
     private static void ValidateInventoryFiles(JsonElement root, string architecture)
     {
-        if (!root.TryGetProperty("files", out var files) || files.ValueKind != JsonValueKind.Array)
+        if (!root.TryGetProperty("files", out var files))
         {
             return;
+        }
+        if (files.ValueKind != JsonValueKind.Array)
+        {
+            throw new ReleaseToolException(
+                $"The linux/{architecture} component inventory declares a 'files' member that is not an array.");
         }
         foreach (var file in files.EnumerateArray())
         {
@@ -738,16 +743,19 @@ internal static partial class Program
         {
             throw new ReleaseToolException("The image vulnerability scan report does not list its scanned subjects.");
         }
-        // A malformed entry is refused rather than skipped: silently ignoring it would let a report that lists
-        // junk alongside the right image IDs still satisfy the "covers exactly the published images" rule.
-        if (subjects.EnumerateArray().Any(static subject => subject.ValueKind != JsonValueKind.Object))
+        // Every entry is refused rather than skipped. Filtering a malformed one out would let a report that lists
+        // junk alongside the right image IDs still satisfy the "covers exactly the published images" rule below,
+        // because the junk would simply vanish from the comparison.
+        var scanned = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var subject in subjects.EnumerateArray())
         {
-            throw new ReleaseToolException("The image vulnerability scan report lists an invalid scanned subject.");
+            if (subject.ValueKind != JsonValueKind.Object || Text(subject, "imageId") is not { } scannedImageId ||
+                string.IsNullOrWhiteSpace(scannedImageId))
+            {
+                throw new ReleaseToolException("The image vulnerability scan report lists an invalid scanned subject.");
+            }
+            scanned.Add(scannedImageId);
         }
-        var scanned = subjects.EnumerateArray()
-            .Select(static subject => Text(subject, "imageId"))
-            .Where(static imageId => imageId is not null)
-            .ToHashSet(StringComparer.Ordinal);
         if (!imageIds.All(scanned.Contains) || scanned.Count != imageIds.Length)
         {
             throw new ReleaseToolException("The image vulnerability scan report does not cover exactly the published images.");
