@@ -35,6 +35,8 @@ internal static class ElasticScalingPolicy
     public const string ReasonDailyLimit = "daily-limit";
     public const string ReasonColdStartExceedsDeadline = "cold-start-exceeds-deadline";
     public const string ReasonEntitlementBound = "entitlement-bound";
+    /// <summary>Applied by the autoscaler, not the policy: the provider cannot describe an instance, so nothing is provisioned.</summary>
+    public const string ReasonInstanceUndescribed = "instance-capabilities-unknown";
 
     public static ElasticScalingDecision Decide(CentralElasticProviderOptions options, ElasticScalingInput input, TimeSpan startupEstimate)
     {

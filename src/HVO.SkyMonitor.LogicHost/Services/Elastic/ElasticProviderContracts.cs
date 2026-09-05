@@ -106,9 +106,11 @@ internal interface IElasticRunnerProvider
 
     /// <summary>
     /// The capabilities an instance provisioned with <paramref name="maxConcurrency"/> and <paramref name="labels"/>
-    /// will register, so the host counts only backlog such an instance could claim (#600).
+    /// will register, so the host counts only backlog such an instance could claim; null when the provider cannot
+    /// currently describe an instance (for example the configured runner failed its capability probe), in which case
+    /// the host provisions nothing until it can (#600).
     /// </summary>
-    ProcessingRunnerCapabilities DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels);
+    ProcessingRunnerCapabilities? DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels);
 
     Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken);
 

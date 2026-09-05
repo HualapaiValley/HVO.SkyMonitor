@@ -18,7 +18,7 @@ internal sealed class NullElasticRunnerProvider : IElasticRunnerProvider
 
     public TimeSpan EstimateStartup() => TimeSpan.Zero;
 
-    public ProcessingRunnerCapabilities DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
+    public ProcessingRunnerCapabilities? DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
         => throw new InvalidOperationException("Elastic provisioning is disabled.");
 
     public Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken)
@@ -363,13 +363,16 @@ internal sealed partial class ElasticRunnerAutoscaler(
         // capabilities such an instance registers (resource class, GPU, architecture, labels), and the claim's own
         // predicate for reclaimable work (pending, retryable, or a lease that expired, e.g. with a crashed runner).
         var placedAll = runnerOptions.Value.ResolveRunnerPlacedRecipes();
-        var placed = runnerOptions.Value.ResolveEligibleRecipes(provider.DescribeInstance(settings.MaxConcurrencyPerInstance, BuildLabels(settings, "template"))).ToHashSet(StringComparer.Ordinal);
+        // A provider that cannot describe an instance (the configured runner failed its probe) gets nothing
+        // provisioned: no backlog is counted for it and even the warm minimum waits until a probe succeeds.
+        var template = provider.DescribeInstance(settings.MaxConcurrencyPerInstance, BuildLabels(settings, "template"));
+        var placed = template is null ? [] : runnerOptions.Value.ResolveEligibleRecipes(template).ToHashSet(StringComparer.Ordinal);
         var excluded = string.Join(',', placedAll.Where(recipe => !placed.Contains(recipe)).OrderBy(recipe => recipe, StringComparer.Ordinal));
-        if (excluded.Length != 0 && !string.Equals(excluded, _lastExcludedRecipes, StringComparison.Ordinal))
+        if (template is not null && excluded.Length != 0 && !string.Equals(excluded, _lastExcludedRecipes, StringComparison.Ordinal))
         {
             Log.RecipesExcluded(logger, provider.Name, excluded);
         }
-        _lastExcludedRecipes = excluded;
+        _lastExcludedRecipes = template is null ? null : excluded;
         var backlogRows = placed.Count == 0
             ? []
             : await dbContext.CentralDerivativeJobs.AsNoTracking()
@@ -452,6 +455,12 @@ internal sealed partial class ElasticRunnerAutoscaler(
         registeredRunningConcurrency = lockedRegistered.Sum();
         input = input with { Running = running, Starting = starting, WarmInstances = warmLive, Capacity = CapacityOf(running, starting) };
         var decision = ElasticScalingPolicy.Decide(settings, input, provider.EstimateStartup());
+        if (template is null && decision.Provision > 0)
+        {
+            decision = new ElasticScalingDecision(0, decision.Retire, ElasticScalingPolicy.ReasonInstanceUndescribed);
+            telemetry.RecordRejectedPlacement(provider.Name, decision.Reason);
+            Log.InstanceUndescribed(logger, provider.Name);
+        }
         if (decision.Provision == 0 && decision.Retire == 0 && decision.Reason is not "steady" && backlog > 0)
         {
             telemetry.RecordRejectedPlacement(provider.Name, decision.Reason);
@@ -504,16 +513,19 @@ internal sealed partial class ElasticRunnerAutoscaler(
                 {
                     continue;
                 }
+                // The lock is tracked the moment it is acquired, so the finally below releases it on every path,
+                // including a lease query that throws or a sample abandoned by the heartbeat renewal.
                 var claimLock = await CentralObjectApplicationLock.AcquireAsync(dbContext, ClaimLockPrefix + item.Row.RunnerId, cancellationToken).ConfigureAwait(false);
+                claimLocks.Add(claimLock);
                 if (decision.Reason != ElasticScalingPolicy.ReasonDailyLimit
                     && await dbContext.CentralDerivativeJobs.AsNoTracking()
                         .AnyAsync(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseOwner == item.Row.RunnerId && job.LeaseExpiresAtUtc > timeProvider.GetUtcNow(), cancellationToken)
                         .ConfigureAwait(false))
                 {
+                    claimLocks.Remove(claimLock);
                     await claimLock.DisposeAsync().ConfigureAwait(false);
                     continue;
                 }
-                claimLocks.Add(claimLock);
                 item.Row.State = nameof(ElasticRunnerInstanceState.Stopping);
                 item.Row.UpdatedAtUtc = now;
                 retiring.Add(item);
@@ -796,5 +808,8 @@ internal sealed partial class ElasticRunnerAutoscaler(
 
         [LoggerMessage(2245, LogLevel.Warning, "Elastic owner heartbeat renewal failed; retrying each tick. UnrenewedSeconds={UnrenewedSeconds}")]
         public static partial void OwnerHeartbeatFailed(ILogger logger, long unrenewedSeconds, Exception exception);
+
+        [LoggerMessage(2246, LogLevel.Warning, "Elastic provisioning withheld: the provider cannot describe an instance (see the capability probe). Provider={Provider}")]
+        public static partial void InstanceUndescribed(ILogger logger, string provider);
     }
 }

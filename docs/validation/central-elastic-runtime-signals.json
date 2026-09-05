@@ -20,7 +20,8 @@
     { "eventId": 2242, "level": "Warning", "fields": ["Provider", "Recipes"] },
     { "eventId": 2243, "level": "Information", "fields": ["Executable", "ProcessArchitecture", "RuntimeIdentifier", "Recipes"] },
     { "eventId": 2244, "level": "Warning", "fields": ["Executable"] },
-    { "eventId": 2245, "level": "Warning", "fields": ["UnrenewedSeconds"] }
+    { "eventId": 2245, "level": "Warning", "fields": ["UnrenewedSeconds"] },
+    { "eventId": 2246, "level": "Warning", "fields": ["Provider"] }
   ],
   "metrics": [
     { "name": "skymonitor.central.elastic.instances", "unit": "{instance}", "labels": { "provider": ["local-process"], "state": ["starting", "running", "idle"] } },
@@ -29,7 +30,7 @@
     { "name": "skymonitor.central.elastic.provisions", "unit": "{instance}", "labels": { "provider": ["local-process"] } },
     { "name": "skymonitor.central.elastic.retirements", "unit": "{instance}", "labels": { "provider": ["local-process"], "reason": ["idle", "daily-limit", "warm-minimum", "registration-timeout", "registry-lost", "retirement-resumed"] } },
     { "name": "skymonitor.central.elastic.orphans_cleaned", "unit": "{instance}", "labels": { "provider": ["local-process"] } },
-    { "name": "skymonitor.central.elastic.placements_rejected", "unit": "{decision}", "labels": { "provider": ["local-process"], "reason": ["daily-limit", "cold-start-exceeds-deadline", "entitlement-bound"] } },
+    { "name": "skymonitor.central.elastic.placements_rejected", "unit": "{decision}", "labels": { "provider": ["local-process"], "reason": ["daily-limit", "cold-start-exceeds-deadline", "entitlement-bound", "instance-capabilities-unknown"] } },
     { "name": "skymonitor.central.elastic.cold_start", "unit": "ms", "labels": { "provider": ["local-process"] } }
   ],
   "healthChecks": [

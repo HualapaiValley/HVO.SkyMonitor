@@ -267,7 +267,7 @@ public sealed class CentralElasticProviderOptionsTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void InstanceDescriptionFallsBackToTheHostWhenTheRunnerCannotBeProbed()
+    public void InstanceDescriptionIsWithheldWhenTheRunnerCannotBeProbed()
     {
         var settings = new CentralElasticProviderOptions
         {
@@ -284,11 +284,8 @@ public sealed class CentralElasticProviderOptionsTests
             Microsoft.Extensions.Options.Options.Create(settings), TimeProvider.System,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<LocalProcessElasticRunnerProvider>.Instance);
         Assert.IsNull(provider.ProbeConfiguredRunner(), "a missing executable cannot be probed");
-        Assert.IsNull(provider.ProbeConfiguredRunner(), "the probe runs once per host process");
-        var described = provider.DescribeInstance(3, ["provider:local-process", "b", "a", "a"]);
-        Assert.AreEqual(3, described.MaxConcurrency);
-        CollectionAssert.AreEqual(new[] { "a", "b", "provider:local-process" }, described.Labels.ToArray());
-        Assert.AreEqual(System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(), described.ProcessArchitecture, "the host process stands in until the next host start");
+        Assert.IsNull(provider.ProbeConfiguredRunner(), "a failed probe is not repeated before the retry interval");
+        Assert.IsNull(provider.DescribeInstance(3, ["provider:local-process", "b", "a", "a"]), "nothing stands in for a runner that cannot be probed: the host provisions nothing until a probe succeeds");
     }
 
     [TestMethod]
@@ -326,12 +323,16 @@ public sealed class CentralElasticProviderOptionsTests
                 if (accepted)
                 {
                     Assert.IsNotNull(probed, "a warm runner's advertisement (exit 0) is accepted");
-                    Assert.AreEqual("probe-rid", provider.DescribeInstance(2, []).RuntimeIdentifier, "instances are described by the probed runner");
+                    var described = provider.DescribeInstance(2, ["b", "a"]);
+                    Assert.IsNotNull(described);
+                    Assert.AreEqual("probe-rid", described.RuntimeIdentifier, "instances are described by the probed runner");
+                    Assert.AreEqual(2, described.MaxConcurrency);
+                    CollectionAssert.AreEqual(new[] { "a", "b" }, described.Labels.ToArray());
                 }
                 else
                 {
                     Assert.IsNull(probed, "a runner whose warmup is incomplete (exit 1) prints capabilities but would abort at startup; its advertisement is refused");
-                    Assert.AreNotEqual("probe-rid", provider.DescribeInstance(2, []).RuntimeIdentifier);
+                    Assert.IsNull(provider.DescribeInstance(2, []), "a refused advertisement describes nothing, so no instance is provisioned");
                 }
             }
             finally

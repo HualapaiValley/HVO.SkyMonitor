@@ -557,6 +557,31 @@ public sealed class ElasticProviderIntegrationTests
     }
 
     [TestMethod]
+    public async Task AProviderThatCannotDescribeAnInstanceProvisionsNothingAndDegradesHealth()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider { Describable = false };
+        var settings = WarmOptions();
+        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        await SeedPreviewJobAsync("elastic-undescribed").ConfigureAwait(false);
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Provision.Should().Be(0, "an instance that cannot be described would abort before registration; the warm minimum waits too");
+        decision.Reason.Should().Be(ElasticScalingPolicy.ReasonInstanceUndescribed);
+        provider.Provisioned.Should().BeEmpty();
+        var health = await new CentralElasticProviderHealthCheck(Options.Create(settings), provider, factory.Services.GetRequiredService<ElasticProviderTelemetry>())
+            .CheckHealthAsync(new HealthCheckContext(), CancellationToken.None).ConfigureAwait(false);
+        health.Status.Should().Be(HealthStatus.Degraded);
+        ((string)health.Data["lastDecision"]).Should().Be(ElasticScalingPolicy.ReasonInstanceUndescribed);
+
+        // Once the provider can describe an instance again, provisioning resumes.
+        provider.Describable = true;
+        (await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false)).Provision.Should().Be(1);
+    }
+
+    [TestMethod]
     public async Task TheLocalAdapterDescribesInstancesFromTheConfiguredRunner()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
@@ -567,7 +592,8 @@ public sealed class ElasticProviderIntegrationTests
         probed!.ProtocolVersion.Should().Be(ProcessingRunnerProtocol.Version);
         probed.BuiltInRecipes.Should().Contain(recipe => recipe.Name == BuiltInProcessingRecipes.EncodedPreview);
         var described = provider.DescribeInstance(2, ["provider:local-process", "elastic-instance:probe"]);
-        described.MaxConcurrency.Should().Be(2);
+        described.Should().NotBeNull();
+        described!.MaxConcurrency.Should().Be(2);
         described.Labels.Should().BeEquivalentTo(["elastic-instance:probe", "provider:local-process"]);
         described.RuntimeIdentifier.Should().Be(probed.RuntimeIdentifier, "the description comes from the probed runner, with the instance's own concurrency and labels");
     }
@@ -721,7 +747,7 @@ public sealed class ElasticProviderIntegrationTests
         public string Name => "counting";
         public ElasticProviderCapabilities Capabilities { get; } = new("counting", "x64", "test", true, []);
         public TimeSpan EstimateStartup() { Calls++; return TimeSpan.Zero; }
-        public ProcessingRunnerCapabilities DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels) { Calls++; return ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, labels, null); }
+        public ProcessingRunnerCapabilities? DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels) { Calls++; return ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, labels, null); }
         public Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken) { Calls++; throw new InvalidOperationException(); }
         public Task RetireAsync(string instanceId, TimeSpan grace, CancellationToken cancellationToken) { Calls++; return Task.CompletedTask; }
         public Task<IReadOnlyList<ElasticRunnerInstance>> ListAsync(CancellationToken cancellationToken) { Calls++; return Task.FromResult<IReadOnlyList<ElasticRunnerInstance>>([]); }
@@ -738,8 +764,10 @@ public sealed class ElasticProviderIntegrationTests
         public ElasticProviderCapabilities Capabilities { get; } = new(ProviderName, "x64", "test", true, []);
         public TimeSpan EstimateStartup() => TimeSpan.Zero;
 
-        public ProcessingRunnerCapabilities DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
-            => ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, labels, null);
+        public bool Describable { get; set; } = true;
+
+        public ProcessingRunnerCapabilities? DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
+            => Describable ? ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, labels, null) : null;
 
         public void MarkAlive(string instanceId, string runnerId)
             => _alive[instanceId] = new ElasticRunnerInstance(instanceId, runnerId, ElasticRunnerInstanceState.Running, DateTimeOffset.UtcNow.AddHours(-1), null);

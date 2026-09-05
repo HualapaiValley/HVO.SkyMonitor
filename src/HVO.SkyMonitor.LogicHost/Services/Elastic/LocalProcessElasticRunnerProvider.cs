@@ -34,35 +34,41 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         [$"provider:{ProviderName}"]);
 
     /// <summary>
-    /// The capabilities a child registers: probed once from the configured executable (<c>--capabilities</c>, the
-    /// runner's own advertisement, so a separately published binary, launcher, or other architecture is described as
-    /// it really is) with the instance's concurrency and labels applied; when the probe fails the host process stands
-    /// in and the failure is logged.
+    /// The capabilities a child registers: probed from the configured executable (<c>--capabilities</c>, the runner's
+    /// own advertisement, so a separately published binary, launcher, or other architecture is described as it really
+    /// is) with the instance's concurrency and labels applied. A failed probe describes nothing (null), so the host
+    /// provisions no instance that would abort before registration; the probe is retried after a cooldown.
     /// </summary>
-    public ProcessingRunnerCapabilities DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
+    public ProcessingRunnerCapabilities? DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
     {
         ArgumentNullException.ThrowIfNull(labels);
         var normalized = labels.Distinct(StringComparer.Ordinal).OrderBy(static label => label, StringComparer.Ordinal).ToArray();
         return ProbeConfiguredRunner() is { } probed
             ? probed with { MaxConcurrency = maxConcurrency, Labels = normalized }
-            : ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, normalized, null);
+            : null;
     }
 
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(60);
+    internal static readonly TimeSpan ProbeRetryInterval = TimeSpan.FromMinutes(5);
     private readonly Lock _probeGate = new();
-    private bool _probeAttempted;
+    private DateTimeOffset? _probeAttemptedAtUtc;
     private ProcessingRunnerCapabilities? _probed;
 
-    /// <summary>Runs the configured executable with <c>--capabilities</c> once per host process and parses its advertisement; null when it fails.</summary>
+    /// <summary>
+    /// Runs the configured executable with <c>--capabilities</c> and parses its advertisement (accepted only on a
+    /// zero exit, the runner's own warm signal); a successful probe is kept for the host's lifetime, a failed one is
+    /// retried after <see cref="ProbeRetryInterval"/>. Null while no probe has succeeded.
+    /// </summary>
     internal ProcessingRunnerCapabilities? ProbeConfiguredRunner()
     {
         lock (_probeGate)
         {
-            if (_probeAttempted)
+            var now = timeProvider.GetUtcNow();
+            if (_probed is not null || (_probeAttemptedAtUtc is { } attempted && now - attempted < ProbeRetryInterval))
             {
                 return _probed;
             }
-            _probeAttempted = true;
+            _probeAttemptedAtUtc = now;
             var settings = options.Value.LocalProcess;
             try
             {
@@ -514,7 +520,7 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         [LoggerMessage(2243, LogLevel.Information, "Elastic runner capabilities probed from the configured executable: Executable={Executable}, ProcessArchitecture={ProcessArchitecture}, RuntimeIdentifier={RuntimeIdentifier}, Recipes={Recipes}")]
         public static partial void CapabilitiesProbed(ILogger logger, string executable, string processArchitecture, string runtimeIdentifier, int recipes);
 
-        [LoggerMessage(2244, LogLevel.Warning, "Elastic runner capability probe failed; the host process describes instances until the next host start: Executable={Executable}")]
+        [LoggerMessage(2244, LogLevel.Warning, "Elastic runner capability probe failed; nothing is provisioned until a later probe succeeds: Executable={Executable}")]
         public static partial void CapabilityProbeFailed(ILogger logger, string executable, Exception exception);
 
         [LoggerMessage(2238, LogLevel.Warning, "Elastic runner stop file could not be written; the instance is retired by signal or force: Instance={Instance}")]

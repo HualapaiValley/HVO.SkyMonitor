@@ -136,9 +136,11 @@ the runner to drain and forces it after `RetireGrace`, which the child also
 receives as its own shutdown grace; the stop time recorded for instance
 minutes is the time the drain actually completed. Backlog counts only
 runner-placed recipes a provisioned instance could claim (the configured
-executable is probed once with `--capabilities`, event 2243, accepted only
-on a zero exit, or the host process stands in after a failed probe, event
-2244; recipes whose
+executable is probed with `--capabilities`, event 2243, accepted only on a
+zero exit; after a failed probe, event 2244, nothing is provisioned, not
+even the warm minimum, the decision reads `instance-capabilities-unknown`
+(event 2246, health degraded) and the probe is retried every five minutes;
+recipes whose
 requirements the instance cannot satisfy are excluded and logged once as
 event 2242) and includes expired leases the claim would reclaim. Idle
 scale-down never retires registered capacity the demand still needs, and
@@ -160,7 +162,7 @@ retains backlog, when startup cannot meet the deadline past the deadline,
 when orphans were cleaned in the last sample, or when no sample has
 completed within three intervals of startup, and unhealthy after three
 consecutive sampling failures (for example an executable that cannot start).
-Log events 2230-2245.
+Log events 2230-2246.
 
 ## Operations
 
