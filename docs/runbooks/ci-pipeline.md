@@ -201,23 +201,21 @@ and snapshot; adding a second migration fails CI during the pre-release period.
 Protect `main` with the stable `Required CI` check and require branches to be
 current before merge. GitHub enforces current-head CI and conversation
 resolution; independent review is an additional repository-process requirement,
-not an approving-review branch-protection rule. The initial review covers the
-full PR diff. Later reviews cover only the correction delta from the previous
-reviewed head and verify prior findings. Use normal GitHub review, `@codex review`,
-or independent local review; do not wait indefinitely when a service or billing
-condition makes one path unavailable.
+not an approving-review branch-protection rule. The complete review-provider,
+correction-cap, finalization-lock, and merge procedure is defined by
+`.agents/skills/pr-lifecycle/SKILL.md`.
 
 Open implementation PRs as drafts and keep them draft while review corrections
-converge. Draft PR events skip the expensive CI plan and publish an intentionally
-failing `Required CI`, so branch protection remains fail-closed; returning a PR
-to draft also cancels its superseded in-progress run. Marking the final reviewed
-head ready triggers the classifier-selected CI plan, and a successful
-`Required CI` on that exact head satisfies the gate. Before every planned
-post-ready head change, including CI corrections, base synchronization, and
-conflict resolution, return the PR to draft. Review that delta before marking it
-ready again. A diagnosed infrastructure failure may rerun the same unchanged
-SHA. Stale, canceled, timed-out, failed, skipped, or absent checks do not satisfy
-`Required CI`.
+converge and the target branch is finally synchronized and integration-reviewed.
+Draft PR events skip the expensive CI plan and publish an intentionally failing
+`Required CI`, so branch protection remains fail-closed; returning a PR to draft
+also cancels its superseded in-progress run. Only the PR holding the
+repository-wide finalization lock may perform final synchronization, transition
+to ready, run protected CI, and merge. Marking that final reviewed head ready
+triggers the classifier-selected CI plan, and a successful `Required CI` on that
+exact head and current target base satisfies the gate. A diagnosed
+infrastructure failure may rerun the same unchanged SHA. Stale, canceled,
+timed-out, failed, skipped, or absent checks do not satisfy `Required CI`.
 
 The aggregate is fail-closed for classification inputs and job results, but a workflow running from a pull request cannot be an independent trust boundary against an author who maliciously rewrites that workflow or its CI helper scripts. Independent review of `.github/workflows/**` and `scripts/ci:*` remains part of this repository's solo-maintainer protection model. Repositories accepting untrusted workflow changes require a separately trusted required workflow or mandatory reviewer policy.
 
@@ -232,10 +230,12 @@ pull request's base and head commits and selects reduced mode only when every
 changed path is an added or modified member of this allowlist:
 
 - `docs/**`, except the production bundle inputs `docs/catalog/hyg-v42-attribution.md` and `docs/catalog/hyg-v42-license.md`
+- `.agents/skills/*/SKILL.md`; supporting scripts and other resources fail
+  closed to the complete matrix
 - `.devcontainer/**`
 - `.vscode/**`
 - `.github/prompts/**`
-- `README.md`, `AGENTS.md`, and `THIRD-PARTY-NOTICES.md`
+- `README.md`, `AGENTS.md`, `CLAUDE.md`, and `THIRD-PARTY-NOTICES.md`
 - `.github/copilot-instructions.md` and `.github/pull_request_template.md`
 - `tools/asi-capture/README.md`
 - one-level `src/*/README.md` and `tests/*/README.md`
@@ -362,7 +362,7 @@ The classification rules applied to that map are:
   or copied into a project. Seven allowlisted paths are included by project
   files today — `THIRD-PARTY-NOTICES.md` and six `docs/validation/*.json`
   signal manifests — and each leaves reduced mode for the complete matrix. The
-  remaining 232 allowlisted paths still classify reduced.
+  remaining 234 allowlisted paths still classify reduced.
 
 Seam selection is an inverse allowlist. A host path is treated as an exported
 protocol or integration seam unless it is explicitly host-private, so a new host

@@ -18,8 +18,10 @@ Read these sources in order before implementation:
 5. The owning subsystem specification or runbook
 6. `docs/planning/requirements-crosswalk.md`
 7. `docs/planning/performance-validation.md`
-8. `docs/planning/agent-prompts.md`
-9. Current code and tests
+8. `.agents/skills/pr-lifecycle/SKILL.md` when the work creates, reviews,
+   updates, finalizes, or merges a PR
+9. `docs/planning/agent-prompts.md`
+10. Current code and tests
 
 If sources conflict, stop implementation long enough to resolve the conflict in
 the issue or authoritative plan. Do not silently choose a convenient behavior.
@@ -128,16 +130,40 @@ when it finishes:
   (inventory complete, first slice committed, a gate started or finished, reviews
   launched, corrections pushed, PR marked ready) and at least every thirty
   minutes of active work. Post on the owning issue until the draft PR exists,
-  then append to the PR's review ledger. Each comment states what finished, what
-  is running now, the next step, and any blocker, with UTC times.
+  then append to the PR's append-only review ledger. Each comment has a UTC
+  timestamp and states what finished, what is running now, the next step, and
+  any blocker. Long gates and reviews get an interim note rather than silence.
 - Review, research, and evidence agents report when they finish; a long review
   posts an interim note after thirty minutes.
-- The coordinator keeps a periodic status watch over active agents, open PRs,
-  and shared resources such as the Docker window, and relays a short status
-  note to the operator at least every few minutes while any delegated work or
-  long gate is running, including "no change" when nothing moved.
+- The coordinator arms exactly one persistent status monitor on a five-minute
+  cadence while delegated agents, review acquisition, long gates, or CI runs are
+  active. Use the harness's scheduled task, background loop, transcript tail,
+  session status, or equivalent capability. Start the monitor when work becomes
+  active, restart it whenever the active agent or PR set changes, and stop it
+  when nothing is active.
+- On every wake, the monitor records, per issue or PR: the agent's last activity
+  timestamp and current step; the PR head SHA, draft state, and merge state; the
+  first line and timestamp of the latest ledger comment; and the state of shared
+  locks such as the Docker or finalization window. While review is pending,
+  include its provider, range, request age, acknowledgement deadline, start and
+  fallback state, and correction-rereview count. Use the best available harness
+  signal for the current step, such as the transcript's latest tool description.
+  Attach a one-line CI result watcher to each PR that emits only on success,
+  failure, or cancellation.
+- The coordinator relays a short note to the main conversation on every wake,
+  even when nothing changed. It uses the literal status `still running, no
+  change` when applicable, converts every reported time to MST (fixed UTC-7,
+  without daylight-saving adjustment), and labels it `MST`.
+- For each item, the coordinator states what just finished, what is running now,
+  the next step, and any blocker. It reads milestone reports and summarizes
+  their substance, such as the root cause, accepted findings, or gate result,
+  rather than only repeating a label.
+- If an implementing agent goes more than thirty minutes without an issue or
+  ledger comment, the coordinator instructs it to post one before continuing
+  and reports that intervention in the next operator note.
 - A progress comment never replaces the handoff in section 11; a blocked agent
-  still leaves the full handoff.
+  still leaves the full handoff, and every agent still provides its final
+  completion report.
 
 ### Validation ladder
 
@@ -338,64 +364,25 @@ Additional issue-specific gates may include:
 
 ## 9. Required PR Lifecycle
 
-Every PR follows this sequence:
+Before changing PR or GitHub state, read and follow
+`.agents/skills/pr-lifecycle/SKILL.md`. That skill is the canonical detailed
+procedure and defines review requests, provider timeouts, correction-rereview
+limits, the finalization lock, target-branch synchronization, protected CI,
+merge, and cleanup.
 
-1. Inspect worktree, diff, recent log, issue, and dependencies.
-2. Use the validation ladder: focused tests while developing, then the selected
-   tier's candidate evidence with applicable output/performance review before
-   push. Tier C/M runs the complete local candidate gate.
-3. Commit only intended files.
-4. Push the issue branch.
-5. Open a draft PR linked to the issue and its owning roadmap epic. Keep it draft
-   while review findings are being corrected.
-6. Include implementation, migrations/compatibility, tests, output evidence,
-   performance evidence, logs/telemetry review, and residual risks.
-7. Record the initial merge base and review head in an append-only PR review
-   ledger. The initial independent review covers that full range. Request normal
-   GitHub review once. If it is unavailable because of billing, service, or
-   configuration, request `@codex review` on the PR or perform an independent
-   local review; do not wait indefinitely for an unavailable reviewer.
-8. Disposition every finding as corrected, evidenced non-actionable, agreed
-   non-blocking deferral with a linked issue, or unresolved merge blocker.
-9. Batch coherent corrections where practical. Run the reproducer and every
-   failed or invalidated focused/affected local gate, then push without an
-   unrequested amend or force push.
-10. Append the corrected range, review path, finding disposition, and evidence to
-    the PR review ledger. Rereview only the delta from the previous reviewed head
-    through the corrected head, plus verification that the prior findings were
-    addressed. A correction rereview is not a second full review. Do not reopen
-    unchanged portions of the earlier diff unless the correction provides
-    concrete evidence of a new interaction. Record unrelated discoveries as
-    follow-up issues; escalate a newly discovered critical security, data-loss,
-    or correctness defect as a merge blocker.
-11. Repeat steps 8-10 only for actionable defects in the latest correction delta.
-    A repeated unchanged disagreement becomes an explicit blocker or operator
-    decision, not an unbounded review cycle.
-12. When review converges and no further code change is expected, mark the PR
-    ready for review. This transition triggers the classifier-selected protected
-    CI plan. Intermediate draft pushes intentionally do not run protected CI.
-13. Investigate every non-green check. A product correction returns the PR to
-    draft before the correction push, runs affected local gates, and receives a
-    review limited to the CI-correction delta before the PR becomes ready and
-    runs protected CI again. A diagnosed infrastructure, timeout, cancellation,
-    or flaky failure may rerun the same SHA without a code change.
-14. Reply to review threads with the correction commit and evidence. Resolve
-    threads only after their finding is dispositioned and any correction delta
-    has been reviewed.
-15. Merge only when the current head equals the reviewed head, is mergeable,
-    `Required CI` is green for that exact head, and every actionable thread is
-    resolved.
-16. Confirm the issue closes, update the owning roadmap epic, synchronize local
-    `main`, and preserve unrelated worktree changes.
+The invariant sequence is:
 
-A successful first protected run is sufficient when the head never changes. Any
-head-changing correction makes older CI and review-delta evidence stale for the
-changed boundary, but does not invalidate unaffected local evidence.
-After a PR becomes ready, return it to draft before every planned head change,
-including review corrections, base synchronization, conflict resolution, and
-dependency updates. If automation changes a ready head first, treat the resulting
-CI as provisional, return the PR to draft, review that delta, and mark it ready to
-trigger authoritative final CI.
+```text
+local candidate evidence -> draft PR -> review convergence or waiver
+  -> final target-branch synchronization and base-sync review
+  -> ready -> classifier-selected protected CI -> merge and cleanup
+```
+
+Draft pushes intentionally do not run protected CI. Do not mark a PR ready while
+review work or target-branch synchronization remains outstanding. A successful
+protected run is valid only for the current reviewed head and current target
+base; head-changing corrections and later target-branch changes follow the
+skill's invalidation and recovery rules.
 
 ## 10. Non-Green Recovery
 
@@ -410,10 +397,12 @@ If any build, test, runtime, review, or deployment check is not green:
 5. Add regression coverage when the failure represents a product defect.
 6. Rerun the focused failure and the full affected gate; do not rerun unrelated
    long suites locally when protected CI will cover them.
-7. For a code correction, return the PR to draft before pushing, then review the
-   CI-correction delta and mark the PR ready to trigger new protected CI. If no
-   repository content changed, rerun the same SHA instead of creating a no-op
-   commit.
+7. For a code correction, return the PR to draft and release the finalization
+   lock before pushing. Review the CI-correction delta, then reacquire the lock
+   and repeat final target synchronization and base-sync review before marking
+   the PR ready for new protected CI. If no repository content changed, rerun
+   the same SHA instead of creating a no-op commit under the bounded
+   infrastructure-only exception in the lifecycle skill.
 8. Keep the PR open and the issue active until green.
 
 Do not merge around a failure, weaken a test without evidence, skip hooks, hide
