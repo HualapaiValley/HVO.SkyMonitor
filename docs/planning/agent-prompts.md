@@ -7,9 +7,15 @@ They supplement, but never override, `AGENTS.md`, `docs/roadmap.md`,
 [the execution protocol](agent-execution.md), or the
 [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md).
 
-Choose providers and models by the capability required for the current brief.
-Record both the requested role and the actual provider/model in the PR review
-ledger; do not rely on a model alias remaining available.
+Choose the capability profile before choosing a provider. Use `fast` for
+deterministic inventory and isolated low-risk work, `standard` for ordinary
+implementation and review, and `deep` for Tier C/M, security, data-loss,
+concurrency, migration, architecture, CI-control, conflict-resolution, or
+material-correctness work. Reviews use at least medium effort; initial reviews
+normally use high effort. The PR lifecycle skill contains the full selection
+matrix and current harness mappings. Record requested profile and actual
+provider/model/effort in the PR review ledger; do not infer an alias or claim a
+provider-managed setting was enforced.
 
 ## 1. Capability Roles
 
@@ -74,13 +80,16 @@ merge, the roadmap coordinator automatically selects, claims, and begins the
 next candidate-ready issue after posting its synopsis and `READY` signal, unless
 the operator asked to pause or a real decision/blocker prevents continuation.
 Non-coordinator implementing agents return completion state to the coordinator
-instead of selecting from the queue. While working, post a short progress
-comment at every milestone and at least every thirty minutes: on the issue until
-the draft PR exists, then in the PR's append-only review ledger. Each comment
-states, with a UTC timestamp, what finished, what is running now, the next step,
-and any blocker. Long gate or review runs get an interim note rather than
-silence. This does not replace the final completion report. If blocked, leave
-the required handoff in the issue and its owning roadmap epic.
+instead of selecting from the queue. Before substantive work, send the
+coordinator a `STARTED` message containing the task, current step, next step,
+and blocker; for reviews also include the exact range and actual
+provider/model/effort. Repeat at every milestone, at least every thirty minutes,
+on a blocker, and at completion. Also post milestones on the issue until the
+draft PR exists, then in the PR's append-only review ledger, using UTC. The
+coordinator relays these events immediately and supplies the independent
+five-minute operator heartbeat. Long gate or review runs get an interim note
+rather than silence. This does not replace the final completion report. If
+blocked, leave the required handoff in the issue and its owning roadmap epic.
 ```
 
 ## 3. Foundation and Contracts Prompt
@@ -250,6 +259,13 @@ every finding under the bounded review protocol.
 
 ```text
 Research only; do not edit. Follow `.agents/skills/pr-lifecycle/SKILL.md`.
+Before substantive work, send the coordinator `STARTED` with the requested
+capability profile, actual provider/model/effort, exact range, current step,
+next step, and blocker; append the same acknowledgement to the PR ledger when
+possible. Use the model and effort pinned by the dispatch. If the actual values
+do not match, or the selected capability cannot be verified, stop and report
+the mismatch rather than silently inheriting defaults. Report an intentionally
+fixed provider model as `provider-managed`, as required by the skill.
 Review mode: <initial|correction|base-sync>. Base reviewed SHA: <SHA or merge
 base>. Head SHA: <SHA>. In initial mode, audit the complete PR diff
 against current code, tests, durable formats, architecture boundaries,
@@ -266,7 +282,8 @@ migration/compatibility risks, I/O/CPU/memory hot paths, and any plan/issue
 contradiction. In base-sync mode, inspect conflict resolutions and new
 interactions against the updated target base without rereviewing unchanged
 upstream code. Acknowledge the start on the PR within fifteen minutes and report
-progress at least every thirty minutes.
+each milestone to the coordinator and PR ledger, with an interim report at least
+every thirty minutes.
 ```
 
 ## 13. Handoff Prompt

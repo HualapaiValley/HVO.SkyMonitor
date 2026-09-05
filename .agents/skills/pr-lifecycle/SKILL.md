@@ -58,9 +58,12 @@ Current head SHA:
 Exact review range:
 Correction rereview count: <N>/3
 Required capability lens:
+Requested capability profile: fast | standard | deep
 Primary provider:
 Fallback provider:
-Preferred reviewer/model, if applicable:
+Execution route: local agent | equivalent exact-range runner | optional PR bot
+Requested model and reasoning effort:
+Actual provider, model, and reasoning effort:
 Tests and failure modes to evaluate:
 Local evidence:
 Prior findings and dispositions:
@@ -68,13 +71,50 @@ Prior-finding verification checklist (finding ID/link, expected disposition,
   and evidence location):
 Expected output:
 Start acknowledgement: acknowledge on this PR within 15 minutes and identify
-  the provider/model when supported.
+  the execution route, provider, model, effort, and exact range.
 ```
 
-Select the primary provider according to the capability needed by the brief.
-The other available provider is the fallback. The current providers are
-Copilot and Codex; record the provider and actual model when that information is
-available.
+## Review Execution and Agent Selection
+
+The canonical exact-range route is a coordinator-launched local review agent,
+or an equivalent runner that can inspect the requested immutable Git range.
+The dispatch configuration, not prose in a PR mention, binds the model and
+reasoning effort. A provider-side PR bot may provide an additional full audit of
+the current PR head, but it is not correction or base-sync convergence evidence
+unless its execution route demonstrably enforces the requested range and its
+report attests that range. Never rerun a bot merely to repair a range-less
+report when a local exact-range reviewer is available.
+
+Choose the capability profile before choosing a provider or model:
+
+| Profile | Use when | Model capability | Reasoning effort |
+| --- | --- | --- | --- |
+| `fast` | Mechanical inventories or a small, isolated Tier A correction with no security, data, concurrency, migration, or CI-control risk | Fast, narrow coding model | `medium`; `low` only for deterministic inventory with no review judgment |
+| `standard` | Ordinary Tier A/B implementation, full initial review, bounded test/configuration work, or a localized correction | Balanced general coding model | `medium` for implementation; `high` for review |
+| `deep` | Tier C/M, security/auth/secrets, data-loss, concurrency, migrations, architecture or cross-host boundaries, CI semantics, material-correctness findings, conflict resolution, or ambiguous failure analysis | Strongest available coding/reasoning model | `high`; increase to `xhigh` or the supported equivalent only when complexity warrants it |
+
+Review work is adversarial and must not use low effort. A narrow correction may
+step down only when both the changed surface and every carried finding are
+non-critical. A security, data-loss, acceptance, failing-CI, or
+material-correctness finding keeps the review at `deep` until verified resolved.
+A base-sync review with no merge-created changes may use `standard`; conflicts
+or newly interacting boundaries require `deep`.
+
+At dispatch, map the profile to a model identifier that the current harness
+actually exposes. For the current Codex family, use `gpt-5.6-sol` for `deep`,
+`gpt-5.6-terra` for `standard`, and `gpt-5.6-luna` for `fast`, or their documented
+successors. Pin the reasoning effort separately. If a provider such as the
+current Copilot reviewer offers one provider-managed model and no effort
+control, record those fields as `provider-managed`; use it only when that fixed
+capability satisfies the selected profile, and never claim that a requested
+model was enforced. Prefer the other provider when the required profile cannot
+be selected or verified.
+
+The current providers are Copilot and Codex. Provider is independent of
+capability profile: select for required capability first, availability second.
+Record requested profile, requested model/effort, execution route, and actual
+provider/model/effort in the append-only ledger. A missing actual value is
+`unknown`, not an inferred alias.
 
 Review modes have fixed ranges:
 
@@ -100,12 +140,18 @@ the correction-round count or changing the head.
 
 ## Bounded Review Acquisition
 
-1. Start a fifteen-minute acquisition timer when the primary request is visibly
-   dispatched for the exact head and range.
+1. Launch the primary local review session with the exact head, range,
+   capability profile, model, and effort. Require it to send the coordinator a
+   structured `STARTED` message before substantive review and post the same
+   acknowledgement on the PR when it can. The coordinator immediately relays
+   the start to the main conversation and starts a fifteen-minute acquisition
+   timer when dispatch is visible.
 2. A written PR acknowledgement is preferred. If the provider cannot post one,
+   accept a local harness start message or session state that identifies the
+   exact head/range and actual model/effort. For an optional provider-side bot,
    accept a provider-generated in-progress check, status, timeline event, or
-   visible review activity after the exact-head/range dispatch and before any
-   head change. The request or mention itself proves dispatch, not start.
+   visible review activity after the exact-head dispatch and before any head
+   change. The request or mention itself proves dispatch, not start.
    For Copilot, the provider-generated `copilot_work_started` PR timeline event
    is the known start acknowledgement. For Codex, the connector-generated
    `codex-pull-request-review-summary` comment qualifies when its table reports
@@ -123,10 +169,12 @@ the correction-round count or changing the head.
    names, request links and times, deadlines, exact SHA/range, and residual
    risk. The waiver completes acquisition for that exact head and mode; it is
    not a passed review and does not waive local evidence or protected CI.
-5. Once a review starts, require activity at least every thirty minutes. After
-   thirty minutes without activity, request status. If there is no response for
-   another fifteen minutes, treat the provider as unavailable and use the same
-   fallback or waiver path.
+5. Once a review starts, require agent-to-coordinator and PR-ledger activity at
+   every milestone and at least every thirty minutes. The coordinator relays
+   milestones immediately and continues its independent five-minute
+   main-conversation heartbeat. After thirty minutes without agent activity,
+   request status. If there is no response for another fifteen minutes, treat
+   the provider as unavailable and use the same fallback or waiver path.
 6. When fallback begins, stop waiting for the primary and withdraw its request
    when supported. Any substantive finding received before merge must still be
    dispositioned; an actionable late finding reopens convergence.
