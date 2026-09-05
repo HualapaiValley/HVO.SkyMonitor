@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.Catalog.Sqlite;
@@ -817,6 +818,7 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
             CheckCertificateRevocationList = true
         };
         var client = new HttpClient(handler) { BaseAddress = agent.BaseUri, Timeout = TimeSpan.FromMinutes(2) };
+        var temporaryPassword = (await File.ReadAllTextAsync(agent.PasswordFile).ConfigureAwait(false)).Trim();
         using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
         login.EnsureSuccessStatusCode();
         var html = await login.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -826,12 +828,17 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         {
             ["__RequestVerificationToken"] = WebUtility.HtmlDecode(token.Groups[1].Value),
             ["Input.Email"] = agent.OwnerEmail,
-            ["Input.Password"] = (await File.ReadAllTextAsync(agent.PasswordFile).ConfigureAwait(false)).Trim(),
+            ["Input.Password"] = temporaryPassword,
             ["Input.RememberMe"] = "false",
             ["_handler"] = "login"
         });
         using var response = await client.PostAsync(new Uri("/Account/Login", UriKind.Relative), form).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
+        // Each trial provisions a new agent, so its owner is seeded with a temporary password and the
+        // owner bootstrap gate refuses every operations request until that password is replaced.
+        await OwnerBootstrapSession.EnsureReadyOwnerAsync(client, temporaryPassword, agent.Name).ConfigureAwait(false);
+        await OwnerBootstrapSession.AssertOperationsAuthorizedAsync(client, agent.Name).ConfigureAwait(false);
+        // Replacement refreshes the sign-in, so the durable cookie is only known afterwards.
         var cookie = cookies.GetCookies(agent.BaseUri).Cast<Cookie>().Single(item => item.Name == agent.CookieName);
         return new AgentSession(client, cookie.Name, cookie.Value);
     }

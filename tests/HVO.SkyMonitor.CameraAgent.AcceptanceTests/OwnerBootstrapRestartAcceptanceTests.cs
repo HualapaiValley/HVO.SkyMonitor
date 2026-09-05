@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 public sealed class OwnerBootstrapRestartAcceptanceTests
 {
     private const string ReplacementPassword = "RestartReplacement!418";
+    private const string SessionName = "restart-owner";
 
     [TestMethod]
     public async Task InstallerStyleBootstrapAndReplacementSurviveHostRestarts()
@@ -25,7 +26,7 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
         {
             Assert.AreEqual(
                 OwnerBootstrapStates.TemporaryPassword,
-                await ReadBootstrapStateAsync(seededClient).ConfigureAwait(false));
+                await OwnerBootstrapSession.ReadBootstrapStateAsync(seededClient, SessionName).ConfigureAwait(false));
         }
 
         await host.RestartWithoutPasswordAuthorityAsync().ConfigureAwait(false);
@@ -34,7 +35,7 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
         using var restartStaleClient = await host.CreateOwnerClientAsync().ConfigureAwait(false);
         Assert.AreEqual(
             OwnerBootstrapStates.PasswordChangeRequired,
-            await ReadBootstrapStateAsync(replacingClient).ConfigureAwait(false));
+            await OwnerBootstrapSession.ReadBootstrapStateAsync(replacingClient, SessionName).ConfigureAwait(false));
         using (var deniedVerification = await replacingClient.GetAsync(
             new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative)).ConfigureAwait(false))
         {
@@ -74,11 +75,11 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
         await AssertSamePasswordRejectedAsync(replacingClient).ConfigureAwait(false);
         Assert.AreEqual(
             OwnerBootstrapStates.PasswordChangeRequired,
-            await ReadBootstrapStateAsync(replacingClient).ConfigureAwait(false));
+            await OwnerBootstrapSession.ReadBootstrapStateAsync(replacingClient, SessionName).ConfigureAwait(false));
         await ReplacePasswordAsync(replacingClient).ConfigureAwait(false);
         Assert.AreEqual(
             OwnerBootstrapStates.Ready,
-            await ReadBootstrapStateAsync(replacingClient).ConfigureAwait(false));
+            await OwnerBootstrapSession.ReadBootstrapStateAsync(replacingClient, SessionName).ConfigureAwait(false));
         using (var stale = await staleClient.GetAsync(
             new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false))
         {
@@ -103,7 +104,7 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
         using var replacementClient = await LoginAsync(host.BaseAddress, ReplacementPassword).ConfigureAwait(false);
         Assert.AreEqual(
             OwnerBootstrapStates.Ready,
-            await ReadBootstrapStateAsync(replacementClient).ConfigureAwait(false));
+            await OwnerBootstrapSession.ReadBootstrapStateAsync(replacementClient, SessionName).ConfigureAwait(false));
         using var operations = await replacementClient.GetAsync(
             new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, operations.StatusCode);
@@ -191,17 +192,6 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
                 client.Dispose();
             }
         }
-    }
-
-    private static async Task<string> ReadBootstrapStateAsync(HttpClient client)
-    {
-        using var response = await client.GetAsync(
-            new Uri("/api/internal/owner-bootstrap/status", UriKind.Relative)).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        using var json = System.Text.Json.JsonDocument.Parse(
-            await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
-        return json.RootElement.GetProperty("state").GetString()
-            ?? throw new InvalidDataException("Owner bootstrap status omitted its state.");
     }
 
     private static string ExtractAntiforgeryToken(string html)
