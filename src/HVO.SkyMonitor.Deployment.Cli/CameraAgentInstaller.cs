@@ -293,7 +293,8 @@ internal sealed class CameraAgentInstaller
                 cancellationToken,
                 // Installing an image is not an in-place state migration, so an image that predates the label
                 // correction is admitted as a known contract; the persisted boundaries it declares still decide.
-                CameraAgentStateContractPolicy.AllowLegacy).ConfigureAwait(false);
+                CameraAgentStateContractPolicy.AllowLegacy,
+                acquiredImage?.Release.Tag).ConfigureAwait(false);
 
             state = await RecordPhaseAsync(paths, state, InstallationPhase.Compose, cancellationToken).ConfigureAwait(false);
             var rendered = await docker.ComposeAsync(

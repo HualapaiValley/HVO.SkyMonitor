@@ -54,7 +54,7 @@ internal sealed class DistributionAcquirer : IDisposable
         try
         {
             var resolved = await ResolveVerifiedManifestAsync(
-                inputs, DistributionManifestKind.CatalogRelease, cancellationToken).ConfigureAwait(false);
+                inputs, DistributionManifestKind.CatalogRelease, readOnly: false, cancellationToken).ConfigureAwait(false);
             var manifest = resolved.Manifest;
             var artifact = manifest.Artifacts.SingleOrDefault(static value => value.Role == DistributionArtifactRole.CatalogBundle)
                 ?? throw new InstallerException("The signed catalog release does not identify exactly one bundle asset.");
@@ -97,15 +97,8 @@ internal sealed class DistributionAcquirer : IDisposable
         try
         {
             var resolved = await ResolveVerifiedManifestAsync(
-                inputs, DistributionManifestKind.ImageRelease, cancellationToken).ConfigureAwait(false);
-            var image = resolved.Manifest.Images[0];
-            var architecture = HostImageArchitecture();
-            var platform = image.Platforms.SingleOrDefault(candidate =>
-                candidate.OperatingSystem == "linux" && candidate.Architecture == architecture)
-                ?? throw new InstallerException(
-                    $"The signed CameraAgent image release {resolved.Manifest.Release.Tag} publishes " +
-                    $"{string.Join(", ", image.Platforms.Select(static value => $"{value.OperatingSystem}/{value.Architecture}"))} " +
-                    $"and does not support this host's linux/{architecture} architecture.");
+                inputs, DistributionManifestKind.ImageRelease, readOnly: false, cancellationToken).ConfigureAwait(false);
+            var (image, platform) = SelectHostPlatform(resolved.Manifest);
             var artifact = resolved.Manifest.Artifacts.Single(value =>
                 value.Role == DistributionArtifactRole.ImageArchive && value.AssetName == platform.OfflineArchiveAsset);
             var assetSource = ResolveAssetSource(inputs, resolved.Source, artifact.AssetName, resolved.Reference is null);
@@ -130,6 +123,66 @@ internal sealed class DistributionAcquirer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Resolves and verifies a signed CameraAgent image release without acquiring it. The manifest, its signature,
+    /// the signed index entry it was named through, and the platform selection are exactly the ones an upgrade
+    /// uses, but the offline archive is never downloaded, no metadata is cached or evicted, and no index rollback
+    /// state is committed. The read-only <c>cameraagent preflight</c> uses this to name the release an upgrade
+    /// would install without leaving anything behind. Returns <c>null</c> when no signed release was named.
+    /// </summary>
+    public async Task<ResolvedImageRelease?> ResolveImageAsync(InstallRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var inputs = TrainInputs.ForImage(request);
+        if (inputs.Manifest is null && inputs.Index is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var resolved = await ResolveVerifiedManifestAsync(
+                inputs, DistributionManifestKind.ImageRelease, readOnly: true, cancellationToken).ConfigureAwait(false);
+            var (image, platform) = SelectHostPlatform(resolved.Manifest);
+            // An acquisition also requires the release to publish exactly one offline archive for the selected
+            // platform. Proving it here costs no download and keeps a malformed release from resolving cleanly
+            // and then failing partway through the upgrade it was resolved for.
+            if (resolved.Manifest.Artifacts.Count(value =>
+                    value.Role == DistributionArtifactRole.ImageArchive &&
+                    value.AssetName == platform.OfflineArchiveAsset) != 1)
+            {
+                throw new InstallerException(
+                    $"The signed CameraAgent image release {resolved.Manifest.Release.Tag} does not publish exactly " +
+                    $"one offline archive named '{platform.OfflineArchiveAsset}' for " +
+                    $"{platform.OperatingSystem}/{platform.Architecture}.");
+            }
+            return new ResolvedImageRelease(resolved.Manifest.Release, image, platform);
+        }
+        catch (Exception exception) when (exception is DistributionValidationException or HttpRequestException or IOException or
+                                           UnauthorizedAccessException or InvalidDataException or CryptographicException)
+        {
+            throw new InstallerException("The signed CameraAgent image distribution could not be acquired or verified.", exception);
+        }
+    }
+
+    /// <summary>
+    /// Selects the published platform this host can execute. A release that does not publish this host's
+    /// architecture names what it does publish instead of failing generically.
+    /// </summary>
+    private static (DistributionImageIdentity Image, DistributionImagePlatform Platform) SelectHostPlatform(
+        DistributionReleaseManifest manifest)
+    {
+        var image = manifest.Images[0];
+        var architecture = HostImageArchitecture();
+        var platform = image.Platforms.SingleOrDefault(candidate =>
+            candidate.OperatingSystem == "linux" && candidate.Architecture == architecture)
+            ?? throw new InstallerException(
+                $"The signed CameraAgent image release {manifest.Release.Tag} publishes " +
+                $"{string.Join(", ", image.Platforms.Select(static value => $"{value.OperatingSystem}/{value.Architecture}"))} " +
+                $"and does not support this host's linux/{architecture} architecture.");
+        return (image, platform);
+    }
+
     /// <summary>The image architecture this host can execute, named the way an OCI platform names it.</summary>
     internal static string HostImageArchitecture() => RuntimeInformation.OSArchitecture switch
     {
@@ -142,17 +195,18 @@ internal sealed class DistributionAcquirer : IDisposable
     private async Task<ResolvedRelease> ResolveVerifiedManifestAsync(
         TrainInputs inputs,
         DistributionManifestKind expectedKind,
+        bool readOnly,
         CancellationToken cancellationToken)
     {
         var resolvedManifest = inputs.Manifest is not null
             ? new ResolvedManifest(DistributionLocator.Parse(inputs.Manifest), null, null, null)
-            : await ResolveManifestFromIndexAsync(inputs, cancellationToken).ConfigureAwait(false);
+            : await ResolveManifestFromIndexAsync(inputs, readOnly, cancellationToken).ConfigureAwait(false);
         var manifestSource = resolvedManifest.Manifest;
         var signatureSource = resolvedManifest.Signature ?? manifestSource.AppendToName(".sig");
         var manifestBytes = await ReadMetadataAsync(
-            manifestSource, DistributionVerifier.MaximumManifestBytes, inputs.NoDownload, cancellationToken).ConfigureAwait(false);
+            manifestSource, DistributionVerifier.MaximumManifestBytes, inputs.NoDownload, readOnly, cancellationToken).ConfigureAwait(false);
         var signatureBytes = await ReadMetadataAsync(
-            signatureSource, DistributionVerifier.MaximumSignatureTextBytes, inputs.NoDownload, cancellationToken).ConfigureAwait(false);
+            signatureSource, DistributionVerifier.MaximumSignatureTextBytes, inputs.NoDownload, readOnly, cancellationToken).ConfigureAwait(false);
         DistributionReleaseManifest manifest;
         try
         {
@@ -160,12 +214,17 @@ internal sealed class DistributionAcquirer : IDisposable
         }
         catch (DistributionValidationException) when (!inputs.NoDownload && (manifestBytes.FromCache || signatureBytes.FromCache))
         {
-            DeleteCachedMetadata(manifestBytes);
-            DeleteCachedMetadata(signatureBytes);
+            // An acquisition evicts a cached copy that no longer verifies; a read-only resolution bypasses it
+            // instead, because it must leave the cache exactly as it found it.
+            if (!readOnly)
+            {
+                DeleteCachedMetadata(manifestBytes);
+                DeleteCachedMetadata(signatureBytes);
+            }
             manifestBytes = await ReadMetadataAsync(
-                manifestSource, DistributionVerifier.MaximumManifestBytes, noDownload: false, cancellationToken, bypassCache: true).ConfigureAwait(false);
+                manifestSource, DistributionVerifier.MaximumManifestBytes, noDownload: false, readOnly, cancellationToken, bypassCache: true).ConfigureAwait(false);
             signatureBytes = await ReadMetadataAsync(
-                signatureSource, DistributionVerifier.MaximumSignatureTextBytes, noDownload: false, cancellationToken, bypassCache: true).ConfigureAwait(false);
+                signatureSource, DistributionVerifier.MaximumSignatureTextBytes, noDownload: false, readOnly, cancellationToken, bypassCache: true).ConfigureAwait(false);
             manifest = DistributionVerifier.VerifyManifest(manifestBytes.Bytes, signatureBytes.Bytes, trustRoot);
         }
         if (resolvedManifest.Reference is { } reference &&
@@ -217,14 +276,15 @@ internal sealed class DistributionAcquirer : IDisposable
 
     private async Task<ResolvedManifest> ResolveManifestFromIndexAsync(
         TrainInputs inputs,
+        bool readOnly,
         CancellationToken cancellationToken)
     {
         var indexSource = DistributionLocator.Parse(inputs.Index!);
         var signatureSource = indexSource.AppendToName(".sig");
         var indexBytes = await ReadMetadataAsync(
-            indexSource, DistributionVerifier.MaximumManifestBytes, inputs.NoDownload, cancellationToken).ConfigureAwait(false);
+            indexSource, DistributionVerifier.MaximumManifestBytes, inputs.NoDownload, readOnly, cancellationToken).ConfigureAwait(false);
         var signatureBytes = await ReadMetadataAsync(
-            signatureSource, DistributionVerifier.MaximumSignatureTextBytes, inputs.NoDownload, cancellationToken).ConfigureAwait(false);
+            signatureSource, DistributionVerifier.MaximumSignatureTextBytes, inputs.NoDownload, readOnly, cancellationToken).ConfigureAwait(false);
         DistributionReleaseIndex index;
         try
         {
@@ -232,19 +292,22 @@ internal sealed class DistributionAcquirer : IDisposable
         }
         catch (DistributionValidationException) when (!inputs.NoDownload && (indexBytes.FromCache || signatureBytes.FromCache))
         {
-            DeleteCachedMetadata(indexBytes);
-            DeleteCachedMetadata(signatureBytes);
+            if (!readOnly)
+            {
+                DeleteCachedMetadata(indexBytes);
+                DeleteCachedMetadata(signatureBytes);
+            }
             indexBytes = await ReadMetadataAsync(
-                indexSource, DistributionVerifier.MaximumManifestBytes, noDownload: false, cancellationToken, bypassCache: true).ConfigureAwait(false);
+                indexSource, DistributionVerifier.MaximumManifestBytes, noDownload: false, readOnly, cancellationToken, bypassCache: true).ConfigureAwait(false);
             signatureBytes = await ReadMetadataAsync(
-                signatureSource, DistributionVerifier.MaximumSignatureTextBytes, noDownload: false, cancellationToken, bypassCache: true).ConfigureAwait(false);
+                signatureSource, DistributionVerifier.MaximumSignatureTextBytes, noDownload: false, readOnly, cancellationToken, bypassCache: true).ConfigureAwait(false);
             index = DistributionVerifier.VerifyIndex(indexBytes.Bytes, signatureBytes.Bytes, trustRoot);
         }
         if (index.Train != inputs.Train)
         {
             throw new InstallerException($"The signed release index is not for the {inputs.Train} train.");
         }
-        var indexState = ValidateIndexRollback(inputs.Train, inputs.Channel, index, indexBytes.Bytes);
+        var indexState = ValidateIndexRollback(inputs.Train, inputs.Channel, index, indexBytes.Bytes, readOnly);
         var version = inputs.Version ?? index.DefaultVersion;
         var reference = index.Releases.SingleOrDefault(release => release.Version == version)
             ?? throw new InstallerException(
@@ -258,9 +321,9 @@ internal sealed class DistributionAcquirer : IDisposable
         string train,
         DistributionChannel channel,
         DistributionReleaseIndex index,
-        byte[] bytes)
+        byte[] bytes,
+        bool readOnly)
     {
-        SafeFileSystem.CreateOwnerDirectory(stateRoot);
         var channelName = channel switch
         {
             DistributionChannel.Local => "local",
@@ -269,24 +332,43 @@ internal sealed class DistributionAcquirer : IDisposable
             DistributionChannel.Prerelease => "prerelease",
             _ => throw new InstallerException("The distribution channel is unsupported.")
         };
-        var statePath = Path.Combine(stateRoot, $"{train}-{channelName}.txt");
-        using var indexLock = OperationLock.Acquire(statePath + ".lock");
         var hash = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        var statePath = Path.Combine(stateRoot, $"{train}-{channelName}.txt");
+        if (readOnly)
+        {
+            // Creating the state root and taking the acquisition lock are both writes, so a read-only resolution
+            // does neither. The retained value is published atomically, so an unlocked read observes either the
+            // complete previous value or the complete next one, which is enough to report a rolled-back index.
+            // A floor established between this probe and the caller's use is missed; only an acquisition, which
+            // holds the lock and commits, is serialized against that.
+            if (File.Exists(statePath))
+            {
+                EnsureIndexNotRolledBack(statePath, index.Sequence, hash);
+            }
+            return new IndexRollbackState(statePath, index.Sequence, hash);
+        }
+        SafeFileSystem.CreateOwnerDirectory(stateRoot);
+        using var indexLock = OperationLock.Acquire(statePath + ".lock");
         if (File.Exists(statePath))
         {
-            using var stream = SafeFileSystem.OpenOwnerFileRead(statePath);
-            using var reader = new StreamReader(stream, Encoding.ASCII, detectEncodingFromByteOrderMarks: false);
-            var fields = reader.ReadToEnd().TrimEnd('\n').Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (fields.Length != 2 || !long.TryParse(fields[0], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var retainedSequence))
-            {
-                throw new InstallerException("The retained signed-index rollback state is invalid.");
-            }
-            if (index.Sequence < retainedSequence || index.Sequence == retainedSequence && hash != fields[1])
-            {
-                throw new InstallerException("The signed release index is older than or conflicts with retained rollback state.");
-            }
+            EnsureIndexNotRolledBack(statePath, index.Sequence, hash);
         }
         return new IndexRollbackState(statePath, index.Sequence, hash);
+    }
+
+    private static void EnsureIndexNotRolledBack(string statePath, long sequence, string hash)
+    {
+        using var stream = SafeFileSystem.OpenOwnerFileRead(statePath);
+        using var reader = new StreamReader(stream, Encoding.ASCII, detectEncodingFromByteOrderMarks: false);
+        var fields = reader.ReadToEnd().TrimEnd('\n').Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (fields.Length != 2 || !long.TryParse(fields[0], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var retainedSequence))
+        {
+            throw new InstallerException("The retained signed-index rollback state is invalid.");
+        }
+        if (sequence < retainedSequence || sequence == retainedSequence && hash != fields[1])
+        {
+            throw new InstallerException("The signed release index is older than or conflicts with retained rollback state.");
+        }
     }
 
     private static void CommitIndexRollback(IndexRollbackState state)
@@ -338,6 +420,7 @@ internal sealed class DistributionAcquirer : IDisposable
         DistributionLocator locator,
         int maximumBytes,
         bool noDownload,
+        bool readOnly,
         CancellationToken cancellationToken,
         bool bypassCache = false)
     {
@@ -366,7 +449,10 @@ internal sealed class DistributionAcquirer : IDisposable
             }
             var cachedBytes = new byte[cachedStream.Length];
             await cachedStream.ReadExactlyAsync(cachedBytes, cancellationToken).ConfigureAwait(false);
-            return new MetadataBytes(cachedBytes, cached, true);
+            // A read-only resolution names no cache entry here either, so no later step can evict one it did
+            // not create. Redundant with the guarded eviction sites, and kept because --no-download now reaches
+            // this branch from a preflight.
+            return new MetadataBytes(cachedBytes, readOnly ? null : cached, true);
         }
         var cachePath = MetadataCachePath(locator.Uri);
         if (!bypassCache && File.Exists(cachePath))
@@ -378,9 +464,18 @@ internal sealed class DistributionAcquirer : IDisposable
                 await cachedStream.ReadExactlyAsync(cachedBytes, cancellationToken).ConfigureAwait(false);
                 return new MetadataBytes(cachedBytes, cachePath, true);
             }
-            File.Delete(cachePath);
+            if (!readOnly)
+            {
+                File.Delete(cachePath);
+            }
         }
         var bytesFromNetwork = await DownloadMetadataAsync(locator.Uri, maximumBytes, cancellationToken).ConfigureAwait(false);
+        if (readOnly)
+        {
+            // The bytes are used but never published: nothing is reserved, written, or evicted, and the returned
+            // record carries no cache path so no later step can delete an entry this call did not create.
+            return new MetadataBytes(bytesFromNetwork, null, false);
+        }
         using (ReserveCacheQuota(bytesFromNetwork.Length, Path.GetFileName(cachePath)))
         {
             await WriteCacheFileAsync(cachePath, bytesFromNetwork, cancellationToken).ConfigureAwait(false);
@@ -1009,6 +1104,15 @@ internal sealed record CameraAgentImageReleaseEvidence(
     string ProvenanceAsset,
     string VulnerabilityScanAsset,
     DateTimeOffset RecordedUtc);
+
+/// <summary>
+/// A verified signed CameraAgent image release resolved for this host without acquiring its offline archive.
+/// It carries exactly the identity and compatibility record an upgrade would enforce against the running image.
+/// </summary>
+internal sealed record ResolvedImageRelease(
+    DistributionReleaseIdentity Release,
+    DistributionImageIdentity Image,
+    DistributionImagePlatform Platform);
 
 /// <summary>The verified signed CameraAgent image release selected for this host.</summary>
 internal sealed record AcquiredImage(

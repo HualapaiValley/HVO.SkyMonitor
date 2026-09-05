@@ -33,6 +33,7 @@ internal sealed record CameraAgentStatePreflightReport(
     Guid InstanceId,
     string InstanceRoot,
     string? CandidateImageId,
+    string? CandidateRelease,
     string CandidateStateContract,
     string? MinimumCompatibleRevision,
     string InstalledStateContract,
@@ -58,6 +59,23 @@ internal sealed record CameraAgentStateRequirements(
         ParseVersion(image.RawIngressSchema),
         ParseVersion(image.CatalogManifestVersion));
 
+    /// <summary>
+    /// The boundaries a signed image release declares. These are exactly the label values an upgrade requires the
+    /// prepared image to carry, so evaluating persisted state against them reaches the same verdict the upgrade's
+    /// own in-flight state preflight will reach, without a local copy of the image. The upgrade's separate
+    /// contract-identity and label-agreement gates are not evaluated here.
+    /// </summary>
+    public static CameraAgentStateRequirements From(DistributionImageCompatibility compatibility)
+    {
+        ArgumentNullException.ThrowIfNull(compatibility);
+        return new(
+            compatibility.StateContract,
+            compatibility.MinimumCompatibleRevision,
+            compatibility.IdentityMigration,
+            compatibility.RawIngressSchema,
+            compatibility.CatalogManifestVersion);
+    }
+
     private static int? ParseVersion(string? value)
         => int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
 }
@@ -75,6 +93,7 @@ internal static class CameraAgentStatePreflight
         InstallationPaths paths,
         Guid instanceId,
         string? candidateImageId,
+        string? candidateRelease,
         CameraAgentStateRequirements requirements,
         string? installedStateContract,
         uint uid,
@@ -97,6 +116,7 @@ internal static class CameraAgentStatePreflight
             instanceId,
             paths.InstanceRoot,
             candidateImageId,
+            candidateRelease,
             CameraAgentStateContract.Describe(requirements.StateContract),
             requirements.MinimumCompatibleRevision,
             CameraAgentStateContract.Describe(installedStateContract),
@@ -120,7 +140,8 @@ internal static class CameraAgentStatePreflight
         bool persist,
         bool renderToStandardError,
         CancellationToken cancellationToken,
-        CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent)
+        CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent,
+        string? candidateRelease = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(candidate);
@@ -128,6 +149,9 @@ internal static class CameraAgentStatePreflight
             paths,
             instanceId,
             candidate.ImageId,
+            // image-distribution.json is written only once the image is accepted, so a refused signed upgrade
+            // leaves this report as the operator's only artifact; it must name the release it refused.
+            candidateRelease,
             CameraAgentStateRequirements.From(candidate),
             installedStateContract,
             uid,
@@ -167,6 +191,11 @@ internal static class CameraAgentStatePreflight
         var builder = new StringBuilder();
         builder.Append(CultureInfo.InvariantCulture, $"CameraAgent state preflight for instance {report.InstanceId:D}: ");
         builder.AppendLine(report.Compatible ? "compatible." : "incompatible.");
+        if (report.CandidateRelease is { Length: > 0 } release)
+        {
+            builder.AppendLine(CultureInfo.InvariantCulture,
+                $"Candidate signed release: {release} ({report.CandidateImageId ?? "no immutable image ID published"}).");
+        }
         builder.AppendLine(CultureInfo.InvariantCulture,
             $"Candidate state contract: {report.CandidateStateContract}; installed: {report.InstalledStateContract}.");
         if (report.MinimumCompatibleRevision is { Length: > 0 } minimum)
@@ -474,7 +503,8 @@ internal static class CameraAgentStatePreflight
 
     private static (List<string> Applied, bool Uninitialized) ReadIdentityLineage(string databasePath)
     {
-        using var connection = OpenReadOnly(databasePath);
+        using var database = ReadOnlyDatabase.Open(databasePath);
+        var connection = database.Connection;
         var migrations = new List<string>();
         // The runtime materializes the file on its first connection and only then creates the history table, so a
         // table-less database is an interrupted fresh start rather than an unreadable one.
@@ -507,7 +537,8 @@ internal static class CameraAgentStatePreflight
 
     private static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
     {
-        using var connection = OpenReadOnly(databasePath);
+        using var database = ReadOnlyDatabase.Open(databasePath);
+        var connection = database.Connection;
         long userVersion;
         using (var version = connection.CreateCommand())
         {
@@ -519,32 +550,156 @@ internal static class CameraAgentStatePreflight
         return (userVersion, Convert.ToInt64(objects.ExecuteScalar(), CultureInfo.InvariantCulture));
     }
 
-    private static SqliteConnection OpenReadOnly(string databasePath)
+    /// <summary>
+    /// Opens a persisted CameraAgent database without writing anything beside it. A plain read-only connection is
+    /// not side-effect free: SQLite creates the wal-index for a WAL database even through a read-only handle, and
+    /// the raw-ingress journal is WAL at rest. For a stopped instance that would leave installer-owned
+    /// <c>-wal</c>/<c>-shm</c> files inside a 0700 runtime-owned bind source that the capability-dropped container
+    /// then cannot open. The three shapes a journal can be in each admit a different side-effect-free read, and
+    /// which one applies was measured rather than assumed:
+    /// <list type="bullet">
+    /// <item>No wal-index and no recovery state: the instance is stopped and checkpointed, and
+    /// <c>immutable=1</c> reads it while creating nothing.</item>
+    /// <item>A wal-index <em>and</em> its log both exist: the files are already present and owned by the runtime
+    /// identity, and an in-place read-only open creates nothing while observing a consistent snapshot through that
+    /// index. A wal-index without its log does not qualify — an in-place open there creates the log — so it falls
+    /// to the first case, which is correct because with no log there is no pending content to read.</item>
+    /// <item>Recovery state without a usable wal-index: an in-place open would create one. The database and its
+    /// recovery files are read through a private copy, which cannot be torn because no writer holds them, and the
+    /// pending journal replays into the copy rather than here.</item>
+    /// </list>
+    /// A clean shutdown between the probe and the open would leave the third case reading a checkpointed
+    /// database; preflight cannot observe a running instance without contacting Docker, which it must not do.
+    /// Reading a live WAL database registers a reader in the existing wal-index, which is what every reader of
+    /// such a database does, including the instance's own. No file is created and no durable state changes. The
+    /// alternative — copying a database a writer holds — is what this arrangement exists to avoid, because that
+    /// copy can tear and report a busy instance as unreadable.
+    /// </summary>
+    private sealed class ReadOnlyDatabase : IDisposable
     {
-        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        private readonly DirectoryInfo? snapshotRoot;
+
+        private ReadOnlyDatabase(SqliteConnection connection, DirectoryInfo? snapshotRoot)
         {
-            DataSource = databasePath,
-            Mode = SqliteOpenMode.ReadOnly,
-            Cache = SqliteCacheMode.Private,
-            Pooling = false
-        }.ToString());
-        try
-        {
-            connection.Open();
-            return connection;
+            Connection = connection;
+            this.snapshotRoot = snapshotRoot;
         }
-        catch
+
+        public SqliteConnection Connection { get; }
+
+        public static ReadOnlyDatabase Open(string databasePath)
         {
-            connection.Dispose();
-            throw;
+            // The shape can change under an in-flight preflight, which runs before the drain: a running instance
+            // can commit and remove its rollback journal between the observation and the copy. The Identity
+            // database uses a rollback journal, so that is the likeliest shape to move. Observe it again rather
+            // than reporting a database that is merely busy as unreadable and blocking a valid upgrade.
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    return OpenObservedShape(databasePath);
+                }
+                catch (FileNotFoundException) when (attempt < 3)
+                {
+                }
+                catch (DirectoryNotFoundException) when (attempt < 3)
+                {
+                }
+            }
+        }
+
+        private static ReadOnlyDatabase OpenObservedShape(string databasePath)
+        {
+            var recoveryFiles = new[] { databasePath + "-wal", databasePath + "-journal" }
+                .Where(File.Exists).ToArray();
+            if (recoveryFiles.Contains(databasePath + "-wal", StringComparer.Ordinal) &&
+                File.Exists(databasePath + "-shm"))
+            {
+                return new ReadOnlyDatabase(OpenConnection(databasePath, SqliteOpenMode.ReadOnly), null);
+            }
+            if (recoveryFiles.Length == 0)
+            {
+                return new ReadOnlyDatabase(
+                    OpenConnection(new Uri(databasePath).AbsoluteUri + "?immutable=1", SqliteOpenMode.ReadOnly), null);
+            }
+            // The copy is driven by the same observation that chose this branch, so the two cannot disagree.
+            DirectoryInfo? snapshotRoot = null;
+            try
+            {
+                snapshotRoot = Directory.CreateTempSubdirectory("hvo-preflight-inspection-");
+                var inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
+                File.Copy(databasePath, inspectionPath);
+                // File.Copy carries the source mode across, and replaying a rollback journal needs a writable
+                // main database, so the private copy is made writable explicitly.
+                File.SetUnixFileMode(inspectionPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                foreach (var recoveryFile in recoveryFiles)
+                {
+                    var copied = inspectionPath + recoveryFile[databasePath.Length..];
+                    File.Copy(recoveryFile, copied);
+                    File.SetUnixFileMode(copied, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                }
+                return new ReadOnlyDatabase(OpenConnection(inspectionPath, SqliteOpenMode.ReadWrite), snapshotRoot);
+            }
+            catch
+            {
+                Discard(snapshotRoot);
+                throw;
+            }
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                Connection.Dispose();
+            }
+            finally
+            {
+                Discard(snapshotRoot);
+            }
+        }
+
+        private static SqliteConnection OpenConnection(string dataSource, SqliteOpenMode mode)
+        {
+            var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = dataSource,
+                Mode = mode,
+                Cache = SqliteCacheMode.Private,
+                Pooling = false
+            }.ToString());
+            try
+            {
+                connection.Open();
+                return connection;
+            }
+            catch
+            {
+                connection.Dispose();
+                throw;
+            }
+        }
+
+        private static void Discard(DirectoryInfo? snapshotRoot)
+        {
+            try
+            {
+                snapshotRoot?.Delete(recursive: true);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // A temporary copy that cannot be removed must not mask the reason the caller is unwinding, nor
+                // fail a preflight that has already produced its answer.
+            }
         }
     }
 }
 
 /// <summary>
 /// Resolves the installed instance and candidate image for the operator-facing
-/// <c>cameraagent preflight</c> command. The command inspects persisted state only; it never loads, starts,
-/// mutates, or deletes anything.
+/// <c>cameraagent preflight</c> command. The command inspects persisted state only; it never pulls, loads,
+/// starts, mutates, or deletes anything, and it writes nothing into the instance, the release media, or the
+/// distribution cache. A journal carrying unreplayed recovery state is read through a private temporary copy.
 /// </summary>
 internal static class CameraAgentStatePreflightManager
 {
@@ -556,7 +711,8 @@ internal static class CameraAgentStatePreflightManager
     internal static async Task<CameraAgentStatePreflightReport> ExecuteAsync(
         CameraAgentStatePreflightRequest request,
         IProcessRunner processRunner,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<DistributionAcquirer>? distributionFactory = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         request.Validate();
@@ -578,11 +734,32 @@ internal static class CameraAgentStatePreflightManager
             throw new InstallerException("The retained instance manifest does not correlate with the selected instance.");
         }
 
-        var candidate = manifest.Image;
+        var requirements = CameraAgentStateRequirements.From(manifest.Image);
+        var candidateImageId = manifest.Image.ImageId;
+        string? candidateRelease = null;
         // Evaluating the installed image reports the instance as it stands; naming a candidate evaluates the
         // in-place upgrade, which additionally requires the current durable state contract.
         var policy = CameraAgentStateContractPolicy.AllowLegacy;
-        if (request.ImageReference is { Length: > 0 } reference)
+        if (request.NamesSignedImageRelease)
+        {
+            policy = CameraAgentStateContractPolicy.RequireCurrent;
+            using var acquirer = (distributionFactory ?? CreateDistributionAcquirer)();
+            var release = await acquirer.ResolveImageAsync(request.ImageSelection(), cancellationToken)
+                              .ConfigureAwait(false)
+                          ?? throw new InstallerException(
+                              "The signed CameraAgent image release did not resolve a candidate image.");
+            // The release is verified and its platform selected exactly as an upgrade does, but the offline
+            // archive is deliberately not acquired and Docker is never contacted: the signed compatibility record
+            // is the candidate declaration, and an upgrade refuses any image that contradicts it. That keeps the
+            // command read-only and lets an operator evaluate a release the host has not received yet. It reports
+            // the persisted-state boundaries only: the upgrade additionally requires the loaded image's labels to
+            // agree with this record and its contract identities to match the instance, so a clean report here is
+            // not a promise the upgrade proceeds.
+            requirements = CameraAgentStateRequirements.From(release.Image.Compatibility);
+            candidateImageId = release.Platform.OfflineArchiveImageId ?? release.Platform.ManifestDigest;
+            candidateRelease = release.Release.Tag;
+        }
+        else if (request.ImageReference is { Length: > 0 } reference)
         {
             policy = CameraAgentStateContractPolicy.RequireCurrent;
             var docker = new DockerClient(processRunner);
@@ -598,18 +775,22 @@ internal static class CameraAgentStatePreflightManager
             };
             var prepared = await docker.PrepareImageAsync(synthetic, allowMutation: false, signedImage: null, cancellationToken)
                 .ConfigureAwait(false);
-            candidate = prepared.Image;
+            requirements = CameraAgentStateRequirements.From(prepared.Image);
+            candidateImageId = prepared.Image.ImageId;
         }
 
         return CameraAgentStatePreflight.Evaluate(
             paths,
             instanceId,
-            candidate.ImageId,
-            CameraAgentStateRequirements.From(candidate),
+            candidateImageId,
+            candidateRelease,
+            requirements,
             manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility,
             manifest.RuntimeUid,
             manifest.RuntimeGid,
             manifest.ReplayProfile,
             policy);
     }
+
+    private static DistributionAcquirer CreateDistributionAcquirer() => new();
 }
