@@ -514,6 +514,45 @@ public sealed class ElasticProviderIntegrationTests
     }
 
     [TestMethod]
+    public async Task AnAdoptedInstanceThatCannotClaimTheBacklogDoesNotCoverIt()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        // An adopted ten-slot instance registered without the placed recipe: plenty of slots, none of them usable.
+        var instanceId = Guid.NewGuid().ToString("N")[..16];
+        var runnerId = $"elastic-scripted-{instanceId}";
+        provider.MarkAlive(instanceId, runnerId);
+        await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId, 10, withoutRecipe: BuiltInProcessingRecipes.EncodedPreview), CancellationToken.None).ConfigureAwait(false);
+        }
+        for (var i = 0; i < 5; i++)
+        {
+            await SeedPreviewJobAsync("elastic-incompatible").ConfigureAwait(false);
+        }
+        var settings = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 3,
+            MaxConcurrencyPerInstance = 1,
+            ScaleToZeroAfter = TimeSpan.FromMinutes(10),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        };
+        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Reason.Should().Be(ElasticScalingPolicy.ReasonBacklog);
+        decision.Provision.Should().Be(2, "the ten registered slots cannot claim encoded-preview, so the five jobs need new one-slot instances up to the maximum");
+        provider.Provisioned.Should().HaveCount(2);
+    }
+
+    [TestMethod]
     public async Task ConcurrentRetirementsStampTheirOwnStopTimes()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
@@ -634,10 +673,15 @@ public sealed class ElasticProviderIntegrationTests
             TimeProvider.System,
             services.GetRequiredService<ILogger<ElasticRunnerAutoscaler>>());
 
-    private static ProcessingRunnerRegistrationRequest ScriptedRegistration(string runnerId, int maxConcurrency = 1)
-        => new(runnerId, "Scripted elastic runner",
-            ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, null, null),
-            Environment.ProcessId, DateTimeOffset.UtcNow.AddMinutes(-1));
+    private static ProcessingRunnerRegistrationRequest ScriptedRegistration(string runnerId, int maxConcurrency = 1, string? withoutRecipe = null)
+    {
+        var capabilities = ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, null, null);
+        if (withoutRecipe is not null)
+        {
+            capabilities = capabilities with { BuiltInRecipes = capabilities.BuiltInRecipes.Where(recipe => recipe.Name != withoutRecipe).ToArray() };
+        }
+        return new ProcessingRunnerRegistrationRequest(runnerId, "Scripted elastic runner", capabilities, Environment.ProcessId, DateTimeOffset.UtcNow.AddMinutes(-1));
+    }
 
     private static async Task SeedScriptedInstanceAsync(
         WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory, string instanceId, string runnerId, string hostName, bool keepWarm,

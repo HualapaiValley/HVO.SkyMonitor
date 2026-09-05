@@ -142,10 +142,13 @@ idle-retired, not even the warm minimum, the decision reads
 `instance-capabilities-unknown` (event 2246, health degraded) and the probe
 is retried every five minutes; recipes whose
 requirements the instance cannot satisfy are excluded and logged once as
-event 2242) and includes expired leases the claim would reclaim. Expired
+event 2242) and includes expired leases the claim would reclaim. Registered capacity counts only instances whose registered recipes cover
+the queued recipes, so an adopted instance that cannot claim the backlog
+never makes it look covered. Expired
 leases whose attempts are exhausted are terminal cleanup the claim exempts
 from pool and entitlement bounds, so they are counted apart from executable
-backlog and only ensure one instance exists. Idle scale-down and warm
+backlog and only ensure one instance exists, while the published backlog
+(health, gauge, rejection log) includes them. Idle scale-down and warm
 replacement never retire registered capacity the demand still needs (the
 replacement's configured size counts), concurrent drains stamp each
 instance's own stop time, and a retirement that fails beside a successful
