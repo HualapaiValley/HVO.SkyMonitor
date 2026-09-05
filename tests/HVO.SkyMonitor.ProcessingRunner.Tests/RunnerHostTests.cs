@@ -108,6 +108,48 @@ public sealed class RunnerHostTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task StopFileDrainsAndRetiresTheHostOnEveryPlatform()
+    {
+        using var handler = new ScriptedHttpHandler();
+        var prefix = $"/{ProcessingRunnerProtocol.RoutePrefix}/{RunnerTestData.RunnerId}";
+        handler.MapJson(HttpMethod.Put, prefix, _ => RunnerTestData.Registration());
+        handler.Map(HttpMethod.Post, $"{prefix}/claims", (_, _) => new HttpResponseMessage(HttpStatusCode.NoContent));
+        handler.MapJson(HttpMethod.Post, $"{prefix}/heartbeat",
+            _ => new ProcessingRunnerHeartbeatResponse(ProcessingRunnerRegistrationStatus.Active, [], [], [BuiltInProcessingRecipes.NoOpAnalyzer], DateTimeOffset.UtcNow));
+        handler.Map(HttpMethod.Delete, prefix, (_, _) => new HttpResponseMessage(HttpStatusCode.NoContent));
+        using var http = RunnerTestData.CreateHttpClient(handler);
+        using var client = new ProcessingRunnerClient(http, RunnerTestData.ClientOptions());
+        using var output = new StringWriter();
+        var stopFile = Path.Combine(Path.GetTempPath(), $"hvo-runner-stop-{Guid.NewGuid():N}");
+        using var host = new RunnerHost(
+            client,
+            new ProcessingRecipeExecutor(),
+            new RunnerHostOptions(
+                RunnerTestData.RunnerId, "Test", RunnerTestData.Capabilities(), 1,
+                ProcessingRunnerProtocol.MaximumTransferBytes, TimeSpan.Zero, TimeSpan.FromSeconds(5), TimeSpan.FromMilliseconds(50),
+                StopFile: stopFile),
+            new RunnerLog(output, output, RunnerTestData.RunnerId));
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var run = host.RunAsync(timeout.Token);
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+        Assert.IsFalse(run.IsCompleted, "without the stop file and without idle shutdown the host keeps running");
+        await File.WriteAllTextAsync(stopFile, "stop");
+        try
+        {
+            Assert.AreEqual(0, await run);
+            var methods = handler.Requests.Select(item => $"{item.Method} {item.Path}").ToArray();
+            Assert.AreEqual($"DELETE {prefix}", methods[^1], "the host retires after draining");
+            StringAssert.Contains(output.ToString(), "\"event\":\"stop-requested\"", StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(stopFile);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task HeartbeatCancellationStopsExecutionWithoutCompletingTheJob()
     {
         var claim = RunnerTestData.NoOpClaim();

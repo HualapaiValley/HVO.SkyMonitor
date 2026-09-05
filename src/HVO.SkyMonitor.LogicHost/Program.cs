@@ -16,6 +16,7 @@ using HVO.SkyMonitor.LogicHost.Components.Account;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.LogicHost.Services.Elastic;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Common.Observability;
@@ -136,6 +137,10 @@ public sealed partial class Program
             .Bind(builder.Configuration.GetSection(CentralProcessingEntitlementOptions.SectionName))
             .Validate(options => options.Validate(out _), "ProcessingEntitlements configuration is invalid.")
             .ValidateOnStart();
+        builder.Services.AddOptions<CentralElasticProviderOptions>()
+            .Bind(builder.Configuration.GetSection(CentralElasticProviderOptions.SectionName))
+            .Validate(options => options.Validate(out _), "ElasticProviders configuration is invalid.")
+            .ValidateOnStart();
         builder.Services.AddOptions<CentralProcessingRunnerOptions>()
             .Bind(builder.Configuration.GetSection(CentralProcessingRunnerOptions.SectionName))
             .Validate(options => options.Validate(out _), "ProcessingRunners configuration is invalid.")
@@ -203,6 +208,7 @@ public sealed partial class Program
             .AddCheck<CentralArtifactRetentionHealthCheck>("artifact-retention", tags: ["worker"])
             .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"])
             .AddCheck<CentralProcessingRunnerHealthCheck>("processing-runners", tags: ["worker"])
+            .AddCheck<CentralElasticProviderHealthCheck>("elastic-providers", tags: ["worker"])
             .AddCheck<CentralProcessingEntitlementHealthCheck>("processing-entitlements", tags: ["worker"])
             .AddCheck<ProcessingGraphCatalogHealthCheck>("processing-graph-catalog", tags: ["consistency"])
             .AddCheck<CentralTransientLifecycleHealthCheck>("central-transient-lifecycle", tags: ["worker"])
@@ -261,6 +267,7 @@ public sealed partial class Program
                 metrics.AddMeter(CentralArtifactRetentionTelemetry.MeterName);
                 metrics.AddMeter(CentralDerivativeWorkerTelemetry.MeterName);
                 metrics.AddMeter(CentralProcessingRunnerTelemetry.MeterName);
+                metrics.AddMeter(ElasticProviderTelemetry.MeterName);
                 metrics.AddMeter(CentralProcessingFairnessTelemetry.MeterName);
                 metrics.AddMeter(CentralTransientLifecycleTelemetry.MeterName);
                 metrics.AddMeter(FleetStatusTelemetry.MeterName);
@@ -886,6 +893,19 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralDerivativeExecutionPipeline>(
             provider => provider.GetRequiredService<CentralDerivativeJobExecutor>());
         builder.Services.AddSingleton<CentralProcessingRunnerTelemetry>();
+        builder.Services.AddSingleton<ElasticProviderTelemetry>();
+        builder.Services.AddSingleton<LocalProcessElasticRunnerProvider>();
+        builder.Services.AddSingleton<IElasticRunnerProvider>(services =>
+            services.GetRequiredService<IOptions<CentralElasticProviderOptions>>().Value is { Enabled: true, Provider: CentralElasticProviderKind.LocalProcess }
+                ? services.GetRequiredService<LocalProcessElasticRunnerProvider>()
+                : new NullElasticRunnerProvider());
+        builder.Services.AddSingleton<IElasticArtifactAccessAdapter>(services =>
+        {
+            var settings = services.GetRequiredService<IOptions<CentralElasticProviderOptions>>().Value;
+            var address = settings.LocalProcess.LogicHostUrl is { } url && Uri.TryCreate(url, UriKind.Absolute, out var parsed) ? parsed : new Uri("https://localhost/");
+            return new LeaseScopedArtifactAccessAdapter(address);
+        });
+        builder.Services.AddHostedService<ElasticRunnerAutoscaler>();
         builder.Services.AddSingleton<CentralProcessingFairnessTelemetry>();
         builder.Services.AddScoped<ICentralProcessingRunnerRegistry, CentralProcessingRunnerRegistry>();
         builder.Services.AddScoped<ICentralProcessingRunnerJobService, CentralProcessingRunnerJobService>();

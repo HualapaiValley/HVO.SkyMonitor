@@ -273,3 +273,11 @@ report, and enforces and publishes that same result. Pull requests cannot remove
 risk paths, lower thresholds, or widen tolerance relative to the target branch.
 Approved generated/platform exclusions remain path-specific; ordinary coverage
 regressions are corrected rather than accepted through a generic disposition.
+
+## Elastic provider evidence (#430)
+
+`ElasticProviderPerformanceEvidenceTests` (Manual) drives the `local-process`
+adapter against a Kestrel-hosted LogicHost with the real runner binary and
+records cold and warm start, drain throughput with 1, 2, and 4 instances,
+scale-to-zero and cleanup timing, and host CPU/memory to
+`TestResults/elastic-providers/<revision>/elastic-provider-evidence.json`.

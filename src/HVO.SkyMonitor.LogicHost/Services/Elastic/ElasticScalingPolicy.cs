@@ -1,0 +1,99 @@
+using HVO.SkyMonitor.LogicHost.Configuration;
+
+namespace HVO.SkyMonitor.LogicHost.Services.Elastic;
+
+internal sealed record ElasticScalingInput(
+    int Backlog,
+    TimeSpan OldestBacklogAge,
+    int Running,
+    int Starting,
+    int Idle,
+    TimeSpan LongestIdle,
+    int? EntitledConcurrency,
+    int InstanceMinutesToday,
+    int InFlight = 0,
+    int WarmInstances = 0);
+
+internal sealed record ElasticScalingDecision(int Provision, int Retire, string Reason)
+{
+    public static readonly ElasticScalingDecision Steady = new(0, 0, "steady");
+}
+
+/// <summary>
+/// Pure autoscaling decision (#430): desired instances follow provider-eligible backlog and per-instance
+/// concurrency, bounded by observatory entitlements, the instance maximum, the warm minimum, and the daily
+/// instance-minute limit; a cold start is only worth taking when the oldest backlog can still be served within the
+/// queue deadline, otherwise the work is retained locally as backlog; idle instances above the warm minimum are
+/// retired after the scale-to-zero delay.
+/// </summary>
+internal static class ElasticScalingPolicy
+{
+    public const string ReasonBacklog = "backlog";
+    public const string ReasonWarmMinimum = "warm-minimum";
+    public const string ReasonIdle = "idle";
+    public const string ReasonDailyLimit = "daily-limit";
+    public const string ReasonColdStartExceedsDeadline = "cold-start-exceeds-deadline";
+    public const string ReasonEntitlementBound = "entitlement-bound";
+
+    public static ElasticScalingDecision Decide(CentralElasticProviderOptions options, ElasticScalingInput input, TimeSpan startupEstimate)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(input);
+        var perInstance = Math.Max(1, options.MaxConcurrencyPerInstance);
+        var active = input.Running + input.Starting;
+        if (options.MaxInstanceMinutesPerDay > 0 && input.InstanceMinutesToday >= options.MaxInstanceMinutesPerDay && active > 0)
+        {
+            // The daily budget bounds existing capacity too: every instance, registering ones included, drains and
+            // stops until the day rolls over.
+            return new ElasticScalingDecision(0, active, ReasonDailyLimit);
+        }
+        // Demand counts work already executing on the instances, so occupied capacity does not mask queued backlog.
+        var needed = (int)Math.Ceiling((input.Backlog + Math.Max(0, input.InFlight)) / (double)perInstance);
+        var entitlementBound = false;
+        if (input.EntitledConcurrency is { } entitled)
+        {
+            var byEntitlement = (int)Math.Ceiling(Math.Max(0, entitled) / (double)perInstance);
+            if (byEntitlement < needed)
+            {
+                needed = byEntitlement;
+                entitlementBound = true;
+            }
+        }
+        var desired = Math.Clamp(Math.Max(needed, options.MinWarmInstances), 0, options.MaxInstances);
+        // The warm minimum is a count of instances that never self-terminate: when fewer than that carry the warm
+        // designation (a warm instance was lost, or the minimum was raised), replacements are provisioned even while
+        // excess capacity is running, within the instance maximum.
+        var warmMissing = Math.Max(0, Math.Min(options.MinWarmInstances, options.MaxInstances) - input.WarmInstances);
+        var warmShortfall = Math.Min(warmMissing, Math.Max(0, options.MaxInstances - active));
+        if (warmMissing > 0 && warmShortfall == 0 && input.Running - input.WarmInstances > 0)
+        {
+            // At capacity with too few warm instances: retire one excess (self-terminating) instance so the next sample
+            // can provision its warm replacement instead of waiting for the excess instance to exit on its own. The
+            // autoscaler applies this only to an excess instance with no work in flight, so busy work is never cut.
+            return new ElasticScalingDecision(0, 1, ReasonWarmMinimum);
+        }
+        if (desired > active || warmShortfall > 0)
+        {
+            if (options.MaxInstanceMinutesPerDay > 0 && input.InstanceMinutesToday >= options.MaxInstanceMinutesPerDay)
+            {
+                return new ElasticScalingDecision(0, 0, ReasonDailyLimit);
+            }
+            if (input.Backlog > 0 && needed > active && startupEstimate + input.OldestBacklogAge > options.QueueDeadline)
+            {
+                // Provider startup cannot meet the deadline for the oldest work: keep it local, only top up the warm minimum.
+                return new ElasticScalingDecision(warmShortfall, 0, ReasonColdStartExceedsDeadline);
+            }
+            var provision = Math.Max(desired - active, warmShortfall);
+            var reason = needed > active ? (entitlementBound ? ReasonEntitlementBound : ReasonBacklog) : ReasonWarmMinimum;
+            return new ElasticScalingDecision(provision, 0, reason);
+        }
+        if (desired < active && input.Idle > 0 && input.LongestIdle >= options.ScaleToZeroAfter)
+        {
+            var retire = Math.Min(input.Idle, active - desired);
+            return retire > 0 ? new ElasticScalingDecision(0, retire, ReasonIdle) : ElasticScalingDecision.Steady;
+        }
+        return entitlementBound && input.Backlog > needed * perInstance
+            ? new ElasticScalingDecision(0, 0, ReasonEntitlementBound)
+            : ElasticScalingDecision.Steady;
+    }
+}

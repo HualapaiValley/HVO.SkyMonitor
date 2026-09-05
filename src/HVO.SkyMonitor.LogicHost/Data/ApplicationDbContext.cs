@@ -33,6 +33,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralProcessingUsageRecord> CentralProcessingUsageRecords => Set<CentralProcessingUsageRecord>();
 
     internal DbSet<CentralProcessingUsageRollup> CentralProcessingUsageRollups => Set<CentralProcessingUsageRollup>();
+
+    internal DbSet<CentralElasticRunnerInstance> CentralElasticRunnerInstances => Set<CentralElasticRunnerInstance>();
     internal DbSet<CentralProcessingGraphExecutionSource> CentralProcessingGraphExecutionSources =>
         Set<CentralProcessingGraphExecutionSource>();
     internal DbSet<CentralDerivativeJobDependency> CentralDerivativeJobDependencies => Set<CentralDerivativeJobDependency>();
@@ -145,6 +147,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.ApplyConfiguration(new CentralProcessingRunnerConfiguration());
         builder.ApplyConfiguration(new CentralProcessingUsageRecordConfiguration());
         builder.ApplyConfiguration(new CentralProcessingUsageRollupConfiguration());
+        builder.ApplyConfiguration(new CentralElasticRunnerInstanceConfiguration());
         CentralProcessingGraphExecutionConfiguration.Configure(builder);
         CentralDerivativeExecutionConfiguration.Configure(builder);
         CentralDerivativeWindowConfiguration.Configure(builder);

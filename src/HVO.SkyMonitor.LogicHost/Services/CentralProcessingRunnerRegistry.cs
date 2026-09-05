@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Services.Elastic;
 using HVO.SkyMonitor.ProcessingRunner.Contracts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -109,6 +110,50 @@ internal sealed partial class CentralProcessingRunnerRegistry(
         }
         var now = timeProvider.GetUtcNow();
         var eligible = _options.ResolveEligibleRecipes(request.Capabilities);
+        // An elastic instance whose launching host is gone was abandoned by the autoscaler (#430); its runner must
+        // stop rather than revive the retired registration and keep claiming unmanaged. The check and the
+        // registration write hold the per-runner lock the autoscaler takes when it abandons or retires an instance,
+        // so an abandonment committed between the two can never be overwritten by a revived registration.
+        var ownTransaction = dbContext.Database.CurrentTransaction is null
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        await using (ownTransaction)
+        {
+            await ElasticRunnerRegistrationLock.AcquireAsync(dbContext, request.RunnerId, cancellationToken).ConfigureAwait(false);
+            if (await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+                    .AnyAsync(instance => instance.RunnerId == request.RunnerId && instance.State == "Abandoned", cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                telemetry.RecordRegistration("rejected");
+                throw CentralProcessingRunnerRejectedException.Create(
+                    ProcessingRunnerReasonCodes.RegistrationDenied,
+                    "The runner was abandoned by its launching host and may not re-register.");
+            }
+            var runner = await RegisterUnderLockAsync(clientSubject, request, eligible, now, cancellationToken).ConfigureAwait(false);
+            if (ownTransaction is not null)
+            {
+                await ownTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            return new ProcessingRunnerRegistrationResponse(
+                runner.RunnerId,
+                runner.Id,
+                ProcessingRunnerRegistrationStatus.Active,
+                _options.HeartbeatInterval,
+                _options.LeaseDuration,
+                _options.RenewalInterval,
+                _options.ClaimBackoff,
+                eligible,
+                now);
+        }
+    }
+
+    private async Task<CentralProcessingRunner> RegisterUnderLockAsync(
+        string clientSubject,
+        ProcessingRunnerRegistrationRequest request,
+        IReadOnlyList<string> eligible,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
         var runner = await dbContext.CentralProcessingRunners
             .SingleOrDefaultAsync(candidate => candidate.RunnerId == request.RunnerId, cancellationToken)
             .ConfigureAwait(false);
@@ -142,16 +187,7 @@ internal sealed partial class CentralProcessingRunnerRegistry(
         telemetry.RecordRegistration(outcome);
         Log.Registered(logger, runner.RunnerId, outcome, runner.ProcessArchitecture, runner.ResourceClass,
             runner.LatencyClass, runner.WarmState.ToString(), runner.MaxConcurrency, string.Join(',', eligible));
-        return new ProcessingRunnerRegistrationResponse(
-            runner.RunnerId,
-            runner.Id,
-            ProcessingRunnerRegistrationStatus.Active,
-            _options.HeartbeatInterval,
-            _options.LeaseDuration,
-            _options.RenewalInterval,
-            _options.ClaimBackoff,
-            eligible,
-            now);
+        return runner;
     }
 
     public async Task<ProcessingRunnerHeartbeatResponse> HeartbeatAsync(
@@ -176,6 +212,19 @@ internal sealed partial class CentralProcessingRunnerRegistry(
         runner.UpdatedAtUtc = now;
         runner.AvailableSlots = request.AvailableSlots;
         runner.WarmState = (CentralProcessingRunnerWarmState)request.WarmState;
+        // An abandoned elastic instance (#430) must not keep heartbeating: its registration is retired here and the
+        // runner is told so; its re-registration is then denied and the runner exits.
+        if (await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+                .AnyAsync(instance => instance.RunnerId == runnerId && instance.State == "Abandoned", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            runner.Status = CentralProcessingRunnerStatus.Retired;
+            runner.RetiredAtUtc = now;
+            runner.UpdatedAtUtc = now;
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            throw CentralProcessingRunnerRejectedException.Create(
+                ProcessingRunnerReasonCodes.RegistrationRetired, "The runner was abandoned by its launching host.");
+        }
         var wasStale = runner.Status == CentralProcessingRunnerStatus.Stale;
         runner.Status = CentralProcessingRunnerStatus.Active;
         var capabilities = context.Capabilities;

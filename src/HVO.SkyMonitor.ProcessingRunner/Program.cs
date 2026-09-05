@@ -104,7 +104,8 @@ internal static class Program
                     options.IdleShutdown,
                     options.ShutdownGrace,
                     options.RegistrationRetry,
-                    LivenessFile: options.LivenessFile),
+                    LivenessFile: options.LivenessFile,
+                    StopFile: options.StopFile),
                 log);
             var exit = await host.RunAsync(cancellation.Token).ConfigureAwait(false);
             log.Info("stopped", "Processing runner stopped gracefully.");
