@@ -623,7 +623,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 FROM processing_executions execution
                 JOIN processing_execution_nodes node ON node.execution_id = execution.execution_id
                 WHERE execution.execution_id = $execution AND execution.execution_class = 'Live'
-                  AND node.node_id = $node COLLATE NOCASE;
+                  AND node.node_id = $node;
                 """;
             command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
             command.Parameters.AddWithValue("$node", nodeId);
@@ -652,7 +652,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             command.CommandText = """
                 SELECT plan_sha256 FROM processing_execution_nodes
-                WHERE execution_id = $execution AND node_id = $node COLLATE NOCASE;
+                WHERE execution_id = $execution AND node_id = $node;
                 """;
             command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
             command.Parameters.AddWithValue("$node", producerId);

@@ -102,9 +102,22 @@ public sealed class RollingCombinationWindowLineageTests
             Assert.HasCount(WindowSize - 1, frozen.Where(static pin => pin.StartsWith(
                 RollingNodeId + "|", StringComparison.Ordinal)).ToArray());
 
-            // A newer calibrated output arrives before the replay runs. A replay that reselected its window
-            // would pick it up; one that honours its frozen pins cannot.
-            await AcceptAndDrainAsync(provider, configuration, CaptureCount).ConfigureAwait(false);
+            // The newest member of the frozen window stops qualifying after submission. A replay that
+            // reselected would drop it and reach one capture further back; one that honours its frozen pins
+            // consumes the original members unchanged, because a pinned output is read by identity.
+            using var store = CreateStore(root);
+            var pinnedArtifactIds = (await store.ReadFrozenExecutionOutputsAsync(
+                    replay.Execution.ExecutionId, RollingNodeId, CancellationToken.None).ConfigureAwait(false))
+                .Select(static output => output.ArtifactId)
+                .ToArray();
+            Assert.HasCount(WindowSize - 1, pinnedArtifactIds);
+            var newestPinned = (await store.ReadFrozenExecutionOutputsAsync(
+                    replay.Execution.ExecutionId, RollingNodeId, CancellationToken.None).ConfigureAwait(false))[^1];
+            await store.SetOutputAvailabilityAsync(
+                newestPinned.OutputIdentitySha256,
+                "Missing",
+                "rolling-window-test",
+                CancellationToken.None).ConfigureAwait(false);
 
             var worker = provider.GetRequiredService<ProcessingReplayWorker>();
             await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
@@ -130,7 +143,6 @@ public sealed class RollingCombinationWindowLineageTests
             // The replay consumed exactly the window frozen when it was submitted, and left it unchanged.
             CollectionAssert.AreEqual(
                 frozen, await ReadPinsAsync(root, replay.Execution.ExecutionId).ConfigureAwait(false));
-            using var store = CreateStore(root);
             var replayed = await store.ReadExecutionNodeAsync(
                 replay.Execution.ExecutionId,
                 descriptor.Capture.CaptureId,
@@ -138,7 +150,9 @@ public sealed class RollingCombinationWindowLineageTests
                 CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(replayed);
             Assert.HasCount(1, replayed.Outputs);
-            Assert.HasCount(WindowSize, replayed.Outputs[0].Descriptor!.Artifact.SourceArtifactIds);
+            var replayedSources = replayed.Outputs[0].Descriptor!.Artifact.SourceArtifactIds;
+            Assert.HasCount(WindowSize, replayedSources);
+            CollectionAssert.AreEqual(pinnedArtifactIds, replayedSources.Take(WindowSize - 1).ToArray());
         }
         finally
         {
@@ -165,13 +179,16 @@ public sealed class RollingCombinationWindowLineageTests
             Assert.HasCount(1, excludedCalibration.Outputs);
             var excludedArtifactId = excludedCalibration.Outputs[0].ArtifactId;
 
-            // The next capture is accepted while its predecessor is still eligible, and the predecessor
-            // becomes ineligible before the consuming node runs - exactly as a failed peer would.
+            // The next capture is accepted while its predecessor is still eligible, and the predecessor stops
+            // qualifying before the consuming node runs, as an evicted, failed, or still-running peer would.
             var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(
                 configuration, CreateSubmission(CaptureCount), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
-            await MarkOutputUnavailableAsync(root, excludedCalibration.Outputs[0].OutputIdentitySha256)
-                .ConfigureAwait(false);
+            await store.SetOutputAvailabilityAsync(
+                excludedCalibration.Outputs[0].OutputIdentitySha256,
+                "Missing",
+                "rolling-window-test",
+                CancellationToken.None).ConfigureAwait(false);
             await DrainOneAsync(provider, configuration).ConfigureAwait(false);
 
             var rolling = await store.ReadNodeAsync(
@@ -191,21 +208,6 @@ public sealed class RollingCombinationWindowLineageTests
         {
             Cleanup(root);
         }
-    }
-
-    private static async Task MarkOutputUnavailableAsync(string root, string outputIdentitySha256)
-    {
-        using var connection = new SqliteConnection(
-            $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
-        await connection.OpenAsync().ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            UPDATE processing_outputs
-            SET availability_state = 'Missing', availability_reason = 'rolling-window-test'
-            WHERE output_identity_sha256 = $output;
-            """;
-        command.Parameters.AddWithValue("$output", outputIdentitySha256);
-        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
     }
 
     private static async Task<(RawCaptureReceipt Receipt, string ActiveRevisionId)> RunBacklogAsync(
@@ -229,18 +231,6 @@ public sealed class RollingCombinationWindowLineageTests
             await DrainOneAsync(provider, configuration).ConfigureAwait(false);
         }
         return (receipt!, registry.ActiveRevisionId);
-    }
-
-    private static async Task<RawCaptureReceipt> AcceptAndDrainAsync(
-        ServiceProvider provider,
-        CameraModuleConfig configuration,
-        int index)
-    {
-        var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(
-            configuration, CreateSubmission(index), CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(receipt);
-        await DrainOneAsync(provider, configuration).ConfigureAwait(false);
-        return receipt;
     }
 
     private static async Task DrainOneAsync(ServiceProvider provider, CameraModuleConfig configuration)

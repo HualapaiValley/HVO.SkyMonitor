@@ -145,13 +145,17 @@ because of one. The selector then takes the most recent eligible outputs up to
 the window's maximum input count, so an excluded capture is skipped over and an
 older eligible capture takes its place rather than leaving a hole. That maximum
 is the smaller of the node's configured window size and
-`CameraAgent:ProcessingGraphs:MaximumWindowInputs`, which live and replay share,
-and it also bounds how far back the skip-over search reaches. A trailing window
+`CameraAgent:ProcessingGraphs:MaximumWindowInputs`, which live and replay share.
+Ineligible captures are filtered before any limit applies, so skipping past them
+is unbounded; what is bounded is how many eligible-but-incompatible candidates
+the selector can look past, by its candidate limit of
+`min(512, max(window - 1, 4 x MaximumWindowInputs))`. A trailing window
 is still allowed to be shorter than its maximum - a freshly started agent has no
 history - and the combination records only the sources it actually used, with
 `stackCount` reporting that count. A live node that resolves fewer inputs than
-its configured window logs event 2085 with the resolved and configured counts, so
-a persistently short stack is visible to an operator.
+its effective window logs event 2085 with the resolved and effective counts, so
+a persistently short stack is visible to an operator. Replay does not log it: a
+frozen window is short only because the archive was.
 
 ## Sequencing, idempotency, conflict, and acknowledgement
 

@@ -381,6 +381,9 @@ internal sealed class CaptureProcessingPersistence(
         return await RestoreWindowInputsAsync(outputs, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>The shared upper bound on a durable window's inputs, applied to live and replay alike.</summary>
+    internal int MaximumWindowInputs => _store.MaximumWindowInputs;
+
     /// <summary>Resolves and pins the derived input window a live execution node consumes.</summary>
     internal async ValueTask<IReadOnlyList<ProcessingArtifact>> ResolveLiveExecutionInputsAsync(
         ProcessingExecutionContext execution,

@@ -300,9 +300,6 @@ internal sealed class FrameProcessingWorker
                         node.Dependencies.Count > 0 && graph.Nodes.FirstOrDefault(candidate =>
                             string.Equals(candidate.Id, node.Dependencies[0], StringComparison.OrdinalIgnoreCase)) is { OutputRole: { } sourceRole })
                     {
-                        var windowDescriptor = rawCapture?.Manifest.Descriptor
-                            ?? throw new InvalidOperationException(
-                                "A durable processing window requires the committed raw capture descriptor.");
                         context.SetHistoricalInputs(item.Execution switch
                         {
                             // A live execution is created while its own raw capture is accepted, before the
@@ -311,18 +308,23 @@ internal sealed class FrameProcessingWorker
                             // recorded as this node's outcome - rather than at acceptance.
                             { ExecutionClass: ProcessingGraphExecutionClass.Live } live =>
                                 await persistence.ResolveLiveExecutionInputsAsync(
-                                    live, node.Id, windowDescriptor, cancellationToken).ConfigureAwait(false),
+                                    live, node.Id, RequireWindowDescriptor(rawCapture), cancellationToken)
+                                    .ConfigureAwait(false),
                             { } archived => await persistence.ReadFrozenExecutionInputsAsync(
                                 archived.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false),
                             _ => await persistence.ReadRecentInputsAsync(
-                                windowDescriptor,
+                                RequireWindowDescriptor(rawCapture),
                                 node.Dependencies[0], sourceRole, window.MaximumInputCount, cancellationToken)
                                 .ConfigureAwait(false)
                         });
+                        // The effective window is the smaller of the node's size and the shared input bound, so a
+                        // configuration cap is never reported as missing history.
+                        var effectiveWindow = Math.Min(window.MaximumInputCount, persistence.MaximumWindowInputs);
                         var resolvedWindowCount = context.GetHistoricalInputs().Count + 1;
-                        if (resolvedWindowCount < window.MaximumInputCount)
+                        if (item.Execution is { ExecutionClass: ProcessingGraphExecutionClass.Live } &&
+                            resolvedWindowCount < effectiveWindow)
                         {
-                            logger.CaptureProcessingWindowShort(node.Id, resolvedWindowCount, window.MaximumInputCount);
+                            logger.CaptureProcessingWindowShort(node.Id, resolvedWindowCount, effectiveWindow);
                         }
                     }
                     else if (persistence is not null && rawCapture is not null &&
@@ -506,6 +508,11 @@ internal sealed class FrameProcessingWorker
             throw;
         }
     }
+
+    private static ReconstructionDescriptor RequireWindowDescriptor(RawCaptureReceipt? rawCapture)
+        => rawCapture?.Manifest.Descriptor
+            ?? throw new InvalidOperationException(
+                "A durable processing window requires the committed raw capture descriptor.");
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Post-commit cleanup cannot invalidate a durable node or block its dependents.")]
     private static async ValueTask RunPostCommitCleanupAsync(
