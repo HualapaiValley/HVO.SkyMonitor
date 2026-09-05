@@ -20,14 +20,18 @@ Options:
   --revision <sha>            Source revision to build and label. Default: HEAD.
   --index-digest <digest>     Multi-architecture manifest digest from the registry publication.
                               Default: the canonical index digest computed from the platform archives.
-  --push                      Push the multi-architecture image to --repository and take the authoritative
-                              index digest from the registry. Requires registry credentials and one builder
-                              that can build both platforms. Only a real release run exercises this.
+  --push                      Push the multi-architecture image to --repository with SLSA provenance and SBOM
+                              attestations, and take the authoritative index digest from the registry. Requires
+                              registry credentials and one builder that can build both platforms. Only a real
+                              release run exercises this.
   --amd64-builder <name>      buildx builder for linux/amd64. Default: HVO_RELEASE_AMD64_BUILDER or "default".
   --arm64-builder <name>      buildx builder for linux/arm64. Default: HVO_RELEASE_ARM64_BUILDER, required.
-  --scanner <trivy|none>      Vulnerability scanner. Default: trivy.
-  --unscanned-dry-run         Permit --scanner none. Forces a version ending in "-dryrun" and never
-                              produces a publishable release.
+  --scanner <trivy|none>      Vulnerability scanner and component-inventory renderer. Default: trivy.
+  --unscanned-dry-run         Permit --scanner none. Requires a version ending in "-dryrun" and never
+                              produces a publishable release. With --scanner none no scan runs, so that
+                              candidate carries no per-platform component inventory and its manifest stays
+                              at release-manifest version 1; a "-dryrun" version scanned with trivy still
+                              carries inventories and a version 2 manifest.
   --sign-key <pem>            Sign the candidate with this local private key (ephemeral/local releases only).
   --allow-dirty               Permit a modified worktree. Only valid with --unscanned-dry-run.
   --keep-work                 Keep the intermediate build directory.
@@ -51,6 +55,10 @@ sign_key=""
 allow_dirty=0
 keep_work=0
 push=0
+
+# The smallest component count that can describe a published CameraAgent image. This must equal
+# MinimumInventoryComponents in the release tool, which applies the same rule again before signing.
+inventory_component_floor=32
 
 # Pinned by tag and digest so a release scan is reproducible and the scanner itself is immutable.
 trivy_image="${HVO_RELEASE_TRIVY_IMAGE:-aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969}"
@@ -134,6 +142,49 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+# Reads the credential the release already holds for a registry, so the attestation payload fetch below uses the
+# same authentication as the push rather than introducing a second mechanism.
+docker_registry_auth() {
+    local host="$1" config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+    [[ -f "$config" ]] || return 0
+    jq -r --arg host "$host" '.auths[$host].auth // empty' "$config" 2>/dev/null || true
+}
+
+# Fetches one blob from the registry holding an image reference, following the standard bearer-token challenge.
+# The attestation statements are blobs rather than manifests, so `docker buildx imagetools inspect` cannot read
+# them; this uses the registry API directly instead of adding another pinned tool to the release.
+registry_blob() {
+    local reference="$1" digest="$2" destination="$3"
+    local host path challenge realm service auth token
+    # A reference whose first segment carries no dot or port names Docker Hub rather than a host, and an
+    # official image there lives under "library/". The release always uses a fully qualified registry, but the
+    # helper is exercised against public Docker Hub images, so it follows the same resolution rule Docker does.
+    if [[ "$reference" != */* || ( "${reference%%/*}" != *.* && "${reference%%/*}" != *:* ) ]]; then
+        host="registry-1.docker.io"
+        path="$reference"
+        [[ "$path" == */* ]] || path="library/$path"
+    else
+        host="${reference%%/*}"
+        path="${reference#*/}"
+    fi
+    challenge="$(curl -sS -o /dev/null -D - "https://${host}/v2/" | tr -d '\r' \
+        | sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: *[Bb]earer //p')"
+    realm="$(printf '%s' "$challenge" | sed -n 's/.*realm="\([^"]*\)".*/\1/p')"
+    service="$(printf '%s' "$challenge" | sed -n 's/.*service="\([^"]*\)".*/\1/p')"
+    token=""
+    if [[ -n "$realm" ]]; then
+        local -a token_auth=()
+        auth="$(docker_registry_auth "$host")"
+        [[ -n "$auth" ]] && token_auth=(--header "Authorization: Basic ${auth}")
+        token="$(curl -sS "${token_auth[@]}" \
+            "${realm}?service=${service}&scope=repository:${path}:pull" \
+            | jq -r '.token // .access_token // empty')"
+    fi
+    local -a blob_auth=()
+    [[ -n "$token" ]] && blob_auth=(--header "Authorization: Bearer ${token}")
+    curl -sSL --fail "${blob_auth[@]}" "https://${host}/v2/${path}/blobs/${digest}" --output "$destination"
+}
 
 release_tool() {
     dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
@@ -229,14 +280,22 @@ if [[ "$scanner" == trivy ]]; then
     trivy_cache="$work/trivy-cache"
     mkdir -p "$trivy_cache"
     scan_one() {
-        local archive="$1" destination="$2" expected_image_id="$3"
+        local architecture="$1" expected_image_id="$2"
+        local archive="$work/linux-${architecture}.tar"
+        local destination="$work/trivy-${architecture}.json"
+        local inventory="$work/image-components-linux-${architecture}.spdx.json"
+        # Mount the archive under the name the release publishes it as. The scanner records its input path in both
+        # the vulnerability report and the SPDX inventory rendered from it, so the published assets name the
+        # published archive rather than a generic scratch path.
+        local scanned_name="cameraagent-image-v${version}-linux-${architecture}.tar"
         # Run as the invoking user so the scanner's cache stays removable by the cleanup trap.
         docker run --rm \
             --user "$(id -u):$(id -g)" \
             --env "TRIVY_CACHE_DIR=/tmp/trivy-cache" \
             --volume "$trivy_cache:/tmp/trivy-cache" \
-            --volume "$archive:/scan/image.tar:ro" \
-            "$trivy_image" image --quiet --format json --scanners vuln --input /scan/image.tar >"$destination"
+            --volume "$archive:/scan/${scanned_name}:ro" \
+            "$trivy_image" image --quiet --format json --scanners vuln --list-all-pkgs \
+                --input "/scan/${scanned_name}" >"$destination"
         # The scanner must say which image it scanned, so the signed coverage claim rests on the scanner's own
         # subject identity rather than on the identity this script derived a moment earlier.
         local scanned_image_id
@@ -252,9 +311,34 @@ if [[ "$scanner" == trivy ]]; then
             printf 'The scanner did not identify %s; the image was not actually scanned.\n' "$archive" >&2
             exit 1
         }
+        # Render the component inventory from the same scan pass. The report above records every installed package
+        # rather than only the vulnerable ones, so `convert` re-renders that single pass as SPDX instead of
+        # unpacking and scanning the image a second time. `--list-all-pkgs` is the pinned scanner's default; it is
+        # stated explicitly so the inventory does not silently depend on a default that a future pin could change.
+        printf 'Rendering the linux/%s component inventory from the same scan\n' "$architecture" >&2
+        docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env "TRIVY_CACHE_DIR=/tmp/trivy-cache" \
+            --volume "$trivy_cache:/tmp/trivy-cache" \
+            --volume "$work:/work" \
+            "$trivy_image" convert --quiet --format spdx-json "/work/trivy-${architecture}.json" >"$inventory"
+        # The release tool re-checks this before signing, but failing here stops the run before the registry push
+        # rather than after it, and a published identity cannot be retracted.
+        # The gate is scripts/lib/component-inventory.jq, shared so the rule has one definition, and pinned
+        # against the release tool by ComponentInventoryParityTests. It runs before the immutable push; the tool
+        # applies the same rule again before signing.
+        jq --exit-status -f "$repo_root/scripts/lib/component-inventory.jq" \
+            --arg imageId "$expected_image_id" --argjson floor "$inventory_component_floor" \
+            "$inventory" >/dev/null || {
+            printf 'The linux/%s component inventory is not an SPDX 2.3 document naming %s as its single subject with at least %s components and a SHA-1 per declared file.\n' \
+                "$architecture" "$expected_image_id" "$inventory_component_floor" >&2
+            exit 1
+        }
+        printf 'linux/%s inventory: %s components\n' "$architecture" \
+            "$(jq -f "$repo_root/scripts/lib/component-inventory-count.jq" "$inventory")" >&2
     }
-    scan_one "$work/linux-amd64.tar" "$work/trivy-amd64.json" "$amd64_image_id"
-    scan_one "$work/linux-arm64.tar" "$work/trivy-arm64.json" "$arm64_image_id"
+    scan_one amd64 "$amd64_image_id"
+    scan_one arm64 "$arm64_image_id"
     trivy_version="$(docker run --rm --user "$(id -u):$(id -g)" "$trivy_image" --version | head -n 1 | awk '{print $2}')"
     jq --null-input \
         --arg scannerVersion "$trivy_version" \
@@ -326,11 +410,15 @@ if [[ "$push" == 1 ]]; then
         else
             push_selector+=(--builder "$amd64_builder")
         fi
+        # SLSA provenance and an SBOM are attached in the registry as separate attestation manifests. They do not
+        # change the platform image manifests, so the index agreement check below still compares the same digests
+        # the archives were examined under; they are additionally required to name those digests as their subject.
         "${push_prefix[@]}" buildx build "${push_selector[@]}" \
             --platform linux/amd64,linux/arm64 \
             --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
             --build-arg "HVO_SOURCE_REVISION=${revision}" \
-            --provenance false \
+            --provenance mode=max \
+            --sbom true \
             --output "type=image,name=${repository}:${version},push=true,oci-mediatypes=true" \
             --metadata-file "$work/push-metadata.json" \
             .
@@ -351,7 +439,52 @@ if [[ "$push" == 1 ]]; then
             "$amd64_manifest" "$arm64_manifest" >&2
         exit 1
     fi
-    printf 'Published multi-architecture digest %s\n' "$index_digest" >&2
+    # An attestation is a separate manifest carrying platform unknown/unknown and an annotation naming the image
+    # manifest it attests, so it never appears in the platform selection above. The annotation is only the
+    # wrapper's claim, so each in-toto statement is then fetched and required to name that same platform manifest
+    # as its own subject: for a registry push BuildKit populates subject[].digest.sha256 with it. Checking the
+    # annotation alone would accept a correctly labelled attestation whose payload concerns different bytes.
+    for attested_manifest in "$amd64_manifest" "$arm64_manifest"; do
+        mapfile -t attestation_digests < <(jq -r --arg subject "$attested_manifest" '
+            [ .manifests[]
+              | select((.annotations["vnd.docker.reference.type"] // "") == "attestation-manifest")
+              | select((.annotations["vnd.docker.reference.digest"] // "") == $subject)
+              | .digest ] | unique | .[]' "$work/published-index.json")
+        if [[ "${#attestation_digests[@]}" != 1 ]]; then
+            printf 'The publication of %s:%s carries %s attestation manifests for %s; exactly one is required.\n' \
+                "$repository" "$version" "${#attestation_digests[@]}" "$attested_manifest" >&2
+            exit 1
+        fi
+        attestation_manifest="$work/attestation-${attested_manifest#sha256:}.json"
+        docker buildx imagetools inspect "${repository}@${attestation_digests[0]}" --raw >"$attestation_manifest"
+        # Both statements must be present. The SLSA predicate version tracks the BuildKit that produced the push,
+        # and both shipped versions are real, so both are accepted; requiring one would abort the release after
+        # the immutable push on a toolchain change. The workflow additionally pins the BuildKit image.
+        sbom_layers="$(jq '[ .layers[]? | select(.mediaType == "application/vnd.in-toto+json")
+            | select((.annotations["in-toto.io/predicate-type"] // "") == "https://spdx.dev/Document") ] | length' \
+            "$attestation_manifest")"
+        provenance_layers="$(jq '[ .layers[]? | select(.mediaType == "application/vnd.in-toto+json")
+            | select(["https://slsa.dev/provenance/v0.2", "https://slsa.dev/provenance/v1"]
+                     | index(.annotations["in-toto.io/predicate-type"] // "") != null) ] | length' \
+            "$attestation_manifest")"
+        if [[ "$sbom_layers" != 1 || "$provenance_layers" != 1 ]]; then
+            printf 'The attestation for %s carries %s SBOM and %s provenance statements; exactly one of each is required.\n' \
+                "$attested_manifest" "$sbom_layers" "$provenance_layers" >&2
+            exit 1
+        fi
+        while IFS=$'\t' read -r layer_digest predicate_type; do
+            statement="$work/statement-${layer_digest#sha256:}.json"
+            registry_blob "$repository" "$layer_digest" "$statement" || {
+                printf 'Could not read the attestation statement %s from %s.\n' "$layer_digest" "$repository" >&2
+                exit 1
+            }
+            release_tool verify-attestation --manifest-digest "$attested_manifest" \
+                --statement "$statement" --predicate-type "$predicate_type" >/dev/null
+        done < <(jq -r '.layers[]? | select(.mediaType == "application/vnd.in-toto+json")
+            | "\(.digest)\t\(.annotations["in-toto.io/predicate-type"] // "")"' "$attestation_manifest")
+    done
+    printf 'Published multi-architecture digest %s; every attestation statement attests its own platform manifest\n' \
+        "$index_digest" >&2
 fi
 
 if [[ -z "$index_digest" ]]; then
@@ -383,6 +516,12 @@ create_arguments=(
     --notices THIRD-PARTY-NOTICES.md
     --output "$output"
 )
+if [[ "$scanner" == trivy ]]; then
+    create_arguments+=(
+        --component-sbom-amd64 "$work/image-components-linux-amd64.spdx.json"
+        --component-sbom-arm64 "$work/image-components-linux-arm64.spdx.json"
+    )
+fi
 if [[ -n "$signing_key_id" ]]; then
     create_arguments+=(--signing-key-id "$signing_key_id")
 fi

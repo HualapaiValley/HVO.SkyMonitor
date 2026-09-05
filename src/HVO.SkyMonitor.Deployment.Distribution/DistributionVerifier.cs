@@ -39,7 +39,13 @@ public static partial class DistributionVerifier
     {
         ArgumentNullException.ThrowIfNull(trustRoot);
         VerifySignedBytes(manifestBytes, signatureText, trustRoot);
-        EnsureStrictJson(manifestBytes);
+        using (var document = ParseStrictJson(manifestBytes))
+        {
+            // The declared version is read before typed deserialization on purpose. A newer manifest may carry
+            // members this build has no property for, and strict unmapped-member handling would reject it as a
+            // schema error before the version check could explain that the installer is what needs upgrading.
+            EnsureSupportedManifestVersion(document.RootElement);
+        }
         DistributionReleaseManifest manifest;
         try
         {
@@ -61,7 +67,7 @@ public static partial class DistributionVerifier
     {
         ArgumentNullException.ThrowIfNull(trustRoot);
         VerifySignedBytes(indexBytes, signatureText, trustRoot);
-        EnsureStrictJson(indexBytes);
+        ParseStrictJson(indexBytes).Dispose();
         DistributionReleaseIndex index;
         try
         {
@@ -159,10 +165,45 @@ public static partial class DistributionVerifier
         }
     }
 
+    /// <summary>
+    /// Reads the manifest's declared schema version straight from the signed bytes and rejects one this build does
+    /// not implement. The verifier ships inside the installer, so this is the one failure an operator can act on,
+    /// and it must survive a future manifest that also adds members this build does not know.
+    /// </summary>
+    private static void EnsureSupportedManifestVersion(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("schemaVersion", out var version) ||
+            version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var declared))
+        {
+            throw new DistributionValidationException("The distribution manifest does not declare a schema version.");
+        }
+        if (declared < DistributionSchemaVersions.ReleaseManifest ||
+            declared > DistributionSchemaVersions.MaximumReleaseManifest)
+        {
+            throw new DistributionValidationException(
+                $"This installation implements distribution release manifest versions " +
+                $"{DistributionSchemaVersions.ReleaseManifest} through " +
+                $"{DistributionSchemaVersions.MaximumReleaseManifest}, but the release declares version " +
+                $"{declared}. Upgrade the installer before installing this release.");
+        }
+    }
+
     private static void Validate(DistributionReleaseManifest manifest, DistributionTrustRoot root)
     {
-        if (manifest.SchemaVersion != DistributionSchemaVersions.ReleaseManifest ||
-            manifest.Signing.Algorithm != DistributionTrustRoot.Algorithm || manifest.Signing.KeyId != root.KeyId ||
+        // EnsureSupportedManifestVersion already rejected an unsupported version before deserialization. This
+        // repeats the bound so the invariant holds for any future caller that validates a manifest it did not
+        // read through VerifyManifest.
+        if (manifest.SchemaVersion < DistributionSchemaVersions.ReleaseManifest ||
+            manifest.SchemaVersion > DistributionSchemaVersions.MaximumReleaseManifest)
+        {
+            throw new DistributionValidationException(
+                $"This installation implements distribution release manifest versions " +
+                $"{DistributionSchemaVersions.ReleaseManifest} through " +
+                $"{DistributionSchemaVersions.MaximumReleaseManifest}, but the release declares version " +
+                $"{manifest.SchemaVersion}. Upgrade the installer before installing this release.");
+        }
+        if (manifest.Signing.Algorithm != DistributionTrustRoot.Algorithm || manifest.Signing.KeyId != root.KeyId ||
             !TrainRegex().IsMatch(manifest.Release.Train) || !VersionRegex().IsMatch(manifest.Release.Version) ||
             !TagRegex().IsMatch(manifest.Release.Tag) || !RepositoryRegex().IsMatch(manifest.Release.Repository) ||
             !GitOidRegex().IsMatch(manifest.Release.SourceRevision) || !GitOidRegex().IsMatch(manifest.Release.SourceTree) ||
@@ -194,6 +235,7 @@ public static partial class DistributionVerifier
         {
             throw new DistributionValidationException("The distribution manifest omits required evidence assets.");
         }
+        ValidateComponentInventoryShape(manifest);
         ValidateReleaseShape(manifest, names);
         if (manifest.Catalog is { } catalog &&
             (catalog.CatalogId != "hyg-v42-production" || !ProductionCatalogVersionRegex().IsMatch(catalog.PackageVersion) ||
@@ -212,6 +254,51 @@ public static partial class DistributionVerifier
                     platform.Architecture is not ("amd64" or "arm64") || !DigestRegex().IsMatch(platform.ManifestDigest)))
             {
                 throw new DistributionValidationException("The signed image identity is invalid.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies the versioned per-platform component-inventory rule. Version
+    /// <see cref="DistributionSchemaVersions.ReleaseManifest"/> is the shape published before component inventories
+    /// existed and must declare none, so a manifest signed under it stays verifiable unchanged. Version
+    /// <see cref="DistributionSchemaVersions.ReleaseManifestWithComponentSboms"/> is an image release that publishes
+    /// exactly one inventory per platform, each named by the platform whose operating system and architecture the
+    /// inventory itself declares, so an inventory for one architecture can never be presented as another's.
+    /// </summary>
+    private static void ValidateComponentInventoryShape(DistributionReleaseManifest manifest)
+    {
+        var inventories = manifest.Artifacts
+            .Where(static artifact => artifact.Role == DistributionArtifactRole.ComponentSbom)
+            .ToArray();
+        var platforms = manifest.Images.SelectMany(static image => image.Platforms).ToArray();
+        if (manifest.SchemaVersion == DistributionSchemaVersions.ReleaseManifest)
+        {
+            if (inventories.Length != 0 || platforms.Any(static platform => platform.ComponentSbomAsset is not null))
+            {
+                throw new DistributionValidationException(
+                    "A version 1 distribution manifest cannot declare a per-platform component inventory.");
+            }
+            return;
+        }
+        if (manifest.ManifestKind != DistributionManifestKind.ImageRelease)
+        {
+            throw new DistributionValidationException(
+                "Only an image release may declare a per-platform component inventory manifest version.");
+        }
+        if (inventories.Length != platforms.Length)
+        {
+            throw new DistributionValidationException(
+                "The image release does not publish exactly one component inventory per platform.");
+        }
+        foreach (var platform in platforms)
+        {
+            if (platform.ComponentSbomAsset is not { } asset ||
+                inventories.SingleOrDefault(artifact => artifact.AssetName == asset) is not { } inventory ||
+                inventory.OperatingSystem != platform.OperatingSystem || inventory.Architecture != platform.Architecture)
+            {
+                throw new DistributionValidationException(
+                    "The image release platform does not name a signed component inventory for its own platform.");
             }
         }
     }
@@ -359,22 +446,36 @@ public static partial class DistributionVerifier
         }
     }
 
-    private static void EnsureStrictJson(ReadOnlySpan<byte> bytes)
+    /// <summary>
+    /// Parses signed metadata strictly and hands the document back, so a caller that also needs to read a member
+    /// before typed deserialization does not parse the same bytes a second time. The caller owns the document.
+    /// </summary>
+    private static JsonDocument ParseStrictJson(ReadOnlySpan<byte> bytes)
     {
+        JsonDocument document;
         try
         {
-            using var document = JsonDocument.Parse(bytes.ToArray(), new JsonDocumentOptions
+            document = JsonDocument.Parse(bytes.ToArray(), new JsonDocumentOptions
             {
                 AllowTrailingCommas = false,
                 CommentHandling = JsonCommentHandling.Disallow,
                 MaxDepth = 32
             });
-            EnsureNoDuplicates(document.RootElement, "$");
         }
         catch (JsonException exception)
         {
             throw new DistributionValidationException("Signed distribution metadata is not strict JSON.", exception);
         }
+        try
+        {
+            EnsureNoDuplicates(document.RootElement, "$");
+        }
+        catch
+        {
+            document.Dispose();
+            throw;
+        }
+        return document;
     }
 
     private static void EnsureNoDuplicates(JsonElement element, string path)
