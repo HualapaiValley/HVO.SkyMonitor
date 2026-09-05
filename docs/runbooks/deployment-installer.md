@@ -187,6 +187,7 @@ every transition the retained release record has to follow:
 | Refused: signed by an untrusted key | `cameraagent upgrade --image-manifest <untrusted>` | unchanged; still names the running release |
 | Rollback to the retained previous image | `cameraagent rollback` | absent |
 | Refused: release contradicts the image labels | `cameraagent upgrade --image-manifest <contradicting>` | still absent |
+| State-compatibility preflight on what the sequence left behind | `cameraagent preflight` | unchanged |
 
 Each refusal asserts its own diagnostic, so a scenario cannot pass by failing
 for the wrong reason, and each transition reads the running image back through
