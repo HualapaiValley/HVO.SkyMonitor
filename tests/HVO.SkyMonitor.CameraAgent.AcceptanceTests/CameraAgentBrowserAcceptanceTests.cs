@@ -1388,6 +1388,68 @@ public sealed class CameraAgentBrowserAcceptanceTests
         return payload;
     }
 
+    [TestMethod]
+    [TestCategory("Manual")]
+    public async Task OwnerObserverCoordinateEditIsConfirmedAndKeyboardCancellableAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        if (!File.Exists(playwright.Chromium.ExecutablePath))
+        {
+            Assert.Inconclusive(
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
+        }
+
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.Chromium.LaunchAsync(
+            new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1280, Height = 720 }
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword)
+            .ConfigureAwait(false);
+
+        await page.GotoAsync("/operations/sky-map").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Sky map & catalog", Level = 1 }))
+            .ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#sky-map-latitude")).ConfigureAwait(false);
+
+        // The page states which captures keep which version before anything durable is asked for.
+        var edit = page.Locator("#sky-map-edit-coordinates");
+        await VisibleAsync(edit).ConfigureAwait(false);
+        var seeded = await page.Locator("#sky-map-latitude").InputValueAsync().ConfigureAwait(false);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(seeded), "The entry fields must be seeded from durable state.");
+        await page.Locator("#sky-map-latitude").FillAsync("31.500000").ConfigureAwait(false);
+
+        var dialog = page.Locator("dialog.confirmation-panel");
+        await OpenDialogAsync(edit, dialog).ConfigureAwait(false);
+        Assert.IsTrue(await page.EvaluateAsync<bool>(
+            "() => document.querySelector('dialog.confirmation-panel')?.contains(document.activeElement) === true")
+            .ConfigureAwait(false), "Opening the confirmation must move focus inside it.");
+        StringAssert.Contains(
+            await dialog.InnerTextAsync().ConfigureAwait(false),
+            "keep version",
+            StringComparison.Ordinal);
+
+        // Escape is guarded, so it cancels through the component and returns focus to the trigger.
+        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
+        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden })
+            .ConfigureAwait(false);
+        Assert.AreEqual(
+            "sky-map-edit-coordinates",
+            await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
+
+        // Cancelling leaves the durable deployment version untouched.
+        await page.ReloadAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#sky-map-latitude")).ConfigureAwait(false);
+        StringAssert.Contains(
+            await page.Locator("article[aria-labelledby='sky-observer-edit']").InnerTextAsync().ConfigureAwait(false),
+            "No manual coordinate change has been recorded",
+            StringComparison.Ordinal);
+    }
+
     private static async Task LoginAsync(IPage page, string email, string password)
     {
         await page.GotoAsync("/Account/Login").ConfigureAwait(false);

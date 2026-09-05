@@ -69,8 +69,11 @@ merge, the roadmap coordinator automatically selects, claims, and begins the
 next candidate-ready issue after posting its synopsis and `READY` signal, unless
 the operator asked to pause or a real decision/blocker prevents continuation.
 Non-coordinator implementing agents return completion state to the coordinator
-instead of selecting from the queue. If blocked, leave the required handoff in
-the issue and its owning roadmap epic.
+instead of selecting from the queue. While working, post a short progress
+comment at every milestone and at least every thirty minutes (on the issue until
+the draft PR exists, then in the PR ledger): what finished, what is running, the
+next step, and any blocker. If blocked, leave the required handoff in the issue
+and its owning roadmap epic.
 ```
 
 ## 3. Foundation and Contracts Prompt

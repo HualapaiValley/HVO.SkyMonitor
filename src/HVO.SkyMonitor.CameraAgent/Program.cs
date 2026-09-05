@@ -394,6 +394,7 @@ public class Program
         app.MapCameraAgentArtifactEndpoints();
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
+        app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
