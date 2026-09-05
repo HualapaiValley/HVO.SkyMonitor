@@ -186,9 +186,10 @@ internal static class ProcessingOutputWindowSelector
         bool scoped,
         CancellationToken cancellationToken)
     {
-        // Two complete statements rather than a composed one, and no DISTINCT: SQLite rejects an ORDER BY term
-        // that is not in a DISTINCT select list, and a duplicate row from the association join carries the same
-        // identity anyway.
+        // Two complete statements rather than one composed at run time, because the scoped and archived forms
+        // differ in their FROM as well as their WHERE. No DISTINCT is needed: the identity column is the
+        // table's primary key, so a duplicate row produced by the association or legacy join carries identical
+        // output columns, and commit time then identity is a total order over distinct outputs.
         const string ScopedSql = """
             SELECT output.output_identity_sha256, output.artifact_id, output.payload_relative_path,
                    output.sidecar_relative_path, output.descriptor_json, output.capture_id,

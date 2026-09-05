@@ -142,9 +142,12 @@ raw identity would reject every earlier capture and collapse the window to the
 current one. The revision- and plan-scoped output is preferred, so a replay of
 this capture under another revision cannot become the identity every candidate
 is measured against; a replay whose own revision never produced this capture
-falls back to the archived output for the same capture and node. When this
-capture has produced nothing from that node at all - a window probed before the
-capture is processed - the raw identity is used. For a live execution that
+falls back to the archived output for the same capture and node. A replay
+resolves its window when it is submitted, so a first replay under a new revision
+always takes that fallback and is measured against the archived identity: its
+window then comes up short or empty rather than wrong. When this capture has
+produced nothing that the consuming node's input contract accepts - a window
+probed before the capture is processed - the raw identity is used. For a live execution that
 cannot normally happen, because the window is resolved after the producing node
 commits its output, so a live window that still comes up short is reported by
 event 2085 rather than failing the capture.

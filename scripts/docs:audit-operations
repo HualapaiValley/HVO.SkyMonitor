@@ -144,6 +144,7 @@ require_source_reference 'Unit=3215' docs/runbooks/ci-pipeline.md
 require_source_reference 'Integration=656' docs/runbooks/ci-pipeline.md
 require_source_reference '3215 Unit cases' docs/runbooks/ci-pipeline.md
 require_source_reference '656 Integration-category cases' docs/runbooks/ci-pipeline.md
+require_source_reference 'six Unit-category boundary cases' docs/runbooks/ci-pipeline.md
 require_source_reference 'Manual=102' docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md
 require_source_reference "report count other than the expected $coverage_report_count" docs/runbooks/ci-pipeline.md
