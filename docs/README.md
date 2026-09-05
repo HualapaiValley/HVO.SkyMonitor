@@ -39,6 +39,7 @@ documents link back without maintaining competing status.
 | Elastic provider adapters | `docs/runbooks/elastic-providers.md` | `elastic-provider-v1` boundaries, the `local-process` proof adapter, autoscaling bounds and placement policy, orphan cleanup, signals, and evidence. |
 | Signed distribution releases | `docs/runbooks/release-distribution.md` | Independent installer/catalog trains, Key Vault signing, immutable publication, public verification, retention, mirrors, and recovery. |
 | CameraAgent retention recovery | `docs/runbooks/cameraagent-retention.md` | Pending-upload retention invariant and outage recovery procedure. |
+| CameraAgent local automation | `docs/runbooks/cameraagent-local-automation.md` | Versioned local automation definitions, the closed task and trigger registry, storage and bounded retention, runner behaviour, restart recovery, and owner-only endpoints. |
 
 ## Documentation Rules
 
