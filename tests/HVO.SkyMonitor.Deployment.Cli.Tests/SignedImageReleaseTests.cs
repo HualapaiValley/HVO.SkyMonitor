@@ -35,28 +35,8 @@ public sealed class SignedImageReleaseTests
     }
 
     [TestMethod]
-    public async Task AcquireImageAsync_UnqualifiedHostArchitecture_RefusesTheInstallation()
-    {
-        if (DistributionAcquirer.HostImageArchitecture() != "arm64")
-        {
-            Assert.Inconclusive("The unqualified-architecture refusal is observable only on an arm64 host.");
-        }
-        using var fixture = ImageDistributionFixture.Create();
-        using var acquirer = new DistributionAcquirer(cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot);
-
-        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
-            () => acquirer.AcquireImageAsync(fixture.LocalRequest(), CancellationToken.None));
-
-        StringAssert.Contains(exception.Message, "issue #603", StringComparison.Ordinal);
-    }
-
-    [TestMethod]
     public async Task AcquireImageAsync_SignedRelease_SelectsThisHostPlatformAndVerifiesItsArchive()
     {
-        if (DistributionAcquirer.HostImageArchitecture() == "arm64")
-        {
-            Assert.Inconclusive("linux/arm64 installation is refused until issue #603 is resolved.");
-        }
         using var fixture = ImageDistributionFixture.Create();
         using var acquirer = new DistributionAcquirer(cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot);
 

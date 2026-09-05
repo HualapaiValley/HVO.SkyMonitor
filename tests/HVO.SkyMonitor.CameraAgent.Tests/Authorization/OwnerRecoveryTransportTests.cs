@@ -22,6 +22,64 @@ public sealed class OwnerRecoveryTransportTests
     private const string CrashRootEnvironmentVariable = "HVO_OWNER_RECOVERY_CRASH_ROOT";
 
     [TestMethod]
+    public void OpenParent_OpensARealDirectoryAndRefusesASymlinkedOne()
+    {
+        // The real-directory assertion is the one that discriminated on aarch64 while the x86 O_DIRECTORY value
+        // was hard-coded: it means O_DIRECT there and open(2) refuses it with EINVAL. The symlink assertion pins
+        // the O_NOFOLLOW guard going forward; the refusal message does not distinguish EINVAL from ELOOP.
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Unix owner recovery is Linux-only.");
+        }
+
+        var root = Directory.CreateTempSubdirectory("hvo-owner-recovery-open-");
+        try
+        {
+            var real = Directory.CreateDirectory(Path.Combine(root.FullName, "real")).FullName;
+            var link = Path.Combine(root.FullName, "link");
+            File.CreateSymbolicLink(link, real);
+
+            using var opened = OwnerRecoveryNative.OpenParent(real);
+            Assert.IsFalse(opened.IsInvalid);
+
+            var refused = Assert.ThrowsExactly<InvalidOperationException>(() => OwnerRecoveryNative.OpenParent(link));
+            StringAssert.Contains(refused.Message, "could not be opened safely", StringComparison.Ordinal);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void PrepareSocketPath_RefusesASymlinkedParentDirectory()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Unix owner recovery is Linux-only.");
+        }
+
+        var root = Directory.CreateTempSubdirectory("hvo-owner-recovery-parent-");
+        try
+        {
+            var real = Directory.CreateDirectory(Path.Combine(root.FullName, "real")).FullName;
+            File.SetUnixFileMode(real, ParentMode);
+            var link = Path.Combine(root.FullName, "link");
+            File.CreateSymbolicLink(link, real);
+
+            var exception = Assert.ThrowsExactly<InvalidOperationException>(
+                () => OwnerRecoveryTransport.PrepareSocketPath(Path.Combine(link, "owner-recovery.sock")));
+
+            StringAssert.Contains(exception.Message, "could not be opened safely", StringComparison.Ordinal);
+            Assert.IsFalse(File.Exists(Path.Combine(real, "owner-recovery.sock")));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task PrepareSocketPath_RemovesSocketLeftByHardTerminationAsync()
     {
         if (!OperatingSystem.IsLinux())

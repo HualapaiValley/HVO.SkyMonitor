@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Hosting;
@@ -207,9 +208,11 @@ internal static class OwnerRecoveryNative
     private const int AtSymbolicLinkNoFollow = 0x100;
     private const int AtEmptyPath = 0x1000;
     private const int OpenReadOnly = 0;
-    private const int OpenDirectory = 0x10000;
-    private const int OpenNoFollow = 0x20000;
-    private const int OpenCloseOnExec = 0x80000;
+    // O_DIRECTORY and O_NOFOLLOW take the arm and powerpc override values on arm64 rather than the asm-generic
+    // defaults x86-64 uses; see LinuxOpenFlags.
+    private static readonly int OpenDirectory = LinuxOpenFlags.Directory;
+    private static readonly int OpenNoFollow = LinuxOpenFlags.NoFollow;
+    private const int OpenCloseOnExec = LinuxOpenFlags.CloseOnExec;
     private const int LockExclusiveNonBlocking = 0x06;
     private const int MissingEntry = 2;
     private const uint StatxType = 0x00000001;

@@ -397,6 +397,7 @@ readonly REPLAY_RUNNER_PROJECT="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Replay
 readonly CAMERA_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
 readonly ACCEPTANCE_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly CATALOG_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"
+readonly CLI_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj"
 readonly UNIT_FILTER='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware'
 DOCKER_SERVER_ID="$(docker info --format '{{.ID}}')"
 readonly DOCKER_SERVER_ID
@@ -407,7 +408,7 @@ printf 'phase,elapsed_seconds\n' > "$RESULTS/phase-durations.csv"
 phase_started=$SECONDS
 
 dotnet tool restore
-for project in "$CAMERA_PROJECT" "$REPLAY_RUNNER_PROJECT" "$CAMERA_TESTS" "$ACCEPTANCE_TESTS" "$CATALOG_TESTS"; do
+for project in "$CAMERA_PROJECT" "$REPLAY_RUNNER_PROJECT" "$CAMERA_TESTS" "$ACCEPTANCE_TESTS" "$CATALOG_TESTS" "$CLI_TESTS"; do
     dotnet restore "$project"
     dotnet build "$project" --no-restore --configuration Release -warnaserror
 done
@@ -417,10 +418,14 @@ phase_started=$SECONDS
 for entry in \
     "$CAMERA_TESTS:cameraagent" \
     "$ACCEPTANCE_TESTS:cameraagent-acceptance" \
-    "$CATALOG_TESTS:catalog-sqlite"; do
+    "$CATALOG_TESTS:catalog-sqlite" \
+    "$CLI_TESTS:deployment-cli"; do
     project="${entry%%:*}"
     name="${entry##*:}"
     mkdir -p "$RESULTS/unit-$name"
+    # The deployment CLI's installer-flow cases are Inconclusive without the production catalog bundle, and this
+    # lane refuses any result that is not Passed, so the bundle the script was given is passed through.
+    HVO_PRODUCTION_CATALOG_BUNDLE="$BUNDLE" \
     DOCKER_HOST="unix://$TEMP_ROOT/unit-docker-must-not-exist.sock" \
         dotnet test "$project" --no-build --configuration Release --filter "$UNIT_FILTER" \
         --results-directory "$RESULTS/unit-$name" --logger "trx;LogFileName=unit-$name-arm64.trx"
