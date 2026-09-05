@@ -165,13 +165,17 @@ built, identity-derived, scanned, and signed. Only the architecture the build
 host can execute is smoke-tested; the other architecture's runtime evidence
 belongs to a host of that architecture.
 
-**`linux/arm64` is published but not runtime-qualified.** The CameraAgent
-runtime and the deployment CLI hard-code x86-64 `open(2)` flag values, which
-mean different things on aarch64, so directory opens fail and the symlink guards
-are silently absent there
-([#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603)). Until that
-closes, do not install or run the `linux/arm64` image, and treat its owner
-recovery and lifecycle behaviour as unproven. The amd64 image is unaffected.
+The `open(2)` flag defect that blocked `linux/arm64`
+([#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603)) is fixed:
+the CameraAgent runtime and the deployment CLI select `O_DIRECTORY` and
+`O_NOFOLLOW` per processor architecture, and the SQLite catalog selects
+`O_NOFOLLOW` the same way (the arm and powerpc ABIs override the asm-generic
+values that x86-64 uses). The advisory native arm64 workflow
+(`.github/workflows/cameraagent-arm64.yml`) runs the CameraAgent, acceptance,
+catalog, and deployment CLI Unit suites on aarch64 and smoke-tests a natively
+built image there. No smoke of a *published* arm64 release image and no arm64
+installer campaign have run, so treat an arm64 installation as unqualified end
+to end until #598 and #599 close.
 
 A published image release must carry a vulnerability scan. The release tool
 refuses a candidate whose scan report does not name a supported scanner and scan
