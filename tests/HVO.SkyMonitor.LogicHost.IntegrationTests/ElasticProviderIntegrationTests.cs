@@ -553,6 +553,45 @@ public sealed class ElasticProviderIntegrationTests
     }
 
     [TestMethod]
+    public async Task AnIncompatibleInstanceAtTheLimitIsReplacedByOneThatCanClaim()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        var instanceId = Guid.NewGuid().ToString("N")[..16];
+        var runnerId = $"elastic-scripted-{instanceId}";
+        provider.MarkAlive(instanceId, runnerId);
+        await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId, 10, withoutRecipe: BuiltInProcessingRecipes.EncodedPreview), CancellationToken.None).ConfigureAwait(false);
+        }
+        await SeedPreviewJobAsync("elastic-replace-incompatible").ConfigureAwait(false);
+        var settings = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 1,
+            MaxConcurrencyPerInstance = 1,
+            ScaleToZeroAfter = TimeSpan.FromMinutes(10),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        };
+        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Should().Be(new ElasticScalingDecision(0, 1, ElasticScalingPolicy.ReasonIncompatibleReplacement), "the only instance cannot claim the queued recipe and fills the limit");
+        provider.Retired.Should().Equal([instanceId]);
+        var row = await ScriptedInstanceAsync(factory, instanceId).ConfigureAwait(false);
+        row.State.Should().Be(nameof(ElasticRunnerInstanceState.Stopped));
+        row.Reason.Should().Be(ElasticScalingPolicy.ReasonIncompatibleReplacement);
+        decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Provision.Should().Be(1, "the freed slot goes to an instance that registers with the placed recipe");
+    }
+
+    [TestMethod]
     public async Task ConcurrentRetirementsStampTheirOwnStopTimes()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);

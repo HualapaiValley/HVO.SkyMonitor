@@ -376,39 +376,28 @@ internal sealed partial class ElasticRunnerAutoscaler(
             Log.RecipesExcluded(logger, provider.Name, excluded);
         }
         _lastExcludedRecipes = template is null ? null : excluded;
-        var backlogRows = placed.Count == 0
+        // The claimable set exactly as the claim sees it (recipe filter, the probed runner's transfer limit, readiness of
+        // inputs and graph execution), so no instance is provisioned for work no runner could claim; the pool predicate
+        // is applied here, as the claim does. Terminal cleanup (expired leases with exhausted attempts) is exempt from
+        // pool, entitlement, and fairness bounds in the claim, so it is counted apart from executable backlog.
+        var claimable = placed.Count == 0 || template is null
             ? []
-            : await dbContext.CentralDerivativeJobs.AsNoTracking()
-                .Where(job => placed.Contains(job.RecipeName)
-                    && (((job.Status == CentralDerivativeJobStatus.Pending || job.Status == CentralDerivativeJobStatus.RetryableFailure)
-                            && job.AvailableAtUtc != null && job.AvailableAtUtc <= now)
-                        || (job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc <= now && job.AttemptCount < job.MaxAttempts)))
-                .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
-                .Select(group => new
-                {
-                    ObservatoryId = group.Key,
-                    Count = group.Count(),
-                    // A claimed job has no availability any more: an expired lease is as old as its expiry.
-                    Oldest = group.Min(job => job.Status == CentralDerivativeJobStatus.Leased ? job.LeaseExpiresAtUtc : job.AvailableAtUtc)
-                })
-                .ToListAsync(cancellationToken).ConfigureAwait(false);
-        // Only backlog the instances could claim counts: the same pool predicate as the claim (a reserved pool
-        // serves its own pool and shared work; unpooled instances serve only unpooled observatories).
+            : await QueryClaimableAsync(dbContext, placed, template.MaxTransferBytes, now, cancellationToken).ConfigureAwait(false);
         var entitlements = entitlementOptions.Value is { Enabled: true } enabled ? enabled : null;
-        backlogRows = backlogRows.Where(row => IsPoolEligible(settings.Pool, entitlements?.ResolvePool(row.ObservatoryId))).ToList();
+        var executable = claimable.Where(row => !row.IsCleanup && IsPoolEligible(settings.Pool, entitlements?.ResolvePool(row.ObservatoryId))).ToList();
+        var backlogRows = executable.GroupBy(row => row.ObservatoryId)
+            .Select(group => new { ObservatoryId = group.Key, Count = group.Count(), Oldest = group.Min(row => row.AvailableSince) })
+            .ToList();
         var backlog = backlogRows.Sum(row => row.Count);
-        var oldestAge = backlogRows.Count == 0 ? TimeSpan.Zero : now - backlogRows.Min(row => row.Oldest!.Value);
-        // Registered capacity counts only instances that can claim what is queued: an adopted instance registered
-        // before a recipe was placed (or with different capabilities) covers none of that recipe's backlog, so its
-        // slots never make the demand look covered; an incompatible instance contributes nothing.
-        var backlogRecipes = backlog == 0
-            ? []
-            : await dbContext.CentralDerivativeJobs.AsNoTracking()
-                .Where(job => placed.Contains(job.RecipeName)
-                    && (((job.Status == CentralDerivativeJobStatus.Pending || job.Status == CentralDerivativeJobStatus.RetryableFailure)
-                            && job.AvailableAtUtc != null && job.AvailableAtUtc <= now)
-                        || (job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc <= now && job.AttemptCount < job.MaxAttempts)))
-                .Select(job => job.RecipeName).Distinct().ToListAsync(cancellationToken).ConfigureAwait(false);
+        var oldestAge = backlogRows.Count == 0 ? TimeSpan.Zero : now - backlogRows.Min(row => row.Oldest ?? now);
+        var cleanupBacklog = claimable.Count(row => row.IsCleanup);
+        var cleanupOldest = cleanupBacklog == 0 ? TimeSpan.Zero : now - claimable.Where(row => row.IsCleanup).Min(row => row.AvailableSince ?? now);
+        // The age published outward covers everything retained; the policy's deadline rule sees executable work only.
+        var reportedAge = oldestAge > cleanupOldest ? oldestAge : cleanupOldest;
+        // Registered capacity counts only instances that can claim what is queued in this provider's pool scope: an
+        // adopted instance registered before a recipe was placed (or with different capabilities) covers none of
+        // that recipe's backlog, so its slots never make the demand look covered; it contributes nothing.
+        var backlogRecipes = executable.Select(row => row.RecipeName).Distinct(StringComparer.Ordinal).ToList();
         bool CanClaimBacklog(string eligibleRecipesJson)
         {
             var eligible = ParseEligibleRecipes(eligibleRecipesJson);
@@ -418,13 +407,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var registeredRunningCount = registeredRunning.Count;
         var compatibleRunningCount = compatibleRunning.Count;
         var compatibleRunningConcurrency = compatibleRunning.Sum(runner => runner.MaxConcurrency);
-        // Expired leases with exhausted attempts are terminal cleanup the claim exempts from pool, entitlement, and
-        // fairness predicates: counted apart from executable backlog so those bounds (and the deadline) never strand them.
-        var cleanupBacklog = placed.Count == 0
-            ? 0
-            : await dbContext.CentralDerivativeJobs.AsNoTracking()
-                .CountAsync(job => placed.Contains(job.RecipeName) && job.Status == CentralDerivativeJobStatus.Leased
-                    && job.LeaseExpiresAtUtc <= now && job.AttemptCount >= job.MaxAttempts, cancellationToken).ConfigureAwait(false);
+        var incompatibleRunning = registeredRunningCount - compatibleRunningCount;
         int? entitled = null;
         if (entitlements is not null && backlogRows.Count != 0)
         {
@@ -449,7 +432,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         int CapacityOf(int runningCount, int startingCount)
             => compatibleRunningConcurrency + Math.Max(0, runningCount - registeredRunningCount) * perInstance + startingCount * perInstance;
         var input = new ElasticScalingInput(backlog, oldestAge, running, starting, idle.Count,
-            idle.Count == 0 ? TimeSpan.Zero : idle.Max(item => item.IdleFor), entitled, minutesToday, inFlight, warmLive, CapacityOf(running, starting), cleanupBacklog);
+            idle.Count == 0 ? TimeSpan.Zero : idle.Max(item => item.IdleFor), entitled, minutesToday, inFlight, warmLive, CapacityOf(running, starting), cleanupBacklog, incompatibleRunning);
         // Deployment-wide decisions are serialized: the decision and its durable intents commit under one
         // application lock so replicas sampling the same backlog cannot both fill the same shortfall.
         await using var scaling = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -461,7 +444,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         {
             await scaling.RollbackAsync(cancellationToken).ConfigureAwait(false);
             Log.ScalingLockBusy(logger);
-            telemetry.UpdateSnapshot(new ElasticProviderSnapshot(now, provider.Name, starting, running, idle.Count, backlog + cleanupBacklog, (long)oldestAge.TotalSeconds, minutesToday, "scaling-lock-busy", orphans));
+            telemetry.UpdateSnapshot(new ElasticProviderSnapshot(now, provider.Name, starting, running, idle.Count, backlog + cleanupBacklog, (long)reportedAge.TotalSeconds, minutesToday, "scaling-lock-busy", orphans));
             return ElasticScalingDecision.Steady;
         }
         // Re-read the deployment-wide counts under the lock: another replica may have decided since the sample began.
@@ -487,7 +470,8 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var lockedCompatible = lockedRegistered.Where(runner => CanClaimBacklog(runner.EligibleRecipesJson)).ToList();
         compatibleRunningCount = lockedCompatible.Count;
         compatibleRunningConcurrency = lockedCompatible.Sum(runner => runner.MaxConcurrency);
-        input = input with { Running = running, Starting = starting, WarmInstances = warmLive, Capacity = CapacityOf(running, starting) };
+        incompatibleRunning = registeredRunningCount - compatibleRunningCount;
+        input = input with { Running = running, Starting = starting, WarmInstances = warmLive, Capacity = CapacityOf(running, starting), IncompatibleActive = incompatibleRunning };
         var decision = ElasticScalingPolicy.Decide(settings, input, provider.EstimateStartup());
         if (template is null && decision.Reason != ElasticScalingPolicy.ReasonDailyLimit)
         {
@@ -504,7 +488,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         if (decision.Provision == 0 && decision.Retire == 0 && decision.Reason is not "steady" && retained > 0)
         {
             telemetry.RecordRejectedPlacement(provider.Name, decision.Reason);
-            Log.PlacementRejected(logger, decision.Reason, retained, (long)oldestAge.TotalSeconds);
+            Log.PlacementRejected(logger, decision.Reason, retained, (long)reportedAge.TotalSeconds);
         }
         // Durable intents and retirement reservations are recorded under the lock; processes launch and drain after
         // it commits, so another replica's decision already sees the reserved capacity change.
@@ -523,10 +507,16 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var excessNotBusy = current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Running) && !row.KeepWarm && !busyNow.Contains(row))
             .Select(row => (Row: row, IdleFor: now - (row.LastBusyAtUtc ?? row.RegisteredAtUtc ?? row.StartedAtUtc)))
             .OrderByDescending(item => item.IdleFor);
+        var incompatibleNotBusy = current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Running) && !busyNow.Contains(row)
+                && registered.TryGetValue(row.RunnerId, out var incompatibleRegistration) && incompatibleRegistration.Status == CentralProcessingRunnerStatus.Active
+                && !CanClaimBacklog(incompatibleRegistration.EligibleRecipesJson))
+            .Select(row => (Row: row, IdleFor: now - (row.LastBusyAtUtc ?? row.RegisteredAtUtc ?? row.StartedAtUtc)))
+            .OrderByDescending(item => item.IdleFor);
         var candidates = decision.Reason switch
         {
             ElasticScalingPolicy.ReasonDailyLimit => idleRows.Concat(busyRunning).Concat(startingRows),
             ElasticScalingPolicy.ReasonWarmMinimum => excessNotBusy,
+            ElasticScalingPolicy.ReasonIncompatibleReplacement => incompatibleNotBusy,
             _ => idleRows.AsEnumerable()
         };
         // Each reservation is taken under the runner's claim lock with a fresh check of its unexpired leases: a claim
@@ -611,9 +601,30 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var startingRetired = retiring.Count(item => item.Row.RegisteredAtUtc is null);
         telemetry.UpdateSnapshot(new ElasticProviderSnapshot(
             now, provider.Name, Math.Max(0, starting + decision.Provision - startingRetired), Math.Max(0, running - (retired - startingRetired)),
-            Math.Max(0, input.Idle - idleRetired), retained, (long)oldestAge.TotalSeconds, minutesToday, decision.Reason, orphans));
+            Math.Max(0, input.Idle - idleRetired), retained, (long)reportedAge.TotalSeconds, minutesToday, decision.Reason, orphans));
         return decision;
     }
+
+    /// <summary>One claimable runner-placed job as the claim's own readiness query reports it.</summary>
+    internal sealed class ClaimableBacklogRow
+    {
+        public Guid ObservatoryId { get; init; }
+        public string RecipeName { get; init; } = string.Empty;
+        public bool IsCleanup { get; init; }
+        public DateTimeOffset? AvailableSince { get; init; }
+    }
+
+#pragma warning disable CA2100 // The text is the constant CreateClaimableSql template; every runtime value is a SqlParameter.
+    private static async Task<List<ClaimableBacklogRow>> QueryClaimableAsync(
+        ApplicationDbContext dbContext, IReadOnlySet<string> recipes, long maximumInputBytes, DateTimeOffset now, CancellationToken cancellationToken)
+        => await dbContext.Database.SqlQueryRaw<ClaimableBacklogRow>(
+                CentralDerivativeJobService.CreateClaimableSql(),
+                new SqlParameter("@now", now),
+                new SqlParameter("@includeRecipes", System.Data.SqlDbType.NVarChar, -1) { Value = string.Join(',', recipes.OrderBy(recipe => recipe, StringComparer.Ordinal)) },
+                new SqlParameter("@excludeRecipes", System.Data.SqlDbType.NVarChar, -1) { Value = string.Empty },
+                new SqlParameter("@maximumInputBytes", maximumInputBytes))
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning restore CA2100
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string[]> EligibleRecipeCache = new(StringComparer.Ordinal);
 

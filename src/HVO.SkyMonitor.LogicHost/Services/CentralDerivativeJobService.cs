@@ -1348,6 +1348,83 @@ internal sealed partial class CentralDerivativeJobService(
     /// classes, applies the entitlement, pool, and exclusion predicates, and orders by starvation, pool affinity,
     /// priority, and weighted fair share before the original availability order.
     /// </summary>
+    /// <summary>Recipe include/exclude and the input-size bound, shared by the claim and the elastic backlog count.</summary>
+    private const string RecipeAndSizeWhere = """
+                (@includeRecipes = N'' OR job.[RecipeName] IN (SELECT [value] FROM STRING_SPLIT(@includeRecipes, ',')))
+                AND (@excludeRecipes = N'' OR job.[RecipeName] NOT IN (SELECT [value] FROM STRING_SPLIT(@excludeRecipes, ',')))
+                AND ((SELECT COALESCE(SUM(sized.[ByteLength]), 0)
+                      FROM [CentralDerivativeJobInputs] AS sizedInput
+                      INNER JOIN [CentralArtifacts] AS sized ON sized.[Id] = sizedInput.[CentralArtifactId]
+                      WHERE sizedInput.[CentralDerivativeJobId] = job.[Id]) <= @maximumInputBytes)
+        """;
+
+    /// <summary>
+    /// Readiness as the claim sees it: a running graph execution when expanded, a resolved input set with every
+    /// required input present and available (or an exempt missing input), inputs whose objects are available and
+    /// reconstructed, and either claimable work (pending, retryable, or an expired lease with attempts left) or an
+    /// expired lease whose attempts are exhausted (terminal cleanup). Shared by the claim and the elastic backlog count.
+    /// </summary>
+    private const string ReadinessWhere = """
+                AND ((job.[GraphExecutionId] IS NULL OR EXISTS (
+                        SELECT 1
+                        FROM [CentralProcessingGraphExecutions] AS execution
+                        WHERE execution.[Id] = job.[GraphExecutionId]
+                          AND execution.[ExpandedAtUtc] IS NOT NULL
+                          AND execution.[Status] = N'Running'))
+                    AND (((job.[Status] IN (N'Pending', N'RetryableFailure')
+                            AND job.[AttemptCount] < job.[MaxAttempts]
+                            AND job.[InputSetIdentitySha256] IS NOT NULL
+                            AND job.[AvailableAtUtc] <= @now)
+                        OR (job.[Status] = N'Leased'
+                            AND job.[LeaseExpiresAtUtc] <= @now
+                            AND job.[AttemptCount] < job.[MaxAttempts]))
+                        AND EXISTS (SELECT 1 FROM [CentralDerivativeJobInputs] AS input WHERE input.[CentralDerivativeJobId] = job.[Id])
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM [CentralDerivativeJobInputRequirements] AS requirement
+                            WHERE requirement.[CentralDerivativeJobId] = job.[Id]
+                                AND requirement.[IsRequired] = CAST(1 AS bit)
+                                AND ((requirement.[ResolutionState] = N'Resolved'
+                                        AND ((requirement.[SourceKind] = N'Artifact' AND NOT EXISTS (
+                                                SELECT 1 FROM [CentralDerivativeJobInputs] AS resolved
+                                                WHERE resolved.[CentralDerivativeJobId] = job.[Id]
+                                                    AND resolved.[CentralDerivativeJobInputRequirementId] = requirement.[Id]))
+                                            OR (requirement.[SourceKind] = N'EnvironmentalObservation' AND NOT EXISTS (
+                                                SELECT 1 FROM [CentralDerivativeJobCanonicalInputs] AS canonical
+                                                WHERE canonical.[CentralDerivativeJobId] = job.[Id]
+                                                    AND canonical.[CentralDerivativeJobInputRequirementId] = requirement.[Id]))))
+                                    OR (requirement.[ResolutionState] <> N'Resolved'
+                                        AND NOT (requirement.[ResolutionState] = N'Missing'
+                                            AND job.[MissingInputOutcome] = N'Run'))))
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM [CentralDerivativeJobInputs] AS input
+                            INNER JOIN [CentralArtifacts] AS source ON source.[Id] = input.[CentralArtifactId]
+                            WHERE input.[CentralDerivativeJobId] = job.[Id]
+                                AND (source.[ObjectState] <> N'Available'
+                                    OR source.[ReconstructionState] <> N'Complete'))
+                        OR (job.[Status] = N'Leased'
+                        AND job.[LeaseExpiresAtUtc] <= @now
+                        AND job.[AttemptCount] >= job.[MaxAttempts])))
+        """;
+
+    /// <summary>
+    /// The claimable set exactly as the claim sees it (recipe filter, input-size bound, readiness), without ranking,
+    /// fairness, or locks: one row per claimable runner-placed job with its observatory, recipe, whether it is terminal
+    /// cleanup, and the age key. Used by the elastic autoscaler so it never provisions for work no runner could claim.
+    /// </summary>
+    internal static string CreateClaimableSql() => $"""
+        SELECT sourceFrame.[ObservatoryId] AS [ObservatoryId], job.[RecipeName] AS [RecipeName],
+            CASE WHEN job.[Status] = N'Leased' AND job.[AttemptCount] >= job.[MaxAttempts] THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS [IsCleanup],
+            CASE WHEN job.[Status] = N'Leased' THEN job.[LeaseExpiresAtUtc] ELSE job.[AvailableAtUtc] END AS [AvailableSince]
+        FROM [CentralDerivativeJobs] AS job WITH (NOLOCK)
+        INNER JOIN [CentralArtifacts] AS sourceArtifact ON sourceArtifact.[Id] = job.[SourceCentralArtifactId]
+        INNER JOIN [CentralFrames] AS sourceFrame ON sourceFrame.[Id] = sourceArtifact.[CentralFrameId]
+        WHERE
+        {RecipeAndSizeWhere}
+        {ReadinessWhere}
+        """;
+
     internal static string CreateCandidateSql(bool fairness, bool idOnly = false)
     {
         // Active-lease aggregates are computed once per query (not once per candidate row) so the fairness cost is
@@ -1465,54 +1542,9 @@ internal sealed partial class CentralDerivativeJobService(
             FROM [CentralDerivativeJobs] AS job {lockHints}
             {fairJoins}
             WHERE
-                (@includeRecipes = N'' OR job.[RecipeName] IN (SELECT [value] FROM STRING_SPLIT(@includeRecipes, ',')))
-                AND (@excludeRecipes = N'' OR job.[RecipeName] NOT IN (SELECT [value] FROM STRING_SPLIT(@excludeRecipes, ',')))
-                AND ((SELECT COALESCE(SUM(sized.[ByteLength]), 0)
-                      FROM [CentralDerivativeJobInputs] AS sizedInput
-                      INNER JOIN [CentralArtifacts] AS sized ON sized.[Id] = sizedInput.[CentralArtifactId]
-                      WHERE sizedInput.[CentralDerivativeJobId] = job.[Id]) <= @maximumInputBytes)
+            {RecipeAndSizeWhere}
                 {fairWhere}
-                AND ((job.[GraphExecutionId] IS NULL OR EXISTS (
-                        SELECT 1
-                        FROM [CentralProcessingGraphExecutions] AS execution
-                        WHERE execution.[Id] = job.[GraphExecutionId]
-                          AND execution.[ExpandedAtUtc] IS NOT NULL
-                          AND execution.[Status] = N'Running'))
-                    AND (((job.[Status] IN (N'Pending', N'RetryableFailure')
-                            AND job.[AttemptCount] < job.[MaxAttempts]
-                            AND job.[InputSetIdentitySha256] IS NOT NULL
-                            AND job.[AvailableAtUtc] <= @now)
-                        OR (job.[Status] = N'Leased'
-                            AND job.[LeaseExpiresAtUtc] <= @now
-                            AND job.[AttemptCount] < job.[MaxAttempts]))
-                        AND EXISTS (SELECT 1 FROM [CentralDerivativeJobInputs] AS input WHERE input.[CentralDerivativeJobId] = job.[Id])
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM [CentralDerivativeJobInputRequirements] AS requirement
-                            WHERE requirement.[CentralDerivativeJobId] = job.[Id]
-                                AND requirement.[IsRequired] = CAST(1 AS bit)
-                                AND ((requirement.[ResolutionState] = N'Resolved'
-                                        AND ((requirement.[SourceKind] = N'Artifact' AND NOT EXISTS (
-                                                SELECT 1 FROM [CentralDerivativeJobInputs] AS resolved
-                                                WHERE resolved.[CentralDerivativeJobId] = job.[Id]
-                                                    AND resolved.[CentralDerivativeJobInputRequirementId] = requirement.[Id]))
-                                            OR (requirement.[SourceKind] = N'EnvironmentalObservation' AND NOT EXISTS (
-                                                SELECT 1 FROM [CentralDerivativeJobCanonicalInputs] AS canonical
-                                                WHERE canonical.[CentralDerivativeJobId] = job.[Id]
-                                                    AND canonical.[CentralDerivativeJobInputRequirementId] = requirement.[Id]))))
-                                    OR (requirement.[ResolutionState] <> N'Resolved'
-                                        AND NOT (requirement.[ResolutionState] = N'Missing'
-                                            AND job.[MissingInputOutcome] = N'Run'))))
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM [CentralDerivativeJobInputs] AS input
-                            INNER JOIN [CentralArtifacts] AS source ON source.[Id] = input.[CentralArtifactId]
-                            WHERE input.[CentralDerivativeJobId] = job.[Id]
-                                AND (source.[ObjectState] <> N'Available'
-                                    OR source.[ReconstructionState] <> N'Complete'))
-                        OR (job.[Status] = N'Leased'
-                        AND job.[LeaseExpiresAtUtc] <= @now
-                        AND job.[AttemptCount] >= job.[MaxAttempts])))
+            {ReadinessWhere}
             {(idOnly ? close : $"ORDER BY {fairOrder} {string.Join(", ", ageKeys)}")}
             {queryHint}
             """;

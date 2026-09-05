@@ -14,7 +14,8 @@ internal sealed record ElasticScalingInput(
     int InFlight = 0,
     int WarmInstances = 0,
     int? Capacity = null,
-    int CleanupBacklog = 0);
+    int CleanupBacklog = 0,
+    int IncompatibleActive = 0);
 
 internal sealed record ElasticScalingDecision(int Provision, int Retire, string Reason)
 {
@@ -38,6 +39,8 @@ internal static class ElasticScalingPolicy
     public const string ReasonEntitlementBound = "entitlement-bound";
     /// <summary>Applied by the autoscaler, not the policy: the provider cannot describe an instance, so nothing is provisioned.</summary>
     public const string ReasonInstanceUndescribed = "instance-capabilities-unknown";
+    /// <summary>An instance unable to claim the queued recipes is retired at the instance limit to make room for one that can.</summary>
+    public const string ReasonIncompatibleReplacement = "incompatible-replacement";
 
     public static ElasticScalingDecision Decide(CentralElasticProviderOptions options, ElasticScalingInput input, TimeSpan startupEstimate)
     {
@@ -56,12 +59,17 @@ internal static class ElasticScalingPolicy
         // per-instance value: an adopted single-slot instance never masks demand a four-slot configuration expects.
         // Below capacity the count is a lower bound: the autoscaler applies idle scale-down only to instances whose
         // registered slots the demand does not still need, so heterogeneous adopted instances are never over-retired.
-        var capacity = input.Capacity ?? active * perInstance;
-        // Demand the existing capacity already covers never asks for more than the active instances, whatever the
-        // configured per-instance size now is (an adopted ten-slot instance under a one-slot configuration is enough).
+        // Instances registered without the queued recipes (adopted before a placement or capability change) are active
+        // for the instance limit and the daily budget but count for nothing toward the demand: only compatible active
+        // instances and their registered capacity cover it.
+        var incompatible = Math.Clamp(input.IncompatibleActive, 0, active);
+        var compatibleActive = active - incompatible;
+        var capacity = input.Capacity ?? compatibleActive * perInstance;
+        // Demand the existing capacity already covers never asks for more than the compatible active instances,
+        // whatever the configured per-instance size now is (an adopted ten-slot instance under a one-slot configuration is enough).
         int InstancesFor(int concurrency) => concurrency > capacity
-            ? active + (int)Math.Ceiling((concurrency - capacity) / (double)perInstance)
-            : Math.Min(active, (int)Math.Ceiling(concurrency / (double)perInstance));
+            ? compatibleActive + (int)Math.Ceiling((concurrency - capacity) / (double)perInstance)
+            : Math.Min(compatibleActive, (int)Math.Ceiling(concurrency / (double)perInstance));
         var needed = InstancesFor(input.Backlog + Math.Max(0, input.InFlight));
         var entitlementBound = false;
         if (input.EntitledConcurrency is { } entitled)
@@ -92,20 +100,29 @@ internal static class ElasticScalingPolicy
             // autoscaler applies this only to an excess instance with no work in flight, so busy work is never cut.
             return new ElasticScalingDecision(0, 1, ReasonWarmMinimum);
         }
-        if (desired > active || warmShortfall > 0)
+        if (desired > compatibleActive || warmShortfall > 0)
         {
             if (options.MaxInstanceMinutesPerDay > 0 && input.InstanceMinutesToday >= options.MaxInstanceMinutesPerDay)
             {
                 return new ElasticScalingDecision(0, 0, ReasonDailyLimit);
             }
-            if (input.Backlog > 0 && needed > active && startupEstimate + input.OldestBacklogAge > options.QueueDeadline)
+            if (input.Backlog > 0 && needed > compatibleActive && startupEstimate + input.OldestBacklogAge > options.QueueDeadline)
             {
                 // Provider startup cannot meet the deadline for the oldest work: keep it local, only top up the warm minimum.
                 return new ElasticScalingDecision(warmShortfall, 0, ReasonColdStartExceedsDeadline);
             }
-            var provision = Math.Max(desired - active, warmShortfall);
-            var reason = needed > active ? (entitlementBound ? ReasonEntitlementBound : ReasonBacklog) : ReasonWarmMinimum;
-            return new ElasticScalingDecision(provision, 0, reason);
+            // Room is bounded by every active instance, compatible or not; when incompatible instances fill the limit,
+            // one is retired so the next sample can provision an instance able to claim the work.
+            var provision = Math.Min(Math.Max(desired - compatibleActive, warmShortfall), Math.Max(0, options.MaxInstances - active));
+            if (provision == 0 && desired > compatibleActive && incompatible > 0)
+            {
+                return new ElasticScalingDecision(0, 1, ReasonIncompatibleReplacement);
+            }
+            if (provision > 0)
+            {
+                var reason = needed > compatibleActive ? (entitlementBound ? ReasonEntitlementBound : ReasonBacklog) : ReasonWarmMinimum;
+                return new ElasticScalingDecision(provision, 0, reason);
+            }
         }
         if (desired < active && input.Idle > 0 && input.LongestIdle >= options.ScaleToZeroAfter)
         {

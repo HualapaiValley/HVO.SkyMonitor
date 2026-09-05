@@ -248,6 +248,12 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanup.Provision, cleanup.Reason), "an expired lease with exhausted attempts needs one instance to terminalize it, whatever the entitlement or pool");
         var cleanupCovered = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, CleanupBacklog: 1), startup);
         Assert.AreEqual(ElasticScalingDecision.Steady, cleanupCovered, "an existing instance performs the cleanup");
+        var incompatibleAtLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 1, perInstance: 1), new ElasticScalingInput(5, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 0, IncompatibleActive: 1), startup);
+        Assert.AreEqual((0, 1, ElasticScalingPolicy.ReasonIncompatibleReplacement), (incompatibleAtLimit.Provision, incompatibleAtLimit.Retire, incompatibleAtLimit.Reason), "an instance unable to claim the queued recipe fills the limit: it is replaced");
+        var incompatibleWithRoom = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(5, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 0, IncompatibleActive: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (incompatibleWithRoom.Provision, incompatibleWithRoom.Reason), "with room, a compatible instance is provisioned beside the incompatible one");
+        var cleanupIncompatible = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 0, CleanupBacklog: 1, IncompatibleActive: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanupIncompatible.Provision, cleanupIncompatible.Reason), "cleanup needs a compatible instance; an incompatible one does not count");
     }
 
     [TestMethod]
