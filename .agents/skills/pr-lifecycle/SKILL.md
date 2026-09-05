@@ -155,8 +155,9 @@ another PR holds it, but no other PR may perform final synchronization, run
 protected CI, or merge.
 
 1. Acquire the lock only after draft review converges and no ordinary product
-   correction is expected. Confirm no open PR has `workflow:finalizing`, apply
-   it to this PR, and query again. If concurrent claims appear, the lowest PR
+   correction is expected. Use live issue/PR API data, not search-indexed list
+   results, to confirm no open PR has `workflow:finalizing`; apply it to this PR
+   and query the live state again. If concurrent claims appear, the lowest PR
    number retains the label and every other claimant removes it and waits.
 2. Fetch the target branch and merge it into the topic branch. Do not rebase or
    force-push reviewed history.
