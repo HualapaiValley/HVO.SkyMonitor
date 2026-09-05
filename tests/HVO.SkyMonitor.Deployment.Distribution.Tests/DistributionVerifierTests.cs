@@ -433,6 +433,42 @@ public sealed partial class DistributionVerifierTests
             StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The realistic shape of a future release: a newer version that also carries members this build has no
+    /// property for. Strict unmapped-member handling would reject it as a schema error before any version check
+    /// that ran after deserialization, so the operator would be told the release is corrupt rather than that the
+    /// installer is out of date. Bumping only the version on a known shape does not exercise this.
+    /// </summary>
+    [TestMethod]
+    public void VerifyManifest_FutureVersionCarryingUnknownMembers_StillNamesTheInstallerAsTheRemedy()
+    {
+        using var fixture = SigningFixture.Create();
+        var future = FrozenVersion1ImageManifest(fixture.TrustRoot.KeyId)
+            .Replace("\"schemaVersion\": 1", "\"schemaVersion\": 99", StringComparison.Ordinal)
+            .Replace("\"manifestKind\"", "\"attestationBundle\": { \"asset\": \"x\" }, \"manifestKind\"", StringComparison.Ordinal);
+        var bytes = Encoding.UTF8.GetBytes(future);
+
+        var exception = Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+
+        StringAssert.Contains(exception.Message, "Upgrade the installer", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "version 99", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void VerifyManifest_ManifestWithoutASchemaVersion_IsRejected()
+    {
+        using var fixture = SigningFixture.Create();
+        var bytes = Encoding.UTF8.GetBytes(
+            FrozenVersion1ImageManifest(fixture.TrustRoot.KeyId)
+                .Replace("\"schemaVersion\": 1,", string.Empty, StringComparison.Ordinal));
+
+        var exception = Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+
+        StringAssert.Contains(exception.Message, "does not declare a schema version", StringComparison.Ordinal);
+    }
+
     [System.Text.RegularExpressions.GeneratedRegex("componentSbomAsset")]
     private static partial System.Text.RegularExpressions.Regex ComponentSbomMember();
 

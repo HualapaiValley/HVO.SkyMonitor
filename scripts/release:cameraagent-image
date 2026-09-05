@@ -281,10 +281,11 @@ if [[ "$scanner" == trivy ]]; then
             "$trivy_image" convert --quiet --format spdx-json "/work/trivy-${architecture}.json" >"$inventory"
         # The release tool re-checks this before signing, but failing here stops the run before the registry push
         # rather than after it, and a published identity cannot be retracted.
-        # This mirrors ValidateComponentInventory in the release tool exactly: a package counts as a component
-        # only when it is not the image subject and carries a non-empty name and version. Keep the two in step --
-        # this one runs first, so a looser rule here would let a bad inventory reach the push the tool then
-        # refuses, and the release would fail after publishing an immutable identity instead of before.
+        # This mirrors ValidateComponentInventory in the release tool exactly: one image subject claim and it must
+        # be this platform's; a package counts as a component only when it is not that subject and carries a
+        # non-empty name and version; and every declared file carries the SHA-1 SPDX 2.3 clause 8.4 requires.
+        # Keep the two in step -- this one runs first, so a looser rule here would let a bad inventory reach the
+        # push, and the release would then fail after publishing an immutable identity instead of before.
         jq --exit-status --arg imageId "$expected_image_id" --argjson floor "$inventory_component_floor" '
             def claims: [ .packages[]? | .annotations[]? | .comment? // ""
                           | select(startswith("ImageID: ")) | ltrimstr("ImageID: ") ];
@@ -292,10 +293,16 @@ if [[ "$scanner" == trivy ]]; then
                               | select([.annotations[]? | .comment? // "" | select(startswith("ImageID: "))] | length == 0)
                               | select(((.name // "") | gsub("^\\s+|\\s+$"; "")) != "")
                               | select(((.versionInfo // "") | gsub("^\\s+|\\s+$"; "")) != "") ];
+            def files_have_sha1: [ .files[]?
+                                   | select([ .checksums[]?
+                                              | select(.algorithm == "SHA1")
+                                              | select((.checksumValue // "") | test("^[0-9a-fA-F]{40}$")) ] | length == 0) ]
+                                 | length == 0;
             .spdxVersion == "SPDX-2.3"
             and (claims == [$imageId])
-            and ((components | length) >= $floor)' "$inventory" >/dev/null || {
-            printf 'The linux/%s component inventory does not name %s as its single subject with at least %s components.\n' \
+            and ((components | length) >= $floor)
+            and files_have_sha1' "$inventory" >/dev/null || {
+            printf 'The linux/%s component inventory does not name %s as its single subject with at least %s components and a SHA-1 per declared file.\n' \
                 "$architecture" "$expected_image_id" "$inventory_component_floor" >&2
             exit 1
         }

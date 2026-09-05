@@ -40,6 +40,10 @@ public static partial class DistributionVerifier
         ArgumentNullException.ThrowIfNull(trustRoot);
         VerifySignedBytes(manifestBytes, signatureText, trustRoot);
         EnsureStrictJson(manifestBytes);
+        // The declared version is read before typed deserialization on purpose. A newer manifest may carry members
+        // this build has no property for, and strict unmapped-member handling would reject it as a schema error
+        // before the version check below could explain that the installer is what needs upgrading.
+        EnsureSupportedManifestVersion(manifestBytes);
         DistributionReleaseManifest manifest;
         try
         {
@@ -159,11 +163,44 @@ public static partial class DistributionVerifier
         }
     }
 
+    /// <summary>
+    /// Reads the manifest's declared schema version straight from the signed bytes and rejects one this build does
+    /// not implement. The verifier ships inside the installer, so this is the one failure an operator can act on,
+    /// and it must survive a future manifest that also adds members this build does not know.
+    /// </summary>
+    private static void EnsureSupportedManifestVersion(ReadOnlySpan<byte> manifestBytes)
+    {
+        int declared;
+        try
+        {
+            using var document = JsonDocument.Parse(manifestBytes.ToArray());
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("schemaVersion", out var version) ||
+                version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out declared))
+            {
+                throw new DistributionValidationException("The distribution manifest does not declare a schema version.");
+            }
+        }
+        catch (JsonException exception)
+        {
+            throw new DistributionValidationException("The distribution manifest schema is invalid.", exception);
+        }
+        if (declared < DistributionSchemaVersions.ReleaseManifest ||
+            declared > DistributionSchemaVersions.MaximumReleaseManifest)
+        {
+            throw new DistributionValidationException(
+                $"This installation implements distribution release manifest versions " +
+                $"{DistributionSchemaVersions.ReleaseManifest} through " +
+                $"{DistributionSchemaVersions.MaximumReleaseManifest}, but the release declares version " +
+                $"{declared}. Upgrade the installer before installing this release.");
+        }
+    }
+
     private static void Validate(DistributionReleaseManifest manifest, DistributionTrustRoot root)
     {
-        // A release newer than this build is the one failure an operator can actually act on, so it says what to
-        // do rather than joining the generic identity check. The verifier ships inside the installer, so a release
-        // that declares a version this installation does not implement means the installer itself is out of date.
+        // EnsureSupportedManifestVersion already rejected an unsupported version before deserialization. This
+        // repeats the bound so the invariant holds for any future caller that validates a manifest it did not
+        // read through VerifyManifest.
         if (manifest.SchemaVersion < DistributionSchemaVersions.ReleaseManifest ||
             manifest.SchemaVersion > DistributionSchemaVersions.MaximumReleaseManifest)
         {

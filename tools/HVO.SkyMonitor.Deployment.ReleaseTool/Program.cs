@@ -520,11 +520,6 @@ internal static partial class Program
     }
 
     /// <summary>
-    /// Parses an inventory, naming the platform and the file in the failure. The document is produced by the
-    /// scanner rather than by this tool, so a malformed one is a plausible release failure and the operator needs
-    /// to be told which file to look at rather than only that some JSON did not parse.
-    /// </summary>
-    /// <summary>
     /// Reads a member as a string, returning null when it is absent or is present with another JSON type. Reading
     /// it with <c>GetString()</c> would throw past this tool's own error handling on a document it did not write.
     /// </summary>
@@ -533,6 +528,11 @@ internal static partial class Program
             ? value.GetString()
             : null;
 
+    /// <summary>
+    /// Parses an inventory, naming the platform and the file in the failure. The document is produced by the
+    /// scanner rather than by this tool, so a malformed one is a plausible release failure and the operator needs
+    /// to be told which file to look at rather than only that some JSON did not parse.
+    /// </summary>
     private static JsonDocument ParseInventory(string path, string architecture)
     {
         try
@@ -590,7 +590,10 @@ internal static partial class Program
                     checksum.TryGetProperty("algorithm", out var algorithm) &&
                     algorithm.ValueKind == JsonValueKind.String && algorithm.GetString() == "SHA1" &&
                     Text(checksum, "checksumValue") is { Length: 40 } sha1 &&
-                    sha1.All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f')))
+                    // The value is only required to be a well-formed SHA-1; it is never compared or reused, so
+                    // rejecting a document purely for emitting uppercase digits would refuse a valid inventory.
+                    sha1.All(static character =>
+                        character is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F')))
             {
                 throw new ReleaseToolException(
                     $"The linux/{architecture} component inventory declares a file without the SHA-1 checksum " +
