@@ -585,9 +585,32 @@ internal static class CameraAgentStatePreflight
 
         public static ReadOnlyDatabase Open(string databasePath)
         {
+            // The shape can change under an in-flight preflight, which runs before the drain: a running instance
+            // can commit and remove its rollback journal between the observation and the copy. The Identity
+            // database uses a rollback journal, so that is the likeliest shape to move. Observe it again rather
+            // than reporting a database that is merely busy as unreadable and blocking a valid upgrade.
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    return OpenObservedShape(databasePath);
+                }
+                catch (FileNotFoundException) when (attempt < 3)
+                {
+                }
+                catch (DirectoryNotFoundException) when (attempt < 3)
+                {
+                }
+            }
+        }
+
+        private static ReadOnlyDatabase OpenObservedShape(string databasePath)
+        {
             var recoveryFiles = new[] { databasePath + "-wal", databasePath + "-journal" }
                 .Where(File.Exists).ToArray();
-            if (File.Exists(databasePath + "-shm") && File.Exists(databasePath + "-wal"))
+            // One observation decides the branch and drives the copy, so the two cannot disagree with each other.
+            if (recoveryFiles.Contains(databasePath + "-wal", StringComparer.Ordinal) &&
+                File.Exists(databasePath + "-shm"))
             {
                 return new ReadOnlyDatabase(OpenConnection(databasePath, SqliteOpenMode.ReadOnly), null);
             }

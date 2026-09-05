@@ -10,17 +10,23 @@ using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
-/// <summary>The states the raw-ingress journal can be in when a preflight reads it.</summary>
-public enum RawIngressJournalShape
+/// <summary>The states a persisted CameraAgent database can be in when a preflight reads it.</summary>
+public enum JournalShape
 {
-    /// <summary>Stopped and checkpointed: no wal-index and no log.</summary>
+    /// <summary>Stopped and checkpointed: no wal-index and no log beside either database.</summary>
     Checkpointed,
 
-    /// <summary>Running: a writer holds the journal, so the wal-index and its log are both present.</summary>
-    Live,
+    /// <summary>The raw-ingress journal is held by a writer, so its wal-index and log are both present.</summary>
+    LiveRawIngressWal,
 
     /// <summary>A wal-index that outlived its log, which an in-place read-only open would recreate.</summary>
-    WalIndexWithoutLog
+    WalIndexWithoutLog,
+
+    /// <summary>
+    /// The Identity database, which uses a rollback journal rather than WAL, has an uncommitted transaction open.
+    /// An in-flight preflight runs before the drain, so this is the live shape it most often meets.
+    /// </summary>
+    HotIdentityRollbackJournal
 }
 
 /// <summary>
@@ -474,10 +480,11 @@ public sealed class PreflightSignedReleaseTests
     /// pins the bytes.
     /// </summary>
     [TestMethod]
-    [DataRow(RawIngressJournalShape.Live)]
-    [DataRow(RawIngressJournalShape.WalIndexWithoutLog)]
+    [DataRow(JournalShape.LiveRawIngressWal)]
+    [DataRow(JournalShape.WalIndexWithoutLog)]
+    [DataRow(JournalShape.HotIdentityRollbackJournal)]
     public async Task ExecuteAsync_JournalCarryingRecoveryState_CreatesNoFileBesideTheDatabase(
-        RawIngressJournalShape shape)
+        JournalShape shape)
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync(shape);
         using var release = SignedImageReleaseFixture.Create(
@@ -490,7 +497,8 @@ public sealed class PreflightSignedReleaseTests
             CancellationToken.None,
             release.CreateAcquirer);
 
-        // Reading the shape correctly is half the guarantee: schema 12 is what makes the report compatible.
+        // Reading the shape correctly is half the guarantee: the boundaries this report compares are the ones
+        // held in those databases, so an unreadable or rolled-forward read would not produce a compatible report.
         Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
         CollectionAssert.AreEqual(before, SnapshotPaths(instance.Root), "preflight must create no file");
     }
@@ -585,7 +593,7 @@ public sealed class PreflightSignedReleaseTests
             => new(InstanceId, Root, null, Json: false) { ImageManifest = manifestPath };
 
         public static async Task<InstalledInstanceFixture> CreateCurrentAsync(
-            RawIngressJournalShape shape = RawIngressJournalShape.Checkpointed)
+            JournalShape shape = JournalShape.Checkpointed)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-preflight-release-{Guid.NewGuid():N}");
             var instanceId = Guid.NewGuid();
@@ -606,20 +614,21 @@ public sealed class PreflightSignedReleaseTests
             }
             fixture.WriteIdentityDatabase();
             fixture.WriteRawIngressDatabase();
-            fixture.ShapeRawIngressJournal(shape);
+            fixture.ShapeJournals(shape);
             await fixture.WriteInstanceManifestAsync().ConfigureAwait(false);
             return fixture;
         }
 
         /// <summary>
-        /// Puts the raw-ingress journal into one of the three shapes a preflight can meet. Which one it is decides
-        /// how the database may be read without writing beside it, so each is reproduced exactly rather than
-        /// approximated.
+        /// Puts the persisted databases into one of the shapes a preflight can meet. Which one it is decides how
+        /// each database may be read without writing beside it, so each is reproduced exactly rather than
+        /// approximated, and the reproduction is asserted.
         /// </summary>
-        private void ShapeRawIngressJournal(RawIngressJournalShape shape)
+        private void ShapeJournals(JournalShape shape)
         {
             var database = CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot);
-            if (shape == RawIngressJournalShape.Live)
+            var identity = CameraAgentStateLayout.IdentityDatabasePath(Paths.StateRoot);
+            if (shape == JournalShape.LiveRawIngressWal)
             {
                 // A running instance holds the journal open, so the wal-index and its log are both present.
                 writer = new SqliteConnection($"Data Source={database}");
@@ -633,16 +642,34 @@ public sealed class PreflightSignedReleaseTests
 
             var walIndex = File.Exists(database + "-shm") ? File.ReadAllBytes(database + "-shm") : null;
             SqliteConnection.ClearAllPools();
-            if (shape == RawIngressJournalShape.WalIndexWithoutLog)
+            if (shape == JournalShape.WalIndexWithoutLog)
             {
                 // A wal-index outliving its log: an in-place read-only open would recreate the log here.
-                File.WriteAllBytes(database + "-shm", walIndex ?? []);
+                Assert.IsNotNull(walIndex, "the fixture must harvest a live wal-index, not fabricate one");
+                File.WriteAllBytes(database + "-shm", walIndex);
                 if (File.Exists(database + "-wal")) File.Delete(database + "-wal");
                 AssertJournalFiles(database, "-shm");
                 return;
             }
+            if (shape == JournalShape.HotIdentityRollbackJournal)
+            {
+                // The Identity database is created through plain UseSqlite, so an open transaction leaves a
+                // rollback journal and no wal-index. Only a private copy can be rolled back to read it.
+                writer = new SqliteConnection($"Data Source={identity}");
+                writer.Open();
+                var transaction = writer.BeginTransaction();
+                using var command = writer.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText =
+                    "INSERT INTO __EFMigrationsHistory VALUES ('99999999999999_Uncommitted', '10.0.0');";
+                command.ExecuteNonQuery();
+                AssertJournalFiles(identity, "-journal");
+                AssertJournalFiles(database);
+                return;
+            }
             // A stopped, checkpointed instance: the shape an operator preflights before an upgrade.
             AssertJournalFiles(database);
+            AssertJournalFiles(identity);
         }
 
         private static void AssertJournalFiles(string database, params string[] expected)
