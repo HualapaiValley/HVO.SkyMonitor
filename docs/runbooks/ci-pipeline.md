@@ -242,8 +242,8 @@ changed path is an added or modified member of this allowlist:
 - `tests/fixtures/catalog/SOURCE.md` and `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
 - `scripts/test:devcontainer`
 Reduced mode still runs lightweight **Quality** and **Required CI**. Quality
-resolves the devcontainer definition with credentials removed from the process
-environment and suppresses the resolved output because future configuration may
+resolves the devcontainer definition after unsetting GitHub-token and Git-identity
+variables and suppresses the resolved output because future configuration may
 contain secrets. It does not set up .NET, restore/format the solution, build
 catalog artifacts, or run the package audit for paths excluded from
 application/package behavior. It
