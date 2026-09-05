@@ -240,6 +240,26 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
   --filter "FullyQualifiedName~ExecutionEvidenceExportPerformanceTests"
 ```
 
+Live derived-window resolution evidence (#608):
+`W6RollingWindowCaptureTimingTests` (Manual, CameraAgent test project) runs the
+`W6` frame dimensions through the real raw ingress and standard lane with a
+`Calibration` to `RollingCombination` graph and live durable executions, and
+splits each capture into the raw-ingress acceptance critical section and the
+lane. It reports minimum/median/maximum/mean for both and their sum, process CPU,
+allocated bytes, working set, retained filesystem bytes, and the resulting stack
+count, so moving derived-window resolution out of acceptance and into the
+consuming node can be compared on an equivalent workload. Run it once per source
+on the same binary harness. Output is written to
+`TestResults/issue-608/w6-rolling-window-capture-timing-<label>.json` (override
+the directory with `HVO_ISSUE608_EVIDENCE_ROOT`).
+
+```bash
+HVO_ISSUE608_LABEL=after \
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release \
+  --filter "FullyQualifiedName~W6RollingWindowCaptureTimingTests"
+```
+
 ## 6. Output and Runtime Correlation
 
 Performance evidence is valid only when the same run or fixture also checks the
