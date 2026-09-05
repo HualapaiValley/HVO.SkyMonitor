@@ -88,8 +88,10 @@ must not redefine its policy inconsistently.
 - Every PR uses a draft-first convergence cycle. Protected CI must not run until
   review has converged and the target branch has been finally synchronized and
   integration-reviewed. Initial review covers the full PR diff; correction
-  rereviews cover only the delta from the previous reviewed head and verify prior
-  findings. If the primary reviewer does not start within fifteen minutes, use
+  rereviews cover only the delta from the previous reviewed head and its concrete
+  interactions, and verify every prior finding individually. A finding neither
+  verified fixed nor explicitly deferred to a linked issue remains unresolved.
+  If the primary reviewer does not start within fifteen minutes, use
   the other available provider; if neither Copilot nor Codex starts within its
   fifteen-minute window, record an exact-head review-unavailability waiver.
   Allow at most three correction rereviews per PR before moving remaining

@@ -64,6 +64,8 @@ Preferred reviewer/model, if applicable:
 Tests and failure modes to evaluate:
 Local evidence:
 Prior findings and dispositions:
+Prior-finding verification checklist (finding ID/link, expected disposition,
+  and evidence location):
 Expected output:
 Start acknowledgement: acknowledge on this PR within 15 minutes and identify
   the provider/model when supported.
@@ -78,19 +80,37 @@ Review modes have fixed ranges:
 
 - **Initial:** review the complete merge-base-to-head PR diff.
 - **Correction:** review only the previous-reviewed-head-to-current-head delta
-  and verify every prior finding's disposition. Do not reopen unchanged code
-  without evidence of a new interaction.
+  and the effects that delta has on surrounding code. Verify every prior
+  finding individually as `verified corrected`, `verified deferred` with a
+  linked issue and rationale, or `unresolved`. A prior finding that is neither
+  fixed nor explicitly deferred must be reported as unresolved. Do not reopen
+  unchanged code without concrete evidence of a new interaction caused by the
+  delta.
 - **Base-sync:** review conflict resolutions and interactions introduced by the
   target-branch merge, then recalculate the complete PR diff against the new
   base without rereviewing unchanged upstream code.
+
+A completed correction rereview is acceptable only when its report identifies
+the exact requested range and returns the disposition of every item in the
+prior-finding checklist. A generic whole-PR approval or a clean result that
+does not provide that evidence is an incomplete response, not convergence.
+Ask the same provider to correct the report within the active acquisition
+window; if it cannot, use the fallback/unavailability path without incrementing
+the correction-round count or changing the head.
 
 ## Bounded Review Acquisition
 
 1. Start a fifteen-minute acquisition timer when the primary request is visibly
    dispatched for the exact head and range.
 2. A written PR acknowledgement is preferred. If the provider cannot post one,
-   accept an in-progress check, status, or visible review activity tied to that
-   exact head and range. Reactions and unrelated automation do not qualify.
+   accept a provider-generated in-progress check, status, timeline event, or
+   visible review activity after the exact-head/range dispatch and before any
+   head change. The request or mention itself proves dispatch, not start.
+   For Copilot, the provider-generated `copilot_work_started` PR timeline event
+   is the known start acknowledgement. For Codex, record the first observed
+   provider-generated comment, status, timeline event, or in-progress review
+   that demonstrates work began; do not invent or assume a signal before it is
+   observed. Reactions and unrelated automation do not qualify.
 3. If the primary rejects the request or dispatch fails, request the fallback
    immediately. Otherwise, when fifteen minutes pass without a valid start,
    append the timeout to the ledger and send the unchanged request to the
@@ -112,10 +132,14 @@ Review modes have fixed ranges:
 
 ## Corrections and Rereview Cap
 
-Disposition each finding as corrected, evidenced non-actionable, deferred as
-non-blocking to a linked issue, or an unresolved merge blocker. Batch coherent
-corrections, run the reproducer and affected local gates, push without rewriting
-reviewed history, and request correction review.
+Disposition each finding as corrected, evidenced non-actionable, explicitly
+deferred as non-blocking to a linked issue, or an unresolved merge blocker.
+Batch coherent corrections, run the reproducer and affected local gates, push
+without rewriting reviewed history, and request correction review. The
+rereviewer must return an item-by-item disposition for all findings carried
+into the round. Any finding omitted from that response, or neither verified
+fixed nor verified deferred, remains unresolved and must be flagged in the
+ledger; it prevents convergence.
 
 Count correction rereviews across the whole PR. Initial and base-sync reviews
 do not consume this cap, and switching providers for the same range remains one

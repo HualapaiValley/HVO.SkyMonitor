@@ -64,7 +64,10 @@ stable-candidate local gate, affected correction gates, and classifier-selected
 protected CI on the final reviewed head. Before changing PR state, read and
 follow `.agents/skills/pr-lifecycle/SKILL.md`. Open a draft PR, review the full
 initial diff, and limit rereviews to each correction delta plus verification of
-prior findings. Use the skill's Copilot/Codex acquisition timeouts, three-round
+prior findings. Require each correction report to identify the exact range and
+mark every prior finding `verified corrected`, `verified deferred` with a linked
+issue, or `unresolved`; an omitted or otherwise undispositioned finding remains
+actionable. Use the skill's Copilot/Codex acquisition timeouts, three-round
 correction cap, finalization lock, base-sync review, and final-CI rules. Do not
 repeat long suites when the validated boundary did not change. After a
 merge, the roadmap coordinator automatically selects, claims, and begins the
