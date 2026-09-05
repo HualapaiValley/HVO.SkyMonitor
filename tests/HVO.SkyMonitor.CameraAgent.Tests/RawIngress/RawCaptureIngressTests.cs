@@ -2441,7 +2441,7 @@ public sealed class RawCaptureIngressTests
                 state,
                 new OneShotFaultInjector(
                     RawIngressFaultPoint.BeforeJournalCommit,
-                    new Func<Exception>(static () => new OperationCanceledException("Injected shutdown while the lifecycle gate was held.")),
+                    static () => new OperationCanceledException("Injected shutdown while the lifecycle gate was held."),
                     shutdown),
                 logger: logger);
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -2487,7 +2487,7 @@ public sealed class RawCaptureIngressTests
                 state,
                 new OneShotFaultInjector(
                     RawIngressFaultPoint.BeforeJournalCommit,
-                    new Func<Exception>(static () => new OperationCanceledException("Injected cancellation nobody asked for."))),
+                    static () => new OperationCanceledException("Injected cancellation nobody asked for.")),
                 logger: logger);
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -2508,26 +2508,36 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_CanceledByTheCaller_DoesNotLogCriticalOrMarkTheIngressUnhealthyAsync()
+    public async Task InitializeAsync_CanceledDuringInitialization_DoesNotLogCriticalOrMarkTheIngressUnhealthyAsync()
     {
-        // Shutdown can reach InitializeAsync with an already-cancelled token (every hosted service calls it with the
-        // stopping token). That used to be logged as an integrity failure at Critical and left the ingress Unhealthy.
+        // Shutdown can cancel an initialization that is already inside the journal migration or the reconciler
+        // (every hosted service calls InitializeAsync with the stopping token). That used to be logged as an integrity
+        // failure at Critical (2047) and left the ingress Unhealthy. An already-cancelled token never reaches that
+        // code (the initialize gate throws first), so the cancellation is injected inside the journal migration.
         var root = CreateRoot();
         try
         {
             var state = new RawIngressState(TimeProvider.System);
             var logger = new RecordingLogger();
-            using var ingress = CreateIngress(root, state, logger: logger);
-            using var canceled = new CancellationTokenSource();
-            await canceled.CancelAsync().ConfigureAwait(false);
+            using var shutdown = new CancellationTokenSource();
+            using var ingress = CreateIngress(
+                root,
+                state,
+                new OneShotFaultInjector(
+                    RawIngressFaultPoint.BeforeMigrationCommit,
+                    static () => new OperationCanceledException("Injected shutdown during initialization."),
+                    shutdown),
+                logger: logger);
 
-            await Assert.ThrowsAsync<OperationCanceledException>(
-                () => ingress.InitializeAsync(canceled.Token).AsTask()).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(
+                () => ingress.InitializeAsync(shutdown.Token).AsTask()).ConfigureAwait(false);
 
             Assert.AreNotEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
             Assert.AreNotEqual("initialization-failed", state.Snapshot.Reason);
-            Assert.IsFalse(logger.Snapshot.Any(entry => entry.Level >= LogLevel.Warning), "shutdown during initialization is not an integrity failure");
+            Assert.IsFalse(logger.Snapshot.Contains((LogLevel.Critical, 2047)), "shutdown during initialization is not an integrity failure");
+            Assert.IsFalse(logger.Snapshot.Any(entry => entry.Level >= LogLevel.Warning));
 
+            // The one-shot fault has fired, so a later initialization with a live token completes normally.
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
         }

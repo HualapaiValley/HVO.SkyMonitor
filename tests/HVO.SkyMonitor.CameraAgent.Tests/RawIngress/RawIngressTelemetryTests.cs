@@ -13,6 +13,7 @@ public sealed class RawIngressTelemetryTests
         "camera_agent.ingress.committed.bytes",
         "camera_agent.ingress.commit.duration",
         "camera_agent.ingress.failures",
+        "camera_agent.ingress.cancellations",
         "camera_agent.ingress.accepting",
         "camera_agent.ingress.pending",
         "camera_agent.ingress.pending.bytes",
@@ -50,6 +51,7 @@ public sealed class RawIngressTelemetryTests
         telemetry.RecordCommit(RawIngressOutcome.Committed, 100, TimeSpan.FromMilliseconds(10));
         telemetry.RecordTransaction("commit", succeeded: true);
         telemetry.RecordFailure("accept", "io");
+        telemetry.RecordCancellation("accept");
         telemetry.RecordReconciliation(new RawIngressReconciliationSummary(4, 1, 1, 1, 1, 20));
         telemetry.RecordCheckpoint(succeeded: true);
         telemetry.RecordWakeup(queued: false);

@@ -539,15 +539,15 @@ internal sealed class RawCaptureIngress :
             }
             return receipt;
         }
-        catch (OperationCanceledException) when (!lifecycleAcquired || cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // The caller's own cancellation (host shutdown, a revision change, a timeout) is not a storage failure:
             // availability is left alone and nothing is logged at Error. A cancellation that is not the caller's
-            // falls through to the failure path below, because the commit and its index projection run on
-            // CancellationToken.None and a stray cancellation from there is a store anomaly.
+            // falls through to the failure path below: every store call here either honours the caller's token or
+            // runs on CancellationToken.None, so a stray cancellation is a store anomaly wherever it surfaces.
+            _telemetry.RecordCancellation(lifecycleAcquired ? "accept" : "admission");
             if (lifecycleAcquired)
             {
-                _telemetry.RecordCancellation("accept");
                 _logger.RawIngressCanceled("accept");
                 if (payloadPublished)
                 {
