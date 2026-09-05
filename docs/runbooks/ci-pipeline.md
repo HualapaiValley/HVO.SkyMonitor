@@ -35,6 +35,66 @@ runners. This allocation keeps the long
 deployment harness off hosted minutes. Quality performs .NET setup, restore,
 formatting, and package audit only for full-mode changes.
 
+## Coverage Badge Publication
+
+The main-branch aggregate Coverage job publishes its line and branch percentages
+to the public
+[`HVO.SkyMonitor coverage badges`](https://gist.github.com/RoySalisbury/aec5c0f8e0741d964da6859ec4466740)
+Gist. The README renders `coverage-line.json` and `coverage-branch.json` through
+the Shields endpoint. The Gist must contain only public aggregate metrics; never
+publish paths, credentials, test output, or other repository data there.
+
+Badge publication uses two repository-level GitHub Actions settings:
+
+| Setting | Kind | Value and ownership |
+| --- | --- | --- |
+| `GIST_TOKEN` | Secret | Dedicated token owned by the Gist account. Use either a fine-grained token with only the `Gists: read and write` user permission or an OAuth token whose only scope is `gist`; record its expiry or rotation due date. |
+| `COVERAGE_GIST_ID` | Variable | `aec5c0f8e0741d964da6859ec4466740`; this identifier is public and is not a credential. |
+
+The owner recovery copy of `GIST_TOKEN` is
+`HVO-SkyMonitor--GitHub--GistToken` in the RBAC-enabled `hvo-central-kv` Azure
+Key Vault. The Gist ID is mirrored there as
+`HVO-SkyMonitor--GitHub--CoverageGistId`. GitHub Actions does not read either
+value directly from Key Vault: the badge job intentionally has no Azure login,
+repository permission, or access to the release-signing identity. Use the Azure
+and GitHub settings portals to copy the current Key Vault secret version into
+the repository Actions secret without placing it in a command argument, shell
+history, log, or issue comment. Install the public identifier with:
+
+```bash
+gh variable set COVERAGE_GIST_ID \
+  --body aec5c0f8e0741d964da6859ec4466740 \
+  --repo RoySalisbury/HVO.SkyMonitor
+```
+
+The publication step is best-effort because `Required CI` is the protected
+code-quality gate. Missing configuration emits a warning and summary. When
+configured, the job sends one atomic Gist API request for both files. Connection,
+transfer, and retry limits bound that request to less than the job's five-minute
+backstop; a request failure is tolerated and followed by a diagnostic warning
+and summary. The token is supplied to `curl` through standard input rather than
+the process argument list on the shared runner, and the invocation disables
+ambient curl configuration before reading that credential. Treat any badge-job
+warning or failed publication step as stale-badge evidence and repair it before
+relying on the displayed percentages. A runner or workflow cancellation can
+still cancel the overall run and is an infrastructure failure, not a
+badge-publication result.
+
+Rotate the token make-before-break: create the replacement with the same narrow
+permission or scope, create a new Key Vault secret version, update the GitHub
+Actions secret from that version, rerun the badge job, verify both Gist files
+changed, and only then revoke the old token. Verify the rendered endpoints and
+the underlying JSON without exposing the token:
+
+```bash
+curl --fail --silent --show-error \
+  https://gist.githubusercontent.com/RoySalisbury/aec5c0f8e0741d964da6859ec4466740/raw/coverage-line.json |
+  jq --exit-status '.schemaVersion == 1 and (.message | endswith("%"))'
+curl --fail --silent --show-error \
+  https://gist.githubusercontent.com/RoySalisbury/aec5c0f8e0741d964da6859ec4466740/raw/coverage-branch.json |
+  jq --exit-status '.schemaVersion == 1 and (.message | endswith("%"))'
+```
+
 ## ARM64 Advisory
 
 `.github/workflows/cameraagent-arm64.yml` supplies native Linux ARM64 evidence
