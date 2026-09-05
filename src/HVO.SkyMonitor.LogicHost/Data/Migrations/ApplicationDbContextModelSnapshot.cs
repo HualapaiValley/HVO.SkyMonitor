@@ -528,10 +528,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("GraphProductContractIdentitySha256")
-                        .IsFixedLength()
                         .HasMaxLength(64)
                         .IsUnicode(false)
-                        .HasColumnType("char(64)");
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
 
                     b.Property<string>("OutputIdentitySha256")
                         .IsRequired()
@@ -1167,6 +1167,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("nvarchar(256)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("EndedAtUtc");
 
                     b.HasIndex("CentralDerivativeJobId", "AttemptNumber")
                         .IsUnique();
@@ -2517,6 +2519,115 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                             t.HasCheckConstraint("CK_CentralProcessingRunners_WarmState", "[WarmState] IN (N'Cold', N'Warming', N'Warm', N'Degraded')");
                         });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingUsageRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttemptNumber")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("CentralDerivativeJobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("DevicePublicId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("EndedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<long>("InputBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("LeaseAcquiredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<long>("OutputBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<long>("RecipeDurationTicks")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("RecipeName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset>("RecordedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ResourceClass")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("WorkerId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RecordedAtUtc");
+
+                    b.HasIndex("CentralDerivativeJobId", "AttemptNumber")
+                        .IsUnique();
+
+                    b.HasIndex("DevicePublicId", "EndedAtUtc");
+
+                    b.HasIndex("ObservatoryId", "EndedAtUtc");
+
+                    b.ToTable("CentralProcessingUsageRecords", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_CentralProcessingUsageRecords_Counters", "[AttemptNumber] >= 1 AND [InputBytes] >= 0 AND [OutputBytes] >= 0 AND [RecipeDurationTicks] >= 0 AND [EndedAtUtc] >= [LeaseAcquiredAtUtc]");
+
+                            t.HasCheckConstraint("CK_CentralProcessingUsageRecords_Outcome", "[Outcome] IN (N'Completed', N'RetryableFailure', N'TerminalFailure', N'LeaseExpired', N'Canceled', N'Skipped', N'Quarantined', N'Superseded')");
+                        });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingUsageRollup", b =>
+                {
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ResourceClass")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Outcome")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<long>("Attempts")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("InputBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("OutputBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("ObservatoryId", "ResourceClass", "Outcome");
+
+                    b.ToTable("CentralProcessingUsageRollups", (string)null);
+                });
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralRecoveryCheckpoint", b =>

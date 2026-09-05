@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.LogicHost.Configuration;
+using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
@@ -40,7 +42,8 @@ internal sealed partial class CentralDerivativeJobOperationsService(
     ApplicationDbContext dbContext,
     TimeProvider timeProvider,
     CentralDerivativeWorkerTelemetry telemetry,
-    ILogger<CentralDerivativeJobOperationsService> logger) : ICentralDerivativeJobOperationsService
+    ILogger<CentralDerivativeJobOperationsService> logger,
+    IOptions<CentralProcessingEntitlementOptions>? entitlementOptions = null) : ICentralDerivativeJobOperationsService
 {
     public async Task CancelAsync(
         Guid jobId,
@@ -98,6 +101,8 @@ internal sealed partial class CentralDerivativeJobOperationsService(
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 throw new CentralDerivativeJobStateException("The active derivative attempt is missing.");
             }
+            await CentralProcessingUsageRecorder.RecordAsync(
+                dbContext, entitlementOptions?.Value, job.Id, job.AttemptCount, cancellationToken).ConfigureAwait(false);
         }
         job.Status = CentralDerivativeJobStatus.Canceled;
         job.CancellationRequestedAtUtc = now;

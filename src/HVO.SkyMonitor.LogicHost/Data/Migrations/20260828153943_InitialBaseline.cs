@@ -4056,6 +4056,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 column: "ProducerSourceId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_CentralDerivativeJobAttempts_EndedAtUtc",
+                table: "CentralDerivativeJobAttempts",
+                column: "EndedAtUtc");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_CentralDerivativeJobAttempts_CentralDerivativeJobId_AttemptNumber",
                 table: "CentralDerivativeJobAttempts",
                 columns: new[] { "CentralDerivativeJobId", "AttemptNumber" },
@@ -5503,6 +5508,72 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 table: "CentralProcessingRunners",
                 columns: new[] { "Status", "LastHeartbeatAtUtc" });
 
+            migrationBuilder.CreateTable(
+                name: "CentralProcessingUsageRecords",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    DevicePublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    AttemptNumber = table.Column<int>(type: "int", nullable: false),
+                    RecipeName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    WorkerId = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    Outcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ReasonCode = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
+                    LeaseAcquiredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    EndedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    InputBytes = table.Column<long>(type: "bigint", nullable: false),
+                    OutputBytes = table.Column<long>(type: "bigint", nullable: false),
+                    RecipeDurationTicks = table.Column<long>(type: "bigint", nullable: false),
+                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingUsageRecords", x => x.Id);
+                    table.CheckConstraint("CK_CentralProcessingUsageRecords_Counters", "[AttemptNumber] >= 1 AND [InputBytes] >= 0 AND [OutputBytes] >= 0 AND [RecipeDurationTicks] >= 0 AND [EndedAtUtc] >= [LeaseAcquiredAtUtc]");
+                    table.CheckConstraint("CK_CentralProcessingUsageRecords_Outcome", "[Outcome] IN (N'Completed', N'RetryableFailure', N'TerminalFailure', N'LeaseExpired', N'Canceled', N'Skipped', N'Quarantined', N'Superseded')");
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralProcessingUsageRollups",
+                columns: table => new
+                {
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    Outcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    Attempts = table.Column<long>(type: "bigint", nullable: false),
+                    InputBytes = table.Column<long>(type: "bigint", nullable: false),
+                    OutputBytes = table.Column<long>(type: "bigint", nullable: false),
+                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingUsageRollups", x => new { x.ObservatoryId, x.ResourceClass, x.Outcome });
+                });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingUsageRecords_CentralDerivativeJobId_AttemptNumber",
+                table: "CentralProcessingUsageRecords",
+                columns: new[] { "CentralDerivativeJobId", "AttemptNumber" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingUsageRecords_DevicePublicId_EndedAtUtc",
+                table: "CentralProcessingUsageRecords",
+                columns: new[] { "DevicePublicId", "EndedAtUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingUsageRecords_ObservatoryId_EndedAtUtc",
+                table: "CentralProcessingUsageRecords",
+                columns: new[] { "ObservatoryId", "EndedAtUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingUsageRecords_RecordedAtUtc",
+                table: "CentralProcessingUsageRecords",
+                column: "RecordedAtUtc");
+
             BaselineTriggerSql.CreateAll(migrationBuilder);
         }
 
@@ -5510,6 +5581,13 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             ArgumentNullException.ThrowIfNull(migrationBuilder);
+
+            migrationBuilder.DropTable(
+                name: "CentralProcessingUsageRecords");
+
+            migrationBuilder.DropTable(
+                name: "CentralProcessingUsageRollups");
+
 
             migrationBuilder.DropTable(
                 name: "CentralProcessingRunners");
