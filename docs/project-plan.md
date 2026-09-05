@@ -233,6 +233,21 @@ normative requirements:
 | `SCHED-009` | Admission and backpressure: raw ingest is never refused and scheduling continues; overload is bounded by entitlements and surfaced by health and throttling signals. |
 | `SCHED-010` | Entitlements and fairness are host configuration, disabled by default, and work identically in a single-machine deployment; capacity guidance derives from the measured graph mix, frame size, and cadence in the fairness evidence harness rather than camera count alone. |
 
+### Elastic provider adapters (#430)
+
+| ID | Requirement |
+| --- | --- |
+| `ELASTIC-001` | Provider-neutral provisioning/autoscaling (`IElasticRunnerProvider`) and artifact-access (`IElasticArtifactAccessAdapter`) boundaries live in LogicHost; provider packages stay outside CameraAgent acquisition and the host-neutral graph/recipe projects, and no cloud SDK is present. |
+| `ELASTIC-002` | Workload class is enforced at submission (a provisioning request naming `CameraAgentLive` is refused before any provider call) and at claim (provisioned instances use `processing-runner-v1`, which refuses live classes), so no provider can ever receive CameraAgent live work. |
+| `ELASTIC-003` | The delivered adapter is the bounded local proof adapter `local-process` (self-hosted runner processes launched on demand), recorded as the provider decision with measured local evidence; cloud adapters are later implementations of the same boundary. |
+| `ELASTIC-004` | Autoscaling supports scale-to-zero, maximum instances, minimum warm capacity, capability labels, entitlement propagation (#429), a daily instance-minute limit, cancellation (drain then force), orphan cleanup, and re-adoption after host restart. |
+| `ELASTIC-005` | Placement includes the expected cold start and the queue deadline: work is retained locally as backlog when provider startup cannot meet policy, and the rejection is counted and logged. |
+| `ELASTIC-006` | Instances access artifacts only through job-scoped, lease-bound access; central storage credentials are never distributed and the runner client secret is passed by file path only. |
+| `ELASTIC-007` | Provenance is preserved: instances advertise provider and instance labels; the host records provider, architecture, runtime image, lifecycle, cold start, and stop reason per instance; outputs remain identity and lineage equivalent through the unchanged runner protocol. |
+| `ELASTIC-008` | Accounting covers instance minutes, cold starts, retirements by reason, and rejected placements, and usage records attribute every attempt to the instance's runner id. |
+| `ELASTIC-009` | `ElasticProviders` is absent and disabled by default; a disabled host never calls a provider adapter, and provider outage, cold capacity, or quota exhaustion only creates bounded, visible backlog that never affects CameraAgent acquisition or live processing. |
+| `ELASTIC-010` | Evidence covers cold and warm start, drain throughput with 1, 2, and 4 instances, scale-to-zero and cleanup timing, and host CPU/memory (`ElasticProviderPerformanceEvidenceTests`). |
+
 ### 3.3 Acquisition and raw evidence
 
 - Camera modules only acquire frames and report capabilities.

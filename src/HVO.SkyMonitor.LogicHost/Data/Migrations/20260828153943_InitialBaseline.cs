@@ -5537,6 +5537,32 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "CentralElasticRunnerInstances",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Provider = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    InstanceId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    RunnerId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ProcessId = table.Column<int>(type: "int", nullable: true),
+                    ProcessArchitecture = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    RuntimeImage = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    State = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    Reason = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
+                    StartedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    RegisteredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    LastBusyAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    StoppedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    ColdStartMilliseconds = table.Column<int>(type: "int", nullable: true),
+                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralElasticRunnerInstances", x => x.Id);
+                    table.CheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned')");
+                });
+
+            migrationBuilder.CreateTable(
                 name: "CentralProcessingUsageRollups",
                 columns: table => new
                 {
@@ -5552,6 +5578,22 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 {
                     table.PrimaryKey("PK_CentralProcessingUsageRollups", x => new { x.ObservatoryId, x.ResourceClass, x.Outcome });
                 });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralElasticRunnerInstances_InstanceId",
+                table: "CentralElasticRunnerInstances",
+                column: "InstanceId",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralElasticRunnerInstances_Provider_State",
+                table: "CentralElasticRunnerInstances",
+                columns: new[] { "Provider", "State" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralElasticRunnerInstances_StartedAtUtc",
+                table: "CentralElasticRunnerInstances",
+                column: "StartedAtUtc");
 
             migrationBuilder.CreateIndex(
                 name: "IX_CentralProcessingUsageRecords_CentralDerivativeJobId_AttemptNumber",
@@ -5587,6 +5629,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             migrationBuilder.DropTable(
                 name: "CentralProcessingUsageRollups");
+
+            migrationBuilder.DropTable(
+                name: "CentralElasticRunnerInstances");
 
 
             migrationBuilder.DropTable(
