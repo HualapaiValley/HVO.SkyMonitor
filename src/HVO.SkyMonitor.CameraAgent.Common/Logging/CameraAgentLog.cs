@@ -201,6 +201,13 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2065, Level = LogLevel.Debug, Message = "Capture processing node {Step} started at attempt {Attempt}")]
     public static partial void CaptureProcessingNodeStarted(this ILogger logger, string step, int attempt);
 
+    [LoggerMessage(EventId = 2085, Level = LogLevel.Information, Message = "Capture processing node {Step} resolved {ResolvedCount} of {ConfiguredCount} window inputs")]
+    public static partial void CaptureProcessingWindowShort(
+        this ILogger logger,
+        string step,
+        int resolvedCount,
+        int configuredCount);
+
     [LoggerMessage(EventId = 2066, Level = LogLevel.Debug, Message = "Capture processing node {Step} completed with {Outcome}")]
     public static partial void CaptureProcessingNodeOutcome(this ILogger logger, string step, string outcome);
 
