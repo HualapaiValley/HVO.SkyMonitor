@@ -94,12 +94,13 @@ internal sealed partial class CentralProcessingRunnerJobService(
         // requests, including two processes that reuse one runner id.
         await using var capacityLock = await CentralObjectApplicationLock.AcquireAsync(
             dbContext, $"processing-runner-claim/{runner.Runner.RunnerId}", cancellationToken).ConfigureAwait(false);
-        // An elastic instance whose retirement is reserved (or whose host abandoned or closed it) takes no new work:
-        // every such transition is written while holding this runner's claim lock, so the check is inside the same
-        // critical section and can never observe a state the autoscaler is about to change (#600).
-        var retiringStates = new[] { nameof(ElasticRunnerInstanceState.Stopping), nameof(ElasticRunnerInstanceState.Abandoned) };
+        // An elastic instance that is not live (retirement reserved, abandoned, or already closed by the autoscaler)
+        // takes no new work: every such transition is written while holding this runner's claim lock, so the check is
+        // inside the same critical section and can never observe a state the autoscaler is about to change, and a
+        // registration resolved before a close committed cannot lease past it (#600).
+        var liveStates = new[] { nameof(ElasticRunnerInstanceState.Starting), nameof(ElasticRunnerInstanceState.Running) };
         if (await dbContext.CentralElasticRunnerInstances.AsNoTracking()
-                .AnyAsync(instance => instance.RunnerId == runner.Runner.RunnerId && retiringStates.Contains(instance.State), cancellationToken)
+                .AnyAsync(instance => instance.RunnerId == runner.Runner.RunnerId && !liveStates.Contains(instance.State), cancellationToken)
                 .ConfigureAwait(false))
         {
             telemetry.RecordClaim("retiring", "none", TimeSpan.Zero);

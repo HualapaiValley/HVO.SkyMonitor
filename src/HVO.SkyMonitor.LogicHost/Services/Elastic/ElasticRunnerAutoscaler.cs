@@ -123,10 +123,19 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var settings = options.Value;
         await HeartbeatOwnerAsync(cancellationToken).ConfigureAwait(false);
         using var renewalStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var renewal = RenewOwnerHeartbeatsAsync(OwnerHeartbeatInterval(settings), renewalStop.Token);
+        // Renewal failures are retried every tick; when the heartbeat has not been persisted for half the owner-stale
+        // window the in-progress sample is abandoned (a cancelled drain keeps its instance tracked for the next
+        // sample), so a peer can never declare this host lost while it is merely waiting on a long drain.
+        using var sampleStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var abandonSample = () => sampleStop.CancelAsync();
+        var renewal = RenewOwnerHeartbeatsAsync(OwnerHeartbeatInterval(settings), OwnerStaleAfter(settings) / 2, abandonSample, renewalStop.Token);
         try
         {
-            return await SampleCoreAsync(settings, cancellationToken).ConfigureAwait(false);
+            return await SampleCoreAsync(settings, sampleStop.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (sampleStop.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("The autoscaler sample was abandoned because the owner heartbeat could not be renewed.");
         }
         finally
         {
@@ -161,12 +170,27 @@ internal sealed partial class ElasticRunnerAutoscaler(
             .ConfigureAwait(false);
     }
 
-    private async Task RenewOwnerHeartbeatsAsync(TimeSpan interval, CancellationToken cancellationToken)
+    private async Task RenewOwnerHeartbeatsAsync(TimeSpan interval, TimeSpan abandonAfter, Func<Task> abandonSample, CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(interval, timeProvider);
+        var lastPersisted = timeProvider.GetUtcNow();
         while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
         {
-            await HeartbeatOwnerAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await HeartbeatOwnerAsync(cancellationToken).ConfigureAwait(false);
+                lastPersisted = timeProvider.GetUtcNow();
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                var unrenewedFor = timeProvider.GetUtcNow() - lastPersisted;
+                Log.OwnerHeartbeatFailed(logger, (long)unrenewedFor.TotalSeconds, exception);
+                if (unrenewedFor >= abandonAfter)
+                {
+                    await abandonSample().ConfigureAwait(false);
+                    return;
+                }
+            }
         }
     }
 
@@ -231,6 +255,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         // claim; instances without an active registration count at the configured value.
         var runningRunnerIds = liveRows.Where(item => item.State == nameof(ElasticRunnerInstanceState.Running)).Select(item => item.RunnerId).ToHashSet(StringComparer.Ordinal);
         var registeredRunning = registrations.Where(runner => runningRunnerIds.Contains(runner.RunnerId) && runner.Status == CentralProcessingRunnerStatus.Active).ToList();
+        var registeredRunningCount = registeredRunning.Count;
         var registeredRunningConcurrency = registeredRunning.Sum(runner => runner.MaxConcurrency);
         // Provider instances without a durable row (a launch whose record failed to persist) are retired so they
         // never run unaccounted; the next provisioning starts from a recorded intent.
@@ -387,7 +412,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var minutesToday = await InstanceMinutesTodayAsync(dbContext, now, cancellationToken).ConfigureAwait(false);
         var perInstance = Math.Max(1, settings.MaxConcurrencyPerInstance);
         int CapacityOf(int runningCount, int startingCount)
-            => registeredRunningConcurrency + Math.Max(0, runningCount - registeredRunning.Count) * perInstance + startingCount * perInstance;
+            => registeredRunningConcurrency + Math.Max(0, runningCount - registeredRunningCount) * perInstance + startingCount * perInstance;
         var input = new ElasticScalingInput(backlog, oldestAge, running, starting, idle.Count,
             idle.Count == 0 ? TimeSpan.Zero : idle.Max(item => item.IdleFor), entitled, minutesToday, inFlight, warmLive, CapacityOf(running, starting));
         // Deployment-wide decisions are serialized: the decision and its durable intents commit under one
@@ -413,6 +438,18 @@ internal sealed partial class ElasticRunnerAutoscaler(
         running = current.Count(row => row.State == nameof(ElasticRunnerInstanceState.Running)) + lockedOthers.Where(item => item.State == nameof(ElasticRunnerInstanceState.Running)).Sum(item => item.Count);
         warmLive = await dbContext.CentralElasticRunnerInstances.AsNoTracking()
             .CountAsync(instance => instance.Provider == provider.Name && instance.KeepWarm && liveStates.Contains(instance.State), cancellationToken).ConfigureAwait(false);
+        // Registered capacity is re-read for the locked set of running rows: another replica may have reserved a
+        // heterogeneous instance since the sample's registration snapshot.
+        var lockedRunningIds = await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+            .Where(instance => instance.Provider == provider.Name && instance.State == nameof(ElasticRunnerInstanceState.Running))
+            .Select(instance => instance.RunnerId)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var lockedRegistered = await dbContext.CentralProcessingRunners.AsNoTracking()
+            .Where(runner => lockedRunningIds.Contains(runner.RunnerId) && runner.Status == CentralProcessingRunnerStatus.Active)
+            .Select(runner => runner.MaxConcurrency)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        registeredRunningCount = lockedRegistered.Count;
+        registeredRunningConcurrency = lockedRegistered.Sum();
         input = input with { Running = running, Starting = starting, WarmInstances = warmLive, Capacity = CapacityOf(running, starting) };
         var decision = ElasticScalingPolicy.Decide(settings, input, provider.EstimateStartup());
         if (decision.Provision == 0 && decision.Retire == 0 && decision.Reason is not "steady" && backlog > 0)
@@ -451,7 +488,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         // Idle scale-down keeps enough registered capacity for the demand: with heterogeneous adopted instances the
         // policy's count is a lower bound, so a candidate whose registered slots the demand still needs is skipped.
         var remainingCapacity = CapacityOf(running, starting);
-        var demand = backlog + Math.Max(0, inFlight);
+        var demand = EffectiveDemand(backlog, inFlight, entitled);
         try
         {
             foreach (var item in candidates)
@@ -513,6 +550,13 @@ internal sealed partial class ElasticRunnerAutoscaler(
             now, provider.Name, Math.Max(0, starting + decision.Provision - startingRetired), Math.Max(0, running - (retired - startingRetired)),
             Math.Max(0, input.Idle - idleRetired), backlog, (long)oldestAge.TotalSeconds, minutesToday, decision.Reason, orphans));
         return decision;
+    }
+
+    /// <summary>The concurrency the demand can really use: queued plus in-flight work, bounded by the entitlement the policy applied.</summary>
+    internal static int EffectiveDemand(int backlog, int inFlight, int? entitledConcurrency)
+    {
+        var demand = Math.Max(0, backlog) + Math.Max(0, inFlight);
+        return entitledConcurrency is { } entitled ? Math.Min(demand, Math.Max(0, entitled)) : demand;
     }
 
     /// <summary>An owner that has not reconciled a row for this long is considered gone.</summary>
@@ -749,5 +793,8 @@ internal sealed partial class ElasticRunnerAutoscaler(
 
         [LoggerMessage(2242, LogLevel.Warning, "Runner-placed recipes excluded from elastic backlog because provisioned instances could not claim them: Provider={Provider}, Recipes={Recipes}")]
         public static partial void RecipesExcluded(ILogger logger, string provider, string recipes);
+
+        [LoggerMessage(2245, LogLevel.Warning, "Elastic owner heartbeat renewal failed; retrying each tick. UnrenewedSeconds={UnrenewedSeconds}")]
+        public static partial void OwnerHeartbeatFailed(ILogger logger, long unrenewedSeconds, Exception exception);
     }
 }

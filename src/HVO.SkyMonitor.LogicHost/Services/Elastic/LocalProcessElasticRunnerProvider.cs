@@ -93,6 +93,12 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
                     process.Kill(entireProcessTree: true);
                     throw new TimeoutException("The runner capability probe did not finish in time.");
                 }
+                if (process.ExitCode != 0)
+                {
+                    // The runner prints its capabilities even when warmup is incomplete (exit 1); such a runner aborts
+                    // normal startup, so its advertisement is not accepted either.
+                    throw new InvalidOperationException($"The runner capability probe exited with code {process.ExitCode}; its warmup is incomplete.");
+                }
                 var line = stdout.GetAwaiter().GetResult().Split('\n').Select(static item => item.Trim()).LastOrDefault(static item => item.StartsWith('{'))
                     ?? throw new InvalidOperationException("The runner capability probe wrote no capabilities.");
                 var probed = JsonSerializer.Deserialize<ProcessingRunnerCapabilities>(line, ProcessingRunnerProtocol.SerializerOptions)

@@ -396,6 +396,18 @@ public sealed class ElasticProviderIntegrationTests
         claim.Should().BeNull("an instance whose retirement is reserved takes no new work it would be forced to abandon");
         (await db.CentralDerivativeJobs.AsNoTracking().CountAsync(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseOwner == runnerId).ConfigureAwait(false))
             .Should().Be(0);
+
+        // A registration resolved just before the autoscaler closed the instance (process exit, registration timeout)
+        // is refused too: every state but Starting and Running is closed for claiming.
+        var closedId = Guid.NewGuid().ToString("N")[..16];
+        var closedRunnerId = $"elastic-scripted-{closedId}";
+        await SeedScriptedInstanceAsync(factory, closedId, closedRunnerId, hostName: Environment.MachineName, keepWarm: false, state: nameof(ElasticRunnerInstanceState.Orphaned)).ConfigureAwait(false);
+        var closedRequest = ScriptedRegistration(closedRunnerId);
+        await registry.RegisterAsync(ScriptedSubject, closedRequest, CancellationToken.None).ConfigureAwait(false);
+        var closedRunner = await db.CentralProcessingRunners.SingleAsync(candidate => candidate.RunnerId == closedRunnerId).ConfigureAwait(false);
+        (await jobs.ClaimAsync(new CentralProcessingRunnerContext(closedRunner, closedRequest.Capabilities, eligible),
+                new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0), CancellationToken.None).ConfigureAwait(false))
+            .Should().BeNull("a closed instance never leases work through a stale registration");
     }
 
     [TestMethod]

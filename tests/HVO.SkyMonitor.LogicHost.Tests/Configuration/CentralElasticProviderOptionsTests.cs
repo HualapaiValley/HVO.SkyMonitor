@@ -293,6 +293,66 @@ public sealed class CentralElasticProviderOptionsTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void CapabilityProbeAcceptsOnlyASuccessfulRunnerAdvertisement()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            Assert.Inconclusive("The probe fixture is a POSIX shell script.");
+        }
+        var advertised = ProcessingRunnerCapabilities.CreateForCurrentProcess(1, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, null, null)
+            with
+        { RuntimeIdentifier = "probe-rid" };
+        var json = System.Text.Json.JsonSerializer.Serialize(advertised, ProcessingRunnerProtocol.SerializerOptions);
+        foreach (var (exitCode, accepted) in new[] { (1, false), (0, true) })
+        {
+            var script = Path.Combine(Path.GetTempPath(), $"hvo-probe-{Guid.NewGuid():N}.sh");
+            File.WriteAllText(script, $"#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\nexit {exitCode}\n");
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+            try
+            {
+                var settings = new CentralElasticProviderOptions
+                {
+                    Enabled = true,
+                    Provider = CentralElasticProviderKind.LocalProcess,
+                    LocalProcess = new CentralLocalProcessElasticOptions { Executable = script, LogicHostUrl = "https://logichost.local/", ClientSecretFile = "/run/secrets/runner" }
+                };
+                using var provider = new LocalProcessElasticRunnerProvider(
+                    Microsoft.Extensions.Options.Options.Create(settings), TimeProvider.System,
+                    Microsoft.Extensions.Logging.Abstractions.NullLogger<LocalProcessElasticRunnerProvider>.Instance);
+                var probed = provider.ProbeConfiguredRunner();
+                if (accepted)
+                {
+                    Assert.IsNotNull(probed, "a warm runner's advertisement (exit 0) is accepted");
+                    Assert.AreEqual("probe-rid", provider.DescribeInstance(2, []).RuntimeIdentifier, "instances are described by the probed runner");
+                }
+                else
+                {
+                    Assert.IsNull(probed, "a runner whose warmup is incomplete (exit 1) prints capabilities but would abort at startup; its advertisement is refused");
+                    Assert.AreNotEqual("probe-rid", provider.DescribeInstance(2, []).RuntimeIdentifier);
+                }
+            }
+            finally
+            {
+                File.Delete(script);
+            }
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void ScaleDownGuardUsesTheEntitlementBoundedDemand()
+    {
+        Assert.AreEqual(101, ElasticRunnerAutoscaler.EffectiveDemand(100, 1, null));
+        Assert.AreEqual(2, ElasticRunnerAutoscaler.EffectiveDemand(100, 1, 2), "entitlements bound the concurrency the queue can use, so idle instances above that bound may retire");
+        Assert.AreEqual(3, ElasticRunnerAutoscaler.EffectiveDemand(2, 1, 10));
+        Assert.AreEqual(0, ElasticRunnerAutoscaler.EffectiveDemand(5, 0, -1));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void LocalProcessEnvironmentCarriesTheRunnerContractAndProvenanceLabels()
     {
         var request = new ElasticRunnerProvisionRequest(

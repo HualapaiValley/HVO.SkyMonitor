@@ -80,7 +80,9 @@ processes on the host on demand. Absent and disabled by default.
   minimum count every replica's live instances. Each sample persists the
   owner heartbeat on the host's rows before reconciliation and renews it on
   its own connection while the sample runs (so a drain that blocks for the
-  whole `RetireGrace` never looks like a lost owner); rows whose owner has
+  whole `RetireGrace` never looks like a lost owner; a failed renewal is
+  retried every tick, event 2245, and a sample whose heartbeat stays
+  unrenewed for half the owner-stale window is abandoned); rows whose owner has
   not reconciled them for six sample intervals (at least five minutes) are
   abandoned as `owner-lost`, counted in `orphansCleanedLastSample`, and stop
   accruing minutes; the registry then denies any re-registration of that
@@ -97,8 +99,9 @@ processes on the host on demand. Absent and disabled by default.
   designation never force-terminates active work. Busy tracking uses the
   runner's unexpired leases as well as its heartbeat-reported slots, every
   retirement is reserved under the runner's claim lock after a fresh lease
-  check, and the claim path refuses new work to an instance whose retirement
-  is reserved (`Stopping`) or that was abandoned. Intents that could not be
+  check, every close is written under that lock, and the claim path refuses
+  new work (inside the same lock) to an instance in any state but `Starting`
+  or `Running`. Intents that could not be
   launched (a failed launch, host shutdown mid-batch, or a process that
   started but whose record could not be saved and is retired again) are
   closed immediately as `launch-aborted`. Abandonment closes the instance row
@@ -133,8 +136,9 @@ the runner to drain and forces it after `RetireGrace`, which the child also
 receives as its own shutdown grace; the stop time recorded for instance
 minutes is the time the drain actually completed. Backlog counts only
 runner-placed recipes a provisioned instance could claim (the configured
-executable is probed once with `--capabilities`, event 2243, or the host
-process stands in after a failed probe, event 2244; recipes whose
+executable is probed once with `--capabilities`, event 2243, accepted only
+on a zero exit, or the host process stands in after a failed probe, event
+2244; recipes whose
 requirements the instance cannot satisfy are excluded and logged once as
 event 2242) and includes expired leases the claim would reclaim. Idle
 scale-down never retires registered capacity the demand still needs, and
@@ -156,7 +160,7 @@ retains backlog, when startup cannot meet the deadline past the deadline,
 when orphans were cleaned in the last sample, or when no sample has
 completed within three intervals of startup, and unhealthy after three
 consecutive sampling failures (for example an executable that cannot start).
-Log events 2230-2244.
+Log events 2230-2245.
 
 ## Operations
 
