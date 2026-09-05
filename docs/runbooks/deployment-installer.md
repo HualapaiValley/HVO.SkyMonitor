@@ -434,8 +434,11 @@ A signed-release preflight is strictly read-only. It evaluates the release's own
 so it neither acquires the offline archive nor contacts Docker at all and it reports on a release this host has
 not received yet. It writes nothing into the instance, the release media, or the distribution download cache,
 and it never advances the signed-index rollback state an acquisition would commit. A persisted database whose
-journal still carries unreplayed recovery state is read through a private temporary copy so that replay never
-touches the instance. Unlike install and upgrade the on-demand command retains no `state-preflight.json`. The
+journal carries unreplayed recovery state without a wal-index is read through a private temporary copy, so
+replay never touches the instance. A database a writer currently holds is instead read in place, which
+registers a reader in the wal-index that already exists, exactly as the instance's own readers do: no file is
+created and no durable state changes. That is preferred over copying a database under a live writer, since such
+a copy can tear and report a busy instance as unreadable. Unlike install and upgrade the on-demand command retains no `state-preflight.json`. The
 report names the resolved release tag beside the immutable image ID it selected; install and upgrade record the
 same tag in the report they retain, which is the only release evidence a refused operation leaves behind.
 

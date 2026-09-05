@@ -570,6 +570,10 @@ internal static class CameraAgentStatePreflight
     /// </list>
     /// A clean shutdown between the probe and the open would leave the third case reading a checkpointed
     /// database; preflight cannot observe a running instance without contacting Docker, which it must not do.
+    /// Reading a live WAL database registers a reader in the existing wal-index, which is what every reader of
+    /// such a database does, including the instance's own. No file is created and no durable state changes. The
+    /// alternative — copying a database a writer holds — is what this arrangement exists to avoid, because that
+    /// copy can tear and report a busy instance as unreadable.
     /// </summary>
     private sealed class ReadOnlyDatabase : IDisposable
     {
@@ -608,7 +612,6 @@ internal static class CameraAgentStatePreflight
         {
             var recoveryFiles = new[] { databasePath + "-wal", databasePath + "-journal" }
                 .Where(File.Exists).ToArray();
-            // One observation decides the branch and drives the copy, so the two cannot disagree with each other.
             if (recoveryFiles.Contains(databasePath + "-wal", StringComparer.Ordinal) &&
                 File.Exists(databasePath + "-shm"))
             {
@@ -619,6 +622,7 @@ internal static class CameraAgentStatePreflight
                 return new ReadOnlyDatabase(
                     OpenConnection(new Uri(databasePath).AbsoluteUri + "?immutable=1", SqliteOpenMode.ReadOnly), null);
             }
+            // The copy is driven by the same observation that chose this branch, so the two cannot disagree.
             DirectoryInfo? snapshotRoot = null;
             try
             {
