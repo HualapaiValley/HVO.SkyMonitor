@@ -10,7 +10,7 @@ using HVO.SkyMonitor.Catalog.Sqlite;
 
 namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 
-internal static class Program
+internal static partial class Program
 {
     private const string Repository = "RoySalisbury/HVO.SkyMonitor";
     private static readonly string[] InstallerTargets = ["linux-x64", "linux-arm64"];
@@ -32,6 +32,15 @@ internal static class Program
                     break;
                 case "create-catalog":
                     await CreateCatalogAsync(options, CancellationToken.None).ConfigureAwait(false);
+                    break;
+                case "create-image":
+                    await CreateImageAsync(options, CancellationToken.None).ConfigureAwait(false);
+                    break;
+                case "describe-image-archive":
+                    await DescribeImageArchiveAsync(options).ConfigureAwait(false);
+                    break;
+                case "image-index-digest":
+                    await WriteImageIndexDigestAsync(options).ConfigureAwait(false);
                     break;
                 case "create-index":
                     await CreateIndexAsync(options, CancellationToken.None).ConfigureAwait(false);
@@ -236,6 +245,333 @@ internal static class Program
         await WriteManifestAsync(output, "catalog-manifest.json", manifest, cancellationToken).ConfigureAwait(false);
     }
 
+    private static readonly (string Architecture, string Option)[] ImagePlatforms =
+    [
+        ("amd64", "--linux-amd64"),
+        ("arm64", "--linux-arm64")
+    ];
+
+    private static readonly string[] SupportedScanners = ["trivy"];
+    private static readonly string[] SeverityCounts = ["critical", "high", "medium", "low", "unknown"];
+
+    private const string ComponentLabel = "io.hvo.skymonitor.component";
+    private const string RevisionLabel = "org.opencontainers.image.revision";
+
+    /// <summary>
+    /// Builds the signed CameraAgent image release from per-platform OCI archives. Every platform digest, immutable
+    /// image ID, architecture, and compatibility label written into the manifest is read out of the archive bytes,
+    /// so signed metadata cannot describe an image the release does not actually contain.
+    /// </summary>
+    private static async Task CreateImageAsync(
+        IReadOnlyDictionary<string, string> options,
+        CancellationToken cancellationToken)
+    {
+        RejectUnknown(
+            options,
+            "--version", "--revision", "--tree", "--created-utc", "--repository", "--index-digest",
+            "--linux-amd64", "--linux-arm64", "--dockerfile", "--scan-report", "--notices", "--output", "--signing-key-id");
+        var version = RequireSafeIdentifier(options, "--version");
+        var revision = RequireGitOid(options, "--revision");
+        var tree = RequireGitOid(options, "--tree");
+        var createdUtc = RequireUtc(options, "--created-utc");
+        var repository = RequireImageRepository(options, "--repository");
+        var indexDigest = RequireDigest(options, "--index-digest");
+        var dockerfile = RequireExistingFile(options, "--dockerfile");
+        var scanReport = RequireExistingFile(options, "--scan-report");
+        var notices = RequireExistingFile(options, "--notices");
+
+        var inspected = new List<(string Architecture, string Source, string AssetName, ImageArchiveIdentity Identity)>();
+        foreach (var (architecture, option) in ImagePlatforms)
+        {
+            var source = RequireExistingFile(options, option);
+            var identity = ImageArchiveInspector.Inspect(source);
+            if (identity.OperatingSystem != "linux" || identity.Architecture != architecture)
+            {
+                throw new ReleaseToolException(
+                    $"{option} contains a linux/{identity.Architecture} image but must contain linux/{architecture}.");
+            }
+            inspected.Add((architecture, source, $"cameraagent-image-v{version}-linux-{architecture}.tar", identity));
+        }
+        var compatibility = ReadImageCompatibility(inspected, revision);
+        ValidateScanReport(scanReport, version, inspected.Select(static value => value.Identity.ImageId).ToArray());
+
+        var output = PrepareOutput(options);
+        foreach (var platform in inspected)
+        {
+            var destination = Path.Combine(output, platform.AssetName);
+            RefuseExisting(destination);
+            File.Copy(platform.Source, destination);
+        }
+        File.Copy(notices, Path.Combine(output, "THIRD-PARTY-NOTICES.md"));
+        const string scanName = "image-vulnerability-scan.json";
+        File.Copy(scanReport, Path.Combine(output, scanName));
+
+        const string provenanceName = "image-provenance.json";
+        await WriteJsonAsync(Path.Combine(output, provenanceName), new
+        {
+            schemaVersion = 1,
+            subject = $"{repository}@{indexDigest}",
+            sourceRepository = Repository,
+            sourceRevision = revision,
+            sourceTree = tree,
+            buildTimestampUtc = createdUtc,
+            dockerfile = new
+            {
+                path = "src/HVO.SkyMonitor.CameraAgent/Dockerfile",
+                sha256 = await Sha256Async(dockerfile, cancellationToken).ConfigureAwait(false)
+            },
+            imageRepository = repository,
+            imageManifestDigest = indexDigest,
+            platforms = inspected.Select(platform => new
+            {
+                os = platform.Identity.OperatingSystem,
+                architecture = platform.Identity.Architecture,
+                manifestDigest = platform.Identity.ManifestDigest,
+                imageId = platform.Identity.ImageId,
+                archiveAsset = platform.AssetName
+            }).ToArray(),
+            labels = inspected[0].Identity.Labels.OrderBy(static label => label.Key, StringComparer.Ordinal)
+                .ToDictionary(static label => label.Key, static label => label.Value, StringComparer.Ordinal)
+        }, cancellationToken).ConfigureAwait(false);
+        const string sbomName = "image-sbom.spdx.json";
+        await WriteSpdxAsync(
+            Path.Combine(output, sbomName),
+            $"hvo-skymonitor-cameraagent-{version}",
+            version,
+            inspected.Select(platform => Path.Combine(output, platform.AssetName)).ToArray(),
+            createdUtc,
+            cancellationToken).ConfigureAwait(false);
+
+        var payloads = inspected
+            .Select(platform => (DistributionArtifactRole.ImageArchive, platform.AssetName, "application/x-tar", (string?)"linux", (string?)platform.Architecture))
+            .Concat(
+            [
+                (DistributionArtifactRole.Sbom, sbomName, "application/spdx+json", (string?)null, (string?)null),
+                (DistributionArtifactRole.Provenance, provenanceName, "application/json", (string?)null, (string?)null),
+                (DistributionArtifactRole.VulnerabilityScan, scanName, "application/json", (string?)null, (string?)null),
+                (DistributionArtifactRole.License, "THIRD-PARTY-NOTICES.md", "text/markdown", (string?)null, (string?)null)
+            ]);
+        var artifacts = await CreateArtifactsAsync(output, payloads, cancellationToken).ConfigureAwait(false);
+        const string checksumsName = "SHA256SUMS";
+        await WriteChecksumsAsync(output, artifacts, checksumsName, cancellationToken).ConfigureAwait(false);
+        artifacts.Add(await CreateArtifactAsync(
+            output,
+            DistributionArtifactRole.Checksums,
+            checksumsName,
+            "text/plain",
+            null,
+            null,
+            cancellationToken).ConfigureAwait(false));
+        var image = new DistributionImageIdentity(
+            "CameraAgent",
+            repository,
+            indexDigest,
+            revision,
+            tree,
+            inspected.Select(platform => new DistributionImagePlatform(
+                "linux",
+                platform.Architecture,
+                platform.Identity.ManifestDigest,
+                platform.AssetName,
+                platform.Identity.ImageId)).ToArray(),
+            provenanceName,
+            sbomName,
+            scanName,
+            compatibility);
+        var manifest = new DistributionReleaseManifest(
+            DistributionSchemaVersions.ReleaseManifest,
+            DistributionManifestKind.ImageRelease,
+            new DistributionReleaseIdentity(
+                "image", version, $"image-v{version}", Repository, revision, tree, createdUtc),
+            SigningIdentity(options),
+            artifacts,
+            null,
+            [image]);
+        await WriteManifestAsync(output, "image-manifest.json", manifest, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Prints the platform identity a single-platform image archive carries, for release scripting.</summary>
+    private static async Task DescribeImageArchiveAsync(IReadOnlyDictionary<string, string> options)
+    {
+        RejectUnknown(options, "--archive");
+        var identity = ImageArchiveInspector.Inspect(RequireExistingFile(options, "--archive"));
+        await Console.Out.WriteLineAsync(
+            $"{identity.ManifestDigest}\t{identity.ImageId}\t{identity.OperatingSystem}\t{identity.Architecture}")
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Prints the digest of the canonical OCI image index over the published platform archives. A real publication
+    /// takes the multi-architecture digest from the registry it pushed to; this value lets a release that has not
+    /// been pushed still name one immutable multi-architecture identity derived from the same platform manifests.
+    /// </summary>
+    private static async Task WriteImageIndexDigestAsync(IReadOnlyDictionary<string, string> options)
+    {
+        RejectUnknown(options, "--linux-amd64", "--linux-arm64");
+        var descriptors = new List<object>();
+        foreach (var (architecture, option) in ImagePlatforms)
+        {
+            var archive = RequireExistingFile(options, option);
+            var identity = ImageArchiveInspector.Inspect(archive);
+            if (identity.OperatingSystem != "linux" || identity.Architecture != architecture)
+            {
+                throw new ReleaseToolException($"{option} does not contain a linux/{architecture} image.");
+            }
+            descriptors.Add(new
+            {
+                mediaType = "application/vnd.oci.image.manifest.v1+json",
+                digest = identity.ManifestDigest,
+                size = ImageArchiveInspector.MeasureManifest(archive, identity.ManifestDigest),
+                platform = new { architecture = identity.Architecture, os = identity.OperatingSystem }
+            });
+        }
+        var index = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            schemaVersion = 2,
+            mediaType = "application/vnd.oci.image.index.v1+json",
+            manifests = descriptors
+        });
+        await Console.Out.WriteLineAsync("sha256:" + Convert.ToHexStringLower(SHA256.HashData(index))).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads the declared compatibility boundaries from the image labels and requires every published platform to
+    /// agree, so a multi-architecture release cannot ship one architecture that reads different durable state.
+    /// </summary>
+    private static DistributionImageCompatibility ReadImageCompatibility(
+        List<(string Architecture, string Source, string AssetName, ImageArchiveIdentity Identity)> platforms,
+        string revision)
+    {
+        var reference = platforms[0].Identity.Labels;
+        foreach (var platform in platforms)
+        {
+            if (platform.Identity.Labels.Count != reference.Count ||
+                platform.Identity.Labels.Any(label => !reference.TryGetValue(label.Key, out var value) || value != label.Value))
+            {
+                throw new ReleaseToolException(
+                    $"The linux/{platform.Architecture} image declares different labels than linux/{platforms[0].Architecture}.");
+            }
+        }
+        if (Label(reference, ComponentLabel) != "CameraAgent")
+        {
+            throw new ReleaseToolException("The published image must declare the CameraAgent component label.");
+        }
+        if (Label(reference, RevisionLabel) != revision)
+        {
+            throw new ReleaseToolException("The image revision label does not match --revision.");
+        }
+        return new DistributionImageCompatibility(
+            Label(reference, "io.hvo.skymonitor.state-compatibility"),
+            Label(reference, "io.hvo.skymonitor.minimum-compatible-revision"),
+            Label(reference, "io.hvo.skymonitor.identity-migration"),
+            LabelVersion(reference, "io.hvo.skymonitor.raw-ingress-schema"),
+            LabelVersion(reference, "io.hvo.skymonitor.catalog-manifest-version"),
+            Label(reference, "io.hvo.skymonitor.configuration-contract"),
+            Label(reference, "io.hvo.skymonitor.catalog-contract"),
+            reference.TryGetValue("io.hvo.skymonitor.replay-runner-contract", out var replay) ? replay : null);
+    }
+
+    private static string Label(IReadOnlyDictionary<string, string> labels, string name)
+        => labels.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? value
+            : throw new ReleaseToolException($"The published image omits the required label '{name}'.");
+
+    private static int LabelVersion(IReadOnlyDictionary<string, string> labels, string name)
+        => int.TryParse(Label(labels, name), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) && parsed > 0
+            ? parsed
+            : throw new ReleaseToolException($"The published image label '{name}' is not a positive integer.");
+
+    /// <summary>
+    /// Requires an image release to carry a scan report from a supported scanner that covers exactly the published
+    /// image IDs and reports no critical finding. The release tool never runs a scanner itself; it refuses to build
+    /// a release whose recorded scan does not describe the images being published. An unscanned candidate is
+    /// permitted only for a version that names itself a dry run, so a publishable version can never carry one.
+    /// Only the critical count gates the release: a base image routinely carries lower-severity findings, so the
+    /// remaining counts are required to be present as evidence rather than to be zero.
+    /// </summary>
+    private static void ValidateScanReport(string path, string version, string[] imageIds)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions
+        {
+            AllowTrailingCommas = false,
+            CommentHandling = JsonCommentHandling.Disallow,
+            MaxDepth = 32
+        });
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("schemaVersion", out var schema) || schema.ValueKind != JsonValueKind.Number ||
+            schema.GetInt32() != 1 ||
+            !root.TryGetProperty("scanner", out var scanner) || string.IsNullOrWhiteSpace(scanner.GetString()) ||
+            !root.TryGetProperty("scannerVersion", out var scannerVersion) || string.IsNullOrWhiteSpace(scannerVersion.GetString()) ||
+            !root.TryGetProperty("scannedUtc", out var scannedUtc) || scannedUtc.GetString() is not { } scannedUtcValue ||
+            !scannedUtcValue.EndsWith('Z') ||
+            !DateTimeOffset.TryParse(scannedUtcValue, CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+        {
+            throw new ReleaseToolException("The image vulnerability scan report does not declare a scanner and scan time.");
+        }
+        var scannerName = scanner.GetString()!;
+        var status = root.TryGetProperty("status", out var statusValue) ? statusValue.GetString() : "scanned";
+        if ((status != "scanned" || !SupportedScanners.Contains(scannerName, StringComparer.Ordinal)) &&
+            !version.EndsWith("-dryrun", StringComparison.Ordinal))
+        {
+            throw new ReleaseToolException(
+                $"A published image release requires a completed scan by a supported scanner ({string.Join(", ", SupportedScanners)}); " +
+                $"this report declares scanner '{scannerName}' with status '{status}'. An unscanned candidate is only " +
+                "permitted for a version ending in '-dryrun', which is never publishable.");
+        }
+        if (!root.TryGetProperty("subjects", out var subjects) || subjects.ValueKind != JsonValueKind.Array)
+        {
+            throw new ReleaseToolException("The image vulnerability scan report does not list its scanned subjects.");
+        }
+        var scanned = subjects.EnumerateArray()
+            .Select(static subject => subject.TryGetProperty("imageId", out var imageId) ? imageId.GetString() : null)
+            .Where(static imageId => imageId is not null)
+            .ToHashSet(StringComparer.Ordinal);
+        if (!imageIds.All(scanned.Contains) || scanned.Count != imageIds.Length)
+        {
+            throw new ReleaseToolException("The image vulnerability scan report does not cover exactly the published images.");
+        }
+        if (!root.TryGetProperty("summary", out var summary) || summary.ValueKind != JsonValueKind.Object ||
+            SeverityCounts.Any(severity => !summary.TryGetProperty(severity, out var count) ||
+                count.ValueKind != JsonValueKind.Number || count.GetInt32() < 0))
+        {
+            throw new ReleaseToolException(
+                $"The image vulnerability scan report must record every severity count ({string.Join(", ", SeverityCounts)}).");
+        }
+        if (summary.GetProperty("critical").GetInt32() != 0)
+        {
+            throw new ReleaseToolException("The image vulnerability scan report must record zero critical findings.");
+        }
+    }
+
+    private static string RequireDigest(IReadOnlyDictionary<string, string> options, string name)
+    {
+        var value = Require(options, name);
+        return value.Length == 71 && value.StartsWith("sha256:", StringComparison.Ordinal) &&
+               value[7..].All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f')
+            ? value
+            : throw new ReleaseToolException($"{name} must be a lowercase sha256:<64 hex> digest.");
+    }
+
+    /// <summary>
+    /// Applies the same repository shape the signed manifest is verified against, so a candidate cannot be built
+    /// with a reference that verification would later reject.
+    /// </summary>
+    private static string RequireImageRepository(IReadOnlyDictionary<string, string> options, string name)
+    {
+        var value = Require(options, name);
+        return ImageRepositoryRegex().IsMatch(value)
+            ? value
+            : throw new ReleaseToolException(
+                $"{name} must be a lowercase OCI repository reference with a host and at least one path segment, " +
+                "and without a tag or digest.");
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(
+        "^[a-z0-9][a-z0-9.-]{0,63}(:[0-9]{1,5})?(/[a-z0-9]+([._-][a-z0-9]+)*){1,6}$",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex ImageRepositoryRegex();
+
     private static async Task SignLocalAsync(
         Dictionary<string, string> options,
         CancellationToken cancellationToken)
@@ -253,17 +589,26 @@ internal static class Program
         var trustRoot = DistributionTrustRoot.FromPem(key.ExportSubjectPublicKeyInfoPem());
         var signatureText = Encoding.ASCII.GetBytes(Convert.ToBase64String(signature));
         var metadataKind = options.TryGetValue("--metadata-kind", out var configuredKind) ? configuredKind : "manifest";
-        if (metadataKind == "manifest")
+        switch (metadataKind)
         {
-            _ = DistributionVerifier.VerifyManifest(bytes, signatureText, trustRoot);
-        }
-        else if (metadataKind == "index")
-        {
-            _ = DistributionVerifier.VerifyIndex(bytes, signatureText, trustRoot);
-        }
-        else
-        {
-            throw new ReleaseToolException("--metadata-kind must be manifest or index.");
+            case "manifest":
+                _ = DistributionVerifier.VerifyManifest(bytes, signatureText, trustRoot);
+                break;
+            case "index":
+                _ = DistributionVerifier.VerifyIndex(bytes, signatureText, trustRoot);
+                break;
+            case "detached":
+                // A checksum list carries no signed schema of its own; the detached signature is the only claim.
+                using (var verifier = trustRoot.CreateVerifier())
+                {
+                    if (!verifier.VerifyData(bytes, signature, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
+                    {
+                        throw new ReleaseToolException("The detached signature did not verify against its own key.");
+                    }
+                }
+                break;
+            default:
+                throw new ReleaseToolException("--metadata-kind must be manifest, index, or detached.");
         }
         await File.WriteAllTextAsync(output, Convert.ToBase64String(signature) + "\n", Encoding.ASCII, cancellationToken)
             .ConfigureAwait(false);
@@ -278,9 +623,9 @@ internal static class Program
             "--train", "--sequence", "--default-version", "--created-utc", "--manifest", "--manifest-signature",
             "--previous-index", "--previous-index-signature", "--public-key", "--signing-key-id", "--output");
         var train = Require(options, "--train");
-        if (train is not ("installer" or "catalog"))
+        if (train is not ("installer" or "catalog" or "image"))
         {
-            throw new ReleaseToolException("--train must be installer or catalog.");
+            throw new ReleaseToolException("--train must be installer, catalog, or image.");
         }
         var sequenceText = Require(options, "--sequence");
         if (!long.TryParse(sequenceText, NumberStyles.None, CultureInfo.InvariantCulture, out var sequence) || sequence < 1)
@@ -415,7 +760,11 @@ internal static class Program
             await using var stream = File.OpenRead(path);
             await DistributionVerifier.VerifyAssetAsync(stream, artifact, cancellationToken).ConfigureAwait(false);
         }
-        if (manifest.ManifestKind == DistributionManifestKind.CatalogRelease)
+        if (manifest.ManifestKind == DistributionManifestKind.ImageRelease)
+        {
+            VerifyImageArchives(assetRoot, manifest.Images[0]);
+        }
+        else if (manifest.ManifestKind == DistributionManifestKind.CatalogRelease)
         {
             var catalogArtifact = manifest.Artifacts.Single(static artifact => artifact.Role == DistributionArtifactRole.CatalogBundle);
             VerifyCatalogArchive(Path.Combine(assetRoot, catalogArtifact.AssetName), manifest.Catalog!);
@@ -429,6 +778,39 @@ internal static class Program
         }
         await Console.Out.WriteLineAsync(
             $"Verified {manifest.ManifestKind} {manifest.Release.Tag} with {manifest.Signing.KeyId}.").ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Re-derives every platform identity from the published archives so a release whose archive bytes no longer
+    /// produce the signed digest, image ID, architecture, or compatibility labels fails verification.
+    /// </summary>
+    private static void VerifyImageArchives(string assetRoot, DistributionImageIdentity image)
+    {
+        foreach (var platform in image.Platforms)
+        {
+            var identity = ImageArchiveInspector.Inspect(Path.Combine(assetRoot, platform.OfflineArchiveAsset!));
+            if (identity.ManifestDigest != platform.ManifestDigest || identity.ImageId != platform.OfflineArchiveImageId ||
+                identity.OperatingSystem != platform.OperatingSystem || identity.Architecture != platform.Architecture)
+            {
+                throw new ReleaseToolException(
+                    $"Image archive '{platform.OfflineArchiveAsset}' does not match its signed platform identity.");
+            }
+            if (Label(identity.Labels, ComponentLabel) != image.Component ||
+                Label(identity.Labels, RevisionLabel) != image.SourceRevision ||
+                Label(identity.Labels, "io.hvo.skymonitor.state-compatibility") != image.Compatibility.StateContract ||
+                Label(identity.Labels, "io.hvo.skymonitor.minimum-compatible-revision") != image.Compatibility.MinimumCompatibleRevision ||
+                Label(identity.Labels, "io.hvo.skymonitor.identity-migration") != image.Compatibility.IdentityMigration ||
+                LabelVersion(identity.Labels, "io.hvo.skymonitor.raw-ingress-schema") != image.Compatibility.RawIngressSchema ||
+                LabelVersion(identity.Labels, "io.hvo.skymonitor.catalog-manifest-version") != image.Compatibility.CatalogManifestVersion ||
+                Label(identity.Labels, "io.hvo.skymonitor.configuration-contract") != image.Compatibility.ConfigurationContract ||
+                Label(identity.Labels, "io.hvo.skymonitor.catalog-contract") != image.Compatibility.CatalogContract ||
+                (identity.Labels.TryGetValue("io.hvo.skymonitor.replay-runner-contract", out var replay) ? replay : null)
+                    != image.Compatibility.ReplayRunnerContract)
+            {
+                throw new ReleaseToolException(
+                    $"Image archive '{platform.OfflineArchiveAsset}' does not carry its signed compatibility labels.");
+            }
+        }
     }
 
     private static void VerifyCatalogArchive(string archivePath, DistributionCatalogIdentity catalog)

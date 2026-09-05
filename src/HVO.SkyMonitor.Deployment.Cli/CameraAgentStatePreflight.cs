@@ -596,7 +596,7 @@ internal static class CameraAgentStatePreflightManager
                 // The preflight never mutates, so the candidate is inspected locally and never pulled or loaded.
                 NoDownload = true
             };
-            var prepared = await docker.PrepareImageAsync(synthetic, allowMutation: false, cancellationToken)
+            var prepared = await docker.PrepareImageAsync(synthetic, allowMutation: false, signedImage: null, cancellationToken)
                 .ConfigureAwait(false);
             candidate = prepared.Image;
         }

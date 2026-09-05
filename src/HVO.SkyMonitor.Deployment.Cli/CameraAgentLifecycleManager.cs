@@ -19,9 +19,11 @@ internal sealed class CameraAgentLifecycleManager
         Func<Uri, IOwnerBootstrapClient>? ownerClientFactory,
         uint uid,
         uint gid,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<DistributionAcquirer>? distributionFactory = null)
     {
         request.Validate();
+        distributionFactory ??= CreateDistributionAcquirer;
         if (request.Operation is LifecycleOperationKind.CatalogInstall or LifecycleOperationKind.CatalogGarbageCollect)
         {
             return await CatalogLifecycleManager.ExecuteAsync(request, processRunner, uid, gid, cancellationToken)
@@ -30,6 +32,25 @@ internal sealed class CameraAgentLifecycleManager
         if (request.Operation is null && request.InstanceId is null)
         {
             return await ListAsync(request.ProductRoot, cancellationToken).ConfigureAwait(false);
+        }
+        // A signed image upgrade resolves and verifies its release before the instance is touched, so an unsupported
+        // architecture, a missing platform, or a tampered archive fails while the running instance is untouched.
+        using var imageAcquirer = request.Operation == LifecycleOperationKind.Upgrade &&
+                                  (request.ImageManifest is not null || request.ImageIndex is not null)
+            ? distributionFactory()
+            : null;
+        AcquiredImage? signedImage = null;
+        if (imageAcquirer is not null)
+        {
+            signedImage = await imageAcquirer.AcquireImageAsync(ImageSelectionRequest(request), cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new InstallerException("The signed CameraAgent image release did not resolve a candidate image.");
+            request = request with
+            {
+                ImageReference = signedImage.Platform.OfflineArchiveImageId,
+                ImageArchive = signedImage.ArchivePath,
+                ImageArchiveSha256 = signedImage.ArchiveSha256
+            };
         }
         var instanceId = request.InstanceId!.Value;
         var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
@@ -119,11 +140,11 @@ internal sealed class CameraAgentLifecycleManager
         {
             LifecycleOperationKind.Upgrade => await ChangeImageAsync(
                 request, paths, manifest, result, compose, docker, processRunner, lifecycleClientFactory, uid, gid,
-                ownerClientFactory, lifecycleControlToken!, installationVerificationToken!,
+                ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage,
                 rollback: false, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.Rollback => await ChangeImageAsync(
                 request, paths, manifest, result, compose, docker, processRunner, lifecycleClientFactory, uid, gid,
-                ownerClientFactory, lifecycleControlToken!, installationVerificationToken!,
+                ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage: null,
                 rollback: true, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.Reinstall => await ReinstallAsync(
                 request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
@@ -158,6 +179,7 @@ internal sealed class CameraAgentLifecycleManager
         Func<Uri, IOwnerBootstrapClient>? ownerClientFactory,
         string lifecycleControlToken,
         string verificationToken,
+        AcquiredImage? signedImage,
         bool rollback,
         CancellationToken cancellationToken)
     {
@@ -215,7 +237,8 @@ internal sealed class CameraAgentLifecycleManager
         {
             var target = manifest.PreviousImage!;
             var synthetic = ImageRequest(manifest, target.ImmutableReference, null, null, noDownload: true);
-            var prepared = await docker.PrepareImageAsync(synthetic, false, cancellationToken).ConfigureAwait(false);
+            var prepared = await docker.PrepareImageAsync(synthetic, false, signedImage: null, cancellationToken)
+                .ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, prepared.Daemon);
             if (prepared.Image.ImageId != target.ImageId || prepared.Image.Architecture != target.Architecture)
             {
@@ -227,7 +250,8 @@ internal sealed class CameraAgentLifecycleManager
         {
             var synthetic = ImageRequest(
                 manifest, request.ImageReference!, request.ImageArchive, request.ImageArchiveSha256, request.NoDownload);
-            var prepared = await docker.PrepareImageAsync(synthetic, !request.DryRun, cancellationToken).ConfigureAwait(false);
+            var prepared = await docker.PrepareImageAsync(synthetic, !request.DryRun, signedImage?.Image, cancellationToken)
+                .ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, prepared.Daemon);
             candidate = prepared.Image;
         }
@@ -531,6 +555,16 @@ internal sealed class CameraAgentLifecycleManager
             operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Committed }, cancellationToken)
                 .ConfigureAwait(false);
             await candidateLifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
+            // The retained release record follows the image the instance actually runs: an upgrade from a signed
+            // release records it, and a rollback withdraws whatever the superseded upgrade recorded.
+            if (signedImage is not null)
+            {
+                await signedImage.WriteEvidenceAsync(paths, cancellationToken).ConfigureAwait(false);
+            }
+            else if (rollback)
+            {
+                AcquiredImage.RemoveEvidence(paths);
+            }
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
             return Result(operation.Kind, "completed", operation.OperationId, paths, committed, manifest.DockerDaemon, true, true);
         }
@@ -879,6 +913,30 @@ internal sealed class CameraAgentLifecycleManager
             cancellationToken).ConfigureAwait(false);
         await docker.VerifyContainerAsync(compose, paths, image, uid, gid, cancellationToken).ConfigureAwait(false);
         return verifiedOwnerState;
+    }
+
+    private static DistributionAcquirer CreateDistributionAcquirer() => new();
+
+    /// <summary>
+    /// The image-train selectors an upgrade uses to resolve its signed release, with no instance state. It is
+    /// validated like any install request so the locator scheme and channel rules produce the same usage errors on
+    /// an upgrade that they produce on an install.
+    /// </summary>
+    private static InstallRequest ImageSelectionRequest(LifecycleRequest request)
+    {
+        var selection = new InstallRequest
+        {
+            FriendlyName = "lifecycle",
+            OwnerEmail = "lifecycle@localhost.invalid",
+            ImageManifest = request.ImageManifest,
+            ImageIndex = request.ImageIndex,
+            ImageVersion = request.ImageVersion,
+            AssetBaseUrl = request.AssetBaseUrl,
+            Channel = request.Channel,
+            NoDownload = request.NoDownload
+        };
+        selection.ValidateImageSelection();
+        return selection;
     }
 
     private static InstallRequest ImageRequest(

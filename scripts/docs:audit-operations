@@ -21,6 +21,8 @@ readonly DOCS=(
     docs/runbooks/smoke-test.md
     docs/runbooks/split-host-preflight.md
     docs/runbooks/ci-pipeline.md
+    docs/runbooks/deployment-installer.md
+    docs/runbooks/release-distribution.md
     docs/catalog/production-install.md
     docs/catalog/hyg-v42.md
     docs/planning/standalone-cameraagent-course-correction.md
@@ -138,7 +140,7 @@ require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCe
 require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
-require_source_reference 'Unit=3176' docs/runbooks/ci-pipeline.md
+require_source_reference 'Unit=3212' docs/runbooks/ci-pipeline.md
 require_source_reference 'Integration=651' docs/runbooks/ci-pipeline.md
 require_source_reference 'Manual=101' docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md

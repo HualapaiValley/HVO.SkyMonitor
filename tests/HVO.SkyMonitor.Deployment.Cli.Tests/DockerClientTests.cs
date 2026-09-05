@@ -17,7 +17,7 @@ public sealed class DockerClientTests
             $"[{{\"Id\":\"sha256:{new string('b', 64)}\",\"Architecture\":\"amd64\",\"Os\":\"linux\",\"RepoDigests\":[\"{digest}\"]}}]");
         var request = CreateRequest(digest);
 
-        var result = await new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, CancellationToken.None);
+        var result = await new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, signedImage: null, CancellationToken.None);
 
         Assert.AreEqual("daemon-1", result.Daemon.Id);
         Assert.AreEqual(digest, result.Image.ImmutableReference);
@@ -36,7 +36,7 @@ public sealed class DockerClientTests
             $"[{{\"Id\":\"{imageId}\",\"Architecture\":\"arm64\",\"Os\":\"linux\",\"RepoDigests\":[]}}]");
 
         await Assert.ThrowsExactlyAsync<InstallerException>(
-            () => new DockerClient(runner).PrepareImageAsync(CreateRequest(imageId), allowMutation: true, CancellationToken.None));
+            () => new DockerClient(runner).PrepareImageAsync(CreateRequest(imageId), allowMutation: true, signedImage: null, CancellationToken.None));
     }
 
     [TestMethod]
@@ -49,7 +49,7 @@ public sealed class DockerClientTests
             $"[{{\"Id\":\"sha256:{new string('b', 64)}\",\"Architecture\":\"amd64\",\"Os\":\"linux\",\"RepoDigests\":[\"{digest}\"]}}]");
         var request = CreateRequest(digest) with { NoDownload = true };
 
-        await new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, CancellationToken.None);
+        await new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, signedImage: null, CancellationToken.None);
 
         Assert.IsFalse(runner.Commands.Any(static command => command.Contains(" image pull ", StringComparison.Ordinal)));
     }
@@ -76,7 +76,7 @@ public sealed class DockerClientTests
                 $"[{{\"Id\":\"{requested}\",\"Architecture\":\"amd64\",\"Os\":\"linux\",\"RepoDigests\":[]}}]");
 
             var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
-                () => new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, CancellationToken.None));
+                () => new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, signedImage: null, CancellationToken.None));
 
             StringAssert.Contains(exception.Message, "did not contain", StringComparison.Ordinal);
             StringAssert.Contains(runner.Commands.Single(command => command.Contains(" image load ", StringComparison.Ordinal)), "/proc/", StringComparison.Ordinal);

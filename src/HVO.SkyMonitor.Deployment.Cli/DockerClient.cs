@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -18,6 +19,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     public async Task<(DockerDaemonIdentity Daemon, ImageInstallationIdentity Image)> PrepareImageAsync(
         InstallRequest request,
         bool allowMutation,
+        DistributionImageIdentity? signedImage,
         CancellationToken cancellationToken)
     {
         var identity = await ReadDaemonIdentityAsync(cancellationToken).ConfigureAwait(false);
@@ -48,7 +50,30 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             await RunDockerAsync(["image", "pull", request.ImageReference], cancellationToken).ConfigureAwait(false);
         }
 
-        var inspectResult = await RunDockerAsync(["image", "inspect", request.ImageReference], cancellationToken).ConfigureAwait(false);
+        // A daemon backed by the containerd image store addresses a loaded image by its manifest digest, while the
+        // classic store addresses it by its configuration digest. The signed release names both, so resolve the
+        // candidate the daemon actually knows instead of assuming one store's identity scheme.
+        var reference = request.ImageReference;
+        var inspectResult = reference.Length == 0
+            ? null
+            : await TryInspectImageAsync(reference, cancellationToken).ConfigureAwait(false);
+        if (inspectResult is null && signedImage is not null)
+        {
+            foreach (var candidate in SignedReferenceCandidates(signedImage, architecture, reference))
+            {
+                inspectResult = await TryInspectImageAsync(candidate, cancellationToken).ConfigureAwait(false);
+                if (inspectResult is not null)
+                {
+                    reference = candidate;
+                    break;
+                }
+            }
+        }
+        if (inspectResult is null)
+        {
+            throw new InstallerException(
+                $"Docker could not inspect the CameraAgent image '{(reference.Length == 0 ? "(unnamed)" : reference)}'.");
+        }
         using var inspectJson = JsonDocument.Parse(inspectResult.StandardOutput);
         var image = inspectJson.RootElement[0];
         var imageId = image.GetProperty("Id").GetString() ?? throw new InstallerException("Docker image ID is missing.");
@@ -62,16 +87,16 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             throw new InstallerException("The CameraAgent image platform does not match the Docker daemon.");
         }
 
-        if (request.ImageReference.StartsWith("sha256:", StringComparison.Ordinal) &&
-            !string.Equals(request.ImageReference, imageId, StringComparison.Ordinal))
+        if (reference.StartsWith("sha256:", StringComparison.Ordinal) &&
+            !string.Equals(reference, imageId, StringComparison.Ordinal))
         {
             throw new InstallerException("The loaded image ID does not match --image-ref.");
         }
 
-        if (request.ImageReference.Contains('@', StringComparison.Ordinal))
+        if (reference.Contains('@', StringComparison.Ordinal))
         {
             var digests = image.GetProperty("RepoDigests").EnumerateArray().Select(static item => item.GetString()).ToArray();
-            if (!digests.Contains(request.ImageReference, StringComparer.Ordinal))
+            if (!digests.Contains(reference, StringComparer.Ordinal))
             {
                 throw new InstallerException("The pulled image does not expose the requested repository digest.");
             }
@@ -98,9 +123,9 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         var rawIngressSchema = Label(labels, "io.hvo.skymonitor.raw-ingress-schema");
         var catalogManifestVersion = Label(labels, "io.hvo.skymonitor.catalog-manifest-version");
 
-        return (identity, new ImageInstallationIdentity(
+        var installationIdentity = new ImageInstallationIdentity(
             request.ImageArchive is null ? "registry" : "archive",
-            request.ImageReference,
+            reference,
             imageId,
             imageArchitecture,
             request.ImageArchiveSha256,
@@ -113,7 +138,80 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             MinimumCompatibleRevision: minimumCompatibleRevision,
             IdentityMigration: identityMigration,
             RawIngressSchema: rawIngressSchema,
-            CatalogManifestVersion: catalogManifestVersion));
+            CatalogManifestVersion: catalogManifestVersion);
+        if (signedImage is not null)
+        {
+            EnsureSignedImageAgreement(signedImage, installationIdentity);
+        }
+        return (identity, installationIdentity);
+    }
+
+    /// <summary>
+    /// Requires the image Docker actually resolved to carry exactly the identity and compatibility boundaries the
+    /// signed release declared. The labels are the installation's compatibility authority, so a mismatch means the
+    /// running bytes are not the released image and the deployment stops before any state is touched.
+    /// </summary>
+    private static void EnsureSignedImageAgreement(DistributionImageIdentity signed, ImageInstallationIdentity actual)
+    {
+        var platform = signed.Platforms.SingleOrDefault(candidate =>
+            candidate.OperatingSystem == "linux" && candidate.Architecture == actual.Architecture)
+            ?? throw new InstallerException(
+                $"The signed CameraAgent image release does not publish linux/{actual.Architecture}.");
+        // Either signed identity is acceptable because the daemon's image store decides which one names the image.
+        if (actual.ImageId != platform.OfflineArchiveImageId && actual.ImageId != platform.ManifestDigest)
+        {
+            throw new InstallerException("The prepared CameraAgent image is not the immutable image the release signed.");
+        }
+        var mismatches = new List<string>();
+        Compare(mismatches, "component", signed.Component, actual.Component);
+        Compare(mismatches, "source revision", signed.SourceRevision, actual.SourceRevision);
+        Compare(mismatches, "state compatibility", signed.Compatibility.StateContract, actual.UpgradeCompatibility);
+        Compare(mismatches, "minimum compatible revision", signed.Compatibility.MinimumCompatibleRevision, actual.MinimumCompatibleRevision);
+        Compare(mismatches, "identity migration", signed.Compatibility.IdentityMigration, actual.IdentityMigration);
+        Compare(
+            mismatches,
+            "raw ingress schema",
+            signed.Compatibility.RawIngressSchema.ToString(CultureInfo.InvariantCulture),
+            actual.RawIngressSchema);
+        Compare(
+            mismatches,
+            "catalog manifest version",
+            signed.Compatibility.CatalogManifestVersion.ToString(CultureInfo.InvariantCulture),
+            actual.CatalogManifestVersion);
+        Compare(mismatches, "configuration contract", signed.Compatibility.ConfigurationContract, actual.ConfigurationContract);
+        Compare(mismatches, "catalog contract", signed.Compatibility.CatalogContract, actual.CatalogContract);
+        Compare(mismatches, "replay runner contract", signed.Compatibility.ReplayRunnerContract, actual.ReplayRunnerContract);
+        if (mismatches.Count != 0)
+        {
+            throw new InstallerException(
+                "The prepared CameraAgent image does not carry the compatibility identity the release signed: " +
+                string.Join("; ", mismatches) + ".");
+        }
+    }
+
+    private static void Compare(List<string> mismatches, string boundary, string? expected, string? actual)
+    {
+        if (!string.Equals(expected, actual, StringComparison.Ordinal))
+        {
+            mismatches.Add($"{boundary} signed '{expected ?? "(absent)"}' but image declares '{actual ?? "(absent)"}'");
+        }
+    }
+
+    private static IEnumerable<string> SignedReferenceCandidates(
+        DistributionImageIdentity signedImage,
+        string architecture,
+        string attempted)
+        => signedImage.Platforms
+            .Where(platform => platform.OperatingSystem == "linux" && platform.Architecture == architecture)
+            .SelectMany(static platform => new[] { platform.OfflineArchiveImageId, platform.ManifestDigest })
+            .OfType<string>()
+            .Where(candidate => !string.Equals(candidate, attempted, StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal);
+
+    private async Task<ProcessResult?> TryInspectImageAsync(string reference, CancellationToken cancellationToken)
+    {
+        var result = await RunDockerRawAsync(["image", "inspect", reference], cancellationToken).ConfigureAwait(false);
+        return result.ExitCode == 0 ? result : null;
     }
 
     private async Task<HashSet<string>> ReadLoadedImageIdsAsync(string output, CancellationToken cancellationToken)

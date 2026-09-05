@@ -35,9 +35,12 @@ internal sealed record InstallRequest
     public string? CatalogVersion { get; init; }
     public string? AssetBaseUrl { get; init; }
     public DistributionChannel Channel { get; init; } = DistributionChannel.Local;
-    public required string ImageReference { get; init; }
+    public string ImageReference { get; init; } = string.Empty;
     public string? ImageArchive { get; init; }
     public string? ImageArchiveSha256 { get; init; }
+    public string? ImageManifest { get; init; }
+    public string? ImageIndex { get; init; }
+    public string? ImageVersion { get; init; }
     public string? PasswordFile { get; init; }
     public double LatitudeDegrees { get; init; }
     public double LongitudeDegrees { get; init; }
@@ -138,6 +141,7 @@ internal sealed record InstallRequest
                 throw new InstallUsageException("--image-archive-sha256 is required with --image-archive.");
             }
         }
+        ValidateImageSelection();
 
         if (PasswordFile is not null)
         {
@@ -146,12 +150,6 @@ internal sealed record InstallRequest
         if (PasswordFile is not null && GeneratePassword)
         {
             throw new InstallUsageException("--generate-password cannot be combined with --password-file.");
-        }
-
-        if (!Regex.IsMatch(ImageReference, "^sha256:[a-f0-9]{64}$", RegexOptions.CultureInvariant) &&
-            !Regex.IsMatch(ImageReference, "^[^@\\s]+@sha256:[a-f0-9]{64}$", RegexOptions.CultureInvariant))
-        {
-            throw new InstallUsageException("--image-ref must be an immutable digest or image ID.");
         }
 
         if (!double.IsFinite(LatitudeDegrees) || !double.IsFinite(LongitudeDegrees) || !double.IsFinite(ElevationMeters) ||
@@ -172,7 +170,7 @@ internal sealed record InstallRequest
             throw new InstallUsageException("--time-zone is invalid on this host.", exception);
         }
 
-        foreach (var value in new[] { FriendlyName, OwnerEmail, ProductRoot, CatalogBundle, CatalogManifest, CatalogIndex, CatalogVersion, AssetBaseUrl, ImageReference, ImageArchive, PasswordFile, TimeZoneId })
+        foreach (var value in new[] { FriendlyName, OwnerEmail, ProductRoot, CatalogBundle, CatalogManifest, CatalogIndex, CatalogVersion, AssetBaseUrl, ImageReference, ImageArchive, ImageManifest, ImageIndex, ImageVersion, PasswordFile, TimeZoneId })
         {
             if (value?.Any(char.IsControl) == true)
             {
@@ -183,6 +181,50 @@ internal sealed record InstallRequest
         if (Resume && InstanceId is null)
         {
             throw new InstallUsageException("--resume requires --instance-id.");
+        }
+    }
+
+    /// <summary>
+    /// Validates only how the image was selected. A signed image release and an operator-supplied image are
+    /// mutually exclusive: the installation either derives the immutable image from verified release metadata or is
+    /// told exactly which image to use, never both. A lifecycle upgrade resolves a signed release without a catalog
+    /// input, so it applies these rules alone rather than the whole install contract.
+    /// </summary>
+    internal void ValidateImageSelection()
+    {
+        if (ImageManifest is not null && ImageIndex is not null)
+        {
+            throw new InstallUsageException("--image-manifest cannot be combined with --image-index.");
+        }
+        if (ImageVersion is not null && ImageIndex is null)
+        {
+            throw new InstallUsageException("--image-version requires --image-index.");
+        }
+        if (ImageManifest is null && ImageIndex is null)
+        {
+            if (!Regex.IsMatch(ImageReference, "^sha256:[a-f0-9]{64}$", RegexOptions.CultureInvariant) &&
+                !Regex.IsMatch(ImageReference, "^[^@\\s]+@sha256:[a-f0-9]{64}$", RegexOptions.CultureInvariant))
+            {
+                throw new InstallUsageException("--image-ref must be an immutable digest or image ID.");
+            }
+            return;
+        }
+        if (ImageReference.Length != 0)
+        {
+            throw new InstallUsageException("--image-ref cannot be combined with a signed image release.");
+        }
+        if (ImageArchive is not null || ImageArchiveSha256 is not null)
+        {
+            throw new InstallUsageException(
+                "--image-archive and --image-archive-sha256 cannot be combined with a signed image release.");
+        }
+        if (ImageManifest is not null)
+        {
+            ValidateDistributionLocator(ImageManifest, "--image-manifest", Channel);
+        }
+        if (ImageIndex is not null)
+        {
+            ValidateDistributionLocator(ImageIndex, "--image-index", Channel);
         }
     }
 

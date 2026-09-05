@@ -432,20 +432,10 @@ internal sealed class RawIngressFileStore(
     }
 
     internal static int GetLinuxDirectoryOnlyFlag(Architecture architecture)
-        => architecture switch
-        {
-            Architecture.Arm or Architecture.Arm64 or Architecture.Armv6 or Architecture.Ppc64le => 0x4000,
-            Architecture.X86 or Architecture.X64 or Architecture.LoongArch64 or Architecture.RiscV64 or Architecture.S390x => 0x10000,
-            _ => throw new PlatformNotSupportedException($"Linux directory synchronization is not configured for {architecture}.")
-        };
+        => Storage.LinuxOpenFlags.GetDirectoryFlag(architecture);
 
     internal static int GetLinuxNoFollowFlag(Architecture architecture)
-        => architecture switch
-        {
-            Architecture.Arm or Architecture.Arm64 or Architecture.Armv6 or Architecture.Ppc64le => 0x8000,
-            Architecture.X86 or Architecture.X64 or Architecture.LoongArch64 or Architecture.RiscV64 or Architecture.S390x => 0x20000,
-            _ => throw new PlatformNotSupportedException($"Linux no-follow opening is not configured for {architecture}.")
-        };
+        => Storage.LinuxOpenFlags.GetNoFollowFlag(architecture);
 
     private void FlushDirectoryTracked(string directory)
     {

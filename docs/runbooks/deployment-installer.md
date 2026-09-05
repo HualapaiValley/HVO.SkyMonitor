@@ -80,6 +80,96 @@ JSON config may be supplied with `--config`; value options cannot be mixed with
 it. Flags such as `--dry-run`, `--json`, `--no-download`, and the explicit non-loopback HTTP
 acknowledgement may still be applied.
 
+## Signed Image Release
+
+> `linux/arm64` installation is no longer refused (the `open(2)` flag defect,
+> [#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603), is fixed
+> and the advisory arm64 workflow runs this CLI's Unit suite natively), but no
+> arm64 installer campaign and no smoke of a published arm64 release image have
+> run yet; treat an arm64 installation as unqualified end to end until #598 and
+> #599 close.
+
+`--image-ref` and `--image-archive` name an image the operator has already
+established. `--image-manifest`, `--image-index`, and `--image-version` instead
+consume the signed CameraAgent image train described in
+[release-distribution.md](release-distribution.md), and the two forms are
+mutually exclusive: a signed release resolves the image, so an installation
+never both trusts a release and accepts an operator-supplied image.
+
+An air-gapped installation receives the release directory on local media and
+needs neither registry access nor a source checkout:
+
+```bash
+hvo-skymonitor cameraagent install \
+  --channel local \
+  --image-manifest /media/hvo/image-v1.4.0/image-manifest.json \
+  --catalog-manifest /media/hvo/catalog-release/catalog-manifest.json \
+  --no-download \
+  --friendly-name "North All-Sky Camera" \
+  --owner-email admin@home.lan \
+  --latitude 35.2 --longitude -114.1 --elevation 800 --time-zone America/Phoenix
+```
+
+Online, use an immutable versioned manifest URL, or `--image-index` with
+`--image-version` to resolve a documented default from a signed index snapshot.
+A non-GitHub mirror also requires `--asset-base-url`; that option is shared with
+the catalog train, so a single invocation that names both a mirrored image
+release and a catalog release resolves both from the same base. Signed indexes
+are rollback-protected per train, so an older image index is refused just as an
+older catalog index is.
+
+The installation retains the verified archive under
+`<instance-root>/state/deployment/image-archive.tar` so a resumed or repeated
+operation does not re-acquire it. It is the size of the published image and is
+included in instance backups; size the instance filesystem accordingly.
+
+The installation resolves the release, selects the platform matching this host,
+and verifies the offline archive against its signed length and checksum **before
+the Docker daemon is contacted**. An unsupported architecture, a release that
+does not publish this host's architecture, a tampered archive, a mismatched
+signature, or a rolled-back index therefore fails while nothing has been loaded,
+started, or written to instance state. After Docker resolves the image, the
+labels it actually carries are compared against the signed compatibility record,
+and every contradicted boundary is reported in one message.
+
+The selected release is retained beside the other deployment evidence:
+
+```text
+<instance-root>/state/deployment/image-distribution.json
+```
+
+It records the release train, tag, version, manifest checksum, signing key,
+asset name and checksum, resolved source URI, verification result, the platform
+and immutable image ID that were installed, the source revision and tree, the
+SBOM, provenance, and vulnerability-scan asset names, and the exact compatibility
+boundaries the release declared. An operator can correlate a running container
+with its release without network access.
+
+The record follows the image the instance actually runs. It is written only once
+the image has been prepared and accepted, a refused install or upgrade leaves
+none behind, and a rollback withdraws whatever the superseded upgrade recorded.
+Its `manifestDigest` is the release's multi-architecture identity; for a release
+published without a registry push that value is a computed index digest and is
+not resolvable with `docker pull`.
+
+An upgrade accepts the same options and writes the same evidence before the
+operation begins:
+
+```bash
+hvo-skymonitor cameraagent upgrade \
+  --instance-id <uuid> \
+  --channel local \
+  --image-manifest /media/hvo/image-v1.5.0/image-manifest.json \
+  --no-download
+```
+
+`--migration-backward-compatible` remains a separate operator assertion about the
+candidate's state migration and is required only when the candidate declares one.
+Do not add it to a routine upgrade; doing so defeats the gate it exists for.
+
+Rollback continues to use the retained previous image identity and never
+consults a release train.
+
 ## Local Replay Runner
 
 Archived replay remains in the CameraAgent process by default. Select the
@@ -447,6 +537,32 @@ accepted after partial deletion, while additions and replacements fail closed.
 
 LogicHost lifecycle, remote orchestration, and physical-camera discovery remain
 future lifecycle scope.
+
+## Harness Inputs For A Published Image
+
+Both container harnesses can exercise a published image instead of building one,
+so a signed release can be proved against the bytes an operator receives:
+
+```bash
+# Install, health, replay-runner health, stop-and-reinstall idempotence, preflight,
+# bind-source ownership and mode, uninstall, and the explicit reset, against a
+# published archive rather than a locally built image. The authenticated owner
+# recovery, upgrade, and rollback contract belongs to the baseline-revision run
+# and is not exercised here.
+HVO_PRODUCTION_CATALOG_BUNDLE=<bundle> \
+HVO_INSTALLER_RELEASE_ARCHIVE=<candidate>/cameraagent-image-v<version>-linux-amd64.tar \
+  ./scripts/test:deployment-installer
+
+# Two-agent standalone smoke against a published image. Diagnostic mode only:
+# this run records the local worktree revision, so it cannot produce citable
+# evidence for an image built elsewhere.
+HVO_CAMERAAGENT_SMOKE_IMAGE=<tag, repository digest, or image ID> \
+  ./scripts/test:cameraagent-dual-standalone-smoke
+```
+
+Neither variable changes anything when unset; both harnesses build their own
+image as before. `HVO_INSTALLER_BASELINE_REVISION` takes precedence, because a
+baseline upgrade contract needs two images built from two revisions.
 
 ## Build Evidence
 

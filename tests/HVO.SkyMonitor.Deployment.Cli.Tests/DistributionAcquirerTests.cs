@@ -12,13 +12,13 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class DistributionCatalogAcquirerTests
+public sealed class DistributionAcquirerTests
 {
     [TestMethod]
     public async Task AcquireAsync_SignedOfflineBundle_VerifiesAndExtractsExactFiles()
     {
         using var fixture = CatalogDistributionFixture.Create();
-        using var acquirer = new DistributionCatalogAcquirer(cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot);
 
         using var acquired = await acquirer.AcquireAsync(fixture.LocalRequest(), CancellationToken.None);
 
@@ -32,14 +32,14 @@ public sealed class DistributionCatalogAcquirerTests
     {
         using var fixture = CatalogDistributionFixture.Create();
         using var handler = new FixtureHandler(fixture.NetworkAssets);
-        using (var online = new DistributionCatalogAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot))
+        using (var online = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot))
         using (var acquired = await online.AcquireAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None))
         {
             Assert.AreEqual(3, handler.RequestCount);
         }
 
         using var offlineHandler = new FixtureHandler(new Dictionary<Uri, byte[]>());
-        using var offline = new DistributionCatalogAcquirer(offlineHandler, fixture.CacheRoot, fixture.TrustRoot);
+        using var offline = new DistributionAcquirer(offlineHandler, fixture.CacheRoot, fixture.TrustRoot);
         using var cached = await offline.AcquireAsync(fixture.NetworkRequest(noDownload: true), CancellationToken.None);
 
         Assert.AreEqual(0, offlineHandler.RequestCount);
@@ -53,7 +53,7 @@ public sealed class DistributionCatalogAcquirerTests
         var assets = fixture.NetworkAssets.ToDictionary(static pair => pair.Key, static pair => pair.Value.ToArray());
         assets[fixture.BundleUri][^1] ^= 1;
         using var handler = new FixtureHandler(assets);
-        using var acquirer = new DistributionCatalogAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
 
         await Assert.ThrowsExactlyAsync<InstallerException>(
             () => acquirer.AcquireAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None));
@@ -66,7 +66,7 @@ public sealed class DistributionCatalogAcquirerTests
     {
         using var fixture = CatalogDistributionFixture.Create();
         using var handler = new FixtureHandler(fixture.NetworkAssets);
-        using var acquirer = new DistributionCatalogAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
 
         using var acquired = await acquirer.AcquireAsync(fixture.IndexRequest(), CancellationToken.None);
 
@@ -83,7 +83,7 @@ public sealed class DistributionCatalogAcquirerTests
         var assets = fixture.NetworkAssets.ToDictionary(static pair => pair.Key, static pair => pair.Value);
         assets[source] = assets[fixture.BundleUri];
         using var handler = new RedirectFixtureHandler(assets, source, terminal);
-        using var acquirer = new DistributionCatalogAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
 
         var request = fixture.NetworkRequest(noDownload: false) with
         {
@@ -100,7 +100,7 @@ public sealed class DistributionCatalogAcquirerTests
         using var fixture = CatalogDistributionFixture.Create();
         using var handler = new RedirectFixtureHandler(
             fixture.NetworkAssets, fixture.BundleUri, new Uri("https://untrusted.example/catalog-bundle.tar.gz"));
-        using var acquirer = new DistributionCatalogAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
 
         await Assert.ThrowsExactlyAsync<InstallerException>(
             () => acquirer.AcquireAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None));
@@ -117,7 +117,7 @@ public sealed class DistributionCatalogAcquirerTests
         File.SetUnixFileMode(victim, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         File.CreateSymbolicLink(Path.Combine(assetRoot, $".{fixture.AssetName}.partial"), victim);
         using var handler = new FixtureHandler(fixture.NetworkAssets);
-        using var acquirer = new DistributionCatalogAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
 
         await Assert.ThrowsExactlyAsync<InstallerException>(
             () => acquirer.AcquireAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None));
@@ -132,7 +132,7 @@ public sealed class DistributionCatalogAcquirerTests
         var assets = fixture.NetworkAssets.ToDictionary(static pair => pair.Key, static pair => pair.Value.ToArray());
         assets[fixture.BundleUri][^1] ^= 1;
         using var handler = new FixtureHandler(assets);
-        using var acquirer = new DistributionCatalogAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
 
         await Assert.ThrowsExactlyAsync<InstallerException>(
             () => acquirer.AcquireAsync(fixture.IndexRequest(), CancellationToken.None));

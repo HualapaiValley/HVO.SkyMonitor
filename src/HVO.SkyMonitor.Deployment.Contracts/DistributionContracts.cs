@@ -12,7 +12,8 @@ public static class DistributionSchemaVersions
 public enum DistributionManifestKind
 {
     InstallerRelease,
-    CatalogRelease
+    CatalogRelease,
+    ImageRelease
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<DistributionArtifactRole>))]
@@ -25,7 +26,8 @@ public enum DistributionArtifactRole
     Sbom,
     Provenance,
     License,
-    Attribution
+    Attribution,
+    VulnerabilityScan
 }
 
 public sealed record DistributionReleaseIdentity(
@@ -74,6 +76,22 @@ public sealed record DistributionImagePlatform(
     string? OfflineArchiveAsset,
     string? OfflineArchiveImageId);
 
+/// <summary>
+/// The durable-state, configuration, catalog, and replay boundaries the published image declares through its
+/// OCI labels. The signed copy exists so an installation can reject an incompatible image before it loads or
+/// starts anything, and so the labels the running image actually carries can be compared against signed values
+/// rather than trusted on their own.
+/// </summary>
+public sealed record DistributionImageCompatibility(
+    string StateContract,
+    string MinimumCompatibleRevision,
+    string IdentityMigration,
+    int RawIngressSchema,
+    int CatalogManifestVersion,
+    string ConfigurationContract,
+    string CatalogContract,
+    string? ReplayRunnerContract);
+
 public sealed record DistributionImageIdentity(
     string Component,
     string Repository,
@@ -82,7 +100,9 @@ public sealed record DistributionImageIdentity(
     string SourceTree,
     IReadOnlyList<DistributionImagePlatform> Platforms,
     string ProvenanceAsset,
-    string SbomAsset);
+    string SbomAsset,
+    string VulnerabilityScanAsset,
+    DistributionImageCompatibility Compatibility);
 
 public sealed record DistributionReleaseManifest(
     int SchemaVersion,

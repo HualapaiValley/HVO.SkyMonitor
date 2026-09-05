@@ -165,8 +165,10 @@ bundle. The native job then:
 1. verifies native host and Docker architecture, memory, physical network link
    and transport, SSD/NVMe placement, service-account privilege, temperature,
    and throttle state;
-2. builds CameraAgent and its CameraAgent, acceptance, and SQLite catalog Unit
-   projects in Release with warnings as errors and an invalid Docker endpoint;
+2. builds CameraAgent and its CameraAgent, acceptance, SQLite catalog, and
+   deployment CLI Unit projects in Release with warnings as errors and runs
+   them with an invalid Docker endpoint and the production catalog bundle
+   exported, so the CLI's installer-flow cases gate rather than skip;
 3. publishes `linux-arm64`, inspects AArch64 ELF identities, rejects test
    assemblies, and writes a sorted SHA-256 manifest;
 4. installs and integrity-checks the canonical SQLite catalog;

@@ -23,6 +23,9 @@ cleanup() {
   if [[ -n "$candidate_tag" ]]; then
     docker image rm --force "$candidate_tag" >/dev/null 2>&1 || true
   fi
+  if [[ -n "${loaded_release_image:-}" ]]; then
+    docker image rm --force "$loaded_release_image" >/dev/null 2>&1 || true
+  fi
   chmod -R u+w "$root" >/dev/null 2>&1 || true
   rm -rf "$root"
 }
@@ -66,6 +69,11 @@ if [[ -n "$baseline_revision" ]]; then
   test "$candidate_image_id" != "$(docker image inspect --format '{{.Id}}' "$install_tag")"
   test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$install_tag")" = "$baseline_revision"
   test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$candidate_tag")" = "$candidate_revision"
+elif [[ -n "${HVO_INSTALLER_RELEASE_ARCHIVE:-}" ]]; then
+  # Install the exact bytes a signed image release publishes rather than an image built here, so the lifecycle
+  # contract is proved against the artifact an operator receives.
+  test -f "$HVO_INSTALLER_RELEASE_ARCHIVE"
+  release_archive=1
 else
   docker build --build-arg "HVO_SOURCE_REVISION=$(git rev-parse HEAD)" --tag "$install_tag" \
     --file src/HVO.SkyMonitor.CameraAgent/Dockerfile .
@@ -73,10 +81,20 @@ fi
 dotnet restore "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime linux-x64
 dotnet publish "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
   --no-restore --configuration Release --runtime linux-x64 --output "$publish_root"
-image_id="$(docker image inspect --format '{{.Id}}' "$install_tag")"
-docker image save --output "$archive" "$install_tag"
+if [[ "${release_archive:-0}" == 1 ]]; then
+  cp "$HVO_INSTALLER_RELEASE_ARCHIVE" "$archive"
+  loaded_reference="$(docker image load --input "$archive" | sed -n 's/^Loaded image ID: //p;s/^Loaded image: //p' | head -n 1)"
+  test -n "$loaded_reference"
+  image_id="$(docker image inspect --format '{{.Id}}' "$loaded_reference")"
+  loaded_release_image="$image_id"
+else
+  image_id="$(docker image inspect --format '{{.Id}}' "$install_tag")"
+  docker image save --output "$archive" "$install_tag"
+fi
 archive_sha256="$(sha256sum "$archive" | cut -d ' ' -f 1)"
-docker image rm "$install_tag"
+if [[ "${release_archive:-0}" != 1 ]]; then
+  docker image rm "$install_tag"
+fi
 
 common_arguments=(
   cameraagent install
