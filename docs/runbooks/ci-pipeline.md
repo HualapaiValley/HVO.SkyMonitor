@@ -240,11 +240,13 @@ changed path is an added or modified member of this allowlist:
 - `tools/asi-capture/README.md`
 - one-level `src/*/README.md` and `tests/*/README.md`
 - `tests/fixtures/catalog/SOURCE.md` and `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
-- `scripts/opencode:enable`, `scripts/opencode:disable`, `scripts/opencode:connect`, `scripts/opencode:remote-connect`, and `scripts/test:opencode`
-
+- `scripts/test:devcontainer`
 Reduced mode still runs lightweight **Quality** and **Required CI**. Quality
-does not set up .NET, restore/format the solution, build catalog artifacts, or
-run the package audit for paths excluded from application/package behavior. It
+resolves the devcontainer definition with credentials removed from the process
+environment and suppresses the resolved output because future configuration may
+contain secrets. It does not set up .NET, restore/format the solution, build
+catalog artifacts, or run the package audit for paths excluded from
+application/package behavior. It
 intentionally skips Catalog Contracts, Build, Unit Tests, Integration Tests,
 Architecture & Publish, Coverage Policy, both migration checks, every component
 lane, and Coverage. Reduced mode is the only plan in which the never-component-scoped

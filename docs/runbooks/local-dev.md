@@ -1,11 +1,13 @@
 # Local Development Runbook
 
 This runbook describes supported day-to-day development workflows for
-HVO.SkyMonitor.
+HVO.SkyMonitor. Native Linux development, including SSH and remote-agent
+sessions, is the primary workflow. The optional devcontainer provides the same
+toolchain for cloud or isolated workspaces.
 
 ## Prerequisites
 
-- Docker Engine with Compose; the devcontainer includes both.
+- Docker Engine with Compose.
 - Exact .NET SDK from `global.json`.
 - `jq` for protected JSON input to .NET User Secrets.
 - Access to development shared-service credentials.
