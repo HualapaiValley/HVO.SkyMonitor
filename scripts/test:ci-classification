@@ -927,10 +927,6 @@ grep -Fxq "    if: github.ref == 'refs/heads/main'" <<< "$badges_job" || {
   printf 'Coverage badges must publish only from main.\n' >&2
   exit 1
 }
-grep -Fxq '    continue-on-error: true' <<< "$badges_job" || {
-  printf 'The coverage badge job must tolerate a hard external-request timeout.\n' >&2
-  exit 1
-}
 grep -Fxq '    permissions: {}' <<< "$badges_job" || {
   printf 'Coverage badge publication must not receive repository permissions.\n' >&2
   exit 1
@@ -950,8 +946,36 @@ if grep -Fq 'secrets.COVERAGE_GIST_ID' <<< "$badges_job"; then
   exit 1
 fi
 badge_continue_count="$(grep -Fc 'continue-on-error: true' <<< "$badges_job" || true)"
-if (( badge_continue_count != 3 )); then
-  printf 'The coverage badge job and both publication steps must remain best-effort.\n' >&2
+if (( badge_continue_count != 1 )); then
+  printf 'Only the bounded coverage badge publication step must be best-effort.\n' >&2
+  exit 1
+fi
+grep -Fq -- '--connect-timeout 10' <<< "$badges_job" || {
+  printf 'Coverage badge publication must bound the Gist connection attempt.\n' >&2
+  exit 1
+}
+grep -Fq -- '--max-time 45' <<< "$badges_job" || {
+  printf 'Coverage badge publication must bound each Gist transfer.\n' >&2
+  exit 1
+}
+grep -Fq -- '--retry-max-time 120' <<< "$badges_job" || {
+  printf 'Coverage badge publication must bound its retry window below the job timeout.\n' >&2
+  exit 1
+}
+grep -Fq -- '--request PATCH' <<< "$badges_job" || {
+  printf 'Coverage badge publication must update both Gist files atomically.\n' >&2
+  exit 1
+}
+grep -Fq 'https://api.github.com/gists/$BADGE_GIST_ID' <<< "$badges_job" || {
+  printf 'Coverage badge publication must use the configured Gist API endpoint.\n' >&2
+  exit 1
+}
+grep -Fq 'header = "Authorization: Bearer %s"' <<< "$badges_job" || {
+  printf 'Coverage badge publication must keep the credential out of process arguments.\n' >&2
+  exit 1
+}
+if grep -Fq 'dynamic-badges-action' <<< "$badges_job"; then
+  printf 'Coverage badge publication must use the bounded first-party API request.\n' >&2
   exit 1
 fi
 grep -Fq 'Report unconfigured coverage badge publication' <<< "$badges_job" || {

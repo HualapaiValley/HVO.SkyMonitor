@@ -67,13 +67,16 @@ gh variable set COVERAGE_GIST_ID \
   --repo RoySalisbury/HVO.SkyMonitor
 ```
 
-The publication job is best-effort because `Required CI` is the protected
-code-quality gate. Missing configuration emits a warning and summary, and a
-completed Gist request failure emits a second diagnostic summary. The job-level
-best-effort boundary also prevents a hard external-request timeout from turning
-an otherwise healthy main workflow red when no later reporting step can run.
-Treat any badge-job warning, failed step, or timeout as stale-badge evidence and
-repair it before relying on the displayed percentages.
+The publication step is best-effort because `Required CI` is the protected
+code-quality gate. Missing configuration emits a warning and summary. When
+configured, the job sends one atomic Gist API request for both files. Connection,
+transfer, and retry limits bound that request to less than the job's five-minute
+backstop; a request failure is tolerated and followed by a diagnostic warning
+and summary. The token is supplied to `curl` through standard input rather than
+the process argument list on the shared runner. Treat any badge-job warning or
+failed publication step as stale-badge evidence and repair it before relying on
+the displayed percentages. A runner or workflow cancellation can still cancel
+the overall run and is an infrastructure failure, not a badge-publication result.
 
 Rotate the token make-before-break: create the replacement with the same narrow
 permission or scope, create a new Key Vault secret version, update the GitHub
