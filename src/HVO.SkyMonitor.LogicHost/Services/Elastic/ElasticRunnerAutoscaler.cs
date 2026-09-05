@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.ProcessingRunner.Contracts;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -131,7 +132,9 @@ internal sealed partial class ElasticRunnerAutoscaler(
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         foreach (var row in stale)
         {
-            await StopAsync(dbContext, row, now, ElasticRunnerInstanceState.Orphaned, "owner-lost", cancellationToken).ConfigureAwait(false);
+            // Abandoned rather than orphaned: the registry denies any re-registration of this runner id, so a process
+            // that outlived its host stops on its own instead of reviving the retired registration.
+            await StopAsync(dbContext, row, now, ElasticRunnerInstanceState.Abandoned, "owner-lost", cancellationToken).ConfigureAwait(false);
             telemetry.RecordOrphanCleaned(provider.Name);
             Log.OwnerLost(logger, row.InstanceId, row.HostName);
         }
@@ -141,12 +144,19 @@ internal sealed partial class ElasticRunnerAutoscaler(
             _adopted = true;
         }
         var alive = (await provider.ListAsync(cancellationToken).ConfigureAwait(false)).ToDictionary(instance => instance.InstanceId, StringComparer.Ordinal);
-        var runnerIds = rows.Select(row => row.RunnerId).ToArray();
+        // Occupied slots are deployment-wide: every replica's live instances contribute to in-flight demand.
+        var liveRunnerIds = await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+            .Where(instance => instance.Provider == provider.Name && live.Contains(instance.State))
+            .Select(instance => instance.RunnerId)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
         var registrations = await dbContext.CentralProcessingRunners.AsNoTracking()
-            .Where(runner => runnerIds.Contains(runner.RunnerId))
+            .Where(runner => liveRunnerIds.Contains(runner.RunnerId))
             .Select(runner => new { runner.RunnerId, runner.Status, runner.RegisteredAtUtc, runner.AvailableSlots, runner.MaxConcurrency })
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var registered = registrations.ToDictionary(runner => runner.RunnerId, StringComparer.Ordinal);
+        var localRunnerIds = rows.Select(row => row.RunnerId).ToHashSet(StringComparer.Ordinal);
+        var inFlight = registrations.Where(runner => !localRunnerIds.Contains(runner.RunnerId) && runner.Status == CentralProcessingRunnerStatus.Active)
+            .Sum(runner => Math.Max(0, runner.MaxConcurrency - runner.AvailableSlots));
         var orphans = 0;
         // Provider instances without a durable row (a launch whose record failed to persist) are retired so they
         // never run unaccounted; the next provisioning starts from a recorded intent.
@@ -158,7 +168,6 @@ internal sealed partial class ElasticRunnerAutoscaler(
             telemetry.RecordOrphanCleaned(provider.Name);
             orphans++;
         }
-        var inFlight = 0;
         foreach (var row in rows)
         {
             registered.TryGetValue(row.RunnerId, out var registration);
@@ -223,12 +232,16 @@ internal sealed partial class ElasticRunnerAutoscaler(
             + otherHosts.Where(item => item.State == nameof(ElasticRunnerInstanceState.Starting)).Sum(item => item.Count);
         var running = current.Count(row => row.State == nameof(ElasticRunnerInstanceState.Running))
             + otherHosts.Where(item => item.State == nameof(ElasticRunnerInstanceState.Running)).Sum(item => item.Count);
-        // Excess instances (with a safety timeout) retire before instances kept for the warm minimum.
+        // Idle retirement candidates are the running instances idle beyond the scale-to-zero delay; excess instances
+        // (with a safety timeout) retire before instances kept for the warm minimum.
         var idle = current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Running))
             .Select(row => new { Row = row, IdleFor = now - (row.LastBusyAtUtc ?? row.RegisteredAtUtc ?? row.StartedAtUtc) })
+            .Where(item => item.IdleFor >= settings.ScaleToZeroAfter)
             .OrderBy(item => item.Row.KeepWarm)
             .ThenByDescending(item => item.IdleFor)
             .ToList();
+        var warmLive = await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+            .CountAsync(instance => instance.Provider == provider.Name && instance.KeepWarm && liveStates.Contains(instance.State), cancellationToken).ConfigureAwait(false);
 
         var placed = runnerOptions.Value.ResolveRunnerPlacedRecipes();
         var backlogRows = placed.Count == 0
@@ -263,23 +276,58 @@ internal sealed partial class ElasticRunnerAutoscaler(
                 : backlogRows.Sum(row => Math.Max(0, entitlements.ResolveActiveJobs(row.ObservatoryId) - (activeByObservatory.TryGetValue(row.ObservatoryId, out var active) ? active : 0))) + inFlight;
         }
         var minutesToday = await InstanceMinutesTodayAsync(dbContext, now, cancellationToken).ConfigureAwait(false);
-        var input = new ElasticScalingInput(backlog, oldestAge, running, starting, idle.Count(item => item.IdleFor >= settings.ScaleToZeroAfter),
-            idle.Count == 0 ? TimeSpan.Zero : idle[0].IdleFor, entitled, minutesToday, inFlight);
+        var input = new ElasticScalingInput(backlog, oldestAge, running, starting, idle.Count,
+            idle.Count == 0 ? TimeSpan.Zero : idle.Max(item => item.IdleFor), entitled, minutesToday, inFlight, warmLive);
+        // Deployment-wide decisions are serialized: the decision and its durable intents commit under one
+        // application lock so replicas sampling the same backlog cannot both fill the same shortfall.
+        await using var scaling = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var lockResult = new SqlParameter("@result", System.Data.SqlDbType.Int) { Direction = System.Data.ParameterDirection.Output };
+        await dbContext.Database.ExecuteSqlRawAsync(
+            "EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 5000;",
+            [new SqlParameter("@resource", $"hvo-elastic-scaling:{provider.Name}"), lockResult], cancellationToken).ConfigureAwait(false);
+        if (lockResult.Value is not int acquired || acquired < 0)
+        {
+            await scaling.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            Log.ScalingLockBusy(logger);
+            telemetry.UpdateSnapshot(new ElasticProviderSnapshot(now, provider.Name, starting, running, idle.Count, backlog, (long)oldestAge.TotalSeconds, minutesToday, "scaling-lock-busy", orphans));
+            return ElasticScalingDecision.Steady;
+        }
+        // Re-read the deployment-wide counts under the lock: another replica may have decided since the sample began.
+        var lockedOthers = await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+            .Where(instance => instance.Provider == provider.Name && instance.HostName != HostName && liveStates.Contains(instance.State))
+            .GroupBy(instance => instance.State).Select(group => new { State = group.Key, Count = group.Count() })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        starting = current.Count(row => row.State == nameof(ElasticRunnerInstanceState.Starting)) + lockedOthers.Where(item => item.State == nameof(ElasticRunnerInstanceState.Starting)).Sum(item => item.Count);
+        running = current.Count(row => row.State == nameof(ElasticRunnerInstanceState.Running)) + lockedOthers.Where(item => item.State == nameof(ElasticRunnerInstanceState.Running)).Sum(item => item.Count);
+        input = input with { Running = running, Starting = starting };
         var decision = ElasticScalingPolicy.Decide(settings, input, provider.EstimateStartup());
         if (decision.Provision == 0 && decision.Retire == 0 && decision.Reason is not "steady" && backlog > 0)
         {
             telemetry.RecordRejectedPlacement(provider.Name, decision.Reason);
             Log.PlacementRejected(logger, decision.Reason, backlog, (long)oldestAge.TotalSeconds);
         }
+        // Durable intents are recorded under the lock; the processes are launched after it commits.
+        var intents = new List<(CentralElasticRunnerInstance Row, ElasticRunnerProvisionRequest Request)>();
         for (var i = 0; i < decision.Provision; i++)
         {
-            await ProvisionAsync(dbContext, settings, now, cancellationToken).ConfigureAwait(false);
+            intents.Add(CreateIntent(dbContext, settings, now, warmLive + i));
+        }
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await scaling.CommitAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var (row, request) in intents)
+        {
+            await LaunchAsync(dbContext, settings, row, request, now, cancellationToken).ConfigureAwait(false);
         }
         var retired = 0;
         var idleRetired = 0;
-        // Idle instances first (longest idle first), then registering ones when the decision covers them (daily limit).
-        var retiring = idle.Select(item => (item.Row, item.IdleFor))
-            .Concat(current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Starting)).Select(row => (Row: row, IdleFor: TimeSpan.Zero)))
+        // Idle scale-down retires only instances idle beyond the delay; the daily-limit drain covers every active
+        // instance (idle first, then busy running ones, then registering ones).
+        var idleRows = idle.Select(item => (item.Row, item.IdleFor)).ToList();
+        var retiring = (decision.Reason == ElasticScalingPolicy.ReasonDailyLimit
+                ? idleRows
+                    .Concat(current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Running) && !idleRows.Any(item => item.Row == row)).Select(row => (Row: row, IdleFor: TimeSpan.Zero)))
+                    .Concat(current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Starting)).Select(row => (Row: row, IdleFor: TimeSpan.Zero)))
+                : idleRows)
             .Take(decision.Retire)
             .ToList();
         await provider.RetireAsync(retiring.Select(item => item.Row.InstanceId).ToArray(), settings.RetireGrace, cancellationToken).ConfigureAwait(false);
@@ -288,12 +336,12 @@ internal sealed partial class ElasticRunnerAutoscaler(
             await StopAsync(dbContext, item.Row, now, ElasticRunnerInstanceState.Stopped, decision.Reason, cancellationToken).ConfigureAwait(false);
             telemetry.RecordRetirement(provider.Name, decision.Reason);
             retired++;
-            if (item.Row.State == nameof(ElasticRunnerInstanceState.Stopped) && item.IdleFor >= settings.ScaleToZeroAfter)
+            if (item.IdleFor >= settings.ScaleToZeroAfter)
             {
                 idleRetired++;
             }
         }
-        var startingRetired = retiring.Count(item => item.IdleFor == TimeSpan.Zero && item.Row.RegisteredAtUtc is null);
+        var startingRetired = retiring.Count(item => item.Row.RegisteredAtUtc is null);
         telemetry.UpdateSnapshot(new ElasticProviderSnapshot(
             now, provider.Name, Math.Max(0, starting + decision.Provision - startingRetired), Math.Max(0, running - (retired - startingRetired)),
             Math.Max(0, input.Idle - idleRetired), backlog, (long)oldestAge.TotalSeconds, minutesToday, decision.Reason, orphans));
@@ -324,7 +372,9 @@ internal sealed partial class ElasticRunnerAutoscaler(
         }
     }
 
-    private async Task ProvisionAsync(ApplicationDbContext dbContext, CentralElasticProviderOptions settings, DateTimeOffset now, CancellationToken cancellationToken)
+    /// <summary>Records the durable intent for one instance (under the scaling lock); the launch follows the commit.</summary>
+    private (CentralElasticRunnerInstance Row, ElasticRunnerProvisionRequest Request) CreateIntent(
+        ApplicationDbContext dbContext, CentralElasticProviderOptions settings, DateTimeOffset now, int warmSoFar)
     {
         var instanceId = Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
         var runnerId = $"elastic-{provider.Name}-{instanceId}";
@@ -336,15 +386,12 @@ internal sealed partial class ElasticRunnerAutoscaler(
             labels.Add($"pool:{pool}");
             labels.Add("pool-mode:reserved");
         }
-        // Instances filling the warm minimum keep no self-termination timeout; excess capacity keeps the safety net.
-        var liveCount = await dbContext.CentralElasticRunnerInstances.CountAsync(instance => instance.Provider == provider.Name
-            && (instance.State == nameof(ElasticRunnerInstanceState.Starting) || instance.State == nameof(ElasticRunnerInstanceState.Running)), cancellationToken).ConfigureAwait(false);
+        // Instances carrying the warm designation never self-terminate; the designation follows the live count of
+        // warm instances, so a lost warm instance is replaced by a warm one even while excess capacity runs.
         var request = new ElasticRunnerProvisionRequest(
             instanceId, runnerId, CentralElasticProviderOptions.EligibleJobClasses, labels, settings.MaxConcurrencyPerInstance, settings.Pool,
-            KeepWarm: liveCount < settings.MinWarmInstances);
+            KeepWarm: warmSoFar < settings.MinWarmInstances);
         ElasticWorkloadClass.EnsureEligible(request.JobClasses);
-        // The durable intent is written before the launch so a launched process is always accounted for; if the
-        // launch fails the intent is closed, and if recording the process fails the process is retired.
         var row = new CentralElasticRunnerInstance
         {
             Provider = provider.Name,
@@ -360,7 +407,14 @@ internal sealed partial class ElasticRunnerAutoscaler(
             UpdatedAtUtc = now
         };
         dbContext.CentralElasticRunnerInstances.Add(row);
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return (row, request);
+    }
+
+    /// <summary>Launches a recorded intent; a failed launch closes the intent and a failed record retires the process.</summary>
+    private async Task LaunchAsync(
+        ApplicationDbContext dbContext, CentralElasticProviderOptions settings, CentralElasticRunnerInstance row, ElasticRunnerProvisionRequest request,
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
         ElasticRunnerInstance instance;
         try
         {
@@ -380,7 +434,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         }
         catch (Exception)
         {
-            await provider.RetireAsync(instanceId, settings.RetireGrace, CancellationToken.None).ConfigureAwait(false);
+            await provider.RetireAsync(row.InstanceId, settings.RetireGrace, CancellationToken.None).ConfigureAwait(false);
             throw;
         }
         telemetry.RecordProvision(provider.Name);
@@ -441,7 +495,10 @@ internal sealed partial class ElasticRunnerAutoscaler(
         [LoggerMessage(2237, LogLevel.Information, "Elastic runner instance inherited while provisioning is disabled: Instance={Instance}, Alive={Alive}")]
         public static partial void InheritedRetired(ILogger logger, string instance, bool alive);
 
-        [LoggerMessage(2239, LogLevel.Warning, "Elastic runner instance reaped because its owning host stopped reconciling it: Instance={Instance}, Owner={Owner}")]
+        [LoggerMessage(2239, LogLevel.Warning, "Elastic runner instance abandoned because its owning host stopped reconciling it: Instance={Instance}, Owner={Owner}")]
         public static partial void OwnerLost(ILogger logger, string instance, string owner);
+
+        [LoggerMessage(2240, LogLevel.Debug, "Elastic scaling decision skipped this sample: another replica holds the scaling lock.")]
+        public static partial void ScalingLockBusy(ILogger logger);
     }
 }

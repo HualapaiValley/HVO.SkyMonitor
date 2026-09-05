@@ -67,6 +67,9 @@ then cancels what remains and retires. Logs are JSON lines on stdout/stderr
 `HVO_RUNNER_STOP_FILE` (optional) names a file whose appearance asks the
 runner to stop claiming, drain, and exit; a host that manages runner
 processes (elastic provisioning) uses it as a cross-platform drain request.
+A registration rejected with `runner.registration-denied` (the host
+abandoned the runner) is terminal: the runner drains and exits instead of
+retrying.
 
 ## Container
 

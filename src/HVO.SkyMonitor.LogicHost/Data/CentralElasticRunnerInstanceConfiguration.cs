@@ -10,7 +10,7 @@ internal sealed class CentralElasticRunnerInstanceConfiguration : IEntityTypeCon
         ArgumentNullException.ThrowIfNull(builder);
         builder.ToTable("CentralElasticRunnerInstances", table => table.HasCheckConstraint(
             "CK_CentralElasticRunnerInstances_State",
-            "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned')"));
+            "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned', N'Abandoned')"));
         builder.HasKey(instance => instance.Id);
         builder.Property(instance => instance.Provider).HasMaxLength(64).IsRequired();
         builder.Property(instance => instance.HostName).HasMaxLength(256).IsRequired();

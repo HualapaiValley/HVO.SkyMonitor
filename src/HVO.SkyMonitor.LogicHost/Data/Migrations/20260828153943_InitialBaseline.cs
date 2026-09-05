@@ -5562,7 +5562,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CentralElasticRunnerInstances", x => x.Id);
-                    table.CheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned')");
+                    table.CheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned', N'Abandoned')");
                 });
 
             migrationBuilder.CreateTable(

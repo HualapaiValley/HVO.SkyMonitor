@@ -69,7 +69,10 @@ internal enum ElasticRunnerInstanceState
     Running,
     Stopping,
     Stopped,
-    Orphaned
+    Orphaned,
+
+    /// <summary>Its launching host stopped reconciling it; the registry denies the runner so it stops on its own.</summary>
+    Abandoned
 }
 
 /// <summary>A provider's view of one instance it launched.</summary>

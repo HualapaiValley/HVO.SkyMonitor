@@ -109,6 +109,17 @@ internal sealed partial class CentralProcessingRunnerRegistry(
         }
         var now = timeProvider.GetUtcNow();
         var eligible = _options.ResolveEligibleRecipes(request.Capabilities);
+        // An elastic instance whose launching host is gone was abandoned by the autoscaler (#430); its runner must
+        // stop rather than revive the retired registration and keep claiming unmanaged.
+        if (await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+                .AnyAsync(instance => instance.RunnerId == request.RunnerId && instance.State == "Abandoned", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            telemetry.RecordRegistration("rejected");
+            throw CentralProcessingRunnerRejectedException.Create(
+                ProcessingRunnerReasonCodes.RegistrationDenied,
+                "The runner was abandoned by its launching host and may not re-register.");
+        }
         var runner = await dbContext.CentralProcessingRunners
             .SingleOrDefaultAsync(candidate => candidate.RunnerId == request.RunnerId, cancellationToken)
             .ConfigureAwait(false);

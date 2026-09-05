@@ -11,7 +11,8 @@ internal sealed record ElasticScalingInput(
     TimeSpan LongestIdle,
     int? EntitledConcurrency,
     int InstanceMinutesToday,
-    int InFlight = 0);
+    int InFlight = 0,
+    int WarmInstances = 0);
 
 internal sealed record ElasticScalingDecision(int Provision, int Retire, string Reason)
 {
@@ -59,20 +60,24 @@ internal static class ElasticScalingPolicy
             }
         }
         var desired = Math.Clamp(Math.Max(needed, options.MinWarmInstances), 0, options.MaxInstances);
-        if (desired > active)
+        // The warm minimum is a count of instances that never self-terminate: when fewer than that carry the warm
+        // designation (a warm instance was lost, or the minimum was raised), replacements are provisioned even while
+        // excess capacity is running, within the instance maximum.
+        var warmShortfall = Math.Max(0, Math.Min(Math.Min(options.MinWarmInstances, options.MaxInstances) - input.WarmInstances, options.MaxInstances - active));
+        if (desired > active || warmShortfall > 0)
         {
             if (options.MaxInstanceMinutesPerDay > 0 && input.InstanceMinutesToday >= options.MaxInstanceMinutesPerDay)
             {
                 return new ElasticScalingDecision(0, 0, ReasonDailyLimit);
             }
-            var warmShortfall = Math.Max(0, Math.Min(options.MinWarmInstances, options.MaxInstances) - active);
             if (input.Backlog > 0 && needed > active && startupEstimate + input.OldestBacklogAge > options.QueueDeadline)
             {
                 // Provider startup cannot meet the deadline for the oldest work: keep it local, only top up the warm minimum.
                 return new ElasticScalingDecision(warmShortfall, 0, ReasonColdStartExceedsDeadline);
             }
+            var provision = Math.Max(desired - active, warmShortfall);
             var reason = needed > active ? (entitlementBound ? ReasonEntitlementBound : ReasonBacklog) : ReasonWarmMinimum;
-            return new ElasticScalingDecision(desired - active, 0, reason);
+            return new ElasticScalingDecision(provision, 0, reason);
         }
         if (desired < active && input.Idle > 0 && input.LongestIdle >= options.ScaleToZeroAfter)
         {

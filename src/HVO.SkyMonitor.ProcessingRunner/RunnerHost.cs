@@ -21,6 +21,7 @@ internal sealed class RunnerHost(
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _activeJobs = new();
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly CancellationTokenSource _stopRequest = new();
     private ProcessingRunnerRegistrationResponse? _registration;
     private long _lastWorkTimestamp;
     private int _availableSlots;
@@ -46,7 +47,7 @@ internal sealed class RunnerHost(
         // External cancellation (SIGTERM) only stops claiming. Heartbeats, renewals, and in-flight executions keep
         // the runner lifetime token until the grace period has drained active jobs, so a deployment restart does not
         // abandon work that could still complete.
-        using var claimStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var claimStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stopRequest.Token);
         var heartbeat = HeartbeatLoopAsync(_lifetime.Token);
         var slots = Enumerable.Range(0, options.MaxConcurrency)
             .Select(slot => SlotLoopAsync(slot, claimStop.Token))
@@ -95,6 +96,12 @@ internal sealed class RunnerHost(
                         "LogicHost placed no recipes on this runner; it will heartbeat and wait for a placement change.");
                 }
                 return registration;
+            }
+            catch (ProcessingRunnerClientException exception) when (string.Equals(exception.ReasonCode, ProcessingRunnerReasonCodes.RegistrationDenied, StringComparison.Ordinal))
+            {
+                // The host abandoned this runner (its launching host is gone): stop instead of retrying.
+                log.Warning("registration-denied", $"LogicHost denied this runner ({exception.Message}); stopping.");
+                return null;
             }
             catch (ProcessingRunnerClientException exception) when (!exception.IsAuthorizationFailure
                 || options.RetryAuthorizationFailures)
@@ -167,6 +174,12 @@ internal sealed class RunnerHost(
                     _registration = registration;
                     interval = registration.HeartbeatInterval;
                     TouchLiveness();
+                }
+                else if (!cancellationToken.IsCancellationRequested)
+                {
+                    // Re-registration was denied: drain and exit rather than claim under a registration the host refuses.
+                    log.Warning("stop-requested", "Re-registration was denied; draining and shutting down.");
+                    await _stopRequest.CancelAsync().ConfigureAwait(false);
                 }
             }
             catch (ProcessingRunnerClientException exception)
@@ -527,7 +540,11 @@ internal sealed class RunnerHost(
         }
     }
 
-    public void Dispose() => _lifetime.Dispose();
+    public void Dispose()
+    {
+        _lifetime.Dispose();
+        _stopRequest.Dispose();
+    }
 
     private static TimeSpan Backoff(TimeSpan claimBackoff, ProcessingRunnerClientException exception)
         => exception.IsUnavailable || exception.IsAuthorizationFailure

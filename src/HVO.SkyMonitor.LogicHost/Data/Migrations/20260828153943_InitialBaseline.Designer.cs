@@ -2715,7 +2715,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.ToTable("CentralElasticRunnerInstances", null, t =>
                         {
-                            t.HasCheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned')");
+                            t.HasCheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned', N'Abandoned')");
                         });
                 });
                 });

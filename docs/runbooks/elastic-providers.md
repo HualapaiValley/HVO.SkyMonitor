@@ -79,13 +79,22 @@ processes on the host on demand. Absent and disabled by default.
   with `ElasticProviders` disabled), while `MaxInstances` and the warm
   minimum count every replica's live instances. Each sample heartbeats the
   host's rows; rows whose owner has not reconciled them for six sample
-  intervals (at least five minutes) are reaped as `owner-lost` and stop
-  accruing minutes. `SampleInterval` and `RetireGrace` are validated even
+  intervals (at least five minutes) are abandoned as `owner-lost` and stop
+  accruing minutes; the registry then denies any re-registration of that
+  runner id (`runner.registration-denied`), so a runner process that
+  outlived its host drains and exits on its own instead of reviving its
+  registration. Deployment-wide scaling decisions are serialized under a
+  database application lock and the intents are committed before the
+  processes launch, so two replicas cannot both fill the same shortfall;
+  in-flight work on every replica's instances counts toward demand. `SampleInterval` and `RetireGrace` are validated even
   while disabled because that cleanup consumes them.
 - The entitlement bound is each backlogged observatory's remaining headroom
   (its limit minus its unexpired leases from any worker) plus the work
   already executing on the instances. Scale-down retires excess instances
-  before instances kept for the warm minimum. A retirement interrupted by
+  before instances kept for the warm minimum, and only instances idle beyond
+  `ScaleToZeroAfter` are idle-retirement candidates. The warm designation
+  follows the live count of warm instances: a lost warm instance is replaced
+  by a warm one even while excess capacity runs. A retirement interrupted by
   host shutdown leaves the instance tracked and its stop file in place so the
   runner still drains and the next host reconciles it.
 

@@ -189,6 +189,10 @@ public sealed class CentralElasticProviderOptionsTests
 
         var warm = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, minWarm: 1), new ElasticScalingInput(0, TimeSpan.Zero, 0, 0, 0, TimeSpan.Zero, null, 0), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonWarmMinimum), (warm.Provision, warm.Reason));
+        var lostWarm = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, minWarm: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, InFlight: 0, WarmInstances: 0), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonWarmMinimum), (lostWarm.Provision, lostWarm.Reason), "an excess instance does not satisfy the warm minimum; a warm replacement is provisioned");
+        var warmSatisfied = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, minWarm: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, InFlight: 0, WarmInstances: 1), startup);
+        Assert.AreEqual(ElasticScalingDecision.Steady, warmSatisfied);
 
         var daily = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { InstanceMinutesToday = 60 }, startup);
         Assert.AreEqual((0, 0, ElasticScalingPolicy.ReasonDailyLimit), (daily.Provision, daily.Retire, daily.Reason), "the daily limit blocks new instances");
