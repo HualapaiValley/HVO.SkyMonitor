@@ -130,6 +130,7 @@ ignored, access-controlled, and out of support bundles:
 - `src/HVO.SkyMonitor.CameraAgent/App_Data/`
 - any host `DataProtection-Keys/` directory
 - `.env` and `.devcontainer/devcontainer.local.env`
+- legacy `.devcontainer/state/` content left by the retired agent integration
 - the ignored schema-v8 split-host `secretSource` file and transient remote `.hvo-deploy/{up,bootstrap,smoke,measure,down}-<run-id>/` private files (credentials are removed at phase exit)
 
 Every local credential staging file, remote credential/session file, and private

@@ -114,20 +114,11 @@ else
 	echo "Git author identity is not configured; commits will remain unavailable until it is supplied."
 fi
 
-github_token="${GH_TOKEN:-${GITHUB_TOKEN:-${GH_PAT:-}}}"
-if [[ -n "$github_token" ]]; then
-	if ! command_exists gh; then
-		echo "A GitHub token was supplied, but gh is not installed." >&2
-		exit 1
-	fi
-	(unset GITHUB_TOKEN GH_TOKEN; printf '%s' "$github_token" | gh auth login --hostname github.com --git-protocol https --with-token)
-	gh auth setup-git
-elif command_exists gh && gh auth status >/dev/null 2>&1; then
+if command_exists gh && gh auth status >/dev/null 2>&1; then
 	gh auth setup-git
 else
-	echo "GitHub authentication is not configured; GitHub operations will remain unavailable until a token is supplied."
+	echo "GitHub authentication is not configured; authenticate through the host or cloud workspace to enable GitHub operations."
 fi
-unset github_token
 
 # Generate HTTPS developer certificate
 echo "Generating HTTPS developer certificate..."
