@@ -10,7 +10,8 @@ internal sealed record ElasticScalingInput(
     int Idle,
     TimeSpan LongestIdle,
     int? EntitledConcurrency,
-    int InstanceMinutesToday);
+    int InstanceMinutesToday,
+    int InFlight = 0);
 
 internal sealed record ElasticScalingDecision(int Provision, int Retire, string Reason)
 {
@@ -39,7 +40,13 @@ internal static class ElasticScalingPolicy
         ArgumentNullException.ThrowIfNull(input);
         var perInstance = Math.Max(1, options.MaxConcurrencyPerInstance);
         var active = input.Running + input.Starting;
-        var needed = (int)Math.Ceiling(input.Backlog / (double)perInstance);
+        if (options.MaxInstanceMinutesPerDay > 0 && input.InstanceMinutesToday >= options.MaxInstanceMinutesPerDay && active > 0)
+        {
+            // The daily budget bounds existing capacity too: every instance drains and stops until the day rolls over.
+            return new ElasticScalingDecision(0, input.Running, ReasonDailyLimit);
+        }
+        // Demand counts work already executing on the instances, so occupied capacity does not mask queued backlog.
+        var needed = (int)Math.Ceiling((input.Backlog + Math.Max(0, input.InFlight)) / (double)perInstance);
         var entitlementBound = false;
         if (input.EntitledConcurrency is { } entitled)
         {

@@ -12,8 +12,12 @@ namespace HVO.SkyMonitor.LogicHost.HealthChecks;
 internal sealed class CentralElasticProviderHealthCheck(
     IOptions<CentralElasticProviderOptions> options,
     IElasticRunnerProvider provider,
-    ElasticProviderTelemetry telemetry) : IHealthCheck
+    ElasticProviderTelemetry telemetry,
+    TimeProvider? timeProvider = null) : IHealthCheck
 {
+    /// <summary>Consecutive sampling failures after which enabled provisioning is reported unhealthy.</summary>
+    internal const int UnhealthyAfterConsecutiveFailures = 3;
+
     public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
     {
         var settings = options.Value;
@@ -22,8 +26,12 @@ internal sealed class CentralElasticProviderHealthCheck(
             return Task.FromResult(HealthCheckResult.Healthy("Elastic provisioning is disabled.", new Dictionary<string, object> { ["enabled"] = false }));
         }
         var snapshot = telemetry.Snapshot(provider.Name);
+        var failures = telemetry.SampleFailures(provider.Name);
+        var now = (timeProvider ?? TimeProvider.System).GetUtcNow();
         var data = new Dictionary<string, object>
         {
+            ["consecutiveSampleFailures"] = failures.Consecutive,
+            ["lastSampleFailure"] = failures.Message ?? string.Empty,
             ["enabled"] = true,
             ["provider"] = provider.Name,
             ["maxInstances"] = settings.MaxInstances,
@@ -36,9 +44,18 @@ internal sealed class CentralElasticProviderHealthCheck(
             ["lastDecision"] = snapshot?.LastDecision ?? "none",
             ["orphansCleanedLastSample"] = snapshot?.OrphansCleaned ?? 0
         };
+        if (failures.Consecutive >= UnhealthyAfterConsecutiveFailures)
+        {
+            return Task.FromResult(HealthCheckResult.Unhealthy(
+                $"The elastic autoscaler failed {failures.Consecutive} consecutive samples; enabled capacity is unavailable: {failures.Message}", data: data));
+        }
         if (snapshot is null)
         {
-            return Task.FromResult(HealthCheckResult.Healthy("Elastic provisioning is enabled; no sample yet.", data));
+            var grace = settings.SampleInterval * 3;
+            var startedAtUtc = telemetry.StartedAtUtc;
+            return Task.FromResult(startedAtUtc is { } started && now - started > grace
+                ? HealthCheckResult.Degraded("Elastic provisioning is enabled but no sample has completed since startup.", data: data)
+                : HealthCheckResult.Healthy("Elastic provisioning is enabled; no sample yet.", data));
         }
         if (snapshot.Backlog > 0 && snapshot.LastDecision == ElasticScalingPolicy.ReasonDailyLimit)
         {

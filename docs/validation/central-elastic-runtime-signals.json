@@ -11,7 +11,8 @@
     { "eventId": 2233, "level": "Information", "fields": [] },
     { "eventId": 2234, "level": "Warning", "fields": [] },
     { "eventId": 2235, "level": "Information", "fields": ["Instance", "Runner", "ColdStartMs"] },
-    { "eventId": 2236, "level": "Information", "fields": ["Reason", "Backlog", "OldestBacklogSeconds"] }
+    { "eventId": 2236, "level": "Information", "fields": ["Reason", "Backlog", "OldestBacklogSeconds"] },
+    { "eventId": 2237, "level": "Information", "fields": ["Instance", "Alive"] }
   ],
   "metrics": [
     { "name": "skymonitor.central.elastic.instances", "unit": "{instance}", "labels": { "provider": ["local-process"], "state": ["starting", "running", "idle"] } },
@@ -24,7 +25,7 @@
     { "name": "skymonitor.central.elastic.cold_start", "unit": "ms", "labels": { "provider": ["local-process"] } }
   ],
   "healthChecks": [
-    { "name": "elastic-providers", "tags": ["worker"], "data": ["enabled", "provider", "maxInstances", "starting", "running", "idle", "backlog", "oldestBacklogSeconds", "instanceMinutesToday", "lastDecision", "orphansCleanedLastSample"] }
+    { "name": "elastic-providers", "tags": ["worker"], "data": ["enabled", "provider", "maxInstances", "starting", "running", "idle", "backlog", "oldestBacklogSeconds", "instanceMinutesToday", "lastDecision", "orphansCleanedLastSample", "consecutiveSampleFailures", "lastSampleFailure"] }
   ],
   "collection": [
     "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --filter \"FullyQualifiedName~ElasticProviderIntegrationTests\"",

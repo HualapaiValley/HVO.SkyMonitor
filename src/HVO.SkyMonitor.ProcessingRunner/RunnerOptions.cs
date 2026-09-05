@@ -40,6 +40,9 @@ internal sealed class RunnerOptions
 
     public string LivenessFile { get; init; } = DefaultLivenessFile;
 
+    /// <summary>Optional file whose appearance asks the runner to stop claiming and drain (a provider-neutral, cross-platform stop signal).</summary>
+    public string? StopFile { get; init; }
+
     public TimeSpan ProbeMaxAge { get; init; } = TimeSpan.FromSeconds(90);
 
     public const string DefaultLivenessFile = "/tmp/hvo-processing-runner.alive";
@@ -79,6 +82,7 @@ internal sealed class RunnerOptions
             RegistrationRetry = TimeSpan.FromSeconds(ReadDouble("HVO_RUNNER_REGISTRATION_RETRY_SECONDS", 5)),
             AllowInsecureHttp = ReadBoolean("HVO_RUNNER_ALLOW_INSECURE_HTTP", false),
             LivenessFile = ReadString("HVO_RUNNER_LIVENESS_FILE", DefaultLivenessFile)!,
+            StopFile = ReadString("HVO_RUNNER_STOP_FILE", null),
             ProbeMaxAge = TimeSpan.FromSeconds(ReadDouble("HVO_RUNNER_PROBE_MAX_AGE_SECONDS", 90))
         };
         options.Validate();

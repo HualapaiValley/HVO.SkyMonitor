@@ -31,7 +31,7 @@ processes on the host on demand. Absent and disabled by default.
       "LogicHostUrl": "https://logichost.example.org/",
       "ClientId": "system-processing-runner",
       "ClientSecretFile": "/run/secrets/hvo-processing-runner",
-      "IdleShutdown": "00:02:00",
+      "IdleShutdown": "00:00:00",
       "AllowInsecureHttp": false
     }
   }
@@ -43,9 +43,31 @@ processes on the host on demand. Absent and disabled by default.
 - `Pool` joins instances to an entitlement pool as reserved runners.
 - `MaxInstanceMinutesPerDay` is the global cost/resource limit; instance
   minutes are accounted from `CentralElasticRunnerInstances`.
-- The runner executable can be the published binary or `dotnet` with the
-  runner dll as the first argument; the instance receives the container's
-  `HVO_RUNNER_*` environment contract and the secret by file path only.
+- The runner executable can be the published binary, `dotnet` with the
+  runner dll as the first argument, or a launcher script; on Unix the
+  instance is started through `setsid` so the launcher and everything it
+  starts are terminated as one process group. The instance receives an
+  allowlisted runtime environment (`PATH`, `HOME`, locale, `DOTNET_*`,
+  temp and certificate paths; never connection strings, passwords, keys, or
+  tokens) plus the container's `HVO_RUNNER_*` contract with the secret by
+  file path only.
+- `LocalProcess:IdleShutdown` is a safety net for a host that disappears:
+  zero (default) leaves instances host-managed; a value is raised to outlive
+  the host's scale-to-zero window, and warm-minimum instances never
+  self-terminate, so an instance is retired and accounted by the host instead
+  of exiting on its own as an orphan.
+- Retirement drains first on every platform (a stop file the runner watches,
+  plus `SIGTERM` to the process group on Unix) and forces the stop after
+  `RetireGrace`. `MaxInstanceMinutesPerDay` also drains existing instances
+  once the budget is spent.
+- Backlog is counted with the claim's pool predicate (a reserved pool serves
+  its pool and shared work; unpooled instances serve only unpooled
+  observatories), and demand includes work already executing on the
+  instances. A launched process is always recorded before it can claim: the
+  durable intent precedes the launch, a failed launch closes it, and an
+  instance the provider reports without a record is retired.
+- A host restarted with `ElasticProviders` disabled retires instances a
+  previous enabled host launched.
 
 ## Behavior
 
@@ -66,8 +88,11 @@ backlog, instance minutes today, provisions, retirements by reason, orphans
 cleaned, rejected placements by reason, cold-start histogram
 (`docs/validation/central-elastic-runtime-signals.json`). Health check
 `elastic-providers` is healthy when disabled, degraded when the daily limit
-retains backlog, when startup cannot meet the deadline past the deadline, or
-when orphans were cleaned in the last sample. Log events 2230-2236.
+retains backlog, when startup cannot meet the deadline past the deadline,
+when orphans were cleaned in the last sample, or when no sample has
+completed within three intervals of startup, and unhealthy after three
+consecutive sampling failures (for example an executable that cannot start).
+Log events 2230-2237.
 
 ## Operations
 

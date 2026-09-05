@@ -67,6 +67,27 @@ public sealed class ElasticProviderPerformanceEvidenceTests
                 $"elastic-warm-{maxInstances}-{Guid.NewGuid():N}"[..40], Guid.NewGuid(), 1, DateTimeOffset.UtcNow.AddMinutes(-5), SourcePayload, $"elastic-warm-{maxInstances}").ConfigureAwait(false);
             await ElasticProviderIntegrationTests.ElasticHost.WaitUntilAsync(async () => await host.JobStatusAsync(warmJob).ConfigureAwait(false) == CentralDerivativeJobStatus.Completed, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
             var warm = Stopwatch.GetElapsedTime(warmStarted);
+            // The runner processes do the recipe work: their CPU and peak memory are sampled while they are alive.
+            double runnerCpu = 0, runnerPeakWorkingSet = 0, runnerWorkingSet = 0;
+            var runnerProcesses = 0;
+            foreach (var row in (await InstancesAsync(host).ConfigureAwait(false)).Where(row => row.StartedAtUtc >= tierStartedUtc && row.ProcessId is { }))
+            {
+                try
+                {
+                    using var runner = Process.GetProcessById(row.ProcessId!.Value);
+                    runner.Refresh();
+                    runnerCpu += runner.TotalProcessorTime.TotalMilliseconds;
+                    runnerPeakWorkingSet += runner.PeakWorkingSet64;
+                    runnerWorkingSet += runner.WorkingSet64;
+                    runnerProcesses++;
+                }
+                catch (ArgumentException)
+                {
+                }
+                catch (InvalidOperationException)
+                {
+                }
+            }
             // Scale to zero after the idle delay, measured until every instance is stopped and no process remains.
             await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
             var scaleDownStarted = Stopwatch.GetTimestamp();
@@ -88,7 +109,11 @@ public sealed class ElasticProviderPerformanceEvidenceTests
                 instancesStopped = rows2.Count(row => row.State == nameof(ElasticRunnerInstanceState.Stopped)),
                 orphans = rows2.Count(row => row.State == nameof(ElasticRunnerInstanceState.Orphaned)),
                 hostCpuMilliseconds = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds,
-                hostWorkingSetBytes = process.WorkingSet64
+                hostWorkingSetBytes = process.WorkingSet64,
+                runnerProcessesSampled = runnerProcesses,
+                runnerCpuMilliseconds = runnerCpu,
+                runnerPeakWorkingSetBytes = runnerPeakWorkingSet,
+                runnerWorkingSetBytes = runnerWorkingSet
             });
         }
         var evidence = new
@@ -104,7 +129,7 @@ public sealed class ElasticProviderPerformanceEvidenceTests
                 framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                 processors = Environment.ProcessorCount
             },
-            method = "Kestrel-hosted LogicHost with the local-process adapter launching the real self-hosted runner binary; per tier 12 runner-placed encoded-preview jobs are seeded, the autoscaler is sampled until every allowed instance registers, drain is measured until all jobs complete, one warm job measures reuse, then the 2-second scale-to-zero delay is measured until every instance is stopped and no process remains.",
+            method = "Kestrel-hosted LogicHost with the local-process adapter launching the real self-hosted runner binary; per tier 12 runner-placed encoded-preview jobs are seeded, the autoscaler is sampled until every allowed instance registers, drain is measured until all jobs complete, one warm job measures reuse, then the 2-second scale-to-zero delay is measured until every instance is stopped and no process remains. Runner CPU and peak working set are the sums over the tier's runner processes sampled while alive; host figures cover the test process with the in-process LogicHost.",
             tiers,
             capacityGuidance = "Cold start is the registration latency of a fresh runner process on this host; size MinWarmInstances so expected backlog arrival within QueueDeadline never waits on a cold start, and MaxInstances from the sum of observatory entitlements you intend to honor on elastic capacity."
         };

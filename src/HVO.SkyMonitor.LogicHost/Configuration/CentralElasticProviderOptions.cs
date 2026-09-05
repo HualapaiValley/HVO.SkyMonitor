@@ -30,8 +30,12 @@ internal sealed class CentralLocalProcessElasticOptions
     /// <summary>File holding the runner client secret; the secret is never placed in the host configuration.</summary>
     public string? ClientSecretFile { get; init; }
 
-    /// <summary>Runner idle shutdown handed to each instance so an instance the host loses track of still exits on its own.</summary>
-    public TimeSpan IdleShutdown { get; init; } = TimeSpan.FromMinutes(2);
+    /// <summary>
+    /// Optional runner self-termination after idleness, a safety net for a host that disappears. Zero (default) means
+    /// instances are stopped only by the host; a configured value is raised to outlive the host's scale-to-zero window
+    /// (see <see cref="CentralElasticProviderOptions.EffectiveInstanceIdleShutdown"/>).
+    /// </summary>
+    public TimeSpan IdleShutdown { get; init; }
 
     public bool AllowInsecureHttp { get; init; }
 }
@@ -91,6 +95,25 @@ internal sealed class CentralElasticProviderOptions
 
     public CentralLocalProcessElasticOptions LocalProcess { get; init; } = new();
 
+    /// <summary>Label namespaces the host controls; configuration may not set them.</summary>
+    public static readonly string[] ReservedLabelPrefixes = ["provider:", "elastic-instance:", "pool:", "pool-mode:"];
+
+    /// <summary>
+    /// The idle shutdown handed to each instance, coordinated with the scaling policy: warm-minimum instances never
+    /// self-terminate, and any other instance outlives the host's scale-to-zero decision window so it is retired by
+    /// the host (and accounted) rather than exiting on its own and being recorded as an orphan. The runner's own idle
+    /// exit remains the safety net for a host that disappears.
+    /// </summary>
+    public TimeSpan EffectiveInstanceIdleShutdown()
+    {
+        if (MinWarmInstances > 0 || LocalProcess.IdleShutdown <= TimeSpan.Zero)
+        {
+            return TimeSpan.Zero;
+        }
+        var minimum = ScaleToZeroAfter + (SampleInterval * 2) + RetireGrace;
+        return LocalProcess.IdleShutdown > minimum ? LocalProcess.IdleShutdown : minimum;
+    }
+
     public bool Validate(out string? error)
     {
         error = null;
@@ -117,15 +140,15 @@ internal sealed class CentralElasticProviderOptions
             error = "ElasticProviders timing values are invalid.";
             return false;
         }
-        if (Pool is not null && !ProcessingRunnerProtocol.IsValidLabel(Pool))
+        if (Pool is not null && (!CentralProcessingEntitlementOptions.IsValidPool(Pool) || !ProcessingRunnerProtocol.IsValidLabel($"pool:{Pool}")))
         {
-            error = "ElasticProviders:Pool must be a lower-case label.";
+            error = "ElasticProviders:Pool must be a pool name (lower-case letters, digits, '-', not 'shared') whose 'pool:' label fits the label limit.";
             return false;
         }
         if (Labels.Count > ProcessingRunnerProtocol.MaximumLabelCount - 4 || Labels.Any(label => !ProcessingRunnerProtocol.IsValidLabel(label))
-            || Labels.Any(label => label.StartsWith("provider:", StringComparison.Ordinal) || label.StartsWith("elastic-instance:", StringComparison.Ordinal)))
+            || Labels.Any(label => ReservedLabelPrefixes.Any(prefix => label.StartsWith(prefix, StringComparison.Ordinal))))
         {
-            error = "ElasticProviders:Labels must be lower-case labels and may not set provider or instance labels.";
+            error = "ElasticProviders:Labels must be lower-case labels and may not set provider, instance, or pool control labels.";
             return false;
         }
         if (Provider == CentralElasticProviderKind.LocalProcess)

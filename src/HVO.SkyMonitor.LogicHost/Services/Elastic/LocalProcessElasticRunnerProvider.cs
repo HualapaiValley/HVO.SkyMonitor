@@ -48,40 +48,107 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         }
     }
 
-    public Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken)
+    private readonly SemaphoreSlim _provisionLock = new(1, 1);
+
+    public async Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         ElasticWorkloadClass.EnsureEligible(request.JobClasses);
-        var settings = options.Value.LocalProcess;
-        var startInfo = new ProcessStartInfo
+        await _provisionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            FileName = settings.Executable!,
-            WorkingDirectory = settings.WorkingDirectory ?? Environment.CurrentDirectory,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        foreach (var argument in settings.Arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
+            // Idempotent per instance id: a retried request returns the instance already launched for it.
+            if (_instances.TryGetValue(request.InstanceId, out var existing) && !existing.Process.HasExited)
+            {
+                return existing.Instance;
+            }
+            var settings = options.Value;
+            var (fileName, leadingArguments) = ResolveLauncher(settings.LocalProcess);
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = fileName,
+                WorkingDirectory = settings.LocalProcess.WorkingDirectory ?? Environment.CurrentDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            foreach (var argument in leadingArguments.Concat(settings.LocalProcess.Arguments))
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+            // The child never inherits the host's secrets: only an allowlisted runtime environment plus the runner contract.
+            startInfo.Environment.Clear();
+            foreach (var (key, value) in FilterInheritedEnvironment(Environment.GetEnvironmentVariables()))
+            {
+                startInfo.Environment[key] = value;
+            }
+            foreach (var (key, value) in ComposeEnvironment(request, settings))
+            {
+                startInfo.Environment[key] = value;
+            }
+            File.Delete(StopFilePath(request.InstanceId));
+            var started = timeProvider.GetUtcNow();
+            var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("The runner process could not be started.");
+            var instance = new ElasticRunnerInstance(request.InstanceId, request.RunnerId, ElasticRunnerInstanceState.Starting, started, process.Id);
+            _instances[request.InstanceId] = new TrackedInstance(instance, process);
+            Log.Provisioned(logger, request.InstanceId, request.RunnerId, process.Id);
+            return instance;
         }
-        foreach (var (key, value) in ComposeEnvironment(request, settings))
+        finally
         {
-            startInfo.Environment[key] = value;
+            _provisionLock.Release();
         }
-        var started = timeProvider.GetUtcNow();
-        var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("The runner process could not be started.");
-        var instance = new ElasticRunnerInstance(request.InstanceId, request.RunnerId, ElasticRunnerInstanceState.Starting, started, process.Id);
-        _instances[request.InstanceId] = new TrackedInstance(instance, process);
-        Log.Provisioned(logger, request.InstanceId, request.RunnerId, process.Id);
-        return Task.FromResult(instance);
     }
 
+    /// <summary>
+    /// On Unix the runner is started through <c>setsid</c> so it leads its own process group: a launcher script and
+    /// every descendant are then terminated together. Elsewhere the executable is started directly.
+    /// </summary>
+    private static (string FileName, string[] LeadingArguments) ResolveLauncher(CentralLocalProcessElasticOptions settings)
+        => !RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && File.Exists(SetsidPath)
+            ? (SetsidPath, [settings.Executable!])
+            : (settings.Executable!, []);
+
+    private const string SetsidPath = "/usr/bin/setsid";
+
+    /// <summary>Environment a launched runner may inherit from the host: runtime and locale essentials, never credentials or connection strings.</summary>
+    internal static IReadOnlyDictionary<string, string> FilterInheritedEnvironment(System.Collections.IDictionary environment)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        var allowed = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (System.Collections.DictionaryEntry entry in environment)
+        {
+            if (entry.Key is not string key || entry.Value is not string value)
+            {
+                continue;
+            }
+            var inherit = InheritedEnvironmentNames.Contains(key)
+                || InheritedEnvironmentPrefixes.Any(prefix => key.StartsWith(prefix, StringComparison.Ordinal));
+            if (inherit && !key.Contains("SECRET", StringComparison.OrdinalIgnoreCase) && !key.Contains("PASSWORD", StringComparison.OrdinalIgnoreCase)
+                && !key.Contains("KEY", StringComparison.OrdinalIgnoreCase) && !key.Contains("TOKEN", StringComparison.OrdinalIgnoreCase))
+            {
+                allowed[key] = value;
+            }
+        }
+        return allowed;
+    }
+
+    private static readonly HashSet<string> InheritedEnvironmentNames = new(StringComparer.Ordinal)
+    {
+        "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LANGUAGE", "TZ", "USER", "LOGNAME", "SHELL", "SystemRoot", "SYSTEMROOT",
+        "windir", "ProgramData", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "COMSPEC", "PATHEXT", "SSL_CERT_FILE", "SSL_CERT_DIR"
+    };
+
+    private static readonly string[] InheritedEnvironmentPrefixes = ["LC_", "DOTNET_", "XDG_"];
+
+    internal static string StopFilePath(string instanceId) => Path.Combine(Path.GetTempPath(), $"hvo-elastic-{instanceId}.stop");
+
     /// <summary>The runner environment contract (mirrors the container image); the secret is passed by file path only.</summary>
-    internal static IReadOnlyDictionary<string, string> ComposeEnvironment(ElasticRunnerProvisionRequest request, CentralLocalProcessElasticOptions settings)
+    internal static IReadOnlyDictionary<string, string> ComposeEnvironment(ElasticRunnerProvisionRequest request, CentralElasticProviderOptions options)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(options);
+        var settings = options.LocalProcess;
         return new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["HVO_RUNNER_LOGICHOST_URL"] = settings.LogicHostUrl!,
@@ -91,9 +158,10 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
             ["HVO_RUNNER_CLIENT_SECRET_FILE"] = settings.ClientSecretFile!,
             ["HVO_RUNNER_MAX_CONCURRENCY"] = request.MaxConcurrency.ToString(CultureInfo.InvariantCulture),
             ["HVO_RUNNER_LABELS"] = string.Join(',', request.Labels),
-            ["HVO_RUNNER_IDLE_SHUTDOWN_SECONDS"] = settings.IdleShutdown.TotalSeconds.ToString(CultureInfo.InvariantCulture),
+            ["HVO_RUNNER_IDLE_SHUTDOWN_SECONDS"] = options.EffectiveInstanceIdleShutdown().TotalSeconds.ToString(CultureInfo.InvariantCulture),
             ["HVO_RUNNER_ALLOW_INSECURE_HTTP"] = settings.AllowInsecureHttp ? "true" : "false",
-            ["HVO_RUNNER_LIVENESS_FILE"] = Path.Combine(Path.GetTempPath(), $"hvo-elastic-{request.InstanceId}.alive")
+            ["HVO_RUNNER_LIVENESS_FILE"] = Path.Combine(Path.GetTempPath(), $"hvo-elastic-{request.InstanceId}.alive"),
+            ["HVO_RUNNER_STOP_FILE"] = StopFilePath(request.InstanceId)
         };
     }
 
@@ -108,7 +176,8 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         {
             if (!process.HasExited)
             {
-                RequestGracefulStop(process);
+                // Drain first on every platform (stop file, plus SIGTERM to the process group on Unix); force after grace.
+                RequestGracefulStop(instanceId, process);
                 using var timeout = new CancellationTokenSource(grace);
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
                 try
@@ -117,13 +186,16 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
                 }
                 catch (OperationCanceledException) when (timeout.IsCancellationRequested && !process.HasExited)
                 {
-                    process.Kill(entireProcessTree: true);
+                    ForceStop(process);
                 }
             }
+            // The launcher may have exited while a descendant lingers: the whole group is signalled once more.
+            ForceStopGroup(process.Id);
             Log.Retired(logger, instanceId, process.Id, process.HasExited ? process.ExitCode : -1);
         }
         finally
         {
+            File.Delete(StopFilePath(instanceId));
             process.Dispose();
         }
     }
@@ -174,20 +246,49 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         }
     }
 
-    private static void RequestGracefulStop(Process process)
+    private static void RequestGracefulStop(string instanceId, Process process)
     {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        // The stop file is the provider-neutral drain request the runner honours on every platform.
+        File.WriteAllText(StopFilePath(instanceId), "stop");
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // SIGTERM to the process group lets the runner (and anything a launcher script started) drain its lease.
+            Signal(process.Id, "-TERM");
+        }
+    }
+
+    private static void ForceStop(Process process)
+    {
+        try
         {
             process.Kill(entireProcessTree: true);
-            return;
         }
-        // SIGTERM lets the runner drain its lease (drain-before-cancel) before it exits.
-        using var kill = Process.Start(new ProcessStartInfo("kill", ["-TERM", process.Id.ToString(CultureInfo.InvariantCulture)])
+        catch (InvalidOperationException)
         {
-            UseShellExecute = false,
-            CreateNoWindow = true
-        });
-        kill?.WaitForExit(5000);
+        }
+        ForceStopGroup(process.Id);
+    }
+
+    private static void ForceStopGroup(int processId)
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && File.Exists(SetsidPath))
+        {
+            Signal(processId, "-KILL");
+        }
+    }
+
+    /// <summary>Signals the process group led by <paramref name="processId"/> (the instance was started through setsid).</summary>
+    private static void Signal(int processId, string signal)
+    {
+        var target = File.Exists(SetsidPath) ? $"-{processId.ToString(CultureInfo.InvariantCulture)}" : processId.ToString(CultureInfo.InvariantCulture);
+        try
+        {
+            using var kill = Process.Start(new ProcessStartInfo("kill", [signal, "--", target]) { UseShellExecute = false, CreateNoWindow = true });
+            kill?.WaitForExit(5000);
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+        }
     }
 
     public void Dispose()
@@ -197,6 +298,7 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
             tracked.Process.Dispose();
         }
         _instances.Clear();
+        _provisionLock.Dispose();
     }
 
     private sealed record TrackedInstance(ElasticRunnerInstance Instance, Process Process);

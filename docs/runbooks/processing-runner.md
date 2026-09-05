@@ -64,6 +64,10 @@ then cancels what remains and retires. Logs are JSON lines on stdout/stderr
 (`event` values such as `registered`, `eligibility-changed`, `job-completed`,
 `job-failed`, `lease-lost`, `draining`, `idle-shutdown`, `retired`).
 
+`HVO_RUNNER_STOP_FILE` (optional) names a file whose appearance asks the
+runner to stop claiming, drain, and exit; a host that manages runner
+processes (elastic provisioning) uses it as a cross-platform drain request.
+
 ## Container
 
 ```bash

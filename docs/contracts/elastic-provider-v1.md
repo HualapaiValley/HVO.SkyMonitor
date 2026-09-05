@@ -27,8 +27,10 @@ long-running, native, or GPU recipes.
 - `IElasticRunnerProvider`: `Name`, `Capabilities` (provider, process
   architecture, runtime image, scale-to-zero support, labels),
   `EstimateStartup()`, `ProvisionAsync(request)`, `RetireAsync(instance,
-  grace)`, `ListAsync()`. Provisioning is idempotent per instance id; retire
-  asks the instance to drain (the runner's drain-before-cancel) and forces it
+  grace)`, `ListAsync()`. Provisioning is idempotent per instance id (a retried
+  request returns the instance already launched); retire asks the instance to
+  drain on every platform (the runner watches a stop file the host creates,
+  and Unix adds `SIGTERM` to the instance's process group) and forces it
   after the grace period.
 - `ElasticRunnerProvisionRequest`: instance id, runner id, eligible job
   classes, labels, per-instance concurrency, optional pool. Requests naming

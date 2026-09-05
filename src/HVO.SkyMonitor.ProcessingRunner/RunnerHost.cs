@@ -50,6 +50,7 @@ internal sealed class RunnerHost(
             .Select(slot => SlotLoopAsync(slot, claimStop.Token))
             .ToArray();
         var idle = IdleWatchAsync(claimStop);
+        var stopFile = StopFileWatchAsync(claimStop);
         var slotsTask = Task.WhenAll(slots);
         try
         {
@@ -62,7 +63,7 @@ internal sealed class RunnerHost(
         await _lifetime.CancelAsync().ConfigureAwait(false);
         try
         {
-            await Task.WhenAll(heartbeat, idle).ConfigureAwait(false);
+            await Task.WhenAll(heartbeat, idle, stopFile).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -177,6 +178,35 @@ internal sealed class RunnerHost(
             catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 log.Warning("heartbeat-failed", "Heartbeat timed out.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// A host that manages this runner (elastic provisioning) asks it to drain by creating the stop file: claiming
+    /// stops, active jobs finish within the grace period, and the process exits. Works on every platform.
+    /// </summary>
+    private async Task StopFileWatchAsync(CancellationTokenSource claimStop)
+    {
+        if (string.IsNullOrWhiteSpace(options.StopFile))
+        {
+            return;
+        }
+        while (!claimStop.IsCancellationRequested && !_lifetime.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, _lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            if (File.Exists(options.StopFile))
+            {
+                log.Info("stop-requested", "Stop file present; draining and shutting down.");
+                await claimStop.CancelAsync().ConfigureAwait(false);
+                return;
             }
         }
     }
@@ -550,7 +580,8 @@ internal sealed record RunnerHostOptions(
     TimeSpan ShutdownGrace,
     TimeSpan RegistrationRetry,
     bool RetryAuthorizationFailures = false,
-    string? LivenessFile = null);
+    string? LivenessFile = null,
+    string? StopFile = null);
 
 internal sealed record RunnerJobExecutionResult(
     ProcessingOutcome? Outcome,

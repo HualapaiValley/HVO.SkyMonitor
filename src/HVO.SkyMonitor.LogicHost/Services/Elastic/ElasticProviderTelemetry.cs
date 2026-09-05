@@ -52,7 +52,23 @@ internal sealed class ElasticProviderTelemetry : IDisposable
 
     public void RecordColdStart(string provider, TimeSpan duration) => _coldStart.Record(duration.TotalMilliseconds, Tag(provider));
 
-    public void UpdateSnapshot(ElasticProviderSnapshot snapshot) => _snapshots[snapshot.Provider] = snapshot;
+    public void UpdateSnapshot(ElasticProviderSnapshot snapshot)
+    {
+        _snapshots[snapshot.Provider] = snapshot;
+        _failures[snapshot.Provider] = (0, null, null);
+    }
+
+    private readonly ConcurrentDictionary<string, (int Consecutive, DateTimeOffset? LastFailureUtc, string? Message)> _failures = new(StringComparer.Ordinal);
+
+    public DateTimeOffset? StartedAtUtc { get; private set; }
+
+    public void MarkStarted(DateTimeOffset now) => StartedAtUtc ??= now;
+
+    public void RecordSampleFailure(string provider, DateTimeOffset now, string message)
+        => _failures.AddOrUpdate(provider, (1, now, message), (_, current) => (current.Consecutive + 1, now, message));
+
+    public (int Consecutive, DateTimeOffset? LastFailureUtc, string? Message) SampleFailures(string provider)
+        => _failures.TryGetValue(provider, out var failures) ? failures : (0, null, null);
 
     public ElasticProviderSnapshot? Snapshot(string provider) => _snapshots.TryGetValue(provider, out var snapshot) ? snapshot : null;
 

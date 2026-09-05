@@ -40,6 +40,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
     IOptions<CentralProcessingRunnerOptions> runnerOptions,
     IOptions<CentralProcessingEntitlementOptions> entitlementOptions,
     IElasticRunnerProvider provider,
+    LocalProcessElasticRunnerProvider localProcessProvider,
     ElasticProviderTelemetry telemetry,
     TimeProvider timeProvider,
     ILogger<ElasticRunnerAutoscaler> logger) : BackgroundService
@@ -48,9 +49,11 @@ internal sealed partial class ElasticRunnerAutoscaler(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        telemetry.MarkStarted(timeProvider.GetUtcNow());
         if (!options.Value.Enabled)
         {
             Log.Disabled(logger);
+            await RetireInheritedInstancesAsync(stoppingToken).ConfigureAwait(false);
             return;
         }
         using var timer = new PeriodicTimer(options.Value.SampleInterval, timeProvider);
@@ -66,10 +69,42 @@ internal sealed partial class ElasticRunnerAutoscaler(
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
+                telemetry.RecordSampleFailure(provider.Name, timeProvider.GetUtcNow(), exception.Message);
                 Log.SampleFailed(logger, exception);
             }
         }
         while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// A host restarted with provisioning disabled still owns the instances a previous, enabled host process
+    /// launched: those recorded as live and still running are drained and stopped so the feature is really off.
+    /// </summary>
+    internal async Task<int> RetireInheritedInstancesAsync(CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var now = timeProvider.GetUtcNow();
+        var live = new[] { nameof(ElasticRunnerInstanceState.Starting), nameof(ElasticRunnerInstanceState.Running), nameof(ElasticRunnerInstanceState.Stopping) };
+        var rows = await dbContext.CentralElasticRunnerInstances.Where(instance => live.Contains(instance.State)).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var retired = 0;
+        foreach (var row in rows)
+        {
+            var alive = row.Provider == LocalProcessElasticRunnerProvider.ProviderName && row.ProcessId is { } processId
+                && localProcessProvider.TryAdopt(row.InstanceId, row.RunnerId, processId, row.StartedAtUtc);
+            if (alive)
+            {
+                await localProcessProvider.RetireAsync(row.InstanceId, options.Value.RetireGrace, cancellationToken).ConfigureAwait(false);
+                await StopAsync(dbContext, row, now, ElasticRunnerInstanceState.Stopped, "provisioning-disabled", cancellationToken).ConfigureAwait(false);
+                retired++;
+            }
+            else
+            {
+                await StopAsync(dbContext, row, now, ElasticRunnerInstanceState.Orphaned, "provisioning-disabled", cancellationToken).ConfigureAwait(false);
+            }
+            Log.InheritedRetired(logger, row.InstanceId, alive);
+        }
+        return retired;
     }
 
     /// <summary>One autoscaling pass; exposed for tests and for the evidence harness.</summary>
@@ -99,6 +134,17 @@ internal sealed partial class ElasticRunnerAutoscaler(
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var registered = registrations.ToDictionary(runner => runner.RunnerId, StringComparer.Ordinal);
         var orphans = 0;
+        // Provider instances without a durable row (a launch whose record failed to persist) are retired so they
+        // never run unaccounted; the next provisioning starts from a recorded intent.
+        var recorded = rows.Select(row => row.InstanceId).ToHashSet(StringComparer.Ordinal);
+        foreach (var unrecorded in alive.Keys.Where(instanceId => !recorded.Contains(instanceId)).ToArray())
+        {
+            await provider.RetireAsync(unrecorded, settings.RetireGrace, cancellationToken).ConfigureAwait(false);
+            alive.Remove(unrecorded);
+            telemetry.RecordOrphanCleaned(provider.Name);
+            orphans++;
+        }
+        var inFlight = 0;
         foreach (var row in rows)
         {
             registered.TryGetValue(row.RunnerId, out var registration);
@@ -143,6 +189,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
             }
             if (registration.AvailableSlots < registration.MaxConcurrency)
             {
+                inFlight += registration.MaxConcurrency - registration.AvailableSlots;
                 row.LastBusyAtUtc = now;
                 row.UpdatedAtUtc = now;
             }
@@ -166,17 +213,21 @@ internal sealed partial class ElasticRunnerAutoscaler(
                 .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
                 .Select(group => new { ObservatoryId = group.Key, Count = group.Count(), Oldest = group.Min(job => job.AvailableAtUtc) })
                 .ToListAsync(cancellationToken).ConfigureAwait(false);
+        // Only backlog the instances could claim counts: the same pool predicate as the claim (a reserved pool
+        // serves its own pool and shared work; unpooled instances serve only unpooled observatories).
+        var entitlements = entitlementOptions.Value is { Enabled: true } enabled ? enabled : null;
+        backlogRows = backlogRows.Where(row => IsPoolEligible(settings.Pool, entitlements?.ResolvePool(row.ObservatoryId))).ToList();
         var backlog = backlogRows.Sum(row => row.Count);
         var oldestAge = backlogRows.Count == 0 ? TimeSpan.Zero : now - backlogRows.Min(row => row.Oldest!.Value);
         int? entitled = null;
-        if (entitlementOptions.Value is { Enabled: true } entitlements && backlogRows.Count != 0)
+        if (entitlements is not null && backlogRows.Count != 0)
         {
             var limits = backlogRows.Select(row => entitlements.ResolveActiveJobs(row.ObservatoryId)).ToArray();
             entitled = limits.Any(limit => limit <= 0) ? null : limits.Sum();
         }
         var minutesToday = await InstanceMinutesTodayAsync(dbContext, now, cancellationToken).ConfigureAwait(false);
         var input = new ElasticScalingInput(backlog, oldestAge, running, starting, idle.Count(item => item.IdleFor >= settings.ScaleToZeroAfter),
-            idle.Count == 0 ? TimeSpan.Zero : idle[0].IdleFor, entitled, minutesToday);
+            idle.Count == 0 ? TimeSpan.Zero : idle[0].IdleFor, entitled, minutesToday, inFlight);
         var decision = ElasticScalingPolicy.Decide(settings, input, provider.EstimateStartup());
         if (decision.Provision == 0 && decision.Retire == 0 && decision.Reason is not "steady" && backlog > 0)
         {
@@ -187,17 +238,28 @@ internal sealed partial class ElasticRunnerAutoscaler(
         {
             await ProvisionAsync(dbContext, settings, now, cancellationToken).ConfigureAwait(false);
         }
+        var retired = 0;
+        var idleRetired = 0;
         foreach (var item in idle.Take(decision.Retire))
         {
             await provider.RetireAsync(item.Row.InstanceId, settings.RetireGrace, cancellationToken).ConfigureAwait(false);
-            await StopAsync(dbContext, item.Row, now, ElasticRunnerInstanceState.Stopped, ElasticScalingPolicy.ReasonIdle, cancellationToken).ConfigureAwait(false);
-            telemetry.RecordRetirement(provider.Name, ElasticScalingPolicy.ReasonIdle);
+            await StopAsync(dbContext, item.Row, now, ElasticRunnerInstanceState.Stopped, decision.Reason, cancellationToken).ConfigureAwait(false);
+            telemetry.RecordRetirement(provider.Name, decision.Reason);
+            retired++;
+            if (item.IdleFor >= settings.ScaleToZeroAfter)
+            {
+                idleRetired++;
+            }
         }
         telemetry.UpdateSnapshot(new ElasticProviderSnapshot(
-            now, provider.Name, starting + decision.Provision, running - decision.Retire, input.Idle, backlog,
+            now, provider.Name, starting + decision.Provision, running - retired, Math.Max(0, input.Idle - idleRetired), backlog,
             (long)oldestAge.TotalSeconds, minutesToday, decision.Reason, orphans));
         return decision;
     }
+
+    /// <summary>The claim's pool predicate: reserved instances serve their pool and shared work, unpooled instances only shared work.</summary>
+    internal static bool IsPoolEligible(string? instancePool, string? observatoryPool)
+        => instancePool is null ? observatoryPool is null : observatoryPool is null || string.Equals(observatoryPool, instancePool, StringComparison.Ordinal);
 
     private void AdoptRecorded(IEnumerable<CentralElasticRunnerInstance> rows)
     {
@@ -226,20 +288,43 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var request = new ElasticRunnerProvisionRequest(
             instanceId, runnerId, CentralElasticProviderOptions.EligibleJobClasses, labels, settings.MaxConcurrencyPerInstance, settings.Pool);
         ElasticWorkloadClass.EnsureEligible(request.JobClasses);
-        var instance = await provider.ProvisionAsync(request, cancellationToken).ConfigureAwait(false);
-        dbContext.CentralElasticRunnerInstances.Add(new CentralElasticRunnerInstance
+        // The durable intent is written before the launch so a launched process is always accounted for; if the
+        // launch fails the intent is closed, and if recording the process fails the process is retired.
+        var row = new CentralElasticRunnerInstance
         {
             Provider = provider.Name,
             InstanceId = instanceId,
             RunnerId = runnerId,
-            ProcessId = instance.ProcessId,
             ProcessArchitecture = provider.Capabilities.ProcessArchitecture,
             RuntimeImage = provider.Capabilities.RuntimeImage,
             State = nameof(ElasticRunnerInstanceState.Starting),
-            StartedAtUtc = instance.StartedAtUtc,
+            StartedAtUtc = now,
             UpdatedAtUtc = now
-        });
+        };
+        dbContext.CentralElasticRunnerInstances.Add(row);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        ElasticRunnerInstance instance;
+        try
+        {
+            instance = await provider.ProvisionAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await StopAsync(dbContext, row, now, ElasticRunnerInstanceState.Stopped, "provision-failed", CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+        row.ProcessId = instance.ProcessId;
+        row.StartedAtUtc = instance.StartedAtUtc;
+        row.UpdatedAtUtc = now;
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            await provider.RetireAsync(instanceId, settings.RetireGrace, CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
         telemetry.RecordProvision(provider.Name);
     }
 
@@ -294,5 +379,8 @@ internal sealed partial class ElasticRunnerAutoscaler(
 
         [LoggerMessage(2236, LogLevel.Information, "Elastic placement rejected, work retained locally: Reason={Reason}, Backlog={Backlog}, OldestBacklogSeconds={OldestBacklogSeconds}")]
         public static partial void PlacementRejected(ILogger logger, string reason, int backlog, long oldestBacklogSeconds);
+
+        [LoggerMessage(2237, LogLevel.Information, "Elastic runner instance inherited while provisioning is disabled: Instance={Instance}, Alive={Alive}")]
+        public static partial void InheritedRetired(ILogger logger, string instance, bool alive);
     }
 }

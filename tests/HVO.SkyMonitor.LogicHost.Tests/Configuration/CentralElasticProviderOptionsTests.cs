@@ -67,6 +67,87 @@ public sealed class CentralElasticProviderOptionsTests
             LocalProcess = Enabled().LocalProcess
         };
         Assert.IsFalse(reservedLabel.Validate(out _), "provider and instance labels are set by the host, not by configuration");
+        var poolLabel = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            Labels = ["pool-mode:reserved"],
+            LocalProcess = Enabled().LocalProcess
+        };
+        Assert.IsFalse(poolLabel.Validate(out _), "pool control labels come from the Pool option only");
+        foreach (var badPool in new[] { "shared", "Blue", "a_b", "a.b", new string('a', 60) })
+        {
+            var options = new CentralElasticProviderOptions
+            {
+                Enabled = true,
+                Provider = CentralElasticProviderKind.LocalProcess,
+                Pool = badPool,
+                LocalProcess = Enabled().LocalProcess
+            };
+            Assert.IsFalse(options.Validate(out _), $"pool '{badPool}' must fail the pool grammar");
+        }
+        Assert.IsTrue(new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            Pool = "blue-1",
+            LocalProcess = Enabled().LocalProcess
+        }.Validate(out _));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void InstanceIdleShutdownIsCoordinatedWithTheScalingPolicy()
+    {
+        var idle = new CentralLocalProcessElasticOptions { Executable = "/opt/hvo/runner", LogicHostUrl = "https://logichost.local/", ClientSecretFile = "/run/secrets/runner", IdleShutdown = TimeSpan.FromMinutes(2) };
+        var scaled = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            ScaleToZeroAfter = TimeSpan.FromMinutes(5),
+            SampleInterval = TimeSpan.FromSeconds(15),
+            RetireGrace = TimeSpan.FromSeconds(30),
+            LocalProcess = idle
+        };
+        Assert.AreEqual(TimeSpan.FromMinutes(5) + TimeSpan.FromSeconds(60), scaled.EffectiveInstanceIdleShutdown(),
+            "an instance never exits before the host's scale-to-zero window has passed");
+        var warm = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MinWarmInstances = 1,
+            LocalProcess = idle
+        };
+        Assert.AreEqual(TimeSpan.Zero, warm.EffectiveInstanceIdleShutdown(), "warm-minimum instances never self-terminate");
+        var longer = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            ScaleToZeroAfter = TimeSpan.FromMinutes(1),
+            LocalProcess = new CentralLocalProcessElasticOptions { Executable = "/x", LogicHostUrl = "https://l/", ClientSecretFile = "/s", IdleShutdown = TimeSpan.FromMinutes(30) }
+        };
+        Assert.AreEqual(TimeSpan.FromMinutes(30), longer.EffectiveInstanceIdleShutdown());
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void InheritedEnvironmentKeepsRuntimeEssentialsAndDropsHostSecrets()
+    {
+        var environment = new System.Collections.Hashtable
+        {
+            ["PATH"] = "/usr/bin",
+            ["HOME"] = "/home/hvo",
+            ["DOTNET_ROOT"] = "/usr/share/dotnet",
+            ["LC_ALL"] = "C.UTF-8",
+            ["ConnectionStrings__skymonitordb"] = "Server=x;Password=y",
+            ["HVO_BOOTSTRAP_CLIENT_SECRET"] = "s",
+            ["MINIO_ACCESS_KEY"] = "k",
+            ["REDIS_PASSWORD"] = "p",
+            ["DOTNET_SOME_TOKEN"] = "t",
+            ["ASPNETCORE_ENVIRONMENT"] = "Production"
+        };
+        var filtered = LocalProcessElasticRunnerProvider.FilterInheritedEnvironment(environment);
+        CollectionAssert.AreEquivalent(new[] { "PATH", "HOME", "DOTNET_ROOT", "LC_ALL" }, filtered.Keys.ToArray());
     }
 
     [TestMethod]
@@ -90,6 +171,8 @@ public sealed class CentralElasticProviderOptionsTests
         var options = Enabled(maxInstances: 3, perInstance: 2);
         var startup = TimeSpan.FromSeconds(20);
         var backlog = new ElasticScalingInput(5, TimeSpan.FromSeconds(30), 0, 0, 0, TimeSpan.Zero, null, 0);
+        var occupied = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(1, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, InFlight: 1), startup);
+        Assert.AreEqual(1, occupied.Provision, "a busy single-slot instance plus one queued job needs a second instance");
         var decision = ElasticScalingPolicy.Decide(options, backlog, startup);
         Assert.AreEqual((3, 0, ElasticScalingPolicy.ReasonBacklog), (decision.Provision, decision.Retire, decision.Reason), "ceil(5/2) = 3 instances");
 
@@ -107,6 +190,8 @@ public sealed class CentralElasticProviderOptionsTests
 
         var daily = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { InstanceMinutesToday = 60 }, startup);
         Assert.AreEqual((0, 0, ElasticScalingPolicy.ReasonDailyLimit), (daily.Provision, daily.Retire, daily.Reason), "the daily limit blocks new instances");
+        var drain = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { Running = 2, Starting = 1, InstanceMinutesToday = 60 }, startup);
+        Assert.AreEqual((0, 2, ElasticScalingPolicy.ReasonDailyLimit), (drain.Provision, drain.Retire, drain.Reason), "existing capacity drains once the daily budget is spent");
         var underLimit = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { InstanceMinutesToday = 59 }, startup);
         Assert.IsTrue(underLimit.Provision > 0);
     }
@@ -136,15 +221,16 @@ public sealed class CentralElasticProviderOptionsTests
     [TestCategory("Unit")]
     public void LocalProcessEnvironmentCarriesTheRunnerContractAndProvenanceLabels()
     {
-        var settings = Enabled().LocalProcess;
         var request = new ElasticRunnerProvisionRequest(
             "0123456789abcdef", "elastic-local-process-0123456789abcdef", CentralElasticProviderOptions.EligibleJobClasses,
             ["provider:local-process", "elastic-instance:0123456789abcdef", "pool:blue", "pool-mode:reserved"], 2, "blue");
-        var environment = LocalProcessElasticRunnerProvider.ComposeEnvironment(request, settings);
+        var environment = LocalProcessElasticRunnerProvider.ComposeEnvironment(request, Enabled());
         Assert.AreEqual("https://logichost.local/", environment["HVO_RUNNER_LOGICHOST_URL"]);
         Assert.AreEqual(request.RunnerId, environment["HVO_RUNNER_ID"]);
         Assert.AreEqual("/run/secrets/runner", environment["HVO_RUNNER_CLIENT_SECRET_FILE"]);
         Assert.IsFalse(environment.ContainsKey("HVO_RUNNER_CLIENT_SECRET"), "the secret value is never composed into the environment");
+        Assert.IsTrue(environment["HVO_RUNNER_STOP_FILE"].EndsWith("hvo-elastic-0123456789abcdef.stop", StringComparison.Ordinal), "the provider-neutral drain signal is wired");
+        Assert.AreEqual("0", environment["HVO_RUNNER_IDLE_SHUTDOWN_SECONDS"], "the default local idle shutdown is coordinated: no self-termination unless configured");
         Assert.AreEqual("2", environment["HVO_RUNNER_MAX_CONCURRENCY"]);
         Assert.AreEqual("provider:local-process,elastic-instance:0123456789abcdef,pool:blue,pool-mode:reserved", environment["HVO_RUNNER_LABELS"]);
         Assert.IsTrue(ProcessingRunnerProtocol.IsValidRunnerId(request.RunnerId));

@@ -125,6 +125,15 @@ public sealed class ElasticProviderIntegrationTests
         await FluentActions.Awaiting(() => host.Provider.ProvisionAsync(request, CancellationToken.None))
             .Should().ThrowAsync<ElasticWorkloadClassException>().ConfigureAwait(false);
         (await host.Provider.ListAsync(CancellationToken.None).ConfigureAwait(false)).Should().BeEmpty("no process was started for the refused request");
+
+        // Provisioning is idempotent per instance id: a retried request returns the instance already launched.
+        var eligible = new ElasticRunnerProvisionRequest("idem0001", "elastic-local-process-idem0001", CentralElasticProviderOptions.EligibleJobClasses, ["provider:local-process"], 1, null);
+        var first = await host.Provider.ProvisionAsync(eligible, CancellationToken.None).ConfigureAwait(false);
+        var second = await host.Provider.ProvisionAsync(eligible, CancellationToken.None).ConfigureAwait(false);
+        second.ProcessId.Should().Be(first.ProcessId);
+        (await host.Provider.ListAsync(CancellationToken.None).ConfigureAwait(false)).Should().HaveCount(1);
+        await host.Provider.RetireAsync("idem0001", TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false);
+        (await host.Provider.ListAsync(CancellationToken.None).ConfigureAwait(false)).Should().BeEmpty();
         // Provisioned runners claim through processing-runner-v1, which refuses live classes at claim for every runner
         // (Runner_CannotClaimLiveOrReplayClassesOrInProcessPlacedRecipes); the boundary refuses them one step earlier.
     }
@@ -255,7 +264,7 @@ public sealed class ElasticProviderIntegrationTests
                     builder.UseSetting("ElasticProviders:LocalProcess:LogicHostUrl", $"http://127.0.0.1:{port}/");
                     builder.UseSetting("ElasticProviders:LocalProcess:ClientId", TestClients.SystemProcessingRunner.ClientId);
                     builder.UseSetting("ElasticProviders:LocalProcess:ClientSecretFile", secretFile);
-                    builder.UseSetting("ElasticProviders:LocalProcess:IdleShutdown", "00:10:00");
+                    builder.UseSetting("ElasticProviders:LocalProcess:IdleShutdown", "00:00:00");
                     builder.UseSetting("ElasticProviders:LocalProcess:AllowInsecureHttp", "true");
                 });
             factory.UseKestrel(options => options.ListenLocalhost(port));
