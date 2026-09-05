@@ -105,9 +105,16 @@ hvo-skymonitor cameraagent install \
 
 Online, use an immutable versioned manifest URL, or `--image-index` with
 `--image-version` to resolve a documented default from a signed index snapshot.
-A non-GitHub mirror also requires `--asset-base-url`. Signed indexes are
-rollback-protected per train, so an older image index is refused just as an older
-catalog index is.
+A non-GitHub mirror also requires `--asset-base-url`; that option is shared with
+the catalog train, so a single invocation that names both a mirrored image
+release and a catalog release resolves both from the same base. Signed indexes
+are rollback-protected per train, so an older image index is refused just as an
+older catalog index is.
+
+The installation retains the verified archive under
+`<instance-root>/state/deployment/image-archive.tar` so a resumed or repeated
+operation does not re-acquire it. It is the size of the published image and is
+included in instance backups; size the instance filesystem accordingly.
 
 The installation resolves the release, selects the platform matching this host,
 and verifies the offline archive against its signed length and checksum **before
@@ -131,6 +138,13 @@ SBOM, provenance, and vulnerability-scan asset names, and the exact compatibilit
 boundaries the release declared. An operator can correlate a running container
 with its release without network access.
 
+The record follows the image the instance actually runs. It is written only once
+the image has been prepared and accepted, a refused install or upgrade leaves
+none behind, and a rollback withdraws whatever the superseded upgrade recorded.
+Its `manifestDigest` is the release's multi-architecture identity; for a release
+published without a registry push that value is a computed index digest and is
+not resolvable with `docker pull`.
+
 An upgrade accepts the same options and writes the same evidence before the
 operation begins:
 
@@ -139,9 +153,12 @@ hvo-skymonitor cameraagent upgrade \
   --instance-id <uuid> \
   --channel local \
   --image-manifest /media/hvo/image-v1.5.0/image-manifest.json \
-  --no-download \
-  --migration-backward-compatible
+  --no-download
 ```
+
+`--migration-backward-compatible` remains a separate operator assertion about the
+candidate's state migration and is required only when the candidate declares one.
+Do not add it to a routine upgrade; doing so defeats the gate it exists for.
 
 Rollback continues to use the retained previous image identity and never
 consults a release train.

@@ -55,15 +55,25 @@ RUN chmod -R a+rX /app/publish /app/replay-runner
 
 # Stage 2: Runtime
 FROM ${DOTNET_ASPNET_IMAGE}
-ARG HVO_SOURCE_REVISION=unknown
 WORKDIR /app
 
+# Install health-check and ASI SDK runtime dependencies. The proprietary SDK is mounted separately.
+RUN apt-get update && apt-get install -y curl libusb-1.0-0 && rm -rf /var/lib/apt/lists/*
+
+# Copy published application. The build stage already applied the runtime permissions.
+COPY --from=build /app/publish .
+COPY --from=build /app/replay-runner /app/replay-runner
+
+# Declared after the payload so that changing only the source revision rebuilds one metadata layer instead of
+# invalidating the package install and the whole payload copy.
+#
 # The state-compatibility label names the durable CameraAgent state contract this image
 # reads and writes. It is not a generic backward-compatibility promise: revisions before
 # minimum-compatible-revision produced catalog manifest v1, Identity migration
 # 20251125021552_CreateLocalIdentity, and raw-ingress schema 11, which this image cannot
 # adopt in place. Deployment preflight compares the three declared boundaries below against
 # the persisted state before the container starts.
+ARG HVO_SOURCE_REVISION=unknown
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
       io.hvo.skymonitor.minimum-compatible-revision="70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f" \
@@ -74,13 +84,6 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.catalog-contract="hyg-v42-production-p3-s2" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}"
-
-# Install health-check and ASI SDK runtime dependencies. The proprietary SDK is mounted separately.
-RUN apt-get update && apt-get install -y curl libusb-1.0-0 && rm -rf /var/lib/apt/lists/*
-
-# Copy published application. The build stage already applied the runtime permissions.
-COPY --from=build /app/publish .
-COPY --from=build /app/replay-runner /app/replay-runner
 
 # Set environment
 ENV ASPNETCORE_ENVIRONMENT=Production \

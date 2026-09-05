@@ -128,7 +128,7 @@ image-manifest.json                              signed release manifest
 image-manifest.json.sig                          detached P-256 signature
 cameraagent-image-v<version>-linux-amd64.tar     loadable OCI archive
 cameraagent-image-v<version>-linux-arm64.tar     loadable OCI archive
-image-sbom.spdx.json                             SPDX 2.3 document
+image-sbom.spdx.json                             SPDX 2.3 file manifest of the published archives
 image-provenance.json                            source, Dockerfile, platform, and label provenance
 image-vulnerability-scan.json                    scanner identity, coverage, and severity summary
 THIRD-PARTY-NOTICES.md                           notices
@@ -152,9 +152,19 @@ labels out of the image configuration. It never records a caller-supplied
 assertion about the image, and `hvo-release verify` re-derives the same facts
 from the published archives.
 
+The SBOM is a file-level manifest: it names the published archives and their
+SHA-256 values, not the operating-system packages and .NET assemblies inside the
+image. Use the vulnerability scan report for component-level triage until
+[#597](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/597) replaces it
+with a component inventory and registry attestation.
+
 A published image release must carry a vulnerability scan. The release tool
-refuses a candidate whose scan report does not name a scanner and scan time,
-cover exactly the published image IDs, and record zero critical findings.
+refuses a candidate whose scan report does not name a supported scanner and scan
+time, cover exactly the published image IDs, record every severity count, and
+record zero critical findings. Lower severities are recorded as evidence rather
+than gated, because a maintained base image routinely carries them. An unscanned
+candidate is accepted only for a version ending in `-dryrun`, which the tool
+itself enforces, so a publishable version can never carry one.
 
 ### Building a candidate
 
@@ -164,25 +174,52 @@ HVO_RELEASE_ARM64_BUILDER=<arm64-capable buildx builder> \
 ```
 
 The script builds each platform with `docker buildx --output type=docker`,
-derives the platform identities, loads and smoke-tests the architecture the
-build host can execute, scans both archives with a pinned Trivy container, and
-assembles the candidate. `--sign-key <pem>` signs and re-verifies the candidate
-with a local key for rehearsal; a publishable release is signed only by the
-production key through the workflow below.
+derives the platform identities from the archive bytes, loads and smoke-tests the
+architecture the build host can execute, scans both archives with a Trivy
+container pinned by tag and digest, and assembles the candidate. `--sign-key
+<pem>` signs and re-verifies the candidate with a local key for rehearsal; a
+publishable release is signed only by the production key through the workflow
+below.
+
+The build host needs a buildx builder for each published architecture that
+supports the docker exporter. A remote host registered with the plain `docker`
+driver cannot produce one, and a host registered as a Docker context is selected
+by context rather than by `--builder`; the script resolves the difference, but a
+`docker-container` driver builder is required either way:
+
+```bash
+docker buildx create --name hvo-arm64 --driver docker-container --platform linux/arm64 <context>
+docker buildx inspect --bootstrap hvo-arm64
+```
+
+Prefer a builder whose Docker data root is on an NVMe device. The published
+image is large, and on a host whose data root is an SD card the runtime layer
+copy alone takes tens of minutes.
 
 ### Publishing
 
 Run the `Signed Distribution Release` workflow with `train: image`. The workflow
 sets up QEMU and Buildx, signs in to the registry with the workflow token, and
-runs the same script with `--push`, so the signed multi-architecture digest is
-the digest the registry returned rather than a locally computed one. Signing,
-index creation, immutable publication, and anonymous public re-verification then
-follow the same path the installer and catalog trains use.
+runs the same script with `--push`. The push happens **after** the smoke test and
+the scan gate, refuses a version the registry already publishes, and then
+requires the published index to name exactly the platform manifests that were
+examined — so the signed multi-architecture digest is the registry's digest for
+the same bytes the release inspected. Signing, index creation, immutable
+publication, and anonymous public re-verification then follow the same path the
+installer and catalog trains use.
 
-Only a real publishing run can prove the credentialed steps: the registry push
-and the digest it returns, Key Vault signing under the production identity, the
-GitHub Release creation and its collision refusal, and anonymous verification
-through public release URLs. Everything before those steps — the multi-platform
+Without `--push` there is no registry, so the signed multi-architecture digest is
+a canonical index computed from the two platform manifests. It is a stable
+identity for those manifests, but `docker pull <repository>@<digest>` will not
+resolve it. An offline installation never uses it: it installs from the signed
+platform archive.
+
+Only a real publishing run can prove the credentialed steps: the registry push,
+the digest it returns and the index agreement check that follows it, Key Vault
+signing under the production identity, the GitHub Release creation and its
+collision refusal, and anonymous verification through public release URLs. It is
+also the only run that builds `linux/arm64` under QEMU on a hosted runner rather
+than on native hardware. Everything before those steps — the multi-platform
 build, the identity derivation, the smoke check, the scan gate, candidate
 assembly, signing, and end-to-end verification — is exercised locally by the
 script and by the release-tool contract tests.

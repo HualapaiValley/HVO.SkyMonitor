@@ -9,8 +9,36 @@ namespace HVO.SkyMonitor.Deployment.Distribution.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[DoNotParallelize]
 public sealed class ImageReleaseToolTests
 {
+    /// <summary>
+    /// Runs the release tool and returns its exit code with everything it reported, so a negative test asserts on
+    /// the rule it names rather than on any failure the tool can produce.
+    /// </summary>
+    private static async Task<(int ExitCode, string Diagnostics)> RunAsync(string[] arguments)
+    {
+        var original = Console.Error;
+        using var captured = new StringWriter();
+        Console.SetError(captured);
+        try
+        {
+            var exitCode = await ReleaseTool.Program.Main(arguments);
+            return (exitCode, captured.ToString());
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+    }
+
+    private static async Task AssertRejectedAsync(string[] arguments, string expected)
+    {
+        var (exitCode, diagnostics) = await RunAsync(arguments);
+        Assert.AreEqual(1, exitCode, diagnostics);
+        StringAssert.Contains(diagnostics, expected, StringComparison.Ordinal);
+    }
+
     private const string Revision = "1f5c1a3b7d9e2f4a6b8c0d1e3f5a7b9c1d3e5f70";
     private const string Tree = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567";
     private const string MinimumRevision = "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f";
@@ -103,7 +131,7 @@ public sealed class ImageReleaseToolTests
         var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
         arguments[Array.IndexOf(arguments, "--linux-arm64") + 1] = fixture.Amd64Archive;
 
-        Assert.AreEqual(1, await ReleaseTool.Program.Main(arguments));
+        await AssertRejectedAsync(arguments, "but must contain linux/arm64");
     }
 
     [TestMethod]
@@ -116,7 +144,7 @@ public sealed class ImageReleaseToolTests
         var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
         arguments[Array.IndexOf(arguments, "--linux-arm64") + 1] = divergent;
 
-        Assert.AreEqual(1, await ReleaseTool.Program.Main(arguments));
+        await AssertRejectedAsync(arguments, "declares different labels than");
     }
 
     [TestMethod]
@@ -131,7 +159,7 @@ public sealed class ImageReleaseToolTests
         arguments[Array.IndexOf(arguments, "--linux-amd64") + 1] = incomplete;
         arguments[Array.IndexOf(arguments, "--linux-arm64") + 1] = incompleteArm;
 
-        Assert.AreEqual(1, await ReleaseTool.Program.Main(arguments));
+        await AssertRejectedAsync(arguments, "omits the required label 'io.hvo.skymonitor.raw-ingress-schema'");
     }
 
     [TestMethod]
@@ -145,7 +173,7 @@ public sealed class ImageReleaseToolTests
         arguments[Array.IndexOf(arguments, "--linux-amd64") + 1] = amd64;
         arguments[Array.IndexOf(arguments, "--linux-arm64") + 1] = arm64;
 
-        Assert.AreEqual(1, await ReleaseTool.Program.Main(arguments));
+        await AssertRejectedAsync(arguments, "revision label does not match --revision");
     }
 
     [TestMethod]
@@ -156,7 +184,7 @@ public sealed class ImageReleaseToolTests
         var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
         arguments[Array.IndexOf(arguments, "--scan-report") + 1] = report;
 
-        Assert.AreEqual(1, await ReleaseTool.Program.Main(arguments));
+        await AssertRejectedAsync(arguments, "must record zero critical findings");
     }
 
     [TestMethod]
@@ -167,7 +195,7 @@ public sealed class ImageReleaseToolTests
         var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
         arguments[Array.IndexOf(arguments, "--scan-report") + 1] = report;
 
-        Assert.AreEqual(1, await ReleaseTool.Program.Main(arguments));
+        await AssertRejectedAsync(arguments, "does not cover exactly the published images");
     }
 
     [TestMethod]
@@ -186,10 +214,12 @@ public sealed class ImageReleaseToolTests
         Assert.AreEqual(0, await ReleaseTool.Program.Main(
             ["sign-local", "--manifest", manifestPath, "--private-key", fixture.PrivateKey, "--signature", signaturePath]));
 
-        Assert.AreEqual(1, await ReleaseTool.Program.Main([
-            "verify", "--manifest", manifestPath, "--signature", signaturePath, "--asset-root", release,
-            "--public-key", fixture.PublicKey
-        ]));
+        await AssertRejectedAsync(
+            [
+                "verify", "--manifest", manifestPath, "--signature", signaturePath, "--asset-root", release,
+                "--public-key", fixture.PublicKey
+            ],
+            "does not match its signed platform identity");
     }
 
     [TestMethod]
@@ -205,10 +235,12 @@ public sealed class ImageReleaseToolTests
         var archive = Path.Combine(release, "cameraagent-image-v1.2.3-linux-arm64.tar");
         File.Copy(fixture.Amd64Archive, archive, overwrite: true);
 
-        Assert.AreEqual(1, await ReleaseTool.Program.Main([
-            "verify", "--manifest", manifestPath, "--signature", signaturePath, "--asset-root", release,
-            "--public-key", fixture.PublicKey
-        ]));
+        await AssertRejectedAsync(
+            [
+                "verify", "--manifest", manifestPath, "--signature", signaturePath, "--asset-root", release,
+                "--public-key", fixture.PublicKey
+            ],
+            "does not match its signed identity");
     }
 
     [TestMethod]
@@ -219,7 +251,7 @@ public sealed class ImageReleaseToolTests
         var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
         arguments[Array.IndexOf(arguments, "--linux-amd64") + 1] = tampered;
 
-        Assert.AreEqual(1, await ReleaseTool.Program.Main(arguments));
+        await AssertRejectedAsync(arguments, "does not match its content address");
     }
 
     private sealed class ImageReleaseFixture : IDisposable

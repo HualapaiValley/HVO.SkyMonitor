@@ -242,10 +242,10 @@ internal sealed record LifecycleRequest : DeploymentCommand
         }
         if (ImageManifest is not null || ImageIndex is not null)
         {
-            if (ImageReference is not null || ImageArchive is not null)
+            if (ImageReference is not null || ImageArchive is not null || ImageArchiveSha256 is not null)
             {
                 throw new InstallUsageException(
-                    "--image-ref and --image-archive cannot be combined with a signed image release.");
+                    "--image-ref, --image-archive, and --image-archive-sha256 cannot be combined with a signed image release.");
             }
             return;
         }

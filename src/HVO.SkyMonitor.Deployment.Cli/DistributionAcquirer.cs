@@ -176,7 +176,8 @@ internal sealed class DistributionAcquirer : IDisposable
         }
         if (manifest.ManifestKind != expectedKind || manifest.Release.Train != inputs.Train)
         {
-            throw new InstallerException($"The signed distribution manifest is not a {inputs.Train} release.");
+            throw new InstallerException(
+                $"The signed distribution manifest does not belong to the {inputs.Train} train.");
         }
         return new ResolvedRelease(
             manifest,
@@ -1038,7 +1039,11 @@ internal sealed record AcquiredImage(
         Image.VulnerabilityScanAsset,
         DateTimeOffset.UtcNow);
 
-    /// <summary>Retains the release record beside the other deployment evidence before any container mutation.</summary>
+    /// <summary>
+    /// Retains the release record beside the other deployment evidence once the image it describes is the one the
+    /// instance runs. Writing it earlier would leave a refused or reverted operation asserting a release the
+    /// running container does not carry.
+    /// </summary>
     public Task WriteEvidenceAsync(InstallationPaths paths, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(paths);
@@ -1047,6 +1052,20 @@ internal sealed record AcquiredImage(
             ToEvidence(),
             DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence,
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Withdraws the retained record when the instance no longer runs the image it describes, so a rollback or a
+    /// reverted upgrade never leaves evidence contradicting the running container.
+    /// </summary>
+    public static void RemoveEvidence(InstallationPaths paths)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        var path = Path.Combine(paths.DeploymentStateRoot, EvidenceFileName);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
     }
 }
 

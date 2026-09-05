@@ -51,16 +51,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           CONFIRM: ${{ inputs.confirm }}
+          TRAIN: ${{ inputs.train }}
+          VERSION: ${{ inputs.version }}
         run: |
           [[ "$GITHUB_REF" == "refs/heads/main" && "$CONFIRM" == "PUBLISH" ]]
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
-          # The repository is not checked out yet, so this step repeats the naming scripts/ci:release-tag owns.
-          case "${{ inputs.train }}" in
-            installer) package_tag="installer-v${{ inputs.version }}" ;;
-            image) package_tag="image-v${{ inputs.version }}" ;;
-            catalog) package_tag="catalog-${{ inputs.version }}" ;;
+          [[ "$VERSION" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,126}[A-Za-z0-9])?$ ]]
+          # The repository is not checked out yet, so this step repeats the naming scripts/ci:release-tag owns and
+          # publishes it, because a republish checks out a source revision from before that script existed.
+          case "$TRAIN" in
+            installer) package_tag="installer-v$VERSION" ;;
+            image) package_tag="image-v$VERSION" ;;
+            catalog) package_tag="catalog-$VERSION" ;;
             *) exit 1 ;;
           esac
+          printf 'PACKAGE_TAG=%s\n' "$package_tag" >> "$GITHUB_ENV"
           main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
           if gh release view "$package_tag" >/dev/null 2>&1; then
             [[ "$(gh release view "$package_tag" --json targetCommitish --jq .targetCommitish)" == "$SOURCE_SHA" ]]
@@ -96,8 +101,7 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
           git merge-base --is-ancestor "$SOURCE_SHA" origin/main
           [[ "$VERSION" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,126}[A-Za-z0-9])?$ ]]
-          package_tag="$(scripts/ci:release-tag "$TRAIN" "$VERSION")"
-          if ! gh release view "$package_tag" >/dev/null 2>&1; then
+          if ! gh release view "$PACKAGE_TAG" >/dev/null 2>&1; then
             [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
           fi
       - name: Set up QEMU for multi-architecture image builds
@@ -390,7 +394,7 @@ jobs:
           public="$RUNNER_TEMP/public"
           mkdir -m 700 "$public"
           download() {
-            curl --fail --silent --show-error --location --proto '=https' --max-redirs 5 --connect-timeout 10 --max-time 300 --max-filesize "$3" --output "$public/$2" \
+            curl --fail --silent --show-error --location --proto '=https' --max-redirs 5 --connect-timeout 10 --max-time 1800 --max-filesize "$3" --output "$public/$2" \
               "https://github.com/$GITHUB_REPOSITORY/releases/download/$1/$2"
           }
           download "$tag" "$manifest" 262144

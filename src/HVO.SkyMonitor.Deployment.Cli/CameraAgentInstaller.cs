@@ -187,10 +187,6 @@ internal sealed class CameraAgentInstaller
             {
                 state = await RecordPhaseAsync(paths, state, InstallationPhase.Image, cancellationToken).ConfigureAwait(false);
             }
-            if (acquiredImage is not null)
-            {
-                await acquiredImage.WriteEvidenceAsync(paths, cancellationToken).ConfigureAwait(false);
-            }
             var effectiveRequest = await StageImageArchiveAsync(
                 request,
                 paths,
@@ -207,6 +203,10 @@ internal sealed class CameraAgentInstaller
             if (daemon != preflightDaemon)
             {
                 throw new InstallerException("The Docker daemon identity changed after preflight.");
+            }
+            if (acquiredImage is not null)
+            {
+                await acquiredImage.WriteEvidenceAsync(paths, cancellationToken).ConfigureAwait(false);
             }
             if (retainedCompletedResult is not null && request.ReplayProfile == CameraAgentReplayProfile.InProcess &&
                 existingManifest!.Image.ReplayRunnerContract is null && retainedCompletedResult.Image.ReplayRunnerContract is null)

@@ -310,7 +310,9 @@ public sealed class InstallerFlowTests
             Assert.AreEqual(
                 release.TrustRoot.KeyId,
                 evidenceRoot.GetProperty("distribution").GetProperty("signingKeyId").GetString());
-            Assert.AreEqual("amd64", evidenceRoot.GetProperty("platformArchitecture").GetString());
+            Assert.AreEqual(
+                DistributionAcquirer.HostImageArchitecture(),
+                evidenceRoot.GetProperty("platformArchitecture").GetString());
             Assert.AreEqual(
                 "cameraagent-state-v2",
                 evidenceRoot.GetProperty("compatibility").GetProperty("stateContract").GetString());
@@ -365,6 +367,9 @@ public sealed class InstallerFlowTests
 
             StringAssert.Contains(exception.Message, "raw ingress schema", StringComparison.Ordinal);
             Assert.AreEqual(0, runner.ComposeUpCount);
+            // A refused release must leave no evidence claiming the instance runs it.
+            Assert.IsFalse(File.Exists(Path.Combine(
+                root, "cameraagents", instanceId.ToString("D"), "state", "deployment", "image-distribution.json")));
         }
         finally
         {

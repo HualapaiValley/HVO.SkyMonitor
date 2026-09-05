@@ -80,13 +80,18 @@ public sealed class SignedImageReleaseTests
     }
 
     [TestMethod]
-    public async Task AcquireImageAsync_CatalogManifestOfferedAsAnImageRelease_IsRejected()
+    public async Task AcquireImageAsync_ValidReleaseFromAnotherTrain_IsRejectedAsTheWrongTrain()
     {
         using var fixture = ImageDistributionFixture.Create();
         using var acquirer = new DistributionAcquirer(cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot);
 
-        await Assert.ThrowsExactlyAsync<InstallerException>(
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
             () => acquirer.AcquireImageAsync(fixture.LocalRequest(fixture.ForeignManifestPath), CancellationToken.None));
+
+        StringAssert.Contains(
+            exception.InnerException?.Message ?? exception.Message,
+            "does not belong to the image train",
+            StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -405,17 +410,37 @@ public sealed class SignedImageReleaseTests
                 null,
                 [fixture.Image]);
             fixture.ManifestPath = Write(root, "image-manifest.json", manifest, key);
+            // A structurally valid installer release, so the acquirer's train check is what rejects it rather than
+            // the verifier refusing a malformed manifest before the check is reached.
+            var installerArtifacts = new List<DistributionArtifact>
+            {
+                Installer("hvo-skymonitor-installer-v1.2.3-linux-x64.tar.gz", "x64"),
+                Installer("hvo-skymonitor-installer-v1.2.3-linux-arm64.tar.gz", "arm64"),
+                Evidence(DistributionArtifactRole.Sbom, "installer-sbom.spdx.json"),
+                Evidence(DistributionArtifactRole.Provenance, "installer-provenance.json"),
+                Evidence(DistributionArtifactRole.License, "THIRD-PARTY-NOTICES.md"),
+                Evidence(DistributionArtifactRole.Checksums, "SHA256SUMS")
+            };
             fixture.ForeignManifestPath = Write(
                 root,
-                "installer-manifest.json",
+                "release-manifest.json",
                 manifest with
                 {
                     ManifestKind = DistributionManifestKind.InstallerRelease,
                     Release = manifest.Release with { Train = "installer", Tag = "installer-v1.2.3" },
+                    Artifacts = installerArtifacts,
                     Images = []
                 },
                 key);
             return fixture;
+        }
+
+        private static DistributionArtifact Installer(string assetName, string architecture)
+        {
+            var content = Encoding.UTF8.GetBytes(assetName);
+            return new DistributionArtifact(
+                DistributionArtifactRole.Installer, assetName, "application/gzip", content.Length,
+                Convert.ToHexStringLower(SHA256.HashData(content)), "linux", architecture);
         }
 
         private static DistributionArtifact Evidence(DistributionArtifactRole role, string assetName)

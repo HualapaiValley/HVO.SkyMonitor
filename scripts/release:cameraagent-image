@@ -53,7 +53,7 @@ keep_work=0
 push=0
 
 # Pinned by tag and digest so a release scan is reproducible and the scanner itself is immutable.
-trivy_image="${HVO_RELEASE_TRIVY_IMAGE:-aquasec/trivy:0.68.0}"
+trivy_image="${HVO_RELEASE_TRIVY_IMAGE:-aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -171,42 +171,25 @@ build_platform() {
         .
 }
 
-if [[ "$push" == 1 ]]; then
-    printf 'Publishing the multi-architecture image to %s:%s\n' "$repository" "$version" >&2
-    docker buildx build \
-        --builder "$amd64_builder" \
-        --platform linux/amd64,linux/arm64 \        --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
-        --build-arg "HVO_SOURCE_REVISION=${revision}" \
-        --provenance false \
-        --tag "${repository}:${version}" \
-        --metadata-file "$work/push-metadata.json" \
-        --push \
-        .
-    index_digest="$(jq -r '."containerimage.digest"' "$work/push-metadata.json")"
-    [[ "$index_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || {
-        printf 'The registry did not report a multi-architecture manifest digest.\n' >&2
-        exit 1
-    }
-    printf 'Published multi-architecture digest %s\n' "$index_digest" >&2
-fi
-
 build_platform amd64 "$amd64_builder" "$work/linux-amd64.tar"
 build_platform arm64 "$arm64_builder" "$work/linux-arm64.tar"
 
 describe() {
-    release_tool describe-image-archive --archive "$1"
+    local architecture="$1" destination="$work/describe-${1}.txt"
+    release_tool describe-image-archive --archive "$work/linux-${architecture}.tar" >"$destination"
+    IFS=$'\t' read -r "${2}" "${3}" _ _ <"$destination"
 }
 
-IFS=$'\t' read -r amd64_manifest amd64_image_id _ _ < <(describe "$work/linux-amd64.tar")
-IFS=$'\t' read -r arm64_manifest arm64_image_id _ _ < <(describe "$work/linux-arm64.tar")
+describe amd64 amd64_manifest amd64_image_id
+describe arm64 arm64_manifest arm64_image_id
+for value in "$amd64_manifest" "$amd64_image_id" "$arm64_manifest" "$arm64_image_id"; do
+    [[ "$value" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+        printf 'The release tool did not report a platform identity for every published archive.\n' >&2
+        exit 1
+    }
+done
 printf 'linux/amd64 manifest %s image %s\n' "$amd64_manifest" "$amd64_image_id" >&2
 printf 'linux/arm64 manifest %s image %s\n' "$arm64_manifest" "$arm64_image_id" >&2
-
-if [[ -z "$index_digest" ]]; then
-    index_digest="$(release_tool image-index-digest \
-        --linux-amd64 "$work/linux-amd64.tar" --linux-arm64 "$work/linux-arm64.tar")"
-    printf 'Computed canonical multi-architecture index digest %s\n' "$index_digest" >&2
-fi
 
 # Smoke-test the architecture this host can execute. The other architecture's runtime smoke belongs to a host of
 # that architecture; the CameraAgent ARM64 advisory workflow owns that evidence.
@@ -245,17 +228,30 @@ if [[ "$scanner" == trivy ]]; then
     trivy_cache="$work/trivy-cache"
     mkdir -p "$trivy_cache"
     scan_one() {
-        local archive="$1" destination="$2"
+        local archive="$1" destination="$2" expected_image_id="$3"
         docker run --rm \
             --volume "$trivy_cache:/root/.cache/trivy" \
             --volume "$archive:/scan/image.tar:ro" \
             "$trivy_image" image --quiet --format json --scanners vuln --input /scan/image.tar >"$destination"
+        # The scanner must say which image it scanned, so the signed coverage claim rests on the scanner's own
+        # subject identity rather than on the identity this script derived a moment earlier.
+        local scanned_image_id
+        scanned_image_id="$(jq -r '.Metadata.ImageID // empty' "$destination")"
+        if [[ "${scanned_image_id#sha256:}" != "${expected_image_id#sha256:}" ]]; then
+            printf 'The scanner reported subject %s but the archive contains %s.\n' \
+                "${scanned_image_id:-<none>}" "$expected_image_id" >&2
+            exit 1
+        fi
+        jq --exit-status '(.Results | type) == "array" and (.Results | length) > 0' "$destination" >/dev/null || {
+            printf 'The scanner returned no results for %s; the image was not actually scanned.\n' "$archive" >&2
+            exit 1
+        }
     }
-    scan_one "$work/linux-amd64.tar" "$work/trivy-amd64.json"
-    scan_one "$work/linux-arm64.tar" "$work/trivy-arm64.json"
+    scan_one "$work/linux-amd64.tar" "$work/trivy-amd64.json" "$amd64_image_id"
+    scan_one "$work/linux-arm64.tar" "$work/trivy-arm64.json" "$arm64_image_id"
     trivy_version="$(docker run --rm "$trivy_image" --version | head -n 1 | awk '{print $2}')"
     jq --null-input \
-        --arg scannerVersion "${trivy_version:-unknown}" \
+        --arg scannerVersion "$trivy_version" \
         --arg scannedUtc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg amd64 "$amd64_image_id" \
         --arg arm64 "$arm64_image_id" \
@@ -269,6 +265,7 @@ if [[ "$scanner" == trivy ]]; then
             scanner: "trivy",
             scannerVersion: $scannerVersion,
             scannedUtc: $scannedUtc,
+            status: "scanned",
             subjects: [
               { imageId: $amd64, architecture: "amd64", findings: (findings($amd64Report) | length) },
               { imageId: $arm64, architecture: "arm64", findings: (findings($arm64Report) | length) }
@@ -299,6 +296,53 @@ else
         }' >"$scan_report"
 fi
 printf 'Vulnerability summary: %s\n' "$(jq -c .summary "$scan_report")" >&2
+
+if [[ "$push" == 1 ]]; then
+    if docker buildx imagetools inspect "${repository}:${version}" >/dev/null 2>&1; then
+        printf 'The registry already publishes %s:%s; a published image identity is immutable.\n' \
+            "$repository" "$version" >&2
+        exit 1
+    fi
+    printf 'Publishing the multi-architecture image to %s:%s\n' "$repository" "$version" >&2
+    push_prefix=(docker)
+    push_selector=()
+    if [[ "$(builder_invocation "$amd64_builder")" == context ]]; then
+        push_prefix+=(--context "$amd64_builder")
+    else
+        push_selector+=(--builder "$amd64_builder")
+    fi
+    "${push_prefix[@]}" buildx build "${push_selector[@]}" \
+        --platform linux/amd64,linux/arm64 \
+        --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
+        --build-arg "HVO_SOURCE_REVISION=${revision}" \
+        --provenance false \
+        --tag "${repository}:${version}" \
+        --metadata-file "$work/push-metadata.json" \
+        --push \
+        .
+    index_digest="$(jq -r '."containerimage.digest" // empty' "$work/push-metadata.json")"
+    [[ "$index_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+        printf 'The registry did not report a multi-architecture manifest digest.\n' >&2
+        exit 1
+    }
+    # The published index must contain exactly the platform manifests that were smoke-tested and scanned, so the
+    # signed multi-architecture digest names those bytes rather than a separate build that nothing examined.
+    docker buildx imagetools inspect "${repository}@${index_digest}" --raw >"$work/published-index.json"
+    published_amd64="$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest] | unique | join(",")' "$work/published-index.json")"
+    published_arm64="$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest] | unique | join(",")' "$work/published-index.json")"
+    if [[ "$published_amd64" != "$amd64_manifest" || "$published_arm64" != "$arm64_manifest" ]]; then
+        printf 'The published index names linux/amd64 %s and linux/arm64 %s, but the examined archives are %s and %s.\n' \
+            "${published_amd64:-<none>}" "${published_arm64:-<none>}" "$amd64_manifest" "$arm64_manifest" >&2
+        exit 1
+    fi
+    printf 'Published multi-architecture digest %s\n' "$index_digest" >&2
+fi
+
+if [[ -z "$index_digest" ]]; then
+    index_digest="$(release_tool image-index-digest \
+        --linux-amd64 "$work/linux-amd64.tar" --linux-arm64 "$work/linux-arm64.tar")"
+    printf 'Computed canonical multi-architecture index digest %s\n' "$index_digest" >&2
+fi
 
 signing_key_id=""
 public_key=""
@@ -337,8 +381,9 @@ if [[ -n "$sign_key" ]]; then
         --asset-root "$output" --public-key "$public_key"
     release_tool verify-signature --input "$output/SHA256SUMS" --signature "$output/SHA256SUMS.sig" \
         --public-key "$public_key"
-    cp "$public_key" "$output/release-public-key.pem"
-    printf 'Candidate signed and verified with local key %s\n' "$signing_key_id" >&2
+    cp "$public_key" "${output}.public-key.pem"
+    printf 'Candidate signed and verified with local key %s (public key at %s.public-key.pem)\n' \
+        "$signing_key_id" "$output" >&2
 fi
 
 printf 'Signed CameraAgent image release candidate written to %s\n' "$output"

@@ -10,7 +10,7 @@ using HVO.SkyMonitor.Catalog.Sqlite;
 
 namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 
-internal static class Program
+internal static partial class Program
 {
     private const string Repository = "RoySalisbury/HVO.SkyMonitor";
     private static readonly string[] InstallerTargets = ["linux-x64", "linux-arm64"];
@@ -251,6 +251,9 @@ internal static class Program
         ("arm64", "--linux-arm64")
     ];
 
+    private static readonly string[] SupportedScanners = ["trivy"];
+    private static readonly string[] SeverityCounts = ["critical", "high", "medium", "low", "unknown"];
+
     private const string ComponentLabel = "io.hvo.skymonitor.component";
     private const string RevisionLabel = "org.opencontainers.image.revision";
 
@@ -290,7 +293,7 @@ internal static class Program
             inspected.Add((architecture, source, $"cameraagent-image-v{version}-linux-{architecture}.tar", identity));
         }
         var compatibility = ReadImageCompatibility(inspected, revision);
-        ValidateScanReport(scanReport, inspected.Select(static value => value.Identity.ImageId).ToArray());
+        ValidateScanReport(scanReport, version, inspected.Select(static value => value.Identity.ImageId).ToArray());
 
         var output = PrepareOutput(options);
         foreach (var platform in inspected)
@@ -479,11 +482,14 @@ internal static class Program
             : throw new ReleaseToolException($"The published image label '{name}' is not a positive integer.");
 
     /// <summary>
-    /// Requires an image release to carry a scan report that names its scanner, covers exactly the published image
-    /// IDs, and reports no critical finding. The release tool never runs a scanner itself; it refuses to sign a
-    /// release whose recorded scan does not describe the images being published.
+    /// Requires an image release to carry a scan report from a supported scanner that covers exactly the published
+    /// image IDs and reports no critical finding. The release tool never runs a scanner itself; it refuses to build
+    /// a release whose recorded scan does not describe the images being published. An unscanned candidate is
+    /// permitted only for a version that names itself a dry run, so a publishable version can never carry one.
+    /// Only the critical count gates the release: a base image routinely carries lower-severity findings, so the
+    /// remaining counts are required to be present as evidence rather than to be zero.
     /// </summary>
-    private static void ValidateScanReport(string path, string[] imageIds)
+    private static void ValidateScanReport(string path, string version, string[] imageIds)
     {
         using var document = JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions
         {
@@ -503,6 +509,16 @@ internal static class Program
         {
             throw new ReleaseToolException("The image vulnerability scan report does not declare a scanner and scan time.");
         }
+        var scannerName = scanner.GetString()!;
+        var status = root.TryGetProperty("status", out var statusValue) ? statusValue.GetString() : "scanned";
+        if ((status != "scanned" || !SupportedScanners.Contains(scannerName, StringComparer.Ordinal)) &&
+            !version.EndsWith("-dryrun", StringComparison.Ordinal))
+        {
+            throw new ReleaseToolException(
+                $"A published image release requires a completed scan by a supported scanner ({string.Join(", ", SupportedScanners)}); " +
+                $"this report declares scanner '{scannerName}' with status '{status}'. An unscanned candidate is only " +
+                "permitted for a version ending in '-dryrun', which is never publishable.");
+        }
         if (!root.TryGetProperty("subjects", out var subjects) || subjects.ValueKind != JsonValueKind.Array)
         {
             throw new ReleaseToolException("The image vulnerability scan report does not list its scanned subjects.");
@@ -516,8 +532,13 @@ internal static class Program
             throw new ReleaseToolException("The image vulnerability scan report does not cover exactly the published images.");
         }
         if (!root.TryGetProperty("summary", out var summary) || summary.ValueKind != JsonValueKind.Object ||
-            !summary.TryGetProperty("critical", out var critical) || critical.ValueKind != JsonValueKind.Number ||
-            critical.GetInt32() != 0)
+            SeverityCounts.Any(severity => !summary.TryGetProperty(severity, out var count) ||
+                count.ValueKind != JsonValueKind.Number || count.GetInt32() < 0))
+        {
+            throw new ReleaseToolException(
+                $"The image vulnerability scan report must record every severity count ({string.Join(", ", SeverityCounts)}).");
+        }
+        if (summary.GetProperty("critical").GetInt32() != 0)
         {
             throw new ReleaseToolException("The image vulnerability scan report must record zero critical findings.");
         }
@@ -532,15 +553,24 @@ internal static class Program
             : throw new ReleaseToolException($"{name} must be a lowercase sha256:<64 hex> digest.");
     }
 
+    /// <summary>
+    /// Applies the same repository shape the signed manifest is verified against, so a candidate cannot be built
+    /// with a reference that verification would later reject.
+    /// </summary>
     private static string RequireImageRepository(IReadOnlyDictionary<string, string> options, string name)
     {
         var value = Require(options, name);
-        return value.Length <= 255 && value.Contains('/', StringComparison.Ordinal) &&
-               !value.Contains("..", StringComparison.Ordinal) &&
-               value.All(static character => char.IsAsciiLetterOrDigit(character) || character is '.' or '-' or '_' or '/' or ':')
+        return ImageRepositoryRegex().IsMatch(value)
             ? value
-            : throw new ReleaseToolException($"{name} must be an OCI repository reference without a tag or digest.");
+            : throw new ReleaseToolException(
+                $"{name} must be a lowercase OCI repository reference with a host and at least one path segment, " +
+                "and without a tag or digest.");
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(
+        "^[a-z0-9][a-z0-9.-]{0,63}(:[0-9]{1,5})?(/[a-z0-9]+([._-][a-z0-9]+)*){1,6}$",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex ImageRepositoryRegex();
 
     private static async Task SignLocalAsync(
         Dictionary<string, string> options,

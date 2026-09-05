@@ -227,6 +227,7 @@ public static partial class DistributionVerifier
         if (manifest.Release.Train != "image" || manifest.Release.Tag != $"image-v{manifest.Release.Version}" ||
             image.Component != "CameraAgent" || !ImageRepositoryRegex().IsMatch(image.Repository) ||
             image.SourceRevision != manifest.Release.SourceRevision || image.SourceTree != manifest.Release.SourceTree ||
+            CountRole(manifest, DistributionArtifactRole.License) != 1 ||
             manifest.Artifacts.Any(static artifact => artifact.Role is DistributionArtifactRole.Installer or
                 DistributionArtifactRole.CatalogBundle or DistributionArtifactRole.Attribution))
         {

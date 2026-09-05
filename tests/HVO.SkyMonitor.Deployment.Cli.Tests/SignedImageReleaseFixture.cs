@@ -58,12 +58,14 @@ internal sealed class SignedImageReleaseFixture : IDisposable
             artifacts.Add(new DistributionArtifact(
                 DistributionArtifactRole.ImageArchive, assetName, "application/x-tar", content.Length,
                 Convert.ToHexStringLower(SHA256.HashData(content)), "linux", architecture));
+            // Both platforms carry the same immutable image ID so the fixture exercises whichever architecture the
+            // host actually reports, rather than only the one the author happened to build on.
             platforms.Add(new DistributionImagePlatform(
                 "linux",
                 architecture,
                 $"sha256:{Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"manifest-{architecture}")))}",
                 assetName,
-                architecture == "amd64" ? imageId : $"sha256:{new string('e', 64)}"));
+                imageId));
         }
         foreach (var (role, assetName) in new[]
                  {

@@ -188,7 +188,11 @@ internal sealed record InstallRequest
     /// A signed image release and an operator-supplied image are mutually exclusive: the installation either
     /// derives the immutable image from verified release metadata or is told exactly which image to use, never both.
     /// </summary>
-    private void ValidateImageSelection()
+    /// <summary>
+    /// Validates only how the image was selected. A lifecycle upgrade resolves a signed image release without a
+    /// catalog input, so it applies these rules alone rather than the whole install contract.
+    /// </summary>
+    internal void ValidateImageSelection()
     {
         if (ImageManifest is not null && ImageIndex is not null)
         {
@@ -211,9 +215,10 @@ internal sealed record InstallRequest
         {
             throw new InstallUsageException("--image-ref cannot be combined with a signed image release.");
         }
-        if (ImageArchive is not null)
+        if (ImageArchive is not null || ImageArchiveSha256 is not null)
         {
-            throw new InstallUsageException("--image-archive cannot be combined with a signed image release.");
+            throw new InstallUsageException(
+                "--image-archive and --image-archive-sha256 cannot be combined with a signed image release.");
         }
         if (ImageManifest is not null)
         {
