@@ -73,6 +73,22 @@ public sealed class DeploymentContinuityReader
             captureWindow);
     }
 
+    /// <summary>
+    /// The durable per-agent capture sequences only. This is the narrow read a local automation
+    /// capture-relative trigger needs; it deliberately avoids the capture window, artifact, and
+    /// fleet reads the full continuity report performs.
+    /// </summary>
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "The reader is an injectable application service.")]
+    public async Task<IReadOnlyList<CaptureSequenceContinuity>> ReadCaptureSequenceContinuityAsync(
+        string root,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        return await ReadCaptureSequencesAsync(
+            Path.Combine(Path.GetFullPath(root), "journal", "raw-ingress.db"), cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     private static async Task<IReadOnlyList<LocalCaptureContinuity>> ReadCaptureWindowAsync(
         string path,
         long? fromCaptureSequence,
