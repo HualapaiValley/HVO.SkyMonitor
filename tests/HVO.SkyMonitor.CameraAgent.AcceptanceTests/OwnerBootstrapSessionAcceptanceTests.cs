@@ -51,6 +51,8 @@ public sealed class OwnerBootstrapSessionAcceptanceTests
         using (var granted = await client.GetAsync(
             new Uri(OwnerBootstrapSession.OperationsProbePath, UriKind.Relative)).ConfigureAwait(false))
         {
+            var grantedBody = await granted.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, granted.StatusCode, grantedBody);
             Assert.IsFalse(granted.Headers.Contains(OwnerBootstrapSession.AuthorizationReasonHeader));
         }
 
@@ -61,12 +63,13 @@ public sealed class OwnerBootstrapSessionAcceptanceTests
             CameraAgentKestrelFixture.OwnerPassword + OwnerBootstrapSession.ReplacementPasswordSuffix,
             replacement);
 
-        // The helper runs once per agent per trial and the crash-recovery phase restarts agents, so
-        // it must be a no-op against an owner that is already ready rather than attempting a second
-        // replacement with a password that is no longer current.
+        // The helper promises to be a no-op against an owner that is already ready. No caller reaches
+        // that branch today, so pin it here: a second call must not attempt another replacement, and
+        // the credential it reports must still be the one the agent accepts.
         var repeated = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
             client, replacement, SessionName).ConfigureAwait(false);
         Assert.AreEqual(replacement, repeated);
-        await OwnerBootstrapSession.AssertOperationsAuthorizedAsync(client, SessionName).ConfigureAwait(false);
+        using var reloggedIn = await host.CreateOwnerClientAsync(repeated).ConfigureAwait(false);
+        await OwnerBootstrapSession.AssertOperationsAuthorizedAsync(reloggedIn, SessionName).ConfigureAwait(false);
     }
 }

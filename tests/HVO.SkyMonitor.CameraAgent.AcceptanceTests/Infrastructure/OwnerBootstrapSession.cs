@@ -108,7 +108,10 @@ internal static class OwnerBootstrapSession
 
         Assert.AreEqual(
             OwnerBootstrapStates.Ready,
-            await ReadBootstrapStateAsync(client, sessionName).ConfigureAwait(false));
+            await ReadBootstrapStateAsync(client, sessionName).ConfigureAwait(false),
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"The {sessionName} owner did not reach the ready state after replacing its temporary password."));
         return replacement;
     }
 
