@@ -180,7 +180,9 @@ to end. The signed-release installer campaign
 signed lifecycle on `linux/amd64`: both architectures of both candidates are
 built, identity-derived, scanned, and signed, and the amd64 archive is the one an
 installation consumes and runs. The arm64 archive of each candidate is published
-and verifiable but is never installed, so arm64 remains unqualified.
+and verifiable but is never installed, so arm64 remains unqualified end to end
+and no open issue currently tracks qualifying it; open one before treating an
+arm64 installation as supported.
 
 A published image release must carry a vulnerability scan. The release tool
 refuses a candidate whose scan report does not name a supported scanner and scan
@@ -210,8 +212,10 @@ campaign builds two candidates from two committed revisions, signs both with one
 ephemeral key, and publishes a campaign-only deployment CLI, built from the same
 committed revision, whose embedded trust root is that ephemeral public key. It
 then installs from the first candidate, upgrades to the second, rolls back, and
-refuses both a release signed by an untrusted key and a release whose signed
-compatibility record contradicts the image labels, asserting the retained
+refuses four releases it must not accept: one signed by a key the trust root does
+not hold, one carrying the trusted key's real signature over a different release,
+one naming an archive that is not the one it signed, and one whose signed
+compatibility record contradicts the image labels. It asserts the retained
 `image-distribution.json` after each transition. Nothing else about verification
 is changed, and the substitution is proved to redirect trust rather than remove
 it: the unmodified product CLI must refuse the same release, and the campaign CLI
@@ -223,6 +227,8 @@ containers. It establishes nothing about the production key itself — that the
 committed public key matches the Key Vault private key, that the workflow
 identity can sign with it, that a Key Vault signature verifies against the
 committed trust root, or that custody and rotation behave as described above.
+It also does not establish the manifest's declared-key-identity comparison, which
+signature verification makes unreachable as a failure.
 Only a real publishing run can establish those, and the production key cannot be
 exported to substitute for one. See
 [deployment-installer.md](deployment-installer.md) for the campaign's transition
