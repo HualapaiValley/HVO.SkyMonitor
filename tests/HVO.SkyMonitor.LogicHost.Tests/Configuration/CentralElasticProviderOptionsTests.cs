@@ -242,6 +242,12 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.AreEqual(ElasticScalingDecision.Steady, matched, "a registered four-slot instance holds three jobs");
         var entitledCapacity = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(9, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, EntitledConcurrency: 2, 0, Capacity: 1), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonEntitlementBound), (entitledCapacity.Provision, entitledCapacity.Reason), "the entitlement bound is applied against registered capacity too");
+        var covered = ElasticScalingPolicy.Decide(Enabled(maxInstances: 5, perInstance: 1), new ElasticScalingInput(5, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 10), startup);
+        Assert.AreEqual(ElasticScalingDecision.Steady, covered, "an adopted ten-slot instance covers five jobs whatever the new configured size is");
+        var cleanup = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 0, 0, 0, TimeSpan.Zero, EntitledConcurrency: 0, 0, CleanupBacklog: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanup.Provision, cleanup.Reason), "an expired lease with exhausted attempts needs one instance to terminalize it, whatever the entitlement or pool");
+        var cleanupCovered = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, CleanupBacklog: 1), startup);
+        Assert.AreEqual(ElasticScalingDecision.Steady, cleanupCovered, "an existing instance performs the cleanup");
     }
 
     [TestMethod]
@@ -267,7 +273,7 @@ public sealed class CentralElasticProviderOptionsTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void InstanceDescriptionIsWithheldWhenTheRunnerCannotBeProbed()
+    public async Task InstanceDescriptionIsWithheldWhenTheRunnerCannotBeProbed()
     {
         var settings = new CentralElasticProviderOptions
         {
@@ -283,14 +289,14 @@ public sealed class CentralElasticProviderOptionsTests
         using var provider = new LocalProcessElasticRunnerProvider(
             Microsoft.Extensions.Options.Options.Create(settings), TimeProvider.System,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<LocalProcessElasticRunnerProvider>.Instance);
-        Assert.IsNull(provider.ProbeConfiguredRunner(), "a missing executable cannot be probed");
-        Assert.IsNull(provider.ProbeConfiguredRunner(), "a failed probe is not repeated before the retry interval");
-        Assert.IsNull(provider.DescribeInstance(3, ["provider:local-process", "b", "a", "a"]), "nothing stands in for a runner that cannot be probed: the host provisions nothing until a probe succeeds");
+        Assert.IsNull(await provider.ProbeConfiguredRunnerAsync(CancellationToken.None), "a missing executable cannot be probed");
+        Assert.IsNull(await provider.ProbeConfiguredRunnerAsync(CancellationToken.None), "a failed probe is not repeated before the retry interval");
+        Assert.IsNull(await provider.DescribeInstanceAsync(3, ["provider:local-process", "b", "a", "a"], CancellationToken.None), "nothing stands in for a runner that cannot be probed: the host provisions nothing until a probe succeeds");
     }
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void CapabilityProbeAcceptsOnlyASuccessfulRunnerAdvertisement()
+    public async Task CapabilityProbeAcceptsOnlyASuccessfulRunnerAdvertisement()
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
         {
@@ -303,7 +309,7 @@ public sealed class CentralElasticProviderOptionsTests
         foreach (var (exitCode, accepted) in new[] { (1, false), (0, true) })
         {
             var script = Path.Combine(Path.GetTempPath(), $"hvo-probe-{Guid.NewGuid():N}.sh");
-            File.WriteAllText(script, $"#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\nexit {exitCode}\n");
+            await File.WriteAllTextAsync(script, $"#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\nexit {exitCode}\n");
             if (!OperatingSystem.IsWindows())
             {
                 File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -319,11 +325,11 @@ public sealed class CentralElasticProviderOptionsTests
                 using var provider = new LocalProcessElasticRunnerProvider(
                     Microsoft.Extensions.Options.Options.Create(settings), TimeProvider.System,
                     Microsoft.Extensions.Logging.Abstractions.NullLogger<LocalProcessElasticRunnerProvider>.Instance);
-                var probed = provider.ProbeConfiguredRunner();
+                var probed = await provider.ProbeConfiguredRunnerAsync(CancellationToken.None);
                 if (accepted)
                 {
                     Assert.IsNotNull(probed, "a warm runner's advertisement (exit 0) is accepted");
-                    var described = provider.DescribeInstance(2, ["b", "a"]);
+                    var described = await provider.DescribeInstanceAsync(2, ["b", "a"], CancellationToken.None);
                     Assert.IsNotNull(described);
                     Assert.AreEqual("probe-rid", described.RuntimeIdentifier, "instances are described by the probed runner");
                     Assert.AreEqual(2, described.MaxConcurrency);
@@ -332,7 +338,7 @@ public sealed class CentralElasticProviderOptionsTests
                 else
                 {
                     Assert.IsNull(probed, "a runner whose warmup is incomplete (exit 1) prints capabilities but would abort at startup; its advertisement is refused");
-                    Assert.IsNull(provider.DescribeInstance(2, []), "a refused advertisement describes nothing, so no instance is provisioned");
+                    Assert.IsNull(await provider.DescribeInstanceAsync(2, [], CancellationToken.None), "a refused advertisement describes nothing, so no instance is provisioned");
                 }
             }
             finally

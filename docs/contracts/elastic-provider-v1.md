@@ -26,15 +26,16 @@ long-running, native, or GPU recipes.
 
 - `IElasticRunnerProvider`: `Name`, `Capabilities` (provider, process
   architecture, runtime image, scale-to-zero support, labels),
-  `EstimateStartup()`, `DescribeInstance(maxConcurrency, labels)` (the
+  `EstimateStartup()`, `DescribeInstanceAsync(maxConcurrency, labels)` (the
   runner capabilities an instance provisioned with those settings registers,
   so the host counts only backlog such an instance could claim, or null when
   the provider cannot currently describe one, in which case the host
   provisions nothing, not even the warm minimum, and reports
   `instance-capabilities-unknown`; the local adapter probes the configured
   executable's own `--capabilities` advertisement, accepted only on a zero
-  exit, keeps a successful probe for the host's lifetime, and retries a
-  failed one every five minutes),
+  exit, keeps a successful probe for the host's lifetime, retries a failed
+  one every five minutes, and observes the probe timeout and the caller's
+  cancellation),
   `ProvisionAsync(request)`, `RetireAsync(instance, grace)`, `ListAsync()`. Provisioning is idempotent per instance id (a retried
   request returns the instance already launched); retire asks the instance to
   drain on every platform (the runner watches a stop file the host creates,

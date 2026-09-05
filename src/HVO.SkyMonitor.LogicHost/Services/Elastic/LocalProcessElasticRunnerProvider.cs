@@ -39,29 +39,31 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
     /// is) with the instance's concurrency and labels applied. A failed probe describes nothing (null), so the host
     /// provisions no instance that would abort before registration; the probe is retried after a cooldown.
     /// </summary>
-    public ProcessingRunnerCapabilities? DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
+    public async ValueTask<ProcessingRunnerCapabilities?> DescribeInstanceAsync(int maxConcurrency, IReadOnlyList<string> labels, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(labels);
         var normalized = labels.Distinct(StringComparer.Ordinal).OrderBy(static label => label, StringComparer.Ordinal).ToArray();
-        return ProbeConfiguredRunner() is { } probed
+        return await ProbeConfiguredRunnerAsync(cancellationToken).ConfigureAwait(false) is { } probed
             ? probed with { MaxConcurrency = maxConcurrency, Labels = normalized }
             : null;
     }
 
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(60);
     internal static readonly TimeSpan ProbeRetryInterval = TimeSpan.FromMinutes(5);
-    private readonly Lock _probeGate = new();
+    private readonly SemaphoreSlim _probeGate = new(1, 1);
     private DateTimeOffset? _probeAttemptedAtUtc;
     private ProcessingRunnerCapabilities? _probed;
 
     /// <summary>
     /// Runs the configured executable with <c>--capabilities</c> and parses its advertisement (accepted only on a
     /// zero exit, the runner's own warm signal); a successful probe is kept for the host's lifetime, a failed one is
-    /// retried after <see cref="ProbeRetryInterval"/>. Null while no probe has succeeded.
+    /// retried after <see cref="ProbeRetryInterval"/>. The wait observes the probe timeout and the caller's
+    /// cancellation (host shutdown, an abandoned sample), and a hung probe child is killed. Null while no probe has succeeded.
     /// </summary>
-    internal ProcessingRunnerCapabilities? ProbeConfiguredRunner()
+    internal async Task<ProcessingRunnerCapabilities?> ProbeConfiguredRunnerAsync(CancellationToken cancellationToken)
     {
-        lock (_probeGate)
+        await _probeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
             var now = timeProvider.GetUtcNow();
             if (_probed is not null || (_probeAttemptedAtUtc is { } attempted && now - attempted < ProbeRetryInterval))
@@ -92,11 +94,21 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
                     startInfo.Environment[key] = value;
                 }
                 using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("The runner probe process could not be started.");
-                var stdout = process.StandardOutput.ReadToEndAsync();
-                var stderr = process.StandardError.ReadToEndAsync();
-                if (!process.WaitForExit(ProbeTimeout))
+                using var timeout = new CancellationTokenSource(ProbeTimeout);
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+                var stdout = process.StandardOutput.ReadToEndAsync(linked.Token);
+                var stderr = process.StandardError.ReadToEndAsync(linked.Token);
+                try
                 {
-                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync(linked.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    ForceStop(process);
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
                     throw new TimeoutException("The runner capability probe did not finish in time.");
                 }
                 if (process.ExitCode != 0)
@@ -105,7 +117,7 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
                     // normal startup, so its advertisement is not accepted either.
                     throw new InvalidOperationException($"The runner capability probe exited with code {process.ExitCode}; its warmup is incomplete.");
                 }
-                var line = stdout.GetAwaiter().GetResult().Split('\n').Select(static item => item.Trim()).LastOrDefault(static item => item.StartsWith('{'))
+                var line = (await stdout.ConfigureAwait(false)).Split('\n').Select(static item => item.Trim()).LastOrDefault(static item => item.StartsWith('{'))
                     ?? throw new InvalidOperationException("The runner capability probe wrote no capabilities.");
                 var probed = JsonSerializer.Deserialize<ProcessingRunnerCapabilities>(line, ProcessingRunnerProtocol.SerializerOptions)
                     ?? throw new InvalidOperationException("The runner capability probe wrote an empty document.");
@@ -120,6 +132,10 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
                 _probed = null;
             }
             return _probed;
+        }
+        finally
+        {
+            _probeGate.Release();
         }
     }
 
@@ -489,6 +505,7 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         }
         _instances.Clear();
         _provisionLock.Dispose();
+        _probeGate.Dispose();
     }
 
     /// <summary>An adopted process (started by a previous host process) exposes no exit code; -1 stands in.</summary>

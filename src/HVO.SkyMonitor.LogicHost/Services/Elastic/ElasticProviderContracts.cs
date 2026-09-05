@@ -110,7 +110,7 @@ internal interface IElasticRunnerProvider
     /// currently describe an instance (for example the configured runner failed its capability probe), in which case
     /// the host provisions nothing until it can (#600).
     /// </summary>
-    ProcessingRunnerCapabilities? DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels);
+    ValueTask<ProcessingRunnerCapabilities?> DescribeInstanceAsync(int maxConcurrency, IReadOnlyList<string> labels, CancellationToken cancellationToken);
 
     Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken);
 

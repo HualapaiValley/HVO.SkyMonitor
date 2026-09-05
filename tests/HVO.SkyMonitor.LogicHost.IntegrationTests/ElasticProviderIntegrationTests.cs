@@ -587,11 +587,11 @@ public sealed class ElasticProviderIntegrationTests
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
         await using var host = await ElasticHost.StartAsync(maxInstances: 1, scaleToZeroAfter: TimeSpan.FromMinutes(10)).ConfigureAwait(false);
         var provider = (LocalProcessElasticRunnerProvider)host.Provider;
-        var probed = provider.ProbeConfiguredRunner();
+        var probed = await provider.ProbeConfiguredRunnerAsync(CancellationToken.None).ConfigureAwait(false);
         probed.Should().NotBeNull("the configured runner executable advertises its own capabilities");
         probed!.ProtocolVersion.Should().Be(ProcessingRunnerProtocol.Version);
         probed.BuiltInRecipes.Should().Contain(recipe => recipe.Name == BuiltInProcessingRecipes.EncodedPreview);
-        var described = provider.DescribeInstance(2, ["provider:local-process", "elastic-instance:probe"]);
+        var described = await provider.DescribeInstanceAsync(2, ["provider:local-process", "elastic-instance:probe"], CancellationToken.None).ConfigureAwait(false);
         described.Should().NotBeNull();
         described!.MaxConcurrency.Should().Be(2);
         described.Labels.Should().BeEquivalentTo(["elastic-instance:probe", "provider:local-process"]);
@@ -747,7 +747,7 @@ public sealed class ElasticProviderIntegrationTests
         public string Name => "counting";
         public ElasticProviderCapabilities Capabilities { get; } = new("counting", "x64", "test", true, []);
         public TimeSpan EstimateStartup() { Calls++; return TimeSpan.Zero; }
-        public ProcessingRunnerCapabilities? DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels) { Calls++; return ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, labels, null); }
+        public ValueTask<ProcessingRunnerCapabilities?> DescribeInstanceAsync(int maxConcurrency, IReadOnlyList<string> labels, CancellationToken cancellationToken) { Calls++; return ValueTask.FromResult<ProcessingRunnerCapabilities?>(ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, labels, null)); }
         public Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken) { Calls++; throw new InvalidOperationException(); }
         public Task RetireAsync(string instanceId, TimeSpan grace, CancellationToken cancellationToken) { Calls++; return Task.CompletedTask; }
         public Task<IReadOnlyList<ElasticRunnerInstance>> ListAsync(CancellationToken cancellationToken) { Calls++; return Task.FromResult<IReadOnlyList<ElasticRunnerInstance>>([]); }
@@ -766,8 +766,8 @@ public sealed class ElasticProviderIntegrationTests
 
         public bool Describable { get; set; } = true;
 
-        public ProcessingRunnerCapabilities? DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
-            => Describable ? ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, labels, null) : null;
+        public ValueTask<ProcessingRunnerCapabilities?> DescribeInstanceAsync(int maxConcurrency, IReadOnlyList<string> labels, CancellationToken cancellationToken)
+            => ValueTask.FromResult(Describable ? ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, labels, null) : null);
 
         public void MarkAlive(string instanceId, string runnerId)
             => _alive[instanceId] = new ElasticRunnerInstance(instanceId, runnerId, ElasticRunnerInstanceState.Running, DateTimeOffset.UtcNow.AddHours(-1), null);

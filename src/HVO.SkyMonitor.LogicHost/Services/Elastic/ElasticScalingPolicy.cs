@@ -13,7 +13,8 @@ internal sealed record ElasticScalingInput(
     int InstanceMinutesToday,
     int InFlight = 0,
     int WarmInstances = 0,
-    int? Capacity = null);
+    int? Capacity = null,
+    int CleanupBacklog = 0);
 
 internal sealed record ElasticScalingDecision(int Provision, int Retire, string Reason)
 {
@@ -56,9 +57,11 @@ internal static class ElasticScalingPolicy
         // Below capacity the count is a lower bound: the autoscaler applies idle scale-down only to instances whose
         // registered slots the demand does not still need, so heterogeneous adopted instances are never over-retired.
         var capacity = input.Capacity ?? active * perInstance;
+        // Demand the existing capacity already covers never asks for more than the active instances, whatever the
+        // configured per-instance size now is (an adopted ten-slot instance under a one-slot configuration is enough).
         int InstancesFor(int concurrency) => concurrency > capacity
             ? active + (int)Math.Ceiling((concurrency - capacity) / (double)perInstance)
-            : (int)Math.Ceiling(concurrency / (double)perInstance);
+            : Math.Min(active, (int)Math.Ceiling(concurrency / (double)perInstance));
         var needed = InstancesFor(input.Backlog + Math.Max(0, input.InFlight));
         var entitlementBound = false;
         if (input.EntitledConcurrency is { } entitled)
@@ -69,6 +72,12 @@ internal static class ElasticScalingPolicy
                 needed = byEntitlement;
                 entitlementBound = true;
             }
+        }
+        // Expired leases whose attempts are exhausted are terminal cleanup the claim exempts from pool, entitlement,
+        // and fairness bounds: they only need one instance to exist, and never trigger the queue-deadline rule.
+        if (input.CleanupBacklog > 0 && needed < 1)
+        {
+            needed = 1;
         }
         var desired = Math.Clamp(Math.Max(needed, options.MinWarmInstances), 0, options.MaxInstances);
         // The warm minimum is a count of instances that never self-terminate: when fewer than that carry the warm

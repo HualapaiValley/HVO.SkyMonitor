@@ -18,7 +18,7 @@ internal sealed class NullElasticRunnerProvider : IElasticRunnerProvider
 
     public TimeSpan EstimateStartup() => TimeSpan.Zero;
 
-    public ProcessingRunnerCapabilities? DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
+    public ValueTask<ProcessingRunnerCapabilities?> DescribeInstanceAsync(int maxConcurrency, IReadOnlyList<string> labels, CancellationToken cancellationToken)
         => throw new InvalidOperationException("Elastic provisioning is disabled.");
 
     public Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken)
@@ -102,15 +102,20 @@ internal sealed partial class ElasticRunnerAutoscaler(
                 && localProcessProvider.TryAdopt(row.InstanceId, row.RunnerId, processId, row.StartedAtUtc))
             .ToList();
         // Every drain request goes out at once so no inherited instance keeps claiming while another drains.
-        var stoppedAt = await RetireEachAsync(alive.Select(row => row.InstanceId).ToArray(), options.Value.RetireGrace, cancellationToken, localProcessProvider).ConfigureAwait(false);
+        var (stoppedAt, retireFailures) = await RetireEachAsync(alive.Select(row => row.InstanceId).ToArray(), options.Value.RetireGrace, cancellationToken, localProcessProvider).ConfigureAwait(false);
         foreach (var row in rows)
         {
             var wasAlive = alive.Contains(row);
-            await StopAsync(dbContext, row, wasAlive ? ElasticRunnerInstanceState.Stopped : ElasticRunnerInstanceState.Orphaned, "provisioning-disabled", cancellationToken,
-                stoppedAt.TryGetValue(row.InstanceId, out var stopped) ? stopped : null).ConfigureAwait(false);
+            if (wasAlive && !stoppedAt.ContainsKey(row.InstanceId))
+            {
+                continue;
+            }
+            await StopAsync(dbContext, row, wasAlive ? ElasticRunnerInstanceState.Stopped : ElasticRunnerInstanceState.Orphaned, "provisioning-disabled",
+                retireFailures.Count == 0 ? cancellationToken : CancellationToken.None, stoppedAt.TryGetValue(row.InstanceId, out var stopped) ? stopped : null).ConfigureAwait(false);
             Log.InheritedRetired(logger, row.InstanceId, wasAlive);
         }
-        return alive.Count;
+        ThrowRetireFailures(retireFailures, cancellationToken);
+        return stoppedAt.Count;
     }
 
     /// <summary>
@@ -365,7 +370,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var placedAll = runnerOptions.Value.ResolveRunnerPlacedRecipes();
         // A provider that cannot describe an instance (the configured runner failed its probe) gets nothing
         // provisioned: no backlog is counted for it and even the warm minimum waits until a probe succeeds.
-        var template = provider.DescribeInstance(settings.MaxConcurrencyPerInstance, BuildLabels(settings, "template"));
+        var template = await provider.DescribeInstanceAsync(settings.MaxConcurrencyPerInstance, BuildLabels(settings, "template"), cancellationToken).ConfigureAwait(false);
         var placed = template is null ? [] : runnerOptions.Value.ResolveEligibleRecipes(template).ToHashSet(StringComparer.Ordinal);
         var excluded = string.Join(',', placedAll.Where(recipe => !placed.Contains(recipe)).OrderBy(recipe => recipe, StringComparer.Ordinal));
         if (template is not null && excluded.Length != 0 && !string.Equals(excluded, _lastExcludedRecipes, StringComparison.Ordinal))
@@ -379,7 +384,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
                 .Where(job => placed.Contains(job.RecipeName)
                     && (((job.Status == CentralDerivativeJobStatus.Pending || job.Status == CentralDerivativeJobStatus.RetryableFailure)
                             && job.AvailableAtUtc != null && job.AvailableAtUtc <= now)
-                        || (job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc <= now)))
+                        || (job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc <= now && job.AttemptCount < job.MaxAttempts)))
                 .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
                 .Select(group => new
                 {
@@ -395,6 +400,13 @@ internal sealed partial class ElasticRunnerAutoscaler(
         backlogRows = backlogRows.Where(row => IsPoolEligible(settings.Pool, entitlements?.ResolvePool(row.ObservatoryId))).ToList();
         var backlog = backlogRows.Sum(row => row.Count);
         var oldestAge = backlogRows.Count == 0 ? TimeSpan.Zero : now - backlogRows.Min(row => row.Oldest!.Value);
+        // Expired leases with exhausted attempts are terminal cleanup the claim exempts from pool, entitlement, and
+        // fairness predicates: counted apart from executable backlog so those bounds (and the deadline) never strand them.
+        var cleanupBacklog = placed.Count == 0
+            ? 0
+            : await dbContext.CentralDerivativeJobs.AsNoTracking()
+                .CountAsync(job => placed.Contains(job.RecipeName) && job.Status == CentralDerivativeJobStatus.Leased
+                    && job.LeaseExpiresAtUtc <= now && job.AttemptCount >= job.MaxAttempts, cancellationToken).ConfigureAwait(false);
         int? entitled = null;
         if (entitlements is not null && backlogRows.Count != 0)
         {
@@ -417,7 +429,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         int CapacityOf(int runningCount, int startingCount)
             => registeredRunningConcurrency + Math.Max(0, runningCount - registeredRunningCount) * perInstance + startingCount * perInstance;
         var input = new ElasticScalingInput(backlog, oldestAge, running, starting, idle.Count,
-            idle.Count == 0 ? TimeSpan.Zero : idle.Max(item => item.IdleFor), entitled, minutesToday, inFlight, warmLive, CapacityOf(running, starting));
+            idle.Count == 0 ? TimeSpan.Zero : idle.Max(item => item.IdleFor), entitled, minutesToday, inFlight, warmLive, CapacityOf(running, starting), cleanupBacklog);
         // Deployment-wide decisions are serialized: the decision and its durable intents commit under one
         // application lock so replicas sampling the same backlog cannot both fill the same shortfall.
         await using var scaling = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -455,9 +467,12 @@ internal sealed partial class ElasticRunnerAutoscaler(
         registeredRunningConcurrency = lockedRegistered.Sum();
         input = input with { Running = running, Starting = starting, WarmInstances = warmLive, Capacity = CapacityOf(running, starting) };
         var decision = ElasticScalingPolicy.Decide(settings, input, provider.EstimateStartup());
-        if (template is null && decision.Provision > 0)
+        if (template is null && decision.Reason != ElasticScalingPolicy.ReasonDailyLimit)
         {
-            decision = new ElasticScalingDecision(0, decision.Retire, ElasticScalingPolicy.ReasonInstanceUndescribed);
+            // With no instance description the backlog is unknown, not zero: no provisioning and no idle retirement
+            // (which could remove the only instance able to claim queued work) until a probe succeeds; the daily-budget
+            // drain still applies.
+            decision = new ElasticScalingDecision(0, 0, ElasticScalingPolicy.ReasonInstanceUndescribed);
             telemetry.RecordRejectedPlacement(provider.Name, decision.Reason);
             Log.InstanceUndescribed(logger, provider.Name);
         }
@@ -497,7 +512,10 @@ internal sealed partial class ElasticRunnerAutoscaler(
         // Idle scale-down keeps enough registered capacity for the demand: with heterogeneous adopted instances the
         // policy's count is a lower bound, so a candidate whose registered slots the demand still needs is skipped.
         var remainingCapacity = CapacityOf(running, starting);
-        var demand = EffectiveDemand(backlog, inFlight, entitled);
+        var demand = Math.Max(EffectiveDemand(backlog, inFlight, entitled), cleanupBacklog > 0 ? 1 : 0);
+        // A warm-minimum replacement is provisioned at the configured size on the next sample, so its capacity counts
+        // toward what may be retired now.
+        var capacityFloor = decision.Reason == ElasticScalingPolicy.ReasonWarmMinimum ? demand - perInstance : demand;
         try
         {
             foreach (var item in candidates)
@@ -509,7 +527,8 @@ internal sealed partial class ElasticRunnerAutoscaler(
                 var candidateConcurrency = registered.TryGetValue(item.Row.RunnerId, out var candidateRegistration) && candidateRegistration.Status == CentralProcessingRunnerStatus.Active
                     ? candidateRegistration.MaxConcurrency
                     : perInstance;
-                if (decision.Reason == ElasticScalingPolicy.ReasonIdle && remainingCapacity - candidateConcurrency < demand)
+                if (decision.Reason is ElasticScalingPolicy.ReasonIdle or ElasticScalingPolicy.ReasonWarmMinimum
+                    && remainingCapacity - candidateConcurrency < capacityFloor)
                 {
                     continue;
                 }
@@ -546,10 +565,16 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var idleRetired = 0;
         // Every drain request goes out at once and each instance is stamped the moment its own drain completes, so an
         // instance that exits quickly is never charged for a slower sibling's grace.
-        var stoppedAt = await RetireEachAsync(retiring.Select(item => item.Row.InstanceId).ToArray(), settings.RetireGrace, cancellationToken).ConfigureAwait(false);
+        var (stoppedAt, retireFailures) = await RetireEachAsync(retiring.Select(item => item.Row.InstanceId).ToArray(), settings.RetireGrace, cancellationToken).ConfigureAwait(false);
         foreach (var item in retiring)
         {
-            await StopAsync(dbContext, item.Row, ElasticRunnerInstanceState.Stopped, decision.Reason, cancellationToken, stoppedAt[item.Row.InstanceId]).ConfigureAwait(false);
+            if (!stoppedAt.TryGetValue(item.Row.InstanceId, out var stopped))
+            {
+                continue;
+            }
+            // Successful retirements are closed even when a sibling failed (non-cancelable), so their rows never stay
+            // `Stopping` with an active registration until the next sample.
+            await StopAsync(dbContext, item.Row, ElasticRunnerInstanceState.Stopped, decision.Reason, retireFailures.Count == 0 ? cancellationToken : CancellationToken.None, stopped).ConfigureAwait(false);
             telemetry.RecordRetirement(provider.Name, decision.Reason);
             retired++;
             if (item.IdleFor >= settings.ScaleToZeroAfter)
@@ -557,6 +582,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
                 idleRetired++;
             }
         }
+        ThrowRetireFailures(retireFailures, cancellationToken);
         var startingRetired = retiring.Count(item => item.Row.RegisteredAtUtc is null);
         telemetry.UpdateSnapshot(new ElasticProviderSnapshot(
             now, provider.Name, Math.Max(0, starting + decision.Provision - startingRetired), Math.Max(0, running - (retired - startingRetired)),
@@ -742,18 +768,43 @@ internal sealed partial class ElasticRunnerAutoscaler(
         }
     }
 
-    /// <summary>Retires the instances concurrently and returns when each one's own drain completed.</summary>
-    private async Task<IReadOnlyDictionary<string, DateTimeOffset>> RetireEachAsync(
+    /// <summary>
+    /// Retires the instances concurrently; returns when each one's own drain completed (or failed) so the caller
+    /// closes every successful retirement before the failures are raised.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Every failure is collected and rethrown by the caller after the successful retirements are persisted.")]
+    private async Task<(IReadOnlyDictionary<string, DateTimeOffset> StoppedAt, IReadOnlyList<Exception> Failures)> RetireEachAsync(
         IReadOnlyCollection<string> instanceIds, TimeSpan grace, CancellationToken cancellationToken, IElasticRunnerProvider? target = null)
     {
         var retireVia = target ?? provider;
         var stoppedAt = new System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var failures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
         await Task.WhenAll(instanceIds.Select(async instanceId =>
         {
-            await retireVia.RetireAsync(instanceId, grace, cancellationToken).ConfigureAwait(false);
-            stoppedAt[instanceId] = timeProvider.GetUtcNow();
+            try
+            {
+                await retireVia.RetireAsync(instanceId, grace, cancellationToken).ConfigureAwait(false);
+                stoppedAt[instanceId] = timeProvider.GetUtcNow();
+            }
+            catch (Exception exception)
+            {
+                failures.Enqueue(exception);
+            }
         })).ConfigureAwait(false);
-        return stoppedAt;
+        return (stoppedAt, failures.ToArray());
+    }
+
+    private static void ThrowRetireFailures(IReadOnlyList<Exception> failures, CancellationToken cancellationToken)
+    {
+        if (failures.Count == 0)
+        {
+            return;
+        }
+        if (cancellationToken.IsCancellationRequested && failures.All(failure => failure is OperationCanceledException))
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+        throw failures.Count == 1 ? new InvalidOperationException("An elastic runner retirement failed.", failures[0]) : new AggregateException(failures);
     }
 
     /// <summary>Instance minutes consumed today (UTC), the daily cost/resource accounting the policy is bounded by.</summary>

@@ -137,14 +137,19 @@ receives as its own shutdown grace; the stop time recorded for instance
 minutes is the time the drain actually completed. Backlog counts only
 runner-placed recipes a provisioned instance could claim (the configured
 executable is probed with `--capabilities`, event 2243, accepted only on a
-zero exit; after a failed probe, event 2244, nothing is provisioned, not
-even the warm minimum, the decision reads `instance-capabilities-unknown`
-(event 2246, health degraded) and the probe is retried every five minutes;
-recipes whose
+zero exit; after a failed probe, event 2244, nothing is provisioned or
+idle-retired, not even the warm minimum, the decision reads
+`instance-capabilities-unknown` (event 2246, health degraded) and the probe
+is retried every five minutes; recipes whose
 requirements the instance cannot satisfy are excluded and logged once as
-event 2242) and includes expired leases the claim would reclaim. Idle
-scale-down never retires registered capacity the demand still needs, and
-concurrent drains stamp each instance's own stop time. Instances
+event 2242) and includes expired leases the claim would reclaim. Expired
+leases whose attempts are exhausted are terminal cleanup the claim exempts
+from pool and entitlement bounds, so they are counted apart from executable
+backlog and only ensure one instance exists. Idle scale-down and warm
+replacement never retire registered capacity the demand still needs (the
+replacement's configured size counts), concurrent drains stamp each
+instance's own stop time, and a retirement that fails beside a successful
+one still closes the successful rows before the failure is raised. Instances
 recorded by a previous host process are re-adopted when their process is
 still alive, reserved retirements included, which are then completed.
 `LocalProcess:LogicHostUrl` must be http or https, and http only for loopback
