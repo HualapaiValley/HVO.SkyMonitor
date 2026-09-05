@@ -1,6 +1,7 @@
 # LogicHost Object-Storage Provider Decision
 
-Status date: 2026-09-05  
+Status date: 2026-09-05
+
 Decision owner: `RM-016`, epic [#499](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/499)
 
 ## Decision
