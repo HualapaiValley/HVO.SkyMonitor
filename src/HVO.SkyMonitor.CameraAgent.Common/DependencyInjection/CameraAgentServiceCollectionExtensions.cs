@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
@@ -236,9 +237,19 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
         services.AddSingleton<IProcessingGraphDeliveryInbox>(provider =>
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
+        services.AddSingleton<IExecutionEvidenceSource>(provider =>
+            provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
         services.TryAddSingleton<IProcessingGraphDeliveryTransport>(NullProcessingGraphDeliveryTransport.Instance);
         services.AddSingleton<ProcessingGraphDeliveryState>();
         services.AddSingleton<ProcessingGraphDeliveryTelemetry>();
+        services.AddSingleton<ExecutionEvidenceExportState>();
+        services.AddSingleton<ExecutionEvidenceExportTelemetry>();
+        services.AddSingleton<ExecutionEvidenceExportWakeup>();
+        services.AddSingleton<IExecutionEvidenceOutbox>(provider => new SqliteExecutionEvidenceOutbox(
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.RawIngressSqliteBusyTimeoutSeconds));
+        services.TryAddSingleton<IExecutionEvidenceTransport>(NullExecutionEvidenceTransport.Instance);
+        services.TryAddSingleton<IExecutionEvidenceOriginProvider, LocalExecutionEvidenceOriginProvider>();
         services.AddSingleton<IObservingDayCalendarProvider, DeploymentObservingDayCalendarProvider>();
         services.AddSingleton<SqliteCameraAgentGallery>();
         services.AddSingleton<ICameraAgentGallery>(provider => provider.GetRequiredService<SqliteCameraAgentGallery>());
@@ -370,6 +381,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService<FleetHeartbeatService>();
         services.AddHostedService<EnvironmentalObservationDeliveryService>();
         services.AddHostedService<ProcessingGraphDeliveryService>();
+        services.AddHostedService<ExecutionEvidenceExportService>();
         services.AddSingleton<TransientWorkerService>();
         services.AddHostedService(provider => provider.GetRequiredService<TransientWorkerService>());
         services.AddSingleton<TransientCandidateDeliveryService>();

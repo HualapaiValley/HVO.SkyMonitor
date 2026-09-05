@@ -111,6 +111,48 @@ internal sealed class OutboxOperationsTokenService
             recordId > 0;
     }
 
+    public string ProtectExecutionEvidenceReference(long recordId)
+        => Protect("execution-evidence.reference", new TokenPayload(
+            "evidence", recordId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+
+    public bool TryReadExecutionEvidenceReference(string token, out long recordId)
+    {
+        recordId = 0;
+        return TryReadTarget("execution-evidence.reference", token, out var alias, out var value) &&
+            alias == "evidence" &&
+            long.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out recordId) &&
+            recordId > 0;
+    }
+
+    public string ProtectExecutionEvidenceAction(OutboxOperationAction action, long recordId)
+        => Protect(
+            ActionPurpose("execution-evidence", action),
+            new TokenPayload("evidence", recordId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+
+    public bool TryReadExecutionEvidenceAction(OutboxOperationAction action, string token, out long recordId)
+    {
+        recordId = 0;
+        return TryReadTarget(ActionPurpose("execution-evidence", action), token, out var alias, out var value) &&
+            alias == "evidence" &&
+            long.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out recordId) &&
+            recordId > 0;
+    }
+
+    public string ProtectExecutionEvidenceCursor(ExecutionEvidenceOutboxOperationsCursor cursor)
+        => Protect("execution-evidence.cursor", new CursorPayload("evidence", null, cursor.RecordId, cursor.RecordId));
+
+    public bool TryReadExecutionEvidenceCursor(string token, out ExecutionEvidenceOutboxOperationsCursor? cursor)
+    {
+        cursor = null;
+        if (!TryUnprotect("execution-evidence.cursor", token, out CursorPayload? payload) ||
+            payload?.Alias != "evidence" || payload.RecordId < 1)
+        {
+            return false;
+        }
+        cursor = new ExecutionEvidenceOutboxOperationsCursor(payload.RecordId);
+        return true;
+    }
+
     public string ProtectTransientRuntimeReference(TransientRuntimeOperationTarget target)
         => Protect("transient-runtime.reference", target);
 
