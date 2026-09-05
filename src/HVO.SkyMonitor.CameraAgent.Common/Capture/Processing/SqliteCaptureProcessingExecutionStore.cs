@@ -571,14 +571,23 @@ internal sealed partial class SqliteCaptureProcessingStore
             // The node declares no window, so it consumes only its own capture's dependency artifact.
             return [];
         }
+        // Selection and its file-retention checks stay outside the write transaction: raw acceptance shares
+        // this database with the lane, and holding the single writer across per-output filesystem probes at
+        // capture cadence would stall the acquisition path. The pin insert re-checks availability, so an
+        // output that changes in between fails the attempt instead of being pinned.
+        var selected = await ProcessingOutputWindowSelector.SelectAsync(
+            connection, null, current, plan.ProducerId, plan.RevisionId, plan.ProducerPlanSha256,
+            plan.InputsJson, plan.Requirement, _executionOptions.MaximumWindowInputs,
+            includeUnpublishedRevisionOutputs: false, cancellationToken).ConfigureAwait(false);
+        foreach (var input in selected)
+        {
+            await EnsureFrozenOutputFilesExistAsync(
+                connection, null, input.OutputIdentitySha256, cancellationToken).ConfigureAwait(false);
+        }
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
         using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
         await EnsureExecutionLeaseAsync(connection, transaction, execution, cancellationToken).ConfigureAwait(false);
-        var selected = await ProcessingOutputWindowSelector.SelectAsync(
-            connection, transaction, current, plan.ProducerId, plan.RevisionId, plan.ProducerPlanSha256,
-            plan.InputsJson, plan.Requirement, _executionOptions.MaximumWindowInputs,
-            includeUnpublishedRevisionOutputs: false, cancellationToken).ConfigureAwait(false);
         using (var clear = connection.CreateCommand())
         {
             clear.Transaction = transaction;
@@ -592,7 +601,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             await clear.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await InsertFrozenOutputPinsAsync(
-            connection, transaction, execution.ExecutionId, nodeId, selected, cancellationToken).ConfigureAwait(false);
+            connection, transaction, execution.ExecutionId, nodeId, selected, cancellationToken,
+            validateRetainedFiles: false).ConfigureAwait(false);
         var outputs = await ReadPinnedOutputsAsync(
             connection, transaction, execution.ExecutionId, nodeId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

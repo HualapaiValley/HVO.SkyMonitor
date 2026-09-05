@@ -464,12 +464,17 @@ internal sealed partial class SqliteCaptureProcessingStore
         Guid executionId,
         string nodeId,
         IReadOnlyList<ProcessingFrozenOutputInput> inputs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool validateRetainedFiles = true)
     {
         for (var ordinal = 0; ordinal < inputs.Count; ordinal++)
         {
-            await EnsureFrozenOutputFilesExistAsync(
-                connection, transaction, inputs[ordinal].OutputIdentitySha256, cancellationToken).ConfigureAwait(false);
+            if (validateRetainedFiles)
+            {
+                await EnsureFrozenOutputFilesExistAsync(
+                    connection, transaction, inputs[ordinal].OutputIdentitySha256, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = """
@@ -521,7 +526,7 @@ internal sealed partial class SqliteCaptureProcessingStore
 
     private async ValueTask EnsureFrozenOutputFilesExistAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         string outputIdentitySha256,
         CancellationToken cancellationToken)
     {
