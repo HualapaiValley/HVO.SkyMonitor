@@ -171,7 +171,14 @@ if ! docker image inspect "$CENTRAL_DENY_IMAGE" >/dev/null 2>&1; then
 fi
 
 image_iid_file="$RESULTS/cameraagent-image-id"
-docker build --iidfile "$image_iid_file" -f "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" 8>&-
+if [[ -n "${HVO_CAMERAAGENT_SMOKE_IMAGE:-}" ]]; then
+    # Exercise an image that was published rather than one built here, so a signed release can be smoke-tested as
+    # the bytes an operator would actually run.
+    docker image inspect "$HVO_CAMERAAGENT_SMOKE_IMAGE" >/dev/null
+    printf '%s' "$HVO_CAMERAAGENT_SMOKE_IMAGE" > "$image_iid_file"
+else
+    docker build --iidfile "$image_iid_file" -f "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" 8>&-
+fi
 readonly CAMERA_AGENT_IMAGE="$(<"$image_iid_file")"
 if [[ "$CAMERA_AGENT_IMAGE" != sha256:* ]]; then
     printf 'CameraAgent build did not produce a content-addressed image ID: %s\n' "$CAMERA_AGENT_IMAGE" >&2
