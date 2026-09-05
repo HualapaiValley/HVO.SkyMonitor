@@ -544,8 +544,11 @@ Both container harnesses can exercise a published image instead of building one,
 so a signed release can be proved against the bytes an operator receives:
 
 ```bash
-# Install, health, authenticated owner bootstrap, restart, uninstall, and reset
-# against a published archive rather than a locally built image.
+# Install, health, replay-runner health, stop-and-reinstall idempotence, preflight,
+# bind-source ownership and mode, uninstall, and the explicit reset, against a
+# published archive rather than a locally built image. The authenticated owner
+# recovery, upgrade, and rollback contract belongs to the baseline-revision run
+# and is not exercised here.
 HVO_PRODUCTION_CATALOG_BUNDLE=<bundle> \
 HVO_INSTALLER_RELEASE_ARCHIVE=<candidate>/cameraagent-image-v<version>-linux-amd64.tar \
   ./scripts/test:deployment-installer

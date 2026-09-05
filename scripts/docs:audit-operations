@@ -21,6 +21,8 @@ readonly DOCS=(
     docs/runbooks/smoke-test.md
     docs/runbooks/split-host-preflight.md
     docs/runbooks/ci-pipeline.md
+    docs/runbooks/deployment-installer.md
+    docs/runbooks/release-distribution.md
     docs/catalog/production-install.md
     docs/catalog/hyg-v42.md
     docs/planning/standalone-cameraagent-course-correction.md

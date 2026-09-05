@@ -23,6 +23,9 @@ cleanup() {
   if [[ -n "$candidate_tag" ]]; then
     docker image rm --force "$candidate_tag" >/dev/null 2>&1 || true
   fi
+  if [[ -n "${loaded_release_image:-}" ]]; then
+    docker image rm --force "$loaded_release_image" >/dev/null 2>&1 || true
+  fi
   chmod -R u+w "$root" >/dev/null 2>&1 || true
   rm -rf "$root"
 }
@@ -83,6 +86,7 @@ if [[ "${release_archive:-0}" == 1 ]]; then
   loaded_reference="$(docker image load --input "$archive" | sed -n 's/^Loaded image ID: //p;s/^Loaded image: //p' | head -n 1)"
   test -n "$loaded_reference"
   image_id="$(docker image inspect --format '{{.Id}}' "$loaded_reference")"
+  loaded_release_image="$image_id"
 else
   image_id="$(docker image inspect --format '{{.Id}}' "$install_tag")"
   docker image save --output "$archive" "$install_tag"

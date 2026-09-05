@@ -76,6 +76,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$version" && -n "$output" ]] || usage
+output="${output%/}"
 if [[ -e "$output" ]]; then
     printf 'Release output already exists: %s\n' "$output" >&2
     exit 1
@@ -245,8 +246,10 @@ if [[ "$scanner" == trivy ]]; then
                 "${scanned_image_id:-<none>}" "$expected_image_id" >&2
             exit 1
         fi
-        jq --exit-status '(.Results | type) == "array" and (.Results | length) > 0' "$destination" >/dev/null || {
-            printf 'The scanner returned no results for %s; the image was not actually scanned.\n' "$archive" >&2
+        # A clean image legitimately reports no vulnerabilities, so liveness is proved by the scanner having
+        # identified the image's operating system rather than by a non-empty result set.
+        jq --exit-status '(.Results | type) == "array" and (.Metadata.OS.Family | type) == "string"' "$destination" >/dev/null || {
+            printf 'The scanner did not identify %s; the image was not actually scanned.\n' "$archive" >&2
             exit 1
         }
     }
@@ -328,9 +331,8 @@ if [[ "$push" == 1 ]]; then
             --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
             --build-arg "HVO_SOURCE_REVISION=${revision}" \
             --provenance false \
-            --tag "${repository}:${version}" \
+            --output "type=image,name=${repository}:${version},push=true,oci-mediatypes=true" \
             --metadata-file "$work/push-metadata.json" \
-            --push \
             .
         index_digest="$(jq -r '."containerimage.digest" // empty' "$work/push-metadata.json")"
     fi

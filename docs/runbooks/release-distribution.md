@@ -216,10 +216,17 @@ copy alone takes tens of minutes.
 Run the `Signed Distribution Release` workflow with `train: image`. The workflow
 sets up QEMU and Buildx, signs in to the registry with the workflow token, and
 runs the same script with `--push`. The push happens **after** the smoke test and
-the scan gate, refuses a version the registry already publishes, and then
-requires the published index to name exactly the platform manifests that were
-examined — so the signed multi-architecture digest is the registry's digest for
-the same bytes the release inspected. Signing, index creation, immutable
+the scan gate, adopts rather than overwrites a version the registry already
+publishes, and then requires the published index to name exactly the platform
+manifests that were examined, so the signed multi-architecture digest is the
+registry's digest for the same bytes the release inspected.
+
+That last check has never been executed: no run has reached the push, and it
+depends on the registry publication carrying the same OCI media types as the
+locally exported archives. The exporter is pinned to `oci-mediatypes=true` for
+that reason, but **treat the index agreement as unproven and check it first on
+the first real release** — rehearse against a throwaway repository before
+publishing a version you intend to keep. Signing, index creation, immutable
 publication, and anonymous public re-verification then follow the same path the
 installer and catalog trains use.
 
