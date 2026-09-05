@@ -87,7 +87,14 @@ must not redefine its policy inconsistently.
   lets agents edit the same worktree.
 - Every PR uses a draft-first convergence cycle. Protected CI must not run until
   review has converged and the target branch has been finally synchronized and
-  integration-reviewed. Initial review covers the full PR diff; correction
+  integration-reviewed. Use a coordinator-launched local review agent, or an
+  equivalent execution route that can bind the requested immutable range and
+  record its actual provider, model, and reasoning effort, for convergence
+  evidence. Provider-side PR bots may supplement this with a current-head audit
+  but do not replace exact-range evidence. Select the review agent from the
+  issue tier, review mode, finding severity, and cross-boundary risk using the
+  PR lifecycle skill; never leave model or effort selection implicit. Initial
+  review covers the full PR diff; correction
   rereviews cover only the delta from the previous reviewed head and its concrete
   interactions, and verify every prior finding individually. A finding neither
   verified fixed nor explicitly deferred to a linked issue remains unresolved.
@@ -125,10 +132,14 @@ long gates, or CI runs are active. Use the current harness's scheduled task,
 background loop, transcript tail, session status, or equivalent capability
 rather than depending on a vendor-specific agent feature.
 
-- The coordinator arms exactly one persistent status monitor on a five-minute
-  cadence. Start it whenever delegated work, review acquisition, a long gate, or
-  CI becomes active; restart it whenever the active agent or PR set changes;
-  stop it when nothing remains active.
+- The coordinator owns operator-visible reporting and arms exactly one
+  persistent status monitor on a five-minute cadence. A delegated observer or
+  background loop may collect state, but responsibility for delivering every
+  update to the main conversation cannot be delegated. If the observer cannot
+  inspect all active work or reach the main conversation, the coordinator polls
+  directly. Start the monitor whenever delegated work, review acquisition, a
+  long gate, or CI becomes active; restart it whenever the active agent or PR
+  set changes; stop it when nothing remains active.
 - On every wake, record for each issue or PR the implementing agent's last
   activity timestamp and current step, the PR head SHA, draft state, merge
   state, the first line and timestamp of the latest ledger comment, and the
@@ -142,6 +153,10 @@ rather than depending on a vendor-specific agent feature.
   changed. Include the literal status `still running, no change` when applicable.
   Convert every reported time to MST (fixed UTC-7 with no daylight-saving
   adjustment) and label it `MST`.
+- Relay each delegated agent's `STARTED`, milestone, blocker, and completion
+  message immediately in addition to the five-minute heartbeat. Harness UI
+  activity and issue or PR comments alone do not satisfy this user-visible
+  requirement.
 - For every item, state what just finished, what is running now, the next step,
   and any blocker. When an agent reports a milestone, read the report and relay
   its substance, such as the root cause, accepted findings, or gate result,
@@ -149,10 +164,13 @@ rather than depending on a vendor-specific agent feature.
 - If an implementing agent goes more than thirty minutes without an issue or
   ledger comment, instruct it to post one before continuing and mention that
   intervention in the coordinator's next note.
-- Implementing agents post a short progress comment at every milestone and at
-  least every thirty minutes of active work. Post on the issue until a draft PR
-  exists, then append to the PR's append-only review ledger. Each comment uses a
-  UTC timestamp and states what finished, what is running now, the next step,
-  and any blocker. Long gates and reviews get an interim note rather than
-  silence. These comments supplement, but never replace, the final completion
-  report or a resumable blocked handoff.
+- Every delegated agent sends the coordinator a `STARTED` message before
+  substantive work, then milestone, blocker, at-least-thirty-minute, and
+  completion messages. Each message includes the task, current step, next step,
+  blocker, and, for reviews, the exact range plus actual provider, model, and
+  effort. Every delegated agent also posts these milestones on the owning issue
+  or PR ledger; when its harness cannot write there, the coordinator posts a
+  clearly attributed proxy entry. Use the issue until a draft PR exists, then
+  the PR review ledger. All repository comments use UTC. Long gates and reviews
+  get an interim note rather than silence. These messages supplement, but never
+  replace, the final completion report or a resumable blocked handoff.

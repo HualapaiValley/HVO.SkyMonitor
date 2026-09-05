@@ -174,6 +174,141 @@ Do not add it to a routine upgrade; doing so defeats the gate it exists for.
 Rollback continues to use the retained previous image identity and never
 consults a release train.
 
+### Proving the signed lifecycle in the installer campaign
+
+`scripts/test:deployment-installer` proves the signed lifecycle against real
+containers when `HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1` is set. The scenario
+builds two release candidates with `scripts/release:cameraagent-image` from two
+committed revisions in throwaway Git worktrees, so each signed manifest
+describes exactly the tree it was built from, then drives one instance through
+every transition the retained release record has to follow:
+
+| Transition | Command | `image-distribution.json` |
+| --- | --- | --- |
+| Install from the superseded release | `cameraagent install --image-manifest <a>` | present, naming that release and the running image |
+| Refused by the production trust root | the unmodified CLI, same upgrade | unchanged |
+| Preflight the candidate release | `cameraagent preflight --image-manifest <b>` | unchanged; nothing is acquired or started |
+| Upgrade to the candidate release | `cameraagent upgrade --image-manifest <b>` | present, naming the new release and the new image |
+| Refused: signed by a key the trust root does not hold | `cameraagent upgrade --image-manifest <untrusted>` | unchanged; still names the running release |
+| Refused: declares a key identity the trust root does not carry | `cameraagent upgrade --image-manifest <declared-key>` | unchanged |
+| Refused: the trusted key's signature over a different release | `cameraagent upgrade --image-manifest <forged>` | unchanged |
+| Refused: names an archive that is not the one it signed | `cameraagent upgrade --image-manifest <mismatched>` | unchanged |
+| Rollback to the retained previous image | `cameraagent rollback` | absent |
+| Refused: release contradicts the image labels | `cameraagent upgrade --image-manifest <contradicting>` | still absent |
+| State-compatibility preflight on what the sequence left behind | `cameraagent preflight` | still absent |
+
+Each refusal targets its own gate. The five acquisition-stage refusals share the
+acquirer's single diagnostic, because the CLI deliberately does not surface the
+inner verification cause; what separates them is that each derived release varies
+exactly one trust or integrity condition against a release the instance has
+already accepted, and that each is required to leave every durable deployment
+record — the release record, the instance manifest, the installation result and
+state, the retained preflight report, and the lifecycle journal — byte-identical.
+Only the label-agreement refusal has a diagnostic of its own, and the campaign
+asserts it. Every transition reads the running image back through `status`, whose
+`status` outcome (rather than `drifted`) means the container really carries the
+recorded image. Every step retains the release record, the
+instance manifest, the installation result, the lifecycle journal, a state
+inventory with modes, deployment checksums, the container log, the container's
+real image and health, and the exact CLI reports the assertions read, under
+`TestResults/issue-598/<run>/`.
+
+Every refusal in the scenario happens before the upgrade mutates anything. A
+signed upgrade that fails *after* mutation begins and is restored by the
+lifecycle's own exact-rollback path is not exercised here; that path is shared
+with the operator-supplied image the campaign already covers, and
+[#641](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/641) tracks proving
+it for a signed release.
+
+The campaign proves that the retained record follows the image the instance runs
+across every transition above, but that guarantee has two known exceptions it
+does not cover, tracked by
+[#642](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/642): a signed
+upgrade whose final resume is lost and is then completed with `--resume` returns
+`completed` without writing the record, and an `--image-ref` upgrade of an
+instance installed from a signed release keeps the superseded record. Until
+those close, treat a record that survived either of those paths as unverified
+rather than authoritative.
+
+The refusals bracket the trust decision from several sides. The release
+contradicting the image labels is genuinely signed and is refused by the
+label-agreement gate after acquisition and before any mutation. Four more are
+refused during acquisition:
+
+- a manifest signed by a key the trust root does not hold, and release B's
+  manifest presented with the trusted key's real signature over release A. Both
+  fail signature verification, from two directions: a signature the trusted key
+  cannot verify at all, and a signature it verifies but not over these bytes.
+- a manifest declaring a key identity the trust root does not carry, signed by
+  the key it does. `VerifyManifest` verifies the signature before comparing
+  `signing.keyId`, so this is the only way to reach that comparison — the release
+  tool refuses to sign a manifest whose declared key is not the signing key, so
+  the campaign produces this signature in detached mode.
+- a manifest naming the other candidate's archive under this release's signed
+  length and checksum: the only case that fails on the acquired bytes rather than
+  on the metadata.
+
+None of the five writes, rewrites, or resurrects the retained release record, and
+each is required to leave every durable deployment record byte-identical.
+
+Each refused release is a manifest and signature in its own directory that names
+the real published archives through `--asset-base-url`, so nothing copies or
+links them, each published candidate still contains exactly the files its own
+`SHA256SUMS` describes — which the run verifies at the end — and the installer's
+refusal to read a hard-linked input still applies to every file it opens. The
+retained evidence keeps each refused manifest, the exact signature it was
+presented with, and the public keys that verify them, under
+`refused-releases/`.
+
+The contradicted boundary is the signed compatibility record — the campaign
+changes the release's `minimumCompatibleRevision` — because the manifest's own
+consistency rules already bind the release identity, the repository, the source
+revision and tree, the evidence assets, and each platform's archive to one
+another. The compatibility record is the one claim about the image that the
+manifest cannot check against itself, which is precisely why the installation
+compares it against the labels the image actually carries.
+
+### The ephemeral key: what the campaign does and does not establish
+
+The production signing key is a Key Vault key that only the release workflow's
+federated identity may sign with. No identity available to this campaign can
+sign with or export it, so a production-signed release can be produced only by a
+real publication run, which this scenario excludes. The campaign therefore signs
+both candidates with an ephemeral P-256 key and publishes a campaign-only CLI,
+built from the same committed revision, whose embedded trust root is that
+ephemeral public key. The key is generated fresh for each run into the
+disposable workspace; a durable `HVO_INSTALLER_SIGNED_WORKSPACE` retains it
+alongside the candidates it signed, so reruns against that workspace reuse it.
+Either way it is never a production key. Nothing else is changed: no
+verification step is removed, relaxed, or bypassed.
+
+The substitution is proved to redirect trust rather than to disable it. An
+unmodified CLI, published from the same archived candidate source so that it
+differs from the campaign CLI only in the embedded trusted key, is run against
+the same signed release and must refuse it; the campaign CLI must refuse the
+same release under a key it does not hold, must refuse the trusted key's real
+signature over other bytes, and must refuse a release whose archive is not the
+one it signed. A campaign whose trust root had simply been switched off would
+pass none of them.
+
+What the campaign establishes: the whole signed image lifecycle — manifest and
+signature verification, asset length and checksum verification, platform
+selection, the agreement between the signed compatibility record and the labels
+the image actually carries, and the retained release record across install,
+upgrade, rollback, and refusal — against real multi-architecture release
+candidates, a real Docker daemon, and a real running CameraAgent.
+
+The manifest's declared-key-identity comparison is included: reaching it needs a
+signature the trust root can verify over a manifest that declares a different
+key, which the campaign produces with a detached signature.
+
+What it does not establish: that the committed production public key matches the
+Key Vault private key, that the workflow's federated identity can sign, that the
+signatures Key Vault produces verify against the committed trust root, that key
+custody and rotation behave as documented, or anything about the registry push
+and the published index. Those remain the first real publishing run's evidence,
+as [release-distribution.md](release-distribution.md) records.
+
 ## Local Replay Runner
 
 Archived replay remains in the CameraAgent process by default. Select the
@@ -608,6 +743,41 @@ HVO_CAMERAAGENT_SMOKE_IMAGE=<tag, repository digest, or image ID> \
 Neither variable changes anything when unset; both harnesses build their own
 image as before. `HVO_INSTALLER_BASELINE_REVISION` takes precedence, because a
 baseline upgrade contract needs two images built from two revisions.
+
+The signed-release scenario is a separate opt-in section of the same campaign
+and adds its own instance rather than replacing the operator-supplied image
+path:
+
+```bash
+HVO_PRODUCTION_CATALOG_BUNDLE=<bundle> \
+HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1 \
+  ./scripts/test:deployment-installer
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN` | `1` runs the signed install/upgrade/rollback/refusal scenario |
+| `HVO_INSTALLER_SIGNED_BASE_REVISION` | Revision of the superseded release. Default `HEAD~1` |
+| `HVO_INSTALLER_SIGNED_CANDIDATE_REVISION` | Revision of the upgrade candidate, which also builds the campaign CLI. Default `HEAD`. The base must be a distinct ancestor of it, and both must own the release train |
+| `HVO_INSTALLER_SIGNED_ARM64_BUILDER` | `linux/arm64` builder for the release candidates. Falls back to `HVO_RELEASE_ARM64_BUILDER`, then to `hvo-edge-01-arm64` |
+| `HVO_INSTALLER_SIGNED_VERSION_A` / `_B` | Candidate versions. Default `0.0.0-598a` and `0.0.0-598b` |
+| `HVO_INSTALLER_SIGNED_WORKSPACE` | Durable directory for the signing key and the two candidates, created if absent and set to mode `0700`. Reused when it already holds them, including its signing key, so an iteration does not rebuild; leave it unset for citable evidence, which generates a fresh key and builds both candidates from scratch into a disposable directory |
+| `HVO_INSTALLER_SIGNED_EVIDENCE_ROOT` | Retained evidence directory. Default `TestResults/issue-598/<timestamp>` |
+
+Every one of those preconditions — a clean worktree, `openssl`, two distinct
+ancestor revisions that both own the release train, and two distinct versions —
+is checked before any scenario runs, so a misconfigured invocation fails in
+seconds rather than after the rest of the campaign.
+
+The scenario requires a clean worktree, because it builds its candidates and its
+CLI from committed revisions. It builds two multi-architecture candidates and
+scans four archives: a complete run that also exercises
+`HVO_INSTALLER_BASELINE_REVISION` took 35 minutes on an amd64 host with a native
+`linux/arm64` builder over the network, of which about 25 minutes were the two
+candidate builds. Hold the shared Docker window for the whole run. It never
+pushes to a registry, and CI never sets
+`HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN`, so this scenario is an operator-run gate
+rather than a CI-gated one.
 
 ## Build Evidence
 

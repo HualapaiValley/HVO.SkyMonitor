@@ -231,7 +231,14 @@ values that x86-64 uses). The advisory native arm64 workflow
 catalog, and deployment CLI Unit suites on aarch64 and smoke-tests a natively
 built image there. No smoke of a *published* arm64 release image and no arm64
 installer campaign have run, so treat an arm64 installation as unqualified end
-to end until #598 and #599 close.
+to end. The signed-release installer campaign
+([#598](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/598)) proves the
+signed lifecycle on `linux/amd64`: both architectures of both candidates are
+built, identity-derived, scanned, and signed, and the amd64 archive is the one that an
+installation consumes and runs. The arm64 archive of each candidate is published
+and verifiable but is never installed, so arm64 remains unqualified end to end
+and no open issue currently tracks qualifying it; open one before treating an
+arm64 installation as supported.
 
 A published image release must carry a vulnerability scan. The release tool
 refuses a candidate whose scan report does not name a supported scanner and scan
@@ -255,6 +262,32 @@ container pinned by tag and digest, renders each platform's component inventory
 from that same scan, and assembles the candidate. `--sign-key <pem>` signs and
 re-verifies the candidate with a local key for rehearsal; a publishable release is
 signed only by the production key through the workflow below.
+
+`--sign-key` is also what the signed-release installer campaign uses. That
+campaign builds two candidates from two committed revisions, signs both with one
+ephemeral key, and publishes a campaign-only deployment CLI, built from the same
+committed revision, whose embedded trust root is that ephemeral public key. It
+then installs from the first candidate, upgrades to the second, rolls back, and
+refuses five releases it must not accept: one signed by a key the trust root does
+not hold, one declaring a key identity it does not carry, one carrying the
+trusted key's real signature over a different release, one naming an archive that
+is not the one it signed, and one whose signed compatibility record contradicts
+the image labels. It asserts the retained
+`image-distribution.json` after each transition. Nothing else about verification
+is changed, and the substitution is proved to redirect trust rather than remove
+it: the unmodified product CLI must refuse the same release, and the campaign CLI
+must refuse the same release re-signed by a second key.
+
+The ephemeral key therefore establishes the lifecycle, verification, and
+compatibility-agreement behaviour of the signed image train against real
+containers. It establishes nothing about the production key itself — that the
+committed public key matches the Key Vault private key, that the workflow
+identity can sign with it, that a Key Vault signature verifies against the
+committed trust root, or that custody and rotation behave as described above.
+Only a real publishing run can establish those, and no identity available to the
+campaign can sign with or export the production key to substitute for one. See
+[deployment-installer.md](deployment-installer.md) for the campaign's transition
+table and evidence layout.
 
 The build host needs a buildx builder for each published architecture that
 supports the docker exporter. A remote host registered with the plain `docker`
