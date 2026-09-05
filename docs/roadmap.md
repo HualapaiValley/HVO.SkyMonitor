@@ -157,7 +157,7 @@ RM-005 completion
         +-> #585 LogicHost filesystem provider
           +-> #586 same-host Linux ext4 qualification
             +-> #506 adoption and MinIO removal
-    +-> RM-019 future external S3 and Azure Blob profiles
+    +-> RM-019 future remote-filesystem, external S3, and Azure Blob profiles
 
 RM-005 #429-#430 fairness and optional provider work does not block RM-017.
 
