@@ -383,13 +383,13 @@ internal sealed class CaptureProcessingPersistence(
 
     /// <summary>Resolves and pins the derived input window a live execution node consumes.</summary>
     internal async ValueTask<IReadOnlyList<ProcessingArtifact>> ResolveLiveExecutionInputsAsync(
-        Guid executionId,
+        ProcessingExecutionContext execution,
         string nodeId,
         ReconstructionDescriptor currentDescriptor,
         CancellationToken cancellationToken)
     {
         var outputs = await _store.ResolveLiveExecutionOutputWindowAsync(
-            executionId, nodeId, currentDescriptor, cancellationToken).ConfigureAwait(false);
+            execution, nodeId, currentDescriptor, cancellationToken).ConfigureAwait(false);
         return await RestoreWindowInputsAsync(outputs, cancellationToken).ConfigureAwait(false);
     }
 

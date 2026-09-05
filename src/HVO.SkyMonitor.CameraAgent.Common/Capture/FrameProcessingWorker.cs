@@ -281,47 +281,6 @@ internal sealed class FrameProcessingWorker
                 {
                     await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
                 }
-                if (persistence is not null && node.Step is IWindowCaptureProcessingGraphStep window &&
-                    node.Dependencies.Count > 0 && graph.Nodes.FirstOrDefault(candidate =>
-                        string.Equals(candidate.Id, node.Dependencies[0], StringComparison.OrdinalIgnoreCase)) is { OutputRole: { } sourceRole })
-                {
-                    context.SetHistoricalInputs(item.Execution switch
-                    {
-                        // A live execution is created when its own raw capture is accepted, before the earlier
-                        // captures in a trailing window have been processed, so its derived window is resolved
-                        // and pinned here rather than at acceptance.
-                        { ExecutionClass: ProcessingGraphExecutionClass.Live } live =>
-                            await persistence.ResolveLiveExecutionInputsAsync(
-                                live.ExecutionId, node.Id, rawCapture!.Manifest.Descriptor, cancellationToken)
-                                .ConfigureAwait(false),
-                        { } archived => await persistence.ReadFrozenExecutionInputsAsync(
-                            archived.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false),
-                        _ => await persistence.ReadRecentInputsAsync(
-                            rawCapture!.Manifest.Descriptor,
-                            node.Dependencies[0], sourceRole, window.MaximumInputCount, cancellationToken)
-                            .ConfigureAwait(false)
-                    });
-                }
-                else if (persistence is not null && rawCapture is not null &&
-                    node.Step is IWindowCaptureProcessingGraphStep rawWindow &&
-                    context.Artifacts?.Raw is { } rawArtifact)
-                {
-                    context.SetHistoricalInputs(item.Execution is not null
-                        ? await persistence.ReadFrozenExecutionRawInputsAsync(
-                            item.Execution.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false)
-                        : await persistence.ReadRecentRawInputsAsync(
-                            rawCapture.Manifest.Descriptor,
-                            CameraAgentRecipeExecutionAdapter.CreateArtifact(
-                                context.Config, rawArtifact, "source", context.AcquisitionTiming,
-                                context.ReconstructionDescriptor),
-                            rawWindow.MaximumInputCount,
-                            cancellationToken).ConfigureAwait(false));
-                }
-                else
-                {
-                    context.SetHistoricalInputs([]);
-                }
-
                 var outcomeStart = context.ProcessingOutcomes.Count;
                 Exception? exception = null;
                 var startedUtc = timeProvider.GetUtcNow();
@@ -336,6 +295,54 @@ internal sealed class FrameProcessingWorker
                     {
                         await persistence.BeginExecutionNodeAttemptAsync(
                             item.Execution, node, persistedAttempt, startedUtc, cancellationToken).ConfigureAwait(false);
+                    }
+                    if (persistence is not null && node.Step is IWindowCaptureProcessingGraphStep window &&
+                        node.Dependencies.Count > 0 && graph.Nodes.FirstOrDefault(candidate =>
+                            string.Equals(candidate.Id, node.Dependencies[0], StringComparison.OrdinalIgnoreCase)) is { OutputRole: { } sourceRole })
+                    {
+                        var windowDescriptor = rawCapture?.Manifest.Descriptor
+                            ?? throw new InvalidOperationException(
+                                "A durable processing window requires the committed raw capture descriptor.");
+                        context.SetHistoricalInputs(item.Execution switch
+                        {
+                            // A live execution is created while its own raw capture is accepted, before the
+                            // earlier captures of a trailing window have been processed, so its derived window
+                            // is resolved and pinned here - inside the node attempt, so a resolution failure is
+                            // recorded as this node's outcome - rather than at acceptance.
+                            { ExecutionClass: ProcessingGraphExecutionClass.Live } live =>
+                                await persistence.ResolveLiveExecutionInputsAsync(
+                                    live, node.Id, windowDescriptor, cancellationToken).ConfigureAwait(false),
+                            { } archived => await persistence.ReadFrozenExecutionInputsAsync(
+                                archived.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false),
+                            _ => await persistence.ReadRecentInputsAsync(
+                                windowDescriptor,
+                                node.Dependencies[0], sourceRole, window.MaximumInputCount, cancellationToken)
+                                .ConfigureAwait(false)
+                        });
+                        var resolvedWindowCount = context.GetHistoricalInputs().Count + 1;
+                        if (resolvedWindowCount < window.MaximumInputCount)
+                        {
+                            logger.CaptureProcessingWindowShort(node.Id, resolvedWindowCount, window.MaximumInputCount);
+                        }
+                    }
+                    else if (persistence is not null && rawCapture is not null &&
+                        node.Step is IWindowCaptureProcessingGraphStep rawWindow &&
+                        context.Artifacts?.Raw is { } rawArtifact)
+                    {
+                        context.SetHistoricalInputs(item.Execution is not null
+                            ? await persistence.ReadFrozenExecutionRawInputsAsync(
+                                item.Execution.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false)
+                            : await persistence.ReadRecentRawInputsAsync(
+                                rawCapture.Manifest.Descriptor,
+                                CameraAgentRecipeExecutionAdapter.CreateArtifact(
+                                    context.Config, rawArtifact, "source", context.AcquisitionTiming,
+                                    context.ReconstructionDescriptor),
+                                rawWindow.MaximumInputCount,
+                                cancellationToken).ConfigureAwait(false));
+                    }
+                    else
+                    {
+                        context.SetHistoricalInputs([]);
                     }
                     faultInjector?.Inject(CaptureProcessingFaultPoint.BeforeNodeExecution, node.Id);
                     await node.Step.ProcessAsync(context, cancellationToken).ConfigureAwait(false);

@@ -546,42 +546,92 @@ internal sealed partial class SqliteCaptureProcessingStore
     /// <summary>
     /// Resolves and pins the derived input window a live execution node consumes. A live execution is created
     /// when its own raw capture is accepted, before the preceding captures in a trailing window have finished
-    /// processing, so the window is selected here - when the consuming node runs - and the pins are replaced so
-    /// the durable evidence records exactly the inputs the attempt used.
+    /// processing, so the window is selected here - when the consuming node runs, under the execution lease -
+    /// and the unreleased pins are replaced so the durable evidence records the window the attempt resolved.
     /// </summary>
     internal async ValueTask<IReadOnlyList<DurableProcessingOutput>> ResolveLiveExecutionOutputWindowAsync(
-        Guid executionId,
+        ProcessingExecutionContext execution,
         string nodeId,
         ReconstructionDescriptor current,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(execution);
         ArgumentException.ThrowIfNullOrWhiteSpace(nodeId);
         ArgumentNullException.ThrowIfNull(current);
+        if (execution.ExecutionClass != ProcessingGraphExecutionClass.Live)
+        {
+            throw new ArgumentException("Only a live execution resolves its derived window at run time.", nameof(execution));
+        }
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        var plan = await ReadLiveWindowPlanAsync(connection, execution.ExecutionId, nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        if (plan is null)
+        {
+            // The node declares no window, so it consumes only its own capture's dependency artifact.
+            return [];
+        }
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
         using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
+        await EnsureExecutionLeaseAsync(connection, transaction, execution, cancellationToken).ConfigureAwait(false);
+        var selected = await ProcessingOutputWindowSelector.SelectAsync(
+            connection, transaction, current, plan.ProducerId, plan.RevisionId, plan.ProducerPlanSha256,
+            plan.InputsJson, plan.Requirement, _executionOptions.MaximumWindowInputs,
+            includeUnpublishedRevisionOutputs: false, cancellationToken).ConfigureAwait(false);
+        using (var clear = connection.CreateCommand())
+        {
+            clear.Transaction = transaction;
+            // Released pins stay as evidence of an earlier attempt; only the active window is replaced.
+            clear.CommandText = """
+                DELETE FROM processing_execution_output_input_pins
+                WHERE execution_id = $execution AND node_id = $node AND released_flag = 0;
+                """;
+            clear.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
+            clear.Parameters.AddWithValue("$node", nodeId);
+            await clear.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await InsertFrozenOutputPinsAsync(
+            connection, transaction, execution.ExecutionId, nodeId, selected, cancellationToken).ConfigureAwait(false);
+        var outputs = await ReadPinnedOutputsAsync(
+            connection, transaction, execution.ExecutionId, nodeId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return outputs;
+    }
+
+    private sealed record LiveWindowPlan(
+        string RevisionId,
+        string ProducerId,
+        string ProducerPlanSha256,
+        string InputsJson,
+        ProcessingGraphWindowRequirement Requirement);
+
+    private static async ValueTask<LiveWindowPlan?> ReadLiveWindowPlanAsync(
+        SqliteConnection connection,
+        Guid executionId,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
         string revisionId;
         string dependenciesJson;
         string inputsJson;
         string? windowJson;
         using (var command = connection.CreateCommand())
         {
-            command.Transaction = transaction;
             command.CommandText = """
                 SELECT execution.graph_revision_id, node.dependencies_json, node.inputs_json, node.window_json
                 FROM processing_executions execution
                 JOIN processing_execution_nodes node ON node.execution_id = execution.execution_id
                 WHERE execution.execution_id = $execution AND execution.execution_class = 'Live'
-                  AND node.node_id = $node;
+                  AND node.node_id = $node COLLATE NOCASE;
                 """;
             command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
             command.Parameters.AddWithValue("$node", nodeId);
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                return [];
+                throw new ProcessingGraphStoreConflictException(
+                    "The live processing execution node is not part of the frozen execution plan.");
             }
             revisionId = reader.GetString(0);
             dependenciesJson = reader.GetString(1);
@@ -593,47 +643,26 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (windowJson is null ||
             ProcessingOutputWindowSelector.ReadFirstProducerId(dependenciesJson) is not { } producerId)
         {
-            return [];
+            return null;
         }
         var requirement = JsonSerializer.Deserialize<ProcessingGraphWindowRequirement>(
             windowJson, ExecutionSerializerOptions)
             ?? throw new InvalidDataException($"Processing graph node '{nodeId}' has an invalid window.");
-        string producerPlanSha256;
         using (var command = connection.CreateCommand())
         {
-            command.Transaction = transaction;
             command.CommandText = """
                 SELECT plan_sha256 FROM processing_execution_nodes
-                WHERE execution_id = $execution AND node_id = $node;
+                WHERE execution_id = $execution AND node_id = $node COLLATE NOCASE;
                 """;
             command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
             command.Parameters.AddWithValue("$node", producerId);
-            if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string plan)
+            if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string producerPlan)
             {
                 throw new ProcessingGraphStoreConflictException(
                     "The live processing window producer is not part of the frozen execution plan.");
             }
-            producerPlanSha256 = plan;
+            return new(revisionId, producerId, producerPlan, inputsJson, requirement);
         }
-        var selected = await ProcessingOutputWindowSelector.SelectAsync(
-            connection, transaction, current, producerId, revisionId, producerPlanSha256, inputsJson,
-            requirement, _executionOptions.MaximumWindowInputs, includeUnpublishedRevisionOutputs: false,
-            cancellationToken).ConfigureAwait(false);
-        using (var clear = connection.CreateCommand())
-        {
-            clear.Transaction = transaction;
-            clear.CommandText = """
-                DELETE FROM processing_execution_output_input_pins
-                WHERE execution_id = $execution AND node_id = $node;
-                """;
-            clear.Parameters.AddWithValue("$execution", executionId.ToString("N"));
-            clear.Parameters.AddWithValue("$node", nodeId);
-            await clear.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        await InsertFrozenOutputPinsAsync(
-            connection, transaction, executionId, nodeId, selected, cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return await ReadFrozenExecutionOutputsAsync(executionId, nodeId, cancellationToken).ConfigureAwait(false);
     }
 
     internal async ValueTask CompleteOutputlessExecutionNodeAsync(

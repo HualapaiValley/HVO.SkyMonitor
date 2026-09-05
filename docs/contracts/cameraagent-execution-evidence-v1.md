@@ -106,11 +106,12 @@ No byte ever travels through this contract.
 not the durable `output_ordinal` column; order is preserved because the store
 reads outputs ordered by the durable ordinal.
 
-`inputs[].windowPosition` is the input's position relative to the execution's
-own capture, as the durable window selector records it: `0` is this capture and
-a negative value is that many captures earlier in a trailing window. It is a
-signed integer with no contract-level bound, because the durable column has
-none.
+`inputs[].windowPosition` is the input's dense rank among the window members the
+execution actually selected, as the durable window selector records it: `0` is
+this capture and `-1` the nearest earlier selected input. It is not the
+capture-sequence delta, because an ineligible capture is skipped over rather
+than leaving a hole (see below). It is a signed integer with no contract-level
+bound, because the durable column has none.
 
 ### When a derived window is resolved
 
@@ -121,23 +122,36 @@ are another node's outputs - is resolved differently by execution class:
 - A **replay** execution resolves and pins its derived window when it is
   submitted, and consumes exactly those pins. Re-running a replay never
   reselects.
-- A **live** execution is created when its own raw capture is accepted, before
+- A **live** execution is created while its own raw capture is accepted, before
   the earlier captures of a trailing window have finished processing. It
   therefore resolves and pins its derived window when the consuming node runs,
-  replacing any earlier selection for that node, so the pinned inputs are
-  exactly the inputs the attempt consumed and the retention hold covers them for
-  the life of the execution.
+  under the execution lease, replacing that node's unreleased pins. The pins are
+  the window the attempt resolved, and the retention hold covers those outputs
+  from that moment until the execution completes. A node's recorded sources can
+  still be a subset of its pins, because a step or recipe may drop an offered
+  input - the rolling combination, for example, stops at the first incompatible
+  layout and honours its own maximum integration and age limits. Retrying a node
+  replaces the window evidence of the previous attempt; the schema keeps one
+  input set per node, not one per attempt.
 
-A live derived window is always trailing; centered windows are replay-only. Only
-an earlier capture whose execution has completed and published the producing
-node's output is eligible, so an earlier capture that failed, was skipped, or is
-still running is **excluded, never waited for**. The selector then takes the most
-recent eligible outputs up to the window's maximum input count, so an excluded
-capture is skipped over and an older eligible capture takes its place rather
-than leaving a hole. A trailing window is still allowed to be shorter than its
-configured maximum - a freshly started agent has no history - and the
-combination records only the sources it actually used, with `stackCount`
-reporting that count.
+A live derived window is always trailing; centered windows are replay-only. For a
+live execution, only an earlier capture whose execution has completed and
+published the producing node's output is eligible (an output from pre-execution
+legacy processing is also eligible on a completed node with the same plan hash;
+replay additionally admits unpublished outputs of its own revision). So an
+earlier capture that failed, was skipped, or is still running is **excluded,
+never waited for**: the node neither blocks on a peer capture nor is skipped
+because of one. The selector then takes the most recent eligible outputs up to
+the window's maximum input count, so an excluded capture is skipped over and an
+older eligible capture takes its place rather than leaving a hole. That maximum
+is the smaller of the node's configured window size and
+`CameraAgent:ProcessingGraphs:MaximumWindowInputs`, which live and replay share,
+and it also bounds how far back the skip-over search reaches. A trailing window
+is still allowed to be shorter than its maximum - a freshly started agent has no
+history - and the combination records only the sources it actually used, with
+`stackCount` reporting that count. A live node that resolves fewer inputs than
+its configured window logs event 2080 with the resolved and configured counts, so
+a persistently short stack is visible to an operator.
 
 ## Sequencing, idempotency, conflict, and acknowledgement
 

@@ -47,6 +47,9 @@ public sealed class RollingCombinationWindowLineageTests
             var sources = rolling.Outputs[0].Descriptor!.Artifact.SourceArtifactIds;
             Assert.HasCount(WindowSize, sources);
 
+            // The combined frame must actually accumulate the window, not merely name it.
+            Assert.AreEqual(TimeSpan.FromSeconds(WindowSize), rolling.Outputs[0].TotalIntegration);
+
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var execution = (await operations.ReadExecutionsAsync(
                     ProcessingGraphExecutionClass.Live, 256, CancellationToken.None).ConfigureAwait(false))
@@ -99,6 +102,10 @@ public sealed class RollingCombinationWindowLineageTests
             Assert.HasCount(WindowSize - 1, frozen.Where(static pin => pin.StartsWith(
                 RollingNodeId + "|", StringComparison.Ordinal)).ToArray());
 
+            // A newer calibrated output arrives before the replay runs. A replay that reselected its window
+            // would pick it up; one that honours its frozen pins cannot.
+            await AcceptAndDrainAsync(provider, configuration, CaptureCount).ConfigureAwait(false);
+
             var worker = provider.GetRequiredService<ProcessingReplayWorker>();
             await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
             try
@@ -139,6 +146,68 @@ public sealed class RollingCombinationWindowLineageTests
         }
     }
 
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task LiveExecutionSkipsAnIneligibleEarlierCaptureAndUsesAnOlderOne()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var provider = CreateProvider(root);
+            var configuration = CreateConfiguration();
+            var (excludedReceipt, _) = await RunBacklogAsync(provider, configuration).ConfigureAwait(false);
+            using var store = CreateStore(root);
+            var excludedCalibration = await store.ReadNodeAsync(
+                excludedReceipt.Manifest.Descriptor.Capture.CaptureId,
+                "calibration",
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(excludedCalibration);
+            Assert.HasCount(1, excludedCalibration.Outputs);
+            var excludedArtifactId = excludedCalibration.Outputs[0].ArtifactId;
+
+            // The next capture is accepted while its predecessor is still eligible, and the predecessor
+            // becomes ineligible before the consuming node runs - exactly as a failed peer would.
+            var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(
+                configuration, CreateSubmission(CaptureCount), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            await MarkOutputUnavailableAsync(root, excludedCalibration.Outputs[0].OutputIdentitySha256)
+                .ConfigureAwait(false);
+            await DrainOneAsync(provider, configuration).ConfigureAwait(false);
+
+            var rolling = await store.ReadNodeAsync(
+                receipt.Manifest.Descriptor.Capture.CaptureId,
+                RollingNodeId,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(rolling);
+            Assert.HasCount(1, rolling.Outputs);
+            var sources = rolling.Outputs[0].Descriptor!.Artifact.SourceArtifactIds;
+
+            // The ineligible capture is skipped over and an older eligible one takes its place.
+            Assert.HasCount(WindowSize, sources);
+            Assert.DoesNotContain(excludedArtifactId, sources);
+            Assert.AreEqual(TimeSpan.FromSeconds(WindowSize), rolling.Outputs[0].TotalIntegration);
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    private static async Task MarkOutputUnavailableAsync(string root, string outputIdentitySha256)
+    {
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE processing_outputs
+            SET availability_state = 'Missing', availability_reason = 'rolling-window-test'
+            WHERE output_identity_sha256 = $output;
+            """;
+        command.Parameters.AddWithValue("$output", outputIdentitySha256);
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+    }
+
     private static async Task<(RawCaptureReceipt Receipt, string ActiveRevisionId)> RunBacklogAsync(
         ServiceProvider provider,
         CameraModuleConfig configuration)
@@ -148,12 +217,6 @@ public sealed class RollingCombinationWindowLineageTests
         var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
         var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
             .ConfigureAwait(false);
-        var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
-        var laneHandler = provider.GetServices<ICaptureLaneHandler>().Single(
-            static handler => handler.Lane == "standard");
-        var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
-            static lane => lane.Name == "standard");
-
         RawCaptureReceipt? receipt = null;
         for (var index = 0; index < CaptureCount; index++)
         {
@@ -163,15 +226,37 @@ public sealed class RollingCombinationWindowLineageTests
         }
         for (var index = 0; index < CaptureCount; index++)
         {
-            var lease = await laneStore.ClaimAsync(
-                standard, "rolling-window-test", configuration, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(lease);
-            var result = await laneHandler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
-            await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
-            operations.NotifyLiveWorkChanged();
+            await DrainOneAsync(provider, configuration).ConfigureAwait(false);
         }
         return (receipt!, registry.ActiveRevisionId);
+    }
+
+    private static async Task<RawCaptureReceipt> AcceptAndDrainAsync(
+        ServiceProvider provider,
+        CameraModuleConfig configuration,
+        int index)
+    {
+        var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(
+            configuration, CreateSubmission(index), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(receipt);
+        await DrainOneAsync(provider, configuration).ConfigureAwait(false);
+        return receipt;
+    }
+
+    private static async Task DrainOneAsync(ServiceProvider provider, CameraModuleConfig configuration)
+    {
+        var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+        var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+            static lane => lane.Name == "standard");
+        var lease = await laneStore.ClaimAsync(
+            standard, "rolling-window-test", configuration, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        var handler = provider.GetServices<ICaptureLaneHandler>().Single(
+            static candidate => candidate.Lane == "standard");
+        var result = await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+        await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+        provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().NotifyLiveWorkChanged();
     }
 
     private static async Task<string[]> ReadPinsAsync(string root, Guid executionId)
