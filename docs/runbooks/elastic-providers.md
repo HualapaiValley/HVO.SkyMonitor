@@ -77,9 +77,14 @@ processes on the host on demand. Absent and disabled by default.
 - Instance rows record the launching host; each LogicHost replica reconciles
   and retires only the instances it launched (including when it restarts
   with `ElasticProviders` disabled), while `MaxInstances` and the warm
-  minimum count every replica's live instances. Each sample heartbeats the
-  host's rows; rows whose owner has not reconciled them for six sample
-  intervals (at least five minutes) are abandoned as `owner-lost` and stop
+  minimum count every replica's live instances. Each sample persists the
+  owner heartbeat on the host's rows before reconciliation and renews it on
+  its own connection while the sample runs (so a drain that blocks for the
+  whole `RetireGrace` never looks like a lost owner; a failed renewal is
+  retried every tick, event 2245, and a sample whose heartbeat stays
+  unrenewed for half the owner-stale window is abandoned); rows whose owner has
+  not reconciled them for six sample intervals (at least five minutes) are
+  abandoned as `owner-lost`, counted in `orphansCleanedLastSample`, and stop
   accruing minutes; the registry then denies any re-registration of that
   runner id (`runner.registration-denied`), so a runner process that
   outlived its host drains and exits on its own instead of reviving its
@@ -91,7 +96,12 @@ processes on the host on demand. Absent and disabled by default.
   instance lost while the pool is at `MaxInstances` is replaced by retiring
   one excess instance that has no work in flight first; when every excess
   instance is busy the replacement waits for one to go idle, because the warm
-  designation never force-terminates active work. Intents that could not be
+  designation never force-terminates active work. Busy tracking uses the
+  runner's unexpired leases as well as its heartbeat-reported slots, every
+  retirement is reserved under the runner's claim lock after a fresh lease
+  check, every close is written under that lock, and the claim path refuses
+  new work (inside the same lock) to an instance in any state but `Starting`
+  or `Running`. Intents that could not be
   launched (a failed launch, host shutdown mid-batch, or a process that
   started but whose record could not be saved and is retired again) are
   closed immediately as `launch-aborted`. Abandonment closes the instance row
@@ -122,9 +132,43 @@ decides with the scaling policy, and provisions or retires. A cold start is
 taken only when it can still serve the oldest backlog within `QueueDeadline`;
 otherwise the work stays local and the rejection is counted. Idle instances
 above the warm minimum are retired after `ScaleToZeroAfter`; retirement asks
-the runner to drain and forces it after `RetireGrace`. Instances recorded by a
-previous host process are re-adopted when their process is still alive,
-reserved retirements included, which are then completed.
+the runner to drain and forces it after `RetireGrace`, which the child also
+receives as its own shutdown grace; the stop time recorded for instance
+minutes is the time the drain actually completed. Backlog counts only
+runner-placed recipes a provisioned instance could claim (the configured
+executable is probed with `--capabilities`, event 2243, accepted only on a
+zero exit; after a failed probe, event 2244, nothing is provisioned or
+idle-retired, not even the warm minimum, the decision reads
+`instance-capabilities-unknown` (event 2246, health degraded) and the probe
+is retried every five minutes; recipes whose
+requirements the instance cannot satisfy are excluded and logged once as
+event 2242) and includes expired leases the claim would reclaim. Backlog is counted with the claim's own readiness query (recipe filter,
+the probed runner's transfer limit, input and graph-execution readiness),
+so no instance is provisioned for work no runner could claim. Registered
+slots are allocated job by job (largest inputs first) to the registrations
+able to claim each job by recipe and transfer limit; an instance that can
+claim nothing covers nothing, and when such instances fill `MaxInstances`
+one is retired as `incompatible-replacement` so the next sample can
+provision one that can. Executable jobs no registration can take within its
+slots are an uncovered shortfall that provisions new instances within the
+entitlement bound; terminal cleanup no instance can claim needs exactly one
+instance, exempt from the deadline; when the limit is full of instances
+serving other work the decision reads `instance-limit` and the work is
+reported, not served by retiring a useful instance, while a fleet above a
+lowered limit retires its idle excess first. Expired
+leases whose attempts are exhausted are terminal cleanup the claim exempts
+from pool and entitlement bounds, so they are counted apart from executable
+backlog and only ensure one instance exists, while the published backlog
+(health, gauge, rejection log) and its age include them. Idle scale-down and warm
+replacement never retire registered capacity the demand still needs (the
+replacement's configured size counts), concurrent drains stamp each
+instance's own stop time, and a retirement that fails beside a successful
+one still closes the successful rows before the failure is raised. Instances
+recorded by a previous host process are re-adopted when their process is
+still alive, reserved retirements included, which are then completed.
+`LocalProcess:LogicHostUrl` must be http or https, and http only for loopback
+or with `AllowInsecureHttp`; enabling `ElasticProviders` requires
+`ProcessingRunners:Enabled=true`, both checked at startup.
 
 ## Signals
 
@@ -137,7 +181,7 @@ retains backlog, when startup cannot meet the deadline past the deadline,
 when orphans were cleaned in the last sample, or when no sample has
 completed within three intervals of startup, and unhealthy after three
 consecutive sampling failures (for example an executable that cannot start).
-Log events 2230-2241.
+Log events 2230-2246.
 
 ## Operations
 

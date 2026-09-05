@@ -97,6 +97,37 @@ public sealed class CentralElasticProviderOptionsTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void LogicHostUrlMirrorsTheRunnerRuleAndElasticNeedsTheRunnerProtocol()
+    {
+        static CentralElasticProviderOptions WithUrl(string url, bool allowInsecure = false) => new()
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            LocalProcess = new CentralLocalProcessElasticOptions
+            {
+                Executable = "/opt/hvo/runner",
+                LogicHostUrl = url,
+                ClientSecretFile = "/run/secrets/runner",
+                AllowInsecureHttp = allowInsecure
+            }
+        };
+        Assert.IsFalse(WithUrl("ftp://logichost.local/").Validate(out var scheme), "a non-HTTP scheme fails at startup, not in each child");
+        StringAssert.Contains(scheme, "http or https");
+        Assert.IsFalse(WithUrl("http://logichost.local/").Validate(out var insecure), "plain http to a remote host needs the explicit opt-in the runner requires");
+        StringAssert.Contains(insecure, "AllowInsecureHttp");
+        Assert.IsTrue(WithUrl("http://logichost.local/", allowInsecure: true).Validate(out _));
+        Assert.IsTrue(WithUrl("http://127.0.0.1:5000/").Validate(out _), "loopback http is the runner's own exception");
+        Assert.IsTrue(WithUrl("http://localhost:5000/").Validate(out _));
+        Assert.IsTrue(WithUrl("https://logichost.local/").Validate(out _));
+
+        Assert.IsFalse(Enabled().ValidateRunnerProtocol(runnerProtocolEnabled: false, out var protocol), "instances register through the runner protocol");
+        StringAssert.Contains(protocol, "ProcessingRunners:Enabled");
+        Assert.IsTrue(Enabled().ValidateRunnerProtocol(runnerProtocolEnabled: true, out _));
+        Assert.IsTrue(new CentralElasticProviderOptions().ValidateRunnerProtocol(runnerProtocolEnabled: false, out _), "a disabled feature needs nothing");
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void InstanceIdleShutdownIsCoordinatedWithTheScalingPolicy()
     {
         var idle = new CentralLocalProcessElasticOptions { Executable = "/opt/hvo/runner", LogicHostUrl = "https://logichost.local/", ClientSecretFile = "/run/secrets/runner", IdleShutdown = TimeSpan.FromMinutes(2) };
@@ -202,6 +233,41 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.AreEqual((0, 3, ElasticScalingPolicy.ReasonDailyLimit), (drain.Provision, drain.Retire, drain.Reason), "existing and registering capacity drains once the daily budget is spent");
         var underLimit = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { InstanceMinutesToday = 59 }, startup);
         Assert.IsTrue(underLimit.Provision > 0);
+
+        // Sizing follows the concurrency the running instances actually registered, not the configured value alone:
+        // an adopted single-slot instance under a four-slot configuration does not absorb three queued jobs.
+        var adopted = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(3, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (adopted.Provision, adopted.Reason), "one more four-slot instance covers the two jobs the single-slot instance cannot");
+        var matched = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(3, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 4), startup);
+        Assert.AreEqual(ElasticScalingDecision.Steady, matched, "a registered four-slot instance holds three jobs");
+        var entitledCapacity = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(9, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, EntitledConcurrency: 2, 0, Capacity: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonEntitlementBound), (entitledCapacity.Provision, entitledCapacity.Reason), "the entitlement bound is applied against registered capacity too");
+        var covered = ElasticScalingPolicy.Decide(Enabled(maxInstances: 5, perInstance: 1), new ElasticScalingInput(5, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 10), startup);
+        Assert.AreEqual(ElasticScalingDecision.Steady, covered, "an adopted ten-slot instance covers five jobs whatever the new configured size is");
+        var cleanup = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 0, 0, 0, TimeSpan.Zero, EntitledConcurrency: 0, 0, CleanupBacklog: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanup.Provision, cleanup.Reason), "an expired lease with exhausted attempts needs one instance to terminalize it, whatever the entitlement or pool");
+        var cleanupCovered = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, CleanupBacklog: 1), startup);
+        Assert.AreEqual(ElasticScalingDecision.Steady, cleanupCovered, "an existing instance performs the cleanup");
+        var incompatibleAtLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 1, perInstance: 1), new ElasticScalingInput(5, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 0, IncompatibleActive: 1), startup);
+        Assert.AreEqual((0, 1, ElasticScalingPolicy.ReasonIncompatibleReplacement), (incompatibleAtLimit.Provision, incompatibleAtLimit.Retire, incompatibleAtLimit.Reason), "an instance unable to claim the queued recipe fills the limit: it is replaced");
+        var incompatibleWithRoom = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(5, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 0, IncompatibleActive: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (incompatibleWithRoom.Provision, incompatibleWithRoom.Reason), "with room, a compatible instance is provisioned beside the incompatible one");
+        var cleanupIncompatible = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 0, CleanupBacklog: 1, IncompatibleActive: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanupIncompatible.Provision, cleanupIncompatible.Reason), "cleanup needs a compatible instance; an incompatible one does not count");
+        var uncoveredWithRoom = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(6, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 10, UncoveredBacklog: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (uncoveredWithRoom.Provision, uncoveredWithRoom.Reason), "a useful ten-slot instance keeps its capacity for the small jobs; the one job it cannot claim provisions a new instance");
+        var uncoveredAtLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 1, perInstance: 1), new ElasticScalingInput(6, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 10, UncoveredBacklog: 1), startup);
+        Assert.AreEqual((0, 0, ElasticScalingPolicy.ReasonInstanceLimit), (uncoveredAtLimit.Provision, uncoveredAtLimit.Retire, uncoveredAtLimit.Reason), "at the limit a useful instance is not retired for one job it cannot claim; the uncovered work is reported");
+        var uncoveredStarting = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(6, TimeSpan.FromSeconds(5), 1, 1, 0, TimeSpan.Zero, null, 0, Capacity: 11, UncoveredBacklog: 1), startup);
+        Assert.AreEqual(ElasticScalingDecision.Steady, uncoveredStarting, "an instance still starting registers with the template and will cover the job");
+        var uncoveredEntitled = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1), new ElasticScalingInput(10, TimeSpan.FromSeconds(5), 0, 0, 0, TimeSpan.Zero, EntitledConcurrency: 0, 0, UncoveredBacklog: 10), startup);
+        Assert.AreEqual((0, 0), (uncoveredEntitled.Provision, uncoveredEntitled.Retire), "uncovered executable work stays within the entitlement bound: no instance is provisioned for work it could not claim");
+        var manyCleanup = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 0, 0, 0, TimeSpan.Zero, null, 0, CleanupBacklog: 100, CleanupUncovered: true), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (manyCleanup.Provision, manyCleanup.Reason), "a hundred exhausted leases need one instance, never the whole limit");
+        var cleanupBesideDeadline = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1, queueDeadline: TimeSpan.FromSeconds(1)), new ElasticScalingInput(50, TimeSpan.FromHours(1), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 1, CleanupBacklog: 1, CleanupUncovered: true), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonColdStartExceedsDeadline), (cleanupBesideDeadline.Provision, cleanupBesideDeadline.Reason), "old executable backlog stays local past the deadline, but the one instance cleanup needs is still provisioned");
+        var loweredLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1, scaleToZero: TimeSpan.FromSeconds(1)), new ElasticScalingInput(3, TimeSpan.FromSeconds(5), 5, 0, 2, TimeSpan.FromMinutes(1), null, 0, Capacity: 3, IncompatibleActive: 2, UncoveredBacklog: 1), startup);
+        Assert.AreEqual((0, 2, ElasticScalingPolicy.ReasonIdle), (loweredLimit.Provision, loweredLimit.Retire, loweredLimit.Reason), "a fleet above a lowered maximum retires its idle excess (two idle here) instead of reporting the limit forever");
     }
 
     [TestMethod]
@@ -227,6 +293,93 @@ public sealed class CentralElasticProviderOptionsTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task InstanceDescriptionIsWithheldWhenTheRunnerCannotBeProbed()
+    {
+        var settings = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            LocalProcess = new CentralLocalProcessElasticOptions
+            {
+                Executable = Path.Combine(Path.GetTempPath(), $"hvo-missing-runner-{Guid.NewGuid():N}"),
+                LogicHostUrl = "https://logichost.local/",
+                ClientSecretFile = "/run/secrets/runner"
+            }
+        };
+        using var provider = new LocalProcessElasticRunnerProvider(
+            Microsoft.Extensions.Options.Options.Create(settings), TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LocalProcessElasticRunnerProvider>.Instance);
+        Assert.IsNull(await provider.ProbeConfiguredRunnerAsync(CancellationToken.None), "a missing executable cannot be probed");
+        Assert.IsNull(await provider.ProbeConfiguredRunnerAsync(CancellationToken.None), "a failed probe is not repeated before the retry interval");
+        Assert.IsNull(await provider.DescribeInstanceAsync(3, ["provider:local-process", "b", "a", "a"], CancellationToken.None), "nothing stands in for a runner that cannot be probed: the host provisions nothing until a probe succeeds");
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task CapabilityProbeAcceptsOnlyASuccessfulRunnerAdvertisement()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            Assert.Inconclusive("The probe fixture is a POSIX shell script.");
+        }
+        var advertised = ProcessingRunnerCapabilities.CreateForCurrentProcess(1, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, null, null)
+            with
+        { RuntimeIdentifier = "probe-rid" };
+        var json = System.Text.Json.JsonSerializer.Serialize(advertised, ProcessingRunnerProtocol.SerializerOptions);
+        foreach (var (exitCode, accepted) in new[] { (1, false), (0, true) })
+        {
+            var script = Path.Combine(Path.GetTempPath(), $"hvo-probe-{Guid.NewGuid():N}.sh");
+            await File.WriteAllTextAsync(script, $"#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\nexit {exitCode}\n");
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+            try
+            {
+                var settings = new CentralElasticProviderOptions
+                {
+                    Enabled = true,
+                    Provider = CentralElasticProviderKind.LocalProcess,
+                    LocalProcess = new CentralLocalProcessElasticOptions { Executable = script, LogicHostUrl = "https://logichost.local/", ClientSecretFile = "/run/secrets/runner" }
+                };
+                using var provider = new LocalProcessElasticRunnerProvider(
+                    Microsoft.Extensions.Options.Options.Create(settings), TimeProvider.System,
+                    Microsoft.Extensions.Logging.Abstractions.NullLogger<LocalProcessElasticRunnerProvider>.Instance);
+                var probed = await provider.ProbeConfiguredRunnerAsync(CancellationToken.None);
+                if (accepted)
+                {
+                    Assert.IsNotNull(probed, "a warm runner's advertisement (exit 0) is accepted");
+                    var described = await provider.DescribeInstanceAsync(2, ["b", "a"], CancellationToken.None);
+                    Assert.IsNotNull(described);
+                    Assert.AreEqual("probe-rid", described.RuntimeIdentifier, "instances are described by the probed runner");
+                    Assert.AreEqual(2, described.MaxConcurrency);
+                    CollectionAssert.AreEqual(new[] { "a", "b" }, described.Labels.ToArray());
+                }
+                else
+                {
+                    Assert.IsNull(probed, "a runner whose warmup is incomplete (exit 1) prints capabilities but would abort at startup; its advertisement is refused");
+                    Assert.IsNull(await provider.DescribeInstanceAsync(2, [], CancellationToken.None), "a refused advertisement describes nothing, so no instance is provisioned");
+                }
+            }
+            finally
+            {
+                File.Delete(script);
+            }
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void ScaleDownGuardUsesTheEntitlementBoundedDemand()
+    {
+        Assert.AreEqual(101, ElasticRunnerAutoscaler.EffectiveDemand(100, 1, null));
+        Assert.AreEqual(2, ElasticRunnerAutoscaler.EffectiveDemand(100, 1, 2), "entitlements bound the concurrency the queue can use, so idle instances above that bound may retire");
+        Assert.AreEqual(3, ElasticRunnerAutoscaler.EffectiveDemand(2, 1, 10));
+        Assert.AreEqual(0, ElasticRunnerAutoscaler.EffectiveDemand(5, 0, -1));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void LocalProcessEnvironmentCarriesTheRunnerContractAndProvenanceLabels()
     {
         var request = new ElasticRunnerProvisionRequest(
@@ -239,6 +392,9 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.IsFalse(environment.ContainsKey("HVO_RUNNER_CLIENT_SECRET"), "the secret value is never composed into the environment");
         Assert.IsTrue(environment["HVO_RUNNER_STOP_FILE"].EndsWith("hvo-elastic-0123456789abcdef.stop", StringComparison.Ordinal), "the provider-neutral drain signal is wired");
         Assert.AreEqual("0", environment["HVO_RUNNER_IDLE_SHUTDOWN_SECONDS"], "the default local idle shutdown is coordinated: no self-termination unless configured");
+        Assert.AreEqual("30", environment["HVO_RUNNER_SHUTDOWN_GRACE_SECONDS"], "the child drains for the host's RetireGrace, so a longer grace lets long jobs finish");
+        var longGrace = LocalProcessElasticRunnerProvider.ComposeEnvironment(request, new CentralElasticProviderOptions { Enabled = true, Provider = CentralElasticProviderKind.LocalProcess, RetireGrace = TimeSpan.FromMinutes(5), LocalProcess = Enabled().LocalProcess });
+        Assert.AreEqual("300", longGrace["HVO_RUNNER_SHUTDOWN_GRACE_SECONDS"]);
         Assert.IsTrue(request.KeepWarm == false);
         Assert.AreEqual("2", environment["HVO_RUNNER_MAX_CONCURRENCY"]);
         Assert.AreEqual("provider:local-process,elastic-instance:0123456789abcdef,pool:blue,pool-mode:reserved", environment["HVO_RUNNER_LABELS"]);
