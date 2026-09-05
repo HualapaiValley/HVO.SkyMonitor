@@ -201,6 +201,12 @@ protected CI, or merge.
 3. Resolve conflicts, run affected local gates, and obtain a base-sync review.
 4. Fetch again and prove the target base and PR head are current, mergeable, and
    reviewed. If either moved, repeat synchronization or review as applicable.
+   At this draft pre-ready gate, use the provider's structural mergeability
+   result: for GitHub, require `mergeable: true`, retry a bounded `null` or
+   unknown result, and stop on `false` or conflicts. Do not require
+   `mergeable_state: clean` here because the intentionally failing draft
+   `Required CI` placeholder keeps policy state `blocked` until the ready
+   transition starts protected CI.
 5. Mark the PR ready only now. This transition starts the authoritative
    classifier-selected protected CI plan.
 6. Hold the lock through CI and merge.
