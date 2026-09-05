@@ -19,6 +19,8 @@
 .env.smoketest
 .devcontainer/devcontainer.local.env
 .devcontainer/hvo-docker.key
+# Retain ignores for retired devcontainer state so upgrades do not expose
+# credentials left by the former integration.
 .devcontainer/state/
 .devcontainer/.state-initialization-v1/
 

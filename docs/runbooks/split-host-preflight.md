@@ -251,8 +251,9 @@ behavior.
 The test uses fake `ssh`, `scp`, and `docker` through `PATH`. Fake SSH executes the exact
 supplied remote Bash scripts against controlled host commands, while TCP and HTTP
 checks use real Bash `/dev/tcp` and curl behavior against a temporary listener
-hosted by the pinned .NET SDK already installed by the devcontainer and CI. It
-asserts routing, host correlation, path and lock safety, missing-tool behavior,
+hosted by the pinned .NET SDK required by `global.json` and installed in CI and
+devcontainer environments. It asserts routing, host correlation, path and lock
+safety, missing-tool behavior,
 redaction, failed-evidence replacement, resume behavior, atomic publication
 recovery, and absence of mutation commands.
 
