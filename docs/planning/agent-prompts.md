@@ -269,24 +269,32 @@ the model and effort pinned by the dispatch. If the actual values do not match,
 or the selected capability cannot be verified, stop and report the mismatch
 rather than silently inheriting defaults. Report an intentionally fixed
 provider model as `provider-managed`, as required by the skill.
-Review mode: <initial|correction|base-sync>. Base reviewed SHA: <SHA or merge
-base>. Head SHA: <SHA>. In initial mode, audit the complete PR diff
-against current code, tests, durable formats, architecture boundaries,
-performance paths, logs/telemetry, and dependent issues. In correction mode,
-review only Base reviewed SHA..Head SHA and verify disposition of the preceding
-findings. Begin the report with the exact range examined and an item-by-item
-table marking every prior finding `verified corrected`, `verified deferred` with
-a linked issue and rationale, or `unresolved`. An omitted finding remains
-unresolved. Do not substitute a generic whole-PR review or reopen unchanged
-portions of the earlier diff without concrete evidence that the correction
-created a new interaction. Return new findings ordered by severity with exact
-paths and minimal fixes. Identify missing acceptance tests,
-migration/compatibility risks, I/O/CPU/memory hot paths, and any plan/issue
-contradiction. In base-sync mode, inspect conflict resolutions and new
-interactions against the updated target base without rereviewing unchanged
-upstream code. Acknowledge the start on the PR within fifteen minutes and report
-each milestone to the coordinator and PR ledger, with an interim report at least
-every thirty minutes.
+Task mode: <issue-research|initial|correction|base-sync>.
+
+In issue-research mode, identify the issue plus base commit or worktree
+fingerprint, investigate only the assigned question, and return conclusions,
+evidence, uncertainty, and the recommended next action. Acknowledge on the issue
+and report each milestone to the coordinator and issue ledger. A PR number,
+review range, and PR acknowledgement are not required.
+
+For every review mode, provide Base reviewed SHA: <SHA or merge base> and Head
+SHA: <SHA>. In initial mode, audit the complete PR diff against current code,
+tests, durable formats, architecture boundaries, performance paths,
+logs/telemetry, and dependent issues. In correction mode, review only Base
+reviewed SHA..Head SHA and verify disposition of the preceding findings. Begin
+the report with the exact range examined and an item-by-item table marking every
+prior finding `verified corrected`, `verified deferred` with a linked issue and
+rationale, or `unresolved`. An omitted finding remains unresolved. Do not
+substitute a generic whole-PR review or reopen unchanged portions of the earlier
+diff without concrete evidence that the correction created a new interaction.
+Return new findings ordered by severity with exact paths and minimal fixes.
+Identify missing acceptance tests, migration/compatibility risks,
+I/O/CPU/memory hot paths, and any plan/issue contradiction. In base-sync mode,
+inspect conflict resolutions and new interactions against the updated target
+base without rereviewing unchanged upstream code. For every review mode,
+acknowledge the start on the PR within fifteen minutes and report each milestone
+to the coordinator and PR ledger, with an interim report at least every thirty
+minutes.
 ```
 
 ## 13. Handoff Prompt
