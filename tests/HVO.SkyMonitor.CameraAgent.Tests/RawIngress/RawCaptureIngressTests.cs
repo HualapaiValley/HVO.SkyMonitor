@@ -9,6 +9,7 @@ using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Diagnostics;
 using System.Security.Cryptography;
@@ -2422,11 +2423,50 @@ public sealed class RawCaptureIngressTests
         }
     }
 
+    [TestMethod]
+    public async Task AcceptAsync_CanceledAfterTheLifecycleGate_DoesNotLogAnErrorOrMarkTheIngressFailedAsync()
+    {
+        // Host shutdown while a capture is being accepted used to fall into the generic failure path: an Error log
+        // (which the arm64 publish smoke treats as a runtime failure), availability set to accept-failed, and a
+        // forced re-initialization. Only the re-initialization is warranted: the journal transaction may have been
+        // interrupted, so the next accept must reconcile before trusting the index.
+        var root = CreateRoot();
+        try
+        {
+            var state = new RawIngressState(TimeProvider.System);
+            var logger = new RecordingLogger();
+            using var ingress = CreateIngress(
+                root, state, new CancelingFaultInjector(RawIngressFaultPoint.BeforeJournalCommit), logger: logger);
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var configuration = CreateConfiguration();
+
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => ingress.AcceptAsync(
+                configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).AsTask())
+                .ConfigureAwait(false);
+
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability, "a cancellation is not a storage failure");
+            Assert.IsFalse(logger.Events.Any(entry => entry.Level >= LogLevel.Error), "nothing may be logged at Error for a cancellation");
+            Assert.IsTrue(logger.Events.Contains((LogLevel.Information, 2060)), "the cancellation is recorded at Information");
+            Assert.IsFalse(logger.Events.Contains((LogLevel.Error, 2044)));
+
+            // The interrupted transaction forces a re-initialization; the same capture is then accepted normally.
+            var receipt = await ingress.AcceptAsync(
+                configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
     private static RawCaptureIngress CreateIngress(
         string root,
         RawIngressState state,
         IRawIngressFaultInjector? faultInjector = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ILogger<RawCaptureIngress>? logger = null)
     {
         return new RawCaptureIngress(
             Options.Create(new CameraAgentHostOptions
@@ -2439,7 +2479,7 @@ public sealed class RawCaptureIngressTests
             state,
             timeProvider ?? TimeProvider.System,
             new RawIngressTelemetry(state),
-            NullLogger<RawCaptureIngress>.Instance,
+            logger ?? NullLogger<RawCaptureIngress>.Instance,
             faultInjector ?? new NullRawIngressFaultInjector());
     }
 
@@ -2768,6 +2808,43 @@ public sealed class RawCaptureIngressTests
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+
+    private sealed class CancelingFaultInjector(RawIngressFaultPoint target) : IRawIngressFaultInjector
+    {
+        private int _injected;
+
+        public bool IsEnabled(RawIngressFaultPoint point) => point == target;
+
+        public void Inject(RawIngressFaultPoint point)
+        {
+            if (point == target && Interlocked.Exchange(ref _injected, 1) == 0)
+            {
+                throw new OperationCanceledException("Injected cancellation while the lifecycle gate was held.");
+            }
+        }
+    }
+
+    private sealed class RecordingLogger : ILogger<RawCaptureIngress>
+    {
+        public List<(LogLevel Level, int EventId)> Events { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (Events)
+            {
+                Events.Add((logLevel, eventId.Id));
+            }
+        }
     }
 
     private sealed class OneShotFaultInjector(RawIngressFaultPoint target) : IRawIngressFaultInjector

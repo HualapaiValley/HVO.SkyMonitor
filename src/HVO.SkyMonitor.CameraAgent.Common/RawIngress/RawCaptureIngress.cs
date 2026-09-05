@@ -532,8 +532,17 @@ internal sealed class RawCaptureIngress :
             }
             return receipt;
         }
-        catch (OperationCanceledException) when (!lifecycleAcquired)
+        catch (OperationCanceledException)
         {
+            // A cancellation (host shutdown or a caller timeout) is not a storage failure: availability is left
+            // alone and nothing is logged at Error. Once the lifecycle gate was held the journal transaction may
+            // have been interrupted, so the next accept re-initializes and reconciles before trusting the index.
+            if (lifecycleAcquired)
+            {
+                _telemetry.RecordFailure("accept", "canceled");
+                _logger.RawIngressCanceled("accept");
+                Volatile.Write(ref _initialized, false);
+            }
             throw;
         }
         catch (CaptureLaneBackpressureException)

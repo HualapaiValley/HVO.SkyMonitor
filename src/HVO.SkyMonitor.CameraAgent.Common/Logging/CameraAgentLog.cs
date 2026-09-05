@@ -144,6 +144,9 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2044, Level = LogLevel.Error, Message = "Raw ingress refused capture during {Phase} because {Reason}")]
     public static partial void RawIngressRefused(this ILogger logger, string phase, string reason);
 
+    [LoggerMessage(EventId = 2060, Level = LogLevel.Information, Message = "Raw ingress capture was canceled during {Phase}; the journal is re-verified on the next accept")]
+    public static partial void RawIngressCanceled(this ILogger logger, string phase);
+
     [LoggerMessage(EventId = 2045, Level = LogLevel.Information, Message = "Raw ingress recovered and is accepting captures")]
     public static partial void RawIngressRecovered(this ILogger logger);
 
