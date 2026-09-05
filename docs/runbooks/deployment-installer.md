@@ -407,9 +407,9 @@ hvo-skymonitor cameraagent preflight --instance-id <uuid> --json
 hvo-skymonitor cameraagent preflight --instance-id <uuid> \
   --image-ref <repository@sha256:digest>
 hvo-skymonitor cameraagent preflight --instance-id <uuid> \
-  --image-manifest /media/hvo/image-v1.5.0/image-manifest.json --no-download
+  --image-manifest /media/hvo/image-v1.5.0/image-manifest.json
 hvo-skymonitor cameraagent preflight --instance-id <uuid> \
-  --channel stable \
+  --channel stable --no-download \
   --image-index https://mirror.example/indexes/image-stable-index.json \
   --image-version 1.5.0 --asset-base-url https://mirror.example/releases
 ```
@@ -424,9 +424,10 @@ declaration and requires the current contract, matching an in-place upgrade. `--
 host already holds and is read from the local Docker image store. `--image-manifest`, `--image-index`, and
 `--image-version` instead name a signed image release from the train above and are resolved exactly as an
 upgrade resolves one: the same signature and index verification, the same rollback protection, the same
-offline-archive identification, and the same platform selection, against the Docker architecture the instance
-manifest recorded. `--asset-base-url`, `--channel`, and `--no-download` apply to them as they do to an upgrade
-and are rejected without `--image-manifest` or `--image-index`. A signed release and `--image-ref` are mutually
+offline-archive identification, and the same platform selection, which follows the architecture of the process
+running the command. `--asset-base-url`, `--channel`, and `--no-download` apply to them as they do to an
+upgrade and are rejected without `--image-manifest` or `--image-index`. A local-media manifest is read from disk
+whether or not `--no-download` is given, so the flag matters only for an `https://` manifest or index. A signed release and `--image-ref` are mutually
 exclusive here for the same reason install and upgrade refuse the combination.
 
 A signed-release preflight is strictly read-only. It evaluates the release's own signed compatibility record,
@@ -439,11 +440,13 @@ report names the resolved release tag beside the immutable image ID it selected;
 same tag in the report they retain, which is the only release evidence a refused operation leaves behind.
 
 **A compatible signed-release preflight is not a promise that the upgrade will proceed.** It compares persisted
-state against the boundaries the release *declares*. Two further gates run only during the upgrade itself: the
-labels the loaded image actually carries are compared against the signed record, and the candidate's component,
-configuration, catalog, and replay-runner contract identities are required to match this instance. A release
-that declares a different configuration or catalog contract therefore preflights clean and is still refused at
-upgrade time.
+state against the boundaries the release *declares*. Further gates run only during the upgrade itself: the
+labels the loaded image actually carries are compared against the signed record; the candidate's component,
+configuration, catalog, and replay-runner contract identities and its architecture are required to match this
+instance; a candidate identical to the image already running is refused outright; and a candidate declaring a
+state migration still requires `--migration-backward-compatible`. A release that declares a different
+configuration or catalog contract, or that the instance already runs, therefore preflights clean and is still
+refused at upgrade time.
 
 Rollback state is retained per operating-system user
 (`$XDG_STATE_HOME/hvo/skymonitor/distribution`, else `~/.local/state/...`), so run the preflight as the same

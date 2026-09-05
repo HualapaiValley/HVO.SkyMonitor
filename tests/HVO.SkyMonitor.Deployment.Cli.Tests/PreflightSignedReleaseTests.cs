@@ -467,12 +467,20 @@ public sealed class PreflightSignedReleaseTests
         File.SetUnixFileMode(path, UnixFileMode.UserRead);
     }
 
-    /// <summary>Every path beneath a root with its file length, so any creation, deletion, or edit is visible.</summary>
+    /// <summary>
+    /// Every path beneath a root with its mode and, for a file, a checksum of its content. Length alone would
+    /// miss a same-length rewrite — a rewritten SQLite page, for instance — so the content itself is hashed.
+    /// </summary>
     private static string[] Snapshot(string root)
         => Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
-            .Select(path => File.Exists(path)
-                ? $"{Path.GetRelativePath(root, path)}:{new FileInfo(path).Length}"
-                : $"{Path.GetRelativePath(root, path)}/")
+            .Select(path =>
+            {
+                var relative = Path.GetRelativePath(root, path);
+                var mode = File.GetUnixFileMode(path);
+                return File.Exists(path)
+                    ? $"{relative}:{mode}:{Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path)))}"
+                    : $"{relative}/:{mode}";
+            })
             .Order(StringComparer.Ordinal)
             .ToArray();
 

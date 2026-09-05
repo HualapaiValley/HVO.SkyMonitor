@@ -555,9 +555,18 @@ internal static class CameraAgentStatePreflight
     /// not side-effect free: SQLite creates the wal-index for a WAL database even through a read-only handle, and
     /// the raw-ingress journal is WAL at rest. For a stopped instance that would leave installer-owned
     /// <c>-wal</c>/<c>-shm</c> files inside a 0700 runtime-owned bind source that the capability-dropped container
-    /// then cannot open. A database with no recovery state beside it is therefore opened <c>immutable=1</c>, which
-    /// creates nothing; one that has recovery state is read through a private copy so the pending WAL is replayed
-    /// into the copy and never into the instance.
+    /// then cannot open. The three shapes a journal can be in each admit a different side-effect-free read, and
+    /// which one applies was measured rather than assumed:
+    /// <list type="bullet">
+    /// <item>No wal-index and no recovery state: the instance is stopped and checkpointed, and
+    /// <c>immutable=1</c> reads it while creating nothing.</item>
+    /// <item>A wal-index already exists: the instance is running, so the files are already present and owned by
+    /// the runtime identity, and an in-place read-only open creates nothing while observing a consistent snapshot
+    /// through that index.</item>
+    /// <item>Recovery state without a wal-index: the instance crashed and is not running, so an in-place open
+    /// would create the index. The database and its recovery files are read through a private copy, which cannot
+    /// be torn because no writer holds them, and the pending journal replays into the copy rather than here.</item>
+    /// </list>
     /// </summary>
     private sealed class ReadOnlyDatabase : IDisposable
     {
@@ -573,54 +582,85 @@ internal static class CameraAgentStatePreflight
 
         public static ReadOnlyDatabase Open(string databasePath)
         {
+            if (File.Exists(databasePath + "-shm"))
+            {
+                return new ReadOnlyDatabase(OpenConnection(databasePath, SqliteOpenMode.ReadOnly), null);
+            }
             var recoveryFiles = new[] { databasePath + "-wal", databasePath + "-journal" }
                 .Where(File.Exists).ToArray();
-            var immutable = recoveryFiles.Length == 0 && !File.Exists(databasePath + "-shm");
+            if (recoveryFiles.Length == 0)
+            {
+                return new ReadOnlyDatabase(
+                    OpenConnection(new Uri(databasePath).AbsoluteUri + "?immutable=1", SqliteOpenMode.ReadOnly), null);
+            }
             DirectoryInfo? snapshotRoot = null;
             try
             {
-                var inspectionPath = databasePath;
-                if (!immutable)
+                snapshotRoot = Directory.CreateTempSubdirectory("hvo-preflight-inspection-");
+                var inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
+                File.Copy(databasePath, inspectionPath);
+                // File.Copy carries the source mode across, and replaying a rollback journal needs a writable
+                // main database, so the private copy is made writable explicitly.
+                File.SetUnixFileMode(inspectionPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                foreach (var recoveryFile in recoveryFiles)
                 {
-                    snapshotRoot = Directory.CreateTempSubdirectory("hvo-preflight-inspection-");
-                    inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
-                    File.Copy(databasePath, inspectionPath);
-                    foreach (var recoveryFile in recoveryFiles)
-                    {
-                        File.Copy(recoveryFile, inspectionPath + recoveryFile[databasePath.Length..]);
-                    }
+                    var copied = inspectionPath + recoveryFile[databasePath.Length..];
+                    File.Copy(recoveryFile, copied);
+                    File.SetUnixFileMode(copied, UnixFileMode.UserRead | UnixFileMode.UserWrite);
                 }
-                var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-                {
-                    DataSource = immutable
-                        ? new Uri(inspectionPath).AbsoluteUri + "?immutable=1"
-                        : inspectionPath,
-                    Mode = immutable ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
-                    Cache = SqliteCacheMode.Private,
-                    Pooling = false
-                }.ToString());
-                try
-                {
-                    connection.Open();
-                }
-                catch
-                {
-                    connection.Dispose();
-                    throw;
-                }
-                return new ReadOnlyDatabase(connection, snapshotRoot);
+                return new ReadOnlyDatabase(OpenConnection(inspectionPath, SqliteOpenMode.ReadWrite), snapshotRoot);
             }
             catch
             {
-                snapshotRoot?.Delete(recursive: true);
+                Discard(snapshotRoot);
                 throw;
             }
         }
 
         public void Dispose()
         {
-            Connection.Dispose();
-            snapshotRoot?.Delete(recursive: true);
+            try
+            {
+                Connection.Dispose();
+            }
+            finally
+            {
+                Discard(snapshotRoot);
+            }
+        }
+
+        private static SqliteConnection OpenConnection(string dataSource, SqliteOpenMode mode)
+        {
+            var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = dataSource,
+                Mode = mode,
+                Cache = SqliteCacheMode.Private,
+                Pooling = false
+            }.ToString());
+            try
+            {
+                connection.Open();
+                return connection;
+            }
+            catch
+            {
+                connection.Dispose();
+                throw;
+            }
+        }
+
+        private static void Discard(DirectoryInfo? snapshotRoot)
+        {
+            try
+            {
+                snapshotRoot?.Delete(recursive: true);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // A temporary copy that cannot be removed must not mask the reason the caller is unwinding, nor
+                // fail a preflight that has already produced its answer.
+            }
         }
     }
 }
@@ -674,10 +714,7 @@ internal static class CameraAgentStatePreflightManager
         {
             policy = CameraAgentStateContractPolicy.RequireCurrent;
             using var acquirer = (distributionFactory ?? CreateDistributionAcquirer)();
-            // The recorded daemon architecture, not this process's, decides which platform an upgrade of this
-            // instance would install. Preflight never contacts Docker, so nothing else would catch a divergence.
-            var release = await acquirer.ResolveImageAsync(
-                              request.ImageSelection(), cancellationToken, manifest.DockerDaemon.Architecture)
+            var release = await acquirer.ResolveImageAsync(request.ImageSelection(), cancellationToken)
                               .ConfigureAwait(false)
                           ?? throw new InstallerException(
                               "The signed CameraAgent image release did not resolve a candidate image.");

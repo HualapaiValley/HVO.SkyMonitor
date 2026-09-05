@@ -130,10 +130,7 @@ internal sealed class DistributionAcquirer : IDisposable
     /// state is committed. The read-only <c>cameraagent preflight</c> uses this to name the release an upgrade
     /// would install without leaving anything behind. Returns <c>null</c> when no signed release was named.
     /// </summary>
-    public async Task<ResolvedImageRelease?> ResolveImageAsync(
-        InstallRequest request,
-        CancellationToken cancellationToken,
-        string? architecture = null)
+    public async Task<ResolvedImageRelease?> ResolveImageAsync(InstallRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         var inputs = TrainInputs.ForImage(request);
@@ -146,7 +143,7 @@ internal sealed class DistributionAcquirer : IDisposable
         {
             var resolved = await ResolveVerifiedManifestAsync(
                 inputs, DistributionManifestKind.ImageRelease, readOnly: true, cancellationToken).ConfigureAwait(false);
-            var (image, platform) = SelectHostPlatform(resolved.Manifest, architecture);
+            var (image, platform) = SelectHostPlatform(resolved.Manifest);
             // An acquisition also requires the release to publish exactly one offline archive for the selected
             // platform. Proving it here costs no download and keeps a malformed release from resolving cleanly
             // and then failing partway through the upgrade it was resolved for.
@@ -169,16 +166,14 @@ internal sealed class DistributionAcquirer : IDisposable
     }
 
     /// <summary>
-    /// Selects the published platform the target daemon can execute, defaulting to this process's architecture
-    /// when no daemon identity is known. A release that does not publish it names what it does publish instead of
-    /// failing generically.
+    /// Selects the published platform this host can execute. A release that does not publish this host's
+    /// architecture names what it does publish instead of failing generically.
     /// </summary>
     private static (DistributionImageIdentity Image, DistributionImagePlatform Platform) SelectHostPlatform(
-        DistributionReleaseManifest manifest,
-        string? requestedArchitecture = null)
+        DistributionReleaseManifest manifest)
     {
         var image = manifest.Images[0];
-        var architecture = requestedArchitecture ?? HostImageArchitecture();
+        var architecture = HostImageArchitecture();
         var platform = image.Platforms.SingleOrDefault(candidate =>
             candidate.OperatingSystem == "linux" && candidate.Architecture == architecture)
             ?? throw new InstallerException(
@@ -454,7 +449,9 @@ internal sealed class DistributionAcquirer : IDisposable
             }
             var cachedBytes = new byte[cachedStream.Length];
             await cachedStream.ReadExactlyAsync(cachedBytes, cancellationToken).ConfigureAwait(false);
-            // A read-only resolution never names a cache entry, so no later step can evict one it did not create.
+            // A read-only resolution names no cache entry here either, so no later step can evict one it did
+            // not create. Redundant with the guarded eviction sites, and kept because --no-download now reaches
+            // this branch from a preflight.
             return new MetadataBytes(cachedBytes, readOnly ? null : cached, true);
         }
         var cachePath = MetadataCachePath(locator.Uri);
