@@ -777,6 +777,20 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-production-trust
   capture_signed_state 02-production-trust-root-refusal
 
+  # The state preflight resolves the same signed release the upgrade is about to consume, without acquiring the
+  # archive or contacting Docker, so the candidate's declared boundaries are evaluated before anything is touched.
+  "$signed_cli" cameraagent preflight \
+    --instance-id "$signed_instance_id" \
+    --product-root "$root/product" \
+    --channel local \
+    --image-manifest "$signed_manifest_b" \
+    --no-download \
+    --json >"$root/signed-candidate-preflight.json"
+  test "$(jq -er '.compatible' "$root/signed-candidate-preflight.json")" = true
+  test "$(jq -er '.outcome' "$root/signed-candidate-preflight.json")" = compatible
+  test "$(jq -er '[.findings[] | select(.blocking)] | length' "$root/signed-candidate-preflight.json")" = 0
+  cp "$root/signed-candidate-preflight.json" "$signed_evidence_root/03-candidate-preflight.json"
+
   "$signed_cli" cameraagent upgrade \
     --instance-id "$signed_instance_id" \
     --product-root "$root/product" \

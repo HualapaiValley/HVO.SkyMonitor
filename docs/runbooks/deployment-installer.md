@@ -187,6 +187,7 @@ every transition the retained release record has to follow:
 | --- | --- | --- |
 | Install from the superseded release | `cameraagent install --image-manifest <a>` | present, naming that release and the running image |
 | Refused by the production trust root | the product CLI, same upgrade | unchanged |
+| Preflight the candidate release | `cameraagent preflight --image-manifest <b>` | unchanged; nothing is acquired or started |
 | Upgrade to the candidate release | `cameraagent upgrade --image-manifest <b>` | present, naming the new release and the new image |
 | Refused: signed by a key the trust root does not carry | `cameraagent upgrade --image-manifest <untrusted>` | unchanged; still names the running release |
 | Refused: the trusted key's signature over a different release | `cameraagent upgrade --image-manifest <forged>` | unchanged |
