@@ -589,12 +589,16 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
       "$signed_workspace/release-$name/image-manifest.json.sig"
   }
 
-  # A release whose signed compatibility record contradicts the image it names. The signature is genuine, so the
-  # refusal below comes from the label-agreement gate rather than from signature verification.
+  # A release whose signed compatibility record contradicts the image it names. The manifest's own consistency
+  # rules already bind the release identity to the image identity, so the boundary that can drift is exactly the
+  # compatibility record the label-agreement gate exists to check. The signature is genuine, so the refusal below
+  # comes from that gate rather than from signature verification.
   derive_signed_release contradicting
-  jq --arg revision "$signed_revision_a" '.images[0].sourceRevision = $revision' \
+  test "$(jq -er '.images[0].compatibility.minimumCompatibleRevision' "$signed_manifest_b")" != "$signed_revision_a"
+  jq --arg revision "$signed_revision_a" '.images[0].compatibility.minimumCompatibleRevision = $revision' \
     "$signed_manifest_b" >"$signed_workspace/release-contradicting/image-manifest.json"
-  test "$(jq -er '.images[0].sourceRevision' "$signed_workspace/release-contradicting/image-manifest.json")" = "$signed_revision_a"
+  test "$(jq -er '.images[0].compatibility.minimumCompatibleRevision' \
+    "$signed_workspace/release-contradicting/image-manifest.json")" = "$signed_revision_a"
 
   # The same release bytes, signed by a key the campaign trust root does not carry. The manifest still names the
   # trusted key id, so this refusal exercises signature verification rather than the key-identity comparison.
@@ -829,7 +833,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test "$(jq -er '.errorCode' "$root/signed-contradicting-error.json")" = installation-failed
   jq -er '.message | test("does not carry the compatibility identity the release signed")' \
     "$root/signed-contradicting-error.json" >/dev/null
-  jq -er '.message | test("source revision signed")' "$root/signed-contradicting-error.json" >/dev/null
+  jq -er '.message | test("minimum compatible revision signed")' "$root/signed-contradicting-error.json" >/dev/null
   # The label-agreement gate runs after the operation is journalled but before any mutation, so the journal records
   # an upgrade that never touched the instance.
   test "$(jq -er '.kind' "$signed_lifecycle_state")" = Upgrade

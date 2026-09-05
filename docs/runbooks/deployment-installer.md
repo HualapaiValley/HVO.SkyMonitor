@@ -204,6 +204,14 @@ untrusted-key release is refused during acquisition, before the instance is
 touched at all. Neither refusal writes, rewrites, or resurrects the retained
 release record.
 
+The contradicted boundary is the signed compatibility record — the campaign
+changes the release's `minimumCompatibleRevision` — because the manifest's own
+consistency rules already bind the release identity, the repository, the source
+revision and tree, the evidence assets, and each platform's archive to one
+another. The compatibility record is the one claim about the image that the
+manifest cannot check against itself, which is precisely why the installation
+compares it against the labels the image actually carries.
+
 ### The ephemeral key: what the campaign does and does not establish
 
 The production signing key exists only as a Key Vault key that the release
