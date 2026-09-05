@@ -27,9 +27,11 @@ Options:
   --amd64-builder <name>      buildx builder for linux/amd64. Default: HVO_RELEASE_AMD64_BUILDER or "default".
   --arm64-builder <name>      buildx builder for linux/arm64. Default: HVO_RELEASE_ARM64_BUILDER, required.
   --scanner <trivy|none>      Vulnerability scanner and component-inventory renderer. Default: trivy.
-  --unscanned-dry-run         Permit --scanner none. Forces a version ending in "-dryrun" and never
-                              produces a publishable release; such a candidate carries no per-platform
-                              component inventory and its manifest stays at release-manifest version 1.
+  --unscanned-dry-run         Permit --scanner none. Requires a version ending in "-dryrun" and never
+                              produces a publishable release. With --scanner none no scan runs, so that
+                              candidate carries no per-platform component inventory and its manifest stays
+                              at release-manifest version 1; a "-dryrun" version scanned with trivy still
+                              carries inventories and a version 2 manifest.
   --sign-key <pem>            Sign the candidate with this local private key (ephemeral/local releases only).
   --allow-dirty               Permit a modified worktree. Only valid with --unscanned-dry-run.
   --keep-work                 Keep the intermediate build directory.
@@ -53,6 +55,10 @@ sign_key=""
 allow_dirty=0
 keep_work=0
 push=0
+
+# The smallest component count that can describe a published CameraAgent image. This must equal
+# MinimumInventoryComponents in the release tool, which applies the same rule again before signing.
+inventory_component_floor=32
 
 # Pinned by tag and digest so a release scan is reproducible and the scanner itself is immutable.
 trivy_image="${HVO_RELEASE_TRIVY_IMAGE:-aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969}"
@@ -245,7 +251,8 @@ if [[ "$scanner" == trivy ]]; then
             --env "TRIVY_CACHE_DIR=/tmp/trivy-cache" \
             --volume "$trivy_cache:/tmp/trivy-cache" \
             --volume "$archive:/scan/${scanned_name}:ro" \
-            "$trivy_image" image --quiet --format json --scanners vuln --input "/scan/${scanned_name}" >"$destination"
+            "$trivy_image" image --quiet --format json --scanners vuln --list-all-pkgs \
+                --input "/scan/${scanned_name}" >"$destination"
         # The scanner must say which image it scanned, so the signed coverage claim rests on the scanner's own
         # subject identity rather than on the identity this script derived a moment earlier.
         local scanned_image_id
@@ -261,9 +268,10 @@ if [[ "$scanner" == trivy ]]; then
             printf 'The scanner did not identify %s; the image was not actually scanned.\n' "$archive" >&2
             exit 1
         }
-        # Render the component inventory from the same scan pass. `trivy image --format json` already records every
-        # installed package rather than only the vulnerable ones, so `convert` re-renders that single pass as SPDX
-        # instead of unpacking and scanning the image a second time.
+        # Render the component inventory from the same scan pass. The report above records every installed package
+        # rather than only the vulnerable ones, so `convert` re-renders that single pass as SPDX instead of
+        # unpacking and scanning the image a second time. `--list-all-pkgs` is the pinned scanner's default; it is
+        # stated explicitly so the inventory does not silently depend on a default that a future pin could change.
         printf 'Rendering the linux/%s component inventory from the same scan\n' "$architecture" >&2
         docker run --rm \
             --user "$(id -u):$(id -g)" \
@@ -273,16 +281,29 @@ if [[ "$scanner" == trivy ]]; then
             "$trivy_image" convert --quiet --format spdx-json "/work/trivy-${architecture}.json" >"$inventory"
         # The release tool re-checks this before signing, but failing here stops the run before the registry push
         # rather than after it, and a published identity cannot be retracted.
-        jq --exit-status --arg imageId "$expected_image_id" '
+        # This mirrors ValidateComponentInventory in the release tool exactly: a package counts as a component
+        # only when it is not the image subject and carries a non-empty name and version. Keep the two in step --
+        # this one runs first, so a looser rule here would let a bad inventory reach the push the tool then
+        # refuses, and the release would fail after publishing an immutable identity instead of before.
+        jq --exit-status --arg imageId "$expected_image_id" --argjson floor "$inventory_component_floor" '
+            def claims: [ .packages[]? | .annotations[]? | .comment? // ""
+                          | select(startswith("ImageID: ")) | ltrimstr("ImageID: ") ];
+            def components: [ .packages[]?
+                              | select([.annotations[]? | .comment? // "" | select(startswith("ImageID: "))] | length == 0)
+                              | select(((.name // "") | gsub("^\\s+|\\s+$"; "")) != "")
+                              | select(((.versionInfo // "") | gsub("^\\s+|\\s+$"; "")) != "") ];
             .spdxVersion == "SPDX-2.3"
-            and ([.packages[]? | select(any(.annotations[]?; .comment == "ImageID: " + $imageId))] | length) == 1
-            and ([.packages[]? | select(has("versionInfo"))] | length) >= 32' "$inventory" >/dev/null || {
-            printf 'The linux/%s component inventory does not describe %s with a usable component list.\n' \
-                "$architecture" "$expected_image_id" >&2
+            and (claims == [$imageId])
+            and ((components | length) >= $floor)' "$inventory" >/dev/null || {
+            printf 'The linux/%s component inventory does not name %s as its single subject with at least %s components.\n' \
+                "$architecture" "$expected_image_id" "$inventory_component_floor" >&2
             exit 1
         }
-        printf 'linux/%s inventory: %s components\n' \
-            "$architecture" "$(jq '[.packages[]? | select(has("versionInfo"))] | length' "$inventory")" >&2
+        printf 'linux/%s inventory: %s components\n' "$architecture" \
+            "$(jq '[ .packages[]?
+                     | select([.annotations[]? | .comment? // "" | select(startswith("ImageID: "))] | length == 0)
+                     | select(((.name // "") | gsub("^\\s+|\\s+$"; "")) != "")
+                     | select(((.versionInfo // "") | gsub("^\\s+|\\s+$"; "")) != "") ] | length' "$inventory")" >&2
     }
     scan_one amd64 "$amd64_image_id"
     scan_one arm64 "$arm64_image_id"
@@ -391,18 +412,35 @@ if [[ "$push" == 1 ]]; then
     # platform manifest is what makes the in-registry provenance and SBOM apply to the bytes this release examined
     # rather than to some other manifest that happens to share the index.
     for attested_manifest in "$amd64_manifest" "$arm64_manifest"; do
-        attestation_count="$(jq -r --arg subject "$attested_manifest" '
+        mapfile -t attestation_digests < <(jq -r --arg subject "$attested_manifest" '
             [ .manifests[]
               | select((.annotations["vnd.docker.reference.type"] // "") == "attestation-manifest")
               | select((.annotations["vnd.docker.reference.digest"] // "") == $subject)
-              | .digest ] | unique | length' "$work/published-index.json")"
-        if [[ "$attestation_count" != 1 ]]; then
+              | .digest ] | unique | .[]' "$work/published-index.json")
+        if [[ "${#attestation_digests[@]}" != 1 ]]; then
             printf 'The publication of %s:%s carries %s attestation manifests for %s; exactly one is required.\n' \
-                "$repository" "$version" "$attestation_count" "$attested_manifest" >&2
+                "$repository" "$version" "${#attestation_digests[@]}" "$attested_manifest" >&2
             exit 1
         fi
+        # An annotated wrapper only proves that something is attached. Resolve it and require both statements the
+        # release promises, so a provenance-only, SBOM-only, or empty attestation cannot be signed as either. This
+        # matters most on the adopt path above, where the wrapper came from a run this release did not perform.
+        docker buildx imagetools inspect "${repository}@${attestation_digests[0]}" --raw \
+            >"$work/attestation-${attested_manifest#sha256:}.json"
+        for predicate in https://spdx.dev/Document https://slsa.dev/provenance/v1; do
+            jq --exit-status --arg predicate "$predicate" '
+                [ .layers[]?
+                  | select(.mediaType == "application/vnd.in-toto+json")
+                  | select((.annotations["in-toto.io/predicate-type"] // "") == $predicate) ] | length == 1' \
+                "$work/attestation-${attested_manifest#sha256:}.json" >/dev/null || {
+                printf 'The attestation for %s does not carry exactly one %s statement.\n' \
+                    "$attested_manifest" "$predicate" >&2
+                exit 1
+            }
+        done
     done
-    printf 'Published multi-architecture digest %s with one attestation manifest per platform\n' "$index_digest" >&2
+    printf 'Published multi-architecture digest %s with an SBOM and provenance attestation per platform\n' \
+        "$index_digest" >&2
 fi
 
 if [[ -z "$index_digest" ]]; then

@@ -427,4 +427,69 @@ public sealed class ImageReleaseToolTests
             ],
             "does not name the published image");
     }
+
+    /// <summary>
+    /// An inventory that keeps its own correct subject but also carries a claim for another image must be
+    /// rejected. Counting only the expected claim would let an arm64 inventory be signed as the amd64 one.
+    /// </summary>
+    [TestMethod]
+    public async Task CreateImage_InventoryThatAlsoClaimsAnotherImage_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var smuggled = fixture.WriteComponentInventory(
+            "two-subjects.spdx.json",
+            fixture.ImageIdFor("amd64"),
+            ImageReleaseFixture.InventoryComponents,
+            additionalImageId: fixture.ImageIdFor("arm64"));
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-amd64") + 1] = smuggled;
+
+        await AssertRejectedAsync(arguments, "as its single subject");
+    }
+
+    /// <summary>SPDX 2.3 clause 8.4 makes a SHA-1 checksum mandatory on every file the document declares.</summary>
+    [TestMethod]
+    public async Task CreateImage_InventoryWithAFileMissingItsSha1Checksum_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var withFiles = fixture.WriteComponentInventory(
+            "files-without-sha1.spdx.json",
+            fixture.ImageIdFor("arm64"),
+            ImageReleaseFixture.InventoryComponents,
+            includeFileWithoutSha1: true);
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-arm64") + 1] = withFiles;
+
+        await AssertRejectedAsync(arguments, "without the SHA-1 checksum SPDX 2.3 requires");
+    }
+
+    [TestMethod]
+    public async Task CreateImage_InventoryThatIsNotValidJson_NamesThePlatformAndTheFile()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var malformed = Path.Combine(fixture.Root, "malformed.spdx.json");
+        await File.WriteAllTextAsync(malformed, "{ \"spdxVersion\": ", new UTF8Encoding(false));
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-amd64") + 1] = malformed;
+
+        await AssertRejectedAsync(arguments, $"The linux/amd64 component inventory '{malformed}' is not valid JSON.");
+    }
+
+    /// <summary>Pins the component floor itself, so the boundary is a decision rather than an accident.</summary>
+    [TestMethod]
+    public async Task CreateImage_InventoryOneComponentBelowTheFloor_IsRejectedAndAtTheFloorIsAccepted()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var below = fixture.WriteComponentInventory("below.spdx.json", fixture.ImageIdFor("amd64"), components: 31);
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-amd64") + 1] = below;
+
+        await AssertRejectedAsync(arguments, "records 31 components");
+
+        var atFloor = fixture.WriteComponentInventory("at-floor.spdx.json", fixture.ImageIdFor("amd64"), components: 32);
+        var accepted = fixture.CreateArguments(Path.Combine(fixture.Root, "accepted"));
+        accepted[Array.IndexOf(accepted, "--component-sbom-amd64") + 1] = atFloor;
+
+        Assert.AreEqual(0, await ReleaseTool.Program.Main(accepted));
+    }
 }

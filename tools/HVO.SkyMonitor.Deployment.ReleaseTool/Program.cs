@@ -257,6 +257,7 @@ internal static partial class Program
     private const string ComponentLabel = "io.hvo.skymonitor.component";
     private const string RevisionLabel = "org.opencontainers.image.revision";
     private const string SpdxPackageIdentifier = "SPDXRef-Package";
+    private const string ScannedImageAnnotation = "ImageID: ";
 
     /// <summary>
     /// The smallest component count that can plausibly describe a published CameraAgent image. The image is an
@@ -472,21 +473,18 @@ internal static partial class Program
     /// </summary>
     private static void ValidateComponentInventory(string path, string architecture, string imageId)
     {
-        using var document = JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions
-        {
-            AllowTrailingCommas = false,
-            CommentHandling = JsonCommentHandling.Disallow,
-            MaxDepth = 64
-        });
+        using var document = ParseInventory(path, architecture);
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("spdxVersion", out var spdxVersion) || spdxVersion.GetString() != "SPDX-2.3" ||
-            !root.TryGetProperty("SPDXID", out var documentId) || documentId.GetString() != "SPDXRef-DOCUMENT" ||
+            Text(root, "spdxVersion") != "SPDX-2.3" || Text(root, "SPDXID") != "SPDXRef-DOCUMENT" ||
             !root.TryGetProperty("packages", out var packages) || packages.ValueKind != JsonValueKind.Array)
         {
             throw new ReleaseToolException($"The linux/{architecture} component inventory is not an SPDX 2.3 document.");
         }
-        var subjects = 0;
+        // Collect every image-subject claim in the document rather than only the expected one. A document that
+        // also claims another image could otherwise keep its real subject and carry an injected annotation for
+        // this platform, and would then pass as either platform's inventory.
+        var claims = new List<string>();
         var components = 0;
         foreach (var package in packages.EnumerateArray())
         {
@@ -494,24 +492,25 @@ internal static partial class Program
             {
                 throw new ReleaseToolException($"The linux/{architecture} component inventory contains an invalid package.");
             }
-            if (DeclaresScannedImage(package, imageId))
+            var declared = ScannedImageClaims(package).ToArray();
+            if (declared.Length != 0)
             {
-                subjects++;
+                claims.AddRange(declared);
                 continue;
             }
-            if (package.TryGetProperty("name", out var componentName) &&
-                !string.IsNullOrWhiteSpace(componentName.GetString()) &&
-                package.TryGetProperty("versionInfo", out var componentVersion) &&
-                !string.IsNullOrWhiteSpace(componentVersion.GetString()))
+            if (!string.IsNullOrWhiteSpace(Text(package, "name")) &&
+                !string.IsNullOrWhiteSpace(Text(package, "versionInfo")))
             {
                 components++;
             }
         }
-        if (subjects != 1)
+        if (claims.Count != 1 || claims[0] != imageId)
         {
             throw new ReleaseToolException(
-                $"The linux/{architecture} component inventory does not name the published image {imageId} as its subject.");
+                $"The linux/{architecture} component inventory does not name the published image {imageId} as its " +
+                $"single subject; it claims [{string.Join(", ", claims)}].");
         }
+        ValidateInventoryFiles(root, architecture);
         if (components < MinimumInventoryComponents)
         {
             throw new ReleaseToolException(
@@ -520,12 +519,85 @@ internal static partial class Program
         }
     }
 
-    private static bool DeclaresScannedImage(JsonElement package, string imageId)
-        => package.TryGetProperty("annotations", out var annotations) && annotations.ValueKind == JsonValueKind.Array &&
-           annotations.EnumerateArray().Any(annotation =>
-               annotation.ValueKind == JsonValueKind.Object &&
-               annotation.TryGetProperty("comment", out var comment) &&
-               string.Equals(comment.GetString(), $"ImageID: {imageId}", StringComparison.Ordinal));
+    /// <summary>
+    /// Parses an inventory, naming the platform and the file in the failure. The document is produced by the
+    /// scanner rather than by this tool, so a malformed one is a plausible release failure and the operator needs
+    /// to be told which file to look at rather than only that some JSON did not parse.
+    /// </summary>
+    /// <summary>
+    /// Reads a member as a string, returning null when it is absent or is present with another JSON type. Reading
+    /// it with <c>GetString()</c> would throw past this tool's own error handling on a document it did not write.
+    /// </summary>
+    private static string? Text(JsonElement element, string member)
+        => element.TryGetProperty(member, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static JsonDocument ParseInventory(string path, string architecture)
+    {
+        try
+        {
+            return JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 64
+            });
+        }
+        catch (JsonException exception)
+        {
+            throw new ReleaseToolException(
+                $"The linux/{architecture} component inventory '{path}' is not valid JSON.", exception);
+        }
+    }
+
+    /// <summary>Every image identity this package annotates itself with, in the scanner's <c>ImageID: </c> form.</summary>
+    private static IEnumerable<string> ScannedImageClaims(JsonElement package)
+    {
+        if (!package.TryGetProperty("annotations", out var annotations) || annotations.ValueKind != JsonValueKind.Array)
+        {
+            yield break;
+        }
+        foreach (var annotation in annotations.EnumerateArray())
+        {
+            if (annotation.ValueKind == JsonValueKind.Object &&
+                Text(annotation, "comment") is { } value &&
+                value.StartsWith(ScannedImageAnnotation, StringComparison.Ordinal))
+            {
+                yield return value[ScannedImageAnnotation.Length..];
+            }
+        }
+    }
+
+    /// <summary>
+    /// Requires every file the inventory declares to carry the SHA-1 checksum SPDX 2.3 clause 8.4 makes mandatory.
+    /// The release signs this document, so it must not sign one that violates the format it declares. The scanner's
+    /// container-image output carries no files, which makes this a guard against a substituted inventory rather
+    /// than a check on the scanner.
+    /// </summary>
+    private static void ValidateInventoryFiles(JsonElement root, string architecture)
+    {
+        if (!root.TryGetProperty("files", out var files) || files.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+        foreach (var file in files.EnumerateArray())
+        {
+            if (file.ValueKind != JsonValueKind.Object ||
+                !file.TryGetProperty("checksums", out var checksums) || checksums.ValueKind != JsonValueKind.Array ||
+                !checksums.EnumerateArray().Any(static checksum =>
+                    checksum.ValueKind == JsonValueKind.Object &&
+                    checksum.TryGetProperty("algorithm", out var algorithm) &&
+                    algorithm.ValueKind == JsonValueKind.String && algorithm.GetString() == "SHA1" &&
+                    Text(checksum, "checksumValue") is { Length: 40 } sha1 &&
+                    sha1.All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f')))
+            {
+                throw new ReleaseToolException(
+                    $"The linux/{architecture} component inventory declares a file without the SHA-1 checksum " +
+                    "SPDX 2.3 requires.");
+            }
+        }
+    }
 
     /// <summary>Prints the platform identity a single-platform image archive carries, for release scripting.</summary>
     private static async Task DescribeImageArchiveAsync(IReadOnlyDictionary<string, string> options)
@@ -1329,7 +1401,9 @@ internal static partial class Program
             SPDXID = "SPDXRef-DOCUMENT",
             documentNamespace = $"https://github.com/{Repository}/spdx/{Uri.EscapeDataString(name)}/{Uri.EscapeDataString(version)}",
             name,
-            creationInfo = new { created = createdUtc, creators = SpdxCreators },
+            // SPDX 2.3 clause 6.9 fixes the creation timestamp at YYYY-MM-DDThh:mm:ssZ. Serializing the
+            // DateTimeOffset directly emits a "+00:00" offset, which the format's own schema rejects.
+            creationInfo = new { created = SpdxTimestamp(createdUtc), creators = SpdxCreators },
             packages = new[]
             {
                 new
@@ -1359,6 +1433,9 @@ internal static partial class Program
             }
         }, cancellationToken).ConfigureAwait(false);
     }
+
+    private static string SpdxTimestamp(DateTimeOffset value)
+        => value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss'Z'", CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Computes the SPDX package verification code defined by SPDX 2.3 clause 7.9: the SHA-1 of the concatenated,

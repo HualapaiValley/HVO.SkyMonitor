@@ -176,8 +176,16 @@ another's.
 
 A published image release must carry an inventory for every architecture it
 ships. Only a version ending in `-dryrun`, which the tool never lets reach
-publication, may omit them; such a candidate publishes the release-manifest
-version 1 shape instead.
+publication, may omit them. Omission is what the unscanned dry run
+(`--scanner none --unscanned-dry-run`) produces, because no scan runs and there
+is nothing to render an inventory from; that candidate publishes the
+release-manifest version 1 shape. A `-dryrun` version scanned with Trivy still
+carries inventories and a version 2 manifest.
+
+The file-level `image-sbom.spdx.json` describes the two published archives, and
+now says so precisely: it declares `filesAnalyzed` with the package verification
+code computed from exactly those two files. It is not an inventory of every asset
+in the release, and it is not the component inventory.
 
 ### Release-manifest versions
 
@@ -194,6 +202,17 @@ manifest must be an image release whose every platform names an inventory whose
 own declared operating system and architecture match that platform. Only an image
 release may declare version 2. The exactly-one-`Sbom` rule is unchanged, so the
 installer and catalog trains are unaffected.
+
+**Publish a version-2-capable installer release before the first version-2 image
+release.** The verifier ships inside the installer, so an installation only
+understands the manifest versions its own installer implements. An installer
+built before a version existed rejects every release that declares it, and
+refuses before it downloads anything. This is the same ordering obligation the
+trust root already carries — an installer release that introduces the successor
+key must precede any metadata signed with it — and it applies to every future
+manifest version, not only to version 2. A release the installation cannot
+understand reports the supported range and says to upgrade the installer, so the
+failure names its own remedy rather than reading as a corrupt release.
 
 ### Architecture qualification
 
@@ -298,11 +317,36 @@ examined platform manifest as its subject, so the in-registry provenance is
 proven to attach to the bytes the release inspected rather than merely to be
 present somewhere in the index.
 
+Each attestation is resolved and its in-toto layers are inspected, because an
+annotated wrapper only proves that *something* is attached: a provenance-only,
+SBOM-only, or empty attestation would otherwise be signed as if it carried both.
+
+**A version published without attestations can never be adopted.** The push
+adopts an existing publication rather than overwriting it, so that a run whose
+signing or publication step failed after the build can be re-dispatched. A tag
+pushed before attestations existed carries none, so the attestation check fails
+and — because published tags are immutable — that version can never be completed.
+Use a version that has never been pushed. Do not relax the check to adopt an
+unattested publication; refusing to sign a release that lacks the evidence it
+promises is the reason the check exists.
+
 The signed GitHub release remains the authoritative provenance channel: it is the
 only one an air-gapped installation can use, the only one bound to the production
 Key Vault trust root, and the only one the installer verifies. The registry
 attestations are an additional channel for a consumer who resolves the image by
 digest, not a replacement.
+
+### What the installed instance records
+
+An installation's retained release evidence (`image-distribution.json`) names the
+file-level SBOM, the provenance, and the vulnerability scan, but not the
+per-platform component inventory. Component-level triage therefore starts from
+the signed release assets rather than from the instance's own evidence file.
+Extending that record is a change to durable installation state and to the
+installer's acquisition path, which
+[#597](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/597) excluded; it is
+tracked by
+[#645](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/645).
 
 Without `--push` there is no registry, so the signed multi-architecture digest is
 a canonical index computed from the two platform manifests. It is a stable

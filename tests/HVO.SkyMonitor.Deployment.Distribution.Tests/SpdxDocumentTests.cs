@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.Deployment.Distribution.Tests;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class SpdxDocumentTests
+public sealed partial class SpdxDocumentTests
 {
     [TestMethod]
     public async Task InstallerRelease_SbomDocument_IsValidSpdx23()
@@ -63,6 +63,15 @@ public sealed class SpdxDocumentTests
         Assert.AreEqual("SPDX-2.3", root.GetProperty("spdxVersion").GetString());
         Assert.AreEqual("CC0-1.0", root.GetProperty("dataLicense").GetString());
         Assert.AreEqual("SPDXRef-DOCUMENT", root.GetProperty("SPDXID").GetString());
+        // SPDX 2.3 clause 6.9 fixes this format; a serialized "+00:00" offset is rejected by the format's schema.
+        var created = root.GetProperty("creationInfo").GetProperty("created").GetString();
+        Assert.IsTrue(
+            created is not null && CreatedTimestamp().IsMatch(created),
+            $"SPDX 2.3 requires a YYYY-MM-DDThh:mm:ssZ creation timestamp; the document declares '{created}'.");
+        Assert.AreEqual(ExpectedCreatedUtc, created);
+        Assert.IsTrue(
+            root.GetProperty("creationInfo").GetProperty("creators").EnumerateArray().Any(),
+            "SPDX 2.3 requires at least one creator.");
 
         var files = root.GetProperty("files").EnumerateArray().ToArray();
         Assert.AreEqual(expectedFiles, files.Length, "The document must analyze every file the release published.");
@@ -109,6 +118,33 @@ public sealed class SpdxDocumentTests
         Assert.AreEqual("DESCRIBES", relationship.GetProperty("relationshipType").GetString());
         Assert.AreEqual(packageId, relationship.GetProperty("relatedSpdxElement").GetString());
     }
+
+    /// <summary>
+    /// A known-answer vector for SPDX 2.3 clause 7.9, taken from the specification's own worked definition rather
+    /// than from this repository's implementation: the SHA-1 of the concatenated, lexically sorted, lowercase-hex
+    /// file SHA-1 values. Without it the contract test would only be re-running the writer's own arithmetic and
+    /// could not catch a shared misreading of the clause.
+    /// </summary>
+    [TestMethod]
+    public void PackageVerificationCode_KnownAnswerVector_MatchesTheSpecificationDefinition()
+    {
+        // sha1("") and sha1("a"), deliberately given out of sorted order.
+        string[] fileSha1Values =
+        [
+            "86f7e437faa5a7fce15d1ddcb9eaeaea377667b8",
+            "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        ];
+        // sha1("86f7e437faa5a7fce15d1ddcb9eaeaea377667b8" + "da39a3ee5e6b4b0d3255bfef95601890afd80709") after
+        // sorting places the "8…" value first, so the concatenation order is the one written above.
+        Assert.AreEqual(
+            "2a6f520ef2c17a239311f8ede54e4039d5500711",
+            ExpectedVerificationCode(fileSha1Values.Reverse()));
+    }
+
+    private const string ExpectedCreatedUtc = "2026-08-24T04:29:18Z";
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")]
+    private static partial System.Text.RegularExpressions.Regex CreatedTimestamp();
 
 #pragma warning disable CA5350 // SPDX 2.3 defines the file checksum and package verification code as SHA-1.
     private static string Sha1(string path) => Convert.ToHexStringLower(SHA1.HashData(File.ReadAllBytes(path)));

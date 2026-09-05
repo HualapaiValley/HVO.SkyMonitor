@@ -161,9 +161,19 @@ public static partial class DistributionVerifier
 
     private static void Validate(DistributionReleaseManifest manifest, DistributionTrustRoot root)
     {
+        // A release newer than this build is the one failure an operator can actually act on, so it says what to
+        // do rather than joining the generic identity check. The verifier ships inside the installer, so a release
+        // that declares a version this installation does not implement means the installer itself is out of date.
         if (manifest.SchemaVersion < DistributionSchemaVersions.ReleaseManifest ||
-            manifest.SchemaVersion > DistributionSchemaVersions.MaximumReleaseManifest ||
-            manifest.Signing.Algorithm != DistributionTrustRoot.Algorithm || manifest.Signing.KeyId != root.KeyId ||
+            manifest.SchemaVersion > DistributionSchemaVersions.MaximumReleaseManifest)
+        {
+            throw new DistributionValidationException(
+                $"This installation implements distribution release manifest versions " +
+                $"{DistributionSchemaVersions.ReleaseManifest} through " +
+                $"{DistributionSchemaVersions.MaximumReleaseManifest}, but the release declares version " +
+                $"{manifest.SchemaVersion}. Upgrade the installer before installing this release.");
+        }
+        if (manifest.Signing.Algorithm != DistributionTrustRoot.Algorithm || manifest.Signing.KeyId != root.KeyId ||
             !TrainRegex().IsMatch(manifest.Release.Train) || !VersionRegex().IsMatch(manifest.Release.Version) ||
             !TagRegex().IsMatch(manifest.Release.Tag) || !RepositoryRegex().IsMatch(manifest.Release.Repository) ||
             !GitOidRegex().IsMatch(manifest.Release.SourceRevision) || !GitOidRegex().IsMatch(manifest.Release.SourceTree) ||

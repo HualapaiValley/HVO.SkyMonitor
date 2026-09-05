@@ -81,7 +81,13 @@ internal sealed class ImageReleaseFixture : IDisposable
     /// Writes a component inventory shaped like the SPDX document Trivy renders from an image scan: a container
     /// package whose annotations record the image ID that was scanned, followed by one package per component.
     /// </summary>
-    public string WriteComponentInventory(string name, string imageId, int components, string spdxVersion = "SPDX-2.3")
+    public string WriteComponentInventory(
+        string name,
+        string imageId,
+        int components,
+        string spdxVersion = "SPDX-2.3",
+        string? additionalImageId = null,
+        bool includeFileWithoutSha1 = false)
     {
         var packages = new List<object>
         {
@@ -104,6 +110,30 @@ internal sealed class ImageReleaseFixture : IDisposable
                 }
             }
         };
+        if (additionalImageId is not null)
+        {
+            // A second image claim on an ordinary package: the shape that would let one architecture's inventory
+            // be presented as the other's if only the expected claim were counted.
+            packages.Add(new
+            {
+                name = "smuggled",
+                SPDXID = "SPDXRef-Package-smuggled",
+                versionInfo = "1.0.0",
+                downloadLocation = "NONE",
+                filesAnalyzed = false,
+                primaryPackagePurpose = "LIBRARY",
+                annotations = new[]
+                {
+                    new
+                    {
+                        annotator = "Tool: trivy-0.74.0",
+                        annotationDate = "2026-08-24T04:29:18Z",
+                        annotationType = "OTHER",
+                        comment = $"ImageID: {additionalImageId}"
+                    }
+                }
+            });
+        }
         for (var index = 0; index < components; index++)
         {
             packages.Add(new
@@ -142,7 +172,18 @@ internal sealed class ImageReleaseFixture : IDisposable
                     creators = InventoryCreators,
                     created = "2026-08-24T04:29:18Z"
                 },
-                packages
+                packages,
+                files = includeFileWithoutSha1
+                    ? new[]
+                    {
+                        new
+                        {
+                            fileName = "./app/HVO.SkyMonitor.CameraAgent.dll",
+                            SPDXID = "SPDXRef-File-1",
+                            checksums = new[] { new { algorithm = "SHA256", checksumValue = new string('a', 64) } }
+                        }
+                    }
+                    : null
             }),
             new UTF8Encoding(false));
         return path;
