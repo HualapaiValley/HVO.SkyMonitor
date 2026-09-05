@@ -150,7 +150,7 @@ and it also bounds how far back the skip-over search reaches. A trailing window
 is still allowed to be shorter than its maximum - a freshly started agent has no
 history - and the combination records only the sources it actually used, with
 `stackCount` reporting that count. A live node that resolves fewer inputs than
-its configured window logs event 2080 with the resolved and configured counts, so
+its configured window logs event 2085 with the resolved and configured counts, so
 a persistently short stack is visible to an operator.
 
 ## Sequencing, idempotency, conflict, and acknowledgement
