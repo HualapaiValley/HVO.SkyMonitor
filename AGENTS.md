@@ -1,10 +1,14 @@
 # HVO.SkyMonitor Agent Guide
 
+This is the canonical repository-wide instruction source for every coding-agent
+harness. Agent-specific instruction files must load or point to this file and
+must not redefine its policy inconsistently.
+
 ## Toolchain and Validation
 
 - Use the SDK pinned in `global.json` (`10.0.400`, stable releases only) and the solution `HVO.SkyMonitor.v9.slnx`.
 - Package versions are centralized in `Directory.Packages.props`; do not put `Version` attributes on individual `PackageReference` items.
-- Run the core validation with:
+- The complete Tier C/M local candidate gate is:
   ```bash
   dotnet tool restore
   dotnet restore
@@ -67,6 +71,9 @@
   handoffs. Epic #89 and the `Virtual-First Platform Completion` milestone retain
   the completed virtual-first delivery history.
 - Before implementing a roadmap issue, follow `docs/planning/agent-execution.md` and the relevant section of `docs/planning/agent-prompts.md`.
+- Before opening, reviewing, updating, finalizing, or merging any PR, read and
+  follow `.agents/skills/pr-lifecycle/SKILL.md`. This instruction is mandatory
+  even when the current harness does not discover repository skills natively.
 - Use `docs/planning/requirements-crosswalk.md` for the owning detailed specification and `docs/planning/performance-validation.md` for canonical workloads and evidence.
 - Keep one implementation issue per branch/PR unless dependencies explicitly coordinate stacked PRs.
 - Before implementation, post the protocol's plain-language synopsis explaining
@@ -78,14 +85,20 @@
   capacity permits; raise that limit only after explicitly verifying capacity.
   The roadmap coordinator records claims in the owning roadmap epic and never
   lets agents edit the same worktree.
-- Every PR uses a draft-first convergence cycle: initial review covers the full
-  PR diff; correction rereviews cover only the delta from the previous reviewed
-  head and verify prior findings. Use `@codex review` or independent local review
-  when normal GitHub review is unavailable. After review converges, mark the PR
-  ready to run protected CI, and merge only when the reviewed current head has
-  green required checks. Return every planned post-ready head change, including a
-  failed-CI correction or base synchronization, to draft for narrow delta review
-  before final CI; do not repeat unchanged successful gates.
+- Every PR uses a draft-first convergence cycle. Protected CI must not run until
+  review has converged and the target branch has been finally synchronized and
+  integration-reviewed. Initial review covers the full PR diff; correction
+  rereviews cover only the delta from the previous reviewed head and verify prior
+  findings. If the primary reviewer does not start within fifteen minutes, use
+  the other available provider; if neither Copilot nor Codex starts within its
+  fifteen-minute window, record an exact-head review-unavailability waiver.
+  Allow at most three correction rereviews per PR before moving remaining
+  non-blocking findings to one linked follow-up issue. Security, data-loss,
+  acceptance, failing-CI, and material-correctness defects always block.
+- Only one PR may hold the repository-wide finalization lock. Acquire it before
+  the final target-branch merge and hold it through base-sync review, protected
+  CI, and merge. If the target branch advances, return the PR to draft, release
+  the lock, synchronize and review again, then run CI on the new reviewed head.
 - Opening a PR assigns its implementing agent ownership of the complete lifecycle:
   request review, actively monitor review and checks, disposition findings, drive
   corrections and bounded rereviews, mark the converged head ready, monitor final
@@ -102,3 +115,42 @@
   to the coordinator. Pause only on explicit operator request, a decision
   blocker, no candidate-ready work, or exhausted safe capacity; do not require a
   routine `continue` prompt.
+
+### Progress Reporting
+
+Progress reporting is mandatory while delegated agents, review acquisition,
+long gates, or CI runs are active. Use the current harness's scheduled task,
+background loop, transcript tail, session status, or equivalent capability
+rather than depending on a vendor-specific agent feature.
+
+- The coordinator arms exactly one persistent status monitor on a five-minute
+  cadence. Start it whenever delegated work, review acquisition, a long gate, or
+  CI becomes active; restart it whenever the active agent or PR set changes;
+  stop it when nothing remains active.
+- On every wake, record for each issue or PR the implementing agent's last
+  activity timestamp and current step, the PR head SHA, draft state, merge
+  state, the first line and timestamp of the latest ledger comment, and the
+  state of any shared lock such as the Docker or finalization window. While
+  review is pending, include the provider, requested range, request age,
+  acknowledgement deadline, start state, fallback state, and correction-rereview
+  count. Use the best available harness signal for the current step (for example,
+  the transcript's latest tool description). Attach a one-line CI result watcher
+  to each PR that emits only when CI reaches success, failure, or cancellation.
+- Relay a short note to the main conversation on every wake, even when no state
+  changed. Include the literal status `still running, no change` when applicable.
+  Convert every reported time to MST (fixed UTC-7 with no daylight-saving
+  adjustment) and label it `MST`.
+- For every item, state what just finished, what is running now, the next step,
+  and any blocker. When an agent reports a milestone, read the report and relay
+  its substance, such as the root cause, accepted findings, or gate result,
+  rather than only its label.
+- If an implementing agent goes more than thirty minutes without an issue or
+  ledger comment, instruct it to post one before continuing and mention that
+  intervention in the coordinator's next note.
+- Implementing agents post a short progress comment at every milestone and at
+  least every thirty minutes of active work. Post on the issue until a draft PR
+  exists, then append to the PR's append-only review ledger. Each comment uses a
+  UTC timestamp and states what finished, what is running now, the next step,
+  and any blocker. Long gates and reviews get an interim note rather than
+  silence. These comments supplement, but never replace, the final completion
+  report or a resumable blocked handoff.

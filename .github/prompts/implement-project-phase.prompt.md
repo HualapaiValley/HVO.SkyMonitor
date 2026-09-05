@@ -21,7 +21,8 @@ Before editing, read:
 6. [The requirements crosswalk](../../docs/planning/requirements-crosswalk.md)
 7. [The performance validation plan](../../docs/planning/performance-validation.md)
 8. [The execution protocol](../../docs/planning/agent-execution.md)
-9. [The relevant agent prompt](../../docs/planning/agent-prompts.md)
+9. [The PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md)
+10. [The relevant agent prompt](../../docs/planning/agent-prompts.md)
 
 Confirm the issue is open, milestone-assigned, and has defined acceptance and
 performance evidence. If acting as the roadmap coordinator, select a
@@ -47,14 +48,20 @@ one tier-selected local candidate gate before the first push, affected local
 gates for corrections, and classifier-selected protected CI on the final
 reviewed head. Do not repeat unchanged long suites or performance harnesses.
 Commit only intended files, push, and open a draft PR linked to the issue and its
-owning roadmap epic. The initial independent review covers the full PR diff. If
-normal GitHub review is unavailable, use `@codex review` or independent local
-review. Batch corrections; each rereview covers only the correction delta and
-verifies prior findings. Mark the PR ready only after review convergence so it
-triggers protected CI. Return every planned post-ready head change, including a
-CI-driven correction or base synchronization, to draft for narrow delta review
-before final CI. Merge only when the reviewed current head has green required
-checks and no actionable thread remains.
+owning roadmap epic. Follow the PR lifecycle skill for the full initial review,
+Copilot/Codex start timeouts and fallback, correction-delta rereviews, the
+three-rereview cap and follow-up issue, the finalization lock, target-branch
+synchronization and base-sync review, protected CI, merge, and cleanup. Mark the
+PR ready only after review convergence and final synchronization. Merge only
+when the reviewed current head has green required checks and no actionable
+thread remains.
+
+While working, post a short progress comment at every milestone and at least
+every thirty minutes: on the issue until the draft PR exists, then in the PR's
+append-only review ledger. Each comment states, with a UTC timestamp, what
+finished, what is running now, the next step, and any blocker. Long gate or
+review runs get an interim note rather than silence. This does not replace the
+final completion report.
 
 After merge, confirm issue closure, synchronize local `main`, preserve unrelated
 worktree changes, and update the owning roadmap epic with completed evidence and the next

@@ -57,25 +57,39 @@
 - Initial merge-base SHA:
 - Initial reviewed head SHA:
 - Latest reviewed head SHA:
-- Review path (`GitHub`, `@codex review`, or independent local):
+- Final target-base SHA:
+- Primary/fallback provider:
+- Requested/actual reviewer model:
+- Correction rereview count (`0`-`3`, or documented blocking exception):
+- Finalization-lock owner and acquisition time:
 
-| Round | Reviewed range | Review path | Finding disposition and evidence |
-| --- | --- | --- | --- |
-| Initial | `<merge-base>..<head>` |  |  |
+| Mode/round | Reviewed range | Provider/model | Requested/start/completed UTC | Finding disposition and evidence |
+| --- | --- | --- | --- | --- |
+| Initial | `<merge-base>..<head>` |  |  |  |
 
 - [ ] Initial review covered the complete PR diff through the initial reviewed head.
+- [ ] Every request recorded its provider, immutable SHA/range, fifteen-minute
+      acknowledgement deadline, and fallback or waiver outcome.
 - [ ] Every finding is corrected, evidenced non-actionable, agreed deferred to a
       linked issue, or identified as an unresolved merge blocker.
 - [ ] Every correction delta since the previous reviewed head was rereviewed and
       the preceding findings were verified; unchanged code was not repeatedly
       reopened without concrete interaction evidence.
+- [ ] No more than three correction rereviews were requested unless a documented
+      non-deferrable blocker required a targeted cap exception.
+- [ ] If a fourth correction rereview would otherwise be needed, one consolidated
+      follow-up issue contains every eligible non-blocking finding and is linked
+      here:
 - [ ] Every review round was appended to the ledger without replacing earlier
       reviewed ranges.
 - [ ] Correction commits are pushed without force-push or unrequested amend.
 - [ ] The PR remained draft during review correction and was marked ready only
-      after review convergence.
+      after review convergence, final target-branch synchronization, and
+      base-sync review.
 - [ ] Every planned post-ready head change returned the PR to draft before the
       change and received bounded delta review.
+- [ ] The repository-wide finalization lock was held from final synchronization
+      through protected CI and merge; no outstanding target-branch merge remains.
 - [ ] Classifier-selected protected CI ran on the final reviewed current head.
 - [ ] Every required current-head check is green; canceled, timed-out, flaky,
       missing, or stale pre-correction checks are not accepted.
