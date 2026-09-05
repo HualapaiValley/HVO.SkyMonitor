@@ -128,6 +128,9 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2024, Level = LogLevel.Debug, Message = "Calibration step {Step} applying {Strategy} strategy with {Passes} passes and max {MaxSeconds}s window")]
     public static partial void CalibrationApplying(this ILogger logger, string Step, string Strategy, int Passes, int MaxSeconds);
 
+    [LoggerMessage(EventId = 2039, Level = LogLevel.Information, Message = "Raw ingress capture was canceled during {Phase} by the caller's token")]
+    public static partial void RawIngressCanceled(this ILogger logger, string phase);
+
     [LoggerMessage(EventId = 2040, Level = LogLevel.Information, Message = "Raw ingress initialized at schema {SchemaVersion} with {PendingCount} held captures")]
     public static partial void RawIngressInitialized(this ILogger logger, int schemaVersion, long pendingCount);
 
