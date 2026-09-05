@@ -232,7 +232,7 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
                 await WaitForGroupExitAsync(process.Id, deadline, cancellationToken).ConfigureAwait(false);
                 ForceStopGroup(process.Id);
                 stopped = true;
-                Log.Retired(logger, instanceId, process.Id, process.HasExited ? process.ExitCode : -1);
+                Log.Retired(logger, instanceId, process.Id, ExitCodeOrUnknown(process));
             }
             finally
             {
@@ -395,6 +395,19 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         }
         _instances.Clear();
         _provisionLock.Dispose();
+    }
+
+    /// <summary>An adopted process (started by a previous host process) exposes no exit code; -1 stands in.</summary>
+    private static int ExitCodeOrUnknown(Process process)
+    {
+        try
+        {
+            return process.HasExited ? process.ExitCode : -1;
+        }
+        catch (InvalidOperationException)
+        {
+            return -1;
+        }
     }
 
     private sealed record TrackedInstance(ElasticRunnerInstance Instance, Process Process);

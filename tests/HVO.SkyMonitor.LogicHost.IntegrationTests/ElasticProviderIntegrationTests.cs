@@ -227,7 +227,7 @@ public sealed class ElasticProviderIntegrationTests
 
         provider.Provisioned.Should().HaveCount(1);
         var instanceId = provider.Provisioned[0].InstanceId;
-        provider.Retired.Should().Equal(instanceId, "a process without a record is retired");
+        provider.Retired.Should().Equal([instanceId], "a process without a record is retired");
         var row = await ScriptedInstanceAsync(factory, instanceId).ConfigureAwait(false);
         row.State.Should().Be(nameof(ElasticRunnerInstanceState.Stopped), "the interrupted intent is closed, so no replica counts it until owner-stale cleanup");
         row.Reason.Should().Be("launch-aborted");
@@ -322,7 +322,7 @@ public sealed class ElasticProviderIntegrationTests
         // Once the excess instance has nothing in flight it is retired and the warm replacement follows.
         await SetAvailableSlotsAsync(factory, runnerId, 1).ConfigureAwait(false);
         await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
-        provider.Retired.Should().Equal(instanceId);
+        provider.Retired.Should().Equal([instanceId]);
         var row = await ScriptedInstanceAsync(factory, instanceId).ConfigureAwait(false);
         row.State.Should().Be(nameof(ElasticRunnerInstanceState.Stopped));
         row.Reason.Should().Be(ElasticScalingPolicy.ReasonWarmMinimum);
