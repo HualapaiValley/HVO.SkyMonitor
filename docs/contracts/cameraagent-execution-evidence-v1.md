@@ -112,6 +112,33 @@ a negative value is that many captures earlier in a trailing window. It is a
 signed integer with no contract-level bound, because the durable column has
 none.
 
+### When a derived window is resolved
+
+A raw window is resolved when the execution is created, because every raw
+capture it can name is already committed. A derived window - one whose inputs
+are another node's outputs - is resolved differently by execution class:
+
+- A **replay** execution resolves and pins its derived window when it is
+  submitted, and consumes exactly those pins. Re-running a replay never
+  reselects.
+- A **live** execution is created when its own raw capture is accepted, before
+  the earlier captures of a trailing window have finished processing. It
+  therefore resolves and pins its derived window when the consuming node runs,
+  replacing any earlier selection for that node, so the pinned inputs are
+  exactly the inputs the attempt consumed and the retention hold covers them for
+  the life of the execution.
+
+A live derived window is always trailing; centered windows are replay-only. Only
+an earlier capture whose execution has completed and published the producing
+node's output is eligible, so an earlier capture that failed, was skipped, or is
+still running is **excluded, never waited for**. The selector then takes the most
+recent eligible outputs up to the window's maximum input count, so an excluded
+capture is skipped over and an older eligible capture takes its place rather
+than leaving a hole. A trailing window is still allowed to be shorter than its
+configured maximum - a freshly started agent has no history - and the
+combination records only the sources it actually used, with `stackCount`
+reporting that count.
+
 ## Sequencing, idempotency, conflict, and acknowledgement
 
 - `originSequence` is a stable, strictly increasing sequence per

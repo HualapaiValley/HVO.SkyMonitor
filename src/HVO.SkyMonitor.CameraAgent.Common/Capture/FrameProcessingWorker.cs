@@ -285,12 +285,22 @@ internal sealed class FrameProcessingWorker
                     node.Dependencies.Count > 0 && graph.Nodes.FirstOrDefault(candidate =>
                         string.Equals(candidate.Id, node.Dependencies[0], StringComparison.OrdinalIgnoreCase)) is { OutputRole: { } sourceRole })
                 {
-                    context.SetHistoricalInputs(item.Execution is not null
-                        ? await persistence.ReadFrozenExecutionInputsAsync(
-                            item.Execution.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false)
-                        : await persistence.ReadRecentInputsAsync(
+                    context.SetHistoricalInputs(item.Execution switch
+                    {
+                        // A live execution is created when its own raw capture is accepted, before the earlier
+                        // captures in a trailing window have been processed, so its derived window is resolved
+                        // and pinned here rather than at acceptance.
+                        { ExecutionClass: ProcessingGraphExecutionClass.Live } live =>
+                            await persistence.ResolveLiveExecutionInputsAsync(
+                                live.ExecutionId, node.Id, rawCapture!.Manifest.Descriptor, cancellationToken)
+                                .ConfigureAwait(false),
+                        { } archived => await persistence.ReadFrozenExecutionInputsAsync(
+                            archived.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false),
+                        _ => await persistence.ReadRecentInputsAsync(
                             rawCapture!.Manifest.Descriptor,
-                            node.Dependencies[0], sourceRole, window.MaximumInputCount, cancellationToken).ConfigureAwait(false));
+                            node.Dependencies[0], sourceRole, window.MaximumInputCount, cancellationToken)
+                            .ConfigureAwait(false)
+                    });
                 }
                 else if (persistence is not null && rawCapture is not null &&
                     node.Step is IWindowCaptureProcessingGraphStep rawWindow &&
