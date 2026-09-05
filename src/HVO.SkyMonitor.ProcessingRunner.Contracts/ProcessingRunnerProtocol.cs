@@ -137,6 +137,9 @@ public static class ProcessingRunnerReasonCodes
     public const string RegistrationRequired = "runner.registration-required";
     public const string RegistrationNotOwned = "runner.registration-not-owned";
     public const string RegistrationRetired = "runner.registration-retired";
+
+    /// <summary>The host abandoned this runner (its launching host is gone); it must stop rather than re-register.</summary>
+    public const string RegistrationDenied = "runner.registration-denied";
     public const string RegistrationStale = "runner.registration-stale";
     public const string OutputIdentityMismatch = "runner.output-identity-mismatch";
     public const string RecipeIdentityMismatch = "runner.recipe-identity-mismatch";
