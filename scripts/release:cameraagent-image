@@ -20,14 +20,16 @@ Options:
   --revision <sha>            Source revision to build and label. Default: HEAD.
   --index-digest <digest>     Multi-architecture manifest digest from the registry publication.
                               Default: the canonical index digest computed from the platform archives.
-  --push                      Push the multi-architecture image to --repository and take the authoritative
-                              index digest from the registry. Requires registry credentials and one builder
-                              that can build both platforms. Only a real release run exercises this.
+  --push                      Push the multi-architecture image to --repository with SLSA provenance and SBOM
+                              attestations, and take the authoritative index digest from the registry. Requires
+                              registry credentials and one builder that can build both platforms. Only a real
+                              release run exercises this.
   --amd64-builder <name>      buildx builder for linux/amd64. Default: HVO_RELEASE_AMD64_BUILDER or "default".
   --arm64-builder <name>      buildx builder for linux/arm64. Default: HVO_RELEASE_ARM64_BUILDER, required.
-  --scanner <trivy|none>      Vulnerability scanner. Default: trivy.
+  --scanner <trivy|none>      Vulnerability scanner and component-inventory renderer. Default: trivy.
   --unscanned-dry-run         Permit --scanner none. Forces a version ending in "-dryrun" and never
-                              produces a publishable release.
+                              produces a publishable release; such a candidate carries no per-platform
+                              component inventory and its manifest stays at release-manifest version 1.
   --sign-key <pem>            Sign the candidate with this local private key (ephemeral/local releases only).
   --allow-dirty               Permit a modified worktree. Only valid with --unscanned-dry-run.
   --keep-work                 Keep the intermediate build directory.
@@ -229,14 +231,21 @@ if [[ "$scanner" == trivy ]]; then
     trivy_cache="$work/trivy-cache"
     mkdir -p "$trivy_cache"
     scan_one() {
-        local archive="$1" destination="$2" expected_image_id="$3"
+        local architecture="$1" expected_image_id="$2"
+        local archive="$work/linux-${architecture}.tar"
+        local destination="$work/trivy-${architecture}.json"
+        local inventory="$work/image-components-linux-${architecture}.spdx.json"
+        # Mount the archive under the name the release publishes it as. The scanner records its input path in both
+        # the vulnerability report and the SPDX inventory rendered from it, so the published assets name the
+        # published archive rather than a generic scratch path.
+        local scanned_name="cameraagent-image-v${version}-linux-${architecture}.tar"
         # Run as the invoking user so the scanner's cache stays removable by the cleanup trap.
         docker run --rm \
             --user "$(id -u):$(id -g)" \
             --env "TRIVY_CACHE_DIR=/tmp/trivy-cache" \
             --volume "$trivy_cache:/tmp/trivy-cache" \
-            --volume "$archive:/scan/image.tar:ro" \
-            "$trivy_image" image --quiet --format json --scanners vuln --input /scan/image.tar >"$destination"
+            --volume "$archive:/scan/${scanned_name}:ro" \
+            "$trivy_image" image --quiet --format json --scanners vuln --input "/scan/${scanned_name}" >"$destination"
         # The scanner must say which image it scanned, so the signed coverage claim rests on the scanner's own
         # subject identity rather than on the identity this script derived a moment earlier.
         local scanned_image_id
@@ -252,9 +261,31 @@ if [[ "$scanner" == trivy ]]; then
             printf 'The scanner did not identify %s; the image was not actually scanned.\n' "$archive" >&2
             exit 1
         }
+        # Render the component inventory from the same scan pass. `trivy image --format json` already records every
+        # installed package rather than only the vulnerable ones, so `convert` re-renders that single pass as SPDX
+        # instead of unpacking and scanning the image a second time.
+        printf 'Rendering the linux/%s component inventory from the same scan\n' "$architecture" >&2
+        docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env "TRIVY_CACHE_DIR=/tmp/trivy-cache" \
+            --volume "$trivy_cache:/tmp/trivy-cache" \
+            --volume "$work:/work" \
+            "$trivy_image" convert --quiet --format spdx-json "/work/trivy-${architecture}.json" >"$inventory"
+        # The release tool re-checks this before signing, but failing here stops the run before the registry push
+        # rather than after it, and a published identity cannot be retracted.
+        jq --exit-status --arg imageId "$expected_image_id" '
+            .spdxVersion == "SPDX-2.3"
+            and ([.packages[]? | select(any(.annotations[]?; .comment == "ImageID: " + $imageId))] | length) == 1
+            and ([.packages[]? | select(has("versionInfo"))] | length) >= 32' "$inventory" >/dev/null || {
+            printf 'The linux/%s component inventory does not describe %s with a usable component list.\n' \
+                "$architecture" "$expected_image_id" >&2
+            exit 1
+        }
+        printf 'linux/%s inventory: %s components\n' \
+            "$architecture" "$(jq '[.packages[]? | select(has("versionInfo"))] | length' "$inventory")" >&2
     }
-    scan_one "$work/linux-amd64.tar" "$work/trivy-amd64.json" "$amd64_image_id"
-    scan_one "$work/linux-arm64.tar" "$work/trivy-arm64.json" "$arm64_image_id"
+    scan_one amd64 "$amd64_image_id"
+    scan_one arm64 "$arm64_image_id"
     trivy_version="$(docker run --rm --user "$(id -u):$(id -g)" "$trivy_image" --version | head -n 1 | awk '{print $2}')"
     jq --null-input \
         --arg scannerVersion "$trivy_version" \
@@ -326,11 +357,15 @@ if [[ "$push" == 1 ]]; then
         else
             push_selector+=(--builder "$amd64_builder")
         fi
+        # SLSA provenance and an SBOM are attached in the registry as separate attestation manifests. They do not
+        # change the platform image manifests, so the index agreement check below still compares the same digests
+        # the archives were examined under; they are additionally required to name those digests as their subject.
         "${push_prefix[@]}" buildx build "${push_selector[@]}" \
             --platform linux/amd64,linux/arm64 \
             --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
             --build-arg "HVO_SOURCE_REVISION=${revision}" \
-            --provenance false \
+            --provenance mode=max \
+            --sbom true \
             --output "type=image,name=${repository}:${version},push=true,oci-mediatypes=true" \
             --metadata-file "$work/push-metadata.json" \
             .
@@ -351,7 +386,23 @@ if [[ "$push" == 1 ]]; then
             "$amd64_manifest" "$arm64_manifest" >&2
         exit 1
     fi
-    printf 'Published multi-architecture digest %s\n' "$index_digest" >&2
+    # An attestation is a separate manifest carrying platform unknown/unknown and an annotation naming the image
+    # manifest it attests, so it never appears in the platform selection above. Requiring exactly one per published
+    # platform manifest is what makes the in-registry provenance and SBOM apply to the bytes this release examined
+    # rather than to some other manifest that happens to share the index.
+    for attested_manifest in "$amd64_manifest" "$arm64_manifest"; do
+        attestation_count="$(jq -r --arg subject "$attested_manifest" '
+            [ .manifests[]
+              | select((.annotations["vnd.docker.reference.type"] // "") == "attestation-manifest")
+              | select((.annotations["vnd.docker.reference.digest"] // "") == $subject)
+              | .digest ] | unique | length' "$work/published-index.json")"
+        if [[ "$attestation_count" != 1 ]]; then
+            printf 'The publication of %s:%s carries %s attestation manifests for %s; exactly one is required.\n' \
+                "$repository" "$version" "$attestation_count" "$attested_manifest" >&2
+            exit 1
+        fi
+    done
+    printf 'Published multi-architecture digest %s with one attestation manifest per platform\n' "$index_digest" >&2
 fi
 
 if [[ -z "$index_digest" ]]; then
@@ -383,6 +434,12 @@ create_arguments=(
     --notices THIRD-PARTY-NOTICES.md
     --output "$output"
 )
+if [[ "$scanner" == trivy ]]; then
+    create_arguments+=(
+        --component-sbom-amd64 "$work/image-components-linux-amd64.spdx.json"
+        --component-sbom-arm64 "$work/image-components-linux-arm64.spdx.json"
+    )
+fi
 if [[ -n "$signing_key_id" ]]; then
     create_arguments+=(--signing-key-id "$signing_key_id")
 fi

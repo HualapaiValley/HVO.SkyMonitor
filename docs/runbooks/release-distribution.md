@@ -129,6 +129,8 @@ image-manifest.json.sig                          detached P-256 signature
 cameraagent-image-v<version>-linux-amd64.tar     loadable OCI archive
 cameraagent-image-v<version>-linux-arm64.tar     loadable OCI archive
 image-sbom.spdx.json                             SPDX 2.3 file manifest of the published archives
+image-components-linux-amd64.spdx.json           SPDX 2.3 component inventory of the amd64 image
+image-components-linux-arm64.spdx.json           SPDX 2.3 component inventory of the arm64 image
 image-provenance.json                            source, Dockerfile, platform, and label provenance
 image-vulnerability-scan.json                    scanner identity, coverage, and severity summary
 THIRD-PARTY-NOTICES.md                           notices
@@ -152,11 +154,46 @@ labels out of the image configuration. It never records a caller-supplied
 assertion about the image, and `hvo-release verify` re-derives the same facts
 from the published archives.
 
-The SBOM is a file-level manifest: it names the published archives and their
-SHA-256 values, not the operating-system packages and .NET assemblies inside the
-image. Use the vulnerability scan report for component-level triage until
-[#597](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/597) replaces it
-with a component inventory and registry attestation.
+### Component inventory
+
+`image-sbom.spdx.json` remains a file-level manifest: it names the published
+archives and their SHA-256 values. The component-level answer to "does this image
+contain package X at version Y" comes from the per-platform inventories, one for
+each published architecture.
+
+Each inventory is an SPDX 2.3 document listing the operating-system packages and
+.NET libraries in that architecture's image. It is rendered from the **same**
+scan pass that produced `image-vulnerability-scan.json`: the scanner's JSON
+report already records every installed package rather than only the vulnerable
+ones, so `trivy convert --format spdx-json` re-renders that one pass instead of
+unpacking and scanning the image again. The scanner also records the image it
+scanned in the inventory's container package annotations, so the release tool
+binds each inventory to the image ID it derived from that platform's archive
+bytes, refuses an inventory that names another image or carries no usable
+component list, and re-derives the same binding during `hvo-release verify`.
+An inventory built for one architecture therefore cannot be signed or verified as
+another's.
+
+A published image release must carry an inventory for every architecture it
+ships. Only a version ending in `-dryrun`, which the tool never lets reach
+publication, may omit them; such a candidate publishes the release-manifest
+version 1 shape instead.
+
+### Release-manifest versions
+
+The signed release manifest carries a schema version:
+
+| Version | Shape |
+| --- | --- |
+| `1` | The shape published before component inventories existed. Exactly one `Sbom` artifact and no per-platform inventory. |
+| `2` | An image release that additionally publishes one `ComponentSbom` artifact per platform, named by the platform it describes. |
+
+The addition is additive, and `DistributionVerifier` accepts both. A version 1
+manifest stays verifiable unchanged and must declare no inventory; a version 2
+manifest must be an image release whose every platform names an inventory whose
+own declared operating system and architecture match that platform. Only an image
+release may declare version 2. The exactly-one-`Sbom` rule is unchanged, so the
+installer and catalog trains are unaffected.
 
 ### Architecture qualification
 
@@ -195,10 +232,10 @@ HVO_RELEASE_ARM64_BUILDER=<arm64-capable buildx builder> \
 The script builds each platform with `docker buildx --output type=docker`,
 derives the platform identities from the archive bytes, loads and smoke-tests the
 architecture the build host can execute, scans both archives with a Trivy
-container pinned by tag and digest, and assembles the candidate. `--sign-key
-<pem>` signs and re-verifies the candidate with a local key for rehearsal; a
-publishable release is signed only by the production key through the workflow
-below.
+container pinned by tag and digest, renders each platform's component inventory
+from that same scan, and assembles the candidate. `--sign-key <pem>` signs and
+re-verifies the candidate with a local key for rehearsal; a publishable release is
+signed only by the production key through the workflow below.
 
 The build host needs a buildx builder for each published architecture that
 supports the docker exporter. A remote host registered with the plain `docker`
@@ -234,6 +271,39 @@ publishing a version you intend to keep. Signing, index creation, immutable
 publication, and anonymous public re-verification then follow the same path the
 installer and catalog trains use.
 
+### Registry attestations
+
+The push carries `--provenance mode=max --sbom true`, so the published image also
+answers for itself in the registry: alongside each platform image manifest the
+index carries an attestation manifest whose layers are two in-toto statements, an
+SPDX SBOM (`https://spdx.dev/Document`) and SLSA provenance
+(`https://slsa.dev/provenance/v1`). A consumer who resolves the image by digest
+can read them with `docker buildx imagetools inspect` or any in-toto client,
+without the signed GitHub release.
+
+Attestations do not change the platform image manifests. That was verified
+locally rather than assumed: building the same Dockerfile with
+`--output type=docker --provenance false` (what the release script exports and
+examines), with `--output type=oci,oci-mediatypes=true --provenance false`, and
+with `--output type=oci,oci-mediatypes=true --provenance mode=max --sbom=true`
+produces the same platform image manifest digest in all three cases. The
+attestation is a separate manifest carrying `platform: unknown/unknown` and the
+annotations `vnd.docker.reference.type=attestation-manifest` and
+`vnd.docker.reference.digest=<the platform manifest it attests>`.
+
+The published-index agreement check therefore still holds: it selects on
+`platform.os == "linux"`, which excludes attestation manifests. The check is
+additionally tightened to require exactly one attestation manifest naming each
+examined platform manifest as its subject, so the in-registry provenance is
+proven to attach to the bytes the release inspected rather than merely to be
+present somewhere in the index.
+
+The signed GitHub release remains the authoritative provenance channel: it is the
+only one an air-gapped installation can use, the only one bound to the production
+Key Vault trust root, and the only one the installer verifies. The registry
+attestations are an additional channel for a consumer who resolves the image by
+digest, not a replacement.
+
 Without `--push` there is no registry, so the signed multi-architecture digest is
 a canonical index computed from the two platform manifests. It is a stable
 identity for those manifests, but `docker pull <repository>@<digest>` will not
@@ -241,11 +311,14 @@ resolve it. An offline installation never uses it: it installs from the signed
 platform archive.
 
 Only a real publishing run can prove the credentialed steps: the registry push,
-the digest it returns and the index agreement check that follows it, Key Vault
-signing under the production identity, the GitHub Release creation and its
-collision refusal, and anonymous verification through public release URLs. It is
-also the only run that builds `linux/arm64` under QEMU on a hosted runner rather
-than on native hardware. Everything before those steps — the multi-platform
-build, the identity derivation, the smoke check, the scan gate, candidate
-assembly, signing, and end-to-end verification — is exercised locally by the
-script and by the release-tool contract tests.
+the digest it returns and the index agreement check that follows it, the
+registry's acceptance and re-serving of the attestation manifests and the
+attestation-subject check that follows them, Key Vault signing under the
+production identity, the GitHub Release creation and its collision refusal, and
+anonymous verification through public release URLs. It is also the only run that
+builds `linux/arm64` under QEMU on a hosted runner rather than on native
+hardware. Everything before those steps — the multi-platform build, the identity
+derivation, the smoke check, the scan gate, the component inventory and its
+binding to each platform's image ID, candidate assembly, signing, and end-to-end
+verification — is exercised locally by the script and by the release-tool
+contract tests.

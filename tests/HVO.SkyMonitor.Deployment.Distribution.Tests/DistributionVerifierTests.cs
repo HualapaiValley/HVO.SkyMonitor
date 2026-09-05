@@ -226,6 +226,119 @@ public sealed class DistributionVerifierTests
         Assert.AreEqual(1, result.Sequence);
     }
 
+    [TestMethod]
+    public void VerifyManifest_ImageReleaseWithPerPlatformComponentInventories_IsAccepted()
+    {
+        using var fixture = SigningFixture.Create();
+        var bytes = fixture.ImageManifestBytes(
+            DistributionSchemaVersions.ReleaseManifestWithComponentSboms, withInventories: true);
+
+        var manifest = DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot);
+
+        Assert.AreEqual(DistributionSchemaVersions.ReleaseManifestWithComponentSboms, manifest.SchemaVersion);
+        Assert.AreEqual(
+            2,
+            manifest.Artifacts.Count(static artifact => artifact.Role == DistributionArtifactRole.ComponentSbom));
+        foreach (var platform in manifest.Images.Single().Platforms)
+        {
+            Assert.AreEqual($"image-components-linux-{platform.Architecture}.spdx.json", platform.ComponentSbomAsset);
+        }
+    }
+
+    /// <summary>
+    /// The shape published before component inventories existed stays verifiable unchanged, so a release signed
+    /// under version 1 is not invalidated by the addition.
+    /// </summary>
+    [TestMethod]
+    public void VerifyManifest_ImageReleaseWithoutComponentInventories_RemainsAccepted()
+    {
+        using var fixture = SigningFixture.Create();
+        var bytes = fixture.ImageManifestBytes(DistributionSchemaVersions.ReleaseManifest);
+
+        var manifest = DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot);
+
+        Assert.AreEqual(DistributionSchemaVersions.ReleaseManifest, manifest.SchemaVersion);
+        Assert.IsFalse(manifest.Artifacts.Any(static artifact => artifact.Role == DistributionArtifactRole.ComponentSbom));
+        Assert.IsTrue(manifest.Images.Single().Platforms.All(static platform => platform.ComponentSbomAsset is null));
+    }
+
+    [TestMethod]
+    public void VerifyManifest_Version1ThatDeclaresAComponentInventory_IsRejected()
+    {
+        using var fixture = SigningFixture.Create();
+        var bytes = fixture.ImageManifestBytes(DistributionSchemaVersions.ReleaseManifest, withInventories: true);
+
+        Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+    }
+
+    [TestMethod]
+    public void VerifyManifest_ComponentInventoryVersionWithoutInventories_IsRejected()
+    {
+        using var fixture = SigningFixture.Create();
+        var bytes = fixture.ImageManifestBytes(DistributionSchemaVersions.ReleaseManifestWithComponentSboms);
+
+        Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+    }
+
+    /// <summary>
+    /// An inventory built for one architecture must not be presentable as another's, or a CVE triage would read
+    /// the wrong image's component list.
+    /// </summary>
+    [TestMethod]
+    public void VerifyManifest_PlatformNamingTheOtherArchitecturesInventory_IsRejected()
+    {
+        using var fixture = SigningFixture.Create();
+        var manifest = fixture.ImageManifest(
+            DistributionSchemaVersions.ReleaseManifestWithComponentSboms, withInventories: true);
+        var image = manifest.Images[0];
+        var swapped = manifest with
+        {
+            Images =
+            [
+                image with
+                {
+                    Platforms =
+                    [
+                        image.Platforms[0] with { ComponentSbomAsset = image.Platforms[1].ComponentSbomAsset },
+                        image.Platforms[1] with { ComponentSbomAsset = image.Platforms[0].ComponentSbomAsset }
+                    ]
+                }
+            ]
+        };
+        var bytes = SigningFixture.Serialize(swapped);
+
+        Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+    }
+
+    [TestMethod]
+    public void VerifyManifest_InstallerReleaseAtTheComponentInventoryVersion_IsRejected()
+    {
+        using var fixture = SigningFixture.Create();
+        var bytes = SigningFixture.Serialize(fixture.Manifest() with
+        {
+            SchemaVersion = DistributionSchemaVersions.ReleaseManifestWithComponentSboms
+        });
+
+        Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+    }
+
+    [TestMethod]
+    public void VerifyManifest_UnsupportedFutureSchemaVersion_IsRejected()
+    {
+        using var fixture = SigningFixture.Create();
+        var bytes = SigningFixture.Serialize(fixture.Manifest() with
+        {
+            SchemaVersion = DistributionSchemaVersions.MaximumReleaseManifest + 1
+        });
+
+        Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+    }
+
     private sealed class SigningFixture(ECDsa key, DistributionTrustRoot trustRoot) : IDisposable
     {
         public DistributionTrustRoot TrustRoot { get; } = trustRoot;
@@ -303,6 +416,85 @@ public sealed class DistributionVerifierTests
                 "topology",
                 new string('f', 64)),
             []);
+
+        /// <summary>
+        /// Builds an image release manifest in either published shape. Version 1 is the shape released before
+        /// per-platform component inventories existed; version 2 adds one inventory per platform, named by the
+        /// platform it describes.
+        /// </summary>
+        public DistributionReleaseManifest ImageManifest(int schemaVersion, bool withInventories = false) => new(
+            schemaVersion,
+            DistributionManifestKind.ImageRelease,
+            new DistributionReleaseIdentity(
+                "image",
+                "1.0.0",
+                "image-v1.0.0",
+                "RoySalisbury/HVO.SkyMonitor",
+                new string('a', 40),
+                new string('b', 40),
+                DateTimeOffset.Parse("2026-08-24T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture)),
+            new DistributionSigningIdentity(DistributionTrustRoot.Algorithm, TrustRoot.KeyId),
+            [
+                ImageArtifact(DistributionArtifactRole.ImageArchive, "cameraagent-image-v1.0.0-linux-amd64.tar", "amd64"),
+                ImageArtifact(DistributionArtifactRole.ImageArchive, "cameraagent-image-v1.0.0-linux-arm64.tar", "arm64"),
+                .. withInventories
+                    ? (DistributionArtifact[])
+                    [
+                        ImageArtifact(DistributionArtifactRole.ComponentSbom, "image-components-linux-amd64.spdx.json", "amd64"),
+                        ImageArtifact(DistributionArtifactRole.ComponentSbom, "image-components-linux-arm64.spdx.json", "arm64")
+                    ]
+                    : [],
+                Artifact(DistributionArtifactRole.Checksums, "SHA256SUMS"),
+                Artifact(DistributionArtifactRole.Sbom, "image-sbom.spdx.json"),
+                Artifact(DistributionArtifactRole.Provenance, "image-provenance.json"),
+                Artifact(DistributionArtifactRole.VulnerabilityScan, "image-vulnerability-scan.json"),
+                Artifact(DistributionArtifactRole.License, "THIRD-PARTY-NOTICES.md")
+            ],
+            null,
+            [
+                new DistributionImageIdentity(
+                    "CameraAgent",
+                    "ghcr.io/roysalisbury/hvo.skymonitor/cameraagent",
+                    "sha256:" + new string('1', 64),
+                    new string('a', 40),
+                    new string('b', 40),
+                    [
+                        ImagePlatform("amd64", '2', withInventories),
+                        ImagePlatform("arm64", '3', withInventories)
+                    ],
+                    "image-provenance.json",
+                    "image-sbom.spdx.json",
+                    "image-vulnerability-scan.json",
+                    new DistributionImageCompatibility(
+                        "cameraagent-state-v2",
+                        new string('a', 40),
+                        "20260827053715_InitialIdentity",
+                        12,
+                        2,
+                        "cameraagent-install-v1",
+                        "hyg-v42-production-p3-s2",
+                        "local-replay-runner-v1"))
+            ]);
+
+        public byte[] ImageManifestBytes(int schemaVersion, bool withInventories = false)
+            => JsonSerializer.SerializeToUtf8Bytes(
+                ImageManifest(schemaVersion, withInventories),
+                DistributionJsonContext.Default.DistributionReleaseManifest);
+
+        public static byte[] Serialize(DistributionReleaseManifest manifest)
+            => JsonSerializer.SerializeToUtf8Bytes(manifest, DistributionJsonContext.Default.DistributionReleaseManifest);
+
+        private static DistributionImagePlatform ImagePlatform(string architecture, char digestFill, bool withInventory)
+            => new(
+                "linux",
+                architecture,
+                "sha256:" + new string(digestFill, 64),
+                $"cameraagent-image-v1.0.0-linux-{architecture}.tar",
+                "sha256:" + new string(digestFill == '2' ? '4' : '5', 64),
+                withInventory ? $"image-components-linux-{architecture}.spdx.json" : null);
+
+        private static DistributionArtifact ImageArtifact(DistributionArtifactRole role, string name, string architecture)
+            => new(role, name, "application/octet-stream", 1, new string('c', 64), "linux", architecture);
 
         public byte[] Sign(ReadOnlySpan<byte> bytes)
             => Encoding.ASCII.GetBytes(Convert.ToBase64String(key.SignData(

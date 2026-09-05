@@ -256,6 +256,14 @@ internal static partial class Program
 
     private const string ComponentLabel = "io.hvo.skymonitor.component";
     private const string RevisionLabel = "org.opencontainers.image.revision";
+    private const string SpdxPackageIdentifier = "SPDXRef-Package";
+
+    /// <summary>
+    /// The smallest component count that can plausibly describe a published CameraAgent image. The image is an
+    /// ASP.NET runtime on a Debian base, so a real inventory records hundreds of operating-system packages and
+    /// .NET libraries; anything near zero means the inventory does not describe the image being published.
+    /// </summary>
+    private const int MinimumInventoryComponents = 32;
 
     /// <summary>
     /// Builds the signed CameraAgent image release from per-platform OCI archives. Every platform digest, immutable
@@ -269,7 +277,8 @@ internal static partial class Program
         RejectUnknown(
             options,
             "--version", "--revision", "--tree", "--created-utc", "--repository", "--index-digest",
-            "--linux-amd64", "--linux-arm64", "--dockerfile", "--scan-report", "--notices", "--output", "--signing-key-id");
+            "--linux-amd64", "--linux-arm64", "--component-sbom-amd64", "--component-sbom-arm64",
+            "--dockerfile", "--scan-report", "--notices", "--output", "--signing-key-id");
         var version = RequireSafeIdentifier(options, "--version");
         var revision = RequireGitOid(options, "--revision");
         var tree = RequireGitOid(options, "--tree");
@@ -294,6 +303,7 @@ internal static partial class Program
         }
         var compatibility = ReadImageCompatibility(inspected, revision);
         ValidateScanReport(scanReport, version, inspected.Select(static value => value.Identity.ImageId).ToArray());
+        var inventories = ReadComponentInventories(options, version, inspected);
 
         var output = PrepareOutput(options);
         foreach (var platform in inspected)
@@ -301,6 +311,12 @@ internal static partial class Program
             var destination = Path.Combine(output, platform.AssetName);
             RefuseExisting(destination);
             File.Copy(platform.Source, destination);
+        }
+        foreach (var (architecture, source) in inventories)
+        {
+            var destination = Path.Combine(output, ComponentInventoryAsset(architecture));
+            RefuseExisting(destination);
+            File.Copy(source, destination);
         }
         File.Copy(notices, Path.Combine(output, "THIRD-PARTY-NOTICES.md"));
         const string scanName = "image-vulnerability-scan.json";
@@ -344,6 +360,12 @@ internal static partial class Program
 
         var payloads = inspected
             .Select(platform => (DistributionArtifactRole.ImageArchive, platform.AssetName, "application/x-tar", (string?)"linux", (string?)platform.Architecture))
+            .Concat(inventories.Select(inventory => (
+                DistributionArtifactRole.ComponentSbom,
+                ComponentInventoryAsset(inventory.Key),
+                "application/spdx+json",
+                (string?)"linux",
+                (string?)inventory.Key)))
             .Concat(
             [
                 (DistributionArtifactRole.Sbom, sbomName, "application/spdx+json", (string?)null, (string?)null),
@@ -373,13 +395,16 @@ internal static partial class Program
                 platform.Architecture,
                 platform.Identity.ManifestDigest,
                 platform.AssetName,
-                platform.Identity.ImageId)).ToArray(),
+                platform.Identity.ImageId,
+                inventories.Count == 0 ? null : ComponentInventoryAsset(platform.Architecture))).ToArray(),
             provenanceName,
             sbomName,
             scanName,
             compatibility);
         var manifest = new DistributionReleaseManifest(
-            DistributionSchemaVersions.ReleaseManifest,
+            inventories.Count == 0
+                ? DistributionSchemaVersions.ReleaseManifest
+                : DistributionSchemaVersions.ReleaseManifestWithComponentSboms,
             DistributionManifestKind.ImageRelease,
             new DistributionReleaseIdentity(
                 "image", version, $"image-v{version}", Repository, revision, tree, createdUtc),
@@ -389,6 +414,118 @@ internal static partial class Program
             [image]);
         await WriteManifestAsync(output, "image-manifest.json", manifest, cancellationToken).ConfigureAwait(false);
     }
+
+    private static string ComponentInventoryAsset(string architecture)
+        => $"image-components-linux-{architecture}.spdx.json";
+
+    /// <summary>
+    /// Resolves the per-platform component inventories this release publishes. They are supplied for every
+    /// published platform or for none: an inventory for one architecture presented without the other would leave
+    /// half a release describing its own contents. A candidate that omits them is accepted only for a version
+    /// ending in <c>-dryrun</c>, which the tool never lets reach publication, exactly as the vulnerability scan is
+    /// gated, so a publishable image release always carries an inventory for every architecture it ships.
+    /// </summary>
+    private static Dictionary<string, string> ReadComponentInventories(
+        IReadOnlyDictionary<string, string> options,
+        string version,
+        List<(string Architecture, string Source, string AssetName, ImageArchiveIdentity Identity)> inspected)
+    {
+        var inventories = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var platform in inspected)
+        {
+            var option = $"--component-sbom-{platform.Architecture}";
+            if (options.ContainsKey(option))
+            {
+                inventories[platform.Architecture] = RequireExistingFile(options, option);
+            }
+        }
+        if (inventories.Count == 0)
+        {
+            if (!version.EndsWith("-dryrun", StringComparison.Ordinal))
+            {
+                throw new ReleaseToolException(
+                    "A published image release requires a component inventory for every published platform " +
+                    "(--component-sbom-amd64 and --component-sbom-arm64). Only a version ending in '-dryrun', " +
+                    "which is never publishable, may omit them.");
+            }
+            return inventories;
+        }
+        if (inventories.Count != inspected.Count)
+        {
+            throw new ReleaseToolException(
+                "A component inventory must be supplied for every published platform or for none.");
+        }
+        foreach (var platform in inspected)
+        {
+            ValidateComponentInventory(inventories[platform.Architecture], platform.Architecture, platform.Identity.ImageId);
+        }
+        return inventories;
+    }
+
+    /// <summary>
+    /// Requires a per-platform component inventory to be an SPDX 2.3 document that names the exact image this
+    /// release publishes for that platform and actually enumerates components. The scanner renders the inventory
+    /// from the same pass that produced the vulnerability report and records the image it scanned in the container
+    /// package's annotations, so the binding rests on the scanner's own subject identity rather than on the file
+    /// name the inventory was handed to the tool under. An inventory for the other architecture, for an older
+    /// build, or an empty stub therefore cannot be signed as this platform's contents.
+    /// </summary>
+    private static void ValidateComponentInventory(string path, string architecture, string imageId)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions
+        {
+            AllowTrailingCommas = false,
+            CommentHandling = JsonCommentHandling.Disallow,
+            MaxDepth = 64
+        });
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("spdxVersion", out var spdxVersion) || spdxVersion.GetString() != "SPDX-2.3" ||
+            !root.TryGetProperty("SPDXID", out var documentId) || documentId.GetString() != "SPDXRef-DOCUMENT" ||
+            !root.TryGetProperty("packages", out var packages) || packages.ValueKind != JsonValueKind.Array)
+        {
+            throw new ReleaseToolException($"The linux/{architecture} component inventory is not an SPDX 2.3 document.");
+        }
+        var subjects = 0;
+        var components = 0;
+        foreach (var package in packages.EnumerateArray())
+        {
+            if (package.ValueKind != JsonValueKind.Object)
+            {
+                throw new ReleaseToolException($"The linux/{architecture} component inventory contains an invalid package.");
+            }
+            if (DeclaresScannedImage(package, imageId))
+            {
+                subjects++;
+                continue;
+            }
+            if (package.TryGetProperty("name", out var componentName) &&
+                !string.IsNullOrWhiteSpace(componentName.GetString()) &&
+                package.TryGetProperty("versionInfo", out var componentVersion) &&
+                !string.IsNullOrWhiteSpace(componentVersion.GetString()))
+            {
+                components++;
+            }
+        }
+        if (subjects != 1)
+        {
+            throw new ReleaseToolException(
+                $"The linux/{architecture} component inventory does not name the published image {imageId} as its subject.");
+        }
+        if (components < MinimumInventoryComponents)
+        {
+            throw new ReleaseToolException(
+                $"The linux/{architecture} component inventory records {components} components, which cannot describe " +
+                $"a published CameraAgent image; at least {MinimumInventoryComponents} are required.");
+        }
+    }
+
+    private static bool DeclaresScannedImage(JsonElement package, string imageId)
+        => package.TryGetProperty("annotations", out var annotations) && annotations.ValueKind == JsonValueKind.Array &&
+           annotations.EnumerateArray().Any(annotation =>
+               annotation.ValueKind == JsonValueKind.Object &&
+               annotation.TryGetProperty("comment", out var comment) &&
+               string.Equals(comment.GetString(), $"ImageID: {imageId}", StringComparison.Ordinal));
 
     /// <summary>Prints the platform identity a single-platform image archive carries, for release scripting.</summary>
     private static async Task DescribeImageArchiveAsync(IReadOnlyDictionary<string, string> options)
@@ -810,6 +947,13 @@ internal static partial class Program
                 throw new ReleaseToolException(
                     $"Image archive '{platform.OfflineArchiveAsset}' does not carry its signed compatibility labels.");
             }
+            if (platform.ComponentSbomAsset is { } inventory)
+            {
+                // Re-derive the inventory's own subject claim from the published bytes, so a release whose
+                // component inventory describes a different image fails verification rather than being trusted
+                // because the manifest names it.
+                ValidateComponentInventory(Path.Combine(assetRoot, inventory), platform.Architecture, identity.ImageId);
+            }
         }
     }
 
@@ -1141,6 +1285,13 @@ internal static partial class Program
         await tar.WriteEntryAsync(entry, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Writes the release's file-level SPDX 2.3 document, shared by the installer, catalog, and image trains.
+    /// SPDX 2.3 requires a SHA-1 checksum on every file (clause 8.4) and, for a package that declares
+    /// <c>filesAnalyzed</c>, the package verification code derived from those SHA-1 values (clause 7.9). The
+    /// document previously declared <c>filesAnalyzed: true</c> while supplying neither, which no SPDX consumer can
+    /// validate, so both are produced here from one pass over each file rather than reading every archive twice.
+    /// </summary>
     private static async Task WriteSpdxAsync(
         string output,
         string name,
@@ -1150,13 +1301,23 @@ internal static partial class Program
         CancellationToken cancellationToken)
     {
         var entries = new List<object>();
+        var identifiers = new List<string>();
+        var sha1Values = new List<string>();
         foreach (var file in files.Order(StringComparer.Ordinal))
         {
+            var (sha1, sha256) = await FileChecksumsAsync(file, cancellationToken).ConfigureAwait(false);
+            var identifier = $"SPDXRef-File-{entries.Count + 1}";
+            identifiers.Add(identifier);
+            sha1Values.Add(sha1);
             entries.Add(new
             {
-                fileName = Path.GetFileName(file),
-                SPDXID = $"SPDXRef-File-{entries.Count + 1}",
-                checksums = new[] { new { algorithm = "SHA256", checksumValue = await Sha256Async(file, cancellationToken).ConfigureAwait(false) } },
+                fileName = "./" + Path.GetFileName(file),
+                SPDXID = identifier,
+                checksums = new[]
+                {
+                    new { algorithm = "SHA1", checksumValue = sha1 },
+                    new { algorithm = "SHA256", checksumValue = sha256 }
+                },
                 licenseConcluded = "NOASSERTION",
                 copyrightText = "NOASSERTION"
             });
@@ -1169,10 +1330,64 @@ internal static partial class Program
             documentNamespace = $"https://github.com/{Repository}/spdx/{Uri.EscapeDataString(name)}/{Uri.EscapeDataString(version)}",
             name,
             creationInfo = new { created = createdUtc, creators = SpdxCreators },
-            packages = new[] { new { name, SPDXID = "SPDXRef-Package", versionInfo = version, downloadLocation = "NOASSERTION", filesAnalyzed = true } },
-            files = entries
+            packages = new[]
+            {
+                new
+                {
+                    name,
+                    SPDXID = SpdxPackageIdentifier,
+                    versionInfo = version,
+                    downloadLocation = "NOASSERTION",
+                    filesAnalyzed = true,
+                    packageVerificationCode = new { packageVerificationCodeValue = PackageVerificationCode(sha1Values) },
+                    licenseConcluded = "NOASSERTION",
+                    licenseDeclared = "NOASSERTION",
+                    copyrightText = "NOASSERTION",
+                    hasFiles = identifiers.ToArray()
+                }
+            },
+            files = entries,
+            documentDescribes = new[] { SpdxPackageIdentifier },
+            relationships = new[]
+            {
+                new
+                {
+                    spdxElementId = "SPDXRef-DOCUMENT",
+                    relationshipType = "DESCRIBES",
+                    relatedSpdxElement = SpdxPackageIdentifier
+                }
+            }
         }, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Computes the SPDX package verification code defined by SPDX 2.3 clause 7.9: the SHA-1 of the concatenated,
+    /// lexically sorted, lowercase-hexadecimal SHA-1 values of every file the package analyzed. SHA-1 is the
+    /// algorithm the format mandates for this value; it carries no security claim here, and the release's own
+    /// integrity rests on the SHA-256 identities in the signed manifest.
+    /// </summary>
+#pragma warning disable CA5350 // SPDX 2.3 defines the package verification code and file checksum as SHA-1.
+    private static string PackageVerificationCode(IEnumerable<string> fileSha1Values)
+        => Convert.ToHexStringLower(
+            SHA1.HashData(Encoding.UTF8.GetBytes(string.Concat(fileSha1Values.Order(StringComparer.Ordinal)))));
+
+    private static async Task<(string Sha1, string Sha256)> FileChecksumsAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = File.OpenRead(path);
+        using var sha1 = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
+        using var sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[128 * 1024];
+        int read;
+        while ((read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) != 0)
+        {
+            sha1.AppendData(buffer, 0, read);
+            sha256.AppendData(buffer, 0, read);
+        }
+        return (Convert.ToHexStringLower(sha1.GetHashAndReset()), Convert.ToHexStringLower(sha256.GetHashAndReset()));
+    }
+#pragma warning restore CA5350
 
     private static async Task WriteJsonAsync<T>(string output, T value, CancellationToken cancellationToken)
     {

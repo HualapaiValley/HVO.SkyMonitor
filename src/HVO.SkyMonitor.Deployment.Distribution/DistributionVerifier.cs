@@ -161,7 +161,8 @@ public static partial class DistributionVerifier
 
     private static void Validate(DistributionReleaseManifest manifest, DistributionTrustRoot root)
     {
-        if (manifest.SchemaVersion != DistributionSchemaVersions.ReleaseManifest ||
+        if (manifest.SchemaVersion < DistributionSchemaVersions.ReleaseManifest ||
+            manifest.SchemaVersion > DistributionSchemaVersions.MaximumReleaseManifest ||
             manifest.Signing.Algorithm != DistributionTrustRoot.Algorithm || manifest.Signing.KeyId != root.KeyId ||
             !TrainRegex().IsMatch(manifest.Release.Train) || !VersionRegex().IsMatch(manifest.Release.Version) ||
             !TagRegex().IsMatch(manifest.Release.Tag) || !RepositoryRegex().IsMatch(manifest.Release.Repository) ||
@@ -194,6 +195,7 @@ public static partial class DistributionVerifier
         {
             throw new DistributionValidationException("The distribution manifest omits required evidence assets.");
         }
+        ValidateComponentInventoryShape(manifest);
         ValidateReleaseShape(manifest, names);
         if (manifest.Catalog is { } catalog &&
             (catalog.CatalogId != "hyg-v42-production" || !ProductionCatalogVersionRegex().IsMatch(catalog.PackageVersion) ||
@@ -212,6 +214,51 @@ public static partial class DistributionVerifier
                     platform.Architecture is not ("amd64" or "arm64") || !DigestRegex().IsMatch(platform.ManifestDigest)))
             {
                 throw new DistributionValidationException("The signed image identity is invalid.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies the versioned per-platform component-inventory rule. Version
+    /// <see cref="DistributionSchemaVersions.ReleaseManifest"/> is the shape published before component inventories
+    /// existed and must declare none, so a manifest signed under it stays verifiable unchanged. Version
+    /// <see cref="DistributionSchemaVersions.ReleaseManifestWithComponentSboms"/> is an image release that publishes
+    /// exactly one inventory per platform, each named by the platform whose operating system and architecture the
+    /// inventory itself declares, so an inventory for one architecture can never be presented as another's.
+    /// </summary>
+    private static void ValidateComponentInventoryShape(DistributionReleaseManifest manifest)
+    {
+        var inventories = manifest.Artifacts
+            .Where(static artifact => artifact.Role == DistributionArtifactRole.ComponentSbom)
+            .ToArray();
+        var platforms = manifest.Images.SelectMany(static image => image.Platforms).ToArray();
+        if (manifest.SchemaVersion == DistributionSchemaVersions.ReleaseManifest)
+        {
+            if (inventories.Length != 0 || platforms.Any(static platform => platform.ComponentSbomAsset is not null))
+            {
+                throw new DistributionValidationException(
+                    "A version 1 distribution manifest cannot declare a per-platform component inventory.");
+            }
+            return;
+        }
+        if (manifest.ManifestKind != DistributionManifestKind.ImageRelease)
+        {
+            throw new DistributionValidationException(
+                "Only an image release may declare a per-platform component inventory manifest version.");
+        }
+        if (inventories.Length != platforms.Length)
+        {
+            throw new DistributionValidationException(
+                "The image release does not publish exactly one component inventory per platform.");
+        }
+        foreach (var platform in platforms)
+        {
+            if (platform.ComponentSbomAsset is not { } asset ||
+                inventories.SingleOrDefault(artifact => artifact.AssetName == asset) is not { } inventory ||
+                inventory.OperatingSystem != platform.OperatingSystem || inventory.Architecture != platform.Architecture)
+            {
+                throw new DistributionValidationException(
+                    "The image release platform does not name a signed component inventory for its own platform.");
             }
         }
     }

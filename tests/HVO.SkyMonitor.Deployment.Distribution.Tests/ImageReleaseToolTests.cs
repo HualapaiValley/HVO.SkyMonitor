@@ -1,9 +1,8 @@
-using System.Formats.Tar;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.Deployment.Contracts;
-using HVO.SkyMonitor.Deployment.Distribution;
 
 namespace HVO.SkyMonitor.Deployment.Distribution.Tests;
 
@@ -39,11 +38,10 @@ public sealed class ImageReleaseToolTests
         StringAssert.Contains(diagnostics, expected, StringComparison.Ordinal);
     }
 
-    private const string Revision = "1f5c1a3b7d9e2f4a6b8c0d1e3f5a7b9c1d3e5f70";
-    private const string Tree = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567";
-    private const string MinimumRevision = "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f";
-    private const string IndexDigest = "sha256:" + "3c" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd";
-    private const string Repository = "ghcr.io/roysalisbury/hvo.skymonitor/cameraagent";
+    private const string Revision = ImageReleaseFixture.Revision;
+    private const string MinimumRevision = ImageReleaseFixture.MinimumRevision;
+    private const string IndexDigest = ImageReleaseFixture.IndexDigest;
+    private const string Repository = ImageReleaseFixture.Repository;
     private static readonly string[] ExpectedArchitectures = ["amd64", "arm64"];
 
     [TestMethod]
@@ -254,186 +252,179 @@ public sealed class ImageReleaseToolTests
         await AssertRejectedAsync(arguments, "does not match its content address");
     }
 
-    private sealed class ImageReleaseFixture : IDisposable
+    [TestMethod]
+    public async Task CreateImage_ComponentInventories_ArePublishedAndBoundToTheirOwnPlatform()
     {
-        private readonly Dictionary<string, string> manifestDigests = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, string> imageIds = new(StringComparer.Ordinal);
+        using var fixture = ImageReleaseFixture.Create();
+        var release = Path.Combine(fixture.Root, "release");
 
-        private ImageReleaseFixture(string root, DistributionTrustRoot trustRoot)
+        Assert.AreEqual(0, await ReleaseTool.Program.Main(fixture.CreateArguments(release)));
+
+        var manifestPath = Path.Combine(release, "image-manifest.json");
+        var signaturePath = manifestPath + ".sig";
+        Assert.AreEqual(0, await ReleaseTool.Program.Main(
+            ["sign-local", "--manifest", manifestPath, "--private-key", fixture.PrivateKey, "--signature", signaturePath]));
+        Assert.AreEqual(0, await ReleaseTool.Program.Main([
+            "verify", "--manifest", manifestPath, "--signature", signaturePath, "--asset-root", release,
+            "--public-key", fixture.PublicKey
+        ]));
+
+        var signedBytes = await File.ReadAllBytesAsync(manifestPath);
+        var signatureBytes = await File.ReadAllBytesAsync(signaturePath);
+        var manifest = DistributionVerifier.VerifyManifest(signedBytes, signatureBytes, fixture.TrustRoot);
+        Assert.AreEqual(DistributionSchemaVersions.ReleaseManifestWithComponentSboms, manifest.SchemaVersion);
+        var inventories = manifest.Artifacts
+            .Where(static artifact => artifact.Role == DistributionArtifactRole.ComponentSbom)
+            .ToArray();
+        Assert.AreEqual(2, inventories.Length);
+        foreach (var platform in manifest.Images.Single().Platforms)
         {
-            Root = root;
-            TrustRoot = trustRoot;
-            PrivateKey = Path.Combine(root, "private.pem");
-            PublicKey = Path.Combine(root, "public.pem");
+            var asset = $"image-components-linux-{platform.Architecture}.spdx.json";
+            Assert.AreEqual(asset, platform.ComponentSbomAsset);
+            var inventory = inventories.Single(artifact => artifact.AssetName == asset);
+            Assert.AreEqual("linux", inventory.OperatingSystem);
+            Assert.AreEqual(platform.Architecture, inventory.Architecture);
+            Assert.AreEqual("application/spdx+json", inventory.MediaType);
+            // The published inventory must name the image ID this platform's archive actually loads.
+            var inventoryBytes = await File.ReadAllBytesAsync(Path.Combine(release, asset));
+            using var document = JsonDocument.Parse(inventoryBytes);
+            Assert.IsTrue(document.RootElement.GetProperty("packages").EnumerateArray().Any(package =>
+                package.TryGetProperty("annotations", out var annotations) &&
+                annotations.EnumerateArray().Any(annotation =>
+                    annotation.GetProperty("comment").GetString() ==
+                        $"ImageID: {fixture.ImageIdFor(platform.Architecture)}")));
         }
+    }
 
-        public string Root { get; }
-        public string PrivateKey { get; }
-        public string PublicKey { get; }
-        public string KeyId => TrustRoot.KeyId;
-        public DistributionTrustRoot TrustRoot { get; }
-        public string Amd64Archive { get; private set; } = string.Empty;
-        public string Arm64Archive { get; private set; } = string.Empty;
-        public string Dockerfile { get; private set; } = string.Empty;
-        public string Notices { get; private set; } = string.Empty;
-        public string ScanReport { get; private set; } = string.Empty;
-        public string[] AllImageIds => [imageIds["amd64"], imageIds["arm64"]];
+    [TestMethod]
+    public async Task CreateImage_InventoryThatDescribesTheOtherArchitecture_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-amd64") + 1] = fixture.ComponentInventoryFor("arm64");
 
-        public string ManifestDigestFor(string architecture) => manifestDigests[architecture];
+        await AssertRejectedAsync(arguments, "does not name the published image");
+    }
 
-        public string ImageIdFor(string architecture) => imageIds[architecture];
+    [TestMethod]
+    public async Task CreateImage_InventoryThatIsNotSpdx23_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var wrongFormat = fixture.WriteComponentInventory(
+            "cyclonedx.spdx.json",
+            fixture.ImageIdFor("amd64"),
+            ImageReleaseFixture.InventoryComponents,
+            spdxVersion: "SPDX-2.2");
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-amd64") + 1] = wrongFormat;
 
-        public static ImageReleaseFixture Create()
+        await AssertRejectedAsync(arguments, "is not an SPDX 2.3 document");
+    }
+
+    [TestMethod]
+    public async Task CreateImage_InventoryWithoutAUsableComponentList_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var empty = fixture.WriteComponentInventory("empty.spdx.json", fixture.ImageIdFor("arm64"), components: 0);
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-arm64") + 1] = empty;
+
+        await AssertRejectedAsync(arguments, "which cannot describe a published CameraAgent image");
+    }
+
+    [TestMethod]
+    public async Task CreateImage_PublishableVersionWithoutComponentInventories_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var arguments = fixture.DryRunArguments(Path.Combine(fixture.Root, "release")).ToList();
+        arguments[arguments.IndexOf("--version") + 1] = "1.2.3";
+
+        await AssertRejectedAsync(
+            [.. arguments],
+            "A published image release requires a component inventory for every published platform");
+    }
+
+    [TestMethod]
+    public async Task CreateImage_OneInventoryWithoutTheOther_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release")).ToList();
+        var index = arguments.IndexOf("--component-sbom-arm64");
+        arguments.RemoveRange(index, 2);
+
+        await AssertRejectedAsync(
+            [.. arguments],
+            "must be supplied for every published platform or for none");
+    }
+
+    /// <summary>
+    /// An unscanned dry run carries no inventory, so it publishes the release-manifest shape released before
+    /// inventories existed. The verifier must still accept it, which is what keeps a version 1 release verifiable.
+    /// </summary>
+    [TestMethod]
+    public async Task CreateImage_UnscannedDryRun_PublishesTheVersion1ShapeThatStillVerifies()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var release = Path.Combine(fixture.Root, "dryrun");
+
+        Assert.AreEqual(0, await ReleaseTool.Program.Main(fixture.DryRunArguments(release)));
+
+        var manifestPath = Path.Combine(release, "image-manifest.json");
+        var signaturePath = manifestPath + ".sig";
+        Assert.AreEqual(0, await ReleaseTool.Program.Main(
+            ["sign-local", "--manifest", manifestPath, "--private-key", fixture.PrivateKey, "--signature", signaturePath]));
+        Assert.AreEqual(0, await ReleaseTool.Program.Main([
+            "verify", "--manifest", manifestPath, "--signature", signaturePath, "--asset-root", release,
+            "--public-key", fixture.PublicKey
+        ]));
+
+        var signedBytes = await File.ReadAllBytesAsync(manifestPath);
+        var signatureBytes = await File.ReadAllBytesAsync(signaturePath);
+        var manifest = DistributionVerifier.VerifyManifest(signedBytes, signatureBytes, fixture.TrustRoot);
+        Assert.AreEqual(DistributionSchemaVersions.ReleaseManifest, manifest.SchemaVersion);
+        Assert.IsFalse(manifest.Artifacts.Any(static artifact => artifact.Role == DistributionArtifactRole.ComponentSbom));
+        Assert.IsTrue(manifest.Images.Single().Platforms.All(static platform => platform.ComponentSbomAsset is null));
+    }
+
+    /// <summary>
+    /// Verification re-derives the inventory's own subject claim from the published bytes, so a release whose
+    /// inventory was replaced and re-signed with a document describing another image still fails.
+    /// </summary>
+    [TestMethod]
+    public async Task Verify_ComponentInventoryThatDescribesAnotherImage_Fails()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var release = Path.Combine(fixture.Root, "release");
+        Assert.AreEqual(0, await ReleaseTool.Program.Main(fixture.CreateArguments(release)));
+
+        const string asset = "image-components-linux-amd64.spdx.json";
+        var substituted = fixture.WriteComponentInventory(
+            "substituted.spdx.json", fixture.ImageIdFor("arm64"), ImageReleaseFixture.InventoryComponents);
+        var assetPath = Path.Combine(release, asset);
+        File.Copy(substituted, assetPath, overwrite: true);
+
+        var manifestPath = Path.Combine(release, "image-manifest.json");
+        var manifestBytes = await File.ReadAllBytesAsync(manifestPath);
+        var manifest = JsonNode.Parse(manifestBytes)!;
+        var bytes = await File.ReadAllBytesAsync(assetPath);
+        foreach (var artifact in manifest["artifacts"]!.AsArray())
         {
-            var root = Path.Combine(Path.GetTempPath(), $"hvo-image-release-{Guid.NewGuid():N}");
-            Directory.CreateDirectory(root);
-            using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-            var fixture = new ImageReleaseFixture(root, DistributionTrustRoot.FromPem(key.ExportSubjectPublicKeyInfoPem()));
-            File.WriteAllText(fixture.PrivateKey, key.ExportPkcs8PrivateKeyPem());
-            File.WriteAllText(fixture.PublicKey, key.ExportSubjectPublicKeyInfoPem());
-            fixture.Dockerfile = Path.Combine(root, "Dockerfile");
-            File.WriteAllText(fixture.Dockerfile, "FROM scratch\n");
-            fixture.Notices = Path.Combine(root, "notices.md");
-            File.WriteAllText(fixture.Notices, "test notices\n");
-            fixture.Amd64Archive = fixture.WriteArchive("cameraagent-amd64", "amd64", DefaultLabels(Revision));
-            fixture.Arm64Archive = fixture.WriteArchive("cameraagent-arm64", "arm64", DefaultLabels(Revision));
-            fixture.ScanReport = fixture.WriteScanReport("scan.json", critical: 0, fixture.AllImageIds);
-            return fixture;
+            if (artifact!["assetName"]!.GetValue<string>() == asset)
+            {
+                artifact["length"] = bytes.Length;
+                artifact["sha256"] = Convert.ToHexStringLower(SHA256.HashData(bytes));
+            }
         }
+        await File.WriteAllTextAsync(manifestPath, manifest.ToJsonString(), new UTF8Encoding(false));
+        var signaturePath = manifestPath + ".sig";
+        Assert.AreEqual(0, await ReleaseTool.Program.Main(
+            ["sign-local", "--manifest", manifestPath, "--private-key", fixture.PrivateKey, "--signature", signaturePath]));
 
-        public static Dictionary<string, string> DefaultLabels(string revision) => new(StringComparer.Ordinal)
-        {
-            ["io.hvo.skymonitor.component"] = "CameraAgent",
-            ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
-            ["io.hvo.skymonitor.minimum-compatible-revision"] = MinimumRevision,
-            ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
-            ["io.hvo.skymonitor.raw-ingress-schema"] = "12",
-            ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
-            ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
-            ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2",
-            ["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1",
-            ["org.opencontainers.image.revision"] = revision
-        };
-
-        public string[] CreateArguments(string output)
-            =>
+        await AssertRejectedAsync(
             [
-                "create-image", "--version", "1.2.3", "--revision", Revision, "--tree", Tree,
-                "--created-utc", "2026-08-24T04:29:18Z", "--repository", Repository, "--index-digest", IndexDigest,
-                "--linux-amd64", Amd64Archive, "--linux-arm64", Arm64Archive, "--dockerfile", Dockerfile,
-                "--scan-report", ScanReport, "--notices", Notices, "--signing-key-id", KeyId, "--output", output
-            ];
-
-        public string WriteScanReport(string name, int critical, IReadOnlyList<string> subjects)
-        {
-            var path = Path.Combine(Root, name);
-            var report = new
-            {
-                schemaVersion = 1,
-                scanner = "trivy",
-                scannerVersion = "0.60.0",
-                scannedUtc = "2026-08-24T04:29:18Z",
-                subjects = subjects.Select(static imageId => new { imageId }).ToArray(),
-                summary = new { critical, high = 0, medium = 0, low = 0, unknown = 0 },
-                findings = Array.Empty<object>()
-            };
-            File.WriteAllText(path, JsonSerializer.Serialize(report), new UTF8Encoding(false));
-            return path;
-        }
-
-        /// <summary>Writes a single-platform OCI archive shaped like a <c>buildx --output type=docker</c> result.</summary>
-        public string WriteArchive(string name, string architecture, IReadOnlyDictionary<string, string> labels)
-        {
-            var configuration = JsonSerializer.SerializeToUtf8Bytes(new
-            {
-                architecture,
-                os = "linux",
-                config = new { Labels = labels },
-                rootfs = new { type = "layers", diff_ids = Array.Empty<string>() }
-            });
-            var configDigest = Digest(configuration);
-            var manifest = JsonSerializer.SerializeToUtf8Bytes(new
-            {
-                schemaVersion = 2,
-                mediaType = "application/vnd.oci.image.manifest.v1+json",
-                config = new
-                {
-                    mediaType = "application/vnd.oci.image.config.v1+json",
-                    digest = configDigest,
-                    size = configuration.Length
-                },
-                layers = Array.Empty<object>()
-            });
-            var manifestDigest = Digest(manifest);
-            var index = JsonSerializer.SerializeToUtf8Bytes(new
-            {
-                schemaVersion = 2,
-                mediaType = "application/vnd.oci.image.index.v1+json",
-                manifests = new[]
-                {
-                    new
-                    {
-                        mediaType = "application/vnd.oci.image.manifest.v1+json",
-                        digest = manifestDigest,
-                        size = manifest.Length
-                    }
-                }
-            });
-            var path = Path.Combine(Root, $"{name}.tar");
-            WriteTar(path, new Dictionary<string, byte[]>(StringComparer.Ordinal)
-            {
-                ["oci-layout"] = "{\"imageLayoutVersion\":\"1.0.0\"}"u8.ToArray(),
-                ["index.json"] = index,
-                [$"blobs/sha256/{manifestDigest["sha256:".Length..]}"] = manifest,
-                [$"blobs/sha256/{configDigest["sha256:".Length..]}"] = configuration
-            });
-            manifestDigests[architecture] = manifestDigest;
-            imageIds[architecture] = configDigest;
-            return path;
-        }
-
-        /// <summary>Writes an archive whose configuration blob no longer hashes to the name it is stored under.</summary>
-        public string WriteTamperedArchive(string name)
-        {
-            var source = Path.Combine(Root, $"{name}.tar");
-            var entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-            using (var file = File.OpenRead(Amd64Archive))
-            using (var reader = new TarReader(file))
-            {
-                TarEntry? entry;
-                while ((entry = reader.GetNextEntry()) is not null)
-                {
-                    using var buffer = new MemoryStream();
-                    entry.DataStream!.CopyTo(buffer);
-                    entries[entry.Name] = buffer.ToArray();
-                }
-            }
-            var configEntry = entries.Single(pair =>
-                pair.Key.StartsWith("blobs/sha256/", StringComparison.Ordinal) &&
-                pair.Key["blobs/sha256/".Length..] == ImageIdFor("amd64")["sha256:".Length..]);
-            entries[configEntry.Key] = Encoding.UTF8.GetBytes(
-                Encoding.UTF8.GetString(configEntry.Value).Replace("cameraagent-state-v2", "cameraagent-state-v9", StringComparison.Ordinal));
-            WriteTar(source, entries);
-            return source;
-        }
-
-        private static void WriteTar(string path, IReadOnlyDictionary<string, byte[]> entries)
-        {
-            using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
-            using var tar = new TarWriter(file, TarEntryFormat.Pax, leaveOpen: true);
-            foreach (var (name, content) in entries.OrderBy(static entry => entry.Key, StringComparer.Ordinal))
-            {
-                using var stream = new MemoryStream(content);
-                tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, name)
-                {
-                    DataStream = stream,
-                    Mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead
-                });
-            }
-        }
-
-        private static string Digest(byte[] content) => "sha256:" + Convert.ToHexStringLower(SHA256.HashData(content));
-
-        public void Dispose() => Directory.Delete(Root, recursive: true);
+                "verify", "--manifest", manifestPath, "--signature", signaturePath, "--asset-root", release,
+                "--public-key", fixture.PublicKey
+            ],
+            "does not name the published image");
     }
 }
