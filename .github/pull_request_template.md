@@ -59,11 +59,13 @@
 - Latest reviewed head SHA:
 - Final target-base SHA:
 - Primary/fallback provider:
-- Requested/actual reviewer model:
+- Requested capability profile:
+- Review execution route:
+- Requested/actual provider, model, and reasoning effort:
 - Correction rereview count (`0`-`3`, or documented blocking exception):
 - Finalization-lock owner and acquisition time:
 
-| Mode/round | Reviewed range | Provider/model | Requested/start/completed UTC | Finding disposition and evidence |
+| Mode/round | Reviewed range | Route and provider/model/effort | Requested/start/completed UTC | Finding disposition and evidence |
 | --- | --- | --- | --- | --- |
 | Initial | `<merge-base>..<head>` |  |  |  |
 
@@ -72,6 +74,9 @@ For every correction row, name the exact delta and record each prior finding as
 A generic whole-PR approval is not correction-rereview evidence.
 
 - [ ] Initial review covered the complete PR diff through the initial reviewed head.
+- [ ] Exact-range convergence reviews used a local agent or equivalent runner
+      that bound the requested range and recorded actual provider/model/effort;
+      an optional provider-side current-head audit was not used as a substitute.
 - [ ] Every request recorded its provider, immutable SHA/range, fifteen-minute
       acknowledgement deadline, and fallback or waiver outcome.
 - [ ] Every finding is corrected, evidenced non-actionable, agreed deferred to a
@@ -89,6 +94,8 @@ A generic whole-PR approval is not correction-rereview evidence.
       here:
 - [ ] Every review round was appended to the ledger without replacing earlier
       reviewed ranges.
+- [ ] The coordinator relayed review start and milestones immediately and sent
+      a main-conversation heartbeat every five minutes while work was active.
 - [ ] Correction commits are pushed without force-push or unrequested amend.
 - [ ] The PR remained draft during review correction and was marked ready only
       after review convergence, final target-branch synchronization, and
