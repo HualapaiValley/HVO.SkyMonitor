@@ -82,6 +82,13 @@ acknowledgement may still be applied.
 
 ## Signed Image Release
 
+> **`linux/arm64` is not yet supported for installation.** The signed release
+> publishes an arm64 image, but the CameraAgent runtime and this CLI hard-code
+> x86-64 `open(2)` flag values that mean something different on aarch64, so
+> directory opens fail and the symlink guards are absent
+> ([#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603)). Install
+> only on `linux/amd64` until that closes.
+
 `--image-ref` and `--image-archive` name an image the operator has already
 established. `--image-manifest`, `--image-index`, and `--image-version` instead
 consume the signed CameraAgent image train described in
