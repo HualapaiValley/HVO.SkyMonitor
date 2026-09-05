@@ -109,7 +109,6 @@ project for LogicHost keys.
 | Kestrel/TLS private key and password | HTTPS when Kestrel owns TLS | Framework configuration is available, but repository Compose has no HTTPS profile or secure mount |
 | LogicHost and CameraAgent Data Protection key rings | Cookies, bootstrap envelopes, and CameraAgent encrypted secrets | Bind-mounted `DataProtection-Keys` directories; never configuration values |
 | CameraAgent device key, registration token, and OAuth secret | Device authentication and outbound central access | Data Protection-encrypted `device-secrets.dat` |
-| `GH_PAT`, `SSH_PRIVATE_KEY`, `TAILSCALE_AUTHKEY` | Developer tooling, not application runtime | Host environment or ignored devcontainer env only |
 | `GIST_TOKEN`, `COVERAGE_GIST_ID` | Optional CI coverage badge publication | GitHub Actions secrets/variables |
 
 Application appsettings contain no usable owner password, API key, OAuth client
@@ -131,7 +130,7 @@ ignored, access-controlled, and out of support bundles:
 - `src/HVO.SkyMonitor.CameraAgent/App_Data/`
 - any host `DataProtection-Keys/` directory
 - `.env` and `.devcontainer/devcontainer.local.env`
-- `.devcontainer/state/` (OpenCode credentials, configuration, sessions, agent worktrees, and resumable scratch state)
+- legacy `.devcontainer/state/` content left by the retired agent integration
 - the ignored schema-v8 split-host `secretSource` file and transient remote `.hvo-deploy/{up,bootstrap,smoke,measure,down}-<run-id>/` private files (credentials are removed at phase exit)
 
 Every local credential staging file, remote credential/session file, and private

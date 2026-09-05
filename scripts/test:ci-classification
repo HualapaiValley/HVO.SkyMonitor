@@ -133,11 +133,7 @@ allowlisted_paths=(
   "tests/fixtures/catalog/SOURCE.md"
   "tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md"
   "tools/asi-capture/README.md"
-  "scripts/opencode:disable"
-  "scripts/opencode:enable"
-  "scripts/opencode:connect"
-  "scripts/opencode:remote-connect"
-  "scripts/test:opencode"
+  "scripts/test:devcontainer"
 )
 
 for path in "${allowlisted_paths[@]}"; do
