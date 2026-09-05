@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.ProcessingRunner.Contracts;
 using Microsoft.Extensions.Options;
@@ -32,9 +33,83 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         SupportsScaleToZero: true,
         [$"provider:{ProviderName}"]);
 
-    /// <summary>A child runs on this host with the runner defaults for resource and latency class and no GPU claim.</summary>
+    /// <summary>
+    /// The capabilities a child registers: probed once from the configured executable (<c>--capabilities</c>, the
+    /// runner's own advertisement, so a separately published binary, launcher, or other architecture is described as
+    /// it really is) with the instance's concurrency and labels applied; when the probe fails the host process stands
+    /// in and the failure is logged.
+    /// </summary>
     public ProcessingRunnerCapabilities DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
-        => ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, labels, null);
+    {
+        ArgumentNullException.ThrowIfNull(labels);
+        var normalized = labels.Distinct(StringComparer.Ordinal).OrderBy(static label => label, StringComparer.Ordinal).ToArray();
+        return ProbeConfiguredRunner() is { } probed
+            ? probed with { MaxConcurrency = maxConcurrency, Labels = normalized }
+            : ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, normalized, null);
+    }
+
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(60);
+    private readonly Lock _probeGate = new();
+    private bool _probeAttempted;
+    private ProcessingRunnerCapabilities? _probed;
+
+    /// <summary>Runs the configured executable with <c>--capabilities</c> once per host process and parses its advertisement; null when it fails.</summary>
+    internal ProcessingRunnerCapabilities? ProbeConfiguredRunner()
+    {
+        lock (_probeGate)
+        {
+            if (_probeAttempted)
+            {
+                return _probed;
+            }
+            _probeAttempted = true;
+            var settings = options.Value.LocalProcess;
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = settings.Executable!,
+                    WorkingDirectory = settings.WorkingDirectory ?? Environment.CurrentDirectory,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                foreach (var argument in settings.Arguments)
+                {
+                    startInfo.ArgumentList.Add(argument);
+                }
+                startInfo.ArgumentList.Add("--capabilities");
+                startInfo.Environment.Clear();
+                foreach (var (key, value) in FilterInheritedEnvironment(Environment.GetEnvironmentVariables()))
+                {
+                    startInfo.Environment[key] = value;
+                }
+                using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("The runner probe process could not be started.");
+                var stdout = process.StandardOutput.ReadToEndAsync();
+                var stderr = process.StandardError.ReadToEndAsync();
+                if (!process.WaitForExit(ProbeTimeout))
+                {
+                    process.Kill(entireProcessTree: true);
+                    throw new TimeoutException("The runner capability probe did not finish in time.");
+                }
+                var line = stdout.GetAwaiter().GetResult().Split('\n').Select(static item => item.Trim()).LastOrDefault(static item => item.StartsWith('{'))
+                    ?? throw new InvalidOperationException("The runner capability probe wrote no capabilities.");
+                var probed = JsonSerializer.Deserialize<ProcessingRunnerCapabilities>(line, ProcessingRunnerProtocol.SerializerOptions)
+                    ?? throw new InvalidOperationException("The runner capability probe wrote an empty document.");
+                probed.Validate();
+                _probed = probed;
+                Log.CapabilitiesProbed(logger, settings.Executable!, probed.ProcessArchitecture, probed.RuntimeIdentifier, probed.BuiltInRecipes.Count);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException or TimeoutException or JsonException
+                or System.ComponentModel.Win32Exception or ProcessingRunnerProtocolException or UnauthorizedAccessException)
+            {
+                Log.CapabilityProbeFailed(logger, settings.Executable ?? string.Empty, exception);
+                _probed = null;
+            }
+            return _probed;
+        }
+    }
 
     public TimeSpan EstimateStartup()
     {
@@ -429,6 +504,12 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
 
         [LoggerMessage(2232, LogLevel.Information, "Elastic runner instance adopted from a previous host process: Instance={Instance}, ProcessId={ProcessId}")]
         public static partial void Adopted(ILogger logger, string instance, int processId);
+
+        [LoggerMessage(2243, LogLevel.Information, "Elastic runner capabilities probed from the configured executable: Executable={Executable}, ProcessArchitecture={ProcessArchitecture}, RuntimeIdentifier={RuntimeIdentifier}, Recipes={Recipes}")]
+        public static partial void CapabilitiesProbed(ILogger logger, string executable, string processArchitecture, string runtimeIdentifier, int recipes);
+
+        [LoggerMessage(2244, LogLevel.Warning, "Elastic runner capability probe failed; the host process describes instances until the next host start: Executable={Executable}")]
+        public static partial void CapabilityProbeFailed(ILogger logger, string executable, Exception exception);
 
         [LoggerMessage(2238, LogLevel.Warning, "Elastic runner stop file could not be written; the instance is retired by signal or force: Instance={Instance}")]
         public static partial void StopFileFailed(ILogger logger, string instance, Exception exception);

@@ -28,7 +28,10 @@ long-running, native, or GPU recipes.
   architecture, runtime image, scale-to-zero support, labels),
   `EstimateStartup()`, `DescribeInstance(maxConcurrency, labels)` (the
   runner capabilities an instance provisioned with those settings registers,
-  so the host counts only backlog such an instance could claim),
+  so the host counts only backlog such an instance could claim; the local
+  adapter probes the configured executable's own `--capabilities`
+  advertisement once per host process and falls back to the host process
+  when the probe fails),
   `ProvisionAsync(request)`, `RetireAsync(instance, grace)`, `ListAsync()`. Provisioning is idempotent per instance id (a retried
   request returns the instance already launched); retire asks the instance to
   drain on every platform (the runner watches a stop file the host creates,

@@ -85,16 +85,6 @@ internal sealed partial class CentralProcessingRunnerJobService(
             telemetry.RecordClaim("ineligible", "none", TimeSpan.Zero);
             return null;
         }
-        // An elastic instance whose retirement is reserved (or whose host abandoned it) takes no new work: the
-        // reservation is written under this runner's claim lock, so the check below is ordered against it (#600).
-        var retiringStates = new[] { nameof(ElasticRunnerInstanceState.Stopping), nameof(ElasticRunnerInstanceState.Abandoned) };
-        if (await dbContext.CentralElasticRunnerInstances.AsNoTracking()
-                .AnyAsync(instance => instance.RunnerId == runner.Runner.RunnerId && retiringStates.Contains(instance.State), cancellationToken)
-                .ConfigureAwait(false))
-        {
-            telemetry.RecordClaim("retiring", "none", TimeSpan.Zero);
-            return null;
-        }
         // Inputs larger than the runner's transfer limit are excluded before leasing so an incompatible runner never
         // consumes an attempt on work another runner could execute.
         var (pool, poolMode) = ResolvePool(runner.Capabilities.Labels);
@@ -104,6 +94,17 @@ internal sealed partial class CentralProcessingRunnerJobService(
         // requests, including two processes that reuse one runner id.
         await using var capacityLock = await CentralObjectApplicationLock.AcquireAsync(
             dbContext, $"processing-runner-claim/{runner.Runner.RunnerId}", cancellationToken).ConfigureAwait(false);
+        // An elastic instance whose retirement is reserved (or whose host abandoned or closed it) takes no new work:
+        // every such transition is written while holding this runner's claim lock, so the check is inside the same
+        // critical section and can never observe a state the autoscaler is about to change (#600).
+        var retiringStates = new[] { nameof(ElasticRunnerInstanceState.Stopping), nameof(ElasticRunnerInstanceState.Abandoned) };
+        if (await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+                .AnyAsync(instance => instance.RunnerId == runner.Runner.RunnerId && retiringStates.Contains(instance.State), cancellationToken)
+                .ConfigureAwait(false))
+        {
+            telemetry.RecordClaim("retiring", "none", TimeSpan.Zero);
+            return null;
+        }
         var now = timeProvider.GetUtcNow();
         var activeLeases = await dbContext.CentralDerivativeJobs.AsNoTracking().CountAsync(job =>
             job.Status == CentralDerivativeJobStatus.Leased

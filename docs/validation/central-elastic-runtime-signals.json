@@ -17,7 +17,9 @@
     { "eventId": 2239, "level": "Warning", "fields": ["Instance", "Owner"] },
     { "eventId": 2240, "level": "Debug", "fields": [] },
     { "eventId": 2241, "level": "Warning", "fields": ["Instance"] },
-    { "eventId": 2242, "level": "Warning", "fields": ["Provider", "Recipes"] }
+    { "eventId": 2242, "level": "Warning", "fields": ["Provider", "Recipes"] },
+    { "eventId": 2243, "level": "Information", "fields": ["Executable", "ProcessArchitecture", "RuntimeIdentifier", "Recipes"] },
+    { "eventId": 2244, "level": "Warning", "fields": ["Executable"] }
   ],
   "metrics": [
     { "name": "skymonitor.central.elastic.instances", "unit": "{instance}", "labels": { "provider": ["local-process"], "state": ["starting", "running", "idle"] } },

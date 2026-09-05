@@ -51,6 +51,8 @@ internal static class ElasticScalingPolicy
         // Demand counts work already executing on the instances, so occupied capacity does not mask queued backlog.
         // Existing instances are sized by the concurrency they actually registered (Capacity), not by the configured
         // per-instance value: an adopted single-slot instance never masks demand a four-slot configuration expects.
+        // Below capacity the count is a lower bound: the autoscaler applies idle scale-down only to instances whose
+        // registered slots the demand does not still need, so heterogeneous adopted instances are never over-retired.
         var capacity = input.Capacity ?? active * perInstance;
         int InstancesFor(int concurrency) => concurrency > capacity
             ? active + (int)Math.Ceiling((concurrency - capacity) / (double)perInstance)

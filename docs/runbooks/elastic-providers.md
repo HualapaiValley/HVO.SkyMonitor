@@ -132,9 +132,13 @@ above the warm minimum are retired after `ScaleToZeroAfter`; retirement asks
 the runner to drain and forces it after `RetireGrace`, which the child also
 receives as its own shutdown grace; the stop time recorded for instance
 minutes is the time the drain actually completed. Backlog counts only
-runner-placed recipes a provisioned instance could claim (recipes whose
+runner-placed recipes a provisioned instance could claim (the configured
+executable is probed once with `--capabilities`, event 2243, or the host
+process stands in after a failed probe, event 2244; recipes whose
 requirements the instance cannot satisfy are excluded and logged once as
-event 2242) and includes expired leases the claim would reclaim. Instances
+event 2242) and includes expired leases the claim would reclaim. Idle
+scale-down never retires registered capacity the demand still needs, and
+concurrent drains stamp each instance's own stop time. Instances
 recorded by a previous host process are re-adopted when their process is
 still alive, reserved retirements included, which are then completed.
 `LocalProcess:LogicHostUrl` must be http or https, and http only for loopback
@@ -152,7 +156,7 @@ retains backlog, when startup cannot meet the deadline past the deadline,
 when orphans were cleaned in the last sample, or when no sample has
 completed within three intervals of startup, and unhealthy after three
 consecutive sampling failures (for example an executable that cannot start).
-Log events 2230-2242.
+Log events 2230-2244.
 
 ## Operations
 

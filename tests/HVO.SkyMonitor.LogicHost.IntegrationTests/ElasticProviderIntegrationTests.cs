@@ -458,6 +458,108 @@ public sealed class ElasticProviderIntegrationTests
         provider.Provisioned.Should().BeEmpty("no instance minutes are spent on work no instance could claim");
     }
 
+    [TestMethod]
+    public async Task IdleScaleDownKeepsEnoughRegisteredCapacityForTheDemand()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        // Two adopted instances registered with different concurrency (1 and 4 slots) under a 4-slot configuration.
+        var small = Guid.NewGuid().ToString("N")[..16];
+        var large = Guid.NewGuid().ToString("N")[..16];
+        foreach (var (instanceId, slots) in new[] { (small, 1), (large, 4) })
+        {
+            var runnerId = $"elastic-scripted-{instanceId}";
+            provider.MarkAlive(instanceId, runnerId);
+            await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+            await using var scope = factory.Services.CreateAsyncScope();
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId, slots), CancellationToken.None).ConfigureAwait(false);
+        }
+        for (var i = 0; i < 4; i++)
+        {
+            await SeedPreviewJobAsync("elastic-capacity").ConfigureAwait(false);
+        }
+        var settings = WarmOptions(minWarm: 0);
+        settings = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 2,
+            MinWarmInstances = 0,
+            MaxConcurrencyPerInstance = 4,
+            ScaleToZeroAfter = TimeSpan.FromSeconds(1),
+            SampleInterval = settings.SampleInterval,
+            RetireGrace = settings.RetireGrace
+        };
+        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Reason.Should().Be(ElasticScalingPolicy.ReasonIdle, "four queued jobs need one configured instance, so one idle instance may go");
+        provider.Retired.Should().Equal([small], "retiring the four-slot instance would leave one registered slot for four jobs; the single-slot instance is the excess");
+        (await ScriptedInstanceAsync(factory, large).ConfigureAwait(false)).State.Should().Be(nameof(ElasticRunnerInstanceState.Running));
+    }
+
+    [TestMethod]
+    public async Task ConcurrentRetirementsStampTheirOwnStopTimes()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        var quick = Guid.NewGuid().ToString("N")[..16];
+        var slow = Guid.NewGuid().ToString("N")[..16];
+        provider.RetireDelays[slow] = TimeSpan.FromSeconds(3);
+        foreach (var instanceId in new[] { quick, slow })
+        {
+            var runnerId = $"elastic-scripted-{instanceId}";
+            provider.MarkAlive(instanceId, runnerId);
+            await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+            await using var scope = factory.Services.CreateAsyncScope();
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId), CancellationToken.None).ConfigureAwait(false);
+        }
+        var settings = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 2,
+            MaxConcurrencyPerInstance = 1,
+            ScaleToZeroAfter = TimeSpan.FromSeconds(1),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(10)
+        };
+        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+
+        var started = DateTimeOffset.UtcNow;
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        var elapsed = DateTimeOffset.UtcNow - started;
+        decision.Retire.Should().Be(2);
+        provider.Retired.Should().BeEquivalentTo([quick, slow]);
+        var quickRow = await ScriptedInstanceAsync(factory, quick).ConfigureAwait(false);
+        var slowRow = await ScriptedInstanceAsync(factory, slow).ConfigureAwait(false);
+        quickRow.StoppedAtUtc.Should().BeBefore(started.AddSeconds(2), "the instance that exited at once is not charged for its sibling's drain");
+        slowRow.StoppedAtUtc.Should().BeOnOrAfter(started.AddSeconds(3));
+        elapsed.Should().BeLessThan(TimeSpan.FromSeconds(8), "drains run concurrently");
+    }
+
+    [TestMethod]
+    public async Task TheLocalAdapterDescribesInstancesFromTheConfiguredRunner()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        await using var host = await ElasticHost.StartAsync(maxInstances: 1, scaleToZeroAfter: TimeSpan.FromMinutes(10)).ConfigureAwait(false);
+        var provider = (LocalProcessElasticRunnerProvider)host.Provider;
+        var probed = provider.ProbeConfiguredRunner();
+        probed.Should().NotBeNull("the configured runner executable advertises its own capabilities");
+        probed!.ProtocolVersion.Should().Be(ProcessingRunnerProtocol.Version);
+        probed.BuiltInRecipes.Should().Contain(recipe => recipe.Name == BuiltInProcessingRecipes.EncodedPreview);
+        var described = provider.DescribeInstance(2, ["provider:local-process", "elastic-instance:probe"]);
+        described.MaxConcurrency.Should().Be(2);
+        described.Labels.Should().BeEquivalentTo(["elastic-instance:probe", "provider:local-process"]);
+        described.RuntimeIdentifier.Should().Be(probed.RuntimeIdentifier, "the description comes from the probed runner, with the instance's own concurrency and labels");
+    }
+
     private const string ScriptedSubject = "scripted-runner-subject";
 
     private static WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> RunnerEnabledFactory()
@@ -494,9 +596,9 @@ public sealed class ElasticProviderIntegrationTests
             TimeProvider.System,
             services.GetRequiredService<ILogger<ElasticRunnerAutoscaler>>());
 
-    private static ProcessingRunnerRegistrationRequest ScriptedRegistration(string runnerId)
+    private static ProcessingRunnerRegistrationRequest ScriptedRegistration(string runnerId, int maxConcurrency = 1)
         => new(runnerId, "Scripted elastic runner",
-            ProcessingRunnerCapabilities.CreateForCurrentProcess(1, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, null, null),
+            ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, null, null),
             Environment.ProcessId, DateTimeOffset.UtcNow.AddMinutes(-1));
 
     private static async Task SeedScriptedInstanceAsync(
@@ -541,6 +643,7 @@ public sealed class ElasticProviderIntegrationTests
             .Where(job => job.SourceCentralArtifactId == sourceArtifactId && job.RecipeName == BuiltInProcessingRecipes.EncodedPreview)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(job => job.Status, CentralDerivativeJobStatus.Leased)
+                .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)
                 .SetProperty(job => job.LeaseOwner, owner)
                 .SetProperty(job => job.LeaseToken, Guid.NewGuid())
                 .SetProperty(job => job.LeaseExpiresAtUtc, leaseExpiresAtUtc))
@@ -640,14 +743,20 @@ public sealed class ElasticProviderIntegrationTests
 
         public TimeSpan RetireDelay { get; set; }
 
+        public Dictionary<string, TimeSpan> RetireDelays { get; } = new(StringComparer.Ordinal);
+
         public async Task RetireAsync(string instanceId, TimeSpan grace, CancellationToken cancellationToken)
         {
-            if (RetireDelay > TimeSpan.Zero)
+            var delay = RetireDelays.TryGetValue(instanceId, out var own) ? own : RetireDelay;
+            if (delay > TimeSpan.Zero)
             {
-                await Task.Delay(RetireDelay, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             }
-            Retired.Add(instanceId);
-            _alive.Remove(instanceId);
+            lock (Retired)
+            {
+                Retired.Add(instanceId);
+                _alive.Remove(instanceId);
+            }
         }
 
         public Task<IReadOnlyList<ElasticRunnerInstance>> ListAsync(CancellationToken cancellationToken)

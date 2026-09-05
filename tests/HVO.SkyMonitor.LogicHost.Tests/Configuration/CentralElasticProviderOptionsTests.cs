@@ -267,6 +267,32 @@ public sealed class CentralElasticProviderOptionsTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void InstanceDescriptionFallsBackToTheHostWhenTheRunnerCannotBeProbed()
+    {
+        var settings = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            LocalProcess = new CentralLocalProcessElasticOptions
+            {
+                Executable = Path.Combine(Path.GetTempPath(), $"hvo-missing-runner-{Guid.NewGuid():N}"),
+                LogicHostUrl = "https://logichost.local/",
+                ClientSecretFile = "/run/secrets/runner"
+            }
+        };
+        using var provider = new LocalProcessElasticRunnerProvider(
+            Microsoft.Extensions.Options.Options.Create(settings), TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LocalProcessElasticRunnerProvider>.Instance);
+        Assert.IsNull(provider.ProbeConfiguredRunner(), "a missing executable cannot be probed");
+        Assert.IsNull(provider.ProbeConfiguredRunner(), "the probe runs once per host process");
+        var described = provider.DescribeInstance(3, ["provider:local-process", "b", "a", "a"]);
+        Assert.AreEqual(3, described.MaxConcurrency);
+        CollectionAssert.AreEqual(new[] { "a", "b", "provider:local-process" }, described.Labels.ToArray());
+        Assert.AreEqual(System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(), described.ProcessArchitecture, "the host process stands in until the next host start");
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void LocalProcessEnvironmentCarriesTheRunnerContractAndProvenanceLabels()
     {
         var request = new ElasticRunnerProvisionRequest(
