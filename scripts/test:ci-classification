@@ -918,6 +918,47 @@ for job in unit integration coverage; do
     exit 1
   }
 done
+
+# Badge publication is optional operational metadata. Its credential stays in
+# the Actions secret store, its public Gist ID stays in a repository variable,
+# and neither an absent credential nor an endpoint outage can falsify Required CI.
+badges_job="$(extract_workflow_job badges)"
+grep -Fxq "    if: github.ref == 'refs/heads/main'" <<< "$badges_job" || {
+  printf 'Coverage badges must publish only from main.\n' >&2
+  exit 1
+}
+grep -Fxq '    permissions: {}' <<< "$badges_job" || {
+  printf 'Coverage badge publication must not receive repository permissions.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # The workflow expressions are intentionally literal.
+grep -Fq 'BADGE_GIST_TOKEN: ${{ secrets.GIST_TOKEN }}' <<< "$badges_job" || {
+  printf 'Coverage badge publication must use the repository GIST_TOKEN secret.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # The workflow expressions are intentionally literal.
+grep -Fq 'BADGE_GIST_ID: ${{ vars.COVERAGE_GIST_ID }}' <<< "$badges_job" || {
+  printf 'Coverage badge publication must use the public repository Gist ID variable.\n' >&2
+  exit 1
+}
+if grep -Fq 'secrets.COVERAGE_GIST_ID' <<< "$badges_job"; then
+  printf 'The public coverage Gist ID must not be stored as a secret.\n' >&2
+  exit 1
+fi
+badge_continue_count="$(grep -Fc 'continue-on-error: true' <<< "$badges_job" || true)"
+if (( badge_continue_count != 2 )); then
+  printf 'Both coverage badge publication steps must remain best-effort.\n' >&2
+  exit 1
+fi
+grep -Fq 'Report unconfigured coverage badge publication' <<< "$badges_job" || {
+  printf 'Missing badge configuration must produce an explicit warning.\n' >&2
+  exit 1
+}
+grep -Fq 'Report coverage badge publication failure' <<< "$badges_job" || {
+  printf 'Failed badge publication must produce an explicit warning.\n' >&2
+  exit 1
+}
+
 for host in cameraagent logichost; do
   job_body="$(extract_workflow_job "migrations-$host")"
   grep -Fq "./scripts/ci:canonical-migration $host" <<< "$job_body" || {

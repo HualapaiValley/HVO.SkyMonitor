@@ -841,12 +841,24 @@ jobs:
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 5
     needs: coverage
+    permissions: {}
+    env:
+      BADGE_GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+      BADGE_GIST_ID: ${{ vars.COVERAGE_GIST_ID }}
     steps:
+      - name: Report unconfigured coverage badge publication
+        if: env.BADGE_GIST_TOKEN == '' || env.BADGE_GIST_ID == ''
+        run: |
+          echo '::warning title=Coverage badge publication disabled::Configure GIST_TOKEN and COVERAGE_GIST_ID as documented in docs/runbooks/ci-pipeline.md.'
+          printf '### Coverage badge publication\n\nSkipped because the repository credential or Gist ID is not configured.\n' >> "$GITHUB_STEP_SUMMARY"
       - name: Update line coverage badge
+        id: line_badge
+        if: env.BADGE_GIST_TOKEN != '' && env.BADGE_GIST_ID != ''
+        continue-on-error: true
         uses: schneegans/dynamic-badges-action@28b0fa8bdeb46170ac397105ece0c1fe58f68910 # v1.9.0
         with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: ${{ secrets.COVERAGE_GIST_ID }}
+          auth: ${{ env.BADGE_GIST_TOKEN }}
+          gistID: ${{ env.BADGE_GIST_ID }}
           filename: coverage-line.json
           label: line coverage
           message: ${{ needs.coverage.outputs.line }}%
@@ -854,16 +866,24 @@ jobs:
           minColorRange: 40
           maxColorRange: 80
       - name: Update branch coverage badge
+        id: branch_badge
+        if: env.BADGE_GIST_TOKEN != '' && env.BADGE_GIST_ID != ''
+        continue-on-error: true
         uses: schneegans/dynamic-badges-action@28b0fa8bdeb46170ac397105ece0c1fe58f68910 # v1.9.0
         with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: ${{ secrets.COVERAGE_GIST_ID }}
+          auth: ${{ env.BADGE_GIST_TOKEN }}
+          gistID: ${{ env.BADGE_GIST_ID }}
           filename: coverage-branch.json
           label: branch coverage
           message: ${{ needs.coverage.outputs.branch }}%
           valColorRange: ${{ needs.coverage.outputs.branch }}
           minColorRange: 30
           maxColorRange: 70
+      - name: Report coverage badge publication failure
+        if: always() && env.BADGE_GIST_TOKEN != '' && env.BADGE_GIST_ID != '' && (steps.line_badge.outcome == 'failure' || steps.branch_badge.outcome == 'failure')
+        run: |
+          echo '::warning title=Coverage badge publication failed::Required CI remains authoritative; rotate GIST_TOKEN or inspect the coverage Gist before relying on the badges.'
+          printf '### Coverage badge publication\n\nPublication failed. Required CI remains authoritative until the badge credential or Gist is repaired.\n' >> "$GITHUB_STEP_SUMMARY"
 
   required:
     name: Required CI

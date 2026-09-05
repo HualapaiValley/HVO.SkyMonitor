@@ -1,5 +1,10 @@
 # HVO.SkyMonitor
 
+[![CI](https://github.com/RoySalisbury/HVO.SkyMonitor/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RoySalisbury/HVO.SkyMonitor/actions/workflows/ci.yml)
+[![Line Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/RoySalisbury/aec5c0f8e0741d964da6859ec4466740/raw/coverage-line.json)](https://github.com/RoySalisbury/HVO.SkyMonitor/actions/workflows/ci.yml)
+[![Branch Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/RoySalisbury/aec5c0f8e0741d964da6859ec4466740/raw/coverage-branch.json)](https://github.com/RoySalisbury/HVO.SkyMonitor/actions/workflows/ci.yml)
+[![.NET](https://img.shields.io/badge/.NET-10.0-512BD4)](https://dotnet.microsoft.com/)
+
 Distributed all-sky imaging system built with .NET 10. Self-contained CameraAgent
 instances acquire and process images near each camera, retain bounded local history,
 and send selected artifacts to a central LogicHost for durable storage and further
