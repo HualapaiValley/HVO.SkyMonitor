@@ -528,6 +528,10 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     openssl ecparam -name prime256v1 -genkey -noout -out "$signed_workspace/untrusted.pem"
     chmod 600 "$signed_workspace/untrusted.pem"
   fi
+  openssl pkey -in "$signed_workspace/untrusted.pem" -pubout -out "$signed_workspace/untrusted.pub.pem"
+  signed_untrusted_key_id="p256-sha256:$(openssl pkey -pubin -in "$signed_workspace/untrusted.pub.pem" -outform DER |
+    sha256sum | cut -d ' ' -f 1)"
+  test "$signed_untrusted_key_id" != "$signed_key_id"
 
   signed_source_worktrees=""
   build_signed_release() {
@@ -600,10 +604,17 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test "$(jq -er '.images[0].compatibility.minimumCompatibleRevision' \
     "$signed_workspace/release-contradicting/image-manifest.json")" = "$signed_revision_a"
 
-  # The same release bytes, signed by a key the campaign trust root does not carry. The manifest still names the
-  # trusted key id, so this refusal exercises signature verification rather than the key-identity comparison.
+  # The same release bytes, signed by a key the campaign trust root does not carry.
   derive_signed_release untrusted
-  cp "$signed_manifest_b" "$signed_workspace/release-untrusted/image-manifest.json"
+  jq --arg keyId "$signed_untrusted_key_id" '.signing.keyId = $keyId' \
+    "$signed_manifest_b" >"$signed_workspace/release-untrusted/image-manifest.json"
+
+  # The same release bytes and the trusted key id, presented with that key's signature over a different release.
+  # The signature is well formed and made by the trusted key, so only verifying it against these bytes refuses it.
+  derive_signed_release forged
+  cp "$signed_manifest_b" "$signed_workspace/release-forged/image-manifest.json"
+  cp "$signed_workspace/release-a/image-manifest.json.sig" \
+    "$signed_workspace/release-forged/image-manifest.json.sig"
 
   dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
     --configuration Release -warnaserror >/dev/null
@@ -803,6 +814,28 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   assert_signed_running_image "$signed_image_b" "$signed_digest_b" signed-status-untrusted
   capture_signed_state 04-untrusted-key-refusal
 
+  # A signature the trusted key really made, over a different release. Only verifying the signature against these
+  # exact bytes rejects it, so this is what proves the campaign trust root still verifies rather than only matching
+  # a key identity.
+  if "$signed_cli" cameraagent upgrade \
+    --instance-id "$signed_instance_id" \
+    --product-root "$root/product" \
+    --channel local \
+    --image-manifest "$signed_workspace/release-forged/image-manifest.json" \
+    --no-download \
+    --migration-backward-compatible \
+    --json >"$root/signed-forged.json" 2>"$root/signed-forged-error.json"; then
+    printf 'A release presented with another release signature was accepted.\n' >&2
+    exit 1
+  fi
+  test ! -s "$root/signed-forged.json"
+  test "$(jq -er '.errorCode' "$root/signed-forged-error.json")" = installation-failed
+  jq -er '.message | test("could not be acquired or verified")' "$root/signed-forged-error.json" >/dev/null
+  test "$(sha256sum "$signed_lifecycle_state" | cut -d ' ' -f 1)" = "$signed_journal_before"
+  assert_signed_evidence_names "$signed_version_b" "$signed_image_b" "$signed_revision_b"
+  assert_signed_running_image "$signed_image_b" "$signed_digest_b" signed-status-forged
+  capture_signed_state 05-forged-signature-refusal
+
   "$signed_cli" cameraagent rollback \
     --instance-id "$signed_instance_id" \
     --product-root "$root/product" \
@@ -814,7 +847,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   # rewritten: no retained evidence may claim a release the instance is no longer running.
   test ! -e "$signed_evidence_path"
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-rollback
-  capture_signed_state 05-rollback
+  capture_signed_state 06-rollback
 
   # A release whose signed compatibility record contradicts the image it names is refused after acquisition and
   # before any mutation, and it records nothing: a refused upgrade never resurrects a withdrawn release record.
@@ -842,7 +875,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     "$(jq -er '.image.imageId' "$signed_instance_root/instance-manifest.json")" "$signed_image_a" "$signed_digest_a"
   test ! -e "$signed_evidence_path"
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-contradicting
-  capture_signed_state 06-contradicting-label-refusal
+  capture_signed_state 07-contradicting-label-refusal
 
   # The state-compatibility preflight must still pass on the instance the signed lifecycle left behind, so the
   # scenario cannot have reached its end by weakening the gate it shares with the operator-supplied image path.
@@ -854,7 +887,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test "$(jq -er '.outcome' "$root/signed-preflight.json")" = compatible
   test "$(jq -er '.instanceId' "$root/signed-preflight.json")" = "$signed_instance_id"
   test "$(jq -er '[.findings[] | select(.blocking)] | length' "$root/signed-preflight.json")" = 0
-  cp "$root/signed-preflight.json" "$signed_evidence_root/07-preflight.json"
+  cp "$root/signed-preflight.json" "$signed_evidence_root/08-preflight.json"
 
   {
     printf 'signed release campaign\n'

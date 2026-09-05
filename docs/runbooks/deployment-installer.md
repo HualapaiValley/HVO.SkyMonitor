@@ -184,7 +184,8 @@ every transition the retained release record has to follow:
 | Install from the superseded release | `cameraagent install --image-manifest <a>` | present, naming that release and the running image |
 | Refused by the production trust root | the product CLI, same upgrade | unchanged |
 | Upgrade to the candidate release | `cameraagent upgrade --image-manifest <b>` | present, naming the new release and the new image |
-| Refused: signed by an untrusted key | `cameraagent upgrade --image-manifest <untrusted>` | unchanged; still names the running release |
+| Refused: signed by a key the trust root does not carry | `cameraagent upgrade --image-manifest <untrusted>` | unchanged; still names the running release |
+| Refused: the trusted key's signature over a different release | `cameraagent upgrade --image-manifest <forged>` | unchanged |
 | Rollback to the retained previous image | `cameraagent rollback` | absent |
 | Refused: release contradicts the image labels | `cameraagent upgrade --image-manifest <contradicting>` | still absent |
 | State-compatibility preflight on what the sequence left behind | `cameraagent preflight` | unchanged |
@@ -197,12 +198,15 @@ instance manifest, the installation result, the lifecycle journal, a state
 inventory with modes, deployment checksums, and the container log under
 `TestResults/issue-598/<run>/`.
 
-The two refusals bracket the trust decision from both sides: the release
+The refusals bracket the trust decision from several sides. The release
 contradicting the image labels is genuinely signed and is refused by the
-label-agreement gate after acquisition and before any mutation, while the
-untrusted-key release is refused during acquisition, before the instance is
-touched at all. Neither refusal writes, rewrites, or resurrects the retained
-release record.
+label-agreement gate after acquisition and before any mutation. The
+untrusted-key release is refused because the trust root does not carry that key
+identity, and the forged release — release B's manifest presented with the
+trusted key's signature over release A — is refused only because the signature
+is actually verified against the bytes in hand, not merely matched to a key
+identity. All three refuse during or before image preparation, and none writes,
+rewrites, or resurrects the retained release record.
 
 The contradicted boundary is the signed compatibility record — the campaign
 changes the release's `minimumCompatibleRevision` — because the manifest's own
