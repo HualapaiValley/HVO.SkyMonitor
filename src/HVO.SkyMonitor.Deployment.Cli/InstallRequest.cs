@@ -185,12 +185,10 @@ internal sealed record InstallRequest
     }
 
     /// <summary>
-    /// A signed image release and an operator-supplied image are mutually exclusive: the installation either
-    /// derives the immutable image from verified release metadata or is told exactly which image to use, never both.
-    /// </summary>
-    /// <summary>
-    /// Validates only how the image was selected. A lifecycle upgrade resolves a signed image release without a
-    /// catalog input, so it applies these rules alone rather than the whole install contract.
+    /// Validates only how the image was selected. A signed image release and an operator-supplied image are
+    /// mutually exclusive: the installation either derives the immutable image from verified release metadata or is
+    /// told exactly which image to use, never both. A lifecycle upgrade resolves a signed release without a catalog
+    /// input, so it applies these rules alone rather than the whole install contract.
     /// </summary>
     internal void ValidateImageSelection()
     {

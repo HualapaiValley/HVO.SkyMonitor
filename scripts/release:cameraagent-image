@@ -299,31 +299,41 @@ else
         }' >"$scan_report"
 fi
 printf 'Vulnerability summary: %s\n' "$(jq -c .summary "$scan_report")" >&2
+# The release tool applies this gate too, but it runs after the registry publication below. A critical finding must
+# stop the release before anything is published, because a published identity is immutable and cannot be retracted.
+jq --exit-status '.summary.critical == 0' "$scan_report" >/dev/null || {
+    printf 'The scan reports %s critical findings; refusing to publish %s:%s.\n' \
+        "$(jq -r '.summary.critical' "$scan_report")" "$repository" "$version" >&2
+    exit 1
+}
 
 if [[ "$push" == 1 ]]; then
-    if docker buildx imagetools inspect "${repository}:${version}" >/dev/null 2>&1; then
-        printf 'The registry already publishes %s:%s; a published image identity is immutable.\n' \
-            "$repository" "$version" >&2
-        exit 1
-    fi
-    printf 'Publishing the multi-architecture image to %s:%s\n' "$repository" "$version" >&2
-    push_prefix=(docker)
-    push_selector=()
-    if [[ "$(builder_invocation "$amd64_builder")" == context ]]; then
-        push_prefix+=(--context "$amd64_builder")
+    # A publication that already exists is adopted rather than refused, because the release workflow supports
+    # re-dispatching a run whose signing or publication step failed after the build succeeded. Immutability is
+    # enforced by the index comparison below, which fails if the existing publication names different bytes.
+    if index_digest="$(docker buildx imagetools inspect "${repository}:${version}" \
+        --format '{{.Manifest.Digest}}' 2>/dev/null)"; then
+        printf 'Adopting the existing publication of %s:%s\n' "$repository" "$version" >&2
     else
-        push_selector+=(--builder "$amd64_builder")
+        printf 'Publishing the multi-architecture image to %s:%s\n' "$repository" "$version" >&2
+        push_prefix=(docker)
+        push_selector=()
+        if [[ "$(builder_invocation "$amd64_builder")" == context ]]; then
+            push_prefix+=(--context "$amd64_builder")
+        else
+            push_selector+=(--builder "$amd64_builder")
+        fi
+        "${push_prefix[@]}" buildx build "${push_selector[@]}" \
+            --platform linux/amd64,linux/arm64 \
+            --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
+            --build-arg "HVO_SOURCE_REVISION=${revision}" \
+            --provenance false \
+            --tag "${repository}:${version}" \
+            --metadata-file "$work/push-metadata.json" \
+            --push \
+            .
+        index_digest="$(jq -r '."containerimage.digest" // empty' "$work/push-metadata.json")"
     fi
-    "${push_prefix[@]}" buildx build "${push_selector[@]}" \
-        --platform linux/amd64,linux/arm64 \
-        --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
-        --build-arg "HVO_SOURCE_REVISION=${revision}" \
-        --provenance false \
-        --tag "${repository}:${version}" \
-        --metadata-file "$work/push-metadata.json" \
-        --push \
-        .
-    index_digest="$(jq -r '."containerimage.digest" // empty' "$work/push-metadata.json")"
     [[ "$index_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || {
         printf 'The registry did not report a multi-architecture manifest digest.\n' >&2
         exit 1
@@ -334,8 +344,9 @@ if [[ "$push" == 1 ]]; then
     published_amd64="$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest] | unique | join(",")' "$work/published-index.json")"
     published_arm64="$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest] | unique | join(",")' "$work/published-index.json")"
     if [[ "$published_amd64" != "$amd64_manifest" || "$published_arm64" != "$arm64_manifest" ]]; then
-        printf 'The published index names linux/amd64 %s and linux/arm64 %s, but the examined archives are %s and %s.\n' \
-            "${published_amd64:-<none>}" "${published_arm64:-<none>}" "$amd64_manifest" "$arm64_manifest" >&2
+        printf 'The publication of %s:%s names linux/amd64 %s and linux/arm64 %s, but the examined archives are %s and %s.\n' \
+            "$repository" "$version" "${published_amd64:-<none>}" "${published_arm64:-<none>}" \
+            "$amd64_manifest" "$arm64_manifest" >&2
         exit 1
     fi
     printf 'Published multi-architecture digest %s\n' "$index_digest" >&2

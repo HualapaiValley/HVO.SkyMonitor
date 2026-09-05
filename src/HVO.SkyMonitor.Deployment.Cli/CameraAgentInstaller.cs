@@ -204,10 +204,6 @@ internal sealed class CameraAgentInstaller
             {
                 throw new InstallerException("The Docker daemon identity changed after preflight.");
             }
-            if (acquiredImage is not null)
-            {
-                await acquiredImage.WriteEvidenceAsync(paths, cancellationToken).ConfigureAwait(false);
-            }
             if (retainedCompletedResult is not null && request.ReplayProfile == CameraAgentReplayProfile.InProcess &&
                 existingManifest!.Image.ReplayRunnerContract is null && retainedCompletedResult.Image.ReplayRunnerContract is null)
             {
@@ -448,6 +444,12 @@ internal sealed class CameraAgentInstaller
                     result,
                     DeploymentJsonContext.Default.InstallationResult,
                     cancellationToken).ConfigureAwait(false);
+            }
+            // The release record is retained only once the installation is complete, so a failure at any earlier
+            // stage never leaves evidence naming a release no container is running.
+            if (acquiredImage is not null)
+            {
+                await acquiredImage.WriteEvidenceAsync(paths, cancellationToken).ConfigureAwait(false);
             }
             _ = await RecordPhaseAsync(
                 paths,

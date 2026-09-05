@@ -538,6 +538,29 @@ accepted after partial deletion, while additions and replacements fail closed.
 LogicHost lifecycle, remote orchestration, and physical-camera discovery remain
 future lifecycle scope.
 
+## Harness Inputs For A Published Image
+
+Both container harnesses can exercise a published image instead of building one,
+so a signed release can be proved against the bytes an operator receives:
+
+```bash
+# Install, health, authenticated owner bootstrap, restart, uninstall, and reset
+# against a published archive rather than a locally built image.
+HVO_PRODUCTION_CATALOG_BUNDLE=<bundle> \
+HVO_INSTALLER_RELEASE_ARCHIVE=<candidate>/cameraagent-image-v<version>-linux-amd64.tar \
+  ./scripts/test:deployment-installer
+
+# Two-agent standalone smoke against a published image. Diagnostic mode only:
+# this run records the local worktree revision, so it cannot produce citable
+# evidence for an image built elsewhere.
+HVO_CAMERAAGENT_SMOKE_IMAGE=<tag, repository digest, or image ID> \
+  ./scripts/test:cameraagent-dual-standalone-smoke
+```
+
+Neither variable changes anything when unset; both harnesses build their own
+image as before. `HVO_INSTALLER_BASELINE_REVISION` takes precedence, because a
+baseline upgrade contract needs two images built from two revisions.
+
 ## Build Evidence
 
 Build the two supported self-contained binaries with:

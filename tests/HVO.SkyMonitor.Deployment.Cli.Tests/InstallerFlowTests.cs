@@ -276,7 +276,7 @@ public sealed class InstallerFlowTests
         var previousTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
         Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
         var imageId = $"sha256:{new string('b', 64)}";
-        using var release = SignedImageReleaseFixture.Create(root, imageId, ContractLabels);
+        using var release = SignedImageReleaseFixture.Create(root, imageId, SignedImageReleaseFixture.ContractLabels);
         var instanceId = Guid.Parse("2b7f6a3c-1d54-4e0a-9c31-6f2b0a5d4e18");
         var request = new InstallRequest
         {
@@ -341,7 +341,7 @@ public sealed class InstallerFlowTests
         var previousTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
         Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
         var imageId = $"sha256:{new string('b', 64)}";
-        var drifted = new Dictionary<string, string>(ContractLabels, StringComparer.Ordinal)
+        var drifted = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
         {
             ["io.hvo.skymonitor.raw-ingress-schema"] = "13"
         };
@@ -381,21 +381,6 @@ public sealed class InstallerFlowTests
             }
         }
     }
-
-    // The labels the fake Docker daemon reports for the candidate image.
-    private static readonly Dictionary<string, string> ContractLabels = new(StringComparer.Ordinal)
-    {
-        ["org.opencontainers.image.revision"] = new string('a', 40),
-        ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
-        ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
-        ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
-        ["io.hvo.skymonitor.raw-ingress-schema"] = "12",
-        ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
-        ["io.hvo.skymonitor.component"] = "CameraAgent",
-        ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
-        ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2",
-        ["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1"
-    };
 
     private sealed class InstallerOwnerClient : IOwnerBootstrapClient
     {

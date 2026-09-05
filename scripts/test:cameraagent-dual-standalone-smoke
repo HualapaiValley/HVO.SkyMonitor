@@ -173,9 +173,12 @@ fi
 image_iid_file="$RESULTS/cameraagent-image-id"
 if [[ -n "${HVO_CAMERAAGENT_SMOKE_IMAGE:-}" ]]; then
     # Exercise an image that was published rather than one built here, so a signed release can be smoke-tested as
-    # the bytes an operator would actually run.
-    docker image inspect "$HVO_CAMERAAGENT_SMOKE_IMAGE" >/dev/null
-    printf '%s' "$HVO_CAMERAAGENT_SMOKE_IMAGE" > "$image_iid_file"
+    # the bytes an operator would actually run. The reference may be a tag, a repository digest, or an image ID.
+    if [[ "$EVIDENCE_MODE" == final ]]; then
+        printf 'A supplied image cannot produce citable evidence: this run records the local worktree revision.\n' >&2
+        exit 2
+    fi
+    docker image inspect --format '{{.Id}}' "$HVO_CAMERAAGENT_SMOKE_IMAGE" > "$image_iid_file"
 else
     docker build --iidfile "$image_iid_file" -f "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" 8>&-
 fi

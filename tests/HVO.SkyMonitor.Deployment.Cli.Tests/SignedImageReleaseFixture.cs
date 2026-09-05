@@ -36,19 +36,35 @@ internal sealed class SignedImageReleaseFixture : IDisposable
 
     public DistributionAcquirer CreateAcquirer() => new(cacheRoot: cacheRoot, trustRoot: TrustRoot);
 
+    /// <summary>The labels a fake Docker daemon reports for a candidate CameraAgent image.</summary>
+    public static readonly Dictionary<string, string> ContractLabels = new(StringComparer.Ordinal)
+    {
+        ["org.opencontainers.image.revision"] = new string('a', 40),
+        ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
+        ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
+        ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
+        ["io.hvo.skymonitor.raw-ingress-schema"] = "12",
+        ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
+        ["io.hvo.skymonitor.component"] = "CameraAgent",
+        ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
+        ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2",
+        ["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1"
+    };
+
     public static SignedImageReleaseFixture Create(
         string root,
         string imageId,
-        IReadOnlyDictionary<string, string> labels)
+        IReadOnlyDictionary<string, string> labels,
+        IReadOnlyList<string>? publishedArchitectures = null)
     {
-        var mediaRoot = Path.Combine(root, "release-media", "image-v1.2.3");
+        var mediaRoot = Path.Combine(root, "release-media", $"image-v1.2.3-{Guid.NewGuid():N}");
         Directory.CreateDirectory(mediaRoot);
         var cacheRoot = Path.Combine(root, "distribution-cache");
         Directory.CreateDirectory(cacheRoot);
 
         var artifacts = new List<DistributionArtifact>();
         var platforms = new List<DistributionImagePlatform>();
-        foreach (var architecture in new[] { "amd64", "arm64" })
+        foreach (var architecture in publishedArchitectures ?? ["amd64", "arm64"])
         {
             var assetName = $"cameraagent-image-v1.2.3-linux-{architecture}.tar";
             var path = Path.Combine(mediaRoot, assetName);
