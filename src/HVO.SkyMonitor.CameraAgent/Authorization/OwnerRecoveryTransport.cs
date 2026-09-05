@@ -208,7 +208,8 @@ internal static class OwnerRecoveryNative
     private const int AtSymbolicLinkNoFollow = 0x100;
     private const int AtEmptyPath = 0x1000;
     private const int OpenReadOnly = 0;
-    // O_DIRECTORY and O_NOFOLLOW differ between the x86 and generic (arm64) Linux ABIs; see LinuxOpenFlags.
+    // O_DIRECTORY and O_NOFOLLOW take the arm and powerpc override values on arm64 rather than the asm-generic
+    // defaults x86-64 uses; see LinuxOpenFlags.
     private static readonly int OpenDirectory = LinuxOpenFlags.Directory;
     private static readonly int OpenNoFollow = LinuxOpenFlags.NoFollow;
     private const int OpenCloseOnExec = LinuxOpenFlags.CloseOnExec;

@@ -711,7 +711,7 @@ public static class CatalogSnapshotResolver
         };
 
     private const int LinuxCloseOnExec = 0x80000;
-    private static readonly int LinuxOpenFlags = GetLinuxNoFollowFlag(RuntimeInformation.ProcessArchitecture) | LinuxCloseOnExec;
+    private static int LinuxRetainedOpenFlags => GetLinuxNoFollowFlag(RuntimeInformation.ProcessArchitecture) | LinuxCloseOnExec;
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "The returned FileStream owns the native handle.")]
@@ -720,7 +720,7 @@ public static class CatalogSnapshotResolver
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
             const int macOsOpenFlags = 0x01000100;
-            var descriptor = Open(path, OperatingSystem.IsLinux() ? LinuxOpenFlags : macOsOpenFlags);
+            var descriptor = Open(path, OperatingSystem.IsLinux() ? LinuxRetainedOpenFlags : macOsOpenFlags);
             if (descriptor < 0)
             {
                 var error = Marshal.GetLastPInvokeError();

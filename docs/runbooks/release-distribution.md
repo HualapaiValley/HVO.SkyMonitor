@@ -167,13 +167,15 @@ belongs to a host of that architecture.
 
 The `open(2)` flag defect that blocked `linux/arm64`
 ([#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603)) is fixed:
-the CameraAgent runtime, the SQLite catalog, and the deployment CLI select
-`O_DIRECTORY` and `O_NOFOLLOW` per processor architecture (the arm and powerpc
-ABIs override the asm-generic values that x86-64 uses). The advisory native
-arm64 workflow (`.github/workflows/cameraagent-arm64.yml`) runs the CameraAgent,
-acceptance, catalog, and deployment CLI Unit suites on aarch64. That is unit
-evidence only: no arm64 container smoke or installer campaign has run, so treat
-an arm64 installation as unqualified end to end until #598 and #599 close.
+the CameraAgent runtime and the deployment CLI select `O_DIRECTORY` and
+`O_NOFOLLOW` per processor architecture, and the SQLite catalog selects
+`O_NOFOLLOW` the same way (the arm and powerpc ABIs override the asm-generic
+values that x86-64 uses). The advisory native arm64 workflow
+(`.github/workflows/cameraagent-arm64.yml`) runs the CameraAgent, acceptance,
+catalog, and deployment CLI Unit suites on aarch64 and smoke-tests a natively
+built image there. No smoke of a *published* arm64 release image and no arm64
+installer campaign has run, so treat an arm64 installation as unqualified end
+to end until #598 and #599 close.
 
 A published image release must carry a vulnerability scan. The release tool
 refuses a candidate whose scan report does not name a supported scanner and scan

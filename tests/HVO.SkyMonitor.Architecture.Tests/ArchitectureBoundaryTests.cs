@@ -143,7 +143,8 @@ public sealed class ArchitectureBoundaryTests
         // 0x4000/0x8000 on arm and powerpc, so a hard-coded value silently breaks aarch64 while every x86-64 lane
         // stays green (#603). Any file that imports open(2)/openat(2) from libc must select the flags by
         // RuntimeInformation.ProcessArchitecture, either through a per-architecture table it declares itself or by
-        // delegating to one, and no file outside the three declared tables may spell the literals at all.
+        // delegating to LinuxOpenFlags, and no importer outside the three declared tables may spell the values on a
+        // line that talks about open flags. The sweep covers src/; tests and tools do not import libc open.
         var root = RepositoryGraph.FindRepositoryRoot();
         string[] tableFiles =
         [
@@ -152,13 +153,23 @@ public sealed class ArchitectureBoundaryTests
             Path.Combine("src", "HVO.SkyMonitor.Catalog.Sqlite", "CatalogSnapshotResolver.cs"),
         ];
         var importPattern = new System.Text.RegularExpressions.Regex(
-            """"libc"[^;]*EntryPoint\s*=\s*"open(at)?"""",
+            """"libc"[^;]*EntryPoint\s*=\s*"open(at)?"|LibraryImport\("libc"\)[^;]*\bopen(at)?\s*\("""",
             System.Text.RegularExpressions.RegexOptions.Singleline);
+        // The flag values in every spelling a caller might reach for, checked only on lines that talk about open
+        // flags so that a 64 KiB buffer constant elsewhere in the file is not mistaken for one.
         var literalPattern = new System.Text.RegularExpressions.Regex(
-            """0x0*(10000|20000|A0000)\b""",
+            """\b(0x0*(10000|20000|A0000)|65536|131072|655360)\b""",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var flagContextPattern = new System.Text.RegularExpressions.Regex(
+            """O_|open|flag|nofollow|directory""",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var violations = new List<string>();
         var callers = 0;
+
+        foreach (var table in tableFiles.Where(table => !File.Exists(Path.Combine(root, table))))
+        {
+            violations.Add($"{table}: the declared flag table file is missing");
+        }
 
         foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
                      .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"))
@@ -172,26 +183,27 @@ public sealed class ArchitectureBoundaryTests
                 violations.Add($"{relative}: the per-architecture flag table is missing");
             }
 
-            if (!declaresTable && literalPattern.IsMatch(text) && importPattern.IsMatch(text))
-            {
-                violations.Add($"{relative}: hard-codes an open(2) flag literal beside a libc open import");
-            }
-
             if (!importPattern.IsMatch(text))
             {
                 continue;
             }
 
             callers++;
-            if (!declaresTable &&
-                !text.Contains("LinuxOpenFlags.", StringComparison.Ordinal) &&
-                !text.Contains("RawIngressFileStore.GetLinux", StringComparison.Ordinal))
+            if (!declaresTable)
             {
-                violations.Add($"{relative}: imports libc open but does not select its flags per architecture");
+                foreach (var line in text.Split('\n').Where(line => literalPattern.IsMatch(line) && flagContextPattern.IsMatch(line)))
+                {
+                    violations.Add($"{relative}: hard-codes an open(2) flag value: {line.Trim()}");
+                }
+
+                if (!text.Contains("LinuxOpenFlags.", StringComparison.Ordinal))
+                {
+                    violations.Add($"{relative}: imports libc open but does not select its flags per architecture");
+                }
             }
         }
 
-        Assert.IsGreaterThanOrEqualTo(4, callers, "the libc open importers were not discovered; the pattern is stale");
+        Assert.AreEqual(5, callers, "the set of libc open importers changed; update this guard deliberately");
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
 

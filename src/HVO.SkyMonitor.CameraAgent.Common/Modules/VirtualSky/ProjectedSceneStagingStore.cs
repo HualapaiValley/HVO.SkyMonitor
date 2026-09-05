@@ -766,10 +766,10 @@ internal sealed class ProjectedSceneStagingStore :
             LinuxNoFollowFlag() | StagingOpenFlags.CloseOnExec, directory: true)!;
 
     private static StagingOpenFlags LinuxDirectoryFlag()
-        => (StagingOpenFlags)RawIngressFileStore.GetLinuxDirectoryOnlyFlag(RuntimeInformation.ProcessArchitecture);
+        => (StagingOpenFlags)Storage.LinuxOpenFlags.Directory;
 
     private static StagingOpenFlags LinuxNoFollowFlag()
-        => (StagingOpenFlags)RawIngressFileStore.GetLinuxNoFollowFlag(RuntimeInformation.ProcessArchitecture);
+        => (StagingOpenFlags)Storage.LinuxOpenFlags.NoFollow;
 
     private static SafeFileHandle? LinuxOpenAtFile(SafeFileHandle parent, string name)
         => LinuxOpenAt(parent, name, StagingOpenFlags.ReadOnly | LinuxNoFollowFlag() |
