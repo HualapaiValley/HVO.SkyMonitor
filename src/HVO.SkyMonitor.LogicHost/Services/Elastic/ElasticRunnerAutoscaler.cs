@@ -394,23 +394,27 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var cleanupOldest = cleanupBacklog == 0 ? TimeSpan.Zero : now - claimable.Where(row => row.IsCleanup).Min(row => row.AvailableSince ?? now);
         // The age published outward covers everything retained; the policy's deadline rule sees executable work only.
         var reportedAge = oldestAge > cleanupOldest ? oldestAge : cleanupOldest;
-        // Registered capacity counts only instances that can claim everything queued for this provider (executable
-        // work in its pool scope and terminal cleanup, which the claim hands to any pool): an adopted instance
-        // registered before a recipe was placed, with different capabilities, or with a transfer limit below the
-        // largest claimable job's inputs covers none of that work, so its slots never make the demand look covered.
+        // Registered capacity counts per job: an instance counts when it can claim at least one queued job for this
+        // provider (executable work in its pool scope and terminal cleanup, which the claim hands to any pool) by
+        // recipe and by its own transfer limit; an instance that can claim none of it (adopted before a placement,
+        // other capabilities, limit below every input) is incompatible and covers nothing. Jobs no active instance can
+        // claim are an uncovered shortfall that only new instances (registering with the probed template) serve.
         var relevant = executable.Concat(claimable.Where(row => row.IsCleanup)).ToList();
-        var backlogRecipes = relevant.Select(row => row.RecipeName).Distinct(StringComparer.Ordinal).ToList();
-        var largestInputBytes = relevant.Count == 0 ? 0L : relevant.Max(row => row.InputBytes);
+        bool CanClaim(string eligibleRecipesJson, long maxTransferBytes, ClaimableBacklogRow row)
+            => maxTransferBytes >= row.InputBytes && ParseEligibleRecipes(eligibleRecipesJson).Contains(row.RecipeName, StringComparer.Ordinal);
         bool CanClaimBacklog(string eligibleRecipesJson, long maxTransferBytes)
+            => relevant.Count == 0 || relevant.Any(row => CanClaim(eligibleRecipesJson, maxTransferBytes, row));
+        int Uncovered(IEnumerable<(string EligibleRecipesJson, long MaxTransferBytes)> activeRegistrations)
         {
-            var eligible = ParseEligibleRecipes(eligibleRecipesJson);
-            return maxTransferBytes >= largestInputBytes && backlogRecipes.All(recipe => eligible.Contains(recipe, StringComparer.Ordinal));
+            var list = activeRegistrations.ToList();
+            return relevant.Count(row => !list.Any(registration => CanClaim(registration.EligibleRecipesJson, registration.MaxTransferBytes, row)));
         }
         var compatibleRunning = registeredRunning.Where(runner => CanClaimBacklog(runner.EligibleRecipesJson, runner.MaxTransferBytes)).ToList();
         var registeredRunningCount = registeredRunning.Count;
         var compatibleRunningCount = compatibleRunning.Count;
         var compatibleRunningConcurrency = compatibleRunning.Sum(runner => runner.MaxConcurrency);
         var incompatibleRunning = registeredRunningCount - compatibleRunningCount;
+        var uncoveredBacklog = Uncovered(registeredRunning.Select(runner => (runner.EligibleRecipesJson, runner.MaxTransferBytes)));
         int? entitled = null;
         if (entitlements is not null && backlogRows.Count != 0)
         {
@@ -435,7 +439,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         int CapacityOf(int runningCount, int startingCount)
             => compatibleRunningConcurrency + Math.Max(0, runningCount - registeredRunningCount) * perInstance + startingCount * perInstance;
         var input = new ElasticScalingInput(backlog, oldestAge, running, starting, idle.Count,
-            idle.Count == 0 ? TimeSpan.Zero : idle.Max(item => item.IdleFor), entitled, minutesToday, inFlight, warmLive, CapacityOf(running, starting), cleanupBacklog, incompatibleRunning);
+            idle.Count == 0 ? TimeSpan.Zero : idle.Max(item => item.IdleFor), entitled, minutesToday, inFlight, warmLive, CapacityOf(running, starting), cleanupBacklog, incompatibleRunning, uncoveredBacklog);
         // Deployment-wide decisions are serialized: the decision and its durable intents commit under one
         // application lock so replicas sampling the same backlog cannot both fill the same shortfall.
         await using var scaling = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -474,7 +478,8 @@ internal sealed partial class ElasticRunnerAutoscaler(
         compatibleRunningCount = lockedCompatible.Count;
         compatibleRunningConcurrency = lockedCompatible.Sum(runner => runner.MaxConcurrency);
         incompatibleRunning = registeredRunningCount - compatibleRunningCount;
-        input = input with { Running = running, Starting = starting, WarmInstances = warmLive, Capacity = CapacityOf(running, starting), IncompatibleActive = incompatibleRunning };
+        uncoveredBacklog = Uncovered(lockedRegistered.Select(runner => (runner.EligibleRecipesJson, runner.MaxTransferBytes)));
+        input = input with { Running = running, Starting = starting, WarmInstances = warmLive, Capacity = CapacityOf(running, starting), IncompatibleActive = incompatibleRunning, UncoveredBacklog = uncoveredBacklog };
         var decision = ElasticScalingPolicy.Decide(settings, input, provider.EstimateStartup());
         if (template is null && decision.Reason != ElasticScalingPolicy.ReasonDailyLimit)
         {

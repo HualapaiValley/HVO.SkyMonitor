@@ -254,6 +254,12 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (incompatibleWithRoom.Provision, incompatibleWithRoom.Reason), "with room, a compatible instance is provisioned beside the incompatible one");
         var cleanupIncompatible = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 0, CleanupBacklog: 1, IncompatibleActive: 1), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanupIncompatible.Provision, cleanupIncompatible.Reason), "cleanup needs a compatible instance; an incompatible one does not count");
+        var uncoveredWithRoom = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(6, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 10, UncoveredBacklog: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (uncoveredWithRoom.Provision, uncoveredWithRoom.Reason), "a useful ten-slot instance keeps its capacity for the small jobs; the one job it cannot claim provisions a new instance");
+        var uncoveredAtLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 1, perInstance: 1), new ElasticScalingInput(6, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 10, UncoveredBacklog: 1), startup);
+        Assert.AreEqual((0, 0, ElasticScalingPolicy.ReasonInstanceLimit), (uncoveredAtLimit.Provision, uncoveredAtLimit.Retire, uncoveredAtLimit.Reason), "at the limit a useful instance is not retired for one job it cannot claim; the uncovered work is reported");
+        var uncoveredStarting = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(6, TimeSpan.FromSeconds(5), 1, 1, 0, TimeSpan.Zero, null, 0, Capacity: 11, UncoveredBacklog: 1), startup);
+        Assert.AreEqual(ElasticScalingDecision.Steady, uncoveredStarting, "an instance still starting registers with the template and will cover the job");
     }
 
     [TestMethod]

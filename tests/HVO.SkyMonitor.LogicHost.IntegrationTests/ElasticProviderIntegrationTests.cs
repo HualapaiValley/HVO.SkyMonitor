@@ -604,6 +604,29 @@ public sealed class ElasticProviderIntegrationTests
         await SeedPreviewJobAsync("elastic-oversized").ConfigureAwait(false);
         decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
         decision.Provision.Should().Be(1, "the adopted instance's one-byte transfer limit excludes the queued job's inputs, so its ten slots cover nothing");
+
+        // An instance that serves the smaller inputs keeps its capacity: only the job it cannot claim provisions more.
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        provider = new ScriptedProvider();
+        autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var medium = Guid.NewGuid().ToString("N")[..16];
+        var mediumRunner = $"elastic-scripted-{medium}";
+        provider.MarkAlive(medium, mediumRunner);
+        await SeedScriptedInstanceAsync(factory, medium, mediumRunner, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(mediumRunner, 10, maxTransferBytes: 16), CancellationToken.None).ConfigureAwait(false);
+        }
+        for (var i = 0; i < 5; i++)
+        {
+            await SeedPreviewJobAsync("elastic-small").ConfigureAwait(false);
+        }
+        await SeedPreviewJobAsync("elastic-large", new byte[64]).ConfigureAwait(false);
+        decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Should().Be(new ElasticScalingDecision(1, 0, ElasticScalingPolicy.ReasonBacklog), "the sixteen-byte limit serves the five small jobs on ten slots; only the 64-byte job needs a new instance");
+        provider.Retired.Should().BeEmpty("the useful instance is never retired for the one job it cannot claim");
     }
 
     [TestMethod]
@@ -840,11 +863,11 @@ public sealed class ElasticProviderIntegrationTests
         await db.CentralElasticRunnerInstances.Where(instance => instance.Provider == ScriptedProvider.ProviderName).ExecuteDeleteAsync().ConfigureAwait(false);
     }
 
-    private static async Task<Guid> SeedPreviewJobAsync(string scenario)
+    private static async Task<Guid> SeedPreviewJobAsync(string scenario, byte[]? payload = null)
     {
         var suffix = Guid.NewGuid().ToString("N")[..8];
         return await CentralDerivativeWindowIntegrationTests.SeedAndScheduleSourceAsync(
-            $"{scenario}-{suffix}", Guid.NewGuid(), 1, DateTimeOffset.UtcNow.AddMinutes(-5), SourcePayload, $"{scenario}-profile").ConfigureAwait(false);
+            $"{scenario}-{suffix}", Guid.NewGuid(), 1, DateTimeOffset.UtcNow.AddMinutes(-5), payload ?? SourcePayload, $"{scenario}-profile").ConfigureAwait(false);
     }
 
     private static async Task DisableClaimableJobsAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory)

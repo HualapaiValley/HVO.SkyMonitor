@@ -30,7 +30,7 @@
     { "name": "skymonitor.central.elastic.provisions", "unit": "{instance}", "labels": { "provider": ["local-process"] } },
     { "name": "skymonitor.central.elastic.retirements", "unit": "{instance}", "labels": { "provider": ["local-process"], "reason": ["idle", "daily-limit", "warm-minimum", "incompatible-replacement", "registration-timeout", "registry-lost", "retirement-resumed"] } },
     { "name": "skymonitor.central.elastic.orphans_cleaned", "unit": "{instance}", "labels": { "provider": ["local-process"] } },
-    { "name": "skymonitor.central.elastic.placements_rejected", "unit": "{decision}", "labels": { "provider": ["local-process"], "reason": ["daily-limit", "cold-start-exceeds-deadline", "entitlement-bound", "instance-capabilities-unknown"] } },
+    { "name": "skymonitor.central.elastic.placements_rejected", "unit": "{decision}", "labels": { "provider": ["local-process"], "reason": ["daily-limit", "cold-start-exceeds-deadline", "entitlement-bound", "instance-capabilities-unknown", "instance-limit"] } },
     { "name": "skymonitor.central.elastic.cold_start", "unit": "ms", "labels": { "provider": ["local-process"] } }
   ],
   "healthChecks": [

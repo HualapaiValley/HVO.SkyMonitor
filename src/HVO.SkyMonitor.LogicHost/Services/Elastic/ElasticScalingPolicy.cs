@@ -15,7 +15,8 @@ internal sealed record ElasticScalingInput(
     int WarmInstances = 0,
     int? Capacity = null,
     int CleanupBacklog = 0,
-    int IncompatibleActive = 0);
+    int IncompatibleActive = 0,
+    int UncoveredBacklog = 0);
 
 internal sealed record ElasticScalingDecision(int Provision, int Retire, string Reason)
 {
@@ -41,6 +42,8 @@ internal static class ElasticScalingPolicy
     public const string ReasonInstanceUndescribed = "instance-capabilities-unknown";
     /// <summary>An instance unable to claim the queued recipes is retired at the instance limit to make room for one that can.</summary>
     public const string ReasonIncompatibleReplacement = "incompatible-replacement";
+    /// <summary>Queued work no active instance can claim while the instance limit is full of instances that serve other work.</summary>
+    public const string ReasonInstanceLimit = "instance-limit";
 
     public static ElasticScalingDecision Decide(CentralElasticProviderOptions options, ElasticScalingInput input, TimeSpan startupEstimate)
     {
@@ -87,6 +90,13 @@ internal static class ElasticScalingPolicy
         {
             needed = 1;
         }
+        // Work no active instance can claim (recipe or input size outside every registration) needs new instances
+        // whatever the registered capacity; instances still starting register with the template and will cover it.
+        if (input.UncoveredBacklog > 0)
+        {
+            var uncoveredInstances = Math.Max(0, (int)Math.Ceiling(input.UncoveredBacklog / (double)perInstance) - input.Starting);
+            needed = Math.Max(needed, compatibleActive + uncoveredInstances);
+        }
         var desired = Math.Clamp(Math.Max(needed, options.MinWarmInstances), 0, options.MaxInstances);
         // The warm minimum is a count of instances that never self-terminate: when fewer than that carry the warm
         // designation (a warm instance was lost, or the minimum was raised), replacements are provisioned even while
@@ -100,7 +110,9 @@ internal static class ElasticScalingPolicy
             // autoscaler applies this only to an excess instance with no work in flight, so busy work is never cut.
             return new ElasticScalingDecision(0, 1, ReasonWarmMinimum);
         }
-        if (desired > compatibleActive || warmShortfall > 0)
+        // The branch is entered on the unclamped need as well: a full limit with work no active instance can claim
+        // still reports the shortfall (or replaces an incompatible instance) instead of reading as satisfied.
+        if (desired > compatibleActive || needed > compatibleActive || warmShortfall > 0)
         {
             if (options.MaxInstanceMinutesPerDay > 0 && input.InstanceMinutesToday >= options.MaxInstanceMinutesPerDay)
             {
@@ -122,6 +134,12 @@ internal static class ElasticScalingPolicy
             {
                 var reason = needed > compatibleActive ? (entitlementBound ? ReasonEntitlementBound : ReasonBacklog) : ReasonWarmMinimum;
                 return new ElasticScalingDecision(provision, 0, reason);
+            }
+            if (input.UncoveredBacklog > 0 && input.Starting == 0)
+            {
+                // The limit is full of instances serving other work: the uncovered work is reported, not served by
+                // retiring a useful instance.
+                return new ElasticScalingDecision(0, 0, ReasonInstanceLimit);
             }
         }
         if (desired < active && input.Idle > 0 && input.LongestIdle >= options.ScaleToZeroAfter)
