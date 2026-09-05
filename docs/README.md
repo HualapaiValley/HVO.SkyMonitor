@@ -11,7 +11,8 @@ documents link back without maintaining competing status.
 | Product roadmap | `docs/roadmap.md` | Portfolio initiatives, stable `RM-###` IDs, planning horizons, top-level epic mappings, and high-level dependencies. |
 | Product architecture and implementation plan | `docs/project-plan.md` | Authoritative virtual-first architecture, requirements, phase status, issues, and acceptance criteria. |
 | Agent execution and handoff | `docs/planning/agent-execution.md` | Required issue lifecycle, performance evidence, validation, review correction, green merge, and resumable handoff protocol. |
-| Agent prompts | `docs/planning/agent-prompts.md` | Reusable GPT-5.6 Sol, Terra, Luna, research, review, implementation, and handoff prompts. |
+| PR lifecycle skill | `.agents/skills/pr-lifecycle/SKILL.md` | Canonical draft, review acquisition, correction cap, finalization lock, protected CI, merge, and cleanup procedure. |
+| Agent prompts | `docs/planning/agent-prompts.md` | Capability-first research, review, implementation, and handoff prompts. |
 | Performance validation | `docs/planning/performance-validation.md` | Canonical workloads, measurement record, phase gates, and evidence rule for justified complexity. |
 | Requirements crosswalk | `docs/planning/requirements-crosswalk.md` | Maps retained normative requirement groups to owning specifications, phases, issues, and deferred evidence. |
 | Standalone CameraAgent course correction | `docs/planning/standalone-cameraagent-course-correction.md` | Detailed phase-12A product outcome, work packages, dependency order, and tiered validation policy for issues #205-#211. |
