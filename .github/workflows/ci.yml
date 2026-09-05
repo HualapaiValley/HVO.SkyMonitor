@@ -862,8 +862,10 @@ jobs:
           set -euo pipefail
 
           if [[ ! "$LINE_COVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
-             [[ ! "$BRANCH_COVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-            printf 'Coverage outputs must be non-negative numbers.\n' >&2
+             [[ ! "$BRANCH_COVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+             ! awk -v line="$LINE_COVERAGE" -v branch="$BRANCH_COVERAGE" \
+               'BEGIN { exit !(line <= 100 && branch <= 100) }'; then
+            printf 'Coverage outputs must be numbers from 0 through 100.\n' >&2
             exit 1
           fi
 
@@ -904,7 +906,7 @@ jobs:
             printf '%s\n' 'header = "Accept: application/vnd.github+json"'
             printf '%s\n' 'header = "X-GitHub-Api-Version: 2022-11-28"'
             printf '%s\n' 'header = "Content-Type: application/json"'
-          } | curl --config - \
+          } | curl --disable --config - \
             --fail-with-body \
             --silent \
             --show-error \
@@ -919,10 +921,10 @@ jobs:
             "https://api.github.com/gists/$BADGE_GIST_ID"
 
           jq --exit-status \
-            --arg line "${LINE_COVERAGE}%" \
-            --arg branch "${BRANCH_COVERAGE}%" \
-            '(.files["coverage-line.json"].content | fromjson | .message) == $line and
-             (.files["coverage-branch.json"].content | fromjson | .message) == $branch' \
+            --argjson line "$line_badge" \
+            --argjson branch "$branch_badge" \
+            '(.files["coverage-line.json"].content | fromjson) == $line and
+             (.files["coverage-branch.json"].content | fromjson) == $branch' \
             "$badge_response" > /dev/null
       - name: Report coverage badge publication failure
         if: always() && env.BADGE_GIST_TOKEN != '' && env.BADGE_GIST_ID != '' && steps.publish_badges.outcome == 'failure'

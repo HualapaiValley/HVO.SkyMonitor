@@ -73,10 +73,12 @@ configured, the job sends one atomic Gist API request for both files. Connection
 transfer, and retry limits bound that request to less than the job's five-minute
 backstop; a request failure is tolerated and followed by a diagnostic warning
 and summary. The token is supplied to `curl` through standard input rather than
-the process argument list on the shared runner. Treat any badge-job warning or
-failed publication step as stale-badge evidence and repair it before relying on
-the displayed percentages. A runner or workflow cancellation can still cancel
-the overall run and is an infrastructure failure, not a badge-publication result.
+the process argument list on the shared runner, and the invocation disables
+ambient curl configuration before reading that credential. Treat any badge-job
+warning or failed publication step as stale-badge evidence and repair it before
+relying on the displayed percentages. A runner or workflow cancellation can
+still cancel the overall run and is an infrastructure failure, not a
+badge-publication result.
 
 Rotate the token make-before-break: create the replacement with the same narrow
 permission or scope, create a new Key Vault secret version, update the GitHub

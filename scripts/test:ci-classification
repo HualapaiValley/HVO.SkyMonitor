@@ -962,16 +962,51 @@ grep -Fq -- '--retry-max-time 120' <<< "$badges_job" || {
   printf 'Coverage badge publication must bound its retry window below the job timeout.\n' >&2
   exit 1
 }
-grep -Fq -- '--request PATCH' <<< "$badges_job" || {
-  printf 'Coverage badge publication must update both Gist files atomically.\n' >&2
+badge_patch_count="$(grep -Fc -- '--request PATCH' <<< "$badges_job" || true)"
+if (( badge_patch_count != 1 )); then
+  printf 'Coverage badge publication must use one atomic Gist PATCH request.\n' >&2
   exit 1
-}
+fi
+for badge_file in coverage-line.json coverage-branch.json; do
+  grep -Fq "\"$badge_file\": {content:" <<< "$badges_job" || {
+    printf 'Atomic coverage badge payload is missing %s.\n' "$badge_file" >&2
+    exit 1
+  }
+done
 grep -Fq 'https://api.github.com/gists/$BADGE_GIST_ID' <<< "$badges_job" || {
   printf 'Coverage badge publication must use the configured Gist API endpoint.\n' >&2
   exit 1
 }
+grep -Fq 'curl --disable --config -' <<< "$badges_job" || {
+  printf 'Coverage badge publication must disable ambient curl configuration before loading the token.\n' >&2
+  exit 1
+}
 grep -Fq 'header = "Authorization: Bearer %s"' <<< "$badges_job" || {
   printf 'Coverage badge publication must keep the credential out of process arguments.\n' >&2
+  exit 1
+}
+grep -Fq 'line <= 100 && branch <= 100' <<< "$badges_job" || {
+  printf 'Coverage badge publication must reject percentages above 100.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Workflow shell variables are intentionally literal.
+grep -Fq -- '--argjson line "$line_badge"' <<< "$badges_job" || {
+  printf 'Coverage badge publication must verify the complete returned line badge.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Workflow shell variables are intentionally literal.
+grep -Fq -- '--argjson branch "$branch_badge"' <<< "$badges_job" || {
+  printf 'Coverage badge publication must verify the complete returned branch badge.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Workflow shell variables are intentionally literal.
+grep -Fq '(.files["coverage-line.json"].content | fromjson) == $line' <<< "$badges_job" || {
+  printf 'Coverage badge publication must compare the complete returned line document.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Workflow shell variables are intentionally literal.
+grep -Fq '(.files["coverage-branch.json"].content | fromjson) == $branch' <<< "$badges_job" || {
+  printf 'Coverage badge publication must compare the complete returned branch document.\n' >&2
   exit 1
 }
 if grep -Fq 'dynamic-badges-action' <<< "$badges_job"; then
