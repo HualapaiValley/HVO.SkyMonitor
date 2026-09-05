@@ -209,6 +209,11 @@ internal sealed class RawCaptureIngress :
                 }
                 Volatile.Write(ref _initialized, true);
             }
+            catch (OperationCanceledException)
+            {
+                // Shutdown during initialization is not an integrity failure: no Critical log, availability untouched.
+                throw;
+            }
             catch (Exception exception)
             {
                 var reason = FailureReason(exception);
@@ -263,6 +268,7 @@ internal sealed class RawCaptureIngress :
         await _acceptGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var lifecycleGate = RawIngressLifecycleLock.ForRoot(_options.RawIngressRoot);
         var lifecycleAcquired = false;
+        var payloadPublished = false;
         try
         {
             var stableIds = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
@@ -370,6 +376,7 @@ internal sealed class RawCaptureIngress :
                 using (var payloadActivity = RawIngressTelemetry.ActivitySource.StartActivity("payload.publish"))
                 {
                     await _files.PublishPayloadAsync(paths, frame.PixelData, cancellationToken).ConfigureAwait(false);
+                    payloadPublished = true;
                     payloadActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 }
                 var descriptor = RawCaptureDescriptorFactory.Create(
@@ -532,16 +539,23 @@ internal sealed class RawCaptureIngress :
             }
             return receipt;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!lifecycleAcquired || cancellationToken.IsCancellationRequested)
         {
-            // A cancellation (host shutdown or a caller timeout) is not a storage failure: availability is left
-            // alone and nothing is logged at Error. Once the lifecycle gate was held the journal transaction may
-            // have been interrupted, so the next accept re-initializes and reconciles before trusting the index.
+            // The caller's own cancellation (host shutdown, a revision change, a timeout) is not a storage failure:
+            // availability is left alone and nothing is logged at Error. A cancellation that is not the caller's
+            // falls through to the failure path below, because the commit and its index projection run on
+            // CancellationToken.None and a stray cancellation from there is a store anomaly.
             if (lifecycleAcquired)
             {
-                _telemetry.RecordFailure("accept", "canceled");
+                _telemetry.RecordCancellation("accept");
                 _logger.RawIngressCanceled("accept");
-                Volatile.Write(ref _initialized, false);
+                if (payloadPublished)
+                {
+                    // The journal commit cannot be interrupted, but a payload published without its sidecar or its
+                    // commit would make every retry of this capture a conflict until the reconciler recovers or
+                    // quarantines it, so the next accept re-initializes first.
+                    Volatile.Write(ref _initialized, false);
+                }
             }
             throw;
         }

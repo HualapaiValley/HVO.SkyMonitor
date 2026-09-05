@@ -16,6 +16,7 @@ public sealed class RawIngressTelemetry : IDisposable
     private readonly Counter<long> _committedBytes;
     private readonly Histogram<double> _commitDuration;
     private readonly Counter<long> _failures;
+    private readonly Counter<long> _cancellations;
     private readonly Histogram<double> _lockWaitDuration;
     private readonly Counter<long> _reconciliationRecords;
     private readonly Counter<long> _transactions;
@@ -38,6 +39,7 @@ public sealed class RawIngressTelemetry : IDisposable
         _committedBytes = _meter.CreateCounter<long>("camera_agent.ingress.committed.bytes", "By");
         _commitDuration = _meter.CreateHistogram<double>("camera_agent.ingress.commit.duration", "s");
         _failures = _meter.CreateCounter<long>("camera_agent.ingress.failures", "{failure}");
+        _cancellations = _meter.CreateCounter<long>("camera_agent.ingress.cancellations", "{capture}");
         _lockWaitDuration = _meter.CreateHistogram<double>("camera_agent.ingress.sqlite.lock_wait.duration", "s");
         _reconciliationRecords = _meter.CreateCounter<long>("camera_agent.ingress.reconciliation.records", "{record}");
         _transactions = _meter.CreateCounter<long>("camera_agent.ingress.sqlite.transactions", "{transaction}");
@@ -67,6 +69,10 @@ public sealed class RawIngressTelemetry : IDisposable
 
     internal void RecordFailure(string phase, string reason)
         => _failures.Add(1, RootTag, new("phase", phase), new("reason", reason));
+
+    /// <summary>A capture cancelled by the caller's token; counted apart from failures because it is not one.</summary>
+    internal void RecordCancellation(string phase)
+        => _cancellations.Add(1, RootTag, new("phase", phase));
 
     internal void RecordTransaction(string operation, bool succeeded)
     {

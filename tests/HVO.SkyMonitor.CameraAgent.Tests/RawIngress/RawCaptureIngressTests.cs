@@ -2424,35 +2424,111 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task AcceptAsync_CanceledAfterTheLifecycleGate_DoesNotLogAnErrorOrMarkTheIngressFailedAsync()
+    public async Task AcceptAsync_CanceledByTheCallerAfterTheLifecycleGate_LogsInformationAndRecoversTheEvidenceAsync()
     {
         // Host shutdown while a capture is being accepted used to fall into the generic failure path: an Error log
         // (which the arm64 publish smoke treats as a runtime failure), availability set to accept-failed, and a
-        // forced re-initialization. Only the re-initialization is warranted: the journal transaction may have been
-        // interrupted, so the next accept must reconcile before trusting the index.
+        // forced re-initialization. With the payload and sidecar already published but the commit not yet run,
+        // only the re-initialization is warranted, and it must recover that evidence rather than conflict on it.
+        var root = CreateRoot();
+        try
+        {
+            var state = new RawIngressState(TimeProvider.System);
+            var logger = new RecordingLogger();
+            using var shutdown = new CancellationTokenSource();
+            using var ingress = CreateIngress(
+                root,
+                state,
+                new OneShotFaultInjector(
+                    RawIngressFaultPoint.BeforeJournalCommit,
+                    new Func<Exception>(static () => new OperationCanceledException("Injected shutdown while the lifecycle gate was held.")),
+                    shutdown),
+                logger: logger);
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var configuration = CreateConfiguration();
+            var eventsBeforeAccept = logger.Snapshot.Length;
+
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => ingress.AcceptAsync(
+                configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), shutdown.Token).AsTask())
+                .ConfigureAwait(false);
+
+            var duringAccept = logger.Snapshot.Skip(eventsBeforeAccept).ToArray();
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability, "a cancellation is not a storage failure");
+            Assert.IsFalse(duringAccept.Any(entry => entry.Level >= LogLevel.Warning), "a caller-requested cancellation is not a warning or an error");
+            Assert.IsTrue(duringAccept.Contains((LogLevel.Information, 2039)), "the cancellation is recorded at Information");
+
+            // The published-but-uncommitted evidence forces a second initialization whose reconciler recovers it, so
+            // the same capture is then reported as existing rather than conflicting or being published again.
+            var receipt = await ingress.AcceptAsync(
+                configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            Assert.AreEqual(RawIngressOutcome.Existing, receipt.Outcome, "the forced re-initialization recovered the orphan evidence");
+            Assert.AreEqual(2, logger.Snapshot.Count(entry => entry.EventId == 2040), "the orphaned evidence forces a second initialization");
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_CanceledWithoutTheCallerAskingAfterTheLifecycleGate_IsStillTreatedAsAFailureAsync()
+    {
+        // A cancellation the caller did not request cannot come from the caller's token, and the commit and its
+        // index projection run on CancellationToken.None, so it is a store anomaly and keeps the failure path.
         var root = CreateRoot();
         try
         {
             var state = new RawIngressState(TimeProvider.System);
             var logger = new RecordingLogger();
             using var ingress = CreateIngress(
-                root, state, new CancelingFaultInjector(RawIngressFaultPoint.BeforeJournalCommit), logger: logger);
+                root,
+                state,
+                new OneShotFaultInjector(
+                    RawIngressFaultPoint.BeforeJournalCommit,
+                    new Func<Exception>(static () => new OperationCanceledException("Injected cancellation nobody asked for."))),
+                logger: logger);
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var configuration = CreateConfiguration();
 
             await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => ingress.AcceptAsync(
-                configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).AsTask())
+                CreateConfiguration(), CreateSubmission(Timestamp(6), [6, 6, 6, 6]), CancellationToken.None).AsTask())
                 .ConfigureAwait(false);
 
-            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability, "a cancellation is not a storage failure");
-            Assert.IsFalse(logger.Events.Any(entry => entry.Level >= LogLevel.Error), "nothing may be logged at Error for a cancellation");
-            Assert.IsTrue(logger.Events.Contains((LogLevel.Information, 2060)), "the cancellation is recorded at Information");
-            Assert.IsFalse(logger.Events.Contains((LogLevel.Error, 2044)));
+            var events = logger.Snapshot;
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+            Assert.AreEqual("accept-failed", state.Snapshot.Reason);
+            Assert.IsTrue(events.Contains((LogLevel.Error, 2044)), "a stray cancellation is still refused at Error");
+            Assert.IsFalse(events.Contains((LogLevel.Information, 2039)));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
 
-            // The interrupted transaction forces a re-initialization; the same capture is then accepted normally.
-            var receipt = await ingress.AcceptAsync(
-                configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(receipt);
+    [TestMethod]
+    public async Task InitializeAsync_CanceledByTheCaller_DoesNotLogCriticalOrMarkTheIngressUnhealthyAsync()
+    {
+        // Shutdown can reach InitializeAsync with an already-cancelled token (every hosted service calls it with the
+        // stopping token). That used to be logged as an integrity failure at Critical and left the ingress Unhealthy.
+        var root = CreateRoot();
+        try
+        {
+            var state = new RawIngressState(TimeProvider.System);
+            var logger = new RecordingLogger();
+            using var ingress = CreateIngress(root, state, logger: logger);
+            using var canceled = new CancellationTokenSource();
+            await canceled.CancelAsync().ConfigureAwait(false);
+
+            await Assert.ThrowsAsync<OperationCanceledException>(
+                () => ingress.InitializeAsync(canceled.Token).AsTask()).ConfigureAwait(false);
+
+            Assert.AreNotEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+            Assert.AreNotEqual("initialization-failed", state.Snapshot.Reason);
+            Assert.IsFalse(logger.Snapshot.Any(entry => entry.Level >= LogLevel.Warning), "shutdown during initialization is not an integrity failure");
+
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
         }
         finally
@@ -2810,24 +2886,20 @@ public sealed class RawCaptureIngressTests
         public override DateTimeOffset GetUtcNow() => utcNow;
     }
 
-    private sealed class CancelingFaultInjector(RawIngressFaultPoint target) : IRawIngressFaultInjector
-    {
-        private int _injected;
-
-        public bool IsEnabled(RawIngressFaultPoint point) => point == target;
-
-        public void Inject(RawIngressFaultPoint point)
-        {
-            if (point == target && Interlocked.Exchange(ref _injected, 1) == 0)
-            {
-                throw new OperationCanceledException("Injected cancellation while the lifecycle gate was held.");
-            }
-        }
-    }
-
     private sealed class RecordingLogger : ILogger<RawCaptureIngress>
     {
-        public List<(LogLevel Level, int EventId)> Events { get; } = [];
+        private readonly List<(LogLevel Level, int EventId)> _events = [];
+
+        public (LogLevel Level, int EventId)[] Snapshot
+        {
+            get
+            {
+                lock (_events)
+                {
+                    return _events.ToArray();
+                }
+            }
+        }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -2840,14 +2912,17 @@ public sealed class RawCaptureIngressTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            lock (Events)
+            lock (_events)
             {
-                Events.Add((logLevel, eventId.Id));
+                _events.Add((logLevel, eventId.Id));
             }
         }
     }
 
-    private sealed class OneShotFaultInjector(RawIngressFaultPoint target) : IRawIngressFaultInjector
+    private sealed class OneShotFaultInjector(
+        RawIngressFaultPoint target,
+        Func<Exception>? exceptionFactory = null,
+        CancellationTokenSource? tokenToCancel = null) : IRawIngressFaultInjector
     {
         private int _injected;
 
@@ -2863,7 +2938,10 @@ public sealed class RawCaptureIngressTests
             }
             if (point == target && Interlocked.Exchange(ref _injected, 1) == 0)
             {
-                throw new InjectedRawIngressFaultException();
+                // Cancelling the caller's token first reproduces host shutdown; leaving it alone reproduces a
+                // cancellation that nobody asked for.
+                tokenToCancel?.Cancel();
+                throw exceptionFactory?.Invoke() ?? new InjectedRawIngressFaultException();
             }
         }
     }

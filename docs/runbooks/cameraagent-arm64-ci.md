@@ -170,7 +170,9 @@ bundle. The native job then:
    them with an invalid Docker endpoint and the production catalog bundle
    exported, so the CLI's installer-flow cases gate rather than skip;
 3. publishes `linux-arm64`, inspects AArch64 ELF identities, rejects test
-   assemblies, and writes a sorted SHA-256 manifest;
+   assemblies, writes a sorted SHA-256 manifest, and starts and gracefully
+   stops the published agent, failing the run if it logs any `ERR` or `FTL`
+   line or an unhandled exception;
 4. installs and integrity-checks the canonical SQLite catalog;
 5. resolves and retains immutable base-image digests, builds the production
    CameraAgent image natively, verifies Linux/ARM64, source revision, and
@@ -180,7 +182,8 @@ bundle. The native job then:
    identity, and waits for a durable capture;
 7. checks raw payload/manifest SHA-256 agreement, required preview and annotated
    artifacts, completed-only processing drain, SQLite integrity, throttle state,
-   and owned-resource cleanup; and
+   and owned-resource cleanup, and fails the run if the container logged any
+   `ERR` or `FTL` line or an unhandled exception; and
 8. uploads sanitized evidence for 30 days even when the native job fails.
 
 Trigger a trusted default-branch run manually with:
