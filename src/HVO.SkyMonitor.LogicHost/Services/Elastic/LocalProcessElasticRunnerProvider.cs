@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using HVO.SkyMonitor.LogicHost.Configuration;
+using HVO.SkyMonitor.ProcessingRunner.Contracts;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.LogicHost.Services.Elastic;
@@ -30,6 +31,10 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         $"local-process:{RuntimeInformation.RuntimeIdentifier}",
         SupportsScaleToZero: true,
         [$"provider:{ProviderName}"]);
+
+    /// <summary>A child runs on this host with the runner defaults for resource and latency class and no GPU claim.</summary>
+    public ProcessingRunnerCapabilities DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels)
+        => ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, labels, null);
 
     public TimeSpan EstimateStartup()
     {
@@ -176,6 +181,8 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
             ["HVO_RUNNER_MAX_CONCURRENCY"] = request.MaxConcurrency.ToString(CultureInfo.InvariantCulture),
             ["HVO_RUNNER_LABELS"] = string.Join(',', request.Labels),
             ["HVO_RUNNER_IDLE_SHUTDOWN_SECONDS"] = options.EffectiveInstanceIdleShutdown(request.KeepWarm).TotalSeconds.ToString(CultureInfo.InvariantCulture),
+            // The child drains for the same grace the host waits before forcing it, so a longer RetireGrace lets long jobs finish.
+            ["HVO_RUNNER_SHUTDOWN_GRACE_SECONDS"] = options.RetireGrace.TotalSeconds.ToString(CultureInfo.InvariantCulture),
             ["HVO_RUNNER_ALLOW_INSECURE_HTTP"] = settings.AllowInsecureHttp ? "true" : "false",
             ["HVO_RUNNER_LIVENESS_FILE"] = Path.Combine(Path.GetTempPath(), $"hvo-elastic-{request.InstanceId}.alive"),
             ["HVO_RUNNER_STOP_FILE"] = StopFilePath(request.InstanceId)

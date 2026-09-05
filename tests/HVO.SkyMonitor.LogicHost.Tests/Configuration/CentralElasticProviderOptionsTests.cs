@@ -97,6 +97,37 @@ public sealed class CentralElasticProviderOptionsTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void LogicHostUrlMirrorsTheRunnerRuleAndElasticNeedsTheRunnerProtocol()
+    {
+        static CentralElasticProviderOptions WithUrl(string url, bool allowInsecure = false) => new()
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            LocalProcess = new CentralLocalProcessElasticOptions
+            {
+                Executable = "/opt/hvo/runner",
+                LogicHostUrl = url,
+                ClientSecretFile = "/run/secrets/runner",
+                AllowInsecureHttp = allowInsecure
+            }
+        };
+        Assert.IsFalse(WithUrl("ftp://logichost.local/").Validate(out var scheme), "a non-HTTP scheme fails at startup, not in each child");
+        StringAssert.Contains(scheme, "http or https");
+        Assert.IsFalse(WithUrl("http://logichost.local/").Validate(out var insecure), "plain http to a remote host needs the explicit opt-in the runner requires");
+        StringAssert.Contains(insecure, "AllowInsecureHttp");
+        Assert.IsTrue(WithUrl("http://logichost.local/", allowInsecure: true).Validate(out _));
+        Assert.IsTrue(WithUrl("http://127.0.0.1:5000/").Validate(out _), "loopback http is the runner's own exception");
+        Assert.IsTrue(WithUrl("http://localhost:5000/").Validate(out _));
+        Assert.IsTrue(WithUrl("https://logichost.local/").Validate(out _));
+
+        Assert.IsFalse(Enabled().ValidateRunnerProtocol(runnerProtocolEnabled: false, out var protocol), "instances register through the runner protocol");
+        StringAssert.Contains(protocol, "ProcessingRunners:Enabled");
+        Assert.IsTrue(Enabled().ValidateRunnerProtocol(runnerProtocolEnabled: true, out _));
+        Assert.IsTrue(new CentralElasticProviderOptions().ValidateRunnerProtocol(runnerProtocolEnabled: false, out _), "a disabled feature needs nothing");
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void InstanceIdleShutdownIsCoordinatedWithTheScalingPolicy()
     {
         var idle = new CentralLocalProcessElasticOptions { Executable = "/opt/hvo/runner", LogicHostUrl = "https://logichost.local/", ClientSecretFile = "/run/secrets/runner", IdleShutdown = TimeSpan.FromMinutes(2) };
@@ -202,6 +233,15 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.AreEqual((0, 3, ElasticScalingPolicy.ReasonDailyLimit), (drain.Provision, drain.Retire, drain.Reason), "existing and registering capacity drains once the daily budget is spent");
         var underLimit = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { InstanceMinutesToday = 59 }, startup);
         Assert.IsTrue(underLimit.Provision > 0);
+
+        // Sizing follows the concurrency the running instances actually registered, not the configured value alone:
+        // an adopted single-slot instance under a four-slot configuration does not absorb three queued jobs.
+        var adopted = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(3, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (adopted.Provision, adopted.Reason), "one more four-slot instance covers the two jobs the single-slot instance cannot");
+        var matched = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(3, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 4), startup);
+        Assert.AreEqual(ElasticScalingDecision.Steady, matched, "a registered four-slot instance holds three jobs");
+        var entitledCapacity = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(9, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, EntitledConcurrency: 2, 0, Capacity: 1), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonEntitlementBound), (entitledCapacity.Provision, entitledCapacity.Reason), "the entitlement bound is applied against registered capacity too");
     }
 
     [TestMethod]
@@ -239,6 +279,9 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.IsFalse(environment.ContainsKey("HVO_RUNNER_CLIENT_SECRET"), "the secret value is never composed into the environment");
         Assert.IsTrue(environment["HVO_RUNNER_STOP_FILE"].EndsWith("hvo-elastic-0123456789abcdef.stop", StringComparison.Ordinal), "the provider-neutral drain signal is wired");
         Assert.AreEqual("0", environment["HVO_RUNNER_IDLE_SHUTDOWN_SECONDS"], "the default local idle shutdown is coordinated: no self-termination unless configured");
+        Assert.AreEqual("30", environment["HVO_RUNNER_SHUTDOWN_GRACE_SECONDS"], "the child drains for the host's RetireGrace, so a longer grace lets long jobs finish");
+        var longGrace = LocalProcessElasticRunnerProvider.ComposeEnvironment(request, new CentralElasticProviderOptions { Enabled = true, Provider = CentralElasticProviderKind.LocalProcess, RetireGrace = TimeSpan.FromMinutes(5), LocalProcess = Enabled().LocalProcess });
+        Assert.AreEqual("300", longGrace["HVO_RUNNER_SHUTDOWN_GRACE_SECONDS"]);
         Assert.IsTrue(request.KeepWarm == false);
         Assert.AreEqual("2", environment["HVO_RUNNER_MAX_CONCURRENCY"]);
         Assert.AreEqual("provider:local-process,elastic-instance:0123456789abcdef,pool:blue,pool-mode:reserved", environment["HVO_RUNNER_LABELS"]);

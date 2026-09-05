@@ -104,6 +104,12 @@ internal interface IElasticRunnerProvider
     /// <summary>Expected time from <see cref="ProvisionAsync"/> to the instance's registration.</summary>
     TimeSpan EstimateStartup();
 
+    /// <summary>
+    /// The capabilities an instance provisioned with <paramref name="maxConcurrency"/> and <paramref name="labels"/>
+    /// will register, so the host counts only backlog such an instance could claim (#600).
+    /// </summary>
+    ProcessingRunnerCapabilities DescribeInstance(int maxConcurrency, IReadOnlyList<string> labels);
+
     Task<ElasticRunnerInstance> ProvisionAsync(ElasticRunnerProvisionRequest request, CancellationToken cancellationToken);
 
     /// <summary>Asks the instance to drain and stop within <paramref name="grace"/>, then forces it.</summary>

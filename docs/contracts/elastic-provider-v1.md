@@ -26,8 +26,10 @@ long-running, native, or GPU recipes.
 
 - `IElasticRunnerProvider`: `Name`, `Capabilities` (provider, process
   architecture, runtime image, scale-to-zero support, labels),
-  `EstimateStartup()`, `ProvisionAsync(request)`, `RetireAsync(instance,
-  grace)`, `ListAsync()`. Provisioning is idempotent per instance id (a retried
+  `EstimateStartup()`, `DescribeInstance(maxConcurrency, labels)` (the
+  runner capabilities an instance provisioned with those settings registers,
+  so the host counts only backlog such an instance could claim),
+  `ProvisionAsync(request)`, `RetireAsync(instance, grace)`, `ListAsync()`. Provisioning is idempotent per instance id (a retried
   request returns the instance already launched); retire asks the instance to
   drain on every platform (the runner watches a stop file the host creates,
   and Unix adds `SIGTERM` to the instance's process group) and forces it
@@ -51,9 +53,13 @@ long-running, native, or GPU recipes.
 
 ## Placement, limits, and cleanup
 
-The autoscaler samples provider-eligible runner-placed backlog and decides
+The autoscaler samples provider-eligible runner-placed backlog (recipes
+filtered through the capabilities a provisioned instance registers; pending,
+retryable, and expired-lease work the claim would reclaim) and decides
 with a pure policy (`ElasticScalingPolicy`): desired instances follow
-backlog plus in-flight work and per-instance concurrency, bounded by the
+backlog plus in-flight work, sized against the concurrency the running
+instances actually registered and the configured per-instance value for new
+ones, bounded by the
 remaining entitlement headroom of the backlogged observatories (#429),
 `MaxInstances` counted across every LogicHost replica,
 `MinWarmInstances`, and `MaxInstanceMinutesPerDay`. A cold start is taken

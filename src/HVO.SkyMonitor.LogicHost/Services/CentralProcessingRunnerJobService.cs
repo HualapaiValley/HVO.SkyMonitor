@@ -1,6 +1,7 @@
 using System.Globalization;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Services.Elastic;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.ProcessingRunner.Contracts;
@@ -82,6 +83,16 @@ internal sealed partial class CentralProcessingRunnerJobService(
         if (runner.EligibleRecipes.Count == 0)
         {
             telemetry.RecordClaim("ineligible", "none", TimeSpan.Zero);
+            return null;
+        }
+        // An elastic instance whose retirement is reserved (or whose host abandoned it) takes no new work: the
+        // reservation is written under this runner's claim lock, so the check below is ordered against it (#600).
+        var retiringStates = new[] { nameof(ElasticRunnerInstanceState.Stopping), nameof(ElasticRunnerInstanceState.Abandoned) };
+        if (await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+                .AnyAsync(instance => instance.RunnerId == runner.Runner.RunnerId && retiringStates.Contains(instance.State), cancellationToken)
+                .ConfigureAwait(false))
+        {
+            telemetry.RecordClaim("retiring", "none", TimeSpan.Zero);
             return null;
         }
         // Inputs larger than the runner's transfer limit are excluded before leasing so an incompatible runner never

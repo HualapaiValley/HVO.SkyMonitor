@@ -12,7 +12,8 @@ internal sealed record ElasticScalingInput(
     int? EntitledConcurrency,
     int InstanceMinutesToday,
     int InFlight = 0,
-    int WarmInstances = 0);
+    int WarmInstances = 0,
+    int? Capacity = null);
 
 internal sealed record ElasticScalingDecision(int Provision, int Retire, string Reason)
 {
@@ -48,11 +49,17 @@ internal static class ElasticScalingPolicy
             return new ElasticScalingDecision(0, active, ReasonDailyLimit);
         }
         // Demand counts work already executing on the instances, so occupied capacity does not mask queued backlog.
-        var needed = (int)Math.Ceiling((input.Backlog + Math.Max(0, input.InFlight)) / (double)perInstance);
+        // Existing instances are sized by the concurrency they actually registered (Capacity), not by the configured
+        // per-instance value: an adopted single-slot instance never masks demand a four-slot configuration expects.
+        var capacity = input.Capacity ?? active * perInstance;
+        int InstancesFor(int concurrency) => concurrency > capacity
+            ? active + (int)Math.Ceiling((concurrency - capacity) / (double)perInstance)
+            : (int)Math.Ceiling(concurrency / (double)perInstance);
+        var needed = InstancesFor(input.Backlog + Math.Max(0, input.InFlight));
         var entitlementBound = false;
         if (input.EntitledConcurrency is { } entitled)
         {
-            var byEntitlement = (int)Math.Ceiling(Math.Max(0, entitled) / (double)perInstance);
+            var byEntitlement = InstancesFor(Math.Max(0, entitled));
             if (byEntitlement < needed)
             {
                 needed = byEntitlement;
