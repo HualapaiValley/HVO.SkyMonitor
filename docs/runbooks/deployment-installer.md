@@ -190,21 +190,24 @@ every transition the retained release record has to follow:
 | Preflight the candidate release | `cameraagent preflight --image-manifest <b>` | unchanged; nothing is acquired or started |
 | Upgrade to the candidate release | `cameraagent upgrade --image-manifest <b>` | present, naming the new release and the new image |
 | Refused: signed by a key the trust root does not hold | `cameraagent upgrade --image-manifest <untrusted>` | unchanged; still names the running release |
+| Refused: declares a key identity the trust root does not carry | `cameraagent upgrade --image-manifest <declared-key>` | unchanged |
 | Refused: the trusted key's signature over a different release | `cameraagent upgrade --image-manifest <forged>` | unchanged |
 | Refused: names an archive that is not the one it signed | `cameraagent upgrade --image-manifest <mismatched>` | unchanged |
 | Rollback to the retained previous image | `cameraagent rollback` | absent |
 | Refused: release contradicts the image labels | `cameraagent upgrade --image-manifest <contradicting>` | still absent |
 | State-compatibility preflight on what the sequence left behind | `cameraagent preflight` | still absent |
 
-Each refusal targets its own gate. The four acquisition-stage refusals share the
+Each refusal targets its own gate. The five acquisition-stage refusals share the
 acquirer's single diagnostic, because the CLI deliberately does not surface the
-inner verification cause; what separates them is that each derived release
-differs from the release the instance just accepted in exactly one field, and
-that each is required to leave the retained record and the lifecycle journal
-byte-identical. Only the label-agreement refusal has a diagnostic of its own, and
-the campaign asserts it. Every transition reads the running image back through
-`status`, whose `status` outcome (rather than `drifted`) means the container
-really carries the recorded image. Every step retains the release record, the
+inner verification cause; what separates them is that each derived release varies
+exactly one trust or integrity condition against a release the instance has
+already accepted, and that each is required to leave every durable deployment
+record — the release record, the instance manifest, the installation result and
+state, the retained preflight report, and the lifecycle journal — byte-identical.
+Only the label-agreement refusal has a diagnostic of its own, and the campaign
+asserts it. Every transition reads the running image back through `status`, whose
+`status` outcome (rather than `drifted`) means the container really carries the
+recorded image. Every step retains the release record, the
 instance manifest, the installation result, the lifecycle journal, a state
 inventory with modes, deployment checksums, the container log, the container's
 real image and health, and the exact CLI reports the assertions read, under
@@ -219,24 +222,33 @@ it for a signed release.
 
 The refusals bracket the trust decision from several sides. The release
 contradicting the image labels is genuinely signed and is refused by the
-label-agreement gate after acquisition and before any mutation. Three more are
-refused during acquisition: a manifest signed by a key the trust root does not
-hold, release B's manifest presented with the trusted key's real signature over
-release A, and a manifest naming the other candidate's archive under this
-release's signed length and checksum. The first two are two directions on
-signature verification rather than two different gates — `VerifyManifest`
-verifies the signature before it compares the manifest's declared key identity,
-so a manifest signed by another key never reaches that comparison — and the
-third is the only case that fails on the acquired bytes rather than on the
-metadata. None of the four writes, rewrites, or resurrects the retained release
-record, and each is required to leave it and the lifecycle journal
-byte-identical.
+label-agreement gate after acquisition and before any mutation. Four more are
+refused during acquisition:
 
-Each derived release is a manifest and signature placed beside the candidate it
-derives from, because an asset is resolved as a sibling of its manifest. They
-therefore name the real published archives without copying or linking them, and
-the installer's refusal to read a hard-linked input still applies to every file
-it opens.
+- a manifest signed by a key the trust root does not hold, and release B's
+  manifest presented with the trusted key's real signature over release A. Both
+  fail signature verification, from two directions: a signature the trusted key
+  cannot verify at all, and a signature it verifies but not over these bytes.
+- a manifest declaring a key identity the trust root does not carry, signed by
+  the key it does. `VerifyManifest` verifies the signature before comparing
+  `signing.keyId`, so this is the only way to reach that comparison — the release
+  tool refuses to sign a manifest whose declared key is not the signing key, so
+  the campaign produces this signature in detached mode.
+- a manifest naming the other candidate's archive under this release's signed
+  length and checksum: the only case that fails on the acquired bytes rather than
+  on the metadata.
+
+None of the five writes, rewrites, or resurrects the retained release record, and
+each is required to leave every durable deployment record byte-identical.
+
+Each refused release is a manifest and signature in its own directory that names
+the real published archives through `--asset-base-url`, so nothing copies or
+links them, each published candidate still contains exactly the files its own
+`SHA256SUMS` describes — which the run verifies at the end — and the installer's
+refusal to read a hard-linked input still applies to every file it opens. The
+retained evidence keeps each refused manifest, the exact signature it was
+presented with, and the public keys that verify them, under
+`refused-releases/`.
 
 The contradicted boundary is the signed compatibility record — the campaign
 changes the release's `minimumCompatibleRevision` — because the manifest's own
@@ -276,11 +288,9 @@ the image actually carries, and the retained release record across install,
 upgrade, rollback, and refusal — against real multi-architecture release
 candidates, a real Docker daemon, and a real running CameraAgent.
 
-It does not establish the manifest's declared-key-identity comparison. That
-check is unreachable as a failure: `VerifyManifest` verifies the signature before
-comparing `signing.keyId` against the trust root, so any manifest that reaches
-the comparison already carries a valid signature over a matching key id. It is
-defence in depth, not a gate a black-box campaign can make fire.
+The manifest's declared-key-identity comparison is included: reaching it needs a
+signature the trust root can verify over a manifest that declares a different
+key, which the campaign produces with a detached signature.
 
 What it does not establish: that the committed production public key matches the
 Key Vault private key, that the workflow's federated identity can sign, that the

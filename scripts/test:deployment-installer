@@ -520,6 +520,9 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   signed_workspace="${HVO_INSTALLER_SIGNED_WORKSPACE:-$root/signed}"
   mkdir -p "$signed_workspace"
   chmod 700 "$signed_workspace"
+  # git reports worktrees by absolute path, so a relative workspace would never match the membership check below
+  # and its checkout would be deleted without being deregistered.
+  signed_workspace="$(cd "$signed_workspace" && pwd)"
   signed_evidence_root="${HVO_INSTALLER_SIGNED_EVIDENCE_ROOT:-TestResults/issue-598/$(date -u +%Y%m%dT%H%M%SZ)}"
   mkdir -p "$signed_evidence_root"
   signed_evidence_root="$(cd "$signed_evidence_root" && pwd)"
@@ -629,12 +632,17 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test "$(jq -er '.images[0].compatibility.minimumCompatibleRevision' "$signed_manifest_contradicting")" = \
     "$signed_revision_a"
 
-  # The same release bytes, signed by a key the trust root does not hold. Verification runs before the manifest's
-  # own key identity is compared, so this and the forged release below are two directions on signature
-  # verification rather than two different gates.
+  # The same release bytes, signed by a key the trust root does not hold.
   signed_manifest_untrusted="$(signed_derived_manifest untrusted)"
   jq --arg keyId "$signed_untrusted_key_id" '.signing.keyId = $keyId' \
     "$signed_manifest_b" >"$signed_manifest_untrusted"
+
+  # The same manifest, but signed by the key the trust root does hold. Signature verification therefore succeeds
+  # and the manifest's own declared key identity is what refuses it, which is the only way to reach that
+  # comparison: the release tool refuses to sign a manifest whose declared key is not the signing key, so the
+  # signature is produced in detached mode.
+  signed_manifest_declared_key="$(signed_derived_manifest declared-key)"
+  cp "$signed_manifest_untrusted" "$signed_manifest_declared_key"
 
   # The same release bytes and the trusted key id, presented with that key's signature over a different release.
   # The signature is well formed and made by the trusted key, so only verifying it against these bytes refuses it.
@@ -672,6 +680,11 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     --manifest "$signed_manifest_mismatched" \
     --private-key "$signed_workspace/signing.pem" \
     --signature "$signed_manifest_mismatched.sig"
+  signed_release_tool sign-local \
+    --manifest "$signed_manifest_declared_key" \
+    --private-key "$signed_workspace/signing.pem" \
+    --signature "$signed_manifest_declared_key.sig" \
+    --metadata-kind detached
 
   # Publish a campaign CLI from the exact candidate revision with the ephemeral public key substituted for the
   # committed production trust root. Only the trusted key changes; no verification step is removed or relaxed.
@@ -776,6 +789,31 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     fi
   }
 
+  # A refused operation and a read-only preflight must leave every durable deployment record alone, not only the
+  # release record, so the whole set is fingerprinted together. The verified image archive is excluded because a
+  # successful upgrade legitimately replaces it and hashing it repeatedly buys nothing.
+  signed_durable_fingerprint() {
+    local relative
+    {
+      for relative in instance-manifest.json \
+        state/deployment/installation-result.json \
+        state/deployment/installation-state.json \
+        state/deployment/state-preflight.json \
+        state/deployment/image-distribution.json; do
+        if [[ -f "$signed_instance_root/$relative" ]]; then
+          printf '%s %s\n' "$(sha256sum "$signed_instance_root/$relative" | cut -d ' ' -f 1)" "$relative"
+        else
+          printf 'absent %s\n' "$relative"
+        fi
+      done
+      if [[ -f "$signed_lifecycle_state" ]]; then
+        printf '%s lifecycle\n' "$(sha256sum "$signed_lifecycle_state" | cut -d ' ' -f 1)"
+      else
+        printf 'absent lifecycle\n'
+      fi
+    } | sha256sum | cut -d ' ' -f 1
+  }
+
   assert_signed_evidence_names() {
     local version="$1" image_id="$2" revision="$3"
     test -f "$signed_evidence_path"
@@ -830,10 +868,12 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test "$(jq -er '.distribution.assetName' "$signed_evidence_path")" = "$signed_archive_a"
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-install
 
-  # A refused upgrade must leave the retained record byte-identical. Each refusal below is a signed release the
-  # instance is not running, and the record's own bytes are compared, so a refusal that rewrote the record with
-  # the release it refused, or merely re-stamped the record it found, fails here.
+  # A refused upgrade and a read-only preflight must leave every durable deployment record byte-identical. The
+  # record's own bytes are compared, so a refusal that rewrote the record with the release it refused, or merely
+  # re-stamped the record it found, fails here; the wider fingerprint catches the same thing in the instance
+  # manifest, the installation result and state, the retained preflight report, and the lifecycle journal.
   signed_record_before="$(signed_record_fingerprint)"
+  signed_durable_before="$(signed_durable_fingerprint)"
 
   # The committed production trust root must not accept an ephemeral-key release. This CLI is published from the
   # same archived candidate source as the campaign CLI and differs from it only in the embedded trust root, so the
@@ -856,6 +896,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test "$(jq -er '.errorCode' "$root/signed-production-trust-error.json")" = installation-failed
   jq -er '.message | test("could not be acquired or verified")' "$root/signed-production-trust-error.json" >/dev/null
   test "$(signed_record_fingerprint)" = "$signed_record_before"
+  test "$(signed_durable_fingerprint)" = "$signed_durable_before"
   assert_signed_evidence_names "$signed_version_a" "$signed_image_a" "$signed_revision_a"
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-production-trust
 
@@ -878,6 +919,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     "$(jq -er '.candidateImageId' "$root/signed-candidate-preflight.json")" "$signed_image_b" "$signed_digest_b"
   test "$(jq -er '[.findings[] | select(.blocking)] | length' "$root/signed-candidate-preflight.json")" = 0
   test "$(signed_record_fingerprint)" = "$signed_record_before"
+  test "$(signed_durable_fingerprint)" = "$signed_durable_before"
   assert_signed_evidence_names "$signed_version_a" "$signed_image_a" "$signed_revision_a"
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-candidate-preflight
 
@@ -900,7 +942,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   assert_signed_running_image "$signed_image_b" "$signed_digest_b" signed-status-upgrade
   test "$(signed_record_fingerprint)" != "$signed_record_before"
   signed_record_before="$(signed_record_fingerprint)"
-  signed_journal_before="$(sha256sum "$signed_lifecycle_state" | cut -d ' ' -f 1)"
+  signed_durable_before="$(signed_durable_fingerprint)"
 
   # Three acquisition-stage refusals. Each derived release differs from the release just accepted in exactly one
   # field, so each isolates one gate even though the CLI reports them all through one acquirer diagnostic: a
@@ -926,24 +968,26 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     test ! -s "$root/signed-$label.json"
     test "$(jq -er '.errorCode' "$root/signed-$label-error.json")" = installation-failed
     jq -er '.message | test("could not be acquired or verified")' "$root/signed-$label-error.json" >/dev/null
-    test "$(sha256sum "$signed_lifecycle_state" | cut -d ' ' -f 1)" = "$signed_journal_before"
     test "$(signed_record_fingerprint)" = "$signed_record_before"
+    test "$(signed_durable_fingerprint)" = "$signed_durable_before"
     assert_signed_evidence_names "$signed_version_b" "$signed_image_b" "$signed_revision_b"
     assert_signed_running_image "$signed_image_b" "$signed_digest_b" "signed-status-$label"
   }
   refuse_signed_acquisition untrusted "$signed_manifest_untrusted" "$signed_workspace/release-b" \
     04-untrusted-key-refusal 'The campaign trust root accepted a release signed by a key it does not hold.'
+  refuse_signed_acquisition declared-key "$signed_manifest_declared_key" "$signed_workspace/release-b" \
+    05-declared-key-identity-refusal 'A release declaring a key identity the trust root does not carry was accepted.'
   refuse_signed_acquisition forged "$signed_manifest_forged" "$signed_workspace/release-b" \
-    05-forged-signature-refusal 'A release presented with another release signature was accepted.'
+    06-forged-signature-refusal 'A release presented with another release signature was accepted.'
   refuse_signed_acquisition mismatched "$signed_manifest_mismatched" "$signed_workspace/release-a" \
-    06-archive-integrity-refusal 'A release naming an archive that is not the one it signed was accepted.'
+    07-archive-integrity-refusal 'A release naming an archive that is not the one it signed was accepted.'
 
   "$signed_cli" cameraagent rollback \
     --instance-id "$signed_instance_id" \
     --product-root "$root/product" \
     --json >"$root/signed-rollback.json"
   read_signed_status signed-status-rollback
-  capture_signed_state 07-rollback signed-rollback signed-status-rollback
+  capture_signed_state 08-rollback signed-rollback signed-status-rollback
   test "$(jq -er '.outcome' "$root/signed-rollback.json")" = completed
   assert_signed_installed_identity \
     "$(jq -er '.image.imageId' "$root/signed-rollback.json")" "$signed_image_a" "$signed_digest_a"
@@ -953,6 +997,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-rollback
   signed_record_before="$(signed_record_fingerprint)"
   test "$signed_record_before" = absent
+  signed_durable_before="$(signed_durable_fingerprint)"
 
   # A release whose signed compatibility record contradicts the image it names is refused after acquisition and
   # before any mutation, and it records nothing: a refused upgrade never resurrects a withdrawn release record.
@@ -969,7 +1014,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     exit 1
   fi
   read_signed_status signed-status-contradicting
-  capture_signed_state 08-contradicting-label-refusal signed-contradicting-error signed-status-contradicting
+  capture_signed_state 09-contradicting-label-refusal signed-contradicting-error signed-status-contradicting
   test ! -s "$root/signed-contradicting.json"
   test "$(jq -er '.errorCode' "$root/signed-contradicting-error.json")" = installation-failed
   jq -er '.message | test("does not carry the compatibility identity the release signed")' \
@@ -984,6 +1029,9 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test "$(signed_record_fingerprint)" = "$signed_record_before"
   test ! -e "$signed_evidence_path"
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-contradicting
+  # The label-agreement refusal legitimately journals its operation, so only the records it must not touch are
+  # compared here rather than the whole durable set.
+  signed_durable_before="$(signed_durable_fingerprint)"
 
   # The state-compatibility preflight must still pass on the instance the signed lifecycle left behind, so the
   # scenario cannot have reached its end by weakening the gate it shares with the operator-supplied image path.
@@ -992,12 +1040,13 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     --product-root "$root/product" \
     --json >"$root/signed-preflight.json"
   read_signed_status signed-status-preflight
-  capture_signed_state 09-final-preflight signed-preflight signed-status-preflight
+  capture_signed_state 10-final-preflight signed-preflight signed-status-preflight
   test "$(jq -er '.compatible' "$root/signed-preflight.json")" = true
   test "$(jq -er '.outcome' "$root/signed-preflight.json")" = compatible
   test "$(jq -er '.instanceId' "$root/signed-preflight.json")" = "$signed_instance_id"
   test "$(jq -er '[.findings[] | select(.blocking)] | length' "$root/signed-preflight.json")" = 0
   test "$(signed_record_fingerprint)" = "$signed_record_before"
+  test "$(signed_durable_fingerprint)" = "$signed_durable_before"
   test ! -e "$signed_evidence_path"
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-preflight
 
@@ -1014,7 +1063,17 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   cp "$signed_workspace/release-a/SHA256SUMS" "$signed_evidence_root/SHA256SUMS-a.txt"
   cp "$signed_workspace/release-b/SHA256SUMS" "$signed_evidence_root/SHA256SUMS-b.txt"
   mkdir -p "$signed_evidence_root/refused-releases"
-  cp "$signed_derived_root"/*-image-manifest.json "$signed_evidence_root/refused-releases/"
+  # The manifests alone do not show why each was refused: the forged one is byte-identical to the accepted
+  # release and differs only in the signature it was presented with. Retain the exact signatures and the public
+  # keys that verify them.
+  cp "$signed_derived_root"/*-image-manifest.json "$signed_derived_root"/*-image-manifest.json.sig \
+    "$signed_evidence_root/refused-releases/"
+  cp "$signed_workspace/release-a/image-manifest.json.sig" \
+    "$signed_evidence_root/refused-releases/release-a-image-manifest.json.sig"
+  cp "$signed_workspace/release-b/image-manifest.json.sig" \
+    "$signed_evidence_root/refused-releases/release-b-image-manifest.json.sig"
+  cp "$signed_workspace/signing.pub.pem" "$signed_evidence_root/refused-releases/campaign-trust-root.pem"
+  cp "$signed_workspace/untrusted.pub.pem" "$signed_evidence_root/refused-releases/untrusted-key.pem"
   # Each published candidate must still contain exactly the files its own SHA256SUMS describes: the refused
   # releases were derived beside them, not inside them.
   for signed_slot in a b; do
