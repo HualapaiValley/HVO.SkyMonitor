@@ -141,7 +141,7 @@ require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Pro
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
 require_source_reference 'Unit=3171' docs/runbooks/ci-pipeline.md
-require_source_reference 'Integration=638' docs/runbooks/ci-pipeline.md
+require_source_reference 'Integration=639' docs/runbooks/ci-pipeline.md
 require_source_reference 'Manual=101' docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md
 require_source_reference "report count other than the expected $coverage_report_count" docs/runbooks/ci-pipeline.md

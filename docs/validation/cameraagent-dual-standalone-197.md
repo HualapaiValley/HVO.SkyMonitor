@@ -55,7 +55,8 @@ they are not labeled as continuous LOH/POH peaks. Reduced local runs use a
 separate diagnostic schema and are never marked citable.
 
 Each trial provisions a new agent, so its owner is seeded with a temporary
-password and every authenticated `/api` request is refused with `403` and
+password and every authenticated owner `/api` request other than the bounded
+owner-bootstrap endpoints is refused with `403` and
 `X-HVO-Authorization-Reason: owner-password-change-required` until the required
 first-login replacement completes, as described under "Owner bootstrap status
 contract" in `docs/identity/operations-runbook.md`. Both agent sessions

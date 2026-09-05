@@ -11,25 +11,46 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 /// Establishes the local owner session that the CameraAgent operations API actually requires.
 /// A newly provisioned agent seeds its owner with a temporary password, and
 /// <see cref="OwnerBootstrapGateMiddleware"/> refuses every authenticated <c>/api</c> request from
-/// that owner with <c>403</c> and <c>X-HVO-Authorization-Reason: owner-password-change-required</c>
-/// until the temporary password is replaced. A harness that only posts the login form therefore
-/// holds a session that is authenticated but not authorized for operations.
+/// that owner, other than the bounded owner-bootstrap endpoints, with <c>403</c> and
+/// <c>X-HVO-Authorization-Reason: owner-password-change-required</c> until the temporary password
+/// is replaced. A harness that only posts the login form therefore holds a session that is
+/// authenticated but not authorized for operations.
 /// </summary>
 internal static class OwnerBootstrapSession
 {
+    /// <summary>
+    /// Mirrors the response header <see cref="OwnerBootstrapGateMiddleware"/> stamps on a refusal.
+    /// The middleware writes the name as a literal, so this is deliberately a local copy rather
+    /// than a shared constant; deduplicating it would put runtime authorization code into an
+    /// otherwise test-only change.
+    /// </summary>
     internal const string AuthorizationReasonHeader = "X-HVO-Authorization-Reason";
+
     internal const string ReplacementPasswordSuffix = "Z9!";
     internal const string OperationsProbePath = "/api/v1/operations/gallery/?pageSize=1";
 
     /// <summary>
-    /// Drives an already authenticated owner session to <see cref="OwnerBootstrapStates.Ready"/> and
-    /// returns the password that session now authenticates with.
+    /// The replacement form bounds the new password; see the <c>StringLength</c> attribute on
+    /// <c>ReplaceTemporaryPassword.InputModel.NewPassword</c>.
     /// </summary>
-    internal static async Task<string> EnsureReadyOwnerAsync(HttpClient client, string temporaryPassword)
+    private const int MaximumReplacementPasswordLength = 100;
+
+    private const int MaximumReportedBodyLength = 512;
+
+    /// <summary>
+    /// Drives an already authenticated owner session to <see cref="OwnerBootstrapStates.Ready"/>.
+    /// Returns the password the session authenticates with afterwards: the replacement when one was
+    /// performed, or <paramref name="temporaryPassword"/> unchanged when the owner was already
+    /// ready and no replacement was needed.
+    /// </summary>
+    internal static async Task<string> EnsureReadyOwnerAsync(
+        HttpClient client,
+        string temporaryPassword,
+        string sessionName)
     {
         ArgumentNullException.ThrowIfNull(client);
 
-        var state = await ReadBootstrapStateAsync(client).ConfigureAwait(false);
+        var state = await ReadBootstrapStateAsync(client, sessionName).ConfigureAwait(false);
         if (string.Equals(state, OwnerBootstrapStates.Ready, StringComparison.Ordinal))
         {
             return temporaryPassword;
@@ -39,10 +60,17 @@ internal static class OwnerBootstrapSession
         {
             Assert.Fail(string.Create(
                 CultureInfo.InvariantCulture,
-                $"The agent reports owner bootstrap state '{state}'; an operations session cannot be established."));
+                $"The {sessionName} agent reports owner bootstrap state '{state}'; an operations session cannot be established."));
         }
 
         var replacement = temporaryPassword + ReplacementPasswordSuffix;
+        Assert.IsLessThanOrEqualTo(
+            MaximumReplacementPasswordLength,
+            replacement.Length,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"The generated {sessionName} replacement password is {replacement.Length} characters, which the replacement form would reject as longer than {MaximumReplacementPasswordLength}."));
+
         using (var page = await client.GetAsync(
             new Uri(OwnerBootstrapGateMiddleware.ReplacementPath, UriKind.Relative)).ConfigureAwait(false))
         {
@@ -52,7 +80,11 @@ internal static class OwnerBootstrapSession
                 html,
                 "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
                 RegexOptions.CultureInvariant);
-            Assert.IsTrue(token.Success, "The temporary-password replacement form did not render an antiforgery token.");
+            Assert.IsTrue(
+                token.Success,
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"The {sessionName} temporary-password replacement form did not render an antiforgery token."));
             using var form = new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["__RequestVerificationToken"] = WebUtility.HtmlDecode(token.Groups[1].Value),
@@ -64,26 +96,35 @@ internal static class OwnerBootstrapSession
             using var response = await client.PostAsync(
                 new Uri(OwnerBootstrapGateMiddleware.ReplacementPath, UriKind.Relative), form).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
-            // The page re-renders itself with a validation message instead of failing the request,
-            // so only the post-redirect location proves the replacement was accepted.
-            Assert.AreEqual(
-                "/",
-                response.RequestMessage?.RequestUri?.AbsolutePath,
-                await response.Content.ReadAsStringAsync().ConfigureAwait(false));
+            // A refused replacement re-renders the form rather than failing the request, so only the
+            // post-redirect location proves it was accepted. The re-rendered page echoes the posted
+            // passwords back into its inputs, so it must never become an assertion message: that text
+            // is written to the retained TRX, which the smoke then rejects as a leaked secret.
+            var refusedMessage = string.Create(
+                CultureInfo.InvariantCulture,
+                $"The {sessionName} temporary-password replacement was refused; the agent re-rendered the replacement form instead of redirecting.");
+            Assert.AreEqual("/", response.RequestMessage?.RequestUri?.AbsolutePath, refusedMessage);
         }
 
-        Assert.AreEqual(OwnerBootstrapStates.Ready, await ReadBootstrapStateAsync(client).ConfigureAwait(false));
+        Assert.AreEqual(
+            OwnerBootstrapStates.Ready,
+            await ReadBootstrapStateAsync(client, sessionName).ConfigureAwait(false));
         return replacement;
     }
 
-    internal static async Task<string> ReadBootstrapStateAsync(HttpClient client)
+    internal static async Task<string> ReadBootstrapStateAsync(HttpClient client, string sessionName)
     {
         ArgumentNullException.ThrowIfNull(client);
 
         using var response = await client.GetAsync(
             new Uri(OwnerBootstrapGateMiddleware.StatusPath, UriKind.Relative)).ConfigureAwait(false);
         var payload = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, payload);
+        Assert.AreEqual(
+            HttpStatusCode.OK,
+            response.StatusCode,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"The {sessionName} owner bootstrap status was not readable: {Summarize(payload)}"));
         using var json = JsonDocument.Parse(payload);
         return json.RootElement.GetProperty("state").GetString() ?? string.Empty;
     }
@@ -109,8 +150,11 @@ internal static class OwnerBootstrapSession
         var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
         Assert.Fail(string.Create(
             CultureInfo.InvariantCulture,
-            $"The {sessionName} owner session is not authorized for the operations API: " +
-            $"GET {OperationsProbePath} returned {(int)response.StatusCode} " +
-            $"with {AuthorizationReasonHeader}={reason} and body {body}"));
+            $"The {sessionName} owner session is not authorized for the operations API: GET {OperationsProbePath} returned {(int)response.StatusCode} with {AuthorizationReasonHeader}={reason} and body {Summarize(body)}"));
     }
+
+    private static string Summarize(string body)
+        => body.Length <= MaximumReportedBodyLength
+            ? body
+            : string.Concat(body.AsSpan(0, MaximumReportedBodyLength), "... (truncated)");
 }

@@ -836,7 +836,7 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         response.EnsureSuccessStatusCode();
         // Each trial provisions a new agent, so its owner is seeded with a temporary password and the
         // owner bootstrap gate refuses every operations request until that password is replaced.
-        await OwnerBootstrapSession.EnsureReadyOwnerAsync(client, temporaryPassword).ConfigureAwait(false);
+        await OwnerBootstrapSession.EnsureReadyOwnerAsync(client, temporaryPassword, agent.Name).ConfigureAwait(false);
         await OwnerBootstrapSession.AssertOperationsAuthorizedAsync(client, agent.Name).ConfigureAwait(false);
         // Replacement refreshes the sign-in, so the durable cookie is only known afterwards.
         var cookie = cookies.GetCookies(agent.BaseUri).Cast<Cookie>().Single(item => item.Name == agent.CookieName);
