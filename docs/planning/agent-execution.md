@@ -110,6 +110,22 @@ reason.
   release.
 - Concurrent issues require stable merged dependencies and separate branches
   and isolated git worktrees. Agents must never edit the same worktree.
+- The operator may split the queue into named execution lanes for coordinators
+  on separate systems. The owning roadmap epic records each lane's ordered
+  queue and its `lane:` label, and `docs/roadmap.md` records the lane
+  boundaries. Each lane has one coordinator and one default implementation
+  slot; the global two-slot default is the sum of the lanes. A lane
+  coordinator selects only from its own queue in the recorded order, tags every
+  claim in the owning epic with the lane name, and never changes files owned by
+  the other lane's active claim. When a lane's higher-priority queue is empty,
+  it may take an unclaimed issue from the other lane's queue of the same
+  priority only when that issue shares no files or Docker-heavy gates with the
+  other lane's active claim; otherwise it proceeds to its own lower-priority
+  queue. The finalization lock, review rules, ledger requirements, and shared
+  hosts such as the aarch64 Docker host remain repository-wide. After each
+  merge the lane coordinator records delivery in the owning epic; it edits
+  `docs/roadmap.md` only when a horizon, owning epic, lane definition, or
+  boundary changes, so lanes do not contend for that file.
 - Do not start a downstream issue from an unmerged contract or migration unless
   the issues explicitly define a stacked PR sequence.
 - Assign each expensive test, benchmark, or evidence run one owner. Other agents

@@ -84,7 +84,10 @@ must not redefine its policy inconsistently.
   proceed in isolated worktrees when dependencies are merged and machine/Docker
   capacity permits; raise that limit only after explicitly verifying capacity.
   The roadmap coordinator records claims in the owning roadmap epic and never
-  lets agents edit the same worktree.
+  lets agents edit the same worktree. When the operator assigns named execution
+  lanes to coordinators on separate systems, each lane has one coordinator and
+  one default slot, selects only from its recorded queue, and follows the lane
+  rules in `docs/planning/agent-execution.md`.
 - Every PR uses a draft-first convergence cycle. Protected CI must not run until
   review has converged and the target branch has been finally synchronized and
   integration-reviewed. Use a coordinator-launched local review agent, or an
