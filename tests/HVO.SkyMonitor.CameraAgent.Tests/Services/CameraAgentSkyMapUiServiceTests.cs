@@ -187,6 +187,28 @@ public sealed class CameraAgentSkyMapUiServiceTests
     }
 
     [TestMethod]
+    [DataRow("manual.expectedManualSequenceConflict", "Another coordinate entry was recorded")]
+    [DataRow("manual.supersededEntry", "a configuration change has since superseded")]
+    [DataRow("manual.idempotencyKeyConflict", "already recorded with different coordinates")]
+    public async Task ApplyManualLocationAsync_DescribesEachConflictReasonDistinctlyAsync(
+        string reasonCode,
+        string expected)
+    {
+        var store = new RecordingDeploymentLocationStore
+        {
+            Status = ManualDeploymentLocationStatus.Conflict,
+            ReasonCode = reasonCode
+        };
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateService(new RecordingProjection(), principal, authorization.Object, store);
+
+        var result = await ApplyAsync(service).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Conflict, result.Kind);
+        Assert.Contains(expected, result.Message!, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task ApplyManualLocationAsync_WhenTheStoreFails_ReturnsAFixedUnavailableStateAsync()
     {
         var store = new RecordingDeploymentLocationStore { Throw = true };

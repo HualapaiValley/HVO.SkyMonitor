@@ -143,6 +143,9 @@ public sealed partial class SkyMapPage : ComponentBase, IAsyncDisposable
 
     private void BeginEdit()
     {
+        // Clear first: a stale outcome must not be announced inside a confirmation for a command that
+        // has not been issued.
+        _manualMessage = null;
         if (_manual is not { Supported: true } || !TryParseForm(out _, out _, out _, out _))
         {
             return;
@@ -318,9 +321,14 @@ public sealed partial class SkyMapPage : ComponentBase, IAsyncDisposable
         }
         var version = _manual.PendingVersion ?? _manual.NextVersion;
         var recorded = pending.RecordedAtUtc.ToString("u", CultureInfo.InvariantCulture);
-        return _manual.PendingVersion is not null && _manual.CandidateAwaitingAcknowledgement
-            ? $"Version {version} entered {recorded} awaits central acknowledgement, then a restart"
-            : $"Version {version} entered {recorded} activates at the next start";
+        if (_manual.PendingVersion is null)
+        {
+            return $"Version {version} entered {recorded} activates at the next start";
+        }
+        // A staged snapshot has already been acknowledged, and the candidate stays set beside it.
+        return _manual.StagedAcknowledgementPending
+            ? $"Version {version} entered {recorded} is acknowledged and activates at the next start"
+            : $"Version {version} entered {recorded} awaits central acknowledgement, then a restart";
     }
 
     private static string NewKey() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);

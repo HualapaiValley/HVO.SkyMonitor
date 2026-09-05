@@ -8,7 +8,7 @@
     { "eventId": 7301, "level": "Information", "fields": ["LocationId", "Version"] },
     { "eventId": 7302, "level": "Information", "fields": ["LocationId", "Version"] },
     { "eventId": 7303, "level": "Information", "fields": ["Outcome", "SourceKind", "VersionRelation"] },
-    { "eventId": 7304, "level": "Warning", "fields": [] },
+    { "eventId": 7304, "level": "Warning", "fields": ["Exception"] },
     { "eventId": 7305, "level": "Information", "fields": ["LocationId", "Sequence"] },
     { "eventId": 7306, "level": "Warning", "fields": ["LocationId"] }
   ],

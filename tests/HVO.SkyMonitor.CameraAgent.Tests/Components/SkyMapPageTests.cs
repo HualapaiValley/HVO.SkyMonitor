@@ -115,7 +115,8 @@ public sealed class SkyMapPageTests
     public void SaveCoordinates_RequiresConfirmationBeforeAnyDurableCommand()
     {
         using var context = CreateContext();
-        var service = new SkyMapUiService(SkyMapTestData.Result(Instant), manual: ManualState());
+        var service = new SkyMapUiService(
+            SkyMapTestData.Result(Instant), manual: ManualState(knownVersion: 4, activeVersion: 3));
         context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
         var cut = context.Render<SkyMapPage>();
         cut.WaitForElement("#sky-map-latitude");
@@ -124,7 +125,8 @@ public sealed class SkyMapPageTests
         cut.Find($"#{SkyMapPage.EditTriggerId}").Click();
 
         Assert.HasCount(1, cut.FindAll("dialog.confirmation-panel"));
-        Assert.Contains("Append manual version 4?", cut.Markup, StringComparison.Ordinal);
+        // The dialog names the version a capture keeps, which is the active one, not the expected token.
+        Assert.Contains("Append manual version 5?", cut.Markup, StringComparison.Ordinal);
         Assert.Contains("keep version 3", cut.Markup, StringComparison.Ordinal);
         Assert.IsEmpty(service.Commands);
 
@@ -275,7 +277,6 @@ public sealed class SkyMapPageTests
                 candidateAwaitingAcknowledgement: true,
                 pending: new ManualDeploymentLocationOverride(
                     31.5, -110.25, 1400, "America/Phoenix", PendingRestart: true, Instant, "owner-1", "moved"),
-                supersededAtUtc: Instant.AddDays(-1),
                 history:
                 [
                     new ManualDeploymentLocationAuditEntry(
@@ -289,11 +290,12 @@ public sealed class SkyMapPageTests
         cut.WaitForElement("#sky-map-latitude");
         Assert.Contains("proposed to LogicHost first", cut.Markup, StringComparison.Ordinal);
         Assert.Contains("A central acknowledgement is already staged", cut.Markup, StringComparison.Ordinal);
-        Assert.Contains("was superseded at", cut.Markup, StringComparison.Ordinal);
         // The pending row names the version the candidate already occupies, not the next one.
         Assert.Contains(
             "Version 4 entered", cut.Markup, StringComparison.Ordinal);
-        Assert.Contains("awaits central acknowledgement", cut.Markup, StringComparison.Ordinal);
+        // The staged snapshot has already been acknowledged, so the row must not still say it is awaited.
+        Assert.Contains("is acknowledged and activates at the next start", cut.Markup, StringComparison.Ordinal);
+        Assert.DoesNotContain("awaits central acknowledgement", cut.Markup, StringComparison.Ordinal);
         // Captures keep the active version, never the candidate or staged one.
         Assert.Contains("keeps version 3", cut.Markup, StringComparison.Ordinal);
         Assert.Contains("Expected version 4", cut.Markup, StringComparison.Ordinal);
@@ -302,6 +304,60 @@ public sealed class SkyMapPageTests
             .ToArray());
         Assert.Contains("owner-1", cut.Markup, StringComparison.Ordinal);
         Assert.Contains("Not recorded", cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Render_WhenAConfigurationChangeSupersededTheEntry_SaysConfiguredCoordinatesGovern()
+    {
+        using var context = CreateContext();
+        // A superseded record no longer governs, so the projection reports no override alongside it.
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SkyMapUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(
+                manualSequence: 0,
+                pending: null,
+                supersededAtUtc: Instant.AddDays(-1),
+                history:
+                [
+                    new ManualDeploymentLocationAuditEntry(
+                        1, Instant.AddDays(-2), "owner-1", "moved", "key-1", 2, 30, -110, 1200, "UTC")
+                ])));
+
+        var cut = context.Render<SkyMapPage>();
+
+        cut.WaitForElement("#sky-map-latitude");
+        Assert.Contains("was superseded at", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains(
+            "Configured coordinates currently govern this deployment", cut.Markup, StringComparison.Ordinal);
+        // No override governs, so the observer card must not advertise a pending manual version.
+        var pendingRow = cut.FindAll("dl.fact-grid > div")
+            .Single(static row => row.QuerySelector("dt")!.TextContent == "Pending manual version");
+        Assert.AreEqual("None", pendingRow.QuerySelector("dd")!.TextContent);
+    }
+
+    [TestMethod]
+    public void Render_WithACandidateNotYetAcknowledged_SaysThePendingVersionAwaitsAcknowledgement()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SkyMapUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(
+                knownVersion: 4,
+                activeVersion: 3,
+                pendingVersion: 4,
+                manualSequence: 1,
+                centralAcknowledgementRequired: true,
+                candidateAwaitingAcknowledgement: true,
+                pending: new ManualDeploymentLocationOverride(
+                    31.5, -110.25, 1400, "America/Phoenix", PendingRestart: true, Instant, "owner-1", "moved"))));
+
+        var cut = context.Render<SkyMapPage>();
+
+        cut.WaitForElement("#sky-map-latitude");
+        Assert.Contains(
+            "Version 4 entered 2026-03-01 04:00:00Z awaits central acknowledgement, then a restart",
+            cut.Markup,
+            StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -333,7 +389,11 @@ public sealed class SkyMapPageTests
 
         Assert.HasCount(2, service.Commands);
         Assert.AreNotEqual(service.Commands[0].IdempotencyKey, service.Commands[1].IdempotencyKey);
+        // An unavailable outcome must not re-read, so both commands carry the tokens from the first read.
+        Assert.AreEqual(4L, service.Commands[0].ExpectedManualSequence);
         Assert.AreEqual(4L, service.Commands[1].ExpectedManualSequence);
+        Assert.AreEqual(service.Commands[0].ExpectedVersion, service.Commands[1].ExpectedVersion);
+        Assert.AreEqual(1, service.ManualReads);
         Assert.AreEqual(-111.65, service.Commands[0].LongitudeDegrees);
         Assert.AreEqual(-110.25, service.Commands[1].LongitudeDegrees);
     }

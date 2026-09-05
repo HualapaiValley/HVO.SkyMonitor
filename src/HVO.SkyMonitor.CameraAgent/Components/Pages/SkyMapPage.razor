@@ -95,8 +95,9 @@
                     {
                         <p class="truth-note">A previous manual entry was superseded at @supersededAtUtc.ToString("u") because the startup configuration seed itself changed. Configured coordinates currently govern this deployment.</p>
                     }
-                    @if (_manualMessage is not null)
+                    @if (_manualMessage is not null && !_confirming)
                     {
+                        @* While the modal is open the same notice is announced inside it instead. *@
                         <p class="truth-note @(_manualMessageIsError ? "manual-error" : "manual-ok")" role="@(_manualMessageIsError ? "alert" : "status")">@_manualMessage</p>
                     }
                     <fieldset class="coordinate-form" disabled="@(_busy || _loading)">

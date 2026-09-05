@@ -451,7 +451,9 @@ public sealed class ManualDeploymentLocationStoreTests
                 CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(ManualDeploymentLocationStatus.Applied, second.Status);
             Assert.AreEqual(1L, acknowledged.Active!.Version);
-            Assert.AreEqual(2L, second.State.PendingVersion);
+            // Version two carries the first entry, so it must not be named as this entry's pending version.
+            Assert.IsNull(second.State.PendingVersion);
+            Assert.AreEqual(3L, second.State.NextVersion);
         }
 
         _timeProvider.UtcNow = Now.AddSeconds(2);
@@ -466,7 +468,73 @@ public sealed class ManualDeploymentLocationStoreTests
         Assert.AreEqual("Pacific/Honolulu", restarted.Candidate.TimeZoneId);
         Assert.AreEqual(2L, restarted.Manual.ActiveVersion);
         Assert.AreEqual(3L, restarted.Manual.KnownVersion);
+        // Now the candidate does carry this entry, so the projection names its version.
+        Assert.AreEqual(3L, restarted.Manual.PendingVersion);
         Assert.IsTrue(restarted.Manual.CandidateAwaitingAcknowledgement);
+        Assert.IsFalse(restarted.Manual.StagedAcknowledgementPending);
+    }
+
+    [TestMethod]
+    public async Task ApplyManualAsync_ReplayedAfterALaterEntryReGovernsTheRecord_StillConflicts()
+    {
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        using (var store = CreateStore())
+        {
+            _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+            _ = await store.ApplyManualAsync(
+                Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 1, key: "superseded"),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        var reconfigured = CreateSeed(20.5, 30.5, 400, "UTC");
+        _timeProvider.UtcNow = Now.AddSeconds(1);
+        using var restarted = CreateStore();
+        _ = await restarted.InitializeAsync(reconfigured, CancellationToken.None).ConfigureAwait(false);
+
+        // A later entry makes the record govern again, but the superseded key must not become replayable.
+        var later = await restarted.ApplyManualAsync(
+            Request(19.82, -155.47, 4200, "Pacific/Honolulu", expectedVersion: 2, key: "later"),
+            CancellationToken.None).ConfigureAwait(false);
+        var replay = await restarted.ApplyManualAsync(
+            Request(
+                -31.2733, 149.07, 1165, "Australia/Sydney",
+                expectedVersion: 2, key: "superseded", expectedManualSequence: 2),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(ManualDeploymentLocationStatus.Applied, later.Status);
+        Assert.AreEqual(ManualDeploymentLocationStatus.Conflict, replay.Status);
+        Assert.AreEqual(ManualDeploymentLocationContract.SupersededEntryReasonCode, replay.ReasonCode);
+        Assert.AreEqual("Pacific/Honolulu", restarted.Manual.Override!.TimeZoneId);
+    }
+
+    [TestMethod]
+    public async Task Initialize_WhenCentralIntegrationIsDisabledWithAStagedVersion_ActivatesAndAppendsWithoutFailing()
+    {
+        _options = CreateOptions(CentralIntegrationMode.Enabled);
+        var first = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        var second = CreateSeed(-31.2733, 149.07, 1165, "Australia/Sydney");
+        using (var proposing = CreateStore())
+        {
+            _ = await proposing.InitializeAsync(first, CancellationToken.None).ConfigureAwait(false);
+        }
+        _timeProvider.UtcNow = Now.AddSeconds(1);
+        using (var candidate = CreateStore())
+        {
+            _ = await candidate.InitializeAsync(second, CancellationToken.None).ConfigureAwait(false);
+            await candidate.StageAsync(candidate.Candidate!, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        // Switching central integration off leaves the staged version to activate and the changed seed to
+        // append in the same startup; the activation instant must not be mistaken for a missed window.
+        _options = CreateOptions(CentralIntegrationMode.Disabled);
+        _timeProvider.UtcNow = Now.AddSeconds(2);
+        using var restarted = CreateStore();
+        var active = await restarted.InitializeAsync(
+            CreateSeed(19.82, -155.47, 4200, "Pacific/Honolulu"), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(3L, active.Version);
+        Assert.AreEqual("Pacific/Honolulu", active.TimeZoneId);
+        Assert.IsNull(restarted.Staged);
+        Assert.IsNull(restarted.Candidate);
     }
 
     [TestMethod]

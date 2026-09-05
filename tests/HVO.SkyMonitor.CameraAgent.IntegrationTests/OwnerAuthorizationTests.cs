@@ -531,7 +531,7 @@ public sealed class OwnerAuthorizationTests
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerManualLocation.StatusCode);
         using var nonOwnerManualMutation = await nonOwnerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/deployment-location/manual", UriKind.Relative),
-            new { latitudeDegrees = 10, longitudeDegrees = 20, elevationMeters = 30, timeZoneId = "UTC", expectedVersion = 1 })
+            new { latitudeDegrees = 10, longitudeDegrees = 20, elevationMeters = 30, timeZoneId = "UTC", expectedVersion = 1, expectedManualSequence = 0 })
             .ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerManualMutation.StatusCode);
         using var nonOwnerMutation = await nonOwnerClient.PostAsJsonAsync(
@@ -619,7 +619,7 @@ public sealed class OwnerAuthorizationTests
         Assert.AreEqual(HttpStatusCode.BadRequest, missingEnvironmentalAntiforgery.StatusCode);
         using var missingManualLocationAntiforgery = await ownerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/deployment-location/manual", UriKind.Relative),
-            new { latitudeDegrees = 10, longitudeDegrees = 20, elevationMeters = 30, timeZoneId = "UTC", expectedVersion = 1 })
+            new { latitudeDegrees = 10, longitudeDegrees = 20, elevationMeters = 30, timeZoneId = "UTC", expectedVersion = 1, expectedManualSequence = 0 })
             .ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, missingManualLocationAntiforgery.StatusCode);
 
@@ -661,6 +661,7 @@ public sealed class OwnerAuthorizationTests
                 longitudeDegrees = 20,
                 elevationMeters = 30,
                 timeZoneId = "UTC",
+                expectedManualSequence = 0L,
                 reason = "missing concurrency version"
             });
             using var missingManualVersion = await ownerClient.SendAsync(missingManualVersionRequest)
@@ -680,6 +681,7 @@ public sealed class OwnerAuthorizationTests
                 elevationMeters = 30,
                 timeZoneId = "UTC",
                 expectedVersion = 999_999L,
+                expectedManualSequence = 0L,
                 reason = "stale expected version"
             });
             using var staleManualVersion = await ownerClient.SendAsync(staleManualVersionRequest)

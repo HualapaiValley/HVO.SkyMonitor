@@ -138,7 +138,7 @@ require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCe
 require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
-require_source_reference 'Unit=3008' docs/runbooks/ci-pipeline.md
+require_source_reference 'Unit=3015' docs/runbooks/ci-pipeline.md
 require_source_reference 'Integration=606' docs/runbooks/ci-pipeline.md
 require_source_reference 'Manual=96' docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md

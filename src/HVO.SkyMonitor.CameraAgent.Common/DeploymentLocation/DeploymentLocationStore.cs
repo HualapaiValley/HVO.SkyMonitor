@@ -381,10 +381,12 @@ public sealed class ProtectedDeploymentLocationStore(
                         manual,
                         configurationSeed);
                 }
-                if (!GovernsConfiguration(manual!, configurationSeed))
+                if (!GovernsConfiguration(manual!, configurationSeed)
+                    || replay.Sequence <= manual!.SupersededThroughSequence)
                 {
                     // The key was recorded, but a configuration change superseded it, so replaying it
-                    // would report success for coordinates that will never govern.
+                    // would report success for coordinates that will never govern. The watermark keeps
+                    // that true after a later entry makes the record govern again.
                     outcome = "conflict";
                     return ManualOutcome(
                         ManualDeploymentLocationStatus.Conflict,
@@ -443,6 +445,9 @@ public sealed class ProtectedDeploymentLocationStore(
                     DeploymentLocationSourceKind.Manual)),
                 configurationSeed,
                 SupersededAtUtc: null,
+                manual is null || GovernsConfiguration(manual, configurationSeed)
+                    ? manual?.SupersededThroughSequence ?? 0
+                    : entries[^1].Sequence,
                 [
                     .. entries.TakeLast(ManualDeploymentLocationContract.MaximumRetainedEntries - 1),
                     new ManualDeploymentLocationAuditEntry(
@@ -604,7 +609,11 @@ public sealed class ProtectedDeploymentLocationStore(
             return new ReconciledLocation(candidateHistory, latest!, Appended: false);
         }
 
-        EnsureEffectiveAtStartup(snapshot, now);
+        // When the floor above pushed the effective-from past `now`, the reconciler synthesized that
+        // instant itself; the startup check exists to reject a declared window that misses startup.
+        EnsureEffectiveAtStartup(
+            snapshot,
+            !seed.EffectiveFromUtc.HasValue && effectiveFrom > now ? effectiveFrom : now);
         var updated = new DeploymentLocationHistory(
             CurrentSchemaVersion,
             seed.LocationId,
@@ -1242,7 +1251,13 @@ public sealed class ProtectedDeploymentLocationStore(
             ActiveVersion: history.Snapshots[^1].Version,
             KnownVersion: knownVersion,
             NextVersion: knownVersion + 1,
-            PendingVersion: history.Staged?.Version ?? history.Candidate?.Version,
+            // Only the candidate or staged snapshot that carries this manual entry names its version.
+            // A candidate created before the newest entry describes a different one.
+            PendingVersion: (history.Staged ?? history.Candidate) is { } pendingSnapshot
+                && governs
+                && SameCoordinates(manual!.Seed.Coordinates, pendingSnapshot)
+                    ? pendingSnapshot.Version
+                    : null,
             ManualSequence: ManualSequence(manual, configurationSeed),
             CentralAcknowledgementRequired: centralAcknowledgementRequired,
             StagedAcknowledgementPending: history.Staged is not null,
@@ -1311,6 +1326,12 @@ public sealed class ProtectedDeploymentLocationStore(
         {
             throw new InvalidDataException(
                 "Protected manual deployment-location state failed integrity validation.");
+        }
+        if (record.SupersededThroughSequence < 0 ||
+            record.SupersededThroughSequence > record.Entries[^1].Sequence)
+        {
+            throw new InvalidDataException(
+                "Protected manual deployment-location supersession watermark is invalid.");
         }
         if (record.Entries.Count > ManualDeploymentLocationContract.MaximumRetainedEntries)
         {
@@ -1407,6 +1428,9 @@ public sealed class ProtectedDeploymentLocationStore(
         [property: JsonRequired] DeploymentLocationSeed Seed,
         [property: JsonRequired] DeploymentLocationSeed BaselineConfigurationSeed,
         [property: JsonRequired] DateTimeOffset? SupersededAtUtc,
+        // Every entry at or below this sequence was superseded by a configuration change and can never
+        // govern again, even after a later entry makes the record itself governing.
+        [property: JsonRequired] long SupersededThroughSequence,
         [property: JsonRequired] IReadOnlyList<ManualDeploymentLocationAuditEntry> Entries);
 
     private sealed record ReconciledLocation(
