@@ -47,7 +47,7 @@ dd { margin: .15rem 0 0; overflow-wrap: anywhere; font-weight: 650; }
 .automation-field--check { flex-direction: row; gap: .5rem; align-items: center; }
 .automation-field label { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
 .automation-field input, .automation-field select { min-width: 0; max-width: 100%; min-height: 44px; padding: .3rem .5rem; border: 1px solid var(--hvo-border-stronger); border-radius: var(--hvo-border-radius-lg, 1rem); background: var(--hvo-card-bg); color: var(--hvo-body-color); color-scheme: dark; }
-.automation-field--check input { min-height: 1.1rem; }
+.automation-field--check input { min-height: 24px; min-width: 24px; }
 .automation-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .8rem; }
 .automation-actions .btn { min-height: 44px; }
 .confirmation-panel { width: min(42rem, calc(100% - 2rem)); padding: 1rem 1.2rem; border: 1px solid var(--hvo-border-stronger); background: var(--hvo-surface-elevated); color: var(--hvo-body-color); }
@@ -57,3 +57,5 @@ dd { margin: .15rem 0 0; overflow-wrap: anywhere; font-weight: 650; }
 .confirmation-panel p { margin: .3rem 0 0; color: var(--hvo-muted-strong); font-size: .85rem; }
 .confirmation-panel div:last-child { display: flex; gap: .6rem; }
 .confirmation-panel .btn { min-height: 44px; }
+.revision-history { margin-top: .6rem; border-top: 1px solid var(--hvo-border-muted); }
+.revision-history > summary { padding: .4rem 0; color: var(--hvo-muted-strong); font-size: .85rem; cursor: pointer; }

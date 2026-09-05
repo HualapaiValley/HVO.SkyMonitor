@@ -28,9 +28,19 @@ public sealed partial class LocalAutomationRunnerService(
 {
     private readonly LocalAutomationOptions _options = options.Value.Automation;
 
+    /// <summary>
+    /// Initializes the durable store before the host is considered started. Doing it here rather than in
+    /// <see cref="ExecuteAsync"/> makes the fail-closed contract structural: a drifted, corrupt, or
+    /// unreadable store fails host startup instead of letting the host serve traffic and stop later.
+    /// </summary>
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await store.InitializeAsync(stoppingToken).ConfigureAwait(false);
         if (!_options.Enabled)
         {
             RunnerDisabled(logger);
@@ -143,7 +153,7 @@ public sealed partial class LocalAutomationRunnerService(
                     LocalAutomationRunOutcome.Missed,
                     string.Create(
                         CultureInfo.InvariantCulture,
-                        $"{occurrence.MissedOccurrences} occurrence(s) elapsed while this CameraAgent was not running; they are not replayed."),
+                        $"No run was recorded for {occurrence.MissedOccurrences} elapsed occurrence(s); they are not replayed."),
                     null,
                     cancellationToken).ConfigureAwait(false);
             }

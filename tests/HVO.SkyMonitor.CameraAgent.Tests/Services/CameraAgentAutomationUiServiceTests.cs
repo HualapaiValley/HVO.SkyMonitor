@@ -150,6 +150,52 @@ public sealed class CameraAgentAutomationUiServiceTests
             StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    [DataRow("definition.definitionId", "lower-case letter")]
+    [DataRow("definition.name", "single line")]
+    [DataRow("definition.taskTarget", "single line")]
+    [DataRow("definition.unknownField", "rejected before anything durable changed")]
+    public void DescribeFailure_ExplainsEveryRejectedField(string fieldPath, string expected)
+    {
+        var message = CameraAgentAutomationUiService.DescribeFailure(
+            new LocalAutomationCommandResult(
+                LocalAutomationCommandStatus.Invalid,
+                LocalAutomationContract.InvalidCommandReasonCode,
+                fieldPath,
+                LocalAutomationOperatorState.Empty));
+
+        StringAssert.Contains(message, expected, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void DescribeFailure_QuotesTheContractBoundsRatherThanRepeatingThemAsLiterals()
+    {
+        var name = CameraAgentAutomationUiService.DescribeFailure(
+            new LocalAutomationCommandResult(
+                LocalAutomationCommandStatus.Invalid,
+                LocalAutomationContract.InvalidCommandReasonCode,
+                "definition.name",
+                LocalAutomationOperatorState.Empty));
+        var target = CameraAgentAutomationUiService.DescribeFailure(
+            new LocalAutomationCommandResult(
+                LocalAutomationCommandStatus.Invalid,
+                LocalAutomationContract.InvalidCommandReasonCode,
+                "definition.taskTarget",
+                LocalAutomationOperatorState.Empty));
+
+        // A bound that moves must move the guidance with it rather than quietly lying.
+        StringAssert.Contains(
+            name,
+            LocalAutomationContract.MaximumNameLength.ToString(
+                System.Globalization.CultureInfo.InvariantCulture),
+            StringComparison.Ordinal);
+        StringAssert.Contains(
+            target,
+            LocalAutomationContract.MaximumTargetLength.ToString(
+                System.Globalization.CultureInfo.InvariantCulture),
+            StringComparison.Ordinal);
+    }
+
     private static LocalAutomationSaveRequest SaveRequest(string actor = "caller-supplied")
         => new(
             "sky-temperature",

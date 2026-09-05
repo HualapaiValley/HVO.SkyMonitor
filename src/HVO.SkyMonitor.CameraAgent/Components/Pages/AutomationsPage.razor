@@ -21,9 +21,9 @@
     }
     else
     {
-        @if (_schedule is null && _environment is null)
+        @if (_schedule is null && _environment is null && _automation is null)
         {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Automations unavailable" Message="@(_message ?? "Neither the capture schedule nor the environmental sources could be read.")">
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Automations unavailable" Message="@(_message ?? "Neither the capture schedule, the environmental sources, nor the local automations could be read.")">
                 <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Try again</button>
             </PageStateNotice>
         }
@@ -106,8 +106,8 @@
             }
 
             <article class="automation-card" aria-labelledby="automation-triggers">
-                <header><div><p class="eyebrow">Registered vocabulary</p><h2 id="automation-triggers">Trigger kinds</h2></div></header>
-                <p>Environmental acquisition may only be started by these registered triggers.</p>
+                <header><div><p class="eyebrow">Registered vocabulary</p><h2 id="automation-triggers">Environmental acquisition trigger kinds</h2></div></header>
+                <p>Environmental acquisition may only be started by these registered triggers. They are the source's own vocabulary, driven by the capture lane. Local automation definitions use their own separate trigger vocabulary, shown in the editor below.</p>
                 <ul class="trigger-list">
                     @foreach (var trigger in Enum.GetValues<EnvironmentalAcquisitionTrigger>())
                     {
@@ -131,7 +131,7 @@
                 else
                 {
                     <p class="truth-note">Every definition names one registered task kind and one registered trigger kind. Nothing on this page runs a command, a script, or a path, and no definition can express one. Saving records an immutable revision; the runner never admits an exposure and never changes capture timing.</p>
-                    @if (_message is null && _commandMessage is not null && !_confirming)
+                    @if (_commandMessage is not null && !_confirming)
                     {
                         @* While the modal is open the same notice is announced inside it instead. *@
                         <p class="truth-note @(_commandMessageIsError ? "automation-error" : "automation-ok")" role="@(_commandMessageIsError ? "alert" : "status")">@_commandMessage</p>
@@ -184,6 +184,35 @@
                                 </tbody>
                             </table>
                         </div>
+
+                        <h3>Recorded revisions</h3>
+                        @foreach (var definition in _automation.Definitions)
+                        {
+                            <details class="revision-history" @key="definition.Definition.DefinitionId">
+                                <summary>@definition.Definition.DefinitionId &mdash; @definition.History.Count retained of @LocalAutomationContract.MaximumProjectedRevisions shown</summary>
+                                <div class="table-scroll">
+                                    <table class="facts-table">
+                                        <caption class="visually-hidden">Recorded revisions of @definition.Definition.DefinitionId, newest first</caption>
+                                        <thead><tr><th scope="col">Version</th><th scope="col">Recorded</th><th scope="col">Actor</th><th scope="col">State</th><th scope="col">Task</th><th scope="col">Trigger</th><th scope="col">Reason</th><th scope="col">Revision</th></tr></thead>
+                                        <tbody>
+                                            @foreach (var revision in definition.History)
+                                            {
+                                                <tr @key="revision.Version">
+                                                    <th scope="row">@revision.Version</th>
+                                                    <td>@revision.RecordedAtUtc.ToString("u")</td>
+                                                    <td>@revision.Actor</td>
+                                                    <td>@(revision.Removed ? "Removed" : revision.Definition.Enabled ? "Enabled" : "Disabled")</td>
+                                                    <td>@revision.Definition.TaskTarget</td>
+                                                    <td>@Split(revision.Definition.TriggerKind.ToString()) / @revision.Definition.TriggerInterval</td>
+                                                    <td>@(revision.Reason ?? "Not recorded")</td>
+                                                    <td class="mono">@revision.RevisionSha256[..12]</td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </details>
+                        }
                     }
 
                     <h3 id="automation-editor" tabindex="-1">@(_editingVersion == 0 ? "Define an automation" : $"Edit {_idInput}")</h3>
@@ -288,7 +317,7 @@
                     {
                         <div class="table-scroll">
                             <table class="facts-table">
-                                <caption class="visually-hidden">Recorded automation runs, newest first</caption>
+                                <caption class="visually-hidden">The @LocalAutomationContract.MaximumProjectedRuns most recent recorded automation runs across all definitions, newest first</caption>
                                 <thead><tr><th scope="col">Started</th><th scope="col">Automation</th><th scope="col">Trigger</th><th scope="col">Scheduled for</th><th scope="col">Outcome</th><th scope="col">Detail</th><th scope="col">Revision</th></tr></thead>
                                 <tbody>
                                     @foreach (var run in _automation.Runs)

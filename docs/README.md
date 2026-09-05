@@ -38,6 +38,7 @@ documents link back without maintaining competing status.
 | Processing entitlements and fair scheduling | `docs/runbooks/processing-entitlements.md` | Per-observatory entitlements, weighted fair share and starvation ordering, resource classes and budgets, runner pools, usage records, signals, backpressure, and capacity guidance. |
 | Signed distribution releases | `docs/runbooks/release-distribution.md` | Independent installer/catalog trains, Key Vault signing, immutable publication, public verification, retention, mirrors, and recovery. |
 | CameraAgent retention recovery | `docs/runbooks/cameraagent-retention.md` | Pending-upload retention invariant and outage recovery procedure. |
+| CameraAgent local automation | `docs/runbooks/cameraagent-local-automation.md` | Versioned local automation definitions, the closed task and trigger registry, storage and bounded retention, runner behaviour, restart recovery, and owner-only endpoints. |
 
 ## Documentation Rules
 

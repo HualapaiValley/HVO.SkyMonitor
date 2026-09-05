@@ -138,8 +138,6 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             command_kind TEXT NOT NULL CHECK (length(command_kind) BETWEEN 1 AND 32),
             payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
             definition_id TEXT NOT NULL CHECK (length(definition_id) BETWEEN 1 AND 64),
-            result_status TEXT NOT NULL CHECK (length(result_status) BETWEEN 1 AND 32),
-            result_version INTEGER NOT NULL CHECK (result_version >= 0),
             recorded_unix_ms INTEGER NOT NULL
         ) STRICT;
         CREATE INDEX IF NOT EXISTS ix_automation_commands_recorded
@@ -156,7 +154,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             completed_unix_ms INTEGER,
             outcome TEXT NOT NULL CHECK (length(outcome) BETWEEN 1 AND 32),
             detail TEXT NOT NULL CHECK (length(detail) <= 512),
-            observed_capture_sequence INTEGER
+            observed_capture_sequence INTEGER,
+            claimant TEXT NOT NULL CHECK (length(claimant) BETWEEN 1 AND 64)
         ) STRICT;
         CREATE INDEX IF NOT EXISTS ix_automation_runs_definition
             ON automation_runs(definition_id, sequence);
@@ -176,7 +175,9 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
     private readonly LocalAutomationTelemetry? _telemetry;
     private readonly CameraAgentHostOptions _options;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly string _claimant = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
     private string? _connectionString;
+    private string? _databasePath;
     private bool _schemaReady;
 
     public SqliteLocalAutomationStore(
@@ -268,11 +269,19 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         {
             throw new InvalidDataException("Local automation SQLite schema is incomplete or drifted.");
         }
+        var integrity = await ScalarStringAsync(
+            connection, transaction, "PRAGMA integrity_check;", cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Local automation SQLite storage failed its integrity check.");
+        }
         var interrupted = 0;
         if (settleInterruptedRuns)
         {
             // Restart recovery: a run claimed by a process that stopped is terminal, never re-claimed.
             // Its occurrence progress was advanced with the claim, so the cadence does not repeat it.
+            // A restarted process and a competing second instance are indistinguishable here, so this
+            // stays a blanket settle and liveness is asserted at completion instead.
             interrupted = await ExecuteAsync(
                 connection,
                 transaction,
@@ -296,12 +305,13 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
 
     public async ValueTask<LocalAutomationOperatorState> GetStateAsync(CancellationToken cancellationToken)
     {
-        var observed = await ReadCaptureSequenceAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
+                .ConfigureAwait(false);
+            var observed = await ReadCaptureSequenceIfNeededAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
             using var transaction = BeginRead(connection);
             return await ProjectAsync(connection, transaction, observed, cancellationToken).ConfigureAwait(false);
@@ -312,18 +322,22 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         }
     }
 
+
     public async ValueTask<LocalAutomationCommandResult> SaveAsync(
         LocalAutomationSaveRequest request,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         using var activity = LocalAutomationTelemetry.ActivitySource.StartActivity("automation.save");
-        var observed = await ReadCaptureSequenceAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
+                .ConfigureAwait(false);
+            // Read before the write transaction opens: this touches another database file and must never
+            // happen while the automation store holds its IMMEDIATE write lock.
+            var observed = await ReadCaptureSequenceIfNeededAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
             var result = await SaveCoreAsync(connection, transaction, request, observed, cancellationToken)
@@ -344,12 +358,13 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
     {
         ArgumentNullException.ThrowIfNull(request);
         using var activity = LocalAutomationTelemetry.ActivitySource.StartActivity("automation.remove");
-        var observed = await ReadCaptureSequenceAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
+                .ConfigureAwait(false);
+            var observed = await ReadCaptureSequenceIfNeededAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
             var result = await RemoveCoreAsync(connection, transaction, request, observed, cancellationToken)
@@ -422,8 +437,9 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 """
                 INSERT INTO automation_runs(
                     definition_id, run_key, revision_sha256, trigger_kind, scheduled_for_unix_ms,
-                    started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence)
-                VALUES ($definition, $key, $revision, $trigger, $scheduled, $started, NULL, 'Running', '', $observed)
+                    started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence, claimant)
+                VALUES ($definition, $key, $revision, $trigger, $scheduled, $started, NULL, 'Running', '', $observed,
+                        $claimant)
                 ON CONFLICT(run_key) DO NOTHING;
                 """,
                 cancellationToken,
@@ -433,7 +449,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 ("$trigger", entry.Definition.TriggerKind.ToString()),
                 ("$scheduled", ToUnixMilliseconds(scheduledForUtc)),
                 ("$started", ToUnixMilliseconds(now)),
-                ("$observed", observedCaptureSequence is { } sequence ? sequence : (object)DBNull.Value)).ConfigureAwait(false);
+                ("$observed", observedCaptureSequence is { } sequence ? sequence : (object)DBNull.Value),
+                ("$claimant", _claimant)).ConfigureAwait(false);
             if (inserted == 0)
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -475,19 +492,26 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
                 .ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
-            await ExecuteAsync(
+            var settled = await ExecuteAsync(
                 connection,
                 transaction,
                 """
                 UPDATE automation_runs
                 SET outcome = $outcome, detail = $detail, completed_unix_ms = $now
-                WHERE run_key = $key AND outcome = 'Running';
+                WHERE run_key = $key AND (outcome = 'Running' OR claimant = $claimant);
                 """,
                 cancellationToken,
                 ("$outcome", outcome.ToString()),
                 ("$detail", Bound(detail)),
                 ("$now", ToUnixMilliseconds(Now())),
-                ("$key", runKey)).ConfigureAwait(false);
+                ("$key", runKey),
+                ("$claimant", _claimant)).ConfigureAwait(false);
+            if (settled == 0)
+            {
+                // The run this instance claimed is gone from the journal entirely, which retention can do
+                // only under extreme churn. Losing a real outcome must never pass silently.
+                RunCompletionLost(_logger, runKey, outcome.ToString(), null);
+            }
             var definitionId = await ScalarStringAsync(
                 connection,
                 transaction,
@@ -532,8 +556,9 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 """
                 INSERT INTO automation_runs(
                     definition_id, run_key, revision_sha256, trigger_kind, scheduled_for_unix_ms,
-                    started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence)
-                VALUES ($definition, $key, $revision, $trigger, $scheduled, $now, $now, $outcome, $detail, $observed)
+                    started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence, claimant)
+                VALUES ($definition, $key, $revision, $trigger, $scheduled, $now, $now, $outcome, $detail, $observed,
+                        $claimant)
                 ON CONFLICT(run_key) DO NOTHING;
                 """,
                 cancellationToken,
@@ -545,7 +570,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 ("$now", now),
                 ("$outcome", outcome.ToString()),
                 ("$detail", Bound(detail)),
-                ("$observed", observedCaptureSequence is { } sequence ? sequence : (object)DBNull.Value)).ConfigureAwait(false);
+                ("$observed", observedCaptureSequence is { } sequence ? sequence : (object)DBNull.Value),
+                ("$claimant", _claimant)).ConfigureAwait(false);
             await RetainRunsAsync(connection, transaction, entry.Definition.DefinitionId, cancellationToken)
                 .ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -667,12 +693,20 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         {
             await RecordCommandAsync(
                 connection, transaction, request.IdempotencyKey, "save", payloadSha256, request.DefinitionId,
-                LocalAutomationCommandStatus.Unchanged, currentVersion, cancellationToken).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false);
             return await ResultAsync(
                 connection, transaction, LocalAutomationCommandStatus.Unchanged, null, null,
                 observedCaptureSequence, cancellationToken).ConfigureAwait(false);
         }
-        var version = currentVersion + 1;
+        // The revision line is immutable and outlives the live row, so a definition identifier that was
+        // removed and is being recreated must continue that line rather than restart it at one.
+        var revisionCeiling = await ScalarLongAsync(
+            connection,
+            transaction,
+            "SELECT COALESCE(MAX(version), 0) FROM automation_definition_revisions WHERE definition_id = $id;",
+            cancellationToken,
+            ("$id", request.DefinitionId)).ConfigureAwait(false);
+        var version = Math.Max(currentVersion, revisionCeiling) + 1;
         var now = ToUnixMilliseconds(Now());
         await ExecuteAsync(
             connection,
@@ -707,18 +741,19 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         await InsertRevisionAsync(
             connection, transaction, definition, version, revisionSha256, removed: false, now, request.Actor,
             request.Reason, cancellationToken).ConfigureAwait(false);
-        // A changed trigger kind invalidates the previous progress dimension, so the definition is
-        // rebaselined rather than measured against a value the new trigger never produced.
-        if (existing is not null && existing.Definition.TriggerKind != definition.TriggerKind)
+        // A changed trigger kind invalidates the previous progress dimension, and a definition that was
+        // disabled has no run history for the time it was off. Both are re-anchored to now rather than
+        // simply cleared: clearing would make every boundary since the epoch look like a missed occurrence.
+        if (existing is not null &&
+            (existing.Definition.TriggerKind != definition.TriggerKind ||
+             (!existing.Definition.Enabled && definition.Enabled)))
         {
-            await ExecuteAsync(
-                connection, transaction,
-                "DELETE FROM automation_progress WHERE definition_id = $id;",
-                cancellationToken, ("$id", definition.DefinitionId)).ConfigureAwait(false);
+            await AnchorProgressAsync(connection, transaction, definition, Now(), cancellationToken)
+                .ConfigureAwait(false);
         }
         await RecordCommandAsync(
             connection, transaction, request.IdempotencyKey, "save", payloadSha256, request.DefinitionId,
-            LocalAutomationCommandStatus.Applied, version, cancellationToken).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
         return await ResultAsync(
             connection, transaction, LocalAutomationCommandStatus.Applied, null, null, observedCaptureSequence,
             cancellationToken).ConfigureAwait(false);
@@ -787,9 +822,10 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         await InsertRevisionAsync(
             connection, transaction, existing.Definition, version, existing.RevisionSha256, removed: true, now,
             request.Actor, request.Reason, cancellationToken).ConfigureAwait(false);
+        await PruneOrphansAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         await RecordCommandAsync(
             connection, transaction, request.IdempotencyKey, "remove", payloadSha256, request.DefinitionId,
-            LocalAutomationCommandStatus.Applied, version, cancellationToken).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
         return await ResultAsync(
             connection, transaction, LocalAutomationCommandStatus.Applied, null, null, observedCaptureSequence,
             cancellationToken).ConfigureAwait(false);
@@ -830,8 +866,6 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         string commandKind,
         string payloadSha256,
         string definitionId,
-        LocalAutomationCommandStatus status,
-        long version,
         CancellationToken cancellationToken)
     {
         var now = Now();
@@ -840,17 +874,14 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             transaction,
             """
             INSERT INTO automation_commands(
-                idempotency_key, command_kind, payload_sha256, definition_id, result_status, result_version,
-                recorded_unix_ms)
-            VALUES ($key, $kind, $payload, $definition, $status, $version, $now);
+                idempotency_key, command_kind, payload_sha256, definition_id, recorded_unix_ms)
+            VALUES ($key, $kind, $payload, $definition, $now);
             """,
             cancellationToken,
             ("$key", idempotencyKey),
             ("$kind", commandKind),
             ("$payload", payloadSha256),
             ("$definition", definitionId),
-            ("$status", status.ToString()),
-            ("$version", version),
             ("$now", ToUnixMilliseconds(now))).ConfigureAwait(false);
         // The retained window is the replay window: a key older than it can no longer be replayed,
         // so the ledger cannot grow without bound from an authenticated caller.
@@ -906,6 +937,44 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             ("$keep", (long)LocalAutomationContract.MaximumRetainedRevisions)).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Bounds the revisions and runs of definitions that no longer exist. Per-definition retention only
+    /// runs from that definition's own write paths, so without this a removed definition would keep its
+    /// tail forever and removal would free the definition slot for another one.
+    /// </summary>
+    private static async ValueTask PruneOrphansAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteAsync(
+            connection,
+            transaction,
+            """
+            DELETE FROM automation_definition_revisions
+            WHERE definition_id NOT IN (SELECT definition_id FROM automation_definitions)
+              AND sequence NOT IN (
+                SELECT sequence FROM automation_definition_revisions
+                WHERE definition_id NOT IN (SELECT definition_id FROM automation_definitions)
+                ORDER BY sequence DESC LIMIT $keep);
+            """,
+            cancellationToken,
+            ("$keep", (long)LocalAutomationContract.MaximumRetainedOrphanRevisions)).ConfigureAwait(false);
+        await ExecuteAsync(
+            connection,
+            transaction,
+            """
+            DELETE FROM automation_runs
+            WHERE definition_id NOT IN (SELECT definition_id FROM automation_definitions)
+              AND sequence NOT IN (
+                SELECT sequence FROM automation_runs
+                WHERE definition_id NOT IN (SELECT definition_id FROM automation_definitions)
+                ORDER BY sequence DESC LIMIT $keep);
+            """,
+            cancellationToken,
+            ("$keep", (long)LocalAutomationContract.MaximumRetainedOrphanRuns)).ConfigureAwait(false);
+    }
+
     private static async ValueTask RetainRunsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -923,6 +992,40 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             cancellationToken,
             ("$id", definitionId),
             ("$keep", (long)LocalAutomationContract.MaximumRetainedRuns)).ConfigureAwait(false);
+
+    /// <summary>
+    /// Resets a definition's progress to the present. A periodic definition is anchored to the most recent
+    /// boundary so its next occurrence is one whole interval away; a capture-relative one is cleared so the
+    /// runner establishes a fresh capture baseline.
+    /// </summary>
+    private static async ValueTask AnchorProgressAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        LocalAutomationDefinition definition,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var occurrence = definition.TriggerKind == LocalAutomationTriggerKind.Periodic
+            ? ToUnixMilliseconds(LocalAutomationSchedule.LatestPeriodicBoundary(
+                definition.TriggerEpochUtc, definition.TriggerInterval, now))
+            : (object)DBNull.Value;
+        await ExecuteAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO automation_progress(
+                definition_id, last_occurrence_unix_ms, last_capture_sequence, updated_unix_ms)
+            VALUES ($id, $occurrence, NULL, $now)
+            ON CONFLICT(definition_id) DO UPDATE SET
+                last_occurrence_unix_ms = excluded.last_occurrence_unix_ms,
+                last_capture_sequence = NULL,
+                updated_unix_ms = excluded.updated_unix_ms;
+            """,
+            cancellationToken,
+            ("$id", definition.DefinitionId),
+            ("$occurrence", occurrence),
+            ("$now", ToUnixMilliseconds(now))).ConfigureAwait(false);
+    }
 
     private static async ValueTask AdvanceProgressAsync(
         SqliteConnection connection,
@@ -992,9 +1095,11 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             connection, transaction,
             "SELECT COALESCE(MAX(sequence), 0) FROM automation_definition_revisions;", cancellationToken)
             .ConfigureAwait(false);
-        var lastRuns = runs
-            .GroupBy(static run => run.DefinitionId, StringComparer.Ordinal)
-            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
+        // The last run is resolved per definition rather than from the projected page: the page is the
+        // newest runs across all definitions, so a working automation outside that window would otherwise
+        // be reported as having never run.
+        var lastRuns = await ReadLatestRunsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        var histories = await ReadRevisionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         var states = new List<LocalAutomationDefinitionState>(definitions.Count);
         var calendar = new List<LocalAutomationCalendarEntry>(definitions.Count);
         foreach (var record in definitions)
@@ -1009,8 +1114,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 ? LocalAutomationSchedule.NextCaptureSequence(
                     record.Definition.TriggerInterval, value.LastCaptureSequence)
                 : null;
-            var history = await ReadRevisionsAsync(
-                connection, transaction, record.Definition.DefinitionId, cancellationToken).ConfigureAwait(false);
+            histories.TryGetValue(record.Definition.DefinitionId, out var history);
             lastRuns.TryGetValue(record.Definition.DefinitionId, out var lastRun);
             states.Add(new LocalAutomationDefinitionState(
                 record.Definition,
@@ -1022,7 +1126,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 nextRunUtc,
                 nextCapture,
                 lastRun,
-                history));
+                history ?? []));
             if (nextRunUtc is { } due)
             {
                 calendar.Add(new LocalAutomationCalendarEntry(
@@ -1077,7 +1181,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                     ParseEnum<LocalAutomationTaskKind>(reader.GetString(3)),
                     reader.GetString(4),
                     ParseEnum<LocalAutomationTriggerKind>(reader.GetString(5)),
-                    checked((int)reader.GetInt64(6)),
+                    ReadInterval(reader.GetInt64(6)),
                     FromUnixMilliseconds(reader.GetInt64(7))),
                 reader.GetInt64(8),
                 reader.GetString(9),
@@ -1140,53 +1244,115 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         var results = new List<LocalAutomationRun>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            results.Add(new LocalAutomationRun(
-                reader.GetInt64(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                ParseEnum<LocalAutomationTriggerKind>(reader.GetString(4)),
-                FromUnixMilliseconds(reader.GetInt64(5)),
-                FromUnixMilliseconds(reader.GetInt64(6)),
-                await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : FromUnixMilliseconds(reader.GetInt64(7)),
-                ParseEnum<LocalAutomationRunOutcome>(reader.GetString(8)),
-                reader.GetString(9),
-                await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(10)));
+            results.Add(await ReadRunAsync(reader, cancellationToken).ConfigureAwait(false));
         }
         return results;
     }
 
-    private static async ValueTask<IReadOnlyList<LocalAutomationRevision>> ReadRevisionsAsync(
+    /// <summary>
+    /// Reads the most recent revisions of every live definition in one query. The per-definition cap keeps
+    /// the projected response bounded no matter how many revisions retention holds.
+    /// </summary>
+    private static async ValueTask<Dictionary<string, IReadOnlyList<LocalAutomationRevision>>> ReadRevisionsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
-        string definitionId,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT version, revision_sha256, definition_json, removed, recorded_unix_ms, actor, reason
+            SELECT definition_id, version, revision_sha256, definition_json, removed, recorded_unix_ms, actor, reason
             FROM automation_definition_revisions
-            WHERE definition_id = $id
-            ORDER BY version DESC;
+            WHERE definition_id IN (SELECT definition_id FROM automation_definitions)
+            ORDER BY definition_id, version DESC;
             """;
-        command.Parameters.AddWithValue("$id", definitionId);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        var results = new List<LocalAutomationRevision>();
+        var results = new Dictionary<string, IReadOnlyList<LocalAutomationRevision>>(StringComparer.Ordinal);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            var definition = JsonSerializer.Deserialize<LocalAutomationDefinition>(reader.GetString(2), SerializerOptions)
+            var definitionId = reader.GetString(0);
+            if (!results.TryGetValue(definitionId, out var bucket))
+            {
+                bucket = new List<LocalAutomationRevision>();
+                results[definitionId] = bucket;
+            }
+            var list = (List<LocalAutomationRevision>)bucket;
+            if (list.Count >= LocalAutomationContract.MaximumProjectedRevisions)
+            {
+                continue;
+            }
+            var definition = JsonSerializer.Deserialize<LocalAutomationDefinition>(
+                reader.GetString(3), SerializerOptions)
                 ?? throw new InvalidDataException("A local automation revision is unreadable.");
-            results.Add(new LocalAutomationRevision(
-                reader.GetInt64(0),
-                reader.GetString(1),
+            list.Add(new LocalAutomationRevision(
+                reader.GetInt64(1),
+                reader.GetString(2),
                 definition,
-                reader.GetInt64(3) != 0,
-                FromUnixMilliseconds(reader.GetInt64(4)),
-                reader.GetString(5),
-                await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6)));
+                reader.GetInt64(4) != 0,
+                FromUnixMilliseconds(reader.GetInt64(5)),
+                reader.GetString(6),
+                await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7)));
         }
         return results;
+    }
+
+    private static async ValueTask<LocalAutomationRun> ReadRunAsync(
+        SqliteDataReader reader,
+        CancellationToken cancellationToken)
+        => new(
+            reader.GetInt64(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.GetString(3),
+            ParseEnum<LocalAutomationTriggerKind>(reader.GetString(4)),
+            FromUnixMilliseconds(reader.GetInt64(5)),
+            FromUnixMilliseconds(reader.GetInt64(6)),
+            await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
+                ? null
+                : FromUnixMilliseconds(reader.GetInt64(7)),
+            ParseEnum<LocalAutomationRunOutcome>(reader.GetString(8)),
+            reader.GetString(9),
+            await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(10));
+
+    /// <summary>Reads the newest run of every definition, independent of the projected run page.</summary>
+    private static async ValueTask<Dictionary<string, LocalAutomationRun>> ReadLatestRunsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT sequence, definition_id, run_key, revision_sha256, trigger_kind, scheduled_for_unix_ms,
+                   started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence
+            FROM automation_runs
+            WHERE sequence IN (SELECT MAX(sequence) FROM automation_runs GROUP BY definition_id);
+            """;
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var results = new Dictionary<string, LocalAutomationRun>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var run = await ReadRunAsync(reader, cancellationToken).ConfigureAwait(false);
+            results[run.DefinitionId] = run;
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// Reads the durable capture sequence only when a capture-relative definition exists. Without one the
+    /// operator projection has nothing to say about it, and the acquisition journal is never opened.
+    /// </summary>
+    private async ValueTask<long?> ReadCaptureSequenceIfNeededAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var needed = await ScalarLongAsync(
+            connection,
+            null,
+            "SELECT EXISTS(SELECT 1 FROM automation_definitions WHERE trigger_kind = $trigger);",
+            cancellationToken,
+            ("$trigger", LocalAutomationTriggerKind.CaptureRelative.ToString())).ConfigureAwait(false);
+        return needed == 0 ? null : await ReadCaptureSequenceAsync(cancellationToken).ConfigureAwait(false);
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -1247,21 +1413,65 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         Justification = "Only internal constant PRAGMA statements with a validated numeric bound are executed.")]
     private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
+        var path = ResolveDatabasePath();
+        // Re-checked on every open rather than once per process: a sidecar can be replaced with a link
+        // between opens, and the WAL and shared-memory files carry committed data just as the database does.
+        EnsureDatabaseFilesArePhysical(path);
         var connection = new SqliteConnection(ResolveConnectionString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText =
-            $"PRAGMA busy_timeout = {_options.RawIngressSqliteBusyTimeoutSeconds * 1000};"
-            + " PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;";
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        using (var settings = connection.CreateCommand())
+        {
+            settings.CommandText =
+                $"PRAGMA busy_timeout = {_options.RawIngressSqliteBusyTimeoutSeconds * 1000};"
+                + " PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;";
+            await settings.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        using (var journal = connection.CreateCommand())
+        {
+            journal.CommandText = "PRAGMA journal_mode = WAL;";
+            // The PRAGMA reports the mode actually in force; a silent fallback to rollback journaling
+            // would lose the atomicity this contract depends on, so it is asserted rather than assumed.
+            var mode = await journal.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+            if (!string.Equals(mode, "wal", StringComparison.OrdinalIgnoreCase))
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+                throw new InvalidDataException(
+                    "Local automation SQLite storage could not enable write-ahead logging.");
+            }
+        }
         return connection;
+    }
+
+    /// <summary>Rejects a database or sidecar that is a symbolic link rather than a real file.</summary>
+    private static void EnsureDatabaseFilesArePhysical(string path)
+    {
+        foreach (var candidate in new[] { path, path + "-wal", path + "-shm", path + "-journal" })
+        {
+            if (new FileInfo(candidate).LinkTarget is not null)
+            {
+                throw new InvalidDataException(
+                    "Local automation SQLite storage must not be a symbolic link.");
+            }
+        }
     }
 
     private string ResolveConnectionString()
     {
-        if (_connectionString is not null)
+        _connectionString ??= new SqliteConnectionStringBuilder
         {
-            return _connectionString;
+            DataSource = ResolveDatabasePath(),
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false,
+            DefaultTimeout = _options.RawIngressSqliteBusyTimeoutSeconds
+        }.ToString();
+        return _connectionString;
+    }
+
+    private string ResolveDatabasePath()
+    {
+        if (_databasePath is not null)
+        {
+            return _databasePath;
         }
         var root = Path.GetFullPath(_options.RawIngressRoot);
         Directory.CreateDirectory(root);
@@ -1275,14 +1485,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         {
             throw new InvalidOperationException("The local automation store path escapes the CameraAgent data root.");
         }
-        _connectionString = new SqliteConnectionStringBuilder
-        {
-            DataSource = path,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Pooling = false,
-            DefaultTimeout = _options.RawIngressSqliteBusyTimeoutSeconds
-        }.ToString();
-        return _connectionString;
+        _databasePath = path;
+        return _databasePath;
     }
 
     private DateTimeOffset Now() => _timeProvider.GetUtcNow().ToUniversalTime();
@@ -1290,12 +1494,26 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
     private static DateTimeOffset Truncate(DateTimeOffset value)
         => new(value.UtcDateTime.AddTicks(-(value.UtcDateTime.Ticks % TimeSpan.TicksPerMillisecond)), TimeSpan.Zero);
 
+    /// <summary>Trims to the stored bound without splitting a surrogate pair.</summary>
     private static string Bound(string value)
-        => value.Length <= 512 ? value : value[..512];
+    {
+        const int Maximum = LocalAutomationContract.MaximumReasonLength;
+        if (value.Length <= Maximum)
+        {
+            return value;
+        }
+        var length = char.IsHighSurrogate(value[Maximum - 1]) ? Maximum - 1 : Maximum;
+        return value[..length];
+    }
 
     private static long ToUnixMilliseconds(DateTimeOffset value) => value.ToUnixTimeMilliseconds();
 
     private static DateTimeOffset FromUnixMilliseconds(long value) => DateTimeOffset.FromUnixTimeMilliseconds(value);
+
+    private static int ReadInterval(long value)
+        => value is > 0 and <= int.MaxValue
+            ? (int)value
+            : throw new InvalidDataException("Local automation storage contains an unusable trigger interval.");
 
     private static T ParseEnum<T>(string value) where T : struct, Enum
         => Enum.TryParse<T>(value, ignoreCase: false, out var parsed) && Enum.IsDefined(parsed)
@@ -1373,6 +1591,12 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             LogLevel.Information,
             new EventId(7401, "LocalAutomationRunsSettled"),
             "Settled {InterruptedRuns} interrupted local automation runs during restart recovery.");
+
+    private static readonly Action<ILogger, string, string, Exception?> RunCompletionLost =
+        LoggerMessage.Define<string, string>(
+            LogLevel.Warning,
+            new EventId(7408, "LocalAutomationRunCompletionLost"),
+            "Local automation run {RunKey} was no longer claimed, so outcome {Outcome} was not recorded.");
 
     private static readonly Action<ILogger, Exception?> CaptureSequenceUnavailable =
         LoggerMessage.Define(

@@ -211,7 +211,11 @@ public sealed class LocalAutomationStoreTests
 
         var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
         var definition = state.Definitions.Single();
-        Assert.AreEqual(LocalAutomationContract.MaximumRetainedRevisions, definition.History.Count);
+        // Storage retains the full window; the projection deliberately returns a smaller page of it.
+        Assert.AreEqual(
+            (long)LocalAutomationContract.MaximumRetainedRevisions,
+            await CountAsync("automation_definition_revisions").ConfigureAwait(false));
+        Assert.AreEqual(LocalAutomationContract.MaximumProjectedRevisions, definition.History.Count);
         Assert.AreEqual(definition.Version, definition.History[0].Version);
     }
 
@@ -252,6 +256,223 @@ public sealed class LocalAutomationStoreTests
 
         Assert.AreEqual(LocalAutomationCommandStatus.Invalid, overflow.Status);
         Assert.AreEqual(LocalAutomationContract.DefinitionLimitReasonCode, overflow.ReasonCode);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_RecreatesARemovedDefinitionIdOnAContinuingRevisionLine()
+    {
+        using var store = await CreateInitializedStoreAsync().ConfigureAwait(false);
+        await store.SaveAsync(SaveRequest(), CancellationToken.None).ConfigureAwait(false);
+        await store.RemoveAsync(
+            new LocalAutomationRemoveRequest("sky-temperature", 1, "remove", "owner", null),
+            CancellationToken.None).ConfigureAwait(false);
+
+        // "Remove it, then create it again under the same name" is the obvious operator gesture. The
+        // revision line is immutable and outlives the live row, so it must continue rather than restart.
+        var recreated = await store.SaveAsync(
+            SaveRequest(key: "recreate"), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, recreated.Status);
+        var definition = recreated.State.Definitions.Single();
+        Assert.AreEqual(3L, definition.Version);
+        Assert.AreEqual(3L, definition.History[0].Version);
+        Assert.IsTrue(definition.History[1].Removed);
+    }
+
+    [TestMethod]
+    public async Task RemoveAsync_BoundsTheRevisionsAndRunsOfDefinitionsThatNoLongerExist()
+    {
+        using var store = await CreateInitializedStoreAsync().ConfigureAwait(false);
+        for (var index = 0; index < 40; index++)
+        {
+            var id = string.Create(CultureInfo.InvariantCulture, $"orphan-{index}");
+            var created = await store.SaveAsync(
+                SaveRequest(definitionId: id, key: string.Create(CultureInfo.InvariantCulture, $"c-{index}")),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(LocalAutomationCommandStatus.Applied, created.Status);
+            var entry = (await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false))
+                .Single(candidate => candidate.Definition.DefinitionId == id);
+            await store.TryBeginRunAsync(
+                entry,
+                string.Create(CultureInfo.InvariantCulture, $"run-{index}"),
+                Now.AddSeconds(3600),
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+            await store.CompleteRunAsync(
+                string.Create(CultureInfo.InvariantCulture, $"run-{index}"),
+                LocalAutomationRunOutcome.Succeeded,
+                "ok",
+                CancellationToken.None).ConfigureAwait(false);
+            await store.RemoveAsync(
+                new LocalAutomationRemoveRequest(
+                    id, 1, string.Create(CultureInfo.InvariantCulture, $"r-{index}"), "owner", null),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        // Removal frees the definition slot, so the definition cap cannot bound the orphan tail.
+        Assert.IsEmpty((await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Definitions);
+        Assert.IsLessThanOrEqualTo(
+            (long)LocalAutomationContract.MaximumRetainedOrphanRevisions,
+            await CountAsync("automation_definition_revisions").ConfigureAwait(false));
+        Assert.IsLessThanOrEqualTo(
+            (long)LocalAutomationContract.MaximumRetainedOrphanRuns,
+            await CountAsync("automation_runs").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task CompleteRunAsync_RecordsTheRealOutcomeAfterAnotherInstanceSettledTheRun()
+    {
+        using var owner = await CreateInitializedStoreAsync().ConfigureAwait(false);
+        await owner.SaveAsync(SaveRequest(), CancellationToken.None).ConfigureAwait(false);
+        var entry = (await owner.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false)).Single();
+        await owner.TryBeginRunAsync(entry, "run-1", Now.AddSeconds(3600), null, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        using (var second = CreateStore())
+        {
+            await second.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        await owner.CompleteRunAsync(
+            "run-1", LocalAutomationRunOutcome.Succeeded, "Acquired an observation.", CancellationToken.None)
+            .ConfigureAwait(false);
+
+        // A second instance settling a run this instance is still executing must not replace the real
+        // outcome: completion is authoritative for the claimant that holds the run.
+        var run = (await owner.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, run.Outcome);
+    }
+
+    [TestMethod]
+    public async Task GetStateAsync_ReadsTheCaptureSequenceOnlyForACaptureRelativeDefinition()
+    {
+        _captureSequence.Sequence = 77;
+        using var store = await CreateInitializedStoreAsync().ConfigureAwait(false);
+        await store.SaveAsync(SaveRequest(), CancellationToken.None).ConfigureAwait(false);
+
+        var periodicOnly = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        var readsAfterPeriodic = _captureSequence.Reads;
+        await store.SaveAsync(
+            SaveRequest(
+                definitionId: "capture-relative",
+                trigger: LocalAutomationTriggerKind.CaptureRelative,
+                interval: 10,
+                key: "capture"),
+            CancellationToken.None).ConfigureAwait(false);
+        var withCaptureRelative = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+
+        // The acquisition journal is another database; an operator read must not open it for nothing.
+        Assert.AreEqual(0, readsAfterPeriodic);
+        Assert.IsNull(periodicOnly.ObservedCaptureSequence);
+        Assert.AreEqual(77L, withCaptureRelative.ObservedCaptureSequence);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_ReAnchorsProgressWhenADisabledDefinitionIsEnabledAgain()
+    {
+        using var store = await CreateInitializedStoreAsync().ConfigureAwait(false);
+        await store.SaveAsync(SaveRequest(enabled: false), CancellationToken.None).ConfigureAwait(false);
+        _timeProvider.Advance(TimeSpan.FromSeconds(3600 * 100));
+
+        var enabled = await store.SaveAsync(
+            SaveRequest(expectedVersion: 1, key: "enable"), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, enabled.Status);
+        // Without re-anchoring, every boundary since the epoch would look like a missed occurrence.
+        var expected = Now.AddSeconds(3600 * 101);
+        Assert.AreEqual(expected, enabled.State.Definitions.Single().NextRunUtc);
+    }
+
+    [TestMethod]
+    public async Task GetStateAsync_ReportsTheLastRunOfADefinitionOutsideTheProjectedRunPage()
+    {
+        using var store = await CreateInitializedStoreAsync().ConfigureAwait(false);
+        await store.SaveAsync(SaveRequest(definitionId: "quiet"), CancellationToken.None).ConfigureAwait(false);
+        await store.SaveAsync(
+            SaveRequest(definitionId: "busy", key: "busy"), CancellationToken.None).ConfigureAwait(false);
+        var entries = await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false);
+        var quiet = entries.Single(entry => entry.Definition.DefinitionId == "quiet");
+        var busy = entries.Single(entry => entry.Definition.DefinitionId == "busy");
+        await store.TryBeginRunAsync(quiet, "quiet-1", Now.AddSeconds(3600), null, CancellationToken.None)
+            .ConfigureAwait(false);
+        await store.CompleteRunAsync(
+            "quiet-1", LocalAutomationRunOutcome.Succeeded, "ok", CancellationToken.None).ConfigureAwait(false);
+        for (var index = 0; index < LocalAutomationContract.MaximumProjectedRuns + 5; index++)
+        {
+            var key = string.Create(CultureInfo.InvariantCulture, $"busy-{index}");
+            await store.TryBeginRunAsync(busy, key, Now.AddSeconds(3600 * (index + 2)), null, CancellationToken.None)
+                .ConfigureAwait(false);
+            await store.CompleteRunAsync(key, LocalAutomationRunOutcome.Succeeded, "ok", CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+
+        // The projected page is the newest runs across all definitions; a quiet definition falls out of it
+        // and must still report its own last run rather than "never ran".
+        Assert.IsFalse(state.Runs.Any(run => run.DefinitionId == "quiet"));
+        Assert.IsNotNull(state.Definitions.Single(item => item.Definition.DefinitionId == "quiet").LastRun);
+    }
+
+    [TestMethod]
+    public async Task GetStateAsync_BoundsTheProjectedRevisionsOfOneDefinition()
+    {
+        using var store = await CreateInitializedStoreAsync().ConfigureAwait(false);
+        await store.SaveAsync(SaveRequest(), CancellationToken.None).ConfigureAwait(false);
+        for (var version = 1; version <= LocalAutomationContract.MaximumProjectedRevisions + 5; version++)
+        {
+            await store.SaveAsync(
+                SaveRequest(
+                    name: string.Create(CultureInfo.InvariantCulture, $"Revision {version}"),
+                    expectedVersion: version,
+                    key: string.Create(CultureInfo.InvariantCulture, $"key-{version}")),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        var definition = (await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false))
+            .Definitions.Single();
+
+        Assert.AreEqual(LocalAutomationContract.MaximumProjectedRevisions, definition.History.Count);
+        Assert.AreEqual(definition.Version, definition.History[0].Version);
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_RefusesADriftedSchemaAndAnUnversionedDatabase()
+    {
+        using (var store = CreateStore())
+        {
+            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        var path = Path.Combine(_root, ".automation", "local-automations.db");
+        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE drifted (id INTEGER PRIMARY KEY) STRICT;";
+            await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        SqliteConnection.ClearAllPools();
+
+        using var drifted = CreateStore();
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            async () => await drifted.InitializeAsync(CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        var unversionedRoot = Path.Combine(_root, "unversioned");
+        Directory.CreateDirectory(Path.Combine(unversionedRoot, ".automation"));
+        var unversionedPath = Path.Combine(unversionedRoot, ".automation", "local-automations.db");
+        using (var connection = new SqliteConnection($"Data Source={unversionedPath};Pooling=False"))
+        {
+            await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE stranger (id INTEGER PRIMARY KEY) STRICT;";
+            await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        SqliteConnection.ClearAllPools();
+
+        using var unversioned = CreateStore(unversionedRoot);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            async () => await unversioned.InitializeAsync(CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -408,13 +629,17 @@ public sealed class LocalAutomationStoreTests
         Assert.AreEqual(1, changed.State.Runs.Count);
     }
 
-    private async Task<long> CountRunsAsync()
+    private Task<long> CountRunsAsync() => CountAsync("automation_runs");
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "The table name comes from this test class, never from input.")]
+    private async Task<long> CountAsync(string table)
     {
         var path = Path.Combine(_root, ".automation", "local-automations.db");
         using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
         await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM automation_runs;";
+        command.CommandText = $"SELECT COUNT(*) FROM {table};";
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(CancellationToken.None).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
@@ -449,11 +674,11 @@ public sealed class LocalAutomationStoreTests
         return store;
     }
 
-    private SqliteLocalAutomationStore CreateStore()
+    private SqliteLocalAutomationStore CreateStore(string? root = null)
         => new(
             _registry,
             _captureSequence,
-            Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root }),
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root ?? _root }),
             _timeProvider,
             NullLogger<SqliteLocalAutomationStore>.Instance);
 }

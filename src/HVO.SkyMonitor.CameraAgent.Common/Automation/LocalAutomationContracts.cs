@@ -61,6 +61,19 @@ public static class LocalAutomationContract
     /// <summary>The most recent runs a projection returns across all definitions, newest first.</summary>
     public const int MaximumProjectedRuns = 50;
 
+    /// <summary>
+    /// The revisions of removed definitions the store keeps in total. Per-definition retention only runs
+    /// from that definition's own write paths, and removal frees its slot, so the orphan tail needs its
+    /// own global bound.
+    /// </summary>
+    public const int MaximumRetainedOrphanRevisions = 200;
+
+    /// <summary>The runs of removed definitions the store keeps in total, for the same reason.</summary>
+    public const int MaximumRetainedOrphanRuns = 200;
+
+    /// <summary>The most recent revisions of one definition a projection returns, newest first.</summary>
+    public const int MaximumProjectedRevisions = 10;
+
     /// <summary>The most next-run calendar entries a projection returns, soonest first.</summary>
     public const int MaximumProjectedCalendarEntries = 25;
 

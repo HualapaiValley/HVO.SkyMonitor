@@ -57,6 +57,26 @@ public static class LocalAutomationSchedule
         return (due.AddTicks(intervalTicks * skipped), skipped);
     }
 
+    /// <summary>
+    /// The most recent occurrence boundary at or before <paramref name="nowUtc"/>. Used to re-anchor a
+    /// definition whose progress is being reset, so that resuming it schedules the next occurrence one
+    /// whole interval away instead of reporting every boundary since the epoch as missed.
+    /// </summary>
+    public static DateTimeOffset LatestPeriodicBoundary(
+        DateTimeOffset epochUtc,
+        int intervalSeconds,
+        DateTimeOffset nowUtc)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(intervalSeconds, 1);
+        if (nowUtc <= epochUtc)
+        {
+            return epochUtc;
+        }
+        var intervalTicks = TimeSpan.FromSeconds(intervalSeconds).Ticks;
+        var elapsed = (nowUtc - epochUtc).Ticks / intervalTicks;
+        return epochUtc.AddTicks(intervalTicks * elapsed);
+    }
+
     /// <summary>The capture sequence at which a capture-relative definition next becomes due.</summary>
     public static long? NextCaptureSequence(int intervalCaptures, long? lastCaptureSequence)
         => lastCaptureSequence is { } last ? last + intervalCaptures : null;

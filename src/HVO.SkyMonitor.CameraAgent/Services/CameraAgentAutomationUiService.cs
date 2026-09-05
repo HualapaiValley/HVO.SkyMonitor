@@ -143,8 +143,12 @@ internal sealed class CameraAgentAutomationUiService(
         "definition.definitionId" =>
             "The identifier must start with a lower-case letter and use only lower-case letters, digits, "
             + "hyphens, and dots.",
-        "definition.name" => "The name must be a single line of at most 96 characters.",
-        "definition.taskTarget" => "The target must be a single line of at most 128 characters.",
+        "definition.name" => string.Create(
+            CultureInfo.InvariantCulture,
+            $"The name must be a single line of at most {LocalAutomationContract.MaximumNameLength} characters."),
+        "definition.taskTarget" => string.Create(
+            CultureInfo.InvariantCulture,
+            $"The target must be a single line of at most {LocalAutomationContract.MaximumTargetLength} characters."),
         "definition.triggerInterval" => string.Create(
             CultureInfo.InvariantCulture,
             $"A periodic interval must be between {LocalAutomationContract.MinimumPeriodicIntervalSeconds} and "

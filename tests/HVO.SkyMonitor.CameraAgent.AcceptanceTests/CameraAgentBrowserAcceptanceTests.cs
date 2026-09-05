@@ -1452,7 +1452,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     [TestMethod]
     [TestCategory("Manual")]
-    public async Task OwnerLocalAutomationDefinitionIsConfirmedAndKeyboardCancellableAsync()
+    public async Task OwnerLocalAutomationSectionRefusesAnUnregisteredTaskTargetAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         if (!File.Exists(playwright.Chromium.ExecutablePath))
@@ -1476,44 +1476,66 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.GotoAsync("/operations/automations").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Automations", Level = 1 }))
             .ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await VisibleAsync(page.Locator("#automation-definitions")).ConfigureAwait(false);
         await VisibleAsync(page.Locator("#automation-calendar")).ConfigureAwait(false);
         await VisibleAsync(page.Locator("#automation-runs")).ConfigureAwait(false);
 
         // Only registered targets and triggers can be chosen; the editor never accepts free text for one.
-        Assert.AreEqual("SELECT", await page.Locator("#automation-target").EvaluateAsync<string>("node => node.tagName")
-            .ConfigureAwait(false));
-        Assert.AreEqual("SELECT", await page.Locator("#automation-trigger").EvaluateAsync<string>("node => node.tagName")
-            .ConfigureAwait(false));
+        Assert.AreEqual(
+            "SELECT",
+            await page.Locator("#automation-target").EvaluateAsync<string>("node => node.tagName")
+                .ConfigureAwait(false));
+        Assert.AreEqual(
+            "SELECT",
+            await page.Locator("#automation-trigger").EvaluateAsync<string>("node => node.tagName")
+                .ConfigureAwait(false));
+
+        // The two trigger vocabularies on this page are disambiguated for the operator.
+        StringAssert.Contains(
+            await page.Locator("article[aria-labelledby='automation-triggers']").InnerTextAsync()
+                .ConfigureAwait(false),
+            "their own separate trigger vocabulary",
+            StringComparison.Ordinal);
+
+        // This fixture disables environmental acquisition, so the closed registry publishes no target.
+        // The section must say so and refuse, rather than raising a confirmation for a command the store
+        // would reject. Recording a definition end to end is proved where a target exists, by the bUnit
+        // page tests, the endpoint tests, and the owner-authorization integration test.
+        var definitions = page.Locator("article[aria-labelledby='automation-definitions']");
+        StringAssert.Contains(
+            await definitions.InnerTextAsync().ConfigureAwait(false),
+            "Environmental acquisition is disabled in this CameraAgent's startup configuration",
+            StringComparison.Ordinal);
+        Assert.AreEqual(
+            1,
+            await page.Locator("#automation-target option").CountAsync().ConfigureAwait(false),
+            "An unavailable task must offer no target to choose.");
 
         await page.Locator("#automation-id").FillAsync("browser-acceptance").ConfigureAwait(false);
         await page.Locator("#automation-name").FillAsync("Browser acceptance").ConfigureAwait(false);
-        var save = page.Locator("#automation-save");
-        var dialog = page.Locator("dialog.confirmation-panel");
-        await OpenDialogAsync(save, dialog).ConfigureAwait(false);
-        Assert.IsTrue(await page.EvaluateAsync<bool>(
-            "() => document.querySelector('dialog.confirmation-panel')?.contains(document.activeElement) === true")
-            .ConfigureAwait(false), "Opening the confirmation must move focus inside it.");
+        await page.Locator("#automation-save").ClickAsync().ConfigureAwait(false);
+        await page.Locator("p.automation-error").WaitForAsync().ConfigureAwait(false);
+        Assert.AreEqual(
+            0,
+            await page.Locator("dialog.confirmation-panel").CountAsync().ConfigureAwait(false),
+            "No confirmation may be raised for a command that cannot be recorded.");
         StringAssert.Contains(
-            await dialog.InnerTextAsync().ConfigureAwait(false),
-            "immutable revision",
+            await page.Locator("p.automation-error").InnerTextAsync().ConfigureAwait(false),
+            "Select a registered task target",
             StringComparison.Ordinal);
 
-        // Escape is guarded, so it cancels through the component and returns focus to the trigger.
-        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
-        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden })
-            .ConfigureAwait(false);
-        Assert.AreEqual(
-            "automation-save",
-            await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
-
-        // Cancelling records nothing durable.
+        // Nothing durable was recorded.
         await page.ReloadAsync().ConfigureAwait(false);
         await VisibleAsync(page.Locator("#automation-definitions")).ConfigureAwait(false);
         StringAssert.Contains(
-            await page.Locator("article[aria-labelledby='automation-definitions']").InnerTextAsync()
-                .ConfigureAwait(false),
+            await definitions.InnerTextAsync().ConfigureAwait(false),
             "No local automation is defined",
+            StringComparison.Ordinal);
+        StringAssert.Contains(
+            await page.Locator("article[aria-labelledby='automation-runs']").InnerTextAsync()
+                .ConfigureAwait(false),
+            "No automation run has been recorded",
             StringComparison.Ordinal);
     }
 

@@ -36,8 +36,11 @@ definable here.
 
 `<raw-ingress-root>/.automation/local-automations.db`, a dedicated SQLite database
 with WAL journaling, `synchronous = FULL`, and `PRAGMA user_version` pinned to the
-contract's schema version. Startup verifies the version and the exact schema object
-count and refuses a newer or drifted database rather than migrating it.
+contract's schema version. Startup verifies the version, the exact schema object
+count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt
+database rather than migrating it. Every open re-asserts that write-ahead logging is
+actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
+sidecars is a symbolic link.
 
 The store is a separate file on purpose. The raw ingress journal pins its own exact
 schema version and object count and refuses a database it does not recognize, so
@@ -63,9 +66,13 @@ Tables:
   replaying it with a different payload returns `409 Conflict` with
   `automation.idempotencyKeyConflict`. The ledger retains keys for seven days, so
   the retained window is the replay window.
-- **Bounded retention.** At most 32 definitions, 50 retained revisions per
-  definition, and 200 retained runs per definition. Projections return at most 50
-  runs and 25 calendar entries.
+- **Bounded retention.** At most 32 definitions, and 50 retained revisions and 200
+  retained runs per live definition. Per-definition retention only runs from that
+  definition's own write paths, and a removal frees its slot, so removed definitions
+  have their own global bound: 200 retained revisions and 200 retained runs in total
+  across every removed definition, pruned on each removal. Projections return at most
+  50 runs across all definitions, 10 revisions per definition, and 25 calendar
+  entries.
 
 ## Runner Behaviour
 
@@ -77,8 +84,12 @@ Tables:
 - The run key is both the occurrence identity and the task command identity, so a
   retried occurrence replays through the task's own durable command contract instead
   of acquiring twice.
-- Occurrences that elapse while the CameraAgent is not running are recorded once as a
-  single `Missed` run and are never replayed as a burst of catch-up commands.
+- Occurrences for which no run was recorded are recorded once as a single `Missed` run
+  and are never replayed as a burst of catch-up commands.
+- Changing a definition's trigger kind, or re-enabling a disabled one, re-anchors its
+  progress to the present rather than clearing it, so resuming schedules the next
+  occurrence one whole interval away instead of reporting every boundary since the
+  epoch as missed.
 - A newly enabled capture-relative definition is baselined at the current durable
   capture sequence rather than firing for captures that predate it.
 - A failed run is recorded as `Failed`; the definition stays enabled and retries at
@@ -89,10 +100,17 @@ Tables:
 
 ## Restart Recovery
 
-`InitializeAsync` settles every run still marked `Running` as `Interrupted` with its
-completion time, because the process that claimed it is gone. Progress already
-advanced with the claim, so the cadence continues at the next occurrence rather than
-repeating the interrupted one.
+`InitializeAsync` runs from the runner's `StartAsync`, so a store that fails any of
+those checks fails host startup rather than letting the host serve traffic and stop
+later. It settles every run still marked `Running` as `Interrupted` with its completion
+time, because the process that claimed it is gone. A restarted process and a
+competing second instance are indistinguishable at that point, so liveness is
+asserted at completion instead: a run stays authoritative for the instance that
+claimed it, and that instance records its real outcome even if another settled the
+row meanwhile. Progress already advanced with
+the claim, so the cadence continues at the next occurrence rather than repeating the
+interrupted one. If a completion ever finds its run no longer claimed, that is logged
+as a warning (event 7408) rather than passing silently.
 
 ## Configuration
 

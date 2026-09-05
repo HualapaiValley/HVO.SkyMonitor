@@ -98,7 +98,7 @@ public sealed class LocalAutomationRunnerServiceTests : IDisposable
         var state = await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(2, state.Runs.Count);
         var missed = state.Runs.Single(static run => run.Outcome == LocalAutomationRunOutcome.Missed);
-        Assert.IsTrue(missed.Detail.Contains("4 occurrence(s) elapsed", StringComparison.Ordinal));
+        StringAssert.Contains(missed.Detail, "4 elapsed occurrence(s)", StringComparison.Ordinal);
         Assert.AreEqual(1, _registry.ExecutedRunKeys.Count, "Skipped occurrences are never replayed.");
         Assert.AreEqual(Now.AddSeconds(3600 * 5), state.Runs
             .Single(static run => run.Outcome == LocalAutomationRunOutcome.Succeeded).ScheduledForUtc);
@@ -214,6 +214,100 @@ public sealed class LocalAutomationRunnerServiceTests : IDisposable
         // Both occurrences are claimed and both stay claimed; restart recovery settles them.
         Assert.AreEqual(2, state.Runs.Count);
         Assert.IsTrue(state.Runs.All(static run => run.Outcome == LocalAutomationRunOutcome.Running));
+    }
+
+    [TestMethod]
+    public async Task StartAsync_FailsHostStartupWhenTheStoreCannotBeVerified()
+    {
+        _store.Dispose();
+        SqliteConnection.ClearAllPools();
+        var path = Path.Combine(_root, ".automation", "local-automations.db");
+        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA user_version = 9;";
+            await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        SqliteConnection.ClearAllPools();
+        _store = new SqliteLocalAutomationStore(
+            _registry,
+            _captureSequence,
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root }),
+            _timeProvider,
+            NullLogger<SqliteLocalAutomationStore>.Instance);
+
+        // Initialization happens in StartAsync, so an unusable store fails host startup rather than
+        // letting the host serve traffic and stop asynchronously afterwards.
+        using var runner = CreateRunner();
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            async () => await runner.StartAsync(CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task SweepAsync_AfterAReEnableDoesNotReportEveryElapsedBoundaryAsMissed()
+    {
+        await SaveAsync(enabled: false).ConfigureAwait(false);
+        _timeProvider.Advance(TimeSpan.FromSeconds(3600 * 50));
+        var enabled = await _store.SaveAsync(
+            new LocalAutomationSaveRequest(
+                "sky-temperature",
+                "Sky temperature",
+                true,
+                LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition,
+                "virtual-sky-temperature",
+                LocalAutomationTriggerKind.Periodic,
+                3600,
+                1,
+                "enable",
+                "owner",
+                null),
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, enabled.Status);
+
+        await CreateRunner().SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        var beforeDue = await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        _timeProvider.Advance(TimeSpan.FromSeconds(3600));
+        await CreateRunner().SweepAsync(CancellationToken.None).ConfigureAwait(false);
+
+        // The fifty boundaries that elapsed while it was disabled are not the agent failing to run.
+        Assert.IsEmpty(beforeDue.Runs);
+        var runs = (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs;
+        Assert.AreEqual(1, runs.Count);
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, runs[0].Outcome);
+    }
+
+    [TestMethod]
+    public async Task SweepAsync_WhenCancelledLeavesTheRunClaimedForRestartRecovery()
+    {
+        await SaveAsync().ConfigureAwait(false);
+        // The task is abandoned mid-run. The claim must survive so restart recovery settles it, rather
+        // than the runner inventing a terminal outcome it does not know.
+        _registry.Throw = new OperationCanceledException();
+        _timeProvider.Advance(TimeSpan.FromSeconds(3600));
+
+        await CreateRunner().SweepAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var run = (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Running, run.Outcome);
+        Assert.IsNull(run.CompletedAtUtc);
+    }
+
+    [TestMethod]
+    public async Task SweepAsync_DescribesAMissedWindowWithoutClaimingTheAgentWasStopped()
+    {
+        await SaveAsync().ConfigureAwait(false);
+        _timeProvider.Advance(TimeSpan.FromSeconds(3600 * 4));
+
+        await CreateRunner().SweepAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var missed = (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false))
+            .Runs.Single(static run => run.Outcome == LocalAutomationRunOutcome.Missed);
+        // A re-enable and a trigger rebaseline reach the same code, so the text must not assert a cause
+        // the runner cannot know.
+        Assert.IsFalse(missed.Detail.Contains("not running", StringComparison.Ordinal));
+        StringAssert.Contains(missed.Detail, "No run was recorded", StringComparison.Ordinal);
     }
 
     private LocalAutomationRunnerService CreateRunner()

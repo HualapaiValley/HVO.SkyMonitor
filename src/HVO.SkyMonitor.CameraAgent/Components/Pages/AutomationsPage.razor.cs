@@ -112,6 +112,15 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
                 failures.Add(automation.Message ?? "The local automations could not be read.");
             }
             _message = failures.Count == 0 ? null : string.Join(' ', failures);
+            // A conflict re-read is only useful if the next attempt carries the version it just read.
+            // Without this the operator would resend the version captured when the editor was opened.
+            if (_editingVersion != 0)
+            {
+                _editingVersion = _automation?.Definitions
+                    .FirstOrDefault(candidate =>
+                        string.Equals(candidate.Definition.DefinitionId, _idInput, StringComparison.Ordinal))
+                    ?.Version ?? 0;
+            }
             SeedForm();
         }
         finally
@@ -178,7 +187,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private void BeginSave()
     {
         _commandMessage = null;
-        if (!TryParseInterval(out _))
+        if (!TryValidateForm())
         {
             return;
         }
@@ -234,7 +243,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             _commandKey = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
             _commandExpectedVersion = signature.Value.ExpectedVersion;
         }
-        var reason = string.IsNullOrWhiteSpace(_reasonInput) ? null : _reasonInput.Trim();
+        var reason = TrimmedReason();
         _busy = true;
         OperatorUiResult<LocalAutomationCommandResult> result;
         try
@@ -280,14 +289,19 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         }
         if (result.IsSuccess && result.Value is { } applied)
         {
-            _formDirty = false;
-            _reasonInput = string.Empty;
-            if (_pendingKind != PendingCommandKind.Toggle)
+            var removedTheEditedDefinition = _pendingKind == PendingCommandKind.Remove
+                && string.Equals(signature.Value.DefinitionId, _idInput, StringComparison.Ordinal);
+            // Only a Save owns the editor. A Toggle or Remove of some other row must never clear the
+            // dirty flag, because the reseed that follows would silently replace the task and trigger
+            // the operator chose for the definition they are still editing.
+            if (_pendingKind == PendingCommandKind.Save)
             {
+                _formDirty = false;
+                _reasonInput = string.Empty;
                 _editingVersion = 0;
             }
             await LoadAsync().ConfigureAwait(false);
-            if (_pendingKind == PendingCommandKind.Save)
+            if (_pendingKind == PendingCommandKind.Save || removedTheEditedDefinition)
             {
                 ResetForm();
             }
@@ -324,7 +338,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             return (id, name, _enabledInput, _taskKindInput, target, _triggerKindInput, interval, _editingVersion,
                 string.Join('|', "save", id, name, _enabledInput, _taskKindInput, target, _triggerKindInput,
                     interval.ToString(CultureInfo.InvariantCulture),
-                    _editingVersion.ToString(CultureInfo.InvariantCulture)));
+                    _editingVersion.ToString(CultureInfo.InvariantCulture),
+                    TrimmedReason() ?? string.Empty));
         }
         if (_pendingDefinition is not { } pending)
         {
@@ -336,13 +351,53 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             return (definition.DefinitionId, definition.Name, definition.Enabled, definition.TaskKind,
                 definition.TaskTarget, definition.TriggerKind, definition.TriggerInterval, pending.Version,
                 string.Join('|', "remove", definition.DefinitionId,
-                    pending.Version.ToString(CultureInfo.InvariantCulture)));
+                    pending.Version.ToString(CultureInfo.InvariantCulture),
+                    TrimmedReason() ?? string.Empty));
         }
         return (definition.DefinitionId, definition.Name, !definition.Enabled, definition.TaskKind,
             definition.TaskTarget, definition.TriggerKind, definition.TriggerInterval, pending.Version,
             string.Join('|', "toggle", definition.DefinitionId, !definition.Enabled,
-                pending.Version.ToString(CultureInfo.InvariantCulture)));
+                pending.Version.ToString(CultureInfo.InvariantCulture),
+                TrimmedReason() ?? string.Empty));
     }
+
+    /// <summary>
+    /// Rejects an unusable definition before a confirmation is raised, so the operator never confirms a
+    /// command the store will reject. The bounds match the ones the contract enforces.
+    /// </summary>
+    private bool TryValidateForm()
+    {
+        if (!LocalAutomationDefinitionValidator.IsIdentifier(
+                _idInput?.Trim(), LocalAutomationContract.MaximumDefinitionIdLength))
+        {
+            SetCommandMessage(
+                "The identifier must start with a lower-case letter and use only lower-case letters, digits, "
+                + "hyphens, and dots.",
+                error: true);
+            return false;
+        }
+        if (!LocalAutomationDefinitionValidator.IsText(
+                _nameInput?.Trim(), LocalAutomationContract.MaximumNameLength))
+        {
+            SetCommandMessage(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"The name must be a single line of at most {LocalAutomationContract.MaximumNameLength} characters."),
+                error: true);
+            return false;
+        }
+        if (!LocalAutomationDefinitionValidator.IsText(
+                _targetInput?.Trim(), LocalAutomationContract.MaximumTargetLength))
+        {
+            SetCommandMessage("Select a registered task target.", error: true);
+            return false;
+        }
+        return TryParseInterval(out _);
+    }
+
+    /// <summary>The reason exactly as the store will hash it, so the retained key stays payload-accurate.</summary>
+    private string? TrimmedReason()
+        => string.IsNullOrWhiteSpace(_reasonInput) ? null : _reasonInput.Trim();
 
     private bool TryParseInterval(out int interval)
     {

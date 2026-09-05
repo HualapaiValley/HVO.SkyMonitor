@@ -30,7 +30,9 @@ public sealed class AutomationsPageTests
             Assert.Contains("Next scheduled activity", cut.Markup, StringComparison.Ordinal);
             Assert.Contains("virtual-sky-temperature", cut.Markup, StringComparison.Ordinal);
             Assert.Contains("on demand available", cut.Markup, StringComparison.Ordinal);
-            Assert.Contains("Trigger kinds", cut.Markup, StringComparison.Ordinal);
+            Assert.Contains("Environmental acquisition trigger kinds", cut.Markup, StringComparison.Ordinal);
+            // The two vocabularies on this page must not read as one.
+            Assert.Contains("their own separate trigger vocabulary", cut.Markup, StringComparison.Ordinal);
             Assert.Contains("On Demand", cut.Markup, StringComparison.Ordinal);
             Assert.AreEqual(
                 "Local automation definitions", cut.Find("#automation-definitions").TextContent.Trim());
@@ -143,6 +145,8 @@ public sealed class AutomationsPageTests
         var cut = context.Render<AutomationsPage>();
         cut.WaitForElement("#automation-interval");
 
+        cut.Find("#automation-id").Change("nightly-temperature");
+        cut.Find("#automation-name").Change("Nightly temperature");
         cut.Find("#automation-interval").Change("5");
         cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
 
@@ -175,24 +179,168 @@ public sealed class AutomationsPageTests
     }
 
     [TestMethod]
-    public void Save_OnConflict_ReReadsDurableStateAndKeepsTheOperatorInformed()
+    public void Save_OnConflict_ReReadsDurableStateAndRetriesWithTheRefreshedVersion()
     {
         using var context = CreateContext();
-        var service = Register(context, Automation(definitions: [], calendar: [], runs: []));
+        var service = Register(context, Automation());
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-edit-sky-temperature");
+        cut.Find("#automation-edit-sky-temperature").Click();
+        var readsBefore = service.Reads;
+        // The durable version moves while the operator is editing, which is what a conflict means.
+        service.AdvanceStoredVersion();
         service.Kind = OperatorUiResultKind.Conflict;
         service.Message = "This automation changed since the page was read. Refresh before retrying.";
+
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find("dialog .btn-primary").Click();
+        // The conflict re-read must be carried into the next attempt, or every retry resends the same
+        // stale token and conflicts forever.
+        service.Kind = OperatorUiResultKind.Success;
+        cut.Find("#automation-name").Change("Renamed");
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find("dialog .btn-primary").Click();
+
+        Assert.IsTrue(service.Reads > readsBefore, "A conflict re-reads durable state.");
+        Assert.HasCount(2, service.SaveRequests);
+        Assert.AreEqual(2L, service.SaveRequests[0].ExpectedVersion);
+        Assert.AreEqual(3L, service.SaveRequests[1].ExpectedVersion);
+    }
+
+    [TestMethod]
+    public void Save_AnnouncesItsOutcomeEvenWhileAnotherSourceIsFailing()
+    {
+        using var context = CreateContext();
+        var service = Register(context, Automation(definitions: [], calendar: [], runs: []),
+            environmentAvailable: false);
         var cut = context.Render<AutomationsPage>();
         cut.WaitForElement("#automation-id");
-        var readsBefore = service.Reads;
 
         cut.Find("#automation-id").Change("nightly-temperature");
         cut.Find("#automation-name").Change("Nightly temperature");
         cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
         cut.Find("dialog .btn-primary").Click();
 
-        Assert.IsTrue(service.Reads > readsBefore, "A conflict re-reads durable state.");
-        Assert.Contains("Refresh before retrying", cut.Markup, StringComparison.Ordinal);
-        Assert.IsNotEmpty(cut.FindAll("[role='alert']"));
+        // A degraded read of some other source must never silence the outcome of the operator's command.
+        Assert.HasCount(1, service.SaveRequests);
+        Assert.Contains("Recorded a new immutable automation revision", cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Save_RejectsAnEmptyIdentifierNameOrTargetBeforeConfirming()
+    {
+        using var context = CreateContext();
+        var service = Register(context, Automation(definitions: [], calendar: [], runs: []));
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-id");
+
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        Assert.IsEmpty(service.SaveRequests);
+        Assert.Contains("The identifier must start with a lower-case letter", cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Toggle_DoesNotRewriteTheDefinitionTheOperatorIsEditing()
+    {
+        using var context = CreateContext();
+        var service = Register(context, Automation());
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-edit-sky-temperature");
+
+        cut.Find("#automation-edit-sky-temperature").Click();
+        cut.Find("#automation-trigger").Change(nameof(LocalAutomationTriggerKind.Periodic));
+        cut.Find("#automation-interval").Change("900");
+        cut.Find("#automation-toggle-sky-temperature").Click();
+        cut.Find("dialog .btn-primary").Click();
+
+        // Toggling a row must not reseed the editor, or a later Save would record fields the operator
+        // never chose.
+        Assert.AreEqual("Periodic", cut.Find("#automation-trigger").GetAttribute("value"));
+        Assert.AreEqual("900", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.AreEqual("sky-temperature", cut.Find("#automation-id").GetAttribute("value"));
+        Assert.HasCount(1, service.SaveRequests);
+    }
+
+    [TestMethod]
+    public void Save_AfterUnavailable_MintsANewKeyWhenOnlyTheReasonChanges()
+    {
+        using var context = CreateContext();
+        var service = Register(context, Automation(definitions: [], calendar: [], runs: []));
+        service.Kind = OperatorUiResultKind.Unavailable;
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-id");
+
+        cut.Find("#automation-id").Change("nightly-temperature");
+        cut.Find("#automation-name").Change("Nightly temperature");
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find("dialog .btn-primary").Click();
+        cut.Find("dialog .btn-outline-light").Click();
+        service.Kind = OperatorUiResultKind.Success;
+        cut.Find("#automation-reason").Change("nightly cadence");
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find("dialog .btn-primary").Click();
+
+        // The reason is part of the durable payload hash, so reusing the key would be an unexplainable
+        // key-conflict dead end.
+        Assert.HasCount(2, service.SaveRequests);
+        Assert.AreNotEqual(service.SaveRequests[0].IdempotencyKey, service.SaveRequests[1].IdempotencyKey);
+        Assert.AreEqual("nightly cadence", service.SaveRequests[1].Reason);
+    }
+
+    [TestMethod]
+    public void Render_ShowsTheRetainedRevisionHistoryTheRemovalPromisesToKeep()
+    {
+        using var context = CreateContext();
+        Register(context, Automation());
+
+        var cut = context.Render<AutomationsPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains("Recorded revisions", cut.Markup, StringComparison.Ordinal);
+            Assert.IsNotNull(cut.Find("details.revision-history"));
+            Assert.Contains("nightly", cut.Markup, StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void Render_WhenEveryReadFails_ShowsTheUnavailableNotice()
+    {
+        using var context = CreateContext();
+        var service = new AutomationUiService(null);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(
+            new SchedulePageTests.ScheduleUiService(null));
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new EnvironmentalUiService(null));
+        context.Services.AddSingleton<ICameraAgentAutomationUiService>(service);
+
+        var cut = context.Render<AutomationsPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains("Automations unavailable", cut.Markup, StringComparison.Ordinal);
+            Assert.Contains(
+                "The local automation store could not be read", cut.Markup, StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll("#automation-calendar"));
+            Assert.IsEmpty(cut.FindAll("#automation-schedule"));
+        });
+    }
+
+    [TestMethod]
+    public void Render_WhenTheRegistryIsUnavailable_SaysWhyAndOffersNoTarget()
+    {
+        using var context = CreateContext();
+        Register(context, Automation(definitions: [], calendar: [], runs: [], registryAvailable: false));
+
+        var cut = context.Render<AutomationsPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains(
+                "Environmental acquisition is disabled", cut.Markup, StringComparison.Ordinal);
+            Assert.HasCount(1, cut.FindAll("#automation-target option"));
+        });
     }
 
     [TestMethod]
@@ -270,7 +418,8 @@ public sealed class AutomationsPageTests
     private static LocalAutomationOperatorState Automation(
         IReadOnlyList<LocalAutomationDefinitionState>? definitions = null,
         IReadOnlyList<LocalAutomationCalendarEntry>? calendar = null,
-        IReadOnlyList<LocalAutomationRun>? runs = null)
+        IReadOnlyList<LocalAutomationRun>? runs = null,
+        bool registryAvailable = true)
     {
         var definition = new LocalAutomationDefinition(
             "sky-temperature",
@@ -316,9 +465,11 @@ public sealed class AutomationsPageTests
                     LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition,
                     "Acquires one observation from a registered environmental source.",
                     [LocalAutomationTriggerKind.Periodic, LocalAutomationTriggerKind.CaptureRelative],
-                    ["virtual-sky-temperature"],
-                    true,
-                    null)
+                    registryAvailable ? ["virtual-sky-temperature"] : [],
+                    registryAvailable,
+                    registryAvailable
+                        ? null
+                        : "Environmental acquisition is disabled in this CameraAgent's startup configuration.")
             ],
             Definitions: definitions ?? [state],
             Calendar: calendar ??
@@ -374,6 +525,8 @@ public sealed class AutomationsPageTests
 
     internal sealed class AutomationUiService(LocalAutomationOperatorState? state) : ICameraAgentAutomationUiService
     {
+        private LocalAutomationOperatorState? _state = state;
+
         internal List<LocalAutomationSaveRequest> SaveRequests { get; } = [];
 
         internal List<LocalAutomationRemoveRequest> RemoveRequests { get; } = [];
@@ -388,10 +541,10 @@ public sealed class AutomationsPageTests
             CancellationToken cancellationToken)
         {
             Reads++;
-            return ValueTask.FromResult(state is null
+            return ValueTask.FromResult(_state is null
                 ? OperatorUiResult<LocalAutomationOperatorState>.Failure(
                     OperatorUiResultKind.Unavailable, "Local automation state is unavailable.")
-                : OperatorUiResult<LocalAutomationOperatorState>.Success(state));
+                : OperatorUiResult<LocalAutomationOperatorState>.Success(_state));
         }
 
         public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> SaveAsync(
@@ -410,6 +563,25 @@ public sealed class AutomationsPageTests
             return ValueTask.FromResult(Result());
         }
 
+        /// <summary>Advances the durable version the way the real store does, so a stale token is visible.</summary>
+        internal void AdvanceStoredVersion()
+        {
+            if (_state is null)
+            {
+                return;
+            }
+            _state = _state with
+            {
+                Definitions =
+                [
+                    .. _state.Definitions.Select(static definition => definition with
+                    {
+                        Version = definition.Version + 1
+                    })
+                ]
+            };
+        }
+
         private OperatorUiResult<LocalAutomationCommandResult> Result()
             => Kind == OperatorUiResultKind.Success
                 ? OperatorUiResult<LocalAutomationCommandResult>.Success(
@@ -417,7 +589,7 @@ public sealed class AutomationsPageTests
                         LocalAutomationCommandStatus.Applied,
                         null,
                         null,
-                        state ?? LocalAutomationOperatorState.Empty))
+                        _state ?? LocalAutomationOperatorState.Empty))
                 : OperatorUiResult<LocalAutomationCommandResult>.Failure(Kind, Message);
     }
 }

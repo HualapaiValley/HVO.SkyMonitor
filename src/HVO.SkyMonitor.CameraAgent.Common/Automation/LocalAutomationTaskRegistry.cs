@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Options;
@@ -241,8 +240,8 @@ public static class LocalAutomationDefinitionValidator
                 LocalAutomationContract.InvalidCommandReasonCode, "definition.triggerEpochUtc");
     }
 
-    /// <summary>An identifier is lower-case ASCII with digits and single separators, so it is stable in a URL and a log.</summary>
-    internal static bool IsIdentifier(string? value, int maximumLength)
+    /// <summary>An identifier is lower-case ASCII with digits and separators, so it is stable in a URL and a log.</summary>
+    public static bool IsIdentifier(string? value, int maximumLength)
         => !string.IsNullOrEmpty(value)
            && value.Length <= maximumLength
            && char.IsAsciiLetterLower(value[0])
@@ -251,13 +250,10 @@ public static class LocalAutomationDefinitionValidator
                char.IsAsciiLetterLower(character) || char.IsAsciiDigit(character) || character is '-' or '.');
 
     /// <summary>Free text is trimmed, bounded, printable, and single-line.</summary>
-    internal static bool IsText(string? value, int maximumLength)
+    public static bool IsText(string? value, int maximumLength)
         => !string.IsNullOrWhiteSpace(value)
            && value.Length <= maximumLength
            && string.Equals(value, value.Trim(), StringComparison.Ordinal)
            && !value.Any(char.IsControl);
 
-    /// <summary>Formats a bounded interval for operator-facing text without a culture surprise.</summary>
-    internal static string FormatInterval(int value)
-        => value.ToString(CultureInfo.InvariantCulture);
 }
