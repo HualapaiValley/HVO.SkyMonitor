@@ -531,7 +531,8 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
 
   signed_source_worktrees=""
   build_signed_release() {
-    local slot="$1" revision="$2" version="$3" source_worktree="$signed_workspace/source-$slot"
+    local slot="$1" revision="$2" version="$3"
+    local source_worktree="$signed_workspace/source-$slot"
     if [[ -f "$signed_workspace/release-$slot/image-manifest.json" ]]; then
       printf 'Reusing the retained %s release candidate in %s.\n' "$version" "$signed_workspace" >&2
       return 0
@@ -665,7 +666,8 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   # Every transition retains the release record, the durable lifecycle records, a state inventory with modes and
   # checksums, and the container logs, so a reviewer can read the transition rather than trust the exit code.
   capture_signed_state() {
-    local label="$1" destination="$signed_evidence_root/$label"
+    local label="$1"
+    local destination="$signed_evidence_root/$label"
     mkdir -p "$destination"
     if [[ -f "$signed_evidence_path" ]]; then
       cp "$signed_evidence_path" "$destination/image-distribution.json"
