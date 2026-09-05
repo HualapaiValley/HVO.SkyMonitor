@@ -293,11 +293,20 @@ if [[ "$scanner" == trivy ]]; then
                               | select([.annotations[]? | .comment? // "" | select(startswith("ImageID: "))] | length == 0)
                               | select(((.name // "") | gsub("^\\s+|\\s+$"; "")) != "")
                               | select(((.versionInfo // "") | gsub("^\\s+|\\s+$"; "")) != "") ];
-            def files_have_sha1: [ .files[]?
-                                   | select([ .checksums[]?
-                                              | select(.algorithm == "SHA1")
-                                              | select((.checksumValue // "") | test("^[0-9a-fA-F]{40}$")) ] | length == 0) ]
-                                 | length == 0;
+            # Mirrors ValidateInventoryFiles, including its structural requirements: when "files" is present it
+            # must be an array of objects, and every "checksums" member must itself be an array. Without the type
+            # checks jq would iterate the values of an object and accept a nested entry the C# validator rejects.
+            def files_have_sha1:
+              (.files // []) as $f
+              | ($f | type) == "array"
+              and ([ $f[]
+                     | select((type) != "object"
+                              or ((.checksums | type) != "array")
+                              or ([ .checksums[]
+                                    | select((type) == "object")
+                                    | select(.algorithm == "SHA1")
+                                    | select(((.checksumValue // "") | type) == "string")
+                                    | select((.checksumValue // "") | test("^[0-9a-fA-F]{40}$")) ] | length == 0)) ] | length == 0);
             .spdxVersion == "SPDX-2.3"
             and (claims == [$imageId])
             and ((components | length) >= $floor)

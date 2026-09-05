@@ -492,4 +492,42 @@ public sealed class ImageReleaseToolTests
 
         Assert.AreEqual(0, await ReleaseTool.Program.Main(accepted));
     }
+
+    /// <summary>
+    /// The scan report is produced outside the tool, so a member present with the wrong JSON type is ordinary
+    /// malformed input. It must fail as a release error rather than as an unhandled exception from GetString().
+    /// </summary>
+    [TestMethod]
+    public async Task CreateImage_ScanReportWithANonStringMember_FailsAsAReleaseError()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var malformed = Path.Combine(fixture.Root, "typed-scan.json");
+        var report = await File.ReadAllTextAsync(fixture.ScanReport);
+        await File.WriteAllTextAsync(
+            malformed,
+            report.Replace("\"scanner\":\"trivy\"", "\"scanner\":123", StringComparison.Ordinal),
+            new UTF8Encoding(false));
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--scan-report") + 1] = malformed;
+
+        await AssertRejectedAsync(arguments, "does not declare a scanner and scan time");
+    }
+
+    [TestMethod]
+    public async Task CreateImage_ScanReportWithANonObjectSubject_FailsAsAReleaseError()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var malformed = Path.Combine(fixture.Root, "subject-scan.json");
+        var report = await File.ReadAllTextAsync(fixture.ScanReport);
+        var opening = report.IndexOf("\"subjects\":[", StringComparison.Ordinal);
+        Assert.IsTrue(opening >= 0, report);
+        await File.WriteAllTextAsync(
+            malformed,
+            report.Insert(opening + "\"subjects\":[".Length, "\"not-an-object\","),
+            new UTF8Encoding(false));
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--scan-report") + 1] = malformed;
+
+        await AssertRejectedAsync(arguments, "lists an invalid scanned subject");
+    }
 }

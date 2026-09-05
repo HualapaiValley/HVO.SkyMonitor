@@ -710,19 +710,22 @@ internal static partial class Program
             MaxDepth = 32
         });
         var root = document.RootElement;
+        // Every member is read through the ValueKind-checked accessor. This report is produced outside the tool,
+        // so a member that is present with the wrong JSON type is ordinary malformed input and must fail as a
+        // release error rather than as an unhandled InvalidOperationException from GetString().
         if (root.ValueKind != JsonValueKind.Object ||
             !root.TryGetProperty("schemaVersion", out var schema) || schema.ValueKind != JsonValueKind.Number ||
-            schema.GetInt32() != 1 ||
-            !root.TryGetProperty("scanner", out var scanner) || string.IsNullOrWhiteSpace(scanner.GetString()) ||
-            !root.TryGetProperty("scannerVersion", out var scannerVersion) || string.IsNullOrWhiteSpace(scannerVersion.GetString()) ||
-            !root.TryGetProperty("scannedUtc", out var scannedUtc) || scannedUtc.GetString() is not { } scannedUtcValue ||
+            !schema.TryGetInt32(out var schemaValue) || schemaValue != 1 ||
+            string.IsNullOrWhiteSpace(Text(root, "scanner")) ||
+            string.IsNullOrWhiteSpace(Text(root, "scannerVersion")) ||
+            Text(root, "scannedUtc") is not { } scannedUtcValue ||
             !scannedUtcValue.EndsWith('Z') ||
             !DateTimeOffset.TryParse(scannedUtcValue, CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
         {
             throw new ReleaseToolException("The image vulnerability scan report does not declare a scanner and scan time.");
         }
-        var scannerName = scanner.GetString()!;
-        var status = root.TryGetProperty("status", out var statusValue) ? statusValue.GetString() : "scanned";
+        var scannerName = Text(root, "scanner")!;
+        var status = root.TryGetProperty("status", out _) ? Text(root, "status") : "scanned";
         if ((status != "scanned" || !SupportedScanners.Contains(scannerName, StringComparer.Ordinal)) &&
             !version.EndsWith("-dryrun", StringComparison.Ordinal))
         {
@@ -735,8 +738,14 @@ internal static partial class Program
         {
             throw new ReleaseToolException("The image vulnerability scan report does not list its scanned subjects.");
         }
+        // A malformed entry is refused rather than skipped: silently ignoring it would let a report that lists
+        // junk alongside the right image IDs still satisfy the "covers exactly the published images" rule.
+        if (subjects.EnumerateArray().Any(static subject => subject.ValueKind != JsonValueKind.Object))
+        {
+            throw new ReleaseToolException("The image vulnerability scan report lists an invalid scanned subject.");
+        }
         var scanned = subjects.EnumerateArray()
-            .Select(static subject => subject.TryGetProperty("imageId", out var imageId) ? imageId.GetString() : null)
+            .Select(static subject => Text(subject, "imageId"))
             .Where(static imageId => imageId is not null)
             .ToHashSet(StringComparer.Ordinal);
         if (!imageIds.All(scanned.Contains) || scanned.Count != imageIds.Length)
@@ -745,7 +754,7 @@ internal static partial class Program
         }
         if (!root.TryGetProperty("summary", out var summary) || summary.ValueKind != JsonValueKind.Object ||
             SeverityCounts.Any(severity => !summary.TryGetProperty(severity, out var count) ||
-                count.ValueKind != JsonValueKind.Number || count.GetInt32() < 0))
+                count.ValueKind != JsonValueKind.Number || !count.TryGetInt32(out var value) || value < 0))
         {
             throw new ReleaseToolException(
                 $"The image vulnerability scan report must record every severity count ({string.Join(", ", SeverityCounts)}).");

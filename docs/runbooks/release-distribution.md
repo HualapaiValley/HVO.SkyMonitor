@@ -321,19 +321,22 @@ Each attestation is resolved and its in-toto layers are inspected, because an
 annotated wrapper only proves that *something* is attached: a provenance-only,
 SBOM-only, or empty attestation would otherwise be signed as if it carried both.
 
-That check has a deliberate limit. It proves the index carries one attestation
-manifest per published platform, that the manifest is annotated with the platform
-manifest digest it attests, and that it carries exactly one SPDX and one SLSA
-in-toto layer. It does **not** fetch those in-toto payloads and compare the
-`subject` digest inside each statement. Doing so needs a raw registry blob read
-that the release path does not perform, and the release cannot rehearse it,
-because rehearsals never push. The signed release is unaffected either way: it
-derives every platform identity from the archive bytes it examined, and it is the
-channel an installation actually verifies. Treat the registry attestation payload
-as consumer-verified — `cosign verify-attestation` against the published digest —
-rather than as something the publishing run has proved. Closing that gap is
-tracked by
-[#648](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/648).
+The annotation is the binding, and that is not a shortcut. BuildKit emits its
+in-toto statements with an **empty** `subject` array and links each attestation to
+the image manifest it describes solely through the
+`vnd.docker.reference.digest` annotation on the attestation manifest. Inspecting
+the blobs of a locally attested export confirms it: both statements carry
+`"subject": []`, and the platform manifest digest appears nowhere inside them —
+only in the index descriptor and in that annotation. So there is no payload
+subject digest to compare, and a check that demanded one would reject every
+legitimate buildx attestation. Verifying the annotation and the two predicate
+types is therefore the complete subject binding available for this attestation
+format.
+
+What remains unproven is narrower and is listed below with the other credentialed
+steps: whether the registry accepts and re-serves these manifests unchanged. A
+consumer who wants an independent guarantee should verify the published digest
+directly rather than relying on the publishing run.
 
 **A version published without attestations can never be adopted.** The push
 adopts an existing publication rather than overwriting it, so that a run whose
@@ -370,9 +373,8 @@ platform archive.
 
 Only a real publishing run can prove the credentialed steps: the registry push,
 the digest it returns and the index agreement check that follows it, the
-registry's acceptance and re-serving of the attestation manifests, the
-attestation wrapper and predicate checks that follow them and the payload
-subjects they do not verify, Key Vault signing under the
+registry's acceptance and re-serving of the attestation manifests and the
+attestation wrapper and predicate checks that follow them, Key Vault signing under the
 production identity, the GitHub Release creation and its collision refusal, and
 anonymous verification through public release URLs. It is also the only run that
 builds `linux/arm64` under QEMU on a hosted runner rather than on native
