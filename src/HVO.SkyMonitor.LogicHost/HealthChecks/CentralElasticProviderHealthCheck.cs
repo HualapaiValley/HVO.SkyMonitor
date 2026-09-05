@@ -66,6 +66,10 @@ internal sealed class CentralElasticProviderHealthCheck(
         {
             return Task.FromResult(HealthCheckResult.Degraded("Provider startup cannot meet the queue deadline; work is retained locally past the deadline.", data: data));
         }
+        if (snapshot.LastDecision == ElasticScalingPolicy.ReasonInstanceUndescribed)
+        {
+            return Task.FromResult(HealthCheckResult.Degraded("The provider cannot describe an instance (the configured runner failed its capability probe); nothing is provisioned until a probe succeeds.", data: data));
+        }
         if (snapshot.OrphansCleaned > 0)
         {
             return Task.FromResult(HealthCheckResult.Degraded("Elastic runner instances were cleaned up as orphans in the last sample.", data: data));
