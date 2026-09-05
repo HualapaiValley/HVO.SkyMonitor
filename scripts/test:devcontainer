@@ -23,8 +23,13 @@ done
 jq --exit-status 'type == "object"' \
     "$REPO_ROOT/.devcontainer/devcontainer.json" >/dev/null
 
-if rg --quiet --ignore-case 'opencode|HVO_AGENT_WORKTREE_ROOT|HVO_DEVCONTAINER_STATE_SOURCE' \
-    "$REPO_ROOT/.devcontainer"; then
+mapfile -d '' devcontainer_sources < <(
+    git -C "$REPO_ROOT" ls-files -z -- .devcontainer
+)
+if ((${#devcontainer_sources[@]} > 0)) && \
+    (cd "$REPO_ROOT" && rg --quiet --ignore-case \
+        'opencode|HVO_AGENT_STATE_ROOT|HVO_AGENT_WORKTREE_ROOT|HVO_DEVCONTAINER_STATE_SOURCE' \
+        "${devcontainer_sources[@]}"); then
     echo "Retired agent integration is present in the devcontainer definition." >&2
     exit 1
 fi
