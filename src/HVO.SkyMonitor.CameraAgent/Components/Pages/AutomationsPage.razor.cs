@@ -114,11 +114,13 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             _message = failures.Count == 0 ? null : string.Join(' ', failures);
             // A conflict re-read is only useful if the next attempt carries the version it just read.
             // Without this the operator would resend the version captured when the editor was opened.
-            if (_editingVersion != 0)
+            // A failed automation read tells us nothing about the version, so it must leave the edit
+            // alone rather than silently demoting it to a create that can never succeed.
+            if (_editingVersion != 0 && _automation is not null)
             {
-                _editingVersion = _automation?.Definitions
-                    .FirstOrDefault(candidate =>
-                        string.Equals(candidate.Definition.DefinitionId, _idInput, StringComparison.Ordinal))
+                _editingVersion = _automation.Definitions
+                    .FirstOrDefault(candidate => string.Equals(
+                        candidate.Definition.DefinitionId, _idInput.Trim(), StringComparison.Ordinal))
                     ?.Version ?? 0;
             }
             SeedForm();
@@ -290,7 +292,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         if (result.IsSuccess && result.Value is { } applied)
         {
             var removedTheEditedDefinition = _pendingKind == PendingCommandKind.Remove
-                && string.Equals(signature.Value.DefinitionId, _idInput, StringComparison.Ordinal);
+                && _editingVersion != 0
+                && string.Equals(signature.Value.DefinitionId, _idInput.Trim(), StringComparison.Ordinal);
             // Only a Save owns the editor. A Toggle or Remove of some other row must never clear the
             // dirty flag, because the reseed that follows would silently replace the task and trigger
             // the operator chose for the definition they are still editing.
@@ -450,7 +453,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private string ConfirmationDescription() => _pendingKind switch
     {
         PendingCommandKind.Remove =>
-            "The definition stops running immediately. Its recorded revisions and run history are retained.",
+            "The definition stops running immediately. Its recorded runs stay in the run history, and its "
+            + "revisions are retained durably under a bounded limit but are no longer listed on this page.",
         PendingCommandKind.Toggle => _pendingDefinition?.Definition.Enabled == true
             ? "The definition stops running. Its recorded revisions and run history are retained."
             : "The definition starts running at its next occurrence. Occurrences that elapsed while it was "

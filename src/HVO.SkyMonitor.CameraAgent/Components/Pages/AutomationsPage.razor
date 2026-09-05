@@ -189,7 +189,13 @@
                         @foreach (var definition in _automation.Definitions)
                         {
                             <details class="revision-history" @key="definition.Definition.DefinitionId">
-                                <summary>@definition.Definition.DefinitionId &mdash; @definition.History.Count retained of @LocalAutomationContract.MaximumProjectedRevisions shown</summary>
+                                <summary>@definition.Definition.DefinitionId &mdash; showing the @definition.History.Count most recent of up to @LocalAutomationContract.MaximumRetainedRevisions retained revisions</summary>
+                                @if (definition.History.Count == 0)
+                                {
+                                    <p class="empty-copy">No revision of this definition is retained.</p>
+                                }
+                                else
+                                {
                                 <div class="table-scroll">
                                     <table class="facts-table">
                                         <caption class="visually-hidden">Recorded revisions of @definition.Definition.DefinitionId, newest first</caption>
@@ -211,6 +217,7 @@
                                         </tbody>
                                     </table>
                                 </div>
+                                }
                             </details>
                         }
                     }

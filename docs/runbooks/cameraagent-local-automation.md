@@ -36,7 +36,9 @@ definable here.
 
 `<raw-ingress-root>/.automation/local-automations.db`, a dedicated SQLite database
 with WAL journaling, `synchronous = FULL`, and `PRAGMA user_version` pinned to the
-contract's schema version. Startup verifies the version, the exact schema object
+contract's schema version. The drift guard counts schema objects, which cannot see a
+column change, so any column change bumps the schema version and a database written by
+an earlier build is refused rather than opened. Startup verifies the version, the exact schema object
 count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt
 database rather than migrating it. Every open re-asserts that write-ahead logging is
 actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
@@ -118,6 +120,12 @@ as a warning (event 7408) rather than passing silently.
 `CameraAgent:Automation:PollIntervalSeconds` (default `30`, range 5-3600). Disabling
 the runner leaves definitions and history readable and mutable; it only stops
 occurrences from firing.
+
+`Enabled` is **not** an escape hatch past store verification. The store is initialized
+and verified from the runner's `StartAsync` before the flag is read, so a drifted or
+corrupt store fails host startup whether or not the runner is enabled. That is
+deliberate: the store is durable operator state, and a CameraAgent that cannot read it
+must say so rather than start and silently present nothing.
 
 ## Endpoints
 

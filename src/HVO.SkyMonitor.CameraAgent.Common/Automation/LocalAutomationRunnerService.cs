@@ -180,6 +180,8 @@ public sealed partial class LocalAutomationRunnerService(
         await RunAsync(entry, RunKey(entry, 'c', current), now, current, cancellationToken).ConfigureAwait(false);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "A throwing task is recorded as a failed run rather than leaving the claim open.")]
     private async Task RunAsync(
         LocalAutomationRunnerEntry entry,
         string runKey,
@@ -207,6 +209,15 @@ public sealed partial class LocalAutomationRunnerService(
         {
             // The claimed run stays claimed and restart recovery settles it as interrupted.
             throw;
+        }
+        catch (Exception exception)
+        {
+            // A registry that throws instead of returning a disposition must not leave the claim open
+            // until the next restart: the occurrence is terminal and is recorded as failed.
+            DefinitionFailed(logger, entry.Definition.DefinitionId, exception);
+            execution = new LocalAutomationExecution(
+                LocalAutomationRunOutcome.Failed,
+                string.Concat("The registered task threw ", exception.GetType().Name, "."));
         }
         var elapsed = Stopwatch.GetElapsedTime(started);
         activity?.SetTag("outcome", execution.Outcome.ToString());

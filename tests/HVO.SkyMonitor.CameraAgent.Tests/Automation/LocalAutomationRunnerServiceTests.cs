@@ -211,38 +211,93 @@ public sealed class LocalAutomationRunnerServiceTests : IDisposable
         await CreateRunner().SweepAsync(CancellationToken.None).ConfigureAwait(false);
 
         var state = await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
-        // Both occurrences are claimed and both stay claimed; restart recovery settles them.
+        // Both occurrences are evaluated and both are recorded as failed rather than left claimed.
         Assert.AreEqual(2, state.Runs.Count);
-        Assert.IsTrue(state.Runs.All(static run => run.Outcome == LocalAutomationRunOutcome.Running));
+        Assert.IsTrue(state.Runs.All(static run => run.Outcome == LocalAutomationRunOutcome.Failed));
     }
 
     [TestMethod]
     public async Task StartAsync_FailsHostStartupWhenTheStoreCannotBeVerified()
     {
-        _store.Dispose();
-        SqliteConnection.ClearAllPools();
-        var path = Path.Combine(_root, ".automation", "local-automations.db");
-        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
-        {
-            await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
-            using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA user_version = 9;";
-            await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        SqliteConnection.ClearAllPools();
-        _store = new SqliteLocalAutomationStore(
+        // The store is deliberately asynchronous here. Microsoft.Data.Sqlite completes synchronously, so a
+        // store that threw from ExecuteAsync would still surface through StartAsync by accident; yielding
+        // first means only initializing in StartAsync can make host startup fail.
+        var store = new ThrowingInitializeStore();
+        using var runner = new LocalAutomationRunnerService(
+            store,
             _registry,
             _captureSequence,
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root }),
             _timeProvider,
-            NullLogger<SqliteLocalAutomationStore>.Instance);
+            NullLogger<LocalAutomationRunnerService>.Instance);
 
-        // Initialization happens in StartAsync, so an unusable store fails host startup rather than
-        // letting the host serve traffic and stop asynchronously afterwards.
-        using var runner = CreateRunner();
         await Assert.ThrowsExactlyAsync<InvalidDataException>(
             async () => await runner.StartAsync(CancellationToken.None).ConfigureAwait(false))
             .ConfigureAwait(false);
+        Assert.IsTrue(store.Initialized);
+    }
+
+    private sealed class ThrowingInitializeStore : ILocalAutomationStore
+    {
+        internal bool Initialized { get; private set; }
+
+        public async ValueTask InitializeAsync(CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+            Initialized = true;
+            throw new InvalidDataException("Local automation SQLite schema is incomplete or drifted.");
+        }
+
+        public ValueTask<LocalAutomationOperatorState> GetStateAsync(CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<LocalAutomationCommandResult> SaveAsync(
+            LocalAutomationSaveRequest request, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<LocalAutomationCommandResult> RemoveAsync(
+            LocalAutomationRemoveRequest request, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<IReadOnlyList<LocalAutomationRunnerEntry>> GetRunnerViewAsync(
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<bool> TryBeginRunAsync(
+            LocalAutomationRunnerEntry entry, string runKey, DateTimeOffset scheduledForUtc,
+            long? observedCaptureSequence, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask CompleteRunAsync(
+            string runKey, LocalAutomationRunOutcome outcome, string detail, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask RecordTerminalRunAsync(
+            LocalAutomationRunnerEntry entry, string runKey, DateTimeOffset scheduledForUtc,
+            LocalAutomationRunOutcome outcome, string detail, long? observedCaptureSequence,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask SetCaptureBaselineAsync(
+            string definitionId, long captureSequence, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+    }
+
+    [TestMethod]
+    public async Task SweepAsync_RecordsAFailedRunWhenTheRegisteredTaskThrows()
+    {
+        await SaveAsync().ConfigureAwait(false);
+        // A registry that throws instead of returning a disposition must not leave the claim open until
+        // the next restart.
+        _registry.Throw = new InvalidOperationException("boom");
+        _timeProvider.Advance(TimeSpan.FromSeconds(3600));
+
+        await CreateRunner().SweepAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var run = (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Failed, run.Outcome);
+        Assert.IsNotNull(run.CompletedAtUtc);
+        StringAssert.Contains(run.Detail, nameof(InvalidOperationException), StringComparison.Ordinal);
     }
 
     [TestMethod]

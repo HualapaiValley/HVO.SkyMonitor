@@ -158,7 +158,7 @@
       "run key",
       "database path"
     ],
-    "labelNote": "The outcome set is the union across operations; an individual operation emits a subset. Missing and Interrupted are recorded in the durable journal rather than the run counter, because neither is produced by an executed task.",
+    "labelNote": "The forbidden list names what may never become a metric label or a trace tag. The outcome set is the union across operations; an individual operation emits a subset. Missing and Interrupted are recorded in the durable journal rather than the run counter, because neither is produced by an executed task.",
     "identifiers": "Definition identifiers and run keys appear in structured logs on the authenticated local host only. No definition identifier, name, target, actor, reason, idempotency key, or run key is ever a metric label or a trace tag."
   },
   "collection": {

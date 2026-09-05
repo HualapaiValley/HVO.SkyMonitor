@@ -12,8 +12,11 @@ public static class LocalAutomationContract
     /// <summary>The durable schema label recorded in every revision hash.</summary>
     public const string SchemaLabel = "hvo-cameraagent-local-automation-v1";
 
-    /// <summary>The current durable schema version of the separate automation store file.</summary>
-    public const int CurrentSchemaVersion = 1;
+    /// <summary>
+    /// The current durable schema version of the separate automation store file. The drift guard counts
+    /// tables and indexes, which cannot see a column change, so any column change must bump this.
+    /// </summary>
+    public const int CurrentSchemaVersion = 2;
 
     /// <summary>The maximum accepted definition identifier length.</summary>
     public const int MaximumDefinitionIdLength = 64;
@@ -32,6 +35,9 @@ public static class LocalAutomationContract
 
     /// <summary>The maximum accepted operator reason length.</summary>
     public const int MaximumReasonLength = 512;
+
+    /// <summary>The maximum stored length of a run's outcome detail.</summary>
+    public const int MaximumDetailLength = 512;
 
     /// <summary>
     /// The most definitions this local contract accepts. The runner evaluates every enabled

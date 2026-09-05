@@ -102,7 +102,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         Converters = { new JsonStringEnumConverter() }
     };
 
-    private const string SchemaSql = """
+    private static readonly string SchemaSql = $"""
         CREATE TABLE IF NOT EXISTS automation_definitions (
             definition_id TEXT PRIMARY KEY CHECK (length(definition_id) BETWEEN 1 AND 64),
             name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 96),
@@ -153,7 +153,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             started_unix_ms INTEGER NOT NULL,
             completed_unix_ms INTEGER,
             outcome TEXT NOT NULL CHECK (length(outcome) BETWEEN 1 AND 32),
-            detail TEXT NOT NULL CHECK (length(detail) <= 512),
+            detail TEXT NOT NULL CHECK (length(detail) <= {LocalAutomationContract.MaximumDetailLength}),
             observed_capture_sequence INTEGER,
             claimant TEXT NOT NULL CHECK (length(claimant) BETWEEN 1 AND 64)
         ) STRICT;
@@ -508,8 +508,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 ("$claimant", _claimant)).ConfigureAwait(false);
             if (settled == 0)
             {
-                // The run this instance claimed is gone from the journal entirely, which retention can do
-                // only under extreme churn. Losing a real outcome must never pass silently.
+                // The claimed row is neither still running nor ours: retention removed it, or another
+                // instance settled it and a third claimed it. Losing a real outcome must never pass silently.
                 RunCompletionLost(_logger, runKey, outcome.ToString(), null);
             }
             var definitionId = await ScalarStringAsync(
@@ -1497,7 +1497,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
     /// <summary>Trims to the stored bound without splitting a surrogate pair.</summary>
     private static string Bound(string value)
     {
-        const int Maximum = LocalAutomationContract.MaximumReasonLength;
+        const int Maximum = LocalAutomationContract.MaximumDetailLength;
         if (value.Length <= Maximum)
         {
             return value;

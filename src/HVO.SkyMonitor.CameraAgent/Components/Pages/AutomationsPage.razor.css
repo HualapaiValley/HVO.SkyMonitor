@@ -58,4 +58,4 @@ dd { margin: .15rem 0 0; overflow-wrap: anywhere; font-weight: 650; }
 .confirmation-panel div:last-child { display: flex; gap: .6rem; }
 .confirmation-panel .btn { min-height: 44px; }
 .revision-history { margin-top: .6rem; border-top: 1px solid var(--hvo-border-muted); }
-.revision-history > summary { padding: .4rem 0; color: var(--hvo-muted-strong); font-size: .85rem; cursor: pointer; }
+.revision-history > summary { display: flex; align-items: center; min-height: 44px; padding: .4rem 0; color: var(--hvo-muted-strong); font-size: .85rem; cursor: pointer; }

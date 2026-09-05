@@ -283,40 +283,63 @@ public sealed class LocalAutomationStoreTests
     public async Task RemoveAsync_BoundsTheRevisionsAndRunsOfDefinitionsThatNoLongerExist()
     {
         using var store = await CreateInitializedStoreAsync().ConfigureAwait(false);
-        for (var index = 0; index < 40; index++)
+        // A live definition must survive the prune untouched.
+        await store.SaveAsync(SaveRequest(definitionId: "kept", key: "kept"), CancellationToken.None)
+            .ConfigureAwait(false);
+        var kept = (await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false))
+            .Single(entry => entry.Definition.DefinitionId == "kept");
+        await store.TryBeginRunAsync(kept, "kept-run", Now.AddSeconds(3600), null, CancellationToken.None)
+            .ConfigureAwait(false);
+        await store.CompleteRunAsync("kept-run", LocalAutomationRunOutcome.Succeeded, "ok", CancellationToken.None)
+            .ConfigureAwait(false);
+
+        // Each cycle leaves four revisions and three runs behind, so the loop drives well past both caps.
+        const int Cycles = 90;
+        for (var index = 0; index < Cycles; index++)
         {
             var id = string.Create(CultureInfo.InvariantCulture, $"orphan-{index}");
-            var created = await store.SaveAsync(
-                SaveRequest(definitionId: id, key: string.Create(CultureInfo.InvariantCulture, $"c-{index}")),
-                CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(LocalAutomationCommandStatus.Applied, created.Status);
+            for (var version = 0; version < 3; version++)
+            {
+                var saved = await store.SaveAsync(
+                    SaveRequest(
+                        definitionId: id,
+                        name: string.Create(CultureInfo.InvariantCulture, $"Orphan {index}.{version}"),
+                        expectedVersion: version,
+                        key: string.Create(CultureInfo.InvariantCulture, $"c-{index}-{version}")),
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(LocalAutomationCommandStatus.Applied, saved.Status);
+            }
             var entry = (await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false))
                 .Single(candidate => candidate.Definition.DefinitionId == id);
-            await store.TryBeginRunAsync(
-                entry,
-                string.Create(CultureInfo.InvariantCulture, $"run-{index}"),
-                Now.AddSeconds(3600),
-                null,
-                CancellationToken.None).ConfigureAwait(false);
-            await store.CompleteRunAsync(
-                string.Create(CultureInfo.InvariantCulture, $"run-{index}"),
-                LocalAutomationRunOutcome.Succeeded,
-                "ok",
-                CancellationToken.None).ConfigureAwait(false);
+            for (var run = 0; run < 3; run++)
+            {
+                var key = string.Create(CultureInfo.InvariantCulture, $"run-{index}-{run}");
+                await store.TryBeginRunAsync(
+                    entry, key, Now.AddSeconds(3600 * (run + 1)), null, CancellationToken.None)
+                    .ConfigureAwait(false);
+                await store.CompleteRunAsync(key, LocalAutomationRunOutcome.Succeeded, "ok", CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
             await store.RemoveAsync(
                 new LocalAutomationRemoveRequest(
-                    id, 1, string.Create(CultureInfo.InvariantCulture, $"r-{index}"), "owner", null),
+                    id, 3, string.Create(CultureInfo.InvariantCulture, $"r-{index}"), "owner", null),
                 CancellationToken.None).ConfigureAwait(false);
         }
 
-        // Removal frees the definition slot, so the definition cap cannot bound the orphan tail.
-        Assert.IsEmpty((await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Definitions);
-        Assert.IsLessThanOrEqualTo(
-            (long)LocalAutomationContract.MaximumRetainedOrphanRevisions,
-            await CountAsync("automation_definition_revisions").ConfigureAwait(false));
-        Assert.IsLessThanOrEqualTo(
-            (long)LocalAutomationContract.MaximumRetainedOrphanRuns,
-            await CountAsync("automation_runs").ConfigureAwait(false));
+        // Removal frees the definition slot, so the definition cap cannot bound the orphan tail. Without
+        // the prune these would be 4 * 90 revisions and 3 * 90 runs.
+        var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("kept", state.Definitions.Single().Definition.DefinitionId);
+        Assert.AreEqual(
+            (long)(LocalAutomationContract.MaximumRetainedOrphanRevisions + 1),
+            await CountAsync("automation_definition_revisions").ConfigureAwait(false),
+            "The orphan revisions are capped and the live definition's own revision is untouched.");
+        Assert.AreEqual(
+            (long)(LocalAutomationContract.MaximumRetainedOrphanRuns + 1),
+            await CountAsync("automation_runs").ConfigureAwait(false),
+            "The orphan runs are capped and the live definition's own run is untouched.");
+        Assert.IsNotNull(state.Definitions.Single().LastRun);
+        Assert.AreEqual(1, state.Definitions.Single().History.Count);
     }
 
     [TestMethod]

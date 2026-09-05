@@ -250,14 +250,16 @@ public sealed class AutomationsPageTests
         cut.WaitForElement("#automation-edit-sky-temperature");
 
         cut.Find("#automation-edit-sky-temperature").Click();
-        cut.Find("#automation-trigger").Change(nameof(LocalAutomationTriggerKind.Periodic));
         cut.Find("#automation-interval").Change("900");
+        // The definition under edit is Capture Relative while the registry's first compatible trigger is
+        // Periodic, so an unscoped reseed would visibly rewrite it.
+        Assert.AreEqual("CaptureRelative", cut.Find("#automation-trigger").GetAttribute("value"));
         cut.Find("#automation-toggle-sky-temperature").Click();
         cut.Find("dialog .btn-primary").Click();
 
         // Toggling a row must not reseed the editor, or a later Save would record fields the operator
         // never chose.
-        Assert.AreEqual("Periodic", cut.Find("#automation-trigger").GetAttribute("value"));
+        Assert.AreEqual("CaptureRelative", cut.Find("#automation-trigger").GetAttribute("value"));
         Assert.AreEqual("900", cut.Find("#automation-interval").GetAttribute("value"));
         Assert.AreEqual("sky-temperature", cut.Find("#automation-id").GetAttribute("value"));
         Assert.HasCount(1, service.SaveRequests);
@@ -376,6 +378,37 @@ public sealed class AutomationsPageTests
         Assert.IsFalse(request.Enabled);
         Assert.AreEqual(2L, request.ExpectedVersion);
         Assert.AreEqual("sky-temperature", request.DefinitionId);
+    }
+
+    [TestMethod]
+    public void Save_WhenTheAutomationReadFails_KeepsTheEditRatherThanDemotingItToACreate()
+    {
+        using var context = CreateContext();
+        var service = Register(context, Automation());
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-edit-sky-temperature");
+        cut.Find("#automation-edit-sky-temperature").Click();
+
+        service.Kind = OperatorUiResultKind.Conflict;
+        service.FailReads = true;
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find("dialog .btn-primary").Click();
+
+        // The conflict re-read failed, so nothing is known about the version. Zeroing it would silently
+        // turn the edit into a create, and the re-resolve guard would never restore it once the read
+        // recovered — every later save would then carry version zero and conflict forever.
+        service.FailReads = false;
+        service.Kind = OperatorUiResultKind.Success;
+        cut.FindAll("button").Single(button =>
+            button.TextContent.Contains("Refresh", StringComparison.Ordinal)).Click();
+        cut.WaitForElement("#automation-editor");
+        Assert.Contains("Edit sky-temperature", cut.Markup, StringComparison.Ordinal);
+        Assert.IsNotNull(cut.Find("#automation-id").GetAttribute("readonly"));
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find("dialog .btn-primary").Click();
+
+        Assert.HasCount(2, service.SaveRequests);
+        Assert.AreEqual(2L, service.SaveRequests[1].ExpectedVersion);
     }
 
     [TestMethod]
@@ -537,11 +570,13 @@ public sealed class AutomationsPageTests
 
         internal int Reads { get; private set; }
 
+        internal bool FailReads { get; set; }
+
         public ValueTask<OperatorUiResult<LocalAutomationOperatorState>> GetAsync(
             CancellationToken cancellationToken)
         {
             Reads++;
-            return ValueTask.FromResult(_state is null
+            return ValueTask.FromResult(_state is null || FailReads
                 ? OperatorUiResult<LocalAutomationOperatorState>.Failure(
                     OperatorUiResultKind.Unavailable, "Local automation state is unavailable.")
                 : OperatorUiResult<LocalAutomationOperatorState>.Success(_state));
