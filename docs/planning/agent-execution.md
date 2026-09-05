@@ -119,6 +119,26 @@ reason.
   discovery, synopsis preparation, or non-overlapping work rather than polling
   as the only activity.
 
+### Progress reporting
+
+Silence reads as a stall. Every agent reports progress while it works, not only
+when it finishes:
+
+- Implementing agents post a short progress comment at every milestone
+  (inventory complete, first slice committed, a gate started or finished, reviews
+  launched, corrections pushed, PR marked ready) and at least every thirty
+  minutes of active work. Post on the owning issue until the draft PR exists,
+  then append to the PR's review ledger. Each comment states what finished, what
+  is running now, the next step, and any blocker, with UTC times.
+- Review, research, and evidence agents report when they finish; a long review
+  posts an interim note after thirty minutes.
+- The coordinator keeps a periodic status watch over active agents, open PRs,
+  and shared resources such as the Docker window, and relays a short status
+  note to the operator at least every few minutes while any delegated work or
+  long gate is running, including "no change" when nothing moved.
+- A progress comment never replaces the handoff in section 11; a blocked agent
+  still leaves the full handoff.
+
 ### Validation ladder
 
 Record commands and the source commit or worktree fingerprint they validate.
