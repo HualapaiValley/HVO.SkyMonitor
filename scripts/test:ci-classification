@@ -918,6 +918,110 @@ for job in unit integration coverage; do
     exit 1
   }
 done
+
+# Badge publication is optional operational metadata. Its credential stays in
+# the Actions secret store, its public Gist ID stays in a repository variable,
+# and neither an absent credential nor an endpoint outage can falsify Required CI.
+badges_job="$(extract_workflow_job badges)"
+grep -Fxq "    if: github.ref == 'refs/heads/main'" <<< "$badges_job" || {
+  printf 'Coverage badges must publish only from main.\n' >&2
+  exit 1
+}
+grep -Fxq '    permissions: {}' <<< "$badges_job" || {
+  printf 'Coverage badge publication must not receive repository permissions.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # The workflow expressions are intentionally literal.
+grep -Fq 'BADGE_GIST_TOKEN: ${{ secrets.GIST_TOKEN }}' <<< "$badges_job" || {
+  printf 'Coverage badge publication must use the repository GIST_TOKEN secret.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # The workflow expressions are intentionally literal.
+grep -Fq 'BADGE_GIST_ID: ${{ vars.COVERAGE_GIST_ID }}' <<< "$badges_job" || {
+  printf 'Coverage badge publication must use the public repository Gist ID variable.\n' >&2
+  exit 1
+}
+if grep -Fq 'secrets.COVERAGE_GIST_ID' <<< "$badges_job"; then
+  printf 'The public coverage Gist ID must not be stored as a secret.\n' >&2
+  exit 1
+fi
+badge_continue_count="$(grep -Fc 'continue-on-error: true' <<< "$badges_job" || true)"
+if (( badge_continue_count != 1 )); then
+  printf 'Only the bounded coverage badge publication step must be best-effort.\n' >&2
+  exit 1
+fi
+grep -Fq -- '--connect-timeout 10' <<< "$badges_job" || {
+  printf 'Coverage badge publication must bound the Gist connection attempt.\n' >&2
+  exit 1
+}
+grep -Fq -- '--max-time 45' <<< "$badges_job" || {
+  printf 'Coverage badge publication must bound each Gist transfer.\n' >&2
+  exit 1
+}
+grep -Fq -- '--retry-max-time 120' <<< "$badges_job" || {
+  printf 'Coverage badge publication must bound its retry window below the job timeout.\n' >&2
+  exit 1
+}
+badge_patch_count="$(grep -Fc -- '--request PATCH' <<< "$badges_job" || true)"
+if (( badge_patch_count != 1 )); then
+  printf 'Coverage badge publication must use one atomic Gist PATCH request.\n' >&2
+  exit 1
+fi
+for badge_file in coverage-line.json coverage-branch.json; do
+  grep -Fq "\"$badge_file\": {content:" <<< "$badges_job" || {
+    printf 'Atomic coverage badge payload is missing %s.\n' "$badge_file" >&2
+    exit 1
+  }
+done
+grep -Fq 'https://api.github.com/gists/$BADGE_GIST_ID' <<< "$badges_job" || {
+  printf 'Coverage badge publication must use the configured Gist API endpoint.\n' >&2
+  exit 1
+}
+grep -Fq 'curl --disable --config -' <<< "$badges_job" || {
+  printf 'Coverage badge publication must disable ambient curl configuration before loading the token.\n' >&2
+  exit 1
+}
+grep -Fq 'header = "Authorization: Bearer %s"' <<< "$badges_job" || {
+  printf 'Coverage badge publication must keep the credential out of process arguments.\n' >&2
+  exit 1
+}
+grep -Fq 'line <= 100 && branch <= 100' <<< "$badges_job" || {
+  printf 'Coverage badge publication must reject percentages above 100.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Workflow shell variables are intentionally literal.
+grep -Fq -- '--argjson line "$line_badge"' <<< "$badges_job" || {
+  printf 'Coverage badge publication must verify the complete returned line badge.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Workflow shell variables are intentionally literal.
+grep -Fq -- '--argjson branch "$branch_badge"' <<< "$badges_job" || {
+  printf 'Coverage badge publication must verify the complete returned branch badge.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Workflow shell variables are intentionally literal.
+grep -Fq '(.files["coverage-line.json"].content | fromjson) == $line' <<< "$badges_job" || {
+  printf 'Coverage badge publication must compare the complete returned line document.\n' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Workflow shell variables are intentionally literal.
+grep -Fq '(.files["coverage-branch.json"].content | fromjson) == $branch' <<< "$badges_job" || {
+  printf 'Coverage badge publication must compare the complete returned branch document.\n' >&2
+  exit 1
+}
+if grep -Fq 'dynamic-badges-action' <<< "$badges_job"; then
+  printf 'Coverage badge publication must use the bounded first-party API request.\n' >&2
+  exit 1
+fi
+grep -Fq 'Report unconfigured coverage badge publication' <<< "$badges_job" || {
+  printf 'Missing badge configuration must produce an explicit warning.\n' >&2
+  exit 1
+}
+grep -Fq 'Report coverage badge publication failure' <<< "$badges_job" || {
+  printf 'Failed badge publication must produce an explicit warning.\n' >&2
+  exit 1
+}
+
 for host in cameraagent logichost; do
   job_body="$(extract_workflow_job "migrations-$host")"
   grep -Fq "./scripts/ci:canonical-migration $host" <<< "$job_body" || {

@@ -133,14 +133,28 @@ when it finishes:
   then append to the PR's append-only review ledger. Each comment has a UTC
   timestamp and states what finished, what is running now, the next step, and
   any blocker. Long gates and reviews get an interim note rather than silence.
-- Review, research, and evidence agents report when they finish; a long review
-  posts an interim note after thirty minutes.
-- The coordinator arms exactly one persistent status monitor on a five-minute
-  cadence while delegated agents, review acquisition, long gates, or CI runs are
-  active. Use the harness's scheduled task, background loop, transcript tail,
-  session status, or equivalent capability. Start the monitor when work becomes
-  active, restart it whenever the active agent or PR set changes, and stop it
-  when nothing is active.
+- Every delegated implementation, review, research, and evidence agent sends
+  the coordinator a structured `STARTED` message before substantive work, then
+  milestone, blocker, at-least-thirty-minute, and completion messages. Review
+  messages also identify the exact range and actual provider/model/effort. A
+  long review posts an interim note after thirty minutes. Each agent also posts
+  the same milestones on the owning issue or PR ledger. If its harness cannot,
+  the coordinator posts a clearly attributed proxy entry before relaying the
+  event to the main conversation.
+- The coordinator immediately relays delegated starts, milestones, blockers,
+  and completions to the main conversation, then arms exactly one persistent
+  status monitor on a five-minute cadence while delegated agents, review
+  acquisition, long gates, or CI runs are active. Use the harness's scheduled
+  task, background loop, transcript tail, session status, or equivalent
+  capability. Start the monitor when work becomes active, restart it whenever
+  the active agent or PR set changes, and stop it when nothing is active.
+  Harness UI activity or repository comments without a main-conversation relay
+  do not satisfy operator-visible reporting.
+- The monitor collects state; the coordinator owns delivery. Do not delegate
+  the delivery obligation to an observer that cannot inspect sibling work or
+  send to the main conversation. If the observer lacks either capability, keep
+  collection in a coordinator-owned background loop or poll directly on every
+  wake.
 - On every wake, the monitor records, per issue or PR: the agent's last activity
   timestamp and current step; the PR head SHA, draft state, and merge state; the
   first line and timestamp of the latest ledger comment; and the state of shared

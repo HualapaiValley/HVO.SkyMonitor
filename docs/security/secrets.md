@@ -109,7 +109,8 @@ project for LogicHost keys.
 | Kestrel/TLS private key and password | HTTPS when Kestrel owns TLS | Framework configuration is available, but repository Compose has no HTTPS profile or secure mount |
 | LogicHost and CameraAgent Data Protection key rings | Cookies, bootstrap envelopes, and CameraAgent encrypted secrets | Bind-mounted `DataProtection-Keys` directories; never configuration values |
 | CameraAgent device key, registration token, and OAuth secret | Device authentication and outbound central access | Data Protection-encrypted `device-secrets.dat` |
-| `GIST_TOKEN`, `COVERAGE_GIST_ID` | Optional CI coverage badge publication | GitHub Actions secrets/variables |
+| `GIST_TOKEN` | Optional CI coverage badge publication to the public aggregate-metrics Gist | Repository-level GitHub Actions secret; owner recovery copy in `hvo-central-kv` as `HVO-SkyMonitor--GitHub--GistToken` |
+| `COVERAGE_GIST_ID` | Public identifier selecting the coverage badge Gist; not a credential | Repository-level GitHub Actions variable; recovery mirror in `hvo-central-kv` as `HVO-SkyMonitor--GitHub--CoverageGistId` |
 
 Application appsettings contain no usable owner password, API key, OAuth client
 secret, or MinIO credential. Integration tests inject isolated fixture
