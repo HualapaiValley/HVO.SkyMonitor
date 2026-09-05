@@ -24,6 +24,12 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 
 internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
 {
+    /// <summary>The override key that carries the opt-in environmental settings file to the host.</summary>
+    private const string EnvironmentalSettingsKey = "HvoBrowserFixture:EnvironmentalSettingsPath";
+
+    /// <summary>The one on-demand-capable environmental source the opt-in fixture configures.</summary>
+    internal const string EnvironmentalSourceId = "browser-air-temperature";
+
     internal const string AgentId = "cameraagent-browser-acceptance";
     internal const string InstallationVerificationToken = "cameraagent-browser-verification-token";
     internal const string LifecycleControlToken = "cameraagent-browser-lifecycle-token";
@@ -68,7 +74,8 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         Action<IServiceCollection>? configureServices = null,
         bool useCalibrationLibrary = false,
         bool requireOwnerPasswordReplacement = false,
-        bool enableCentralIntegration = false)
+        bool enableCentralIntegration = false,
+        bool useEnvironmentalAcquisition = false)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
@@ -160,6 +167,15 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["Logging:LogLevel:Default"] = "Warning",
             ["Serilog:MinimumLevel:Default"] = "Warning"
         };
+
+        if (useEnvironmentalAcquisition)
+        {
+            // One on-demand-capable source, so the closed local automation registry publishes a target.
+            // Every browser test builds its own root, config, and host, so this affects only its caller.
+            var environmentalSettingsPath = Path.Combine(root, "cameraagent.browser.environmental.json");
+            await WriteEnvironmentalSettingsAsync(environmentalSettingsPath).ConfigureAwait(false);
+            overrides[EnvironmentalSettingsKey] = environmentalSettingsPath;
+        }
 
         var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices);
         try
@@ -438,7 +454,16 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
                 builder.UseSetting(setting.Key, setting.Value);
             }
             builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(overrides));
+            {
+                configuration.AddInMemoryCollection(overrides);
+                // Environmental sources carry an opaque options element, which flat key-value overrides
+                // cannot express, so the opt-in settings arrive as a JSON file.
+                if (overrides.TryGetValue(EnvironmentalSettingsKey, out var environmentalSettings) &&
+                    !string.IsNullOrEmpty(environmentalSettings))
+                {
+                    configuration.AddJsonFile(environmentalSettings, optional: false, reloadOnChange: false);
+                }
+            });
             builder.ConfigureServices(services =>
             {
                 services.AddDataProtection()
@@ -450,6 +475,52 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
                 configureServices?.Invoke(services);
             });
         }
+    }
+
+    private static async Task WriteEnvironmentalSettingsAsync(string path)
+    {
+        var settings = new JsonObject
+        {
+            ["CameraAgent"] = new JsonObject
+            {
+                ["EnvironmentalAcquisition"] = new JsonObject
+                {
+                    ["Enabled"] = true,
+                    ["MaximumConcurrency"] = 2,
+                    ["QueueCapacity"] = 32,
+                    ["Sources"] = new JsonArray
+                    {
+                        new JsonObject
+                        {
+                            ["Id"] = EnvironmentalSourceId,
+                            ["Type"] = "VirtualEnvironment",
+                            ["Kind"] = "AirTemperature",
+                            ["Required"] = false,
+                            ["Triggers"] = new JsonArray("Periodic", "OnDemand"),
+                            ["ScheduleEpochUtc"] = "2026-01-15T08:00:00Z",
+                            ["PeriodSeconds"] = 3600,
+                            ["EveryNthCapture"] = 3,
+                            ["ValidForSeconds"] = 120,
+                            ["StaleAfterSeconds"] = 45,
+                            ["Options"] = new JsonObject
+                            {
+                                ["Seed"] = 209,
+                                ["EpochUtc"] = "2026-01-15T08:00:00Z",
+                                ["NumericValue"] = 12.5,
+                                ["NoiseAmplitude"] = 0.25,
+                                ["Uncertainty"] = 0.1,
+                                ["Quality"] = "Good",
+                                ["Mode"] = "Normal",
+                                ["DelayMilliseconds"] = 0,
+                                ["AlgorithmVersion"] = "virtual-environment-source-v1"
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        await File.WriteAllTextAsync(
+            path, settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true })).ConfigureAwait(false);
     }
 
     private sealed class FixedStorageResolver(CameraAgentStorageLocation location) : ICameraAgentStorageResolver

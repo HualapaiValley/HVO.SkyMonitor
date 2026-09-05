@@ -16,24 +16,39 @@ verified local/offline assets, see the
 
 ## Development Environment
 
-This repository is configured to work with Visual Studio Code Dev Containers and GitHub Codespaces. The devcontainer provides a Docker CLI for local and remote Docker contexts.
+The primary development workflow runs directly on a Linux host, often through
+SSH or VS Code Remote. The repository does not require or configure a particular
+coding agent. A standard devcontainer is also available for cloud workspaces or
+when an isolated environment is useful; it mirrors the same SDK and command-line
+tooling used on the host.
 
 ### Prerequisites
 
-- [Visual Studio Code](https://code.visualstudio.com/)
-- [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
-- [Docker Desktop](https://www.docker.com/products/docker-desktop) (for local development)
+- Exact .NET SDK from [`global.json`](global.json)
+- Docker Engine with Compose
+- Git and the Linux/GNU command-line tools used by repository scripts
+- `jq`, `rg`, `shellcheck`, and `sqlite3`
 
-On Windows, clone and open the repository from a WSL2 Linux filesystem, not an
-NTFS-mounted path, so owner-only persistent developer state can be enforced.
-Open the physical, non-symlinked checkout path and start Dev Containers from a
-normal non-root host account; initialization fails before state mutation when
-the account or checkout-source prerequisite is not met, and rejects filesystems
-that cannot enforce the required owner-only state.
+On Windows, use WSL2 and keep the checkout on its Linux filesystem. Repository
+scripts assume Linux filesystem semantics and GNU tools.
 
 ### Getting Started
 
-#### Using Dev Containers (Local)
+#### Native host or SSH
+
+1. Clone the repository on the Linux host.
+2. Install the SDK pinned by `global.json` and the prerequisites above.
+3. Copy `.env.template` to the ignored `.env` and supply local credentials.
+4. Run `dotnet tool restore` and `dotnet restore HVO.SkyMonitor.v9.slnx`.
+5. Open the checkout locally, over SSH, or with VS Code Remote and use the
+   repository commands below.
+
+#### Devcontainer or cloud workspace
+
+For a local devcontainer, install
+[Visual Studio Code](https://code.visualstudio.com/), the
+[Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers),
+and Docker Desktop or Docker Engine.
 
 1. Clone this repository
 2. Open the folder in Visual Studio Code
@@ -41,7 +56,7 @@ that cannot enforce the required owner-only state.
 4. Wait for the container to build and start
 5. The development environment will be ready with .NET 10 SDK and all necessary tools
 
-#### Using GitHub Codespaces
+For GitHub Codespaces:
 
 1. Navigate to the repository on GitHub
 2. Click the "Code" button and select "Codespaces"
@@ -123,68 +138,41 @@ VS Code launch configuration is intentionally attach-only. Start a host with
 debugging uses the same supported environment-loading path as ordinary direct
 execution.
 
-### Devcontainer Setup
+### Devcontainer and cloud setup
 
-The `.devcontainer/devcontainer.json` uses the Docker-outside-of-Docker feature so containers run through the host Docker daemon without granting the devcontainer privileged mode.
+The optional `.devcontainer/devcontainer.json` uses the
+Docker-outside-of-Docker feature so containers run through the workspace Docker
+daemon without granting the development container privileged mode. It does not
+install, configure, proxy, or persist any coding-agent runtime.
 
 **Post-create script** (`.devcontainer/post-create.sh`):
+
 - Restores the pinned `dotnet-ef` and ReportGenerator tools from `dotnet-tools.json`
 - Restores `HVO.SkyMonitor.v9.slnx` so a fresh container can build immediately
 - Generates HTTPS developer certificate (`dotnet dev-certs https`)
-- Configures optional Git, GitHub, and remote-host SSH access from ignored settings
+- Uses Git and GitHub authentication supplied by the host or cloud workspace
 - Verifies Docker and Compose daemon access
 
-**Note:** We default to HTTP endpoints inside the dev container to avoid certificate trust issues.
-
+**Note:** We default to HTTP endpoints inside the devcontainer to avoid
+certificate trust issues.
 
 ### What's Included
 
 The devcontainer configuration includes:
 
-- **.NET 10 SDK** - Latest .NET SDK for building and running applications
+- **.NET 10 SDK** - Repository-pinned SDK for building and running applications
 - **Docker CLI** - Manage host and remote Docker contexts from the dev container
 - **.NET local tools** - Pinned Entity Framework Core and ReportGenerator tooling restored automatically
-- **OpenCode CLI** - Checksum-verified, pinned CLI serving persistent in-container sessions on port 4096
-- **Tailscale CLI** - Signature-verified, pinned client available in the container image
 - **Command-line tools** - `jq`, `rg`, `shellcheck`, and `sqlite3` are installed in the container image
 - **C# Dev Kit** - Complete C# development experience with IntelliSense, debugging, and more
 - **GitHub Copilot** - AI-powered code completion and chat
 - **Git & GitHub CLI** - Version control and GitHub integration
 - **Zsh with Oh My Zsh** - Enhanced terminal experience
 - **Docker extension** - Container and Compose integration in VS Code
-- **Secret management plumbing** - `.env.template`, `.devcontainer/devcontainer.local.env`, and .NET user secrets support keep credentials out of git
+- **Secret management plumbing** - `.env.template`, optional `.devcontainer/devcontainer.local.env`, and .NET user secrets support keep credentials out of git
 - **Identity & API infrastructure parity** - LogicHost and CameraAgent use shared middleware and helpers from `HVO.SkyMonitor.Common` while retaining separate identity stores.
 - **Shared diagnostics/security library** - Cross-cutting middleware (correlation IDs, exception handling, antiforgery helpers) and API-key primitives live in `src/HVO.SkyMonitor.Common`, consumed by the main site and reusable by future services.
 - **Camera-agent independence** - Projects under `HVO.SkyMonitor.CameraAgent.*` keep acquisition and local processing independent from LogicHost while registering their own diagnostics and security components.
-
-### OpenCode from the devcontainer
-
-OpenCode runs as a persistent in-container server supervised by an internal `tmux` session. The server survives terminal, SSH, browser, and desktop-client disconnects; each client is independent and `/exit` closes only that client. The server starts automatically during devcontainer startup and can be managed from a devcontainer terminal:
-
-```bash
-./scripts/opencode:enable
-./scripts/opencode:disable
-```
-
-The server listens on container port `4096`; Docker publishes it to every Docker-host interface at port `4097`. Browser and desktop clients can use `http://<docker-host>:4097`. A terminal client must set `OPENCODE_SERVER_PASSWORD` from the protected password file and run `opencode attach --username opencode http://<docker-host>:4097`; the host-side `./scripts/opencode:remote-connect --continue` helper does this automatically through `http://127.0.0.1:4097`. Inside the devcontainer, `./scripts/opencode:connect --continue` attaches a new TUI client to `http://127.0.0.1:4096`. Use `--session <session-id>` to attach to a specific session.
-
-The endpoint requires OpenCode Basic Auth. Its username is `opencode`; post-create setup generates a random password at `.devcontainer/state/opencode-data/server-password` and retains it across rebuilds. The HTTP endpoint does not use TLS. Host firewall rules must restrict port `4097` to an encrypted private overlay such as Tailscale, or the endpoint must sit behind a TLS reverse proxy; never expose it to an untrusted LAN or the public Internet. Only one client should actively control a particular session at a time.
-
-The non-secret [`.devcontainer/opencode-host.conf`](.devcontainer/opencode-host.conf) keeps the internal tmux identity, container port, and Docker-host port consistent with [`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json).
-
-Another repository can use the same scripts without colliding by choosing its own host port and tmux session while retaining OpenCode's container port:
-
-```bash
-OPENCODE_TMUX_SESSION=hvo-website-opencode
-OPENCODE_CONTAINER_PORT=4096
-OPENCODE_HOST_PORT=4098
-```
-
-Its devcontainer would publish `0.0.0.0:4098:4096`. Host ports and tmux session names must be unique for concurrently running workspaces. Stop the repository's managed session before changing these values and recreate the devcontainer for the Docker port change.
-
-The OpenCode executable is pinned, checksum-verified, and installed root-owned in the container image. Provider credentials, configuration, sessions, agent worktrees, and resumable scratch state remain in ignored host bind mounts beneath `.devcontainer/state/` across container rebuilds and Docker daemon restarts. Specifically, `opencode-worktrees` is mounted at `/tmp/opencode`, while `agent-scratch` is mounted at `/var/lib/hvo-agent-state`. Normal `/tmp` remains disposable and must contain only caches, sockets, locks, and other reproducible files.
-
-Host initialization creates all four developer-state paths with owner-only permissions. Post-create, post-start, and manual enable checks refuse to start OpenCode unless the configuration, data, worktree, and scratch paths are dedicated writable mounts with the expected source, owner, and mode. A completely empty current configuration/data pair receives a schema-only configuration and random password once; partial, obsolete, or unsafe state causes startup to fail without rewriting or relocating it. This avoids the dangerous fallback where a missing mount appears to work but stores in-progress files on the disposable container layer. The bind-mounted state still belongs to the local checkout: back up `.devcontainer/state/` separately before deleting the clone, running an ignored-file cleanup such as `git clean -xfd`, or replacing the host disk.
 
 ### Extensions
 
@@ -209,9 +197,10 @@ The following ports are automatically forwarded and accessible from your host ma
 ### Environment Variables & Secrets
 
 - Copy `.env.template` to `.env` for Docker Compose. Only non-secret defaults live in version control.
-- Place per-developer overrides in `.devcontainer/devcontainer.local.env` (gitignored) and map them via the `remoteEnv` block in `.devcontainer/devcontainer.json`.
-- Treat `.devcontainer/state/` as secret local data. OpenCode credentials survive rebuilds but not a fresh clone; restore them securely or reauthenticate OpenCode after cloning. Legacy Tailscale state is intentionally not mounted into the container.
-- Use `.NET` [user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets?view=aspnetcore-10.0&tabs=linux) for local debugging outside containers. The devcontainer mounts your host secrets folder automatically.
+- Place per-developer command overrides in `.devcontainer/devcontainer.local.env`
+  (gitignored). `scripts/with-env` loads them after the root `.env` inside or
+  outside the devcontainer.
+- Use [.NET user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets?view=aspnetcore-10.0&tabs=linux) for direct development. A local devcontainer mounts the host user-secrets folder.
 - See `docs/security/secrets.md` for detailed workflows covering Testcontainers, Docker Compose, and production deployments.
 
 ## Container Support

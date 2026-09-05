@@ -45,6 +45,7 @@ using OpenTelemetry.Trace;
 using Scalar.AspNetCore;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
@@ -226,6 +227,7 @@ public class Program
                 metrics.AddMeter(TransientWorkerTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
+                metrics.AddMeter(LocalAutomationTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
                 metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
@@ -239,6 +241,7 @@ public class Program
                 }
                 tracing.AddSource(TransientWorkerTelemetry.ActivitySourceName)
                     .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
+                    .AddSource(LocalAutomationTelemetry.ActivitySourceName)
                     .AddSource(EnvironmentalObservationDeliveryTelemetry.ActivitySourceName)
                     .AddSource(EnvironmentalAcquisitionTelemetry.InstrumentationName)
                     .AddSource(CameraAgentOperatorTelemetry.InstrumentationName)
@@ -284,6 +287,7 @@ public class Program
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
         builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
         builder.Services.AddScoped<ICameraAgentEnvironmentalUiService, CameraAgentEnvironmentalUiService>();
+        builder.Services.AddScoped<ICameraAgentAutomationUiService, CameraAgentAutomationUiService>();
         builder.Services.AddScoped<ICameraAgentTransientUiService, CameraAgentTransientUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
@@ -395,6 +399,7 @@ public class Program
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
+        app.MapCameraAgentAutomationOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();

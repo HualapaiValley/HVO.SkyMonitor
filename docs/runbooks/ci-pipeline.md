@@ -55,7 +55,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3060`, `Integration=630`, `Manual=98`, `Soak=1`, `External=0`, and `Hardware=1`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3162`, `Integration=630`, `Manual=100`, `Soak=1`, `External=0`, and `Hardware=1`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
@@ -240,11 +240,13 @@ changed path is an added or modified member of this allowlist:
 - `tools/asi-capture/README.md`
 - one-level `src/*/README.md` and `tests/*/README.md`
 - `tests/fixtures/catalog/SOURCE.md` and `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
-- `scripts/opencode:enable`, `scripts/opencode:disable`, `scripts/opencode:connect`, `scripts/opencode:remote-connect`, and `scripts/test:opencode`
-
+- `scripts/test:devcontainer`
 Reduced mode still runs lightweight **Quality** and **Required CI**. Quality
-does not set up .NET, restore/format the solution, build catalog artifacts, or
-run the package audit for paths excluded from application/package behavior. It
+resolves the devcontainer definition after unsetting GitHub-token and Git-identity
+variables and suppresses the resolved output because future configuration may
+contain secrets. It does not set up .NET, restore/format the solution, build
+catalog artifacts, or run the package audit for paths excluded from
+application/package behavior. It
 intentionally skips Catalog Contracts, Build, Unit Tests, Integration Tests,
 Architecture & Publish, Coverage Policy, both migration checks, every component
 lane, and Coverage. Reduced mode is the only plan in which the never-component-scoped
