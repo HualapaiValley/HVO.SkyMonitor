@@ -489,7 +489,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     exit 2
   fi
   command -v openssl >/dev/null
-  signed_revision_b="$(git rev-parse --verify 'HEAD^{commit}')"
+  signed_revision_b="$(git rev-parse --verify "${HVO_INSTALLER_SIGNED_CANDIDATE_REVISION:-HEAD}^{commit}")"
   signed_revision_a="$(git rev-parse --verify "${HVO_INSTALLER_SIGNED_BASE_REVISION:-HEAD~1}^{commit}")"
   if [[ "$signed_revision_a" = "$signed_revision_b" ]]; then
     printf 'The signed upgrade requires two distinct source revisions; set HVO_INSTALLER_SIGNED_BASE_REVISION.\n' >&2

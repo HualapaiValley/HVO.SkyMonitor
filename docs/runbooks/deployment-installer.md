@@ -641,7 +641,8 @@ HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1 \
 | Variable | Meaning |
 | --- | --- |
 | `HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN` | `1` runs the signed install/upgrade/rollback/refusal scenario |
-| `HVO_INSTALLER_SIGNED_BASE_REVISION` | Revision of the superseded release. Default `HEAD~1`; it must be an ancestor of `HEAD` and must own the release train |
+| `HVO_INSTALLER_SIGNED_BASE_REVISION` | Revision of the superseded release. Default `HEAD~1` |
+| `HVO_INSTALLER_SIGNED_CANDIDATE_REVISION` | Revision of the upgrade candidate, which also builds the campaign CLI. Default `HEAD`. The base must be a distinct ancestor of it, and both must own the release train |
 | `HVO_INSTALLER_SIGNED_ARM64_BUILDER` | `linux/arm64` builder for the release candidates. Default `hvo-edge-01-arm64`, then `HVO_RELEASE_ARM64_BUILDER` |
 | `HVO_INSTALLER_SIGNED_VERSION_A` / `_B` | Candidate versions. Default `0.0.0-598a` and `0.0.0-598b` |
 | `HVO_INSTALLER_SIGNED_WORKSPACE` | Durable directory for the signing key and the two candidates. Reused when it already holds them, so an iteration does not rebuild; leave it unset for citable evidence, which builds both candidates from scratch |
