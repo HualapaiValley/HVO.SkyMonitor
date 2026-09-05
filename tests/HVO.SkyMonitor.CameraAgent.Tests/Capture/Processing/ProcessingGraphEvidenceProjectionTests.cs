@@ -45,7 +45,7 @@ public sealed class ProcessingGraphEvidenceProjectionTests
             1,
             Guid.NewGuid(),
             BaseUtc,
-            ProcessingGraphEvidenceProjection.CreateRevisionEvidence(CreateSnapshot(), assignment: null),
+            ProcessingGraphEvidenceProjection.CreateRevisionEvidence(CreateSnapshot(), assignment: null).Value!,
             ExecutionEvidenceRedactionPolicyV1.None);
 
         Assert.IsTrue(GraphExecutionEvidenceJson.Validate(envelope).IsValid);
@@ -81,7 +81,7 @@ public sealed class ProcessingGraphEvidenceProjectionTests
             1,
             Guid.NewGuid(),
             BaseUtc,
-            ProcessingGraphEvidenceProjection.CreateRevisionEvidence(CreateSnapshot(), assignment),
+            ProcessingGraphEvidenceProjection.CreateRevisionEvidence(CreateSnapshot(), assignment).Value!,
             ExecutionEvidenceRedactionPolicyV1.None);
 
         Assert.IsTrue(GraphExecutionEvidenceJson.Validate(envelope).IsValid);
@@ -98,7 +98,7 @@ public sealed class ProcessingGraphEvidenceProjectionTests
             2,
             Guid.NewGuid(),
             BaseUtc,
-            ProcessingGraphEvidenceProjection.CreateExecutionEvidence(detail),
+            ProcessingGraphEvidenceProjection.CreateExecutionEvidence(detail).Value!,
             ExecutionEvidenceRedactionPolicyV1.None);
 
         Assert.IsTrue(GraphExecutionEvidenceJson.Validate(envelope).IsValid);
@@ -137,17 +137,21 @@ public sealed class ProcessingGraphEvidenceProjectionTests
         {
             var projected = ProcessingGraphEvidenceProjection.CreateExecutionEvidence(
                 new(detail.Execution with { ExecutionClass = durable }, detail.Nodes));
+            Assert.AreEqual(ProcessingGraphEvidenceProjectionOutcome.Projected, projected.Outcome);
             Assert.AreEqual(
                 Enum.Parse<ExecutionEvidenceExecutionClass>(durable.ToString()),
-                projected.ExecutionClass,
+                projected.Value!.ExecutionClass,
                 durable.ToString());
         }
 
-        // A future durable member must fail loudly rather than be silently exported as Live.
-        var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
-            ProcessingGraphEvidenceProjection.CreateExecutionEvidence(
-                new(detail.Execution with { ExecutionClass = (ProcessingGraphExecutionClass)99 }, detail.Nodes)));
-        StringAssert.Contains(exception.Message, "execution class", StringComparison.Ordinal);
+        // A future durable member must produce a bounded rejection rather than be silently exported as Live, and
+        // rather than throwing: the exporter quarantines that one unit and keeps draining every other one.
+        var rejected = ProcessingGraphEvidenceProjection.CreateExecutionEvidence(
+            new(detail.Execution with { ExecutionClass = (ProcessingGraphExecutionClass)99 }, detail.Nodes));
+        Assert.AreEqual(ProcessingGraphEvidenceProjectionOutcome.Rejected, rejected.Outcome);
+        Assert.IsNull(rejected.Value);
+        Assert.AreEqual(GraphExecutionEvidenceReasonCodes.InvalidBody, rejected.ReasonCode);
+        Assert.AreEqual("execution.executionClass", rejected.FieldPath);
     }
 
     [TestMethod]
@@ -159,12 +163,13 @@ public sealed class ProcessingGraphEvidenceProjectionTests
             2,
             Guid.NewGuid(),
             BaseUtc,
-            ProcessingGraphEvidenceProjection.CreateExecutionEvidence(detail),
+            ProcessingGraphEvidenceProjection.CreateExecutionEvidence(detail).Value!,
             ExecutionEvidenceRedactionPolicyV1.None);
         Assert.IsNull(executionEnvelope.Availability);
 
-        var availability = ProcessingGraphEvidenceProjection.CreateAvailabilityReport(detail, BaseUtc.AddHours(1));
-        Assert.IsNotNull(availability);
+        var availabilityResult = ProcessingGraphEvidenceProjection.CreateAvailabilityReport(detail, BaseUtc.AddHours(1));
+        Assert.AreEqual(ProcessingGraphEvidenceProjectionOutcome.Projected, availabilityResult.Outcome);
+        var availability = availabilityResult.Value!;
         var envelope = ProcessingGraphEvidenceProjection.CreateEnvelope(
             CreateOrigin(), 3, Guid.NewGuid(), BaseUtc.AddHours(1), availability,
             ExecutionEvidenceRedactionPolicyV1.None);
@@ -175,8 +180,9 @@ public sealed class ProcessingGraphEvidenceProjectionTests
         Assert.AreEqual("reconciliation.checksum-mismatch", availability.Observations[0].ReasonCode);
         Assert.AreEqual(BaseUtc.AddHours(1), availability.Observations[0].ObservedAtUtc);
 
-        Assert.IsNull(ProcessingGraphEvidenceProjection.CreateAvailabilityReport(
-            new(detail.Execution, []), BaseUtc));
+        Assert.AreEqual(
+            ProcessingGraphEvidenceProjectionOutcome.Empty,
+            ProcessingGraphEvidenceProjection.CreateAvailabilityReport(new(detail.Execution, []), BaseUtc).Outcome);
 
         // The durable schema permits a reason on an Available row; the contract reserves a reason for a
         // non-available observation, so the projection drops it rather than exporting an invalid observation.
@@ -190,7 +196,7 @@ public sealed class ProcessingGraphEvidenceProjectionTests
                     AvailabilityReason = "reconciliation.restored"
                 }]
             }]);
-        var restored = ProcessingGraphEvidenceProjection.CreateAvailabilityReport(available, BaseUtc);
+        var restored = ProcessingGraphEvidenceProjection.CreateAvailabilityReport(available, BaseUtc).Value!;
         Assert.IsNotNull(restored);
         Assert.AreEqual(ExecutionEvidenceAvailabilityState.Available, restored.Observations[0].State);
         Assert.IsNull(restored.Observations[0].ReasonCode);
@@ -204,7 +210,7 @@ public sealed class ProcessingGraphEvidenceProjectionTests
     public void ProjectedExecutionRedactsOperatorIdentityWhenThePolicyRequiresIt()
     {
         var detail = CreateDetail();
-        var evidence = ProcessingGraphEvidenceProjection.CreateExecutionEvidence(detail);
+        var evidence = ProcessingGraphEvidenceProjection.CreateExecutionEvidence(detail).Value!;
         var envelope = ProcessingGraphEvidenceProjection.CreateEnvelope(
             CreateOrigin(),
             2,
@@ -240,7 +246,7 @@ public sealed class ProcessingGraphEvidenceProjectionTests
             originSequence: 3,
             new("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
             GoldenBaseUtc.AddSeconds(3),
-            ProcessingGraphEvidenceProjection.CreateExecutionEvidence(CreateGoldenDetail()),
+            ProcessingGraphEvidenceProjection.CreateExecutionEvidence(CreateGoldenDetail()).Value!,
             ExecutionEvidenceRedactionPolicyV1.None);
 
         CollectionAssert.AreEqual(expected[..^1], GraphExecutionEvidenceJson.Serialize(envelope));

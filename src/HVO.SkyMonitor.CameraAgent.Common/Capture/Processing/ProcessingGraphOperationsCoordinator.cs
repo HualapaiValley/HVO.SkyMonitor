@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 internal sealed class ProcessingGraphOperationsCoordinator :
     IProcessingGraphOperations,
     IProcessingGraphDeliveryInbox,
+    Evidence.IExecutionEvidenceSource,
     IDisposable
 {
     private const string ConfiguredGraphName = "configured-basic";
@@ -440,10 +441,33 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     /// definition and the frozen plan already persisted for <paramref name="revisionId"/>. It writes nothing and
     /// changes no durable state.
     /// </summary>
-    internal ValueTask<ProcessingGraphRevisionSnapshot> ReadRevisionSnapshotAsync(
+    public ValueTask<ProcessingGraphRevisionSnapshot> ReadRevisionSnapshotAsync(
         string revisionId,
         CancellationToken cancellationToken)
         => _store.ReadRevisionAsync(revisionId, cancellationToken);
+
+    /// <summary>Forward, resumable sweep over terminal executions for the durable evidence exporter.</summary>
+    public ValueTask<IReadOnlyList<ProcessingGraphTerminalExecution>> ReadTerminalExecutionsAsync(
+        long afterTerminalUnixMs,
+        string afterExecutionId,
+        int maximumCount,
+        CancellationToken cancellationToken)
+        => _store.ReadTerminalExecutionsAsync(
+            afterTerminalUnixMs, afterExecutionId, maximumCount, cancellationToken);
+
+    /// <summary>The lowest terminal ordering key the source still holds, or null when it holds none.</summary>
+    public ValueTask<long?> ReadOldestTerminalExecutionKeyAsync(CancellationToken cancellationToken)
+        => _store.ReadOldestTerminalExecutionKeyAsync(cancellationToken);
+
+    /// <summary>The barrier the evidence sweep may not advance past; null when nothing is still active.</summary>
+    public ValueTask<long?> ReadOldestActiveExecutionKeyAsync(CancellationToken cancellationToken)
+        => _store.ReadOldestActiveExecutionKeyAsync(cancellationToken);
+
+    /// <summary>Central assignment provenance for a revision, or null when the revision was compiled locally.</summary>
+    public ValueTask<ExecutionEvidenceAssignmentProvenanceV1?> ReadAssignmentProvenanceAsync(
+        string revisionId,
+        CancellationToken cancellationToken)
+        => _store.ReadAssignmentProvenanceAsync(revisionId, cancellationToken);
 
     public ValueTask<ProcessingGraphExecutionState> CancelReplayAsync(
         Guid executionId,
