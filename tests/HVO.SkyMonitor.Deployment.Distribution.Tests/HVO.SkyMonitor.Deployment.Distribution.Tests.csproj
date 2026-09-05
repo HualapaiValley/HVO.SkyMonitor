@@ -4,6 +4,9 @@
     <PackageReference Include="coverlet.collector"><PrivateAssets>all</PrivateAssets></PackageReference>
   </ItemGroup>
   <ItemGroup>
+    <Content Include="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Contracts\HVO.SkyMonitor.Deployment.Contracts.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Distribution\HVO.SkyMonitor.Deployment.Distribution.csproj" />

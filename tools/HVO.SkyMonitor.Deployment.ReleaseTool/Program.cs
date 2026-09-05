@@ -36,6 +36,9 @@ internal static partial class Program
                 case "create-image":
                     await CreateImageAsync(options, CancellationToken.None).ConfigureAwait(false);
                     break;
+                case "verify-attestation":
+                    VerifyAttestation(options);
+                    break;
                 case "describe-image-archive":
                     await DescribeImageArchiveAsync(options).ConfigureAwait(false);
                     break;
@@ -417,6 +420,102 @@ internal static partial class Program
             null,
             [image]);
         await WriteManifestAsync(output, "image-manifest.json", manifest, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The in-toto statement types buildx has produced. A registry push from an older BuildKit emits the v0.1
+    /// statement with an SLSA v0.2 predicate, and a newer one emits the v1 statement with an SLSA v1 predicate;
+    /// both are real and both are accepted, because refusing one aborts a release after the immutable push.
+    /// </summary>
+    private static readonly string[] StatementTypes =
+    [
+        "https://in-toto.io/Statement/v0.1",
+        "https://in-toto.io/Statement/v1"
+    ];
+
+    private const string SbomPredicate = "https://spdx.dev/Document";
+
+    private static readonly string[] ProvenancePredicates =
+    [
+        "https://slsa.dev/provenance/v0.2",
+        "https://slsa.dev/provenance/v1"
+    ];
+
+    /// <summary>
+    /// Verifies that an in-toto statement pulled from the registry actually attests the platform manifest the
+    /// release examined. The attestation manifest's <c>vnd.docker.reference.digest</c> annotation only says what
+    /// the wrapper claims; the statement's own <c>subject</c> is what the attestation is about, and for a registry
+    /// push BuildKit populates it with the platform manifest digest. Checking the annotation alone would accept a
+    /// correctly labelled attestation whose payload concerns different bytes.
+    /// </summary>
+    private static void VerifyAttestation(Dictionary<string, string> options)
+    {
+        RejectUnknown(options, "--manifest-digest", "--statement", "--predicate-type");
+        var expected = RequireDigest(options, "--manifest-digest")["sha256:".Length..];
+        var path = RequireExistingFile(options, "--statement");
+        var expectedPredicate = options.TryGetValue("--predicate-type", out var configured) ? configured : null;
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 64
+            });
+        }
+        catch (JsonException exception)
+        {
+            throw new ReleaseToolException($"The attestation statement '{path}' is not valid JSON.", exception);
+        }
+        using (document)
+        {
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || Text(root, "_type") is not { } statementType ||
+                !StatementTypes.Contains(statementType, StringComparer.Ordinal))
+            {
+                throw new ReleaseToolException(
+                    $"The attestation statement '{path}' is not an in-toto statement this release understands.");
+            }
+            var predicate = Text(root, "predicateType");
+            if (predicate is null ||
+                (predicate != SbomPredicate && !ProvenancePredicates.Contains(predicate, StringComparer.Ordinal)))
+            {
+                throw new ReleaseToolException(
+                    $"The attestation statement '{path}' declares predicate type '{predicate ?? "<none>"}', which is " +
+                    "not an SBOM or SLSA provenance statement.");
+            }
+            if (expectedPredicate is not null && predicate != expectedPredicate)
+            {
+                throw new ReleaseToolException(
+                    $"The attestation statement '{path}' declares predicate type '{predicate}' but the manifest " +
+                    $"layer it was read from is annotated '{expectedPredicate}'.");
+            }
+            if (!root.TryGetProperty("subject", out var subjects) || subjects.ValueKind != JsonValueKind.Array ||
+                subjects.GetArrayLength() == 0)
+            {
+                throw new ReleaseToolException(
+                    $"The attestation statement '{path}' names no subject, so it does not attest any image.");
+            }
+            // Every subject must be this platform's manifest. A push names one image under one or more tags, so
+            // the digests are identical; a statement that also attests something else is not this image's
+            // provenance and must not be accepted as it.
+            foreach (var subject in subjects.EnumerateArray())
+            {
+                if (subject.ValueKind != JsonValueKind.Object ||
+                    !subject.TryGetProperty("digest", out var digest) || digest.ValueKind != JsonValueKind.Object ||
+                    Text(digest, "sha256") is not { Length: 64 } sha256 ||
+                    !sha256.All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f') ||
+                    !string.Equals(sha256, expected, StringComparison.Ordinal))
+                {
+                    throw new ReleaseToolException(
+                        $"The attestation statement '{path}' attests a subject that is not the published platform " +
+                        $"manifest sha256:{expected}.");
+                }
+            }
+        }
+        Console.Out.WriteLine($"Attestation {Path.GetFileName(path)} attests sha256:{expected}.");
     }
 
     private static string ComponentInventoryAsset(string architecture)

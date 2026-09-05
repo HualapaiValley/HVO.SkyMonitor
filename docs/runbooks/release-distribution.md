@@ -317,26 +317,31 @@ examined platform manifest as its subject, so the in-registry provenance is
 proven to attach to the bytes the release inspected rather than merely to be
 present somewhere in the index.
 
-Each attestation is resolved and its in-toto layers are inspected, because an
-annotated wrapper only proves that *something* is attached: a provenance-only,
-SBOM-only, or empty attestation would otherwise be signed as if it carried both.
+Each attestation is resolved, its in-toto layers are inspected, and **each statement is then fetched from the
+registry and required to name that platform's manifest digest as its own `subject`**. The annotation on the
+attestation manifest is only the wrapper's claim about what it attests; the statement's `subject` is what the
+attestation is actually about. For a registry push BuildKit populates it with the platform manifest digest, so
+checking the annotation alone would accept a correctly labelled attestation whose payload concerns different
+bytes. That matters most on the adopt path below, where the wrapper came from a run this release did not
+perform.
 
-The annotation is the binding, and that is not a shortcut. BuildKit emits its
-in-toto statements with an **empty** `subject` array and links each attestation to
-the image manifest it describes solely through the
-`vnd.docker.reference.digest` annotation on the attestation manifest. Inspecting
-the blobs of a locally attested export confirms it: both statements carry
-`"subject": []`, and the platform manifest digest appears nowhere inside them —
-only in the index descriptor and in that annotation. So there is no payload
-subject digest to compare, and a check that demanded one would reject every
-legitimate buildx attestation. Verifying the annotation and the two predicate
-types is therefore the complete subject binding available for this attestation
-format.
+An earlier revision of this runbook asserted the opposite — that BuildKit leaves the statement subject empty and
+binds attestations solely through the annotation. **That was wrong**, and it is recorded here because a reader
+would otherwise have no reason to doubt it. The measurement behind it was taken on a local
+`--output type=oci` export, where BuildKit has no image reference to name and the subject is legitimately empty.
+The release pushes with `--output type=image,name=…,push=true`, and that exporter does populate the subject.
+Verified against two public images built and pushed by buildx:
 
-What remains unproven is narrower and is listed below with the other credentialed
-steps: whether the registry accepts and re-serves these manifests unchanged. A
-consumer who wants an independent guarantee should verify the published digest
-directly rather than relying on the publishing run.
+| Image | linux/amd64 platform manifest | Statement subject | Predicate types |
+| --- | --- | --- | --- |
+| `docker/dockerfile:1.9.0` | `sha256:dc9e2365…` | `dc9e2365…` (4 subjects, all the same digest) | `spdx.dev/Document`, `slsa.dev/provenance/v0.2` |
+| `docker/buildx-bin:latest` | `sha256:108c5ca2…` | `108c5ca2…` | `spdx.dev/Document`, `slsa.dev/provenance/v1` |
+
+Both SLSA predicate versions in that table are accepted. The version BuildKit emits depends on the BuildKit
+release, and this check runs **after** the immutable push, so requiring one version would abort a release that
+has already consumed its version on a toolchain change. `.github/workflows/release.yml` additionally pins the
+buildx version and the BuildKit image by tag and digest, the same way this script pins the Trivy scanner, so the
+emitted version is deterministic rather than merely tolerated.
 
 **A version published without attestations can never be adopted.** The push
 adopts an existing publication rather than overwriting it, so that a run whose
@@ -373,8 +378,9 @@ platform archive.
 
 Only a real publishing run can prove the credentialed steps: the registry push,
 the digest it returns and the index agreement check that follows it, the
-registry's acceptance and re-serving of the attestation manifests and the
-attestation wrapper and predicate checks that follow them, Key Vault signing under the
+registry's acceptance and re-serving of the attestation manifests, the attestation
+wrapper, predicate, and payload-subject checks that follow them and the registry
+blob reads they perform, Key Vault signing under the
 production identity, the GitHub Release creation and its collision refusal, and
 anonymous verification through public release URLs. It is also the only run that
 builds `linux/arm64` under QEMU on a hosted runner rather than on native

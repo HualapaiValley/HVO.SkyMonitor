@@ -600,12 +600,67 @@ public sealed class ImageReleaseToolTests
         }
 
         // The component inventories must sit in a stable, data-derived position in the signed artifact list.
+        // This asserts the ordering invariant itself -- ordinal by architecture -- rather than a fixed pair, so
+        // it still holds if a third platform is ever published.
+        //
+        // Note on what this can and cannot prove: the inventories are gathered into a dictionary whose insertion
+        // order follows the fixed platform list, and .NET's Dictionary enumerates in insertion order while no
+        // entry has been removed. For the two platforms published today, insertion order and ordinal order are
+        // the same sequence, so no behavioural test can distinguish the pre-fix implementation from the fixed
+        // one. The fix is correct by construction rather than by discrimination, and this test defends the
+        // invariant against a future platform whose name would sort differently.
         var manifestBytes = await File.ReadAllBytesAsync(Path.Combine(first, "image-manifest.json"));
         using var document = JsonDocument.Parse(manifestBytes);
         var inventories = document.RootElement.GetProperty("artifacts").EnumerateArray()
             .Where(static artifact => artifact.GetProperty("role").GetString() == "ComponentSbom")
-            .Select(static artifact => artifact.GetProperty("architecture").GetString())
+            .Select(static artifact => artifact.GetProperty("architecture").GetString()!)
             .ToArray();
         CollectionAssert.AreEqual(ExpectedArchitectures, inventories);
+        CollectionAssert.AreEqual(
+            inventories.Order(StringComparer.Ordinal).ToArray(),
+            inventories,
+            "The signed component-inventory artifacts must be ordered by architecture, not by hash-table order.");
+    }
+
+    [TestMethod]
+    public async Task CreateImage_InventoryWithTheWrongDocumentIdentifier_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var path = Path.Combine(fixture.Root, "wrong-spdxid.spdx.json");
+        var document = JsonNode.Parse(await File.ReadAllBytesAsync(fixture.ComponentInventoryFor("amd64")))!;
+        document["SPDXID"] = "SPDXRef-Other";
+        await File.WriteAllTextAsync(path, document.ToJsonString(), new UTF8Encoding(false));
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-amd64") + 1] = path;
+
+        await AssertRejectedAsync(arguments, "is not an SPDX 2.3 document");
+    }
+
+    [TestMethod]
+    public async Task CreateImage_InventoryWhosePackagesMemberIsNotAnArray_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var path = Path.Combine(fixture.Root, "packages-object.spdx.json");
+        var document = JsonNode.Parse(await File.ReadAllBytesAsync(fixture.ComponentInventoryFor("arm64")))!;
+        document["packages"] = new JsonObject { ["only"] = new JsonObject() };
+        await File.WriteAllTextAsync(path, document.ToJsonString(), new UTF8Encoding(false));
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-arm64") + 1] = path;
+
+        await AssertRejectedAsync(arguments, "is not an SPDX 2.3 document");
+    }
+
+    [TestMethod]
+    public async Task CreateImage_InventoryContainingANonObjectPackage_IsRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var path = Path.Combine(fixture.Root, "package-string.spdx.json");
+        var document = JsonNode.Parse(await File.ReadAllBytesAsync(fixture.ComponentInventoryFor("amd64")))!;
+        document["packages"]!.AsArray().Add("a-string");
+        await File.WriteAllTextAsync(path, document.ToJsonString(), new UTF8Encoding(false));
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--component-sbom-amd64") + 1] = path;
+
+        await AssertRejectedAsync(arguments, "contains an invalid package");
     }
 }

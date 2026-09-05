@@ -1,0 +1,34 @@
+{
+  "_comment": "Recorded verbatim from the public image docker/dockerfile:1.9.0. Platform manifest (attestation subject): sha256:dc9e236567481e0aca4c1f52351af213b9a176622f10e3f4a86e5cc48919fa01. Source blob: sha256:58a9d7f279fadce436629dc3e9a4d30e400f1b413e7f4464102a3ec593d04fc4. The predicate body is elided; the release tool's attestation check reads only _type, predicateType, and subject.",
+  "_type": "https://in-toto.io/Statement/v0.1",
+  "predicateType": "https://slsa.dev/provenance/v0.2",
+  "subject": [
+    {
+      "name": "pkg:docker/docker/dockerfile-upstream@1.9.0?platform=linux%2Famd64",
+      "digest": {
+        "sha256": "dc9e236567481e0aca4c1f52351af213b9a176622f10e3f4a86e5cc48919fa01"
+      }
+    },
+    {
+      "name": "pkg:docker/docker/dockerfile-upstream@latest?platform=linux%2Famd64",
+      "digest": {
+        "sha256": "dc9e236567481e0aca4c1f52351af213b9a176622f10e3f4a86e5cc48919fa01"
+      }
+    },
+    {
+      "name": "pkg:docker/docker/dockerfile-upstream@1.9?platform=linux%2Famd64",
+      "digest": {
+        "sha256": "dc9e236567481e0aca4c1f52351af213b9a176622f10e3f4a86e5cc48919fa01"
+      }
+    },
+    {
+      "name": "pkg:docker/docker/dockerfile-upstream@1?platform=linux%2Famd64",
+      "digest": {
+        "sha256": "dc9e236567481e0aca4c1f52351af213b9a176622f10e3f4a86e5cc48919fa01"
+      }
+    }
+  ],
+  "predicate": {
+    "_elided": true
+  }
+}

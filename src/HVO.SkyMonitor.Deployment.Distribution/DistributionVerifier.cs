@@ -39,11 +39,13 @@ public static partial class DistributionVerifier
     {
         ArgumentNullException.ThrowIfNull(trustRoot);
         VerifySignedBytes(manifestBytes, signatureText, trustRoot);
-        EnsureStrictJson(manifestBytes);
-        // The declared version is read before typed deserialization on purpose. A newer manifest may carry members
-        // this build has no property for, and strict unmapped-member handling would reject it as a schema error
-        // before the version check below could explain that the installer is what needs upgrading.
-        EnsureSupportedManifestVersion(manifestBytes);
+        using (var document = ParseStrictJson(manifestBytes))
+        {
+            // The declared version is read before typed deserialization on purpose. A newer manifest may carry
+            // members this build has no property for, and strict unmapped-member handling would reject it as a
+            // schema error before the version check could explain that the installer is what needs upgrading.
+            EnsureSupportedManifestVersion(document.RootElement);
+        }
         DistributionReleaseManifest manifest;
         try
         {
@@ -65,7 +67,7 @@ public static partial class DistributionVerifier
     {
         ArgumentNullException.ThrowIfNull(trustRoot);
         VerifySignedBytes(indexBytes, signatureText, trustRoot);
-        EnsureStrictJson(indexBytes);
+        ParseStrictJson(indexBytes).Dispose();
         DistributionReleaseIndex index;
         try
         {
@@ -168,22 +170,13 @@ public static partial class DistributionVerifier
     /// not implement. The verifier ships inside the installer, so this is the one failure an operator can act on,
     /// and it must survive a future manifest that also adds members this build does not know.
     /// </summary>
-    private static void EnsureSupportedManifestVersion(ReadOnlySpan<byte> manifestBytes)
+    private static void EnsureSupportedManifestVersion(JsonElement root)
     {
-        int declared;
-        try
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("schemaVersion", out var version) ||
+            version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var declared))
         {
-            using var document = JsonDocument.Parse(manifestBytes.ToArray());
-            if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                !document.RootElement.TryGetProperty("schemaVersion", out var version) ||
-                version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out declared))
-            {
-                throw new DistributionValidationException("The distribution manifest does not declare a schema version.");
-            }
-        }
-        catch (JsonException exception)
-        {
-            throw new DistributionValidationException("The distribution manifest schema is invalid.", exception);
+            throw new DistributionValidationException("The distribution manifest does not declare a schema version.");
         }
         if (declared < DistributionSchemaVersions.ReleaseManifest ||
             declared > DistributionSchemaVersions.MaximumReleaseManifest)
@@ -453,22 +446,36 @@ public static partial class DistributionVerifier
         }
     }
 
-    private static void EnsureStrictJson(ReadOnlySpan<byte> bytes)
+    /// <summary>
+    /// Parses signed metadata strictly and hands the document back, so a caller that also needs to read a member
+    /// before typed deserialization does not parse the same bytes a second time. The caller owns the document.
+    /// </summary>
+    private static JsonDocument ParseStrictJson(ReadOnlySpan<byte> bytes)
     {
+        JsonDocument document;
         try
         {
-            using var document = JsonDocument.Parse(bytes.ToArray(), new JsonDocumentOptions
+            document = JsonDocument.Parse(bytes.ToArray(), new JsonDocumentOptions
             {
                 AllowTrailingCommas = false,
                 CommentHandling = JsonCommentHandling.Disallow,
                 MaxDepth = 32
             });
-            EnsureNoDuplicates(document.RootElement, "$");
         }
         catch (JsonException exception)
         {
             throw new DistributionValidationException("Signed distribution metadata is not strict JSON.", exception);
         }
+        try
+        {
+            EnsureNoDuplicates(document.RootElement, "$");
+        }
+        catch
+        {
+            document.Dispose();
+            throw;
+        }
+        return document;
     }
 
     private static void EnsureNoDuplicates(JsonElement element, string path)
