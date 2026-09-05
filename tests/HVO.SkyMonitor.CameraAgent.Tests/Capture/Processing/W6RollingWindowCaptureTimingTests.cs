@@ -28,7 +28,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed class W6RollingWindowCaptureTimingTests
 {
     private const int WindowSize = 5;
-    private const int WarmupCaptures = 2;
+    private const int WarmupCaptures = WindowSize;
     private const int MeasuredCaptures = 6;
     private const int Width = 3552;
     private const int Height = 3552;
@@ -137,6 +137,8 @@ public sealed class W6RollingWindowCaptureTimingTests
                     WindowSize,
                     WarmupCaptures,
                     MeasuredCaptures,
+                    Calibration = "pass-through, so both sources resolve the same window",
+                    Isolation = "strictly serial accept then lane; process counters require a filtered run",
                     Graph = "Calibration -> RollingCombination, cameraagent-capture-pipeline-v2, live durable executions"
                 },
                 Result = new
@@ -203,7 +205,9 @@ public sealed class W6RollingWindowCaptureTimingTests
         return new
         {
             Minimum = ordered[0],
-            Median = ordered[ordered.Length / 2],
+            Median = ordered.Length % 2 == 1
+                ? ordered[ordered.Length / 2]
+                : (ordered[(ordered.Length / 2) - 1] + ordered[ordered.Length / 2]) / 2,
             Maximum = ordered[^1],
             Mean = ordered.Average()
         };

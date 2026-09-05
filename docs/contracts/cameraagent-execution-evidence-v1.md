@@ -134,6 +134,25 @@ are another node's outputs - is resolved differently by execution class:
   replaces the window evidence of the previous attempt; the schema keeps one
   input set per node, not one per attempt.
 
+A derived window's members are compared for compatibility against **this capture's
+own output from the same producer**, not against its raw capture. A producer
+deliberately changes compatibility axes - reference calibration rewrites the
+calibration and mask profiles - so comparing a calibrated candidate against the
+raw identity would reject every earlier capture and collapse the window to the
+current one. The revision- and plan-scoped output is preferred, so a replay of
+this capture under another revision cannot become the identity every candidate
+is measured against; a replay whose own revision never produced this capture
+falls back to the archived output for the same capture and node. When this
+capture has produced nothing from that node at all - a window probed before the
+capture is processed - the raw identity is used. For a live execution that
+cannot normally happen, because the window is resolved after the producing node
+commits its output, so a live window that still comes up short is reported by
+event 2085 rather than failing the capture.
+
+A pinned window member is read back by identity, not by availability: a replay
+consumes the outputs pinned when it was submitted even if one of them is later
+marked unavailable, because the pin is what holds their retention.
+
 A live derived window is always trailing; centered windows are replay-only. For a
 live execution, only an earlier capture whose execution has completed and
 published the producing node's output is eligible (an output from pre-execution
@@ -149,7 +168,7 @@ is the smaller of the node's configured window size and
 Ineligible captures are filtered before any limit applies, so skipping past them
 is unbounded; what is bounded is how many eligible-but-incompatible candidates
 the selector can look past, by its candidate limit of
-`min(512, max(window - 1, 4 x MaximumWindowInputs))`. A trailing window
+`min(512, 4 x MaximumWindowInputs)`. A trailing window
 is still allowed to be shorter than its maximum - a freshly started agent has no
 history - and the combination records only the sources it actually used, with
 `stackCount` reporting that count. A live node that resolves fewer inputs than

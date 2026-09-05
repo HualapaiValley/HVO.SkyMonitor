@@ -248,8 +248,16 @@ splits each capture into the raw-ingress acceptance critical section and the
 lane. It reports minimum/median/maximum/mean for both and their sum, process CPU,
 allocated bytes, working set, retained filesystem bytes, and the resulting stack
 count, so moving derived-window resolution out of acceptance and into the
-consuming node can be compared on an equivalent workload. Run it once per source
-on the same binary harness. Output is written to
+consuming node can be compared on an equivalent workload. Run it on the same
+binary harness once per source, repeating for a spread. The harness is strictly
+serial - one acceptance followed by one lane run - so it measures each phase in
+isolation and cannot show contention between raw acceptance and the lane over
+the shared SQLite writer; the single-agent production smoke covers that. Its
+calibration step is pass-through, so the resolved stack count is five on both
+sources and the harness compares equivalent work rather than reproducing the
+short-window defect. Process CPU, allocation, and working-set figures are
+process-scoped, so run the filtered invocation below rather than a wider
+selection. Output is written to
 `TestResults/issue-608/w6-rolling-window-capture-timing-<label>.json` (override
 the directory with `HVO_ISSUE608_EVIDENCE_ROOT`).
 

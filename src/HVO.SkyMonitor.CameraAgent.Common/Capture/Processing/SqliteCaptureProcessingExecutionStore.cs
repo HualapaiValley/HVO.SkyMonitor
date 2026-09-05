@@ -573,8 +573,11 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         // Selection and its file-retention checks stay outside the write transaction: raw acceptance shares
         // this database with the lane, and holding the single writer across per-output filesystem probes at
-        // capture cadence would stall the acquisition path. The pin insert re-checks availability, so an
-        // output that changes in between fails the attempt instead of being pinned.
+        // capture cadence would stall the acquisition path. What still holds: the pin insert re-checks
+        // availability inside the transaction, so a pin can only name an output the database still calls
+        // Available, and a change in between fails the attempt as a recorded, retryable node outcome. What no
+        // longer holds: file retention is verified before the transaction, so a payload removed without its
+        // row being marked unavailable is caught when the node reads it rather than at pin time.
         var selected = await ProcessingOutputWindowSelector.SelectAsync(
             connection, null, current, plan.ProducerId, plan.RevisionId, plan.ProducerPlanSha256,
             plan.InputsJson, plan.Requirement, _executionOptions.MaximumWindowInputs,

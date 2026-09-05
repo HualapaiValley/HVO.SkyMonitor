@@ -112,14 +112,24 @@ internal static class ProcessingOutputWindowSelector
         command.Parameters.AddWithValue("$candidates", Math.Min(512, Math.Max(maximumHistory, maximumAllowedInputs * 4)));
         var contracts = JsonSerializer.Deserialize<ProcessingGraphInputContract[]>(inputsJson, SerializerOptions)
             ?? throw new InvalidDataException("The derived processing window input contract is invalid.");
-        // A derived window is compared against this capture's own output from the same producer, not against
-        // the raw capture: a producer such as calibration deliberately changes the calibration and mask axes,
-        // so comparing a calibrated candidate with the raw identity would reject every earlier capture.
-        var expectedCompatibility = await ReadProducerCompatibilityAsync(
-                connection, transaction, current, sourceNodeId, contracts, cancellationToken).ConfigureAwait(false)
-            ?? CameraAgentRecipeExecutionAdapter.CreateCompatibility(current);
-        var selected = (await SqliteCaptureProcessingStore.ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false))
+        var candidates = (await SqliteCaptureProcessingStore.ReadOutputRowsAsync(command, cancellationToken)
+            .ConfigureAwait(false))
             .Select(static row => row.Output)
+            .ToList();
+        // A derived window is compared against this capture's own output from the same producer under the same
+        // revision or plan, not against the raw capture: a producer such as reference calibration deliberately
+        // changes the calibration and mask axes, so comparing a calibrated candidate against the raw identity
+        // would reject every earlier capture.
+        var producerCompatibility = await ReadProducerCompatibilityAsync(
+            connection, transaction, current, sourceNodeId, graphRevisionId, sourcePlanSha256, contracts,
+            cancellationToken).ConfigureAwait(false);
+        // When this capture has produced nothing from the producer yet - a window probed before the capture is
+        // processed - the raw identity is the only identity available. A live window is resolved after the
+        // producing node commits, so this is not the live path; a live window that still comes up short is
+        // reported by the short-window log rather than failing the capture.
+        var expectedCompatibility = producerCompatibility
+            ?? CameraAgentRecipeExecutionAdapter.CreateCompatibility(current);
+        var selected = candidates
             .Where(output => output.Compatibility == expectedCompatibility &&
                              contracts.Any(contract => Matches(contract, output)))
             .Take(maximumHistory)
@@ -142,17 +152,65 @@ internal static class ProcessingOutputWindowSelector
         return result;
     }
 
+    /// <summary>
+    /// Reads the compatibility identity of this capture's own output from the window's producer node. The
+    /// revision- and plan-scoped output is preferred, so a replay of this capture under another revision
+    /// cannot become the identity every candidate is measured against; a replay whose own revision never
+    /// produced this capture falls back to the archived output for the same capture and node.
+    /// </summary>
     private static async ValueTask<ProcessingCompatibilityIdentity?> ReadProducerCompatibilityAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         ReconstructionDescriptor current,
         string sourceNodeId,
+        string graphRevisionId,
+        string sourcePlanSha256,
         IReadOnlyList<ProcessingGraphInputContract> contracts,
         CancellationToken cancellationToken)
+        => await ReadProducerOutputCompatibilityAsync(
+                connection, transaction, current, sourceNodeId, graphRevisionId, sourcePlanSha256,
+                contracts, scoped: true, cancellationToken).ConfigureAwait(false)
+            ?? await ReadProducerOutputCompatibilityAsync(
+                connection, transaction, current, sourceNodeId, graphRevisionId, sourcePlanSha256,
+                contracts, scoped: false, cancellationToken).ConfigureAwait(false);
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The statement is selected from two fixed internal constants and every value remains parameterized.")]
+    private static async ValueTask<ProcessingCompatibilityIdentity?> ReadProducerOutputCompatibilityAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        ReconstructionDescriptor current,
+        string sourceNodeId,
+        string graphRevisionId,
+        string sourcePlanSha256,
+        IReadOnlyList<ProcessingGraphInputContract> contracts,
+        bool scoped,
+        CancellationToken cancellationToken)
     {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
+        // Two complete statements rather than a composed one, and no DISTINCT: SQLite rejects an ORDER BY term
+        // that is not in a DISTINCT select list, and a duplicate row from the association join carries the same
+        // identity anyway.
+        const string ScopedSql = """
+            SELECT output.output_identity_sha256, output.artifact_id, output.payload_relative_path,
+                   output.sidecar_relative_path, output.descriptor_json, output.capture_id,
+                   output.agent_id, output.node_id, output.role, output.variant,
+                   output.recipe_identity_sha256, output.algorithms_json, output.compatibility_json,
+                   output.total_integration_ticks, output.capture_sequence, output.product_kind,
+                   output.product_schema_version, output.content_identity_sha256,
+                   output.availability_state, output.availability_reason,
+                   output.frame_artifact_recipe_version
+            FROM processing_outputs output
+            LEFT JOIN processing_execution_outputs association
+              ON association.output_identity_sha256 = output.output_identity_sha256
+            LEFT JOIN processing_executions execution ON execution.execution_id = association.execution_id
+            LEFT JOIN processing_nodes legacy ON legacy.capture_id = output.capture_id
+                                                 AND legacy.node_id = output.node_id
+            WHERE output.capture_id = $capture AND output.availability_state = 'Available'
+              AND ((association.node_id = $node AND execution.graph_revision_id = $revision)
+                   OR (output.node_id = $node
+                       AND legacy.status = 'Completed' AND legacy.plan_sha256 = $source_plan))
+            ORDER BY output.committed_unix_ms DESC, output.output_identity_sha256 DESC;
+            """;
+        const string ArchivedSql = """
             SELECT output.output_identity_sha256, output.artifact_id, output.payload_relative_path,
                    output.sidecar_relative_path, output.descriptor_json, output.capture_id,
                    output.agent_id, output.node_id, output.role, output.variant,
@@ -163,10 +221,19 @@ internal static class ProcessingOutputWindowSelector
                    output.frame_artifact_recipe_version
             FROM processing_outputs output
             WHERE output.capture_id = $capture AND output.node_id = $node
-              AND output.availability_state = 'Available';
+              AND output.availability_state = 'Available'
+            ORDER BY output.committed_unix_ms DESC, output.output_identity_sha256 DESC;
             """;
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = scoped ? ScopedSql : ArchivedSql;
         command.Parameters.AddWithValue("$capture", current.Capture.CaptureId.ToString("N"));
         command.Parameters.AddWithValue("$node", sourceNodeId);
+        if (scoped)
+        {
+            command.Parameters.AddWithValue("$revision", graphRevisionId);
+            command.Parameters.AddWithValue("$source_plan", sourcePlanSha256);
+        }
         return (await SqliteCaptureProcessingStore.ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false))
             .Select(static row => row.Output)
             .FirstOrDefault(output => contracts.Any(contract => Matches(contract, output)))

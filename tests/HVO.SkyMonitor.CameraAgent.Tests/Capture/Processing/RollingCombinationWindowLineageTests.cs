@@ -234,6 +234,64 @@ public sealed class RollingCombinationWindowLineageTests
         }
     }
 
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task LiveExecutionResolvesTheWindowAfterAcceptance()
+    {
+        // A pass-through calibration leaves the compatibility axes alone, so the raw identity would still
+        // admit every earlier capture. Only the moment the window is resolved can decide this case, which
+        // isolates it from the identity the window is compared against.
+        var root = CreateRoot();
+        ICameraModule? module = null;
+        try
+        {
+            using var provider = CreateProvider(root);
+            var configuration = CreateConfiguration(syntheticReferences: false);
+            module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
+            var (excludedReceipt, _) = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
+            using var store = CreateStore(root);
+            var excludedCalibration = await store.ReadNodeAsync(
+                excludedReceipt.Manifest.Descriptor.Capture.CaptureId,
+                "calibration",
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(excludedCalibration);
+            Assert.HasCount(1, excludedCalibration.Outputs);
+            var excludedArtifactId = excludedCalibration.Outputs[0].ArtifactId;
+
+            var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(
+                configuration,
+                await CreateSubmissionAsync(module, CaptureCount, CancellationToken.None).ConfigureAwait(false),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            await store.SetOutputAvailabilityAsync(
+                excludedCalibration.Outputs[0].OutputIdentitySha256,
+                "Missing",
+                "rolling-window-test",
+                CancellationToken.None).ConfigureAwait(false);
+            await DrainOneAsync(provider, configuration).ConfigureAwait(false);
+
+            var rolling = await store.ReadNodeAsync(
+                receipt.Manifest.Descriptor.Capture.CaptureId,
+                RollingNodeId,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(rolling);
+            Assert.HasCount(1, rolling.Outputs);
+            var sources = rolling.Outputs[0].Descriptor!.Artifact.SourceArtifactIds;
+            Assert.HasCount(WindowSize, sources);
+
+            // A window frozen at acceptance would still name the predecessor, which was eligible then.
+            Assert.DoesNotContain(excludedArtifactId, sources);
+        }
+        finally
+        {
+            if (module is not null)
+            {
+                await module.DisposeAsync().ConfigureAwait(false);
+            }
+            Cleanup(root);
+        }
+    }
+
     private static async Task<ICameraModule> CreateModuleAsync(
         ServiceProvider provider,
         CameraModuleConfig configuration)
@@ -367,7 +425,7 @@ public sealed class RollingCombinationWindowLineageTests
         return services.BuildServiceProvider();
     }
 
-    private static CameraModuleConfig CreateConfiguration()
+    private static CameraModuleConfig CreateConfiguration(bool syntheticReferences = true)
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
             new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(
@@ -375,6 +433,7 @@ public sealed class RollingCombinationWindowLineageTests
                 {
                     MaximumResults = 10,
                     ShotNoiseEnabled = false,
+                    FixedSceneUtc = FixtureUtc,
                     SyntheticCalibration = SyntheticCalibration
                 })),
             new CameraRigConfig(
@@ -393,12 +452,14 @@ public sealed class RollingCombinationWindowLineageTests
                     new CaptureProcessingStepConfig(
                         "Calibration",
                         "calibration",
-                        Options: JsonSerializer.SerializeToElement(new
-                        {
-                            strategy = "SyntheticReferences",
-                            outputVariant = "synthetic-corrected",
-                            syntheticCalibration = SyntheticCalibration
-                        }),
+                        Options: syntheticReferences
+                            ? JsonSerializer.SerializeToElement(new
+                            {
+                                strategy = "SyntheticReferences",
+                                outputVariant = "synthetic-corrected",
+                                syntheticCalibration = SyntheticCalibration
+                            })
+                            : JsonSerializer.SerializeToElement(new { }),
                         DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig(
                         "RollingCombination",
