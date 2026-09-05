@@ -208,6 +208,12 @@ is actually verified against the bytes in hand, not merely matched to a key
 identity. All three refuse during or before image preparation, and none writes,
 rewrites, or resurrects the retained release record.
 
+Each derived release is a manifest and signature placed beside the candidate it
+derives from, because an asset is resolved as a sibling of its manifest. They
+therefore name the real published archives without copying or linking them, and
+the installer's refusal to read a hard-linked input still applies to every file
+it opens.
+
 The contradicted boundary is the signed compatibility record — the campaign
 changes the release's `minimumCompatibleRevision` — because the manifest's own
 consistency rules already bind the release identity, the repository, the source

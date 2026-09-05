@@ -582,15 +582,15 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test "$(jq -er '.release.version' "$signed_manifest_b")" = "$signed_version_b"
   signed_loaded_images="$signed_image_a $signed_image_b $signed_digest_a $signed_digest_b"
 
-  # Two derived releases share the published archives by hard link rather than copying a gigabyte twice. Their own
-  # manifest and signature are removed before they are rewritten, so a derived release can never write through a
-  # link into the release it was derived from.
+  # Each derived release is a manifest and signature placed beside the candidate it derives from, because an asset
+  # is resolved as a sibling of its manifest. They therefore name the real published archives without copying or
+  # linking a gigabyte of them, and the installer's refusal to read a hard-linked input still applies to every file
+  # it opens.
+  signed_derived_manifest() { printf '%s/release-b/%s-image-manifest.json' "$signed_workspace" "$1"; }
   derive_signed_release() {
     local name="$1"
     rm -rf "$signed_workspace/release-$name"
-    cp -al "$signed_workspace/release-b" "$signed_workspace/release-$name"
-    rm -f "$signed_workspace/release-$name/image-manifest.json" \
-      "$signed_workspace/release-$name/image-manifest.json.sig"
+    rm -f "$(signed_derived_manifest "$name")" "$(signed_derived_manifest "$name").sig"
   }
 
   # A release whose signed compatibility record contradicts the image it names. The manifest's own consistency
@@ -598,23 +598,25 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   # compatibility record the label-agreement gate exists to check. The signature is genuine, so the refusal below
   # comes from that gate rather than from signature verification.
   derive_signed_release contradicting
+  signed_manifest_contradicting="$(signed_derived_manifest contradicting)"
   test "$(jq -er '.images[0].compatibility.minimumCompatibleRevision' "$signed_manifest_b")" != "$signed_revision_a"
   jq --arg revision "$signed_revision_a" '.images[0].compatibility.minimumCompatibleRevision = $revision' \
-    "$signed_manifest_b" >"$signed_workspace/release-contradicting/image-manifest.json"
-  test "$(jq -er '.images[0].compatibility.minimumCompatibleRevision' \
-    "$signed_workspace/release-contradicting/image-manifest.json")" = "$signed_revision_a"
+    "$signed_manifest_b" >"$signed_manifest_contradicting"
+  test "$(jq -er '.images[0].compatibility.minimumCompatibleRevision' "$signed_manifest_contradicting")" = \
+    "$signed_revision_a"
 
   # The same release bytes, signed by a key the campaign trust root does not carry.
   derive_signed_release untrusted
+  signed_manifest_untrusted="$(signed_derived_manifest untrusted)"
   jq --arg keyId "$signed_untrusted_key_id" '.signing.keyId = $keyId' \
-    "$signed_manifest_b" >"$signed_workspace/release-untrusted/image-manifest.json"
+    "$signed_manifest_b" >"$signed_manifest_untrusted"
 
   # The same release bytes and the trusted key id, presented with that key's signature over a different release.
   # The signature is well formed and made by the trusted key, so only verifying it against these bytes refuses it.
   derive_signed_release forged
-  cp "$signed_manifest_b" "$signed_workspace/release-forged/image-manifest.json"
-  cp "$signed_workspace/release-a/image-manifest.json.sig" \
-    "$signed_workspace/release-forged/image-manifest.json.sig"
+  signed_manifest_forged="$(signed_derived_manifest forged)"
+  cp "$signed_manifest_b" "$signed_manifest_forged"
+  cp "$signed_workspace/release-a/image-manifest.json.sig" "$signed_manifest_forged.sig"
 
   dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
     --configuration Release -warnaserror >/dev/null
@@ -623,13 +625,13 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
       --no-build --configuration Release -- "$@"
   }
   signed_release_tool sign-local \
-    --manifest "$signed_workspace/release-contradicting/image-manifest.json" \
+    --manifest "$signed_manifest_contradicting" \
     --private-key "$signed_workspace/signing.pem" \
-    --signature "$signed_workspace/release-contradicting/image-manifest.json.sig"
+    --signature "$signed_manifest_contradicting.sig"
   signed_release_tool sign-local \
-    --manifest "$signed_workspace/release-untrusted/image-manifest.json" \
+    --manifest "$signed_manifest_untrusted" \
     --private-key "$signed_workspace/untrusted.pem" \
-    --signature "$signed_workspace/release-untrusted/image-manifest.json.sig"
+    --signature "$signed_manifest_untrusted.sig"
 
   # Publish a campaign CLI from the exact candidate revision with the ephemeral public key substituted for the
   # committed production trust root. Only the trusted key changes; no verification step is removed or relaxed.
@@ -799,7 +801,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     --instance-id "$signed_instance_id" \
     --product-root "$root/product" \
     --channel local \
-    --image-manifest "$signed_workspace/release-untrusted/image-manifest.json" \
+    --image-manifest "$signed_manifest_untrusted" \
     --no-download \
     --migration-backward-compatible \
     --json >"$root/signed-untrusted.json" 2>"$root/signed-untrusted-error.json"; then
@@ -821,7 +823,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     --instance-id "$signed_instance_id" \
     --product-root "$root/product" \
     --channel local \
-    --image-manifest "$signed_workspace/release-forged/image-manifest.json" \
+    --image-manifest "$signed_manifest_forged" \
     --no-download \
     --migration-backward-compatible \
     --json >"$root/signed-forged.json" 2>"$root/signed-forged-error.json"; then
@@ -855,7 +857,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     --instance-id "$signed_instance_id" \
     --product-root "$root/product" \
     --channel local \
-    --image-manifest "$signed_workspace/release-contradicting/image-manifest.json" \
+    --image-manifest "$signed_manifest_contradicting" \
     --no-download \
     --migration-backward-compatible \
     --json >"$root/signed-contradicting.json" 2>"$root/signed-contradicting-error.json"; then
