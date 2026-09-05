@@ -255,12 +255,16 @@ base>. Head SHA: <SHA>. In initial mode, audit the complete PR diff
 against current code, tests, durable formats, architecture boundaries,
 performance paths, logs/telemetry, and dependent issues. In correction mode,
 review only Base reviewed SHA..Head SHA and verify disposition of the preceding
-findings. Do not reopen unchanged portions of the earlier diff without concrete
-evidence that the correction created a new interaction. Return findings ordered
-by severity with exact paths and minimal fixes. Identify missing acceptance
-tests, migration/compatibility risks, I/O/CPU/memory hot paths, and any
-plan/issue contradiction. In base-sync mode, inspect conflict resolutions and
-new interactions against the updated target base without rereviewing unchanged
+findings. Begin the report with the exact range examined and an item-by-item
+table marking every prior finding `verified corrected`, `verified deferred` with
+a linked issue and rationale, or `unresolved`. An omitted finding remains
+unresolved. Do not substitute a generic whole-PR review or reopen unchanged
+portions of the earlier diff without concrete evidence that the correction
+created a new interaction. Return new findings ordered by severity with exact
+paths and minimal fixes. Identify missing acceptance tests,
+migration/compatibility risks, I/O/CPU/memory hot paths, and any plan/issue
+contradiction. In base-sync mode, inspect conflict resolutions and new
+interactions against the updated target base without rereviewing unchanged
 upstream code. Acknowledge the start on the PR within fifteen minutes and report
 progress at least every thirty minutes.
 ```

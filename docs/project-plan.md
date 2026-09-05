@@ -1193,16 +1193,23 @@ Every issue follows this sequence:
 8. Inspect logs, metrics, traces, health, and durable state.
 9. Commit only issue files and preserve unrelated worktree changes.
 10. Push and open a draft PR linked to the issue and epic.
-11. Review the full initial PR diff. If normal GitHub review is unavailable, use
-    `@codex review` or independent local review rather than waiting indefinitely.
-12. Batch and validate corrections. Rereview only each correction delta and verify
-    the preceding findings; unrelated unchanged-code discoveries become follow-up
-    work unless they are critical merge blockers.
-13. After review convergence, mark the PR ready and run the classifier-selected
-    protected CI plan. Draft correction pushes intentionally skip protected CI.
-14. If CI requires code changes, return the PR to draft, review only that
-    correction delta, then mark it ready for final current-head CI. Rerun the same
-    SHA for diagnosed infrastructure failures that require no content change.
+11. Review the full initial PR diff using the bounded Copilot/Codex acquisition
+    and exact-head waiver rules in `.agents/skills/pr-lifecycle/SKILL.md`; an
+    unrecorded local review does not replace that provider sequence.
+12. Batch and validate corrections. Rereview only each exact correction delta
+    and its concrete interactions, and verify every preceding finding
+    individually; a finding neither verified fixed nor explicitly deferred to a
+    linked issue remains unresolved.
+13. After draft review converges, acquire the repository finalization lock,
+    synchronize the target branch, run affected local evidence, obtain base-sync
+    review, and fetch again to prove the base and reviewed head remain current.
+    Only then mark the PR ready and run classifier-selected protected CI. Draft
+    correction and synchronization pushes intentionally skip protected CI.
+14. If CI requires code changes, return the PR to draft, release the lock, review
+    only that correction delta, then re-enter step 13 to reacquire the lock and
+    repeat final synchronization and base-sync review before marking it ready for
+    final current-head CI. Rerun the same SHA only for diagnosed infrastructure
+    failures that require no content change.
 15. Reply to and resolve review threads only after correction evidence and delta
     review exist.
 16. Merge only when the current head equals the reviewed head, has green required
@@ -1212,9 +1219,11 @@ Every issue follows this sequence:
     candidate-ready issue, post its plain-language synopsis and `READY` claim,
     and begin automatically.
 
-Every planned head change after readiness, including base synchronization and
-conflict resolution, returns the PR to draft before the change. Review that delta
-before marking the PR ready for authoritative current-head CI.
+Every planned base synchronization and conflict resolution happens before
+readiness. If the target branch advances or any planned head change becomes
+necessary afterward, return the PR to draft, release the finalization lock,
+review the resulting delta, and repeat final synchronization before marking the
+PR ready for authoritative current-head CI.
 
 Any red, canceled, timed-out, flaky, or missing required check blocks merge until
 it is understood and corrected or rerun successfully on the same unchanged SHA.

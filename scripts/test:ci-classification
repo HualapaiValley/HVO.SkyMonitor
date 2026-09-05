@@ -160,6 +160,10 @@ grep -Fq 'Deployment contracts: **false**' "$summary_file"
 grep -Fq 'Complete matrix: **false**' "$summary_file"
 grep -Fq 'Deployment reason: pull request does not change deployment-contract inputs' "$summary_file"
 
+# Only the top-level skill manifest is reduced. Supporting files, including a
+# nested file also named SKILL.md, fail closed to the complete matrix.
+verify_component_plan ".agents/skills/pr-lifecycle/resources/SKILL.md" full false true true true true true true
+
 # Component ownership. Shared contracts select every consuming lane, host-private
 # paths stay in their own lane, and exported host seams add combined coverage.
 verify_component_plan "src/HVO.SkyMonitor.AgentCore/Contract.cs"                       full false false true  true  true  true  true

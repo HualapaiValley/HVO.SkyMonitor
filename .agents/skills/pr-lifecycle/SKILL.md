@@ -107,7 +107,10 @@ the correction-round count or changing the head.
    visible review activity after the exact-head/range dispatch and before any
    head change. The request or mention itself proves dispatch, not start.
    For Copilot, the provider-generated `copilot_work_started` PR timeline event
-   is the known start acknowledgement. For Codex, record the first observed
+   is the known start acknowledgement. For Codex, the connector-generated
+   `codex-pull-request-review-summary` comment qualifies when its table reports
+   `Running`, a start time, and the exact commit. A Codex `mentioned` timeline
+   event is invocation only. For another provider, record the first observed
    provider-generated comment, status, timeline event, or in-progress review
    that demonstrates work began; do not invent or assume a signal before it is
    observed. Reactions and unrelated automation do not qualify.
@@ -145,9 +148,9 @@ Count correction rereviews across the whole PR. Initial and base-sync reviews
 do not consume this cap, and switching providers for the same range remains one
 round. A clean correction rereview still counts.
 
-After the third correction rereview, do not request a fourth for newly reported
-non-blocking findings and do not change the reviewed head to correct them.
-Before finalization:
+After the third correction rereview, if eligible newly reported non-blocking
+findings remain and would otherwise require a fourth round, do not request that
+round and do not change the reviewed head to correct them. Before finalization:
 
 1. Create one issue titled
    `Follow-up: deferred review findings from PR #<number>`.
@@ -160,11 +163,14 @@ Before finalization:
    each carried finding as `deferred due to three-rereview cap`.
 4. Treat the third reviewed head as converged and continue to finalization.
 
-Critical security, data-loss, acceptance, failing-CI, and material-correctness
-defects are never deferrable. Correct them, rerun affected evidence, and request
-a targeted cap-exception review. Record the exception, and do not run CI or
-merge until the blocker is resolved. A deferred finding that makes CI fail
-becomes a current-PR blocker.
+If the third rereview is clean or no eligible finding remains, do not create an
+empty follow-up issue.
+
+Security, data-loss, acceptance, failing-CI, and material-correctness defects
+are never deferrable. Correct them, rerun affected evidence, and request a
+targeted cap-exception review. Record the exception, and do not run CI or merge
+until the blocker is resolved. A deferred finding that makes CI fail becomes a
+current-PR blocker.
 
 Review converges only when every requested review has completed or has an exact
 head/range unavailability waiver, every finding is dispositioned, required
@@ -180,9 +186,16 @@ protected CI, or merge.
 
 1. Acquire the lock only after draft review converges and no ordinary product
    correction is expected. Use live issue/PR API data, not search-indexed list
-   results, to confirm no open PR has `workflow:finalizing`; apply it to this PR
-   and query the live state again. If concurrent claims appear, the lowest PR
-   number retains the label and every other claimant removes it and waits.
+   results, to confirm no open PR has `workflow:finalizing`. If a holder exists,
+   do not apply the label. Otherwise, apply it to this PR, then use live queries
+   to confirm sole ownership at both ends of a minimum thirty-second
+   stabilization interval. If concurrent claims appear, the lowest PR number
+   retains the label and every other claimant removes it and waits. Recheck sole
+   ownership immediately before final synchronization, the ready transition,
+   every CI rerun, and merge; losing ownership aborts the guarded transition.
+   With `gh api`, use an explicit `--method GET` when passing query fields, or
+   put the encoded query in the URL; otherwise `-f` fields default to a POST and
+   can accidentally target issue creation instead of performing a read.
 2. Fetch the target branch and merge it into the topic branch. Do not rebase or
    force-push reviewed history.
 3. Resolve conflicts, run affected local gates, and obtain a base-sync review.

@@ -397,10 +397,12 @@ If any build, test, runtime, review, or deployment check is not green:
 5. Add regression coverage when the failure represents a product defect.
 6. Rerun the focused failure and the full affected gate; do not rerun unrelated
    long suites locally when protected CI will cover them.
-7. For a code correction, return the PR to draft before pushing, then review the
-   CI-correction delta and mark the PR ready to trigger new protected CI. If no
-   repository content changed, rerun the same SHA instead of creating a no-op
-   commit.
+7. For a code correction, return the PR to draft and release the finalization
+   lock before pushing. Review the CI-correction delta, then reacquire the lock
+   and repeat final target synchronization and base-sync review before marking
+   the PR ready for new protected CI. If no repository content changed, rerun
+   the same SHA instead of creating a no-op commit under the bounded
+   infrastructure-only exception in the lifecycle skill.
 8. Keep the PR open and the issue active until green.
 
 Do not merge around a failure, weaken a test without evidence, skip hooks, hide
