@@ -170,6 +170,70 @@ Do not add it to a routine upgrade; doing so defeats the gate it exists for.
 Rollback continues to use the retained previous image identity and never
 consults a release train.
 
+### Proving the signed lifecycle in the installer campaign
+
+`scripts/test:deployment-installer` proves the signed lifecycle against real
+containers when `HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1` is set. The scenario
+builds two release candidates with `scripts/release:cameraagent-image` from two
+committed revisions in throwaway Git worktrees, so each signed manifest
+describes exactly the tree it was built from, then drives one instance through
+every transition the retained release record has to follow:
+
+| Transition | Command | `image-distribution.json` |
+| --- | --- | --- |
+| Install from the superseded release | `cameraagent install --image-manifest <a>` | present, naming that release and the running image |
+| Refused by the production trust root | the product CLI, same upgrade | unchanged |
+| Upgrade to the candidate release | `cameraagent upgrade --image-manifest <b>` | present, naming the new release and the new image |
+| Refused: signed by an untrusted key | `cameraagent upgrade --image-manifest <untrusted>` | unchanged; still names the running release |
+| Rollback to the retained previous image | `cameraagent rollback` | absent |
+| Refused: release contradicts the image labels | `cameraagent upgrade --image-manifest <contradicting>` | still absent |
+
+Each refusal asserts its own diagnostic, so a scenario cannot pass by failing
+for the wrong reason, and each transition reads the running image back through
+`status`, whose `status` outcome (rather than `drifted`) means the container
+really carries the recorded image. Every step retains the release record, the
+instance manifest, the installation result, the lifecycle journal, a state
+inventory with modes, deployment checksums, and the container log under
+`TestResults/issue-598/<run>/`.
+
+The two refusals bracket the trust decision from both sides: the release
+contradicting the image labels is genuinely signed and is refused by the
+label-agreement gate after acquisition and before any mutation, while the
+untrusted-key release is refused during acquisition, before the instance is
+touched at all. Neither refusal writes, rewrites, or resurrects the retained
+release record.
+
+### The ephemeral key: what the campaign does and does not establish
+
+The production signing key exists only as a Key Vault key that the release
+workflow's federated identity may sign with; it cannot be exported, and no
+release can be signed with it outside that workflow. The campaign therefore
+signs both candidates with an ephemeral P-256 key it generates per run and
+publishes a campaign-only CLI, built from the same committed revision, whose
+embedded trust root is that ephemeral public key. Nothing else is changed: no
+verification step is removed, relaxed, or bypassed.
+
+The substitution is proved to redirect trust rather than to disable it. The
+unmodified product CLI, carrying the committed production trust root, is run
+against the same signed release and must refuse it; the campaign CLI is run
+against the same release re-signed by a second ephemeral key and must refuse
+that. A campaign whose trust root had simply been switched off would pass
+neither check.
+
+What the campaign establishes: the whole signed image lifecycle — manifest and
+signature verification, key-identity binding, asset length and checksum
+verification, platform selection, the agreement between the signed compatibility
+record and the labels the image actually carries, and the retained release record
+across install, upgrade, rollback, and refusal — against real multi-architecture
+release candidates, a real Docker daemon, and a real running CameraAgent.
+
+What it does not establish: that the committed production public key matches the
+Key Vault private key, that the workflow's federated identity can sign, that the
+signatures Key Vault produces verify against the committed trust root, that key
+custody and rotation behave as documented, or anything about the registry push
+and the published index. Those remain the first real publishing run's evidence,
+as [release-distribution.md](release-distribution.md) records.
+
 ## Local Replay Runner
 
 Archived replay remains in the CameraAgent process by default. Select the
@@ -563,6 +627,31 @@ HVO_CAMERAAGENT_SMOKE_IMAGE=<tag, repository digest, or image ID> \
 Neither variable changes anything when unset; both harnesses build their own
 image as before. `HVO_INSTALLER_BASELINE_REVISION` takes precedence, because a
 baseline upgrade contract needs two images built from two revisions.
+
+The signed-release scenario is a separate opt-in section of the same campaign
+and adds its own instance rather than replacing the operator-supplied image
+path:
+
+```bash
+HVO_PRODUCTION_CATALOG_BUNDLE=<bundle> \
+HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1 \
+  ./scripts/test:deployment-installer
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN` | `1` runs the signed install/upgrade/rollback/refusal scenario |
+| `HVO_INSTALLER_SIGNED_BASE_REVISION` | Revision of the superseded release. Default `HEAD~1`; it must be an ancestor of `HEAD` and must own the release train |
+| `HVO_INSTALLER_SIGNED_ARM64_BUILDER` | `linux/arm64` builder for the release candidates. Default `hvo-edge-01-arm64`, then `HVO_RELEASE_ARM64_BUILDER` |
+| `HVO_INSTALLER_SIGNED_VERSION_A` / `_B` | Candidate versions. Default `0.0.0-598a` and `0.0.0-598b` |
+| `HVO_INSTALLER_SIGNED_WORKSPACE` | Durable directory for the signing key and the two candidates. Reused when it already holds them, so an iteration does not rebuild; leave it unset for citable evidence, which builds both candidates from scratch |
+| `HVO_INSTALLER_SIGNED_EVIDENCE_ROOT` | Retained evidence directory. Default `TestResults/issue-598/<timestamp>` |
+
+The scenario requires a clean worktree, because it builds its candidates and its
+CLI from committed revisions. It builds two multi-architecture candidates and
+scans four archives, so budget substantially more time than the campaign's other
+scenarios, and hold the shared Docker window for the whole run. It never pushes
+to a registry.
 
 ## Build Evidence
 
