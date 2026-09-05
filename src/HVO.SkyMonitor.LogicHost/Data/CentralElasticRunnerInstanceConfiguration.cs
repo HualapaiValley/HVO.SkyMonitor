@@ -13,6 +13,7 @@ internal sealed class CentralElasticRunnerInstanceConfiguration : IEntityTypeCon
             "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned')"));
         builder.HasKey(instance => instance.Id);
         builder.Property(instance => instance.Provider).HasMaxLength(64).IsRequired();
+        builder.Property(instance => instance.HostName).HasMaxLength(256).IsRequired();
         builder.Property(instance => instance.InstanceId).HasMaxLength(128).IsRequired();
         builder.Property(instance => instance.RunnerId).HasMaxLength(128).IsRequired();
         builder.Property(instance => instance.ProcessArchitecture).HasMaxLength(32).IsRequired();

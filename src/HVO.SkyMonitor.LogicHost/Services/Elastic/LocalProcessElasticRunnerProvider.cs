@@ -64,6 +64,11 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
             }
             var settings = options.Value;
             var (fileName, leadingArguments) = ResolveLauncher(settings.LocalProcess);
+            if (settings.LocalProcess.RequireProcessGroupIsolation && !RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && SetsidPath is null)
+            {
+                throw new InvalidOperationException(
+                    "Process-group isolation is required for elastic runner instances but 'setsid' is not available on this host; install util-linux or set ElasticProviders:LocalProcess:RequireProcessGroupIsolation=false for an executable that is the runner itself.");
+            }
             var startInfo = new ProcessStartInfo
             {
                 FileName = fileName,
@@ -105,11 +110,23 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
     /// every descendant are then terminated together. Elsewhere the executable is started directly.
     /// </summary>
     private static (string FileName, string[] LeadingArguments) ResolveLauncher(CentralLocalProcessElasticOptions settings)
-        => !RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && File.Exists(SetsidPath)
-            ? (SetsidPath, [settings.Executable!])
+        => !RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && SetsidPath is { } setsid
+            ? (setsid, [settings.Executable!])
             : (settings.Executable!, []);
 
-    private const string SetsidPath = "/usr/bin/setsid";
+    /// <summary>The <c>setsid</c> binary found on PATH or in the usual system locations; null when unavailable.</summary>
+    internal static string? SetsidPath { get; } = LocateSetsid();
+
+    private static string? LocateSetsid()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return null;
+        }
+        var directories = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Concat(["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"]);
+        return directories.Select(directory => Path.Combine(directory, "setsid")).FirstOrDefault(File.Exists);
+    }
 
     /// <summary>Environment a launched runner may inherit from the host: runtime and locale essentials, never credentials or connection strings.</summary>
     internal static IReadOnlyDictionary<string, string> FilterInheritedEnvironment(System.Collections.IDictionary environment)
@@ -158,45 +175,109 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
             ["HVO_RUNNER_CLIENT_SECRET_FILE"] = settings.ClientSecretFile!,
             ["HVO_RUNNER_MAX_CONCURRENCY"] = request.MaxConcurrency.ToString(CultureInfo.InvariantCulture),
             ["HVO_RUNNER_LABELS"] = string.Join(',', request.Labels),
-            ["HVO_RUNNER_IDLE_SHUTDOWN_SECONDS"] = options.EffectiveInstanceIdleShutdown().TotalSeconds.ToString(CultureInfo.InvariantCulture),
+            ["HVO_RUNNER_IDLE_SHUTDOWN_SECONDS"] = options.EffectiveInstanceIdleShutdown(request.KeepWarm).TotalSeconds.ToString(CultureInfo.InvariantCulture),
             ["HVO_RUNNER_ALLOW_INSECURE_HTTP"] = settings.AllowInsecureHttp ? "true" : "false",
             ["HVO_RUNNER_LIVENESS_FILE"] = Path.Combine(Path.GetTempPath(), $"hvo-elastic-{request.InstanceId}.alive"),
             ["HVO_RUNNER_STOP_FILE"] = StopFilePath(request.InstanceId)
         };
     }
 
-    public async Task RetireAsync(string instanceId, TimeSpan grace, CancellationToken cancellationToken)
+    public Task RetireAsync(string instanceId, TimeSpan grace, CancellationToken cancellationToken)
+        => RetireAsync([instanceId], grace, cancellationToken);
+
+    /// <summary>
+    /// Drain requests for every instance are issued first (stop file, and SIGTERM to the process group on Unix), then
+    /// each instance is awaited until its whole process group is gone or the grace period ends, and only then forced.
+    /// An instance stays tracked until its drain request has been signalled, so a failed stop-file write never leaves
+    /// a running process unaccounted.
+    /// </summary>
+    public async Task RetireAsync(IReadOnlyCollection<string> instanceIds, TimeSpan grace, CancellationToken cancellationToken)
     {
-        if (!_instances.TryRemove(instanceId, out var tracked))
+        ArgumentNullException.ThrowIfNull(instanceIds);
+        var draining = new List<(string InstanceId, TrackedInstance Tracked)>();
+        foreach (var instanceId in instanceIds.Distinct(StringComparer.Ordinal))
+        {
+            if (!_instances.TryGetValue(instanceId, out var tracked))
+            {
+                continue;
+            }
+            if (!tracked.Process.HasExited)
+            {
+                RequestGracefulStop(instanceId, tracked.Process);
+            }
+            draining.Add((instanceId, tracked));
+        }
+        var deadline = timeProvider.GetUtcNow() + grace;
+        foreach (var (instanceId, tracked) in draining)
+        {
+            var process = tracked.Process;
+            try
+            {
+                var remaining = deadline - timeProvider.GetUtcNow();
+                if (!process.HasExited)
+                {
+                    using var timeout = new CancellationTokenSource(remaining > TimeSpan.Zero ? remaining : TimeSpan.FromMilliseconds(1));
+                    using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+                    try
+                    {
+                        await process.WaitForExitAsync(linked.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (timeout.IsCancellationRequested && !process.HasExited)
+                    {
+                        ForceStop(process);
+                    }
+                }
+                // A launcher may exit before the runner it started: wait for the whole group until the deadline, then force it.
+                await WaitForGroupExitAsync(process.Id, deadline, cancellationToken).ConfigureAwait(false);
+                ForceStopGroup(process.Id);
+                Log.Retired(logger, instanceId, process.Id, process.HasExited ? process.ExitCode : -1);
+            }
+            finally
+            {
+                _instances.TryRemove(instanceId, out _);
+                try
+                {
+                    File.Delete(StopFilePath(instanceId));
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+                process.Dispose();
+            }
+        }
+    }
+
+    private async Task WaitForGroupExitAsync(int processId, DateTimeOffset deadline, CancellationToken cancellationToken)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || SetsidPath is null)
         {
             return;
         }
-        var process = tracked.Process;
+        while (GroupHasMembers(processId) && timeProvider.GetUtcNow() < deadline)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(250), timeProvider, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary><c>kill -0</c> against the group reports whether any member is still alive.</summary>
+    private static bool GroupHasMembers(int processId)
+    {
         try
         {
-            if (!process.HasExited)
+            using var probe = Process.Start(new ProcessStartInfo("kill", ["-0", "--", $"-{processId.ToString(CultureInfo.InvariantCulture)}"]) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true });
+            if (probe is null)
             {
-                // Drain first on every platform (stop file, plus SIGTERM to the process group on Unix); force after grace.
-                RequestGracefulStop(instanceId, process);
-                using var timeout = new CancellationTokenSource(grace);
-                using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
-                try
-                {
-                    await process.WaitForExitAsync(linked.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (timeout.IsCancellationRequested && !process.HasExited)
-                {
-                    ForceStop(process);
-                }
+                return false;
             }
-            // The launcher may have exited while a descendant lingers: the whole group is signalled once more.
-            ForceStopGroup(process.Id);
-            Log.Retired(logger, instanceId, process.Id, process.HasExited ? process.ExitCode : -1);
+            probe.WaitForExit(5000);
+            return probe.ExitCode == 0;
         }
-        finally
+        catch (System.ComponentModel.Win32Exception)
         {
-            File.Delete(StopFilePath(instanceId));
-            process.Dispose();
+            return false;
         }
     }
 
@@ -246,10 +327,18 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         }
     }
 
-    private static void RequestGracefulStop(string instanceId, Process process)
+    private void RequestGracefulStop(string instanceId, Process process)
     {
-        // The stop file is the provider-neutral drain request the runner honours on every platform.
-        File.WriteAllText(StopFilePath(instanceId), "stop");
+        // The stop file is the provider-neutral drain request the runner honours on every platform; a failed write
+        // is logged and the Unix signal (or the forced stop after grace) still retires the instance.
+        try
+        {
+            File.WriteAllText(StopFilePath(instanceId), "stop");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Log.StopFileFailed(logger, instanceId, exception);
+        }
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             // SIGTERM to the process group lets the runner (and anything a launcher script started) drain its lease.
@@ -271,7 +360,7 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
 
     private static void ForceStopGroup(int processId)
     {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && File.Exists(SetsidPath))
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && SetsidPath is not null && GroupHasMembers(processId))
         {
             Signal(processId, "-KILL");
         }
@@ -280,7 +369,7 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
     /// <summary>Signals the process group led by <paramref name="processId"/> (the instance was started through setsid).</summary>
     private static void Signal(int processId, string signal)
     {
-        var target = File.Exists(SetsidPath) ? $"-{processId.ToString(CultureInfo.InvariantCulture)}" : processId.ToString(CultureInfo.InvariantCulture);
+        var target = SetsidPath is not null ? $"-{processId.ToString(CultureInfo.InvariantCulture)}" : processId.ToString(CultureInfo.InvariantCulture);
         try
         {
             using var kill = Process.Start(new ProcessStartInfo("kill", [signal, "--", target]) { UseShellExecute = false, CreateNoWindow = true });
@@ -313,5 +402,8 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
 
         [LoggerMessage(2232, LogLevel.Information, "Elastic runner instance adopted from a previous host process: Instance={Instance}, ProcessId={ProcessId}")]
         public static partial void Adopted(ILogger logger, string instance, int processId);
+
+        [LoggerMessage(2238, LogLevel.Warning, "Elastic runner stop file could not be written; the instance is retired by signal or force: Instance={Instance}")]
+        public static partial void StopFileFailed(ILogger logger, string instance, Exception exception);
     }
 }

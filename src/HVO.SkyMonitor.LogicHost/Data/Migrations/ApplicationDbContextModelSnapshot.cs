@@ -2638,6 +2638,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<int?>("ColdStartMilliseconds")
                         .HasColumnType("int");
 
+                    b.Property<string>("HostName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
                     b.Property<string>("InstanceId")
                         .IsRequired()
                         .HasMaxLength(128)

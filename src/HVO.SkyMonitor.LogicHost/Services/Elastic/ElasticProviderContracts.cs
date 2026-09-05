@@ -60,7 +60,8 @@ internal sealed record ElasticRunnerProvisionRequest(
     IReadOnlyList<ProcessingRunnerJobClass> JobClasses,
     IReadOnlyList<string> Labels,
     int MaxConcurrency,
-    string? Pool);
+    string? Pool,
+    bool KeepWarm = false);
 
 internal enum ElasticRunnerInstanceState
 {
@@ -104,6 +105,19 @@ internal interface IElasticRunnerProvider
 
     /// <summary>Asks the instance to drain and stop within <paramref name="grace"/>, then forces it.</summary>
     Task RetireAsync(string instanceId, TimeSpan grace, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Retires several instances: every drain request is issued first, then each instance is awaited (and forced
+    /// after <paramref name="grace"/>), so no instance keeps claiming while earlier ones drain.
+    /// </summary>
+    async Task RetireAsync(IReadOnlyCollection<string> instanceIds, TimeSpan grace, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(instanceIds);
+        foreach (var instanceId in instanceIds)
+        {
+            await RetireAsync(instanceId, grace, cancellationToken).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>Instances the provider still knows to be alive.</summary>
     Task<IReadOnlyList<ElasticRunnerInstance>> ListAsync(CancellationToken cancellationToken);

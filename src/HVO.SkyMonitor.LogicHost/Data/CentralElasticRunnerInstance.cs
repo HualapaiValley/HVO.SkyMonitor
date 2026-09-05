@@ -11,6 +11,9 @@ internal sealed class CentralElasticRunnerInstance
 
     public string Provider { get; set; } = string.Empty;
 
+    /// <summary>The LogicHost machine that launched the instance; only that host reconciles or retires it.</summary>
+    public string HostName { get; set; } = string.Empty;
+
     public string InstanceId { get; set; } = string.Empty;
 
     public string RunnerId { get; set; } = string.Empty;

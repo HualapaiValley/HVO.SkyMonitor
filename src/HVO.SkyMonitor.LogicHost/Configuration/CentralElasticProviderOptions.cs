@@ -38,6 +38,13 @@ internal sealed class CentralLocalProcessElasticOptions
     public TimeSpan IdleShutdown { get; init; }
 
     public bool AllowInsecureHttp { get; init; }
+
+    /// <summary>
+    /// Requires each instance to lead its own process group (Unix: started through <c>setsid</c>) so launcher scripts
+    /// and their descendants are retired together; provisioning is refused when isolation is unavailable. Set to
+    /// false only for an executable that is the runner itself (no launcher) on a host without <c>setsid</c>.
+    /// </summary>
+    public bool RequireProcessGroupIsolation { get; init; } = true;
 }
 
 /// <summary>
@@ -99,17 +106,18 @@ internal sealed class CentralElasticProviderOptions
     public static readonly string[] ReservedLabelPrefixes = ["provider:", "elastic-instance:", "pool:", "pool-mode:"];
 
     /// <summary>
-    /// The idle shutdown handed to each instance, coordinated with the scaling policy: warm-minimum instances never
-    /// self-terminate, and any other instance outlives the host's scale-to-zero decision window so it is retired by
-    /// the host (and accounted) rather than exiting on its own and being recorded as an orphan. The runner's own idle
-    /// exit remains the safety net for a host that disappears.
+    /// The idle shutdown handed to an instance, coordinated with the scaling policy: an instance provisioned for the
+    /// warm minimum never self-terminates, and any other instance outlives the host's scale-to-zero decision window
+    /// so it is retired by the host (and accounted) rather than exiting on its own and being recorded as an orphan.
+    /// The runner's own idle exit remains the safety net for excess capacity when the host disappears.
     /// </summary>
-    public TimeSpan EffectiveInstanceIdleShutdown()
+    public TimeSpan EffectiveInstanceIdleShutdown(bool keepWarm)
     {
-        if (MinWarmInstances > 0 || LocalProcess.IdleShutdown <= TimeSpan.Zero)
+        if (keepWarm || LocalProcess.IdleShutdown <= TimeSpan.Zero)
         {
             return TimeSpan.Zero;
         }
+        // The runner's idle clock starts after registration, so the window is the host's decision window only.
         var minimum = ScaleToZeroAfter + (SampleInterval * 2) + RetireGrace;
         return LocalProcess.IdleShutdown > minimum ? LocalProcess.IdleShutdown : minimum;
     }
@@ -117,6 +125,12 @@ internal sealed class CentralElasticProviderOptions
     public bool Validate(out string? error)
     {
         error = null;
+        // Settings consumed even while disabled (the inherited-instance cleanup) are validated unconditionally.
+        if (SampleInterval <= TimeSpan.Zero || RetireGrace <= TimeSpan.Zero || RetireGrace > TimeSpan.FromHours(1))
+        {
+            error = "ElasticProviders:SampleInterval and RetireGrace must be positive (RetireGrace at most one hour).";
+            return false;
+        }
         if (!Enabled)
         {
             return true;

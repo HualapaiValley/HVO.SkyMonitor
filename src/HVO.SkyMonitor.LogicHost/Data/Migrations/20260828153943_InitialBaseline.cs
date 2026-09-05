@@ -5542,6 +5542,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     Provider = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    HostName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
                     InstanceId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
                     RunnerId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
                     ProcessId = table.Column<int>(type: "int", nullable: true),

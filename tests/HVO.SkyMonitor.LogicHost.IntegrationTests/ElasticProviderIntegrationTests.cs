@@ -120,6 +120,9 @@ public sealed class ElasticProviderIntegrationTests
     public async Task LiveWorkIsRefusedByTheProviderBeforeAnyProcessStarts()
     {
         await using var host = await ElasticHost.StartAsync(maxInstances: 1, scaleToZeroAfter: TimeSpan.FromMinutes(10)).ConfigureAwait(false);
+        // The provider is exercised directly here: the hosted autoscaler is stopped so its reconciliation cannot
+        // retire the unrecorded instances this test launches.
+        await host.Autoscaler.StopAsync(CancellationToken.None).ConfigureAwait(false);
         var request = new ElasticRunnerProvisionRequest("livetest", "elastic-local-process-livetest",
             [ProcessingRunnerJobClass.CentralRecipe, ProcessingRunnerJobClass.CameraAgentLive], ["provider:local-process"], 1, null);
         await FluentActions.Awaiting(() => host.Provider.ProvisionAsync(request, CancellationToken.None))

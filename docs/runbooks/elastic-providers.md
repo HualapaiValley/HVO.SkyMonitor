@@ -32,7 +32,8 @@ processes on the host on demand. Absent and disabled by default.
       "ClientId": "system-processing-runner",
       "ClientSecretFile": "/run/secrets/hvo-processing-runner",
       "IdleShutdown": "00:00:00",
-      "AllowInsecureHttp": false
+      "AllowInsecureHttp": false,
+      "RequireProcessGroupIsolation": true
     }
   }
 }
@@ -45,20 +46,27 @@ processes on the host on demand. Absent and disabled by default.
   minutes are accounted from `CentralElasticRunnerInstances`.
 - The runner executable can be the published binary, `dotnet` with the
   runner dll as the first argument, or a launcher script; on Unix the
-  instance is started through `setsid` so the launcher and everything it
-  starts are terminated as one process group. The instance receives an
+  instance is started through `setsid` (found on `PATH` or the usual system
+  locations) so the launcher and everything it starts are terminated as one
+  process group, and provisioning is refused when `setsid` is unavailable
+  unless `RequireProcessGroupIsolation` is false for an executable that is
+  the runner itself. The instance receives an
   allowlisted runtime environment (`PATH`, `HOME`, locale, `DOTNET_*`,
   temp and certificate paths; never connection strings, passwords, keys, or
   tokens) plus the container's `HVO_RUNNER_*` contract with the secret by
   file path only.
 - `LocalProcess:IdleShutdown` is a safety net for a host that disappears:
   zero (default) leaves instances host-managed; a value is raised to outlive
-  the host's scale-to-zero window, and warm-minimum instances never
-  self-terminate, so an instance is retired and accounted by the host instead
-  of exiting on its own as an orphan.
+  the host's scale-to-zero window (the runner's idle clock starts after
+  registration), instances provisioned for the warm minimum never
+  self-terminate, and excess capacity keeps the timeout, so an instance is
+  retired and accounted by the host instead of exiting on its own as an
+  orphan.
 - Retirement drains first on every platform (a stop file the runner watches,
-  plus `SIGTERM` to the process group on Unix) and forces the stop after
-  `RetireGrace`. `MaxInstanceMinutesPerDay` also drains existing instances
+  plus `SIGTERM` to the process group on Unix), waits for the whole process
+  group, and forces the stop after `RetireGrace`; when several instances
+  retire at once every drain request goes out before any is awaited.
+  `MaxInstanceMinutesPerDay` also drains existing and registering instances
   once the budget is spent.
 - Backlog is counted with the claim's pool predicate (a reserved pool serves
   its pool and shared work; unpooled instances serve only unpooled
@@ -66,8 +74,10 @@ processes on the host on demand. Absent and disabled by default.
   instances. A launched process is always recorded before it can claim: the
   durable intent precedes the launch, a failed launch closes it, and an
   instance the provider reports without a record is retired.
-- A host restarted with `ElasticProviders` disabled retires instances a
-  previous enabled host launched.
+- Instance rows record the launching host; each LogicHost replica reconciles
+  and retires only the instances it launched, including when it restarts
+  with `ElasticProviders` disabled. `SampleInterval` and `RetireGrace` are
+  validated even while disabled because that cleanup consumes them.
 
 ## Behavior
 

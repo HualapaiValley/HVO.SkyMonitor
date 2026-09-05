@@ -42,8 +42,9 @@ internal static class ElasticScalingPolicy
         var active = input.Running + input.Starting;
         if (options.MaxInstanceMinutesPerDay > 0 && input.InstanceMinutesToday >= options.MaxInstanceMinutesPerDay && active > 0)
         {
-            // The daily budget bounds existing capacity too: every instance drains and stops until the day rolls over.
-            return new ElasticScalingDecision(0, input.Running, ReasonDailyLimit);
+            // The daily budget bounds existing capacity too: every instance, registering ones included, drains and
+            // stops until the day rolls over.
+            return new ElasticScalingDecision(0, active, ReasonDailyLimit);
         }
         // Demand counts work already executing on the instances, so occupied capacity does not mask queued backlog.
         var needed = (int)Math.Ceiling((input.Backlog + Math.Max(0, input.InFlight)) / (double)perInstance);

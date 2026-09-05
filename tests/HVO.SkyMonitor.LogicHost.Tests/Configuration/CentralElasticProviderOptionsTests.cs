@@ -109,7 +109,7 @@ public sealed class CentralElasticProviderOptionsTests
             RetireGrace = TimeSpan.FromSeconds(30),
             LocalProcess = idle
         };
-        Assert.AreEqual(TimeSpan.FromMinutes(5) + TimeSpan.FromSeconds(60), scaled.EffectiveInstanceIdleShutdown(),
+        Assert.AreEqual(TimeSpan.FromMinutes(5) + TimeSpan.FromSeconds(60), scaled.EffectiveInstanceIdleShutdown(keepWarm: false),
             "an instance never exits before the host's scale-to-zero window has passed");
         var warm = new CentralElasticProviderOptions
         {
@@ -118,7 +118,8 @@ public sealed class CentralElasticProviderOptionsTests
             MinWarmInstances = 1,
             LocalProcess = idle
         };
-        Assert.AreEqual(TimeSpan.Zero, warm.EffectiveInstanceIdleShutdown(), "warm-minimum instances never self-terminate");
+        Assert.AreEqual(TimeSpan.Zero, warm.EffectiveInstanceIdleShutdown(keepWarm: true), "warm-minimum instances never self-terminate");
+        Assert.AreNotEqual(TimeSpan.Zero, warm.EffectiveInstanceIdleShutdown(keepWarm: false), "excess capacity above the warm minimum keeps the safety net");
         var longer = new CentralElasticProviderOptions
         {
             Enabled = true,
@@ -126,7 +127,8 @@ public sealed class CentralElasticProviderOptionsTests
             ScaleToZeroAfter = TimeSpan.FromMinutes(1),
             LocalProcess = new CentralLocalProcessElasticOptions { Executable = "/x", LogicHostUrl = "https://l/", ClientSecretFile = "/s", IdleShutdown = TimeSpan.FromMinutes(30) }
         };
-        Assert.AreEqual(TimeSpan.FromMinutes(30), longer.EffectiveInstanceIdleShutdown());
+        Assert.AreEqual(TimeSpan.FromMinutes(30), longer.EffectiveInstanceIdleShutdown(keepWarm: false));
+        Assert.IsFalse(new CentralElasticProviderOptions { RetireGrace = TimeSpan.FromSeconds(-1) }.Validate(out _), "RetireGrace is consumed even while disabled");
     }
 
     [TestMethod]
@@ -191,7 +193,7 @@ public sealed class CentralElasticProviderOptionsTests
         var daily = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { InstanceMinutesToday = 60 }, startup);
         Assert.AreEqual((0, 0, ElasticScalingPolicy.ReasonDailyLimit), (daily.Provision, daily.Retire, daily.Reason), "the daily limit blocks new instances");
         var drain = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { Running = 2, Starting = 1, InstanceMinutesToday = 60 }, startup);
-        Assert.AreEqual((0, 2, ElasticScalingPolicy.ReasonDailyLimit), (drain.Provision, drain.Retire, drain.Reason), "existing capacity drains once the daily budget is spent");
+        Assert.AreEqual((0, 3, ElasticScalingPolicy.ReasonDailyLimit), (drain.Provision, drain.Retire, drain.Reason), "existing and registering capacity drains once the daily budget is spent");
         var underLimit = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { InstanceMinutesToday = 59 }, startup);
         Assert.IsTrue(underLimit.Provision > 0);
     }
@@ -231,6 +233,7 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.IsFalse(environment.ContainsKey("HVO_RUNNER_CLIENT_SECRET"), "the secret value is never composed into the environment");
         Assert.IsTrue(environment["HVO_RUNNER_STOP_FILE"].EndsWith("hvo-elastic-0123456789abcdef.stop", StringComparison.Ordinal), "the provider-neutral drain signal is wired");
         Assert.AreEqual("0", environment["HVO_RUNNER_IDLE_SHUTDOWN_SECONDS"], "the default local idle shutdown is coordinated: no self-termination unless configured");
+        Assert.IsTrue(request.KeepWarm == false);
         Assert.AreEqual("2", environment["HVO_RUNNER_MAX_CONCURRENCY"]);
         Assert.AreEqual("provider:local-process,elastic-instance:0123456789abcdef,pool:blue,pool-mode:reserved", environment["HVO_RUNNER_LABELS"]);
         Assert.IsTrue(ProcessingRunnerProtocol.IsValidRunnerId(request.RunnerId));

@@ -40,6 +40,8 @@ internal sealed class RunnerHost(
         {
             return 0;
         }
+        // The idle clock starts once registered: registration retries must not count as idleness.
+        _lastWorkTimestamp = _timeProvider.GetTimestamp();
         TouchLiveness();
         // External cancellation (SIGTERM) only stops claiming. Heartbeats, renewals, and in-flight executions keep
         // the runner lifetime token until the grace period has drained active jobs, so a deployment restart does not

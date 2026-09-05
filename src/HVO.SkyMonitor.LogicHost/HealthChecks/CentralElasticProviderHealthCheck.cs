@@ -31,7 +31,6 @@ internal sealed class CentralElasticProviderHealthCheck(
         var data = new Dictionary<string, object>
         {
             ["consecutiveSampleFailures"] = failures.Consecutive,
-            ["lastSampleFailure"] = failures.Message ?? string.Empty,
             ["enabled"] = true,
             ["provider"] = provider.Name,
             ["maxInstances"] = settings.MaxInstances,
@@ -46,8 +45,9 @@ internal sealed class CentralElasticProviderHealthCheck(
         };
         if (failures.Consecutive >= UnhealthyAfterConsecutiveFailures)
         {
+            // The exception is logged privately (event 2234); the anonymous health response stays generic.
             return Task.FromResult(HealthCheckResult.Unhealthy(
-                $"The elastic autoscaler failed {failures.Consecutive} consecutive samples; enabled capacity is unavailable: {failures.Message}", data: data));
+                $"The elastic autoscaler failed {failures.Consecutive} consecutive samples; enabled capacity is unavailable (see log event 2234).", data: data));
         }
         if (snapshot is null)
         {
