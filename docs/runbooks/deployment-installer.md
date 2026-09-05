@@ -220,6 +220,16 @@ with the operator-supplied image the campaign already covers, and
 [#641](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/641) tracks proving
 it for a signed release.
 
+The campaign proves that the retained record follows the image the instance runs
+across every transition above, but that guarantee has two known exceptions it
+does not cover, tracked by
+[#642](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/642): a signed
+upgrade whose final resume is lost and is then completed with `--resume` returns
+`completed` without writing the record, and an `--image-ref` upgrade of an
+instance installed from a signed release keeps the superseded record. Until
+those close, treat a record that survived either of those paths as unverified
+rather than authoritative.
+
 The refusals bracket the trust decision from several sides. The release
 contradicting the image labels is genuinely signed and is refused by the
 label-agreement gate after acquisition and before any mutation. Four more are
