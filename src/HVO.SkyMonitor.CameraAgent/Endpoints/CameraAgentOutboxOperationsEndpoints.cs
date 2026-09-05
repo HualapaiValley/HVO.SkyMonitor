@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -36,6 +37,12 @@ internal static class CameraAgentOutboxOperationsEndpoints
         MapEnvironmentalMutation(group, "/environmental/replay", OutboxOperationAction.Replay);
         MapEnvironmentalMutation(group, "/environmental/abandon", OutboxOperationAction.Abandon);
 
+        group.MapGet("/execution-evidence", ReadExecutionEvidencePageAsync);
+        group.MapGet("/execution-evidence/{reference}", ReadExecutionEvidenceDetailAsync);
+        group.MapGet("/execution-evidence/{reference}/audit", ReadExecutionEvidenceAuditAsync);
+        MapExecutionEvidenceMutation(group, "/execution-evidence/replay", OutboxOperationAction.Replay);
+        MapExecutionEvidenceMutation(group, "/execution-evidence/abandon", OutboxOperationAction.Abandon);
+
         return endpoints;
     }
 
@@ -63,6 +70,167 @@ internal static class CameraAgentOutboxOperationsEndpoints
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance);
     }
+
+    private static void MapExecutionEvidenceMutation(
+        RouteGroupBuilder group,
+        string pattern,
+        OutboxOperationAction action)
+    {
+        group.MapPost(pattern, (HttpContext context, [FromBody] OutboxResolutionRequest request,
+                [FromServices] IExecutionEvidenceOutbox outbox, OutboxOperationsTokenService tokens,
+                CancellationToken cancellationToken) =>
+                ResolveExecutionEvidenceCoreAsync(context, action, request, outbox, tokens, cancellationToken))
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
+            .WithMetadata(RequiredAntiforgeryMetadata.Instance);
+    }
+
+    private static async Task<IResult> ReadExecutionEvidencePageAsync(
+        [FromQuery] int? pageSize,
+        [FromQuery] string? cursor,
+        IExecutionEvidenceOutbox outbox,
+        IOptions<CameraAgentHostOptions> options,
+        OutboxOperationsTokenService tokens,
+        CancellationToken cancellationToken)
+    {
+        var size = pageSize ?? 50;
+        if (size is < 1 or > 100)
+        {
+            return InvalidQuery();
+        }
+        if (!await outbox.ExistsAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false))
+        {
+            // A lane that has never run has no durable store; reading it here must not create one.
+            return Results.Ok(new OutboxPage<ExecutionEvidenceOutboxItem>([], null));
+        }
+        ExecutionEvidenceOutboxOperationsCursor? position = null;
+        if (cursor is not null && !tokens.TryReadExecutionEvidenceCursor(cursor, out position))
+        {
+            return Results.NotFound();
+        }
+        var page = await outbox.ReadOperationsPageAsync(
+            options.Value.RawIngressRoot, size, position, cancellationToken).ConfigureAwait(false);
+        return Results.Ok(new OutboxPage<ExecutionEvidenceOutboxItem>(
+            page.Items.Select(item => ToExecutionEvidenceItem(item, tokens)).ToArray(),
+            page.NextCursor is null ? null : tokens.ProtectExecutionEvidenceCursor(page.NextCursor)));
+    }
+
+    private static async Task<IResult> ReadExecutionEvidenceDetailAsync(
+        string reference,
+        IExecutionEvidenceOutbox outbox,
+        IOptions<CameraAgentHostOptions> options,
+        OutboxOperationsTokenService tokens,
+        CancellationToken cancellationToken)
+    {
+        if (!tokens.TryReadExecutionEvidenceReference(reference, out var recordId) ||
+            !await outbox.ExistsAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false))
+        {
+            return Results.NotFound();
+        }
+        var detail = await outbox.ReadOperationsDetailAsync(
+            options.Value.RawIngressRoot, recordId, cancellationToken).ConfigureAwait(false);
+        return detail is null ? Results.NotFound() : Results.Ok(ToExecutionEvidenceItem(detail, tokens));
+    }
+
+    private static async Task<IResult> ReadExecutionEvidenceAuditAsync(
+        string reference,
+        [FromQuery] int? pageSize,
+        [FromQuery] string? cursor,
+        IExecutionEvidenceOutbox outbox,
+        IOptions<CameraAgentHostOptions> options,
+        OutboxOperationsTokenService tokens,
+        CancellationToken cancellationToken)
+    {
+        var size = pageSize ?? 50;
+        if (size is < 1 or > 100 ||
+            !tokens.TryReadExecutionEvidenceReference(reference, out var recordId) ||
+            !await outbox.ExistsAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false))
+        {
+            return size is < 1 or > 100 ? InvalidQuery() : Results.NotFound();
+        }
+        var target = recordId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        OutboxOperationsAuditCursor? position = null;
+        if (cursor is not null && !tokens.TryReadAuditCursor("execution-evidence", cursor, target, out position))
+        {
+            return Results.NotFound();
+        }
+        var page = await outbox.ReadOperationsAuditAsync(
+            options.Value.RawIngressRoot, recordId, size, position, cancellationToken).ConfigureAwait(false);
+        return Results.Ok(new OutboxPage<OutboxAuditItem>(
+            page.Items.Select(ToAuditItem).ToArray(),
+            page.NextCursor is null
+                ? null
+                : tokens.ProtectAuditCursor("execution-evidence", target, page.NextCursor)));
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Operational mutations must not disclose persistence failures.")]
+    private static async Task<IResult> ResolveExecutionEvidenceCoreAsync(
+        HttpContext context,
+        OutboxOperationAction action,
+        OutboxResolutionRequest request,
+        IExecutionEvidenceOutbox outbox,
+        OutboxOperationsTokenService tokens,
+        CancellationToken cancellationToken)
+    {
+        if (!ValidRequest(context, action, request, out var operationKey))
+        {
+            return InvalidMutation();
+        }
+        if (!tokens.TryReadExecutionEvidenceAction(action, request.ActionToken, out var recordId))
+        {
+            return Results.NotFound();
+        }
+        var options = context.RequestServices.GetRequiredService<IOptions<CameraAgentHostOptions>>();
+        if (!await outbox.ExistsAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false))
+        {
+            return Results.NotFound();
+        }
+        try
+        {
+            await outbox.ResolveOperationsAsync(
+                options.Value.RawIngressRoot, recordId, action, operationKey, "owner", request.ReasonCode,
+                cancellationToken).ConfigureAwait(false);
+            context.RequestServices.GetRequiredService<ExecutionEvidenceExportWakeup>().Signal();
+            return Results.NoContent();
+        }
+        catch (OutboxOperationCollisionException)
+        {
+            return MutationConflict();
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or InvalidDataException)
+        {
+            return MutationConflict();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return MutationFailure();
+        }
+    }
+
+    private static ExecutionEvidenceOutboxItem ToExecutionEvidenceItem(
+        ExecutionEvidenceOutboxOperationsRecord item,
+        OutboxOperationsTokenService tokens)
+        => new(
+            tokens.ProtectExecutionEvidenceReference(item.RecordId),
+            item.BodyKind,
+            item.OriginSequence,
+            item.Status,
+            item.AttemptCount,
+            item.PayloadBytes,
+            item.CreatedUtc,
+            item.UpdatedUtc,
+            item.NextAttemptUtc,
+            item.ReasonCode is null ? null : OutboxOperationsReasonCodes.Sanitize(item.ReasonCode),
+            new OutboxAllowedActions(
+                item.CanReplay
+                    ? tokens.ProtectExecutionEvidenceAction(OutboxOperationAction.Replay, item.RecordId)
+                    : null,
+                item.CanAbandon
+                    ? tokens.ProtectExecutionEvidenceAction(OutboxOperationAction.Abandon, item.RecordId)
+                    : null));
 
     private static async Task<IResult> ReadArtifactPageAsync(
         [FromQuery] string storage,
@@ -384,6 +552,18 @@ internal static class CameraAgentOutboxOperationsEndpoints
         long? PayloadBytes,
         string? MediaType,
         string? Role,
+        DateTimeOffset CreatedUtc,
+        DateTimeOffset UpdatedUtc,
+        DateTimeOffset NextAttemptUtc,
+        string? ReasonCode,
+        OutboxAllowedActions AllowedActions);
+    private sealed record ExecutionEvidenceOutboxItem(
+        string Reference,
+        string BodyKind,
+        long OriginSequence,
+        string Status,
+        int AttemptCount,
+        long PayloadBytes,
         DateTimeOffset CreatedUtc,
         DateTimeOffset UpdatedUtc,
         DateTimeOffset NextAttemptUtc,

@@ -56,6 +56,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public EnvironmentalAcquisitionOptions EnvironmentalAcquisition { get; init; } = new();
 
     [Required]
+    public ExecutionEvidenceExportOptions ExecutionEvidenceExport { get; init; } = new();
+
+    [Required]
     public ArtifactReadOptions ArtifactRead { get; init; } = new();
 
     [Range(1, 60)]
@@ -224,6 +227,17 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             yield return result;
         }
 
+        var evidenceExportResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            ExecutionEvidenceExport,
+            new ValidationContext(ExecutionEvidenceExport),
+            evidenceExportResults,
+            validateAllProperties: true);
+        foreach (var result in evidenceExportResults)
+        {
+            yield return result;
+        }
+
         var artifactReadResults = new List<ValidationResult>();
         Validator.TryValidateObject(
             ArtifactRead,
@@ -270,6 +284,103 @@ public sealed class DerivedProductLifecycleOptions
 
     [Range(1, 1440)]
     public int OrphanRecoveryWindowMinutes { get; init; } = 30;
+}
+
+/// <summary>
+/// Bounds for the durable graph-execution evidence export lane. Every limit refuses new work at the enlistment or
+/// request boundary; none of them discards evidence that is already durable, and none of them can delay acquisition,
+/// raw ingress, live processing, local publication, artifact upload, or replay.
+/// </summary>
+public sealed class ExecutionEvidenceExportOptions : IValidatableObject
+{
+    /// <summary>When false the lane performs no source sweep at all and the durable store never grows.</summary>
+    public bool Enabled { get; init; } = true;
+
+    [Range(1, 3600)]
+    public int PollIntervalSeconds { get; init; } = 30;
+
+    /// <summary>Terminal executions inspected per source sweep query.</summary>
+    [Range(1, 256)]
+    public int DiscoveryBatchSize { get; init; } = 64;
+
+    /// <summary>Source sweep queries performed per cycle, so one cycle cannot run unbounded.</summary>
+    [Range(1, 64)]
+    public int MaximumDiscoveryBatchesPerCycle { get; init; } = 8;
+
+    /// <summary>Evidence units in one submission request.</summary>
+    [Range(1, 256)]
+    public int MaximumRequestUnits { get; init; } = 32;
+
+    /// <summary>Canonical bytes in one submission request.</summary>
+    [Range(65536, 16 * 1024 * 1024)]
+    public int MaximumRequestBytes { get; init; } = 4 * 1024 * 1024;
+
+    [Range(1, 300)]
+    public int RequestTimeoutSeconds { get; init; } = 30;
+
+    [Range(1, 3600)]
+    public int RetryInitialDelaySeconds { get; init; } = 10;
+
+    [Range(1, 86400)]
+    public int RetryMaximumDelaySeconds { get; init; } = 300;
+
+    /// <summary>Attempts before a unit is quarantined instead of retried forever.</summary>
+    [Range(1, 1000)]
+    public int MaximumAttempts { get; init; } = 12;
+
+    [Range(1, 1_000_000)]
+    public long MaximumPendingUnits { get; init; } = 50_000;
+
+    [Range(1024L * 1024, 64L * 1024 * 1024 * 1024)]
+    public long MaximumPendingBytes { get; init; } = 2L * 1024 * 1024 * 1024;
+
+    [Range(1024L * 1024, 64L * 1024 * 1024 * 1024)]
+    public long MaximumStorageBytes { get; init; } = 4L * 1024 * 1024 * 1024;
+
+    /// <summary>Canonical bytes one sealed unit may occupy; never above the contract's absolute envelope cap.</summary>
+    [Range(4096, 8 * 1024 * 1024)]
+    public int MaximumUnitBytes { get; init; } = 8 * 1024 * 1024;
+
+    /// <summary>Oldest pending age tolerated before the lane reports an explicit degraded state.</summary>
+    [Range(1, 8760)]
+    public int MaximumPendingAgeHours { get; init; } = 168;
+
+    [Range(1, 8760)]
+    public int AcknowledgementRetentionHours { get; init; } = 168;
+
+    [Range(0, 1_000_000)]
+    public int MaximumRetainedAcknowledgements { get; init; } = 10_000;
+
+    /// <summary>Replaces operator-identifying trigger references and lease owners before the payload is hashed.</summary>
+    public bool RedactOperatorIdentity { get; init; } = true;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (RetryMaximumDelaySeconds < RetryInitialDelaySeconds)
+        {
+            yield return new ValidationResult(
+                "RetryMaximumDelaySeconds must be greater than or equal to RetryInitialDelaySeconds.",
+                [nameof(RetryMaximumDelaySeconds), nameof(RetryInitialDelaySeconds)]);
+        }
+        if (MaximumRequestBytes > MaximumPendingBytes)
+        {
+            yield return new ValidationResult(
+                "MaximumRequestBytes must not exceed MaximumPendingBytes.",
+                [nameof(MaximumRequestBytes), nameof(MaximumPendingBytes)]);
+        }
+        if (MaximumUnitBytes > GraphExecutionEvidenceLimits.MaximumEnvelopeBytes)
+        {
+            yield return new ValidationResult(
+                "MaximumUnitBytes must not exceed the contract's absolute envelope cap.",
+                [nameof(MaximumUnitBytes)]);
+        }
+        if (RequestTimeoutSeconds > PollIntervalSeconds * 10)
+        {
+            yield return new ValidationResult(
+                "RequestTimeoutSeconds must not exceed ten poll intervals.",
+                [nameof(RequestTimeoutSeconds), nameof(PollIntervalSeconds)]);
+        }
+    }
 }
 
 public sealed class ProvisioningStartupGateOptions

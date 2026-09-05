@@ -137,7 +137,8 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
         var snapshot = await operations
             .ReadRevisionSnapshotAsync(registry.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
         var origin = CreateOrigin();
-        var revisionEvidence = ProcessingGraphEvidenceProjection.CreateRevisionEvidence(snapshot, assignment: null);
+        var revisionEvidence = ProcessingGraphEvidenceProjection.CreateRevisionEvidence(snapshot, assignment: null).Value!;
+        Assert.IsNotNull(revisionEvidence);
         var revisionEnvelope = ProcessingGraphEvidenceProjection.CreateEnvelope(
             origin, 1, Guid.NewGuid(), FixtureUtc, revisionEvidence, ExecutionEvidenceRedactionPolicyV1.None);
         var revisionBytes = GraphExecutionEvidenceJson.Serialize(revisionEnvelope);
@@ -153,7 +154,8 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
             .ConfigureAwait(false);
         Assert.IsNotNull(detail);
 
-        var executionEvidence = ProcessingGraphEvidenceProjection.CreateExecutionEvidence(detail);
+        var executionEvidence = ProcessingGraphEvidenceProjection.CreateExecutionEvidence(detail).Value!;
+        Assert.IsNotNull(executionEvidence);
         var executionEnvelope = ProcessingGraphEvidenceProjection.CreateEnvelope(
             origin,
             2,
@@ -162,7 +164,7 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
             executionEvidence,
             ExecutionEvidenceRedactionPolicyV1.OperatorIdentity);
         var executionBytes = GraphExecutionEvidenceJson.Serialize(executionEnvelope);
-        var availability = ProcessingGraphEvidenceProjection.CreateAvailabilityReport(detail, FixtureUtc);
+        var availability = ProcessingGraphEvidenceProjection.CreateAvailabilityReport(detail, FixtureUtc).Value!;
         Assert.IsNotNull(availability);
         var availabilityEnvelope = ProcessingGraphEvidenceProjection.CreateEnvelope(
             origin, 3, Guid.NewGuid(), FixtureUtc, availability, ExecutionEvidenceRedactionPolicyV1.None);

@@ -648,6 +648,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = ExecutionSelectSql + " " + """
+            FROM processing_executions
             WHERE ($class IS NULL OR execution_class = $class)
             ORDER BY accepted_unix_ms DESC, execution_id DESC
             LIMIT $limit;
@@ -659,6 +660,144 @@ internal sealed partial class SqliteCaptureProcessingStore
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) results.Add(ReadExecutionState(reader));
         return results;
     }
+
+    /// <summary>
+    /// Reads terminal execution keys in ascending <c>(accepted time, execution id)</c> order from an exclusive
+    /// cursor. The evidence exporter needs a forward, resumable sweep; the delivered
+    /// <see cref="ReadExecutionsAsync"/> window is a newest-first operator view capped at 256 rows and cannot
+    /// express one.
+    /// </summary>
+    /// <remarks>
+    /// The sweep is deliberately expressed as one index-only range scan per
+    /// <c>(execution_class, status)</c> pair so it can be served entirely by the delivered
+    /// <c>ix_processing_executions_live_capture</c>/<c>ix_processing_executions_status</c> index on
+    /// <c>(execution_class, status, accepted_unix_ms, execution_id)</c>. A single ordered scan over a
+    /// <c>COALESCE</c> of the completion time cannot use that index, would scan the whole table, and would walk the
+    /// two multi-megabyte document blobs that precede the ordering columns in every row — on a live journal that is
+    /// exactly the page-cache pressure this lane must not put on the capture path. Acceptance time is used instead
+    /// of completion time because it is immutable and indexed; a caller compensates for an execution that becomes
+    /// terminal long after acceptance with a bounded lookback, which is safe because enlistment is idempotent by
+    /// unit key.
+    /// </remarks>
+    internal async ValueTask<IReadOnlyList<ProcessingGraphTerminalExecution>> ReadTerminalExecutionsAsync(
+        long afterAcceptedUnixMs,
+        string afterExecutionId,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(afterExecutionId);
+        ArgumentOutOfRangeException.ThrowIfNegative(afterAcceptedUnixMs);
+        if (maximumCount is < 1 or > 256) throw new ArgumentOutOfRangeException(nameof(maximumCount));
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        var merged = new List<ProcessingGraphTerminalExecution>(maximumCount * TerminalStatuses.Length);
+        foreach (var executionClass in Enum.GetValues<ProcessingGraphExecutionClass>())
+        {
+            foreach (var status in TerminalStatuses)
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    SELECT accepted_unix_ms, execution_id
+                    FROM processing_executions
+                    WHERE execution_class = $class AND status = $status
+                      AND (accepted_unix_ms > $ms
+                           OR (accepted_unix_ms = $ms AND execution_id > $execution))
+                    ORDER BY accepted_unix_ms, execution_id
+                    LIMIT $limit;
+                    """;
+                command.Parameters.AddWithValue("$class", executionClass.ToString());
+                command.Parameters.AddWithValue("$status", status);
+                command.Parameters.AddWithValue("$ms", afterAcceptedUnixMs);
+                command.Parameters.AddWithValue("$execution", afterExecutionId);
+                command.Parameters.AddWithValue("$limit", maximumCount);
+                using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    merged.Add(new(Guid.ParseExact(reader.GetString(1), "N"), reader.GetInt64(0)));
+                }
+            }
+        }
+        return [.. merged
+            .OrderBy(static row => row.AcceptedUnixMs)
+            .ThenBy(static row => row.ExecutionId.ToString("N"), StringComparer.Ordinal)
+            .Take(maximumCount)];
+    }
+
+    /// <summary>
+    /// The lowest acceptance time of an execution that has not yet reached a terminal status. It is the barrier the
+    /// evidence sweep may not advance past: every execution below it is already terminal, so nothing below it can
+    /// still become terminal later and be missed by a forward acceptance-time cursor. Null means nothing is active.
+    /// </summary>
+    internal async ValueTask<long?> ReadOldestActiveExecutionKeyAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        long? oldest = null;
+        foreach (var executionClass in Enum.GetValues<ProcessingGraphExecutionClass>())
+        {
+            foreach (var status in ActiveStatuses)
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    SELECT accepted_unix_ms FROM processing_executions
+                    WHERE execution_class = $class AND status = $status
+                    ORDER BY accepted_unix_ms
+                    LIMIT 1;
+                    """;
+                command.Parameters.AddWithValue("$class", executionClass.ToString());
+                command.Parameters.AddWithValue("$status", status);
+                var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (value is not (null or DBNull))
+                {
+                    var candidate = Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+                    oldest = oldest is { } current ? Math.Min(current, candidate) : candidate;
+                }
+            }
+        }
+        return oldest;
+    }
+
+    /// <summary>
+    /// The lowest acceptance time still present among terminal executions. A value above the exporter cursor proves
+    /// that source retention removed executions the exporter had not yet enlisted.
+    /// </summary>
+    internal async ValueTask<long?> ReadOldestTerminalExecutionKeyAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        long? oldest = null;
+        foreach (var executionClass in Enum.GetValues<ProcessingGraphExecutionClass>())
+        {
+            foreach (var status in TerminalStatuses)
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    SELECT accepted_unix_ms FROM processing_executions
+                    WHERE execution_class = $class AND status = $status
+                    ORDER BY accepted_unix_ms
+                    LIMIT 1;
+                    """;
+                command.Parameters.AddWithValue("$class", executionClass.ToString());
+                command.Parameters.AddWithValue("$status", status);
+                var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (value is not (null or DBNull))
+                {
+                    var candidate = Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+                    oldest = oldest is { } current ? Math.Min(current, candidate) : candidate;
+                }
+            }
+        }
+        return oldest;
+    }
+
+    /// <summary>
+    /// The durable <c>status</c> values that are terminal, and the ones that are not. Together they must be exactly
+    /// the set the <c>processing_executions</c> CHECK constraint admits, or the sweep would silently never see a
+    /// status outside both lists; <c>ProcessingGraphExecutionStatusCoverageTests</c> asserts that.
+    /// </summary>
+    internal static readonly string[] TerminalStatuses = ["Completed", "Failed", "Cancelled", "Expired"];
+
+    internal static readonly string[] ActiveStatuses = ["Pending", "Running"];
 
     internal async ValueTask<ProcessingGraphExecutionState?> ReadExecutionAsync(
         Guid executionId,
@@ -1187,7 +1326,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = ExecutionSelectSql + " WHERE execution_id = $execution;";
+        command.CommandText = ExecutionSelectSql + " FROM processing_executions WHERE execution_id = $execution;";
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadExecutionState(reader) : null;
@@ -1269,6 +1408,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                accepted_unix_ms, available_unix_ms, deadline_unix_ms, maximum_age_unix_ms,
                started_unix_ms, completed_unix_ms, failure_reason, cancellation_requested,
                attempt_count
-        FROM processing_executions
         """;
+
+
 }

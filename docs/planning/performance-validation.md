@@ -218,6 +218,28 @@ throughput, CPU, memory, and lease-loss recovery under
 `TestResults/processing-fairness/<revision>/`; signals are pinned in
 `docs/validation/central-fairness-runtime-signals.json`.
 
+Execution-evidence export evidence (#537):
+`ExecutionEvidenceExportPerformanceTests` (Manual, CameraAgent test project)
+records the `W6` capture stage twice on separate roots — once with the export
+lane absent and once with an export cycle running concurrently with each
+capture against a sink that negotiates and then refuses every submission —
+plus a drain stage that enlists a bounded backlog and drains it against the
+conformance sink. It reports per-capture median/min/max latency, process CPU,
+working set, allocated bytes, raw-ingress bytes, completed executions, export
+backlog depth and durable bytes, enlistment throughput, submission
+median/p95/maximum latency over at least thirty measured operations, drain
+rate, remaining backlog, gap count, and the maximum concurrent export request.
+Output is written to `TestResults/issue-537/w6-execution-evidence-export.json`
+(override with `HVO_ISSUE537_EVIDENCE_ROOT`).
+
+Reproduce with:
+
+```bash
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release \
+  --filter "FullyQualifiedName~ExecutionEvidenceExportPerformanceTests"
+```
+
 ## 6. Output and Runtime Correlation
 
 Performance evidence is valid only when the same run or fixture also checks the

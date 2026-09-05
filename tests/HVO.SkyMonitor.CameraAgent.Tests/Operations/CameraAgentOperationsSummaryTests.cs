@@ -15,6 +15,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Fleet.Contracts;
 using Microsoft.Extensions.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Operations;
 
@@ -110,6 +111,7 @@ public sealed class CameraAgentOperationsSummaryTests
             runtime,
             heartbeat,
             environmental,
+            new ExecutionEvidenceExportState(),
             transient,
             telemetryProvider,
             configuration,
