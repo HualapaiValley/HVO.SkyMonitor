@@ -54,6 +54,17 @@ last-GC observations and include fragmentation, collection, and pause deltas;
 they are not labeled as continuous LOH/POH peaks. Reduced local runs use a
 separate diagnostic schema and are never marked citable.
 
+Each trial provisions a new agent, so its owner is seeded with a temporary
+password and every authenticated owner `/api` request other than the bounded
+owner-bootstrap endpoints is refused with `403` and
+`X-HVO-Authorization-Reason: owner-password-change-required` until the required
+first-login replacement completes, as described under "Owner bootstrap status
+contract" in `docs/identity/operations-runbook.md`. Both agent sessions
+therefore complete that replacement and prove the resulting session reads the
+operations API before any capture poll starts; issue #602 fixed a harness that
+skipped it and failed on the first gallery poll instead. This applies equally to
+the reduced diagnostic mode and the final five-trial mode.
+
 Final mode first runs the unchanged #171 gate on the same machine and revision.
 It blocks citation for a positive regression over 20 percent in the equivalent
 normalized subset: retained filesystem bytes per completed capture and pooled
