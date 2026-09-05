@@ -142,11 +142,27 @@ release_tool() {
 dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
     --configuration Release -warnaserror >/dev/null
 
+# A builder may be a buildx builder instance or, for a remote native host using the plain docker driver, a
+# Docker context. Those are selected differently, so resolve which one the name refers to.
+builder_invocation() {
+    local builder="$1"
+    if [[ "$builder" != default ]] && docker context inspect "$builder" >/dev/null 2>&1; then
+        printf 'context'
+    else
+        printf 'builder'
+    fi
+}
+
 build_platform() {
     local architecture="$1" builder="$2" destination="$3"
-    printf 'Building linux/%s with builder %s\n' "$architecture" "$builder" >&2
-    docker buildx build \
-        --builder "$builder" \
+    local -a prefix=(docker) selector=()
+    if [[ "$(builder_invocation "$builder")" == context ]]; then
+        prefix+=(--context "$builder")
+    else
+        selector+=(--builder "$builder")
+    fi
+    printf 'Building linux/%s with %s %s\n' "$architecture" "$(builder_invocation "$builder")" "$builder" >&2
+    "${prefix[@]}" buildx build "${selector[@]}" \
         --platform "linux/${architecture}" \
         --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
         --build-arg "HVO_SOURCE_REVISION=${revision}" \
@@ -159,8 +175,7 @@ if [[ "$push" == 1 ]]; then
     printf 'Publishing the multi-architecture image to %s:%s\n' "$repository" "$version" >&2
     docker buildx build \
         --builder "$amd64_builder" \
-        --platform linux/amd64,linux/arm64 \
-        --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
+        --platform linux/amd64,linux/arm64 \        --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
         --build-arg "HVO_SOURCE_REVISION=${revision}" \
         --provenance false \
         --tag "${repository}:${version}" \
