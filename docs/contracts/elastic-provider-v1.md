@@ -53,8 +53,9 @@ long-running, native, or GPU recipes.
 
 The autoscaler samples provider-eligible runner-placed backlog and decides
 with a pure policy (`ElasticScalingPolicy`): desired instances follow
-backlog and per-instance concurrency, bounded by the sum of observatory
-entitlements of the backlogged observatories (#429), `MaxInstances`,
+backlog plus in-flight work and per-instance concurrency, bounded by the
+remaining entitlement headroom of the backlogged observatories (#429),
+`MaxInstances` counted across every LogicHost replica,
 `MinWarmInstances`, and `MaxInstanceMinutesPerDay`. A cold start is taken
 only when `startup estimate + oldest backlog age <= QueueDeadline`; otherwise
 the work is retained locally as backlog (rejected placements are counted and

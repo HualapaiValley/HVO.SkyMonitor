@@ -119,6 +119,22 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var rows = await dbContext.CentralElasticRunnerInstances
             .Where(instance => instance.Provider == provider.Name && instance.HostName == HostName && live.Contains(instance.State))
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var row in rows)
+        {
+            row.OwnerHeartbeatAtUtc = now;
+        }
+        // Rows whose owning host stopped reconciling them (replica removed, renamed, or dead) are reaped so they stop
+        // holding capacity and accruing minutes; their registrations are retired.
+        var ownerStaleBefore = now - OwnerStaleAfter(settings);
+        var stale = await dbContext.CentralElasticRunnerInstances
+            .Where(instance => instance.HostName != HostName && live.Contains(instance.State) && instance.OwnerHeartbeatAtUtc < ownerStaleBefore)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var row in stale)
+        {
+            await StopAsync(dbContext, row, now, ElasticRunnerInstanceState.Orphaned, "owner-lost", cancellationToken).ConfigureAwait(false);
+            telemetry.RecordOrphanCleaned(provider.Name);
+            Log.OwnerLost(logger, row.InstanceId, row.HostName);
+        }
         if (!_adopted)
         {
             AdoptRecorded(rows);
@@ -195,11 +211,23 @@ internal sealed partial class ElasticRunnerAutoscaler(
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         var current = rows.Where(row => row.State is nameof(ElasticRunnerInstanceState.Starting) or nameof(ElasticRunnerInstanceState.Running)).ToList();
-        var starting = current.Count(row => row.State == nameof(ElasticRunnerInstanceState.Starting));
-        var running = current.Count(row => row.State == nameof(ElasticRunnerInstanceState.Running));
+        // Capacity is bounded deployment-wide: every replica's live instances count toward MaxInstances, while only
+        // this host's instances are reconciled or retired here.
+        var liveStates = new[] { nameof(ElasticRunnerInstanceState.Starting), nameof(ElasticRunnerInstanceState.Running) };
+        var otherHosts = await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+            .Where(instance => instance.Provider == provider.Name && instance.HostName != HostName && liveStates.Contains(instance.State))
+            .GroupBy(instance => instance.State)
+            .Select(group => new { State = group.Key, Count = group.Count() })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var starting = current.Count(row => row.State == nameof(ElasticRunnerInstanceState.Starting))
+            + otherHosts.Where(item => item.State == nameof(ElasticRunnerInstanceState.Starting)).Sum(item => item.Count);
+        var running = current.Count(row => row.State == nameof(ElasticRunnerInstanceState.Running))
+            + otherHosts.Where(item => item.State == nameof(ElasticRunnerInstanceState.Running)).Sum(item => item.Count);
+        // Excess instances (with a safety timeout) retire before instances kept for the warm minimum.
         var idle = current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Running))
             .Select(row => new { Row = row, IdleFor = now - (row.LastBusyAtUtc ?? row.RegisteredAtUtc ?? row.StartedAtUtc) })
-            .OrderByDescending(item => item.IdleFor)
+            .OrderBy(item => item.Row.KeepWarm)
+            .ThenByDescending(item => item.IdleFor)
             .ToList();
 
         var placed = runnerOptions.Value.ResolveRunnerPlacedRecipes();
@@ -220,10 +248,19 @@ internal sealed partial class ElasticRunnerAutoscaler(
         int? entitled = null;
         if (entitlements is not null && backlogRows.Count != 0)
         {
-            // Demand includes in-flight work, so the bound counts it too: occupied slots already hold entitlement
-            // of observatories that may not be backlogged, and backlogged observatories keep their own limits.
+            // The bound is what the claim could still admit: each backlogged observatory's remaining headroom
+            // (limit minus its unexpired leases from any worker) plus the work already executing on our instances.
+            var observatoryIds = backlogRows.Select(row => row.ObservatoryId).ToArray();
+            var activeByObservatory = await dbContext.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc > now
+                    && observatoryIds.Contains(job.SourceArtifact!.Frame!.ObservatoryId))
+                .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
+                .Select(group => new { ObservatoryId = group.Key, Active = group.Count() })
+                .ToDictionaryAsync(item => item.ObservatoryId, item => item.Active, cancellationToken).ConfigureAwait(false);
             var limits = backlogRows.Select(row => entitlements.ResolveActiveJobs(row.ObservatoryId)).ToArray();
-            entitled = limits.Any(limit => limit <= 0) ? null : limits.Sum() + inFlight;
+            entitled = limits.Any(limit => limit <= 0)
+                ? null
+                : backlogRows.Sum(row => Math.Max(0, entitlements.ResolveActiveJobs(row.ObservatoryId) - (activeByObservatory.TryGetValue(row.ObservatoryId, out var active) ? active : 0))) + inFlight;
         }
         var minutesToday = await InstanceMinutesTodayAsync(dbContext, now, cancellationToken).ConfigureAwait(false);
         var input = new ElasticScalingInput(backlog, oldestAge, running, starting, idle.Count(item => item.IdleFor >= settings.ScaleToZeroAfter),
@@ -263,6 +300,14 @@ internal sealed partial class ElasticRunnerAutoscaler(
         return decision;
     }
 
+    /// <summary>An owner that has not reconciled a row for this long is considered gone.</summary>
+    internal static TimeSpan OwnerStaleAfter(CentralElasticProviderOptions settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        var byInterval = settings.SampleInterval * 6;
+        return byInterval > TimeSpan.FromMinutes(5) ? byInterval : TimeSpan.FromMinutes(5);
+    }
+
     /// <summary>The claim's pool predicate: reserved instances serve their pool and shared work, unpooled instances only shared work.</summary>
     internal static bool IsPoolEligible(string? instancePool, string? observatoryPool)
         => instancePool is null ? observatoryPool is null : observatoryPool is null || string.Equals(observatoryPool, instancePool, StringComparison.Ordinal);
@@ -292,7 +337,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
             labels.Add("pool-mode:reserved");
         }
         // Instances filling the warm minimum keep no self-termination timeout; excess capacity keeps the safety net.
-        var liveCount = await dbContext.CentralElasticRunnerInstances.CountAsync(instance => instance.Provider == provider.Name && instance.HostName == HostName
+        var liveCount = await dbContext.CentralElasticRunnerInstances.CountAsync(instance => instance.Provider == provider.Name
             && (instance.State == nameof(ElasticRunnerInstanceState.Starting) || instance.State == nameof(ElasticRunnerInstanceState.Running)), cancellationToken).ConfigureAwait(false);
         var request = new ElasticRunnerProvisionRequest(
             instanceId, runnerId, CentralElasticProviderOptions.EligibleJobClasses, labels, settings.MaxConcurrencyPerInstance, settings.Pool,
@@ -306,6 +351,8 @@ internal sealed partial class ElasticRunnerAutoscaler(
             HostName = HostName,
             InstanceId = instanceId,
             RunnerId = runnerId,
+            KeepWarm = request.KeepWarm,
+            OwnerHeartbeatAtUtc = now,
             ProcessArchitecture = provider.Capabilities.ProcessArchitecture,
             RuntimeImage = provider.Capabilities.RuntimeImage,
             State = nameof(ElasticRunnerInstanceState.Starting),
@@ -393,5 +440,8 @@ internal sealed partial class ElasticRunnerAutoscaler(
 
         [LoggerMessage(2237, LogLevel.Information, "Elastic runner instance inherited while provisioning is disabled: Instance={Instance}, Alive={Alive}")]
         public static partial void InheritedRetired(ILogger logger, string instance, bool alive);
+
+        [LoggerMessage(2239, LogLevel.Warning, "Elastic runner instance reaped because its owning host stopped reconciling it: Instance={Instance}, Owner={Owner}")]
+        public static partial void OwnerLost(ILogger logger, string instance, string owner);
     }
 }

@@ -211,6 +211,7 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
         foreach (var (instanceId, tracked) in draining)
         {
             var process = tracked.Process;
+            var stopped = false;
             try
             {
                 var remaining = deadline - timeProvider.GetUtcNow();
@@ -222,7 +223,7 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
                     {
                         await process.WaitForExitAsync(linked.Token).ConfigureAwait(false);
                     }
-                    catch (OperationCanceledException) when (timeout.IsCancellationRequested && !process.HasExited)
+                    catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested && !process.HasExited)
                     {
                         ForceStop(process);
                     }
@@ -230,22 +231,28 @@ internal sealed partial class LocalProcessElasticRunnerProvider(
                 // A launcher may exit before the runner it started: wait for the whole group until the deadline, then force it.
                 await WaitForGroupExitAsync(process.Id, deadline, cancellationToken).ConfigureAwait(false);
                 ForceStopGroup(process.Id);
+                stopped = true;
                 Log.Retired(logger, instanceId, process.Id, process.HasExited ? process.ExitCode : -1);
             }
             finally
             {
-                _instances.TryRemove(instanceId, out _);
-                try
+                if (stopped)
                 {
-                    File.Delete(StopFilePath(instanceId));
+                    _instances.TryRemove(instanceId, out _);
+                    try
+                    {
+                        File.Delete(StopFilePath(instanceId));
+                    }
+                    catch (IOException)
+                    {
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                    }
+                    process.Dispose();
                 }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
-                process.Dispose();
+                // A caller cancellation (host shutdown) leaves the instance tracked and its stop file in place: the
+                // runner still drains on its own signal, and the next host reconciles or re-adopts it.
             }
         }
     }

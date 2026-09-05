@@ -18,6 +18,12 @@ internal sealed class CentralElasticRunnerInstance
 
     public string RunnerId { get; set; } = string.Empty;
 
+    /// <summary>Provisioned to fill the warm minimum: never self-terminates and is retired after excess capacity.</summary>
+    public bool KeepWarm { get; set; }
+
+    /// <summary>Last time the launching host reconciled this instance; a stale value means the owner is gone and the row is reaped.</summary>
+    public DateTimeOffset OwnerHeartbeatAtUtc { get; set; }
+
     public int? ProcessId { get; set; }
 
     public string ProcessArchitecture { get; set; } = string.Empty;

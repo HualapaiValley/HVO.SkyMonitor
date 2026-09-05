@@ -5545,6 +5545,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     HostName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
                     InstanceId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
                     RunnerId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    KeepWarm = table.Column<bool>(type: "bit", nullable: false),
+                    OwnerHeartbeatAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
                     ProcessId = table.Column<int>(type: "int", nullable: true),
                     ProcessArchitecture = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
                     RuntimeImage = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),

@@ -47,13 +47,14 @@ public sealed class ElasticProviderIntegrationTests
         decision.Provision.Should().Be(1, "runner-placed backlog provisions one instance");
         decision.Reason.Should().Be(ElasticScalingPolicy.ReasonBacklog);
         var instance = await host.SingleInstanceAsync().ConfigureAwait(false);
+        var instanceId = instance.InstanceId;
         instance.State.Should().Be(nameof(ElasticRunnerInstanceState.Starting));
         instance.ProcessId.Should().NotBeNull();
         instance.RunnerId.Should().StartWith("elastic-local-process-");
 
         // The launched runner registers (cold start measured), claims through the runner protocol, and completes the job.
-        await host.SampleUntilAsync(async () => (await host.SingleInstanceAsync().ConfigureAwait(false)).State == nameof(ElasticRunnerInstanceState.Running), CompletionTimeout).ConfigureAwait(false);
-        instance = await host.SingleInstanceAsync().ConfigureAwait(false);
+        await host.SampleUntilAsync(async () => (await host.InstanceAsync(instanceId).ConfigureAwait(false)).State == nameof(ElasticRunnerInstanceState.Running), CompletionTimeout).ConfigureAwait(false);
+        instance = await host.InstanceAsync(instanceId).ConfigureAwait(false);
         instance.ColdStartMilliseconds.Should().BeGreaterThan(0);
         await ElasticHost.WaitUntilAsync(async () => await host.JobStatusAsync(sourceId).ConfigureAwait(false) == CentralDerivativeJobStatus.Completed, CompletionTimeout).ConfigureAwait(false);
         var jobId = await host.PlacedJobIdAsync(sourceId).ConfigureAwait(false);
@@ -69,8 +70,8 @@ public sealed class ElasticProviderIntegrationTests
 
         // Idle beyond the scale-to-zero delay retires the instance and its registration; the process is gone.
         await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-        await host.SampleUntilAsync(async () => (await host.SingleInstanceAsync().ConfigureAwait(false)).State == nameof(ElasticRunnerInstanceState.Stopped), TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-        instance = await host.SingleInstanceAsync().ConfigureAwait(false);
+        await host.SampleUntilAsync(async () => (await host.InstanceAsync(instanceId).ConfigureAwait(false)).State == nameof(ElasticRunnerInstanceState.Stopped), TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+        instance = await host.InstanceAsync(instanceId).ConfigureAwait(false);
         instance.Reason.Should().Be(ElasticScalingPolicy.ReasonIdle);
         instance.StoppedAtUtc.Should().NotBeNull();
         await using (var scope = host.Factory.Services.CreateAsyncScope())
@@ -93,7 +94,8 @@ public sealed class ElasticProviderIntegrationTests
         await SeedPreviewJobAsync("elastic-orphan").ConfigureAwait(false);
         (await host.Autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false)).Provision.Should().Be(1);
         var instance = await host.SingleInstanceAsync().ConfigureAwait(false);
-        await host.SampleUntilAsync(async () => (await host.SingleInstanceAsync().ConfigureAwait(false)).State == nameof(ElasticRunnerInstanceState.Running), CompletionTimeout).ConfigureAwait(false);
+        var instanceId = instance.InstanceId;
+        await host.SampleUntilAsync(async () => (await host.InstanceAsync(instanceId).ConfigureAwait(false)).State == nameof(ElasticRunnerInstanceState.Running), CompletionTimeout).ConfigureAwait(false);
 
         // Simulate a crash outside the host's control.
         using (var process = Process.GetProcessById(instance.ProcessId!.Value))
@@ -102,8 +104,8 @@ public sealed class ElasticProviderIntegrationTests
             await process.WaitForExitAsync().ConfigureAwait(false);
         }
         await host.Autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
-        instance = await host.SingleInstanceAsync().ConfigureAwait(false);
-        instance.State.Should().Be(nameof(ElasticRunnerInstanceState.Orphaned));
+        instance = await host.InstanceAsync(instanceId).ConfigureAwait(false);
+        instance.State.Should().Be(nameof(ElasticRunnerInstanceState.Orphaned), "the dead instance is reaped even though the remaining backlog provisions a replacement");
         instance.Reason.Should().Be("process-exited");
         await using (var scope = host.Factory.Services.CreateAsyncScope())
         {
@@ -274,6 +276,8 @@ public sealed class ElasticProviderIntegrationTests
             factory.CreateClient();
             var published = factory.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault();
             new Uri(published ?? "http://127.0.0.1:0/").Port.Should().Be(port, "the runner was told the address the host actually listens on");
+            // The hosted loop samples once at startup (finding no backlog because callers reset the database first)
+            // and then waits for the one-hour interval; the tests drive every further sample explicitly.
             return new ElasticHost(factory, secretFile);
         }
 
@@ -316,6 +320,13 @@ public sealed class ElasticProviderIntegrationTests
             await using var scope = Factory.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             return await db.CentralElasticRunnerInstances.AsNoTracking().OrderByDescending(instance => instance.StartedAtUtc).FirstAsync().ConfigureAwait(false);
+        }
+
+        public async Task<CentralElasticRunnerInstance> InstanceAsync(string instanceId)
+        {
+            await using var scope = Factory.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            return await db.CentralElasticRunnerInstances.AsNoTracking().SingleAsync(instance => instance.InstanceId == instanceId).ConfigureAwait(false);
         }
 
         /// <summary>The seed helper returns the raw source artifact id; the runner-placed job is the preview job of that source.</summary>

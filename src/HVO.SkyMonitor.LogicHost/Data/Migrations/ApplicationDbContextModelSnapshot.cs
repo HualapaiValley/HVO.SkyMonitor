@@ -2648,7 +2648,13 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
 
+                    b.Property<bool>("KeepWarm")
+                        .HasColumnType("bit");
+
                     b.Property<DateTimeOffset?>("LastBusyAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("OwnerHeartbeatAtUtc")
                         .HasColumnType("datetimeoffset");
 
                     b.Property<string>("ProcessArchitecture")

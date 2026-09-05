@@ -13,7 +13,8 @@
     { "eventId": 2235, "level": "Information", "fields": ["Instance", "Runner", "ColdStartMs"] },
     { "eventId": 2236, "level": "Information", "fields": ["Reason", "Backlog", "OldestBacklogSeconds"] },
     { "eventId": 2237, "level": "Information", "fields": ["Instance", "Alive"] },
-    { "eventId": 2238, "level": "Warning", "fields": ["Instance"] }
+    { "eventId": 2238, "level": "Warning", "fields": ["Instance"] },
+    { "eventId": 2239, "level": "Warning", "fields": ["Instance", "Owner"] }
   ],
   "metrics": [
     { "name": "skymonitor.central.elastic.instances", "unit": "{instance}", "labels": { "provider": ["local-process"], "state": ["starting", "running", "idle"] } },

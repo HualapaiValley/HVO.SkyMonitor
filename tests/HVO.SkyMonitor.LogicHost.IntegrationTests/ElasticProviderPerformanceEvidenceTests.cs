@@ -29,8 +29,9 @@ public sealed class ElasticProviderPerformanceEvidenceTests
         var tiers = new List<object>();
         foreach (var maxInstances in InstanceTiers)
         {
+            // The reset precedes the host so the autoscaler's startup sample finds no backlog and touches no rows.
+            await DisableClaimableAsync().ConfigureAwait(false);
             await using var host = await ElasticProviderIntegrationTests.ElasticHost.StartAsync(maxInstances, TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-            await DisableClaimableAsync(host).ConfigureAwait(false);
             var tierStartedUtc = DateTimeOffset.UtcNow;
             using var process = Process.GetCurrentProcess();
             process.Refresh();
@@ -148,9 +149,9 @@ public sealed class ElasticProviderPerformanceEvidenceTests
             .OrderByDescending(row => row.StartedAtUtc).Take(8).ToListAsync().ConfigureAwait(false);
     }
 
-    private static async Task DisableClaimableAsync(ElasticProviderIntegrationTests.ElasticHost host)
+    private static async Task DisableClaimableAsync()
     {
-        await using var scope = host.Factory.Services.CreateAsyncScope();
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         await db.CentralDerivativeJobs.Where(job => job.Status != CentralDerivativeJobStatus.Completed)
             .ExecuteUpdateAsync(setters => setters

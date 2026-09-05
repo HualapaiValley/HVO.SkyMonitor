@@ -75,9 +75,19 @@ processes on the host on demand. Absent and disabled by default.
   durable intent precedes the launch, a failed launch closes it, and an
   instance the provider reports without a record is retired.
 - Instance rows record the launching host; each LogicHost replica reconciles
-  and retires only the instances it launched, including when it restarts
-  with `ElasticProviders` disabled. `SampleInterval` and `RetireGrace` are
-  validated even while disabled because that cleanup consumes them.
+  and retires only the instances it launched (including when it restarts
+  with `ElasticProviders` disabled), while `MaxInstances` and the warm
+  minimum count every replica's live instances. Each sample heartbeats the
+  host's rows; rows whose owner has not reconciled them for six sample
+  intervals (at least five minutes) are reaped as `owner-lost` and stop
+  accruing minutes. `SampleInterval` and `RetireGrace` are validated even
+  while disabled because that cleanup consumes them.
+- The entitlement bound is each backlogged observatory's remaining headroom
+  (its limit minus its unexpired leases from any worker) plus the work
+  already executing on the instances. Scale-down retires excess instances
+  before instances kept for the warm minimum. A retirement interrupted by
+  host shutdown leaves the instance tracked and its stop file in place so the
+  runner still drains and the next host reconciles it.
 
 ## Behavior
 
