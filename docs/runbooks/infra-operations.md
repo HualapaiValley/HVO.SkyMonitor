@@ -3,14 +3,12 @@
 This runbook covers persistent shared services on `hvo-docker.hvo.lan` and the
 local application containers that consume them.
 
-Repository infrastructure helpers require the Linux/devcontainer GNU toolchain
+Repository infrastructure helpers require the Linux GNU toolchain
 (`bash`, GNU `realpath`, `tar`, `find`, `sort`, `stat`, `flock`, `sha256sum`,
-`cmp`, and Perl). Run them from the supported devcontainer on macOS or Windows
-hosts. Windows development requires a clone on the WSL2 Linux filesystem rather
-than NTFS so the ignored persistent developer-state roots can enforce POSIX
-owner-only permissions. On every host, open the physical checkout path rather
-than a symlink and invoke Dev Containers as the normal non-root account that
-owns the checkout.
+`cmp`, and Perl). Run them natively on Linux or WSL2. On macOS or Windows, the
+optional devcontainer provides a compatible environment. Keep Windows checkouts
+on the WSL2 Linux filesystem so repository scripts receive normal Unix
+filesystem semantics.
 
 ## Service Layout and Ownership
 

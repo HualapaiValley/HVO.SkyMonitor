@@ -3,8 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-bash "$SCRIPT_DIR/verify-persistent-agent-state.sh"
-bash "$SCRIPT_DIR/configure-opencode.sh"
 cd "$REPO_ROOT"
 
 LOG_ROOT="${POST_CREATE_LOG_ROOT:-$SCRIPT_DIR/logs}"
@@ -20,12 +18,6 @@ exec 2>&1
 
 echo "Recording post-create output to $LOG_FILE"
 echo
-
-# Make ignored repository secrets available to this setup process.
-# .devcontainer/devcontainer.local.env overrides the repository .env.
-# shellcheck source=.devcontainer/load-repo-env.sh
-source "$SCRIPT_DIR/load-repo-env.sh"
-unset TAILSCALE_AUTHKEY
 
 command_exists() {
 	command -v "$1" >/dev/null 2>&1
@@ -111,19 +103,7 @@ else
 	exit 1
 fi
 
-log_section "SSH agent setup"
-echo "Setting up SSH agent..."
-if [ -z "${SSH_AUTH_SOCK:-}" ]; then
-	echo "Starting new SSH agent..."
-	eval "$(ssh-agent -s)"
-else
-	echo "Using existing SSH agent at $SSH_AUTH_SOCK"
-fi
-
-# SSH_PRIVATE_KEY is optional and must be injected from the host or ignored local env.
-bash "$SCRIPT_DIR/setup-ssh-key.sh"
-
-# Match the Website devcontainer behavior when these optional values are present.
+# Apply an optional developer identity when both values are present.
 if [[ -n "${GIT_AUTHOR_NAME:-}" && -n "${GIT_AUTHOR_EMAIL:-}" ]]; then
 	git config --global user.name "$GIT_AUTHOR_NAME"
 	git config --global user.email "$GIT_AUTHOR_EMAIL"
@@ -134,20 +114,11 @@ else
 	echo "Git author identity is not configured; commits will remain unavailable until it is supplied."
 fi
 
-github_token="${GH_TOKEN:-${GITHUB_TOKEN:-${GH_PAT:-}}}"
-if [[ -n "$github_token" ]]; then
-	if ! command_exists gh; then
-		echo "A GitHub token was supplied, but gh is not installed." >&2
-		exit 1
-	fi
-	(unset GITHUB_TOKEN GH_TOKEN; printf '%s' "$github_token" | gh auth login --hostname github.com --git-protocol https --with-token)
-	gh auth setup-git
-elif command_exists gh && gh auth status >/dev/null 2>&1; then
+if command_exists gh && gh auth status >/dev/null 2>&1; then
 	gh auth setup-git
 else
-	echo "GitHub authentication is not configured; GitHub operations will remain unavailable until a token is supplied."
+	echo "GitHub authentication is not configured; authenticate through the host or cloud workspace to enable GitHub operations."
 fi
-unset github_token
 
 # Generate HTTPS developer certificate
 echo "Generating HTTPS developer certificate..."
@@ -161,8 +132,6 @@ echo "Pinned .NET tools:"
 dotnet tool list --local
 echo
 log_tool_version "dotnet-ef" dotnet ef --version
-log_tool_version "OpenCode" opencode --version
-log_tool_version "Tailscale" tailscale version
 log_tool_version "Docker" docker --version
 log_tool_version "ShellCheck" shellcheck --version
 log_tool_version "dotnet" dotnet --version

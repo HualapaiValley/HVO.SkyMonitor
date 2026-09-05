@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Validate the cloud/devcontainer definition without exposing resolved credentials.
+
+set -euo pipefail
+umask 077
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEMP_PARENT="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+TEMP_ROOT="$(mktemp -d "$TEMP_PARENT/hvo-devcontainer-contract.XXXXXX")"
+readonly SCRIPT_DIR REPO_ROOT TEMP_PARENT TEMP_ROOT
+
+cleanup() {
+    case "$TEMP_ROOT" in
+        "$TEMP_PARENT"/hvo-devcontainer-contract.*) rm -rf -- "$TEMP_ROOT" ;;
+    esac
+}
+trap cleanup EXIT
+
+for variable in GITHUB_TOKEN GH_TOKEN GH_PAT GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL; do
+    unset "$variable"
+done
+
+jq --exit-status 'type == "object"' \
+    "$REPO_ROOT/.devcontainer/devcontainer.json" >/dev/null
+
+mapfile -d '' devcontainer_sources < <(
+    git -C "$REPO_ROOT" ls-files -z -- .devcontainer
+)
+if ((${#devcontainer_sources[@]} > 0)) && \
+    (cd "$REPO_ROOT" && rg --quiet --ignore-case \
+        'opencode|HVO_AGENT_STATE_ROOT|HVO_AGENT_WORKTREE_ROOT|HVO_DEVCONTAINER_STATE_SOURCE' \
+        "${devcontainer_sources[@]}"); then
+    echo "Retired agent integration is present in the devcontainer definition." >&2
+    exit 1
+fi
+
+if ! npx --yes @devcontainers/cli@0.89.0 read-configuration \
+    --workspace-folder "$REPO_ROOT" \
+    > "$TEMP_ROOT/resolved.json" \
+    2> "$TEMP_ROOT/read-configuration.log"; then
+    echo "Devcontainer configuration resolution failed; diagnostics were suppressed because resolved configuration may contain secrets." >&2
+    exit 1
+fi
+
+jq --exit-status \
+    '.configuration.remoteUser == "vscode" and
+     (.configuration.features["ghcr.io/devcontainers/features/dotnet:2"].version == "10.0.400") and
+     (.configuration.features["ghcr.io/devcontainers/features/docker-outside-of-docker:1"].version == "29.7.2")' \
+    "$TEMP_ROOT/resolved.json" >/dev/null
+
+echo "Devcontainer configuration contract passed."

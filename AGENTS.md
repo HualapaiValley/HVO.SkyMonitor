@@ -56,17 +56,12 @@
 
 ## Roadmap Execution
 
-### Rebuild-Safe Agent State
+### Agent Workspaces
 
-- Create agent Git worktrees only beneath `$HVO_AGENT_WORKTREE_ROOT`, which is
-  mounted at `/tmp/opencode` from ignored host state. Do not create authoritative
-  worktrees in any other `/tmp` location.
-- Store resumable non-Git scratch state beneath `$HVO_AGENT_STATE_ROOT`. Normal
-  `/tmp` remains intentionally ephemeral for sockets, locks, caches, and files
-  that are safe to discard.
-- OpenCode configuration, credentials, sessions, worktrees, and resumable agent
-  state are host bind mounts. The devcontainer must fail its persistence check
-  rather than start OpenCode against container-layer fallback directories.
+- Run agents from the native host, an SSH session, or remote-agent tooling.
+  Keep concurrent work isolated in Git worktrees at durable, host-owned paths
+  appropriate to the selected tool. Do not rely on a devcontainer's writable
+  layer for authoritative work or resumable state.
 
 - Use the active initiative's owning roadmap epic for coordination, claims, and
   handoffs. Epic #89 and the `Virtual-First Platform Completion` milestone retain
