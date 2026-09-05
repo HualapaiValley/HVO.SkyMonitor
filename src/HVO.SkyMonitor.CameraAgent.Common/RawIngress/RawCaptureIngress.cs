@@ -209,6 +209,11 @@ internal sealed class RawCaptureIngress :
                 }
                 Volatile.Write(ref _initialized, true);
             }
+            catch (OperationCanceledException)
+            {
+                // Shutdown during initialization is not an integrity failure: no Critical log, availability untouched.
+                throw;
+            }
             catch (Exception exception)
             {
                 var reason = FailureReason(exception);
@@ -263,6 +268,7 @@ internal sealed class RawCaptureIngress :
         await _acceptGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var lifecycleGate = RawIngressLifecycleLock.ForRoot(_options.RawIngressRoot);
         var lifecycleAcquired = false;
+        var payloadPublished = false;
         try
         {
             var stableIds = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
@@ -370,6 +376,7 @@ internal sealed class RawCaptureIngress :
                 using (var payloadActivity = RawIngressTelemetry.ActivitySource.StartActivity("payload.publish"))
                 {
                     await _files.PublishPayloadAsync(paths, frame.PixelData, cancellationToken).ConfigureAwait(false);
+                    payloadPublished = true;
                     payloadActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 }
                 var descriptor = RawCaptureDescriptorFactory.Create(
@@ -532,8 +539,24 @@ internal sealed class RawCaptureIngress :
             }
             return receipt;
         }
-        catch (OperationCanceledException) when (!lifecycleAcquired)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // The caller's own cancellation (host shutdown, a revision change, a timeout) is not a storage failure:
+            // availability is left alone and nothing is logged at Error. A cancellation that is not the caller's
+            // falls through to the failure path below: every store call here either honours the caller's token or
+            // runs on CancellationToken.None, so a stray cancellation is a store anomaly wherever it surfaces.
+            _telemetry.RecordCancellation(lifecycleAcquired ? "accept" : "admission");
+            if (lifecycleAcquired)
+            {
+                _logger.RawIngressCanceled("accept");
+                if (payloadPublished)
+                {
+                    // The journal commit cannot be interrupted, but a payload published without its sidecar or its
+                    // commit would make every retry of this capture a conflict until the reconciler recovers or
+                    // quarantines it, so the next accept re-initializes first.
+                    Volatile.Write(ref _initialized, false);
+                }
+            }
             throw;
         }
         catch (CaptureLaneBackpressureException)
