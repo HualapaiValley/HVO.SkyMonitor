@@ -233,6 +233,48 @@ internal sealed partial class SqliteCaptureProcessingStore
             ReadNullableString(reader, 8));
     }
 
+    /// <summary>
+    /// Reads the central assignment provenance that produced <paramref name="localRevisionId"/>, or null when the
+    /// revision was compiled locally. The evidence exporter uses it to mark a revision <c>CentrallyAssigned</c>.
+    /// </summary>
+    internal async ValueTask<ExecutionEvidenceAssignmentProvenanceV1?> ReadAssignmentProvenanceAsync(
+        string localRevisionId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(localRevisionId);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT proposal_id, catalog_revision_id, assignment_id, registration_id, installation_id,
+                   installation_public_id, capability_snapshot_sha256, issued_unix_ms,
+                   COALESCE((SELECT MIN(occurred_unix_ms) FROM processing_graph_delivery_facts
+                             WHERE proposal_id = processing_graph_delivery_proposals.proposal_id
+                               AND fact_kind = 'Accepted'), settled_unix_ms, issued_unix_ms)
+            FROM processing_graph_delivery_proposals
+            WHERE disposition = 'Accepted' AND local_revision_id = $revision
+            ORDER BY issued_unix_ms DESC, proposal_id DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$revision", localRevisionId);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        return new(
+            ExecutionEvidenceAssignmentProvenanceV1.CurrentSchemaVersion,
+            Guid.ParseExact(reader.GetString(0), "N"),
+            Guid.ParseExact(reader.GetString(1), "N"),
+            Guid.ParseExact(reader.GetString(2), "N"),
+            Guid.ParseExact(reader.GetString(3), "N"),
+            Guid.ParseExact(reader.GetString(4), "N"),
+            Guid.ParseExact(reader.GetString(5), "N"),
+            reader.GetString(6),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7)),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(8)));
+    }
+
     internal async ValueTask AcknowledgeDeliveryFactAsync(Guid factId, CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
