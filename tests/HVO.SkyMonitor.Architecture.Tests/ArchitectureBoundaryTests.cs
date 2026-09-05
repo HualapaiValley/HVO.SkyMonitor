@@ -137,6 +137,66 @@ public sealed class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void NativeOpenCallers_SelectDirectoryAndNoFollowFlagsPerArchitecture()
+    {
+        // O_DIRECTORY and O_NOFOLLOW are 0x10000/0x20000 on the asm-generic ABI (x86, loongarch, riscv, s390) but
+        // 0x4000/0x8000 on arm and powerpc, so a hard-coded value silently breaks aarch64 while every x86-64 lane
+        // stays green (#603). Any file that imports open(2)/openat(2) from libc must select the flags by
+        // RuntimeInformation.ProcessArchitecture, either through a per-architecture table it declares itself or by
+        // delegating to one, and no file outside the three declared tables may spell the literals at all.
+        var root = RepositoryGraph.FindRepositoryRoot();
+        string[] tableFiles =
+        [
+            Path.Combine("src", "HVO.SkyMonitor.CameraAgent.Common", "Storage", "LinuxOpenFlags.cs"),
+            Path.Combine("src", "HVO.SkyMonitor.Deployment.Cli", "NativeLinux.cs"),
+            Path.Combine("src", "HVO.SkyMonitor.Catalog.Sqlite", "CatalogSnapshotResolver.cs"),
+        ];
+        var importPattern = new System.Text.RegularExpressions.Regex(
+            """"libc"[^;]*EntryPoint\s*=\s*"open(at)?"""",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        var literalPattern = new System.Text.RegularExpressions.Regex(
+            """0x0*(10000|20000|A0000)\b""",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var violations = new List<string>();
+        var callers = 0;
+
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+                     .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"))
+                     .Order(StringComparer.Ordinal))
+        {
+            var text = File.ReadAllText(file);
+            var relative = Path.GetRelativePath(root, file);
+            var declaresTable = tableFiles.Contains(relative, StringComparer.Ordinal);
+            if (declaresTable && !text.Contains("Architecture.Arm64", StringComparison.Ordinal))
+            {
+                violations.Add($"{relative}: the per-architecture flag table is missing");
+            }
+
+            if (!declaresTable && literalPattern.IsMatch(text) && importPattern.IsMatch(text))
+            {
+                violations.Add($"{relative}: hard-codes an open(2) flag literal beside a libc open import");
+            }
+
+            if (!importPattern.IsMatch(text))
+            {
+                continue;
+            }
+
+            callers++;
+            if (!declaresTable &&
+                !text.Contains("LinuxOpenFlags.", StringComparison.Ordinal) &&
+                !text.Contains("RawIngressFileStore.GetLinux", StringComparison.Ordinal))
+            {
+                violations.Add($"{relative}: imports libc open but does not select its flags per architecture");
+            }
+        }
+
+        Assert.IsGreaterThanOrEqualTo(4, callers, "the libc open importers were not discovered; the pattern is stale");
+        Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void EveryForbiddenProductionPairIsRejectedByTheAllowlist()
     {
         foreach (var source in AllowedProductionReferences.Keys)
@@ -868,10 +928,10 @@ public sealed class ArchitectureBoundaryTests
                 : $"<unknown:{resolved}>";
         }
 
-        private static bool HasPathSegment(string path, string segment) =>
+        internal static bool HasPathSegment(string path, string segment) =>
             path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Contains(segment, StringComparer.OrdinalIgnoreCase);
 
-        private static string FindRepositoryRoot()
+        internal static string FindRepositoryRoot()
         {
             for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
             {

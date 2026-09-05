@@ -23,6 +23,54 @@ internal sealed class CatalogSnapshotResolverTests
     }
 
     [TestMethod]
+    public void NoFollowFlagFollowsTheKernelAbiOfEachArchitecture()
+    {
+        foreach (var overriding in new[] { Architecture.Arm, Architecture.Arm64, Architecture.Armv6, Architecture.Ppc64le })
+        {
+            Assert.AreEqual(0x8000, CatalogSnapshotResolver.GetLinuxNoFollowFlag(overriding), $"O_NOFOLLOW on {overriding}");
+        }
+
+        foreach (var generic in new[] { Architecture.X86, Architecture.X64, Architecture.LoongArch64, Architecture.RiscV64, Architecture.S390x })
+        {
+            Assert.AreEqual(0x20000, CatalogSnapshotResolver.GetLinuxNoFollowFlag(generic), $"O_NOFOLLOW on {generic}");
+        }
+
+        Assert.ThrowsExactly<PlatformNotSupportedException>(() => CatalogSnapshotResolver.GetLinuxNoFollowFlag(Architecture.Wasm));
+    }
+
+    [TestMethod]
+    public void OpenFileNoFollowOpensARealFileAndRefusesASymlinkedOne()
+    {
+        // While the x86 O_NOFOLLOW value was hard-coded, aarch64 got O_LARGEFILE instead and the symlink was
+        // followed, so the second assertion is the one that discriminates there.
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Native no-follow opening is verified on Linux.");
+        }
+
+        var root = Directory.CreateTempSubdirectory("hvo-catalog-open-");
+        try
+        {
+            var real = Path.Combine(root.FullName, "retained.sqlite");
+            File.WriteAllBytes(real, [1, 2, 3, 4]);
+            var link = Path.Combine(root.FullName, "link.sqlite");
+            File.CreateSymbolicLink(link, real);
+
+            using (var stream = CatalogSnapshotResolver.OpenFileNoFollow(real))
+            {
+                Assert.AreEqual(4, stream.Length);
+            }
+
+            var refused = Assert.ThrowsExactly<Win32Exception>(() => CatalogSnapshotResolver.OpenFileNoFollow(link));
+            Assert.AreEqual(40, refused.NativeErrorCode, "ELOOP: the symlink must not be followed");
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
     public void ResolveLoadsExplicitFixtureAndReturnsValidatedIdentity()
     {
         using var installation = CreateInstallation();

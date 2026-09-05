@@ -697,15 +697,30 @@ public static class CatalogSnapshotResolver
         }
     }
 
+    /// <summary>
+    /// Linux <c>O_NOFOLLOW</c> for <paramref name="architecture"/>: the asm-generic value on x86, loongarch,
+    /// riscv, and s390, and the arm and powerpc override elsewhere. Mirrors <c>LinuxOpenFlags</c> in
+    /// <c>CameraAgent.Common</c>, which this assembly does not reference.
+    /// </summary>
+    internal static int GetLinuxNoFollowFlag(Architecture architecture)
+        => architecture switch
+        {
+            Architecture.Arm or Architecture.Arm64 or Architecture.Armv6 or Architecture.Ppc64le => 0x8000,
+            Architecture.X86 or Architecture.X64 or Architecture.LoongArch64 or Architecture.RiscV64 or Architecture.S390x => 0x20000,
+            _ => throw new PlatformNotSupportedException($"Linux O_NOFOLLOW is not configured for {architecture}.")
+        };
+
+    private const int LinuxCloseOnExec = 0x80000;
+    private static readonly int LinuxOpenFlags = GetLinuxNoFollowFlag(RuntimeInformation.ProcessArchitecture) | LinuxCloseOnExec;
+
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "The returned FileStream owns the native handle.")]
-    private static FileStream OpenFileNoFollow(string path)
+    internal static FileStream OpenFileNoFollow(string path)
     {
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
-            const int linuxOpenFlags = 0x000A0000;
             const int macOsOpenFlags = 0x01000100;
-            var descriptor = Open(path, OperatingSystem.IsLinux() ? linuxOpenFlags : macOsOpenFlags);
+            var descriptor = Open(path, OperatingSystem.IsLinux() ? LinuxOpenFlags : macOsOpenFlags);
             if (descriptor < 0)
             {
                 var error = Marshal.GetLastPInvokeError();

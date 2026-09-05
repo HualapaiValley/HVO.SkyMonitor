@@ -735,8 +735,8 @@ internal sealed class ProjectedSceneStagingStore :
     }
 
     private static SafeFileHandle LinuxOpenDirectory(string path)
-        => LinuxOpen(path, LinuxOpenFlags.ReadOnly | LinuxDirectoryFlag() |
-            LinuxNoFollowFlag() | LinuxOpenFlags.CloseOnExec, directory: true);
+        => LinuxOpen(path, StagingOpenFlags.ReadOnly | LinuxDirectoryFlag() |
+            LinuxNoFollowFlag() | StagingOpenFlags.CloseOnExec, directory: true);
 
     private static SafeFileHandle LinuxOpenAbsoluteDirectoryComponents(string path)
     {
@@ -762,18 +762,18 @@ internal sealed class ProjectedSceneStagingStore :
     }
 
     private static SafeFileHandle LinuxOpenAtDirectory(SafeFileHandle parent, string name)
-        => LinuxOpenAt(parent, name, LinuxOpenFlags.ReadOnly | LinuxDirectoryFlag() |
-            LinuxNoFollowFlag() | LinuxOpenFlags.CloseOnExec, directory: true)!;
+        => LinuxOpenAt(parent, name, StagingOpenFlags.ReadOnly | LinuxDirectoryFlag() |
+            LinuxNoFollowFlag() | StagingOpenFlags.CloseOnExec, directory: true)!;
 
-    private static LinuxOpenFlags LinuxDirectoryFlag()
-        => (LinuxOpenFlags)RawIngressFileStore.GetLinuxDirectoryOnlyFlag(RuntimeInformation.ProcessArchitecture);
+    private static StagingOpenFlags LinuxDirectoryFlag()
+        => (StagingOpenFlags)RawIngressFileStore.GetLinuxDirectoryOnlyFlag(RuntimeInformation.ProcessArchitecture);
 
-    private static LinuxOpenFlags LinuxNoFollowFlag()
-        => (LinuxOpenFlags)RawIngressFileStore.GetLinuxNoFollowFlag(RuntimeInformation.ProcessArchitecture);
+    private static StagingOpenFlags LinuxNoFollowFlag()
+        => (StagingOpenFlags)RawIngressFileStore.GetLinuxNoFollowFlag(RuntimeInformation.ProcessArchitecture);
 
     private static SafeFileHandle? LinuxOpenAtFile(SafeFileHandle parent, string name)
-        => LinuxOpenAt(parent, name, LinuxOpenFlags.ReadOnly | LinuxNoFollowFlag() |
-            LinuxOpenFlags.CloseOnExec, directory: false);
+        => LinuxOpenAt(parent, name, StagingOpenFlags.ReadOnly | LinuxNoFollowFlag() |
+            StagingOpenFlags.CloseOnExec, directory: false);
 
     private async ValueTask PublishLinuxAsync(
         string temporaryName,
@@ -786,8 +786,8 @@ internal sealed class ProjectedSceneStagingStore :
         SafeFileHandle temporary = LinuxOpenAt(
             directory,
             temporaryName,
-            LinuxOpenFlags.WriteOnly | LinuxOpenFlags.Create | LinuxOpenFlags.Exclusive |
-                LinuxNoFollowFlag() | LinuxOpenFlags.CloseOnExec,
+            StagingOpenFlags.WriteOnly | StagingOpenFlags.Create | StagingOpenFlags.Exclusive |
+                LinuxNoFollowFlag() | StagingOpenFlags.CloseOnExec,
             directory: false,
             mode: 0x180)
             ?? throw new IOException("Projected-scene temporary stage could not be created.");
@@ -843,7 +843,7 @@ internal sealed class ProjectedSceneStagingStore :
         }
     }
 
-    private static SafeFileHandle LinuxOpen(string path, LinuxOpenFlags flags, bool directory)
+    private static SafeFileHandle LinuxOpen(string path, StagingOpenFlags flags, bool directory)
     {
         var descriptor = Open(path, (int)flags);
         if (descriptor >= 0) return new SafeFileHandle((nint)descriptor, ownsHandle: true);
@@ -853,7 +853,7 @@ internal sealed class ProjectedSceneStagingStore :
     private static SafeFileHandle? LinuxOpenAt(
         SafeFileHandle parent,
         string name,
-        LinuxOpenFlags flags,
+        StagingOpenFlags flags,
         bool directory,
         int mode = 0)
     {
@@ -934,7 +934,7 @@ internal sealed class ProjectedSceneStagingStore :
     }
 
     [Flags]
-    private enum LinuxOpenFlags
+    private enum StagingOpenFlags
     {
         ReadOnly = 0,
         WriteOnly = 1,

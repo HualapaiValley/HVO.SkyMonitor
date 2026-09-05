@@ -22,8 +22,10 @@ internal static partial class NativeLinux
     private const int OpenReadOnly = 0;
     private const int OpenReadWrite = 2;
     private const int OpenCreate = 0x40;
-    // O_DIRECTORY and O_NOFOLLOW are numbered differently by the generic Linux ABI (arm, arm64, ppc64le) than by
-    // x86; the x86 values mean O_DIRECT and O_LARGEFILE there, so they must be selected per architecture.
+    // O_DIRECTORY and O_NOFOLLOW take the asm-generic values (0x10000, 0x20000) on x86, loongarch, riscv, and
+    // s390, but the arm and powerpc ABIs override them (0x4000, 0x8000); the default values name other flags
+    // there, so they must be selected per architecture. Mirrors LinuxOpenFlags in CameraAgent.Common, which the
+    // deployment CLI does not reference.
     private static readonly int OpenDirectory = GetOpenDirectoryFlag(RuntimeInformation.ProcessArchitecture);
     private static readonly int OpenNoFollow = GetOpenNoFollowFlag(RuntimeInformation.ProcessArchitecture);
     private const int OpenCloseOnExec = 0x80000;

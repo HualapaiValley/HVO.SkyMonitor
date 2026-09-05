@@ -10,16 +10,16 @@ public sealed class NativeLinuxOpenFlagsTests
     [TestMethod]
     public void OpenFlags_FollowTheKernelAbiOfEachArchitecture()
     {
-        foreach (var generic in new[] { Architecture.Arm, Architecture.Arm64, Architecture.Armv6, Architecture.Ppc64le })
+        foreach (var overriding in new[] { Architecture.Arm, Architecture.Arm64, Architecture.Armv6, Architecture.Ppc64le })
         {
-            Assert.AreEqual(0x4000, NativeLinux.GetOpenDirectoryFlag(generic), $"O_DIRECTORY on {generic}");
-            Assert.AreEqual(0x8000, NativeLinux.GetOpenNoFollowFlag(generic), $"O_NOFOLLOW on {generic}");
+            Assert.AreEqual(0x4000, NativeLinux.GetOpenDirectoryFlag(overriding), $"O_DIRECTORY on {overriding}");
+            Assert.AreEqual(0x8000, NativeLinux.GetOpenNoFollowFlag(overriding), $"O_NOFOLLOW on {overriding}");
         }
 
-        foreach (var x86 in new[] { Architecture.X86, Architecture.X64, Architecture.LoongArch64, Architecture.RiscV64, Architecture.S390x })
+        foreach (var generic in new[] { Architecture.X86, Architecture.X64, Architecture.LoongArch64, Architecture.RiscV64, Architecture.S390x })
         {
-            Assert.AreEqual(0x10000, NativeLinux.GetOpenDirectoryFlag(x86), $"O_DIRECTORY on {x86}");
-            Assert.AreEqual(0x20000, NativeLinux.GetOpenNoFollowFlag(x86), $"O_NOFOLLOW on {x86}");
+            Assert.AreEqual(0x10000, NativeLinux.GetOpenDirectoryFlag(generic), $"O_DIRECTORY on {generic}");
+            Assert.AreEqual(0x20000, NativeLinux.GetOpenNoFollowFlag(generic), $"O_NOFOLLOW on {generic}");
         }
 
         Assert.ThrowsExactly<PlatformNotSupportedException>(() => NativeLinux.GetOpenDirectoryFlag(Architecture.Wasm));
@@ -29,8 +29,8 @@ public sealed class NativeLinuxOpenFlagsTests
     [TestMethod]
     public void OpenDirectoryNoFollow_OpensARealDirectoryAndRefusesASymlinkOnThisArchitecture()
     {
-        // With x86 values on aarch64 the real directory fails with EINVAL (O_DIRECT) and the symlink is followed
-        // (O_LARGEFILE instead of O_NOFOLLOW). Both assertions below therefore discriminate on arm64.
+        // The real-directory assertions discriminated on aarch64 while the x86 values were hard-coded (O_DIRECT on a
+        // directory fails with EINVAL). The symlink assertions pin the O_NOFOLLOW guard going forward.
         if (!OperatingSystem.IsLinux())
         {
             Assert.Inconclusive("Native directory opening is Linux-only.");
@@ -50,8 +50,36 @@ public sealed class NativeLinuxOpenFlagsTests
             StringAssert.Contains(refused.Message, "without following links", StringComparison.Ordinal);
 
             using var parent = NativeLinux.OpenDirectoryNoFollow(root.FullName);
-            Assert.IsNotNull(NativeLinux.TryOpenDirectoryAt(parent, "real"));
-            Assert.IsNull(NativeLinux.TryOpenDirectoryAt(parent, "link"), "a symlinked child must not be opened as a directory");
+            using var child = NativeLinux.TryOpenDirectoryAt(parent, "real");
+            Assert.IsNotNull(child);
+            using var linked = NativeLinux.TryOpenDirectoryAt(parent, "link");
+            Assert.IsNull(linked, "a symlinked child must not be opened as a directory");
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void FlushDirectory_FlushesARealDirectoryAndRefusesASymlinkedOne()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Native directory flushing is Linux-only.");
+        }
+
+        var root = Directory.CreateTempSubdirectory("hvo-native-flush-");
+        try
+        {
+            var real = Directory.CreateDirectory(Path.Combine(root.FullName, "real")).FullName;
+            var link = Path.Combine(root.FullName, "link");
+            File.CreateSymbolicLink(link, real);
+
+            NativeLinux.FlushDirectory(real);
+
+            var refused = Assert.ThrowsExactly<InstallerException>(() => NativeLinux.FlushDirectory(link));
+            StringAssert.Contains(refused.Message, "could not be flushed", StringComparison.Ordinal);
         }
         finally
         {
