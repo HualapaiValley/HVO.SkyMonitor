@@ -112,7 +112,12 @@ internal static class ProcessingOutputWindowSelector
         command.Parameters.AddWithValue("$candidates", Math.Min(512, Math.Max(maximumHistory, maximumAllowedInputs * 4)));
         var contracts = JsonSerializer.Deserialize<ProcessingGraphInputContract[]>(inputsJson, SerializerOptions)
             ?? throw new InvalidDataException("The derived processing window input contract is invalid.");
-        var expectedCompatibility = CameraAgentRecipeExecutionAdapter.CreateCompatibility(current);
+        // A derived window is compared against this capture's own output from the same producer, not against
+        // the raw capture: a producer such as calibration deliberately changes the calibration and mask axes,
+        // so comparing a calibrated candidate with the raw identity would reject every earlier capture.
+        var expectedCompatibility = await ReadProducerCompatibilityAsync(
+                connection, transaction, current, sourceNodeId, contracts, cancellationToken).ConfigureAwait(false)
+            ?? CameraAgentRecipeExecutionAdapter.CreateCompatibility(current);
         var selected = (await SqliteCaptureProcessingStore.ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false))
             .Select(static row => row.Output)
             .Where(output => output.Compatibility == expectedCompatibility &&
@@ -135,6 +140,37 @@ internal static class ProcessingOutputWindowSelector
             throw new ProcessingGraphStoreConflictException("The archived derived processing window is missing a required position.");
         }
         return result;
+    }
+
+    private static async ValueTask<ProcessingCompatibilityIdentity?> ReadProducerCompatibilityAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        ReconstructionDescriptor current,
+        string sourceNodeId,
+        IReadOnlyList<ProcessingGraphInputContract> contracts,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT output.output_identity_sha256, output.artifact_id, output.payload_relative_path,
+                   output.sidecar_relative_path, output.descriptor_json, output.capture_id,
+                   output.agent_id, output.node_id, output.role, output.variant,
+                   output.recipe_identity_sha256, output.algorithms_json, output.compatibility_json,
+                   output.total_integration_ticks, output.capture_sequence, output.product_kind,
+                   output.product_schema_version, output.content_identity_sha256,
+                   output.availability_state, output.availability_reason,
+                   output.frame_artifact_recipe_version
+            FROM processing_outputs output
+            WHERE output.capture_id = $capture AND output.node_id = $node
+              AND output.availability_state = 'Available';
+            """;
+        command.Parameters.AddWithValue("$capture", current.Capture.CaptureId.ToString("N"));
+        command.Parameters.AddWithValue("$node", sourceNodeId);
+        return (await SqliteCaptureProcessingStore.ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false))
+            .Select(static row => row.Output)
+            .FirstOrDefault(output => contracts.Any(contract => Matches(contract, output)))
+            ?.Compatibility;
     }
 
     private static bool Matches(ProcessingGraphInputContract contract, DurableProcessingOutput output)

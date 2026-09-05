@@ -6,7 +6,10 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.Imaging;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -33,11 +36,13 @@ public sealed class RollingCombinationWindowLineageTests
     public async Task LiveExecutionSpansTheConfiguredWindowAndRecordsWhatItConsumed()
     {
         var root = CreateRoot();
+        ICameraModule? module = null;
         try
         {
             using var provider = CreateProvider(root);
             var configuration = CreateConfiguration();
-            var (receipt, _) = await RunBacklogAsync(provider, configuration).ConfigureAwait(false);
+            module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
+            var (receipt, _) = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
             var captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
             using var store = CreateStore(root);
             var rolling = await store.ReadNodeAsync(captureId, RollingNodeId, CancellationToken.None)
@@ -74,6 +79,10 @@ public sealed class RollingCombinationWindowLineageTests
         }
         finally
         {
+            if (module is not null)
+            {
+                await module.DisposeAsync().ConfigureAwait(false);
+            }
             Cleanup(root);
         }
     }
@@ -83,11 +92,14 @@ public sealed class RollingCombinationWindowLineageTests
     public async Task ReplayExecutionKeepsItsFrozenWindowPins()
     {
         var root = CreateRoot();
+        ICameraModule? module = null;
         try
         {
             using var provider = CreateProvider(root);
             var configuration = CreateConfiguration();
-            var (receipt, activeRevisionId) = await RunBacklogAsync(provider, configuration).ConfigureAwait(false);
+            module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
+            var (receipt, activeRevisionId) = await RunBacklogAsync(provider, configuration, module)
+                .ConfigureAwait(false);
             var descriptor = receipt.Manifest.Descriptor;
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var replay = await operations.SubmitReplayAsync(
@@ -156,6 +168,10 @@ public sealed class RollingCombinationWindowLineageTests
         }
         finally
         {
+            if (module is not null)
+            {
+                await module.DisposeAsync().ConfigureAwait(false);
+            }
             Cleanup(root);
         }
     }
@@ -165,11 +181,13 @@ public sealed class RollingCombinationWindowLineageTests
     public async Task LiveExecutionSkipsAnIneligibleEarlierCaptureAndUsesAnOlderOne()
     {
         var root = CreateRoot();
+        ICameraModule? module = null;
         try
         {
             using var provider = CreateProvider(root);
             var configuration = CreateConfiguration();
-            var (excludedReceipt, _) = await RunBacklogAsync(provider, configuration).ConfigureAwait(false);
+            module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
+            var (excludedReceipt, _) = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
             using var store = CreateStore(root);
             var excludedCalibration = await store.ReadNodeAsync(
                 excludedReceipt.Manifest.Descriptor.Capture.CaptureId,
@@ -182,7 +200,9 @@ public sealed class RollingCombinationWindowLineageTests
             // The next capture is accepted while its predecessor is still eligible, and the predecessor stops
             // qualifying before the consuming node runs, as an evicted, failed, or still-running peer would.
             var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(
-                configuration, CreateSubmission(CaptureCount), CancellationToken.None).ConfigureAwait(false);
+                configuration,
+                await CreateSubmissionAsync(module, CaptureCount, CancellationToken.None).ConfigureAwait(false),
+                CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
             await store.SetOutputAvailabilityAsync(
                 excludedCalibration.Outputs[0].OutputIdentitySha256,
@@ -206,13 +226,31 @@ public sealed class RollingCombinationWindowLineageTests
         }
         finally
         {
+            if (module is not null)
+            {
+                await module.DisposeAsync().ConfigureAwait(false);
+            }
             Cleanup(root);
         }
     }
 
-    private static async Task<(RawCaptureReceipt Receipt, string ActiveRevisionId)> RunBacklogAsync(
+    private static async Task<ICameraModule> CreateModuleAsync(
         ServiceProvider provider,
         CameraModuleConfig configuration)
+    {
+        var module = new VirtualSkyCameraModule(
+            TimeProvider.System,
+            provider.GetRequiredService<ICelestialCatalog>(),
+            provider.GetRequiredService<IProjectedSceneStore>(),
+            provider.GetRequiredService<IConstellationTopology>());
+        await module.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+        return module;
+    }
+
+    private static async Task<(RawCaptureReceipt Receipt, string ActiveRevisionId)> RunBacklogAsync(
+        ServiceProvider provider,
+        CameraModuleConfig configuration,
+        ICameraModule module)
     {
         var ingress = provider.GetRequiredService<IRawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -223,7 +261,9 @@ public sealed class RollingCombinationWindowLineageTests
         for (var index = 0; index < CaptureCount; index++)
         {
             receipt = await ingress.AcceptAsync(
-                configuration, CreateSubmission(index), CancellationToken.None).ConfigureAwait(false);
+                configuration,
+                await CreateSubmissionAsync(module, index, CancellationToken.None).ConfigureAwait(false),
+                CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
         }
         for (var index = 0; index < CaptureCount; index++)
@@ -314,6 +354,8 @@ public sealed class RollingCombinationWindowLineageTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog(
+            [new CelestialCatalogObject("star", "Star", 2.5, 20, 1)]));
         services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
@@ -328,19 +370,35 @@ public sealed class RollingCombinationWindowLineageTests
     private static CameraModuleConfig CreateConfiguration()
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
-            new CameraModuleDescriptor("VirtualSky"),
+            new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(
+                new VirtualSkyCameraModuleOptions
+                {
+                    MaximumResults = 10,
+                    ShotNoiseEnabled = false,
+                    SyntheticCalibration = SyntheticCalibration
+                })),
             new CameraRigConfig(
-                new SensorProfile("rolling-window", 4, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono16),
-                new OpticsProfile("rolling-window", 1, 1, 0),
+                new SensorProfile("rolling-window", 64, 48, 5, SensorColorMode.Mono, CameraPixelFormat.Mono16,
+                    SensorResponseMode.Monochrome),
+                new OpticsProfile("EquidistantFisheye", 0, 180, 0, LensKind.Fisheye,
+                    PrincipalPointX: 32, PrincipalPointY: 24, ImageCircleRadiusPixels: 23),
                 new RigOrientation(0, 0, 0),
                 new PipelineExposureProfile(
                     TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
             new CapturePipelineConfig(
                 [
+                    // Synthetic references are what the production smoke uses, and they deliberately change the
+                    // calibrated artifact's calibration and mask compatibility axes, which is the case a
+                    // pass-through calibration would not cover.
                     new CaptureProcessingStepConfig(
                         "Calibration",
                         "calibration",
-                        Options: JsonSerializer.SerializeToElement(new { }),
+                        Options: JsonSerializer.SerializeToElement(new
+                        {
+                            strategy = "SyntheticReferences",
+                            outputVariant = "synthetic-corrected",
+                            syntheticCalibration = SyntheticCalibration
+                        }),
                         DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig(
                         "RollingCombination",
@@ -352,25 +410,27 @@ public sealed class RollingCombinationWindowLineageTests
                 CapturePipelineDependencyPolicy.RejectEnabledDependent),
             "rolling-window-agent");
 
-    private static CaptureLoopSubmission CreateSubmission(int index)
+    private static readonly SyntheticCalibrationModelV1 SyntheticCalibration = new()
+    {
+        Seed = 195,
+        DarkExposure = TimeSpan.FromSeconds(1),
+        FlatExposure = TimeSpan.FromSeconds(1),
+        Gain = 1,
+        TemperatureC = -10
+    };
+
+    private static async Task<CaptureLoopSubmission> CreateSubmissionAsync(
+        ICameraModule module,
+        int index,
+        CancellationToken cancellationToken)
     {
         var startedUtc = FixtureUtc.AddSeconds(index * 5L);
-        var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
-        var payload = new byte[16];
-        for (var offset = 0; offset < payload.Length; offset++)
-        {
-            payload[offset] = (byte)(offset + index);
-        }
-        var frame = new CameraFrame(
-            startedUtc,
-            4,
-            2,
-            CameraPixelFormat.Mono16,
-            payload,
-            new FrameMetadata(TimeSpan.FromSeconds(1), 1, 10, "rolling-window"));
+        var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, -10);
+        var request = new CaptureRequest(startedUtc, TimeSpan.FromSeconds(2), CaptureMode.Still, setpoint);
+        var result = await module.CaptureAsync(request, cancellationToken).ConfigureAwait(false);
         return new CaptureLoopSubmission(
-            new CaptureRequest(startedUtc, TimeSpan.FromSeconds(2), CaptureMode.Still, setpoint),
-            new CaptureResult(frame, setpoint, TimeSpan.Zero, CaptureMode.Still, false)
+            request,
+            result with
             {
                 AcquisitionTiming = new CaptureAcquisitionTiming(
                     startedUtc, startedUtc.AddSeconds(1), startedUtc.AddSeconds(1.1))
