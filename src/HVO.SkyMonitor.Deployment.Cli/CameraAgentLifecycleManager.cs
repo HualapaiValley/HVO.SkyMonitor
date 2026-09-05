@@ -306,7 +306,8 @@ internal sealed class CameraAgentLifecycleManager
             persist: !request.DryRun,
             renderToStandardError: !request.Json,
             cancellationToken,
-            rollback ? CameraAgentStateContractPolicy.AllowLegacy : CameraAgentStateContractPolicy.RequireCurrent)
+            rollback ? CameraAgentStateContractPolicy.AllowLegacy : CameraAgentStateContractPolicy.RequireCurrent,
+            signedImage?.Release.Tag)
             .ConfigureAwait(false);
         if (operation.CandidateImage is not null && operation.CandidateImage != candidate)
             throw new InstallerException("The retained image operation has a different candidate identity.");
