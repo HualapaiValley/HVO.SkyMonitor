@@ -464,12 +464,17 @@ internal sealed partial class SqliteCaptureProcessingStore
         Guid executionId,
         string nodeId,
         IReadOnlyList<ProcessingFrozenOutputInput> inputs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool validateRetainedFiles = true)
     {
         for (var ordinal = 0; ordinal < inputs.Count; ordinal++)
         {
-            await EnsureFrozenOutputFilesExistAsync(
-                connection, transaction, inputs[ordinal].OutputIdentitySha256, cancellationToken).ConfigureAwait(false);
+            if (validateRetainedFiles)
+            {
+                await EnsureFrozenOutputFilesExistAsync(
+                    connection, transaction, inputs[ordinal].OutputIdentitySha256, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = """
@@ -486,7 +491,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             command.Parameters.AddWithValue("$position", inputs[ordinal].WindowPosition);
             command.Parameters.AddWithValue("$output", inputs[ordinal].OutputIdentitySha256);
             if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-                throw new ProcessingGraphStoreConflictException("A frozen replay output changed before it could be pinned.");
+                throw new ProcessingGraphStoreConflictException("A frozen processing window output changed before it could be pinned.");
         }
     }
 
@@ -521,7 +526,7 @@ internal sealed partial class SqliteCaptureProcessingStore
 
     private async ValueTask EnsureFrozenOutputFilesExistAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         string outputIdentitySha256,
         CancellationToken cancellationToken)
     {
@@ -535,13 +540,13 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$output", outputIdentitySha256);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            throw new ProcessingGraphStoreConflictException("A frozen replay output changed before it could be pinned.");
+            throw new ProcessingGraphStoreConflictException("A frozen processing window output changed before it could be pinned.");
         var payloadPath = ResolveReplayPath(reader.GetString(0));
         var sidecarPath = await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false)
             ? null
             : ResolveReplayPath(reader.GetString(1));
         if (!File.Exists(payloadPath) || sidecarPath is not null && !File.Exists(sidecarPath))
-            throw new ProcessingGraphStoreConflictException("A frozen replay output is no longer retained.");
+            throw new ProcessingGraphStoreConflictException("A frozen processing window output is no longer retained.");
     }
 
     private sealed record PreparedReplayInputs(
@@ -617,7 +622,19 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadPinnedOutputsAsync(connection, null, executionId, nodeId, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static async ValueTask<IReadOnlyList<DurableProcessingOutput>> ReadPinnedOutputsAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        Guid executionId,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT output.output_identity_sha256, output.artifact_id, output.payload_relative_path,
                    output.sidecar_relative_path, output.descriptor_json, output.capture_id,

@@ -209,6 +209,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private bool _initialized;
 
     internal string StorageRoot => _root;
+    /// <summary>The shared upper bound on a durable window's inputs, applied to live and replay alike.</summary>
+    internal int MaximumWindowInputs => _executionOptions.MaximumWindowInputs;
     internal static string LegacySchema5SqlForTests => LegacySchema5Sql;
     internal static string LegacySchema6SqlForTests => LegacySchema6Sql;
 
