@@ -22,8 +22,10 @@ internal static partial class NativeLinux
     private const int OpenReadOnly = 0;
     private const int OpenReadWrite = 2;
     private const int OpenCreate = 0x40;
-    private const int OpenDirectory = 0x10000;
-    private const int OpenNoFollow = 0x20000;
+    // O_DIRECTORY and O_NOFOLLOW are numbered differently by the generic Linux ABI (arm, arm64, ppc64le) than by
+    // x86; the x86 values mean O_DIRECT and O_LARGEFILE there, so they must be selected per architecture.
+    private static readonly int OpenDirectory = GetOpenDirectoryFlag(RuntimeInformation.ProcessArchitecture);
+    private static readonly int OpenNoFollow = GetOpenNoFollowFlag(RuntimeInformation.ProcessArchitecture);
     private const int OpenCloseOnExec = 0x80000;
     private const int OpenNonBlocking = 0x800;
     private const int AtRemoveDirectory = 0x200;
@@ -31,6 +33,22 @@ internal static partial class NativeLinux
     private const int TimeError = 5;
     private const int StatusUnsynchronized = 0x0040;
     private const int NoSuchFileOrDirectory = 2;
+
+    internal static int GetOpenDirectoryFlag(Architecture architecture)
+        => architecture switch
+        {
+            Architecture.Arm or Architecture.Arm64 or Architecture.Armv6 or Architecture.Ppc64le => 0x4000,
+            Architecture.X86 or Architecture.X64 or Architecture.LoongArch64 or Architecture.RiscV64 or Architecture.S390x => 0x10000,
+            _ => throw new PlatformNotSupportedException($"Linux O_DIRECTORY is not configured for {architecture}.")
+        };
+
+    internal static int GetOpenNoFollowFlag(Architecture architecture)
+        => architecture switch
+        {
+            Architecture.Arm or Architecture.Arm64 or Architecture.Armv6 or Architecture.Ppc64le => 0x8000,
+            Architecture.X86 or Architecture.X64 or Architecture.LoongArch64 or Architecture.RiscV64 or Architecture.S390x => 0x20000,
+            _ => throw new PlatformNotSupportedException($"Linux O_NOFOLLOW is not configured for {architecture}.")
+        };
 
     [LibraryImport("libc")]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]

@@ -100,7 +100,6 @@ internal sealed class DistributionAcquirer : IDisposable
                 inputs, DistributionManifestKind.ImageRelease, cancellationToken).ConfigureAwait(false);
             var image = resolved.Manifest.Images[0];
             var architecture = HostImageArchitecture();
-            EnsureArchitectureIsQualified(architecture);
             var platform = image.Platforms.SingleOrDefault(candidate =>
                 candidate.OperatingSystem == "linux" && candidate.Architecture == architecture)
                 ?? throw new InstallerException(
@@ -128,23 +127,6 @@ internal sealed class DistributionAcquirer : IDisposable
                                            UnauthorizedAccessException or InvalidDataException or CryptographicException)
         {
             throw new InstallerException("The signed CameraAgent image distribution could not be acquired or verified.", exception);
-        }
-    }
-
-    /// <summary>
-    /// The architectures a signed release may be installed on. A published release carries linux/arm64, but the
-    /// deployment CLI and the CameraAgent runtime still hardcode x86-64 open(2) flag values, so on aarch64 the
-    /// symlink guard is silently absent rather than failing loudly. Refuse the installation until #603 closes
-    /// instead of relying on an operator having read the runbook.
-    /// </summary>
-    private static void EnsureArchitectureIsQualified(string architecture)
-    {
-        if (architecture == "arm64")
-        {
-            throw new InstallerException(
-                "CameraAgent images are published for linux/arm64 but that architecture is not yet qualified for " +
-                "installation: the deployment CLI and runtime hardcode x86-64 open(2) flag values, so the symlink " +
-                "guard would be absent on this host. Install on linux/amd64 until issue #603 is resolved.");
         }
     }
 
