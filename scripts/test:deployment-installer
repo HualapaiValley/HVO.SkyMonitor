@@ -628,6 +628,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   signed_container="hvo-skymonitor-${signed_instance_id//-/}"
   signed_instance_root="$root/product/cameraagents/$signed_instance_id"
   signed_evidence_path="$signed_instance_root/state/deployment/image-distribution.json"
+  signed_lifecycle_state="$root/product/operations/cameraagent-$signed_instance_id.lifecycle.json"
 
   signed_install_arguments=(
     cameraagent install
@@ -764,7 +765,8 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   capture_signed_state 03-upgrade-release-b
 
   # A release signed by an untrusted key is refused before the instance is touched, so the retained record still
-  # names the release the container is running.
+  # names the release the container is running and the lifecycle journal is not even opened.
+  signed_journal_before="$(sha256sum "$signed_lifecycle_state" | cut -d ' ' -f 1)"
   if "$signed_cli" cameraagent upgrade \
     --instance-id "$signed_instance_id" \
     --product-root "$root/product" \
@@ -779,6 +781,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test ! -s "$root/signed-untrusted.json"
   test "$(jq -er '.errorCode' "$root/signed-untrusted-error.json")" = installation-failed
   jq -er '.message | test("could not be acquired or verified")' "$root/signed-untrusted-error.json" >/dev/null
+  test "$(sha256sum "$signed_lifecycle_state" | cut -d ' ' -f 1)" = "$signed_journal_before"
   assert_signed_evidence_names "$signed_version_b" "$signed_image_b" "$signed_revision_b"
   assert_signed_running_image "$signed_image_b" "$signed_digest_b" signed-status-untrusted
   capture_signed_state 04-untrusted-key-refusal
@@ -814,6 +817,12 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   jq -er '.message | test("does not carry the compatibility identity the release signed")' \
     "$root/signed-contradicting-error.json" >/dev/null
   jq -er '.message | test("source revision signed")' "$root/signed-contradicting-error.json" >/dev/null
+  # The label-agreement gate runs after the operation is journalled but before any mutation, so the journal records
+  # an upgrade that never touched the instance.
+  test "$(jq -er '.kind' "$signed_lifecycle_state")" = Upgrade
+  test "$(jq -er '.mutationStarted' "$signed_lifecycle_state")" = false
+  assert_signed_installed_identity \
+    "$(jq -er '.image.imageId' "$signed_instance_root/instance-manifest.json")" "$signed_image_a" "$signed_digest_a"
   test ! -e "$signed_evidence_path"
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-contradicting
   capture_signed_state 06-contradicting-label-refusal
