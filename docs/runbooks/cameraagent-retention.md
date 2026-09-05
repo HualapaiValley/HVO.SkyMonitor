@@ -169,6 +169,21 @@ capture-time location versions unavailable; the marker and retained manifests
 make CameraAgent fail closed rather than assigning current coordinates or
 silently creating a replacement version 1.
 
+The versioned local automation store is
+`<raw-ingress-root>/.automation/local-automations.db`. It is deliberately a
+separate SQLite database rather than tables inside the raw ingress journal: the
+journal pins an exact schema version and object count and refuses a database it
+does not recognize, so a forward-only change there would break the installer's
+rollback-to-baseline contract. A baseline image never opens this file, so a
+rollback simply leaves it in place and a roll-forward finds the same definitions
+and run history. Back it up with the raw-ingress evidence. Its retention is
+bounded by the contract itself: at most 32 definitions, 50 retained revisions per
+definition, 200 retained runs per definition, and a seven-day idempotency ledger
+whose retained window is the replay window. Deleting the file loses only the
+local automation definitions and their run journal; capture, calibration, and
+location evidence are unaffected, and the store is recreated empty on the next
+start. See [the local automation runbook](cameraagent-local-automation.md).
+
 Configured synthetic calibration references are immutable payload/manifest pairs
 under `<raw-ingress-root>/calibration/synthetic/`. They are explicit processing
 retention holds and must be backed up with the raw evidence while their profile

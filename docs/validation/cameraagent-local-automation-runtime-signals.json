@@ -1,0 +1,45 @@
+{
+  "schema": "hvo-runtime-signal-manifest-v1",
+  "issue": 563,
+  "component": "CameraAgent local automation definitions and run history",
+  "meter": "HVO.SkyMonitor.CameraAgent.Automation",
+  "activitySource": "HVO.SkyMonitor.CameraAgent.Automation",
+  "logs": [
+    { "eventId": 7401, "level": "Information", "fields": ["InterruptedRuns"] },
+    { "eventId": 7402, "level": "Warning", "fields": ["Exception"] },
+    { "eventId": 7403, "level": "Information", "fields": [] },
+    { "eventId": 7404, "level": "Warning", "fields": ["Exception"] },
+    { "eventId": 7405, "level": "Warning", "fields": ["Exception"] },
+    { "eventId": 7406, "level": "Warning", "fields": ["DefinitionId", "Exception"] },
+    { "eventId": 7407, "level": "Information", "fields": ["DefinitionId", "Trigger", "Outcome"] }
+  ],
+  "metrics": [
+    { "name": "skymonitor.cameraagent.automation.commands", "unit": "{command}", "labels": { "command": ["save", "remove"], "outcome": ["Applied", "Replayed", "Unchanged", "Conflict", "NotFound", "Invalid"] } },
+    { "name": "skymonitor.cameraagent.automation.runs", "unit": "{run}", "labels": { "trigger": ["Periodic", "CaptureRelative"], "outcome": ["Succeeded", "Skipped", "Failed"] } },
+    { "name": "skymonitor.cameraagent.automation.run_duration", "unit": "ms", "labels": { "trigger": ["Periodic", "CaptureRelative"], "outcome": ["Succeeded", "Skipped", "Failed"] } }
+  ],
+  "spans": [
+    { "name": "automation.save", "kind": "Internal", "tags": ["operation", "outcome"] },
+    { "name": "automation.remove", "kind": "Internal", "tags": ["operation", "outcome"] },
+    { "name": "automation.run", "kind": "Internal", "tags": ["trigger", "outcome"] }
+  ],
+  "health": {
+    "check": "N/A: the local automation contract adds no health check. A store that fails verification makes the runner's InitializeAsync throw, which fails host startup through the hosted-service boundary rather than reporting a degraded dependency.",
+    "healthy": [],
+    "degraded": [],
+    "unhealthy": [],
+    "fields": []
+  },
+  "privacy": {
+    "forbidden": ["definition identifier", "definition name", "task target", "operator actor identifier", "operator reason", "idempotency key", "run key", "database path"],
+    "labelNote": "The outcome set is the union across operations; an individual operation emits a subset. Missing and Interrupted are recorded in the durable journal rather than the run counter, because neither is produced by an executed task.",
+    "identifiers": "Definition identifiers appear in structured logs on the authenticated local host only. No definition identifier, name, target, actor, reason, idempotency key, or run key is ever a metric label or a trace tag."
+  },
+  "collection": {
+    "focusedCommand": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --filter FullyQualifiedName~Automation",
+    "standaloneCommand": "DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --filter \"TestCategory=Unit&FullyQualifiedName~Automation\"",
+    "performanceCommand": "N/A: the runner evaluates at most 32 definitions once per poll interval and issues no new capture, image, or upload work. There is no measured hot path to compare.",
+    "retainedArtifactPath": "TestResults/issue-563/",
+    "centralBoundary": "N/A: the contract is local only. Named-graph lifecycle, replay submission, and external runners remain RM-005."
+  }
+}

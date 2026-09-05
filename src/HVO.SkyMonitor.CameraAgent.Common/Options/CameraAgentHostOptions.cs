@@ -58,6 +58,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     [Required]
     public ArtifactReadOptions ArtifactRead { get; init; } = new();
 
+    [Required]
+    public LocalAutomationOptions Automation { get; init; } = new();
+
     [Range(1, 60)]
     public int OperationsReferenceLifetimeMinutes { get; init; } = 15;
 
@@ -220,6 +223,17 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             environmentalAcquisitionResults,
             validateAllProperties: true);
         foreach (var result in environmentalAcquisitionResults)
+        {
+            yield return result;
+        }
+
+        var automationResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            Automation,
+            new ValidationContext(Automation),
+            automationResults,
+            validateAllProperties: true);
+        foreach (var result in automationResults)
         {
             yield return result;
         }
@@ -498,6 +512,23 @@ public sealed class EnvironmentalObservationDeliveryOptions : IValidatableObject
                 [nameof(RequestTimeoutSeconds), nameof(LeaseSeconds)]);
         }
     }
+}
+
+/// <summary>
+/// Host settings for the local automation runner. The durable definitions themselves live in the
+/// versioned local automation store, never in configuration.
+/// </summary>
+public sealed class LocalAutomationOptions
+{
+    /// <summary>Whether the runner evaluates definitions. Definitions remain readable when disabled.</summary>
+    public bool Enabled { get; init; } = true;
+
+    /// <summary>
+    /// How often the runner evaluates definitions. It bounds how late an occurrence can fire, and
+    /// how often a capture-relative definition reads the durable capture sequence.
+    /// </summary>
+    [Range(5, 3_600)]
+    public int PollIntervalSeconds { get; init; } = 30;
 }
 
 public sealed class EnvironmentalAcquisitionOptions : IValidatableObject

@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
 using System.Net;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -505,6 +506,9 @@ public sealed class OwnerAuthorizationTests
         using var anonymousManualLocation = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/deployment-location/manual", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousManualLocation.StatusCode);
+        using var anonymousAutomations = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/automations", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousAutomations.StatusCode);
 
         using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
@@ -534,6 +538,23 @@ public sealed class OwnerAuthorizationTests
             new { latitudeDegrees = 10, longitudeDegrees = 20, elevationMeters = 30, timeZoneId = "UTC", expectedVersion = 1, expectedManualSequence = 0 })
             .ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerManualMutation.StatusCode);
+        using var nonOwnerAutomations = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/automations", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerAutomations.StatusCode);
+        using var nonOwnerAutomationMutation = await nonOwnerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/automations/definitions", UriKind.Relative),
+            new
+            {
+                definitionId = "sky-temperature",
+                name = "Sky temperature",
+                enabled = true,
+                taskKind = "EnvironmentalOnDemandAcquisition",
+                taskTarget = "virtual-sky-temperature",
+                triggerKind = "Periodic",
+                triggerInterval = 3600,
+                expectedVersion = 0
+            }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerAutomationMutation.StatusCode);
         using var nonOwnerMutation = await nonOwnerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/capture/resume", UriKind.Relative),
             new { reason = "test" }).ConfigureAwait(false);
@@ -571,6 +592,14 @@ public sealed class OwnerAuthorizationTests
         var manualLocationJson = await ownerManualLocation.Content.ReadAsStringAsync().ConfigureAwait(false);
         StringAssert.Contains(manualLocationJson, "knownVersion", StringComparison.Ordinal);
         Assert.IsFalse(manualLocationJson.Contains(
+            AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+        using var ownerAutomations = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/automations", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerAutomations.StatusCode);
+        var automationsJson = await ownerAutomations.Content.ReadAsStringAsync().ConfigureAwait(false);
+        StringAssert.Contains(automationsJson, "storeVersion", StringComparison.Ordinal);
+        StringAssert.Contains(automationsJson, "registry", StringComparison.Ordinal);
+        Assert.IsFalse(automationsJson.Contains(
             AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
         using var ownerPipeline = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/pipeline", UriKind.Relative)).ConfigureAwait(false);
@@ -622,6 +651,20 @@ public sealed class OwnerAuthorizationTests
             new { latitudeDegrees = 10, longitudeDegrees = 20, elevationMeters = 30, timeZoneId = "UTC", expectedVersion = 1, expectedManualSequence = 0 })
             .ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, missingManualLocationAntiforgery.StatusCode);
+        using var missingAutomationAntiforgery = await ownerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/automations/definitions", UriKind.Relative),
+            new
+            {
+                definitionId = "sky-temperature",
+                name = "Sky temperature",
+                enabled = true,
+                taskKind = "EnvironmentalOnDemandAcquisition",
+                taskTarget = "virtual-sky-temperature",
+                triggerKind = "Periodic",
+                triggerInterval = 3600,
+                expectedVersion = 0
+            }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, missingAutomationAntiforgery.StatusCode);
 
         var token = await GetAntiforgeryTokenAsync(ownerClient).ConfigureAwait(false);
         using (var missingEnvironmentalRequest = new HttpRequestMessage(
@@ -688,6 +731,63 @@ public sealed class OwnerAuthorizationTests
                 .ConfigureAwait(false);
             // A stale expected version is rejected without appending a deployment version.
             Assert.AreEqual(HttpStatusCode.Conflict, staleManualVersion.StatusCode);
+        }
+        using (var missingAutomationVersionRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/automations/definitions", UriKind.Relative)))
+        {
+            missingAutomationVersionRequest.Headers.Add("Idempotency-Key", $"automation-{Guid.NewGuid():N}");
+            missingAutomationVersionRequest.Headers.Add("RequestVerificationToken", token);
+            missingAutomationVersionRequest.Content = JsonContent.Create(new
+            {
+                definitionId = "sky-temperature",
+                name = "Sky temperature",
+                enabled = true,
+                taskKind = "EnvironmentalOnDemandAcquisition",
+                taskTarget = "virtual-sky-temperature",
+                triggerKind = "Periodic",
+                triggerInterval = 3600
+            });
+            using var missingAutomationVersion = await ownerClient.SendAsync(missingAutomationVersionRequest)
+                .ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, missingAutomationVersion.StatusCode);
+        }
+        using (var unregisteredAutomationRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/automations/definitions", UriKind.Relative)))
+        {
+            unregisteredAutomationRequest.Headers.Add("Idempotency-Key", $"automation-{Guid.NewGuid():N}");
+            unregisteredAutomationRequest.Headers.Add("RequestVerificationToken", token);
+            unregisteredAutomationRequest.Content = JsonContent.Create(new
+            {
+                definitionId = "sky-temperature",
+                name = "Sky temperature",
+                enabled = true,
+                taskKind = "EnvironmentalOnDemandAcquisition",
+                taskTarget = "/bin/sh -c reboot",
+                triggerKind = "Periodic",
+                triggerInterval = 3600,
+                expectedVersion = 0
+            });
+            using var unregisteredAutomation = await ownerClient.SendAsync(unregisteredAutomationRequest)
+                .ConfigureAwait(false);
+            // A target that is not a registered environmental source is rejected; nothing durable changes
+            // and no definition can ever name a command line.
+            Assert.AreEqual(HttpStatusCode.BadRequest, unregisteredAutomation.StatusCode);
+            var body = await unregisteredAutomation.Content.ReadAsStringAsync().ConfigureAwait(false);
+            StringAssert.Contains(
+                body, LocalAutomationContract.UnregisteredTargetReasonCode, StringComparison.Ordinal);
+        }
+        using (var staleAutomationRemovalRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/automations/definitions/sky-temperature/removal", UriKind.Relative)))
+        {
+            staleAutomationRemovalRequest.Headers.Add("Idempotency-Key", $"automation-{Guid.NewGuid():N}");
+            staleAutomationRemovalRequest.Headers.Add("RequestVerificationToken", token);
+            staleAutomationRemovalRequest.Content = JsonContent.Create(new { expectedVersion = 42L });
+            using var staleAutomationRemoval = await ownerClient.SendAsync(staleAutomationRemovalRequest)
+                .ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.NotFound, staleAutomationRemoval.StatusCode);
         }
         using (var scheduleDocument = JsonDocument.Parse(scheduleJson))
         using (var missingVersionRequest = new HttpRequestMessage(

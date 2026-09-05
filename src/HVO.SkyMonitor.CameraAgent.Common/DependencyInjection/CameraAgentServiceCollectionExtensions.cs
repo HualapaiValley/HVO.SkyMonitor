@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
@@ -203,6 +204,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<EnvironmentalAcquisitionCoordinator>();
         services.AddSingleton<EnvironmentalOnDemandAcquisitionService>();
         services.AddSingleton<EnvironmentalAssociationService>();
+        services.AddSingleton<LocalAutomationTelemetry>();
+        services.AddSingleton<ILocalAutomationCaptureSequenceSource, DeploymentContinuityCaptureSequenceSource>();
+        services.AddSingleton<ILocalAutomationTaskRegistry, EnvironmentalLocalAutomationTaskRegistry>();
+        services.AddSingleton<SqliteLocalAutomationStore>();
+        services.AddSingleton<ILocalAutomationStore>(provider =>
+            provider.GetRequiredService<SqliteLocalAutomationStore>());
         services.AddSingleton<CameraAgentCloudEnvironment>();
         services.AddSingleton<PresentationMetadataFactsBuilder>();
         services.AddSingleton<EnvironmentalAssociationCaptureLaneHandler>();
@@ -349,6 +356,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "PresentationMaterializer", typeof(PresentationMaterializerCaptureProcessingStep),
             typeof(PresentationMaterializerProcessingStepOptions), 81, AutoInclude: false));
+        services.AddHostedService<LocalAutomationRunnerService>();
         services.AddHostedService<EnvironmentalObservationSchemaInitializationService>();
         services.AddHostedService(provider => provider.GetRequiredService<EnvironmentalAcquisitionService>());
         services.AddHostedService<CalibrationLibraryValidationService>();
