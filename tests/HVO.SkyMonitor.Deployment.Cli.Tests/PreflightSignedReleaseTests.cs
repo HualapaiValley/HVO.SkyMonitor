@@ -12,9 +12,10 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
 /// The operator-facing <c>cameraagent preflight</c> command reading its candidate from a signed image release.
-/// The command answers whether an upgrade to that release would be accepted, so it resolves the release exactly
-/// as the upgrade does while remaining strictly read-only: nothing is pulled, loaded, started, or written,
-/// including into the distribution download cache.
+/// The command answers whether the persisted state satisfies the boundaries that release declares, so it
+/// resolves the release exactly as the upgrade does while remaining strictly read-only: nothing is pulled,
+/// loaded, started, or written, including into the distribution download cache. The upgrade's own
+/// contract-identity and image-label-agreement gates run only during the upgrade and are out of scope here.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -126,16 +127,64 @@ public sealed class PreflightSignedReleaseTests
         StringAssert.Contains(exception.Message, "cannot use HTTPS with the local channel", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Every release-resolution option requires a release to resolve. `--channel local` names the default value,
+    /// so presence rather than the resolved value has to decide, or it slips through unremarked.
+    /// </summary>
     [TestMethod]
-    public void CommandLine_PreflightChannelWithoutASignedRelease_IsRejected()
+    [DataRow("--channel", "stable")]
+    [DataRow("--channel", "local")]
+    [DataRow("--asset-base-url", "https://mirror.example/releases")]
+    public void CommandLine_PreflightReleaseOptionWithoutASignedRelease_IsRejected(string option, string value)
     {
         var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(
         [
             "cameraagent", "preflight", "--instance-id", Guid.NewGuid().ToString("D"),
-            "--product-root", "/tmp/hvo-preflight", "--channel", "stable"
+            "--product-root", "/tmp/hvo-preflight", option, value
         ]));
 
         StringAssert.Contains(exception.Message, "require --image-manifest or --image-index", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void CommandLine_PreflightNoDownloadWithoutASignedRelease_IsRejected()
+    {
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(
+        [
+            "cameraagent", "preflight", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--product-root", "/tmp/hvo-preflight", "--no-download"
+        ]));
+
+        StringAssert.Contains(exception.Message, "require --image-manifest or --image-index", StringComparison.Ordinal);
+    }
+
+    /// <summary>An air-gapped operator forces cache-only resolution the same way an upgrade does.</summary>
+    [TestMethod]
+    public void CommandLine_PreflightNoDownload_IsCarriedIntoTheReleaseSelection()
+    {
+        var request = (CameraAgentStatePreflightRequest)CommandLine.ParseCommand(
+        [
+            "cameraagent", "preflight", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--product-root", "/tmp/hvo-preflight",
+            "--image-manifest", "/media/hvo/image-v1.4.0/image-manifest.json", "--no-download"
+        ]);
+
+        Assert.IsTrue(request.NoDownload);
+        Assert.IsTrue(request.ImageSelection().NoDownload);
+    }
+
+    [TestMethod]
+    public void CommandLine_PreflightAssetBaseUrlThatIsNotAnHttpsLocator_IsRejected()
+    {
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(
+        [
+            "cameraagent", "preflight", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--product-root", "/tmp/hvo-preflight", "--channel", "stable",
+            "--image-index", "https://mirror.example/indexes/image-stable-index.json",
+            "--asset-base-url", "http://mirror.example/releases"
+        ]));
+
+        StringAssert.Contains(exception.Message, "--asset-base-url", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -289,6 +338,135 @@ public sealed class PreflightSignedReleaseTests
         Assert.IsTrue(File.Exists(statePath), "the contrast: an acquisition does commit the rollback state");
     }
 
+    /// <summary>
+    /// A rollback floor retained by an earlier acquisition still refuses an older index during a read-only
+    /// resolution, and refusing it changes nothing on disk.
+    /// </summary>
+    [TestMethod]
+    public async Task ResolveImageAsync_IndexBelowTheRetainedRollbackFloor_IsRefusedWithoutTouchingIt()
+    {
+        using var fixture = NetworkImageReleaseFixture.Create();
+        var statePath = Path.Combine(fixture.CacheRoot, "test-state", "image-stable.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(statePath)!);
+        await File.WriteAllTextAsync(statePath, $"9 {new string('e', 64)}\n");
+        File.SetUnixFileMode(statePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var retained = await File.ReadAllBytesAsync(statePath);
+        using var handler = new FixtureHandler(fixture.NetworkAssets);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => acquirer.ResolveImageAsync(NetworkImageReleaseFixture.IndexRequest(), CancellationToken.None));
+
+        StringAssert.Contains(
+            exception.Message, "older than or conflicts with retained rollback state", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(retained, await File.ReadAllBytesAsync(statePath));
+    }
+
+    /// <summary>
+    /// A cached metadata entry that no longer verifies is bypassed, not evicted: an operator's preflight must not
+    /// destroy the cache an acquisition is relying on. The same corruption drives an acquisition to replace it.
+    /// </summary>
+    [TestMethod]
+    public async Task ResolveImageAsync_CachedMetadataThatNoLongerVerifies_IsBypassedAndLeftInPlace()
+    {
+        using var fixture = NetworkImageReleaseFixture.Create();
+        using var warmingHandler = new FixtureHandler(fixture.NetworkAssets);
+        using (var warming = new DistributionAcquirer(warmingHandler, fixture.CacheRoot, fixture.TrustRoot))
+        {
+            _ = await warming.AcquireImageAsync(
+                NetworkImageReleaseFixture.ManifestRequest(), CancellationToken.None);
+        }
+        var cached = CachedManifestPath(fixture);
+        var corrupt = await File.ReadAllBytesAsync(cached);
+        corrupt[^1] ^= 1;
+        await WriteCachedAsync(cached, corrupt);
+
+        using var resolvingHandler = new FixtureHandler(fixture.NetworkAssets);
+        using (var acquirer = new DistributionAcquirer(resolvingHandler, fixture.CacheRoot, fixture.TrustRoot))
+        {
+            var resolved = await acquirer.ResolveImageAsync(
+                NetworkImageReleaseFixture.ManifestRequest(), CancellationToken.None);
+
+            Assert.IsNotNull(resolved);
+            Assert.AreEqual("image-v1.2.3", resolved.Release.Tag);
+        }
+        CollectionAssert.AreEqual(
+            corrupt, await File.ReadAllBytesAsync(cached), "a read-only resolution must not evict a cache entry");
+
+        using var acquiringHandler = new FixtureHandler(fixture.NetworkAssets);
+        using var acquiring = new DistributionAcquirer(acquiringHandler, fixture.CacheRoot, fixture.TrustRoot);
+        _ = await acquiring.AcquireImageAsync(NetworkImageReleaseFixture.ManifestRequest(), CancellationToken.None);
+
+        CollectionAssert.AreNotEqual(
+            corrupt,
+            await File.ReadAllBytesAsync(CachedManifestPath(fixture)),
+            "the contrast: an acquisition does replace the entry it could not verify");
+    }
+
+    /// <summary>
+    /// The request's own option plumbing carries the index, the requested version, the asset base, and the
+    /// channel: the index defaults to a superseded release, so a selector that fails to reach the resolver
+    /// silently resolves the wrong manifest.
+    /// </summary>
+    [TestMethod]
+    public async Task ExecuteAsync_IndexedReleaseSelectedThroughTheCommandLine_ResolvesTheRequestedVersion()
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
+        using var fixture = NetworkImageReleaseFixture.Create();
+        using var handler = new FixtureHandler(fixture.NetworkAssets);
+
+        var report = await CameraAgentStatePreflightManager.ExecuteAsync(
+            NetworkImageReleaseFixture.IndexPreflightRequest(instance.InstanceId, instance.Root),
+            new RefusingProcessRunner(),
+            CancellationToken.None,
+            () => new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot));
+
+        Assert.AreEqual("image-v1.2.3", report.CandidateRelease);
+        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
+        CollectionAssert.AreEqual(Array.Empty<string>(), Snapshot(fixture.CacheRoot));
+    }
+
+    /// <summary>
+    /// A signed release can never present the superseded unbounded contract as an upgrade candidate: verification
+    /// refuses the release outright, before the state boundaries are ever compared. This is why the signed path's
+    /// <c>RequireCurrent</c> policy has no reachable candidate it would admit and <c>AllowLegacy</c> would not.
+    /// </summary>
+    [TestMethod]
+    public async Task ExecuteAsync_ReleaseDeclaringTheSupersededContract_IsRefusedByVerificationItself()
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
+        var superseded = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
+        {
+            ["io.hvo.skymonitor.state-compatibility"] = CameraAgentStateContract.LegacyUnbounded
+        };
+        using var release = SignedImageReleaseFixture.Create(
+            instance.Root, $"sha256:{new string('c', 64)}", superseded);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => CameraAgentStatePreflightManager.ExecuteAsync(
+                instance.Request(release.ManifestPath),
+                new RefusingProcessRunner(),
+                CancellationToken.None,
+                release.CreateAcquirer));
+
+        StringAssert.Contains(
+            exception.InnerException?.Message ?? exception.Message,
+            "signed image compatibility identity is invalid",
+            StringComparison.Ordinal);
+    }
+
+    private static string CachedManifestPath(NetworkImageReleaseFixture fixture)
+        => Directory.EnumerateFiles(
+                Path.Combine(fixture.CacheRoot, "v1", "metadata"), "*", SearchOption.AllDirectories)
+            .Single(path => File.ReadAllBytes(path).Length == fixture.ManifestLength);
+
+    private static async Task WriteCachedAsync(string path, byte[] bytes)
+    {
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        await File.WriteAllBytesAsync(path, bytes);
+        File.SetUnixFileMode(path, UnixFileMode.UserRead);
+    }
+
     /// <summary>Every path beneath a root with its file length, so any creation, deletion, or edit is visible.</summary>
     private static string[] Snapshot(string root)
         => Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
@@ -368,6 +546,16 @@ public sealed class PreflightSignedReleaseTests
             }
             fixture.WriteIdentityDatabase();
             fixture.WriteRawIngressDatabase();
+            // A preflight runs against a stopped instance, whose journal has been checkpointed and carries no
+            // wal-index beside it. Releasing the pooled writers reproduces that shape, so the read-only guarantee
+            // below is asserted against the state an operator actually preflights.
+            SqliteConnection.ClearAllPools();
+            foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
+            {
+                Assert.IsFalse(
+                    File.Exists(CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot) + suffix),
+                    $"the fixture must model a checkpointed journal, but left {suffix} behind");
+            }
             await fixture.WriteInstanceManifestAsync().ConfigureAwait(false);
             return fixture;
         }
@@ -417,7 +605,11 @@ public sealed class PreflightSignedReleaseTests
             connection.Open();
             using var command = connection.CreateCommand();
 #pragma warning disable CA2100 // PRAGMA user_version cannot be parameterized; the value is a test constant.
+            // The runtime journal is WAL at rest, and a read-only SQLite handle creates the wal-index unless the
+            // reader opts out, so the fixture must carry the production journal mode for the read-only guarantee
+            // below to mean anything.
             command.CommandText =
+                "PRAGMA journal_mode = WAL;" +
                 "CREATE TABLE raw_capture (id INTEGER PRIMARY KEY);" +
                 $"PRAGMA user_version = {CurrentRawIngressSchema.ToString(CultureInfo.InvariantCulture)};";
 #pragma warning restore CA2100
@@ -431,8 +623,9 @@ public sealed class PreflightSignedReleaseTests
                 ProductionCatalog.CatalogId, ProductionCatalog.PackageVersion, "2", "3",
                 ProductionCatalog.DatabaseSha256, ProductionCatalog.DatabaseLength, ProductionCatalog.RowCount,
                 Paths.CatalogRoot, new string('a', 64), "local-offline");
+            var architecture = DistributionAcquirer.HostImageArchitecture();
             var image = new ImageInstallationIdentity(
-                "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('9', 64)}", "amd64", null,
+                "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('9', 64)}", architecture, null,
                 UpgradeCompatibility: CameraAgentStateContract.LegacyUnbounded, SourceRevision: new string('8', 40),
                 Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1",
                 CatalogContract: "hyg-v42-production-p3-s2");
@@ -442,7 +635,8 @@ public sealed class PreflightSignedReleaseTests
                 "owner@example.test", 0, 0, 0, "UTC", Guid.NewGuid(), RuntimeUid, RuntimeGid, Paths.ProductRoot,
                 Paths.ConfigRoot, Paths.StateRoot, ComposeDeployment.TemplateVersion, new string('e', 64),
                 new string('f', 64), new string('1', 64), "default", "1", "1", "active", new string('2', 64),
-                new string('3', 64), catalog, image, null, new DockerDaemonIdentity("daemon", "host", "amd64", "29.7.2"),
+                new string('3', 64), catalog, image, null,
+                new DockerDaemonIdentity("daemon", "host", architecture, "29.7.2"),
                 CameraAgentStateContract.LegacyUnbounded, DateTimeOffset.UtcNow,
                 LifecycleCondition: InstanceLifecycleCondition.Installed);
             return SafeFileSystem.WriteJsonAtomicAsync(
@@ -453,8 +647,12 @@ public sealed class PreflightSignedReleaseTests
     /// <summary>A signed CameraAgent image release published over HTTPS, both directly and through an index.</summary>
     private sealed class NetworkImageReleaseFixture : IDisposable
     {
+        public const string AssetBase = "https://mirror.example/releases";
+
         private static readonly Uri ManifestUri =
             new("https://mirror.example/releases/image-v1.2.3/image-manifest.json");
+        private static readonly Uri SupersededManifestUri =
+            new("https://mirror.example/releases/image-v1.1.0/image-manifest.json");
         private static readonly Uri IndexUri = new("https://mirror.example/indexes/image-stable-index.json");
 
         private NetworkImageReleaseFixture(
@@ -470,6 +668,7 @@ public sealed class PreflightSignedReleaseTests
         public string CacheRoot => Path.Combine(Root, "cache");
         public DistributionTrustRoot TrustRoot { get; }
         public string ImageId { get; }
+        public int ManifestLength { get; private set; }
         public IReadOnlyDictionary<Uri, byte[]> NetworkAssets { get; }
 
         public static InstallRequest ManifestRequest() => new()
@@ -486,8 +685,21 @@ public sealed class PreflightSignedReleaseTests
             ImageManifest = null,
             ImageIndex = IndexUri.AbsoluteUri,
             ImageVersion = "1.2.3",
-            AssetBaseUrl = "https://mirror.example/releases"
+            AssetBaseUrl = AssetBase
         };
+
+        /// <summary>
+        /// The same index selection expressed as an operator would type it, so the request's own option plumbing
+        /// carries the index, the version, the asset base, and the channel rather than a hand-built selection.
+        /// </summary>
+        public static CameraAgentStatePreflightRequest IndexPreflightRequest(Guid instanceId, string productRoot)
+            => (CameraAgentStatePreflightRequest)CommandLine.ParseCommand(
+            [
+                "cameraagent", "preflight", "--instance-id", instanceId.ToString("D"),
+                "--product-root", productRoot, "--channel", "stable",
+                "--image-index", IndexUri.AbsoluteUri, "--image-version", "1.2.3",
+                "--asset-base-url", AssetBase
+            ]);
 
         public static NetworkImageReleaseFixture Create()
         {
@@ -561,26 +773,49 @@ public sealed class PreflightSignedReleaseTests
             network[ManifestUri] = manifestBytes;
             network[new Uri(ManifestUri.AbsoluteUri + ".sig")] = Sign(key, manifestBytes);
 
+            // A superseded release is published alongside, and it is the index default, so an --image-version
+            // that fails to reach the resolver silently selects the wrong manifest instead of passing anyway.
+            var superseded = manifest with
+            {
+                Release = manifest.Release with { Version = "1.1.0", Tag = "image-v1.1.0" }
+            };
+            var supersededBytes = JsonSerializer.SerializeToUtf8Bytes(
+                superseded, DistributionJsonContext.Default.DistributionReleaseManifest);
+            network[SupersededManifestUri] = supersededBytes;
+            network[new Uri(SupersededManifestUri.AbsoluteUri + ".sig")] = Sign(key, supersededBytes);
+
             var index = new DistributionReleaseIndex(
                 DistributionSchemaVersions.ReleaseIndex,
                 "release-index",
                 "image",
                 1,
                 DateTimeOffset.Parse("2026-08-24T00:00:00Z", CultureInfo.InvariantCulture),
-                "1.2.3",
+                "1.1.0",
                 new DistributionSigningIdentity(DistributionTrustRoot.Algorithm, trustRoot.KeyId),
-                [new DistributionReleaseReference(
-                    "1.2.3",
-                    "image-v1.2.3",
-                    "image-manifest.json",
-                    manifestBytes.Length,
-                    Convert.ToHexStringLower(SHA256.HashData(manifestBytes)),
-                    "image-manifest.json.sig")]);
+                [
+                    new DistributionReleaseReference(
+                        "1.2.3",
+                        "image-v1.2.3",
+                        "image-manifest.json",
+                        manifestBytes.Length,
+                        Convert.ToHexStringLower(SHA256.HashData(manifestBytes)),
+                        "image-manifest.json.sig"),
+                    new DistributionReleaseReference(
+                        "1.1.0",
+                        "image-v1.1.0",
+                        "image-manifest.json",
+                        supersededBytes.Length,
+                        Convert.ToHexStringLower(SHA256.HashData(supersededBytes)),
+                        "image-manifest.json.sig")
+                ]);
             var indexBytes = JsonSerializer.SerializeToUtf8Bytes(
                 index, DistributionJsonContext.Default.DistributionReleaseIndex);
             network[IndexUri] = indexBytes;
             network[new Uri(IndexUri.AbsoluteUri + ".sig")] = Sign(key, indexBytes);
-            return new NetworkImageReleaseFixture(root, trustRoot, imageId, network);
+            return new NetworkImageReleaseFixture(root, trustRoot, imageId, network)
+            {
+                ManifestLength = manifestBytes.Length
+            };
         }
 
         public void Dispose() => Directory.Delete(Root, recursive: true);

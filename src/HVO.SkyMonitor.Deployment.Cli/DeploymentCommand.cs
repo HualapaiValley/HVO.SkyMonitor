@@ -67,7 +67,14 @@ internal sealed record CameraAgentStatePreflightRequest(
     public string? ImageIndex { get; init; }
     public string? ImageVersion { get; init; }
     public string? AssetBaseUrl { get; init; }
-    public DistributionChannel Channel { get; init; }
+    public bool NoDownload { get; init; }
+
+    /// <summary>
+    /// The operator-selected distribution channel, or <c>null</c> when none was named. Presence is retained rather
+    /// than collapsed onto the <c>Local</c> default so an explicit <c>--channel local</c> is rejected without a
+    /// signed release exactly as any other explicit channel is.
+    /// </summary>
+    public DistributionChannel? Channel { get; init; }
 
     /// <summary>Whether the operator named a signed image release instead of an image already established here.</summary>
     public bool NamesSignedImageRelease => ImageManifest is not null || ImageIndex is not null || ImageVersion is not null;
@@ -87,10 +94,10 @@ internal sealed record CameraAgentStatePreflightRequest(
             ImageSelection().ValidateImageSelection();
             return;
         }
-        if (AssetBaseUrl is not null || Channel != DistributionChannel.Local)
+        if (AssetBaseUrl is not null || Channel is not null || NoDownload)
         {
             throw new InstallUsageException(
-                "--asset-base-url and --channel require --image-manifest or --image-index.");
+                "--asset-base-url, --channel, and --no-download require --image-manifest or --image-index.");
         }
         if (ImageReference is not null &&
             !System.Text.RegularExpressions.Regex.IsMatch(
@@ -115,7 +122,8 @@ internal sealed record CameraAgentStatePreflightRequest(
         ImageIndex = ImageIndex,
         ImageVersion = ImageVersion,
         AssetBaseUrl = AssetBaseUrl,
-        Channel = Channel
+        Channel = Channel ?? DistributionChannel.Local,
+        NoDownload = NoDownload
     };
 
     internal static void ValidateProductRoot(string productRoot)

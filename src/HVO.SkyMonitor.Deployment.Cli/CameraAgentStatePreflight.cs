@@ -61,8 +61,9 @@ internal sealed record CameraAgentStateRequirements(
 
     /// <summary>
     /// The boundaries a signed image release declares. These are exactly the label values an upgrade requires the
-    /// prepared image to carry, so evaluating persisted state against them answers the question the upgrade's own
-    /// in-flight preflight will ask, without a local copy of the image.
+    /// prepared image to carry, so evaluating persisted state against them reaches the same verdict the upgrade's
+    /// own in-flight state preflight will reach, without a local copy of the image. The upgrade's separate
+    /// contract-identity and label-agreement gates are not evaluated here.
     /// </summary>
     public static CameraAgentStateRequirements From(DistributionImageCompatibility compatibility)
     {
@@ -139,7 +140,8 @@ internal static class CameraAgentStatePreflight
         bool persist,
         bool renderToStandardError,
         CancellationToken cancellationToken,
-        CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent)
+        CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent,
+        string? candidateRelease = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(candidate);
@@ -147,9 +149,9 @@ internal static class CameraAgentStatePreflight
             paths,
             instanceId,
             candidate.ImageId,
-            // Install and upgrade retain the complete release record in image-distribution.json, so the in-flight
-            // report names the image it evaluated and leaves the release identity to that evidence.
-            candidateRelease: null,
+            // image-distribution.json is written only once the image is accepted, so a refused signed upgrade
+            // leaves this report as the operator's only artifact; it must name the release it refused.
+            candidateRelease,
             CameraAgentStateRequirements.From(candidate),
             installedStateContract,
             uid,
@@ -501,7 +503,8 @@ internal static class CameraAgentStatePreflight
 
     private static (List<string> Applied, bool Uninitialized) ReadIdentityLineage(string databasePath)
     {
-        using var connection = OpenReadOnly(databasePath);
+        using var database = ReadOnlyDatabase.Open(databasePath);
+        var connection = database.Connection;
         var migrations = new List<string>();
         // The runtime materializes the file on its first connection and only then creates the history table, so a
         // table-less database is an interrupted fresh start rather than an unreadable one.
@@ -534,7 +537,8 @@ internal static class CameraAgentStatePreflight
 
     private static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
     {
-        using var connection = OpenReadOnly(databasePath);
+        using var database = ReadOnlyDatabase.Open(databasePath);
+        var connection = database.Connection;
         long userVersion;
         using (var version = connection.CreateCommand())
         {
@@ -546,24 +550,77 @@ internal static class CameraAgentStatePreflight
         return (userVersion, Convert.ToInt64(objects.ExecuteScalar(), CultureInfo.InvariantCulture));
     }
 
-    private static SqliteConnection OpenReadOnly(string databasePath)
+    /// <summary>
+    /// Opens a persisted CameraAgent database without writing anything beside it. A plain read-only connection is
+    /// not side-effect free: SQLite creates the wal-index for a WAL database even through a read-only handle, and
+    /// the raw-ingress journal is WAL at rest. For a stopped instance that would leave installer-owned
+    /// <c>-wal</c>/<c>-shm</c> files inside a 0700 runtime-owned bind source that the capability-dropped container
+    /// then cannot open. A database with no recovery state beside it is therefore opened <c>immutable=1</c>, which
+    /// creates nothing; one that has recovery state is read through a private copy so the pending WAL is replayed
+    /// into the copy and never into the instance.
+    /// </summary>
+    private sealed class ReadOnlyDatabase : IDisposable
     {
-        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        private readonly DirectoryInfo? snapshotRoot;
+
+        private ReadOnlyDatabase(SqliteConnection connection, DirectoryInfo? snapshotRoot)
         {
-            DataSource = databasePath,
-            Mode = SqliteOpenMode.ReadOnly,
-            Cache = SqliteCacheMode.Private,
-            Pooling = false
-        }.ToString());
-        try
-        {
-            connection.Open();
-            return connection;
+            Connection = connection;
+            this.snapshotRoot = snapshotRoot;
         }
-        catch
+
+        public SqliteConnection Connection { get; }
+
+        public static ReadOnlyDatabase Open(string databasePath)
         {
-            connection.Dispose();
-            throw;
+            var recoveryFiles = new[] { databasePath + "-wal", databasePath + "-journal" }
+                .Where(File.Exists).ToArray();
+            var immutable = recoveryFiles.Length == 0 && !File.Exists(databasePath + "-shm");
+            DirectoryInfo? snapshotRoot = null;
+            try
+            {
+                var inspectionPath = databasePath;
+                if (!immutable)
+                {
+                    snapshotRoot = Directory.CreateTempSubdirectory("hvo-preflight-inspection-");
+                    inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
+                    File.Copy(databasePath, inspectionPath);
+                    foreach (var recoveryFile in recoveryFiles)
+                    {
+                        File.Copy(recoveryFile, inspectionPath + recoveryFile[databasePath.Length..]);
+                    }
+                }
+                var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = immutable
+                        ? new Uri(inspectionPath).AbsoluteUri + "?immutable=1"
+                        : inspectionPath,
+                    Mode = immutable ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
+                    Cache = SqliteCacheMode.Private,
+                    Pooling = false
+                }.ToString());
+                try
+                {
+                    connection.Open();
+                }
+                catch
+                {
+                    connection.Dispose();
+                    throw;
+                }
+                return new ReadOnlyDatabase(connection, snapshotRoot);
+            }
+            catch
+            {
+                snapshotRoot?.Delete(recursive: true);
+                throw;
+            }
+        }
+
+        public void Dispose()
+        {
+            Connection.Dispose();
+            snapshotRoot?.Delete(recursive: true);
         }
     }
 }
@@ -571,7 +628,8 @@ internal static class CameraAgentStatePreflight
 /// <summary>
 /// Resolves the installed instance and candidate image for the operator-facing
 /// <c>cameraagent preflight</c> command. The command inspects persisted state only; it never pulls, loads,
-/// starts, mutates, or deletes anything, and it writes nothing anywhere, including the distribution cache.
+/// starts, mutates, or deletes anything, and it writes nothing into the instance, the release media, or the
+/// distribution cache. A journal carrying unreplayed recovery state is read through a private temporary copy.
 /// </summary>
 internal static class CameraAgentStatePreflightManager
 {
@@ -616,14 +674,20 @@ internal static class CameraAgentStatePreflightManager
         {
             policy = CameraAgentStateContractPolicy.RequireCurrent;
             using var acquirer = (distributionFactory ?? CreateDistributionAcquirer)();
-            var release = await acquirer.ResolveImageAsync(request.ImageSelection(), cancellationToken)
+            // The recorded daemon architecture, not this process's, decides which platform an upgrade of this
+            // instance would install. Preflight never contacts Docker, so nothing else would catch a divergence.
+            var release = await acquirer.ResolveImageAsync(
+                              request.ImageSelection(), cancellationToken, manifest.DockerDaemon.Architecture)
                               .ConfigureAwait(false)
                           ?? throw new InstallerException(
                               "The signed CameraAgent image release did not resolve a candidate image.");
             // The release is verified and its platform selected exactly as an upgrade does, but the offline
             // archive is deliberately not acquired and Docker is never contacted: the signed compatibility record
             // is the candidate declaration, and an upgrade refuses any image that contradicts it. That keeps the
-            // command read-only and lets an operator evaluate a release the host has not received yet.
+            // command read-only and lets an operator evaluate a release the host has not received yet. It reports
+            // the persisted-state boundaries only: the upgrade additionally requires the loaded image's labels to
+            // agree with this record and its contract identities to match the instance, so a clean report here is
+            // not a promise the upgrade proceeds.
             requirements = CameraAgentStateRequirements.From(release.Image.Compatibility);
             candidateImageId = release.Platform.OfflineArchiveImageId ?? release.Platform.ManifestDigest;
             candidateRelease = release.Release.Tag;

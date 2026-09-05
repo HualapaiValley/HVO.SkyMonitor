@@ -277,7 +277,7 @@ internal static class CommandLine
 
     private static CameraAgentStatePreflightRequest ParseStatePreflight(string[] args)
     {
-        var (values, flags) = ParseOptions(args, 2, ["--json"]);
+        var (values, flags) = ParseOptions(args, 2, ["--json", "--no-download"]);
         RejectUnknown(values, [
             "--instance-id", "--product-root", "--image-ref",
             "--image-manifest", "--image-index", "--image-version", "--asset-base-url", "--channel"
@@ -292,7 +292,10 @@ internal static class CommandLine
             ImageIndex = Get(values, "--image-index"),
             ImageVersion = Get(values, "--image-version"),
             AssetBaseUrl = Get(values, "--asset-base-url"),
-            Channel = ParseChannel(Get(values, "--channel"))
+            // Presence, not the resolved value: an explicit --channel local must be rejected without a signed
+            // release just as --channel stable is.
+            Channel = Get(values, "--channel") is { } channel ? ParseChannel(channel) : null,
+            NoDownload = flags.Contains("--no-download")
         };
         request.Validate();
         return request;

@@ -407,7 +407,7 @@ hvo-skymonitor cameraagent preflight --instance-id <uuid> --json
 hvo-skymonitor cameraagent preflight --instance-id <uuid> \
   --image-ref <repository@sha256:digest>
 hvo-skymonitor cameraagent preflight --instance-id <uuid> \
-  --image-manifest /media/hvo/image-v1.5.0/image-manifest.json
+  --image-manifest /media/hvo/image-v1.5.0/image-manifest.json --no-download
 hvo-skymonitor cameraagent preflight --instance-id <uuid> \
   --channel stable \
   --image-index https://mirror.example/indexes/image-stable-index.json \
@@ -423,20 +423,34 @@ Without a candidate the installed image's declaration is evaluated; naming one e
 declaration and requires the current contract, matching an in-place upgrade. `--image-ref` names an image this
 host already holds and is read from the local Docker image store. `--image-manifest`, `--image-index`, and
 `--image-version` instead name a signed image release from the train above and are resolved exactly as an
-upgrade resolves one: the same signature and index verification, the same rollback protection, and the same
-platform selection. `--asset-base-url` and `--channel` apply to them as they do to an upgrade, and they require
-one of those two selectors. A signed release and `--image-ref` are mutually exclusive here for the same reason
-install and upgrade refuse the combination, and the usage errors are identical.
+upgrade resolves one: the same signature and index verification, the same rollback protection, the same
+offline-archive identification, and the same platform selection, against the Docker architecture the instance
+manifest recorded. `--asset-base-url`, `--channel`, and `--no-download` apply to them as they do to an upgrade
+and are rejected without `--image-manifest` or `--image-index`. A signed release and `--image-ref` are mutually
+exclusive here for the same reason install and upgrade refuse the combination.
 
 A signed-release preflight is strictly read-only. It evaluates the release's own signed compatibility record,
-which is the record an upgrade requires the prepared image to carry, so it neither acquires the offline archive
-nor contacts Docker at all and it reports on a release this host has not received yet. Nothing is written
-anywhere: not the instance, not the distribution download cache, and not the signed-index rollback state, which
-an acquisition would advance. Unlike install and upgrade the on-demand command retains no
-`state-preflight.json`. The report names the resolved release tag beside the immutable image ID it selected.
+so it neither acquires the offline archive nor contacts Docker at all and it reports on a release this host has
+not received yet. It writes nothing into the instance, the release media, or the distribution download cache,
+and it never advances the signed-index rollback state an acquisition would commit. A persisted database whose
+journal still carries unreplayed recovery state is read through a private temporary copy so that replay never
+touches the instance. Unlike install and upgrade the on-demand command retains no `state-preflight.json`. The
+report names the resolved release tag beside the immutable image ID it selected; install and upgrade record the
+same tag in the report they retain, which is the only release evidence a refused operation leaves behind.
 
-The command exits `0` when compatible and
-`1` with error code `state-incompatible` otherwise. Each finding names its boundary code, path, observed
+**A compatible signed-release preflight is not a promise that the upgrade will proceed.** It compares persisted
+state against the boundaries the release *declares*. Two further gates run only during the upgrade itself: the
+labels the loaded image actually carries are compared against the signed record, and the candidate's component,
+configuration, catalog, and replay-runner contract identities are required to match this instance. A release
+that declares a different configuration or catalog contract therefore preflights clean and is still refused at
+upgrade time.
+
+Rollback state is retained per operating-system user
+(`$XDG_STATE_HOME/hvo/skymonitor/distribution`, else `~/.local/state/...`), so run the preflight as the same
+user that will run the upgrade for its rollback protection to consult the same floor.
+
+The command exits `0` when compatible and `1` with error code `state-incompatible` otherwise. Each finding
+names its boundary code, path, observed
 value, expected value, and remediation. The checked boundaries are the selected catalog manifest version and
 catalog identity, the Identity migration lineage recorded in `__EFMigrationsHistory`, the raw-ingress
 `PRAGMA user_version`, and the ownership and mode of every writable Compose bind source.

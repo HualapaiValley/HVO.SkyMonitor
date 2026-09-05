@@ -130,7 +130,10 @@ internal sealed class DistributionAcquirer : IDisposable
     /// state is committed. The read-only <c>cameraagent preflight</c> uses this to name the release an upgrade
     /// would install without leaving anything behind. Returns <c>null</c> when no signed release was named.
     /// </summary>
-    public async Task<ResolvedImageRelease?> ResolveImageAsync(InstallRequest request, CancellationToken cancellationToken)
+    public async Task<ResolvedImageRelease?> ResolveImageAsync(
+        InstallRequest request,
+        CancellationToken cancellationToken,
+        string? architecture = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         var inputs = TrainInputs.ForImage(request);
@@ -143,7 +146,19 @@ internal sealed class DistributionAcquirer : IDisposable
         {
             var resolved = await ResolveVerifiedManifestAsync(
                 inputs, DistributionManifestKind.ImageRelease, readOnly: true, cancellationToken).ConfigureAwait(false);
-            var (image, platform) = SelectHostPlatform(resolved.Manifest);
+            var (image, platform) = SelectHostPlatform(resolved.Manifest, architecture);
+            // An acquisition also requires the release to publish exactly one offline archive for the selected
+            // platform. Proving it here costs no download and keeps a malformed release from resolving cleanly
+            // and then failing partway through the upgrade it was resolved for.
+            if (resolved.Manifest.Artifacts.Count(value =>
+                    value.Role == DistributionArtifactRole.ImageArchive &&
+                    value.AssetName == platform.OfflineArchiveAsset) != 1)
+            {
+                throw new InstallerException(
+                    $"The signed CameraAgent image release {resolved.Manifest.Release.Tag} does not publish exactly " +
+                    $"one offline archive named '{platform.OfflineArchiveAsset}' for " +
+                    $"{platform.OperatingSystem}/{platform.Architecture}.");
+            }
             return new ResolvedImageRelease(resolved.Manifest.Release, image, platform);
         }
         catch (Exception exception) when (exception is DistributionValidationException or HttpRequestException or IOException or
@@ -154,14 +169,16 @@ internal sealed class DistributionAcquirer : IDisposable
     }
 
     /// <summary>
-    /// Selects the published platform this host can execute. A release that does not publish this host's
-    /// architecture names what it does publish instead of failing generically.
+    /// Selects the published platform the target daemon can execute, defaulting to this process's architecture
+    /// when no daemon identity is known. A release that does not publish it names what it does publish instead of
+    /// failing generically.
     /// </summary>
     private static (DistributionImageIdentity Image, DistributionImagePlatform Platform) SelectHostPlatform(
-        DistributionReleaseManifest manifest)
+        DistributionReleaseManifest manifest,
+        string? requestedArchitecture = null)
     {
         var image = manifest.Images[0];
-        var architecture = HostImageArchitecture();
+        var architecture = requestedArchitecture ?? HostImageArchitecture();
         var platform = image.Platforms.SingleOrDefault(candidate =>
             candidate.OperatingSystem == "linux" && candidate.Architecture == architecture)
             ?? throw new InstallerException(
@@ -327,6 +344,8 @@ internal sealed class DistributionAcquirer : IDisposable
             // Creating the state root and taking the acquisition lock are both writes, so a read-only resolution
             // does neither. The retained value is published atomically, so an unlocked read observes either the
             // complete previous value or the complete next one, which is enough to report a rolled-back index.
+            // A floor established between this probe and the caller's use is missed; only an acquisition, which
+            // holds the lock and commits, is serialized against that.
             if (File.Exists(statePath))
             {
                 EnsureIndexNotRolledBack(statePath, index.Sequence, hash);
@@ -435,7 +454,8 @@ internal sealed class DistributionAcquirer : IDisposable
             }
             var cachedBytes = new byte[cachedStream.Length];
             await cachedStream.ReadExactlyAsync(cachedBytes, cancellationToken).ConfigureAwait(false);
-            return new MetadataBytes(cachedBytes, cached, true);
+            // A read-only resolution never names a cache entry, so no later step can evict one it did not create.
+            return new MetadataBytes(cachedBytes, readOnly ? null : cached, true);
         }
         var cachePath = MetadataCachePath(locator.Uri);
         if (!bypassCache && File.Exists(cachePath))
