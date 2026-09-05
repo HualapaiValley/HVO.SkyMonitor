@@ -129,10 +129,6 @@ internal sealed record InstallRequest
         {
             ValidateDistributionLocator(CatalogIndex, "--catalog-index", Channel);
         }
-        if (AssetBaseUrl is not null)
-        {
-            ValidateDistributionLocator(AssetBaseUrl, "--asset-base-url", Channel);
-        }
         if (ImageArchive is not null)
         {
             ValidateAbsolutePath(ImageArchive, "--image-archive");
@@ -192,6 +188,12 @@ internal sealed record InstallRequest
     /// </summary>
     internal void ValidateImageSelection()
     {
+        // The asset base steers both trains' immutable asset resolution, so it belongs to the selection rules an
+        // install, an upgrade, and a preflight all apply rather than to the install contract alone.
+        if (AssetBaseUrl is not null)
+        {
+            ValidateDistributionLocator(AssetBaseUrl, "--asset-base-url", Channel);
+        }
         if (ImageManifest is not null && ImageIndex is not null)
         {
             throw new InstallUsageException("--image-manifest cannot be combined with --image-index.");
