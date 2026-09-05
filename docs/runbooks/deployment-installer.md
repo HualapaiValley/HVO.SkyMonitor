@@ -163,6 +163,10 @@ hvo-skymonitor cameraagent upgrade \
   --no-download
 ```
 
+`cameraagent preflight` accepts the same release selectors and resolves them the same way, so a planned upgrade
+can be evaluated against persisted state first without acquiring, loading, or starting anything; see
+[State Compatibility Boundary](#state-compatibility-boundary).
+
 `--migration-backward-compatible` remains a separate operator assertion about the
 candidate's state migration and is required only when the candidate declares one.
 Do not add it to a routine upgrade; doing so defeats the gate it exists for.
@@ -402,6 +406,12 @@ it on demand without starting, loading, pulling, or mutating anything:
 hvo-skymonitor cameraagent preflight --instance-id <uuid> --json
 hvo-skymonitor cameraagent preflight --instance-id <uuid> \
   --image-ref <repository@sha256:digest>
+hvo-skymonitor cameraagent preflight --instance-id <uuid> \
+  --image-manifest /media/hvo/image-v1.5.0/image-manifest.json
+hvo-skymonitor cameraagent preflight --instance-id <uuid> \
+  --channel stable \
+  --image-index https://mirror.example/indexes/image-stable-index.json \
+  --image-version 1.5.0 --asset-base-url https://mirror.example/releases
 ```
 
 A `--json` install or lifecycle invocation reserves standard error for its single error object, so the
@@ -409,8 +419,23 @@ rendered report is written there only in human form. Read the complete report fr
 `state/deployment/state-preflight.json`, or from `cameraagent preflight --json` on standard output; a
 `--dry-run` deliberately retains nothing, and its error message still enumerates every blocking code.
 
-Without `--image-ref` the installed image's declaration is evaluated; with it, the candidate's declaration is
-and the current contract is required, matching an in-place upgrade. The command exits `0` when compatible and
+Without a candidate the installed image's declaration is evaluated; naming one evaluates that candidate's
+declaration and requires the current contract, matching an in-place upgrade. `--image-ref` names an image this
+host already holds and is read from the local Docker image store. `--image-manifest`, `--image-index`, and
+`--image-version` instead name a signed image release from the train above and are resolved exactly as an
+upgrade resolves one: the same signature and index verification, the same rollback protection, and the same
+platform selection. `--asset-base-url` and `--channel` apply to them as they do to an upgrade, and they require
+one of those two selectors. A signed release and `--image-ref` are mutually exclusive here for the same reason
+install and upgrade refuse the combination, and the usage errors are identical.
+
+A signed-release preflight is strictly read-only. It evaluates the release's own signed compatibility record,
+which is the record an upgrade requires the prepared image to carry, so it neither acquires the offline archive
+nor contacts Docker at all and it reports on a release this host has not received yet. Nothing is written
+anywhere: not the instance, not the distribution download cache, and not the signed-index rollback state, which
+an acquisition would advance. Unlike install and upgrade the on-demand command retains no
+`state-preflight.json`. The report names the resolved release tag beside the immutable image ID it selected.
+
+The command exits `0` when compatible and
 `1` with error code `state-incompatible` otherwise. Each finding names its boundary code, path, observed
 value, expected value, and remediation. The checked boundaries are the selected catalog manifest version and
 catalog identity, the Identity migration lineage recorded in `__EFMigrationsHistory`, the raw-ingress

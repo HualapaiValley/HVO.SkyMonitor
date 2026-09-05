@@ -572,6 +572,7 @@ public sealed class UpgradePreflightTests
             fixture.Paths,
             fixture.InstanceId,
             $"sha256:{new string('c', 64)}",
+            candidateRelease: null,
             requirements ?? CurrentRequirements,
             CameraAgentStateContract.LegacyUnbounded,
             RuntimeUid,

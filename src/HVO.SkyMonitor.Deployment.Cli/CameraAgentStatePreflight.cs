@@ -33,6 +33,7 @@ internal sealed record CameraAgentStatePreflightReport(
     Guid InstanceId,
     string InstanceRoot,
     string? CandidateImageId,
+    string? CandidateRelease,
     string CandidateStateContract,
     string? MinimumCompatibleRevision,
     string InstalledStateContract,
@@ -58,6 +59,22 @@ internal sealed record CameraAgentStateRequirements(
         ParseVersion(image.RawIngressSchema),
         ParseVersion(image.CatalogManifestVersion));
 
+    /// <summary>
+    /// The boundaries a signed image release declares. These are exactly the label values an upgrade requires the
+    /// prepared image to carry, so evaluating persisted state against them answers the question the upgrade's own
+    /// in-flight preflight will ask, without a local copy of the image.
+    /// </summary>
+    public static CameraAgentStateRequirements From(DistributionImageCompatibility compatibility)
+    {
+        ArgumentNullException.ThrowIfNull(compatibility);
+        return new(
+            compatibility.StateContract,
+            compatibility.MinimumCompatibleRevision,
+            compatibility.IdentityMigration,
+            compatibility.RawIngressSchema,
+            compatibility.CatalogManifestVersion);
+    }
+
     private static int? ParseVersion(string? value)
         => int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
 }
@@ -75,6 +92,7 @@ internal static class CameraAgentStatePreflight
         InstallationPaths paths,
         Guid instanceId,
         string? candidateImageId,
+        string? candidateRelease,
         CameraAgentStateRequirements requirements,
         string? installedStateContract,
         uint uid,
@@ -97,6 +115,7 @@ internal static class CameraAgentStatePreflight
             instanceId,
             paths.InstanceRoot,
             candidateImageId,
+            candidateRelease,
             CameraAgentStateContract.Describe(requirements.StateContract),
             requirements.MinimumCompatibleRevision,
             CameraAgentStateContract.Describe(installedStateContract),
@@ -128,6 +147,9 @@ internal static class CameraAgentStatePreflight
             paths,
             instanceId,
             candidate.ImageId,
+            // Install and upgrade retain the complete release record in image-distribution.json, so the in-flight
+            // report names the image it evaluated and leaves the release identity to that evidence.
+            candidateRelease: null,
             CameraAgentStateRequirements.From(candidate),
             installedStateContract,
             uid,
@@ -167,6 +189,11 @@ internal static class CameraAgentStatePreflight
         var builder = new StringBuilder();
         builder.Append(CultureInfo.InvariantCulture, $"CameraAgent state preflight for instance {report.InstanceId:D}: ");
         builder.AppendLine(report.Compatible ? "compatible." : "incompatible.");
+        if (report.CandidateRelease is { Length: > 0 } release)
+        {
+            builder.AppendLine(CultureInfo.InvariantCulture,
+                $"Candidate signed release: {release} ({report.CandidateImageId ?? "no immutable image ID published"}).");
+        }
         builder.AppendLine(CultureInfo.InvariantCulture,
             $"Candidate state contract: {report.CandidateStateContract}; installed: {report.InstalledStateContract}.");
         if (report.MinimumCompatibleRevision is { Length: > 0 } minimum)
@@ -543,8 +570,8 @@ internal static class CameraAgentStatePreflight
 
 /// <summary>
 /// Resolves the installed instance and candidate image for the operator-facing
-/// <c>cameraagent preflight</c> command. The command inspects persisted state only; it never loads, starts,
-/// mutates, or deletes anything.
+/// <c>cameraagent preflight</c> command. The command inspects persisted state only; it never pulls, loads,
+/// starts, mutates, or deletes anything, and it writes nothing anywhere, including the distribution cache.
 /// </summary>
 internal static class CameraAgentStatePreflightManager
 {
@@ -556,7 +583,8 @@ internal static class CameraAgentStatePreflightManager
     internal static async Task<CameraAgentStatePreflightReport> ExecuteAsync(
         CameraAgentStatePreflightRequest request,
         IProcessRunner processRunner,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<DistributionAcquirer>? distributionFactory = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         request.Validate();
@@ -578,11 +606,29 @@ internal static class CameraAgentStatePreflightManager
             throw new InstallerException("The retained instance manifest does not correlate with the selected instance.");
         }
 
-        var candidate = manifest.Image;
+        var requirements = CameraAgentStateRequirements.From(manifest.Image);
+        var candidateImageId = manifest.Image.ImageId;
+        string? candidateRelease = null;
         // Evaluating the installed image reports the instance as it stands; naming a candidate evaluates the
         // in-place upgrade, which additionally requires the current durable state contract.
         var policy = CameraAgentStateContractPolicy.AllowLegacy;
-        if (request.ImageReference is { Length: > 0 } reference)
+        if (request.NamesSignedImageRelease)
+        {
+            policy = CameraAgentStateContractPolicy.RequireCurrent;
+            using var acquirer = (distributionFactory ?? CreateDistributionAcquirer)();
+            var release = await acquirer.ResolveImageAsync(request.ImageSelection(), cancellationToken)
+                              .ConfigureAwait(false)
+                          ?? throw new InstallerException(
+                              "The signed CameraAgent image release did not resolve a candidate image.");
+            // The release is verified and its platform selected exactly as an upgrade does, but the offline
+            // archive is deliberately not acquired and Docker is never contacted: the signed compatibility record
+            // is the candidate declaration, and an upgrade refuses any image that contradicts it. That keeps the
+            // command read-only and lets an operator evaluate a release the host has not received yet.
+            requirements = CameraAgentStateRequirements.From(release.Image.Compatibility);
+            candidateImageId = release.Platform.OfflineArchiveImageId ?? release.Platform.ManifestDigest;
+            candidateRelease = release.Release.Tag;
+        }
+        else if (request.ImageReference is { Length: > 0 } reference)
         {
             policy = CameraAgentStateContractPolicy.RequireCurrent;
             var docker = new DockerClient(processRunner);
@@ -598,18 +644,22 @@ internal static class CameraAgentStatePreflightManager
             };
             var prepared = await docker.PrepareImageAsync(synthetic, allowMutation: false, signedImage: null, cancellationToken)
                 .ConfigureAwait(false);
-            candidate = prepared.Image;
+            requirements = CameraAgentStateRequirements.From(prepared.Image);
+            candidateImageId = prepared.Image.ImageId;
         }
 
         return CameraAgentStatePreflight.Evaluate(
             paths,
             instanceId,
-            candidate.ImageId,
-            CameraAgentStateRequirements.From(candidate),
+            candidateImageId,
+            candidateRelease,
+            requirements,
             manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility,
             manifest.RuntimeUid,
             manifest.RuntimeGid,
             manifest.ReplayProfile,
             policy);
     }
+
+    private static DistributionAcquirer CreateDistributionAcquirer() => new();
 }

@@ -63,6 +63,15 @@ internal sealed record CameraAgentStatePreflightRequest(
     string? ImageReference,
     bool Json) : DeploymentCommand(Json)
 {
+    public string? ImageManifest { get; init; }
+    public string? ImageIndex { get; init; }
+    public string? ImageVersion { get; init; }
+    public string? AssetBaseUrl { get; init; }
+    public DistributionChannel Channel { get; init; }
+
+    /// <summary>Whether the operator named a signed image release instead of an image already established here.</summary>
+    public bool NamesSignedImageRelease => ImageManifest is not null || ImageIndex is not null || ImageVersion is not null;
+
     public void Validate()
     {
         if (InstanceId is null)
@@ -70,6 +79,19 @@ internal sealed record CameraAgentStatePreflightRequest(
             throw new InstallUsageException("--instance-id is required.");
         }
         ValidateProductRoot(ProductRoot);
+        if (NamesSignedImageRelease)
+        {
+            // A preflight selects its candidate by exactly the rules an install and an upgrade use, so the mutual
+            // exclusion with --image-ref, the index/version pairing, and the locator/channel rules all produce the
+            // same usage errors here that they produce there.
+            ImageSelection().ValidateImageSelection();
+            return;
+        }
+        if (AssetBaseUrl is not null || Channel != DistributionChannel.Local)
+        {
+            throw new InstallUsageException(
+                "--asset-base-url and --channel require --image-manifest or --image-index.");
+        }
         if (ImageReference is not null &&
             !System.Text.RegularExpressions.Regex.IsMatch(
                 ImageReference,
@@ -79,6 +101,22 @@ internal sealed record CameraAgentStatePreflightRequest(
             throw new InstallUsageException("preflight requires an immutable --image-ref.");
         }
     }
+
+    /// <summary>
+    /// The image-train selectors this preflight resolves, carrying no instance state. It is validated as an
+    /// install request so one set of selection rules governs install, upgrade, and preflight alike.
+    /// </summary>
+    internal InstallRequest ImageSelection() => new()
+    {
+        FriendlyName = "preflight",
+        OwnerEmail = "preflight@localhost.invalid",
+        ImageReference = ImageReference ?? string.Empty,
+        ImageManifest = ImageManifest,
+        ImageIndex = ImageIndex,
+        ImageVersion = ImageVersion,
+        AssetBaseUrl = AssetBaseUrl,
+        Channel = Channel
+    };
 
     internal static void ValidateProductRoot(string productRoot)
     {
