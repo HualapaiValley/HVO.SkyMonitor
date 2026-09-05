@@ -127,13 +127,14 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 | `HVO.SkyMonitor.Fleet.Contracts` | Stable transport-neutral fleet status, health, timing, and acknowledgement contracts | HTTP, host orchestration, persistence, retention, authentication, UI |
 | `HVO.SkyMonitor.Processing` | Host-neutral recipe definitions/execution contracts, selectors, transforms, analyzers, gates, windows, environmental/event products, assessments, outcomes, and canonical recipe identity | Host persistence, HTTP, UI, background-service policy |
 | `HVO.SkyMonitor.Catalog.Sqlite` | Shared read-only SQLite catalog adapter | Shared SQL schema, mutable catalog state |
+| `HVO.SkyMonitor.Storage.FileSystem` | Host-neutral root confinement, symlink/reparse protection, atomic filesystem publication, durable file/directory synchronization, and bounded cleanup/error primitives | CameraAgent or LogicHost storage contracts, capture/artifact manifests, bucket/key or generation semantics, SQLite/EF persistence, retention/replay policy, ASP.NET, or provider SDKs |
 | `HVO.SkyMonitor.Common` | Reusable ASP.NET security, identity, API, middleware, and observability infrastructure used by either host | Camera acquisition, recipes/image algorithms, central/edge workflow ownership, or shared domain persistence |
 | `HVO.SkyMonitor.CameraAgent.Common` | Edge acquisition orchestration, SQLite WAL journal, durable lanes, local storage, outbox, retention, telemetry, and configuration | LogicHost references or central persistence |
 | `HVO.SkyMonitor.CameraAgent.Replay` | CameraAgent-local authenticated bounded transport, immutable request/result projection, capabilities, and per-dispatch transport evidence for explicitly requested archived replay | Durable job or lease authority, live/new-capture execution, cross-host evidence export, host persistence, UI, central scheduling, or provider placement |
 | `HVO.SkyMonitor.CameraAgent.ReplayRunner` | Self-contained local replay executable, warmup/probe behavior, and server composition for configured archived replay | Acquisition, durable replay state, publication authority, global scheduling, LogicHost/cloud dependencies, or host UI/API |
 | `HVO.SkyMonitor.CameraAgent.Modules.Zwo` | Linux ZWO ASI SDK interop and full-frame bin-1 color RAW16 acquisition for the ASI676MC and ASI178MC | Host orchestration, processing, persistence, vendor artifacts, unsupported ZWO modes, or non-ZWO cameras |
 | `HVO.SkyMonitor.CameraAgent` | Local ASP.NET/Blazor host, local Identity, authenticated local APIs and composition | Central persistence or private processing algorithms |
-| `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/provider-neutral S3 object-storage services, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
+| `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/provider-neutral object-storage services and provider adapters, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
 | `HVO.SkyMonitor.Deployment.Contracts` | Host-neutral installation, lifecycle, distribution, release, and compatibility records | Filesystem, network, signature verification, Docker/Compose, host runtime, or secrets |
 | `HVO.SkyMonitor.Deployment.Distribution` | Immutable release/catalog signature, trust, checksum, and distribution verification | Installation mutation, Docker/Compose, application runtime, or host workflow ownership |
 | `HVO.SkyMonitor.Deployment.Cli` | Self-contained installation and lifecycle orchestration across signed distribution, catalogs, filesystem state, Docker/Compose placement, owner bootstrap, verification, diagnostics, and recovery | Application runtime behavior, acquisition/processing, domain persistence, or host UI/API |
@@ -397,18 +398,30 @@ correctness evidence. Dapper, generic repositories, blanket retries, `NOLOCK`,
 database splits, and provider-wide procedure conversion are not default
 solutions.
 
-### 3.12 Provider-neutral S3 object storage
+### 3.12 Provider-neutral object storage
 
 | ID | Requirement |
 | --- | --- |
-| `S3-001` | LogicHost owns a provider-SDK-neutral, strongly consistent S3 subset covering authenticated bucket readiness, non-seekable known-length put, stat with an opaque generation token, conditional streamed get, same-bucket copy, idempotent delete, and complete ordinal paginated prefix listing. It normalizes provider failures, keeps SHA-256 and byte length authoritative, supports custom-endpoint and AWS-style configuration, confines provider types to LogicHost infrastructure, and supplies one reusable conformance suite. |
-| `S3-002` | Before adoption, qualify one immutable SeaweedFS release and single-node topology for the complete contract, source and license identity, SBOM and provenance disposition, vulnerability status, least privilege, non-root private operation, runtime signals, faults, actual backup and restore, `W1`/`W2`/`W3M`/`W3P`/`W4` performance, and native Linux amd64 and arm64 operation. Failure returns to #499 for an explicit decision and never authorizes automatic substitution. |
-| `S3-003` | Supported deployment uses the exact qualified artifact and platform digests across Compose, installer inventory, Testcontainers, CI, provisioning, configuration, and current runbooks. Initialization is fresh-state, deterministic, private, and least privilege; old MinIO state remains untouched and unsupported, and all central workflows are requalified against the adopted artifact. |
+| `OBJ-001` | LogicHost owns a provider-SDK-neutral, strongly consistent object-store contract covering logical bucket readiness, non-seekable known-length put, stat with an opaque generation token, conditional streamed read, same-bucket copy, idempotent delete, and complete ordinal paginated prefix listing. It normalizes provider failures, including explicit non-retryable `Capacity` and terminal `CorruptState` outcomes for local storage, keeps application SHA-256 and byte length authoritative, confines provider types to LogicHost infrastructure, and supplies one universal conformance suite plus provider-specific evidence. Blind request retries never hide capacity exhaustion or corrupt durable state. |
+| `OBJ-002` | Provider selection, options, validation, health, telemetry, diagnostics, and persisted references are provider neutral. Logical identities such as `object://` preserve bucket/key identity across providers; physical paths, endpoints, credentials, SDK types, and provider-specific ETags do not become application identity. Filesystem, S3, and future Azure option groups are mutually exclusive and fail closed. |
+| `OBJ-003` | A small host-neutral filesystem infrastructure project owns only root confinement, canonical path validation, symlink/reparse rejection, same-filesystem atomic publication, durable file flush and supported-platform directory synchronization, and bounded cleanup/error primitives. LogicHost and CameraAgent retain separate storage contracts and lifecycle policies; CameraAgent adoption occurs only after `RM-017` through #587. The solution graph, architecture rules, coverage policy, and CI classifier explicitly register the project as shared infrastructure rather than allowing an unknown-project fallback. |
+| `OBJ-004` | The first supported local provider is an HVO-owned durable filesystem implementation of LogicHost `IObjectStore`, qualified for one LogicHost replica on Linux amd64/arm64 with a same-host ext4 bind mount, fixed non-root identity, read-only container root, and two deployment-precreated bucket roots. Its commit descriptor includes a provider-internal SHA-256 computed during the streaming write for local corruption detection without replacing the application checksum as cross-provider authority. Qualification covers crash consistency, concurrency, corruption, capacity/permission faults, bounded reclamation of retired immutable generations, reconciliation, backup/destructive restore, observability, and `W1`/`W2`/`W3M`/`W3P`/`W4` performance. Untested filesystems, remote mounts, and multiple writers remain unsupported. |
+| `OBJ-005` | Supported local deployment, installer inventory, Testcontainers, CI, provisioning, configuration, and current runbooks use the exact qualified filesystem topology. Initialization is fresh-state, deterministic, private, and least privilege; old MinIO state remains untouched and unsupported, MinIO server/control-plane ownership is removed, and all affected central workflows are requalified. |
+| `OBJ-REMOTE-001` | A future remote-filesystem profile qualifies one exact server implementation, server filesystem, protocol/version, client kernel, mount-option, identity, network, and availability topology. It must prove atomic publication, durable flush, cache visibility, one-writer fencing, absent/wrong-mount preflight, partition/remount recovery, backup/restore, security, and performance independently of the same-host result under `RM-019` issue #591. |
+| `S3-001` | The delivered #504 S3 adapter remains a provider-specific implementation of `OBJ-001`, supporting custom endpoints and AWS-style region/default credential configuration without leaking AWS SDK types. The first supported release profile is filesystem-only: installer and production preflight reject S3 selection until #589 qualifies and enables an exact external profile. Focused adapter tests and development/qualification configuration remain. S3 transport authentication, addressing, throttling, pagination, exception mapping, and ambiguous-result evidence stays separate from universal conformance. |
+| `S3-002` | Every supported external S3 service and topology requires a new immutable qualification for API behavior, security, supply chain, recovery, faults, observability, performance, and native deployment, followed by exact-profile installer, preflight, provisioning, runbook, and central-workflow adoption. The SeaweedFS 4.44 no-go in #505 certifies no later release; external S3 qualification/adoption is future `RM-019` issue #589 and does not block the first local release. |
+| `AZURE-OBJ-001` | A future native Azure Blob adapter implements `OBJ-001` directly with opaque generations and provider-neutral identity. It requires independent Azure identity, authorization, continuation, conditional request, copy, recovery, cost/capacity, observability, and performance qualification under `RM-019` issue #590. |
 
-Runtime LogicHost credentials are data-plane-only for two pre-provisioned private
-buckets. Deployment infrastructure owns bucket, user, and policy administration.
-Provider ETags are opaque generation tokens; application SHA-256 and byte length
-remain integrity authority. CameraAgent never depends on central object storage.
+Deployment infrastructure owns the two private logical bucket roots and their
+permissions. LogicHost is confined to the declared object-data mount for the
+local provider and uses data-plane-only identities for remote providers.
+Provider generations are opaque concurrency tokens; application SHA-256 and byte
+length remain integrity authority. CameraAgent never depends on central object
+storage. It may share the low-level `OBJ-003` filesystem mechanisms after
+`RM-017`, but retains its capture-specific storage, ingress, path, journal,
+retention, outbox, and replay contracts. The complete decision and comparison is
+recorded in
+[`planning/object-storage-provider-decision.md`](planning/object-storage-provider-decision.md).
 
 ## 4. Performance Is a Design Requirement
 
@@ -489,7 +502,8 @@ The plan starts from the following completed foundation:
 - Shared solar-system, catalog, and constellation behavior.
 - Local ordered processing, raw artifact preservation, rolling combination,
   preview, annotation, storage, browse indexes, retention, and outbox v1.
-- Multipart checksum-verified LogicHost ingest into MinIO and SQL.
+- Multipart checksum-verified LogicHost ingest through `IObjectStore` and SQL,
+  with MinIO retained only as the temporary pre-`RM-016` local/test backend.
 - Normalized central frame and artifact records.
 - Bounded central history APIs.
 - Durable derivative scheduling, leases, retries, expiry recovery, terminal
