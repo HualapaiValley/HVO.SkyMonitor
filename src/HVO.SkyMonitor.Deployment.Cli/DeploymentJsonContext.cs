@@ -23,4 +23,5 @@ namespace HVO.SkyMonitor.Deployment;
 [JsonSerializable(typeof(CameraAgentStatePreflightReport))]
 [JsonSerializable(typeof(CameraAgentStateResetEvidence))]
 [JsonSerializable(typeof(CameraAgentStateResetResult))]
+[JsonSerializable(typeof(CameraAgentImageReleaseEvidence))]
 internal sealed partial class DeploymentJsonContext : JsonSerializerContext;

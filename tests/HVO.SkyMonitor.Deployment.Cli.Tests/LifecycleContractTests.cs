@@ -26,6 +26,34 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    public async Task UpgradeAsync_SignedReleaseWithoutThisHostArchitecture_FailsBeforeAnyMutation()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var other = DistributionAcquirer.HostImageArchitecture() == "amd64" ? "arm64" : "amd64";
+        using var release = SignedImageReleaseFixture.Create(
+            fixture.Root,
+            $"sha256:{new string('b', 64)}",
+            SignedImageReleaseFixture.ContractLabels,
+            publishedArchitectures: [other]);
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageManifest = release.ManifestPath,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            CameraAgentLifecycleManager.ExecuteAsync(
+                request, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None,
+                release.CreateAcquirer));
+
+        StringAssert.Contains(exception.Message, "does not support this host", StringComparison.Ordinal);
+        // The release is resolved before the instance is touched, so no lifecycle operation is journaled.
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
+        Assert.IsFalse(File.Exists(Path.Combine(fixture.Paths.DeploymentStateRoot, "image-distribution.json")));
+    }
+
+    [TestMethod]
     public async Task UninstallAsync_AlreadyUninstalled_IsIdempotentAndPreservesState()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);

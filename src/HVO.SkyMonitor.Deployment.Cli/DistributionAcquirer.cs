@@ -1,6 +1,7 @@
 using System.Formats.Tar;
 using System.IO.Compression;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
@@ -11,7 +12,7 @@ using HVO.SkyMonitor.Deployment.Distribution;
 
 namespace HVO.SkyMonitor.Deployment;
 
-internal sealed class DistributionCatalogAcquirer : IDisposable
+internal sealed class DistributionAcquirer : IDisposable
 {
     private const int MaximumRedirects = 5;
     private const int MaximumAttempts = 3;
@@ -28,7 +29,7 @@ internal sealed class DistributionCatalogAcquirer : IDisposable
     private readonly string stateRoot;
     private readonly DistributionTrustRoot trustRoot;
 
-    public DistributionCatalogAcquirer(
+    public DistributionAcquirer(
         HttpMessageHandler? handler = null,
         string? cacheRoot = null,
         DistributionTrustRoot? trustRoot = null,
@@ -44,76 +45,32 @@ internal sealed class DistributionCatalogAcquirer : IDisposable
     public async Task<AcquiredCatalog> AcquireAsync(InstallRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (request.CatalogManifest is null && request.CatalogIndex is null)
+        var inputs = TrainInputs.ForCatalog(request);
+        if (inputs.Manifest is null && inputs.Index is null)
         {
             return new AcquiredCatalog(request.CatalogBundle!, null, null, null);
         }
 
         try
         {
-            var resolvedManifest = request.CatalogManifest is not null
-                ? new ResolvedManifest(DistributionLocator.Parse(request.CatalogManifest), null, null, null)
-                : await ResolveManifestFromIndexAsync(request, cancellationToken).ConfigureAwait(false);
-            var manifestSource = resolvedManifest.Manifest;
-            var signatureSource = resolvedManifest.Signature ?? manifestSource.AppendToName(".sig");
-            var manifestBytes = await ReadMetadataAsync(
-                manifestSource, DistributionVerifier.MaximumManifestBytes, request.NoDownload, cancellationToken).ConfigureAwait(false);
-            var signatureBytes = await ReadMetadataAsync(
-                signatureSource, DistributionVerifier.MaximumSignatureTextBytes, request.NoDownload, cancellationToken).ConfigureAwait(false);
-            DistributionReleaseManifest manifest;
-            try
-            {
-                manifest = DistributionVerifier.VerifyManifest(manifestBytes.Bytes, signatureBytes.Bytes, trustRoot);
-            }
-            catch (DistributionValidationException) when (!request.NoDownload && (manifestBytes.FromCache || signatureBytes.FromCache))
-            {
-                DeleteCachedMetadata(manifestBytes);
-                DeleteCachedMetadata(signatureBytes);
-                manifestBytes = await ReadMetadataAsync(
-                    manifestSource, DistributionVerifier.MaximumManifestBytes, noDownload: false, cancellationToken, bypassCache: true).ConfigureAwait(false);
-                signatureBytes = await ReadMetadataAsync(
-                    signatureSource, DistributionVerifier.MaximumSignatureTextBytes, noDownload: false, cancellationToken, bypassCache: true).ConfigureAwait(false);
-                manifest = DistributionVerifier.VerifyManifest(manifestBytes.Bytes, signatureBytes.Bytes, trustRoot);
-            }
-            if (resolvedManifest.Reference is { } reference &&
-                (manifestBytes.Bytes.Length != reference.ManifestLength ||
-                 Convert.ToHexStringLower(SHA256.HashData(manifestBytes.Bytes)) != reference.ManifestSha256))
-            {
-                throw new InstallerException("The catalog manifest does not match its signed index entry.");
-            }
-            if (manifest.ManifestKind != DistributionManifestKind.CatalogRelease)
-            {
-                throw new InstallerException("The signed distribution manifest is not a catalog release.");
-            }
+            var resolved = await ResolveVerifiedManifestAsync(
+                inputs, DistributionManifestKind.CatalogRelease, cancellationToken).ConfigureAwait(false);
+            var manifest = resolved.Manifest;
             var artifact = manifest.Artifacts.SingleOrDefault(static value => value.Role == DistributionArtifactRole.CatalogBundle)
                 ?? throw new InstallerException("The signed catalog release does not identify exactly one bundle asset.");
-            var assetSource = ResolveAssetSource(request, manifestSource, artifact.AssetName, resolvedManifest.Reference is null);
-            var asset = await AcquireAssetAsync(assetSource, request.CatalogBundle, artifact, request.NoDownload, cancellationToken)
+            var assetSource = ResolveAssetSource(inputs, resolved.Source, artifact.AssetName, resolved.Reference is null);
+            var asset = await AcquireAssetAsync(assetSource, inputs.OperatorAsset, artifact, inputs.NoDownload, cancellationToken)
                 .ConfigureAwait(false);
             var extractedRoot = await ExtractCatalogAsync(asset.Path, artifact, manifest.Catalog!, cancellationToken).ConfigureAwait(false);
-            if (resolvedManifest.IndexState is { } indexState)
+            if (resolved.IndexState is { } indexState)
             {
                 CommitIndexRollback(indexState);
             }
-            var manifestHash = Convert.ToHexStringLower(SHA256.HashData(manifestBytes.Bytes));
-            var evidence = new DistributionVerificationEvidence(
-                manifest.ManifestKind.ToString(),
-                manifest.Release.Train,
-                manifest.Release.Version,
-                manifest.Release.Tag,
-                manifestHash,
-                manifestBytes.Bytes.Length,
-                manifest.Signing.KeyId,
-                artifact.AssetName,
-                artifact.Sha256,
-                artifact.Length,
-                manifestSource.Uri,
-                asset.ResolvedUri,
-                "verified",
-                DateTimeOffset.UtcNow,
-                manifest.Artifacts.Single(static value => value.Role == DistributionArtifactRole.Provenance).AssetName,
-                manifest.Artifacts.Single(static value => value.Role == DistributionArtifactRole.Provenance).Sha256);
-            return new AcquiredCatalog(extractedRoot, evidence, manifest.Catalog, extractedRoot);
+            return new AcquiredCatalog(
+                extractedRoot,
+                CreateEvidence(resolved, artifact, asset),
+                manifest.Catalog,
+                extractedRoot);
         }
         catch (Exception exception) when (exception is DistributionValidationException or HttpRequestException or IOException or
                                            UnauthorizedAccessException or InvalidDataException or CryptographicException)
@@ -122,24 +79,176 @@ internal sealed class DistributionCatalogAcquirer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Acquires the signed CameraAgent image release for this host architecture. The platform is selected, the
+    /// offline archive is verified against its signed length and checksum, and every failure is raised here, before
+    /// the installer asks Docker to load or start anything. Returns <c>null</c> when the operator supplied the image
+    /// directly instead of naming a signed release.
+    /// </summary>
+    public async Task<AcquiredImage?> AcquireImageAsync(InstallRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var inputs = TrainInputs.ForImage(request);
+        if (inputs.Manifest is null && inputs.Index is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var resolved = await ResolveVerifiedManifestAsync(
+                inputs, DistributionManifestKind.ImageRelease, cancellationToken).ConfigureAwait(false);
+            var image = resolved.Manifest.Images[0];
+            var architecture = HostImageArchitecture();
+            EnsureArchitectureIsQualified(architecture);
+            var platform = image.Platforms.SingleOrDefault(candidate =>
+                candidate.OperatingSystem == "linux" && candidate.Architecture == architecture)
+                ?? throw new InstallerException(
+                    $"The signed CameraAgent image release {resolved.Manifest.Release.Tag} publishes " +
+                    $"{string.Join(", ", image.Platforms.Select(static value => $"{value.OperatingSystem}/{value.Architecture}"))} " +
+                    $"and does not support this host's linux/{architecture} architecture.");
+            var artifact = resolved.Manifest.Artifacts.Single(value =>
+                value.Role == DistributionArtifactRole.ImageArchive && value.AssetName == platform.OfflineArchiveAsset);
+            var assetSource = ResolveAssetSource(inputs, resolved.Source, artifact.AssetName, resolved.Reference is null);
+            var asset = await AcquireAssetAsync(assetSource, inputs.OperatorAsset, artifact, inputs.NoDownload, cancellationToken)
+                .ConfigureAwait(false);
+            if (resolved.IndexState is { } indexState)
+            {
+                CommitIndexRollback(indexState);
+            }
+            return new AcquiredImage(
+                asset.Path,
+                artifact.Sha256,
+                platform,
+                image,
+                resolved.Manifest.Release,
+                CreateEvidence(resolved, artifact, asset));
+        }
+        catch (Exception exception) when (exception is DistributionValidationException or HttpRequestException or IOException or
+                                           UnauthorizedAccessException or InvalidDataException or CryptographicException)
+        {
+            throw new InstallerException("The signed CameraAgent image distribution could not be acquired or verified.", exception);
+        }
+    }
+
+    /// <summary>
+    /// The architectures a signed release may be installed on. A published release carries linux/arm64, but the
+    /// deployment CLI and the CameraAgent runtime still hardcode x86-64 open(2) flag values, so on aarch64 the
+    /// symlink guard is silently absent rather than failing loudly. Refuse the installation until #603 closes
+    /// instead of relying on an operator having read the runbook.
+    /// </summary>
+    private static void EnsureArchitectureIsQualified(string architecture)
+    {
+        if (architecture == "arm64")
+        {
+            throw new InstallerException(
+                "CameraAgent images are published for linux/arm64 but that architecture is not yet qualified for " +
+                "installation: the deployment CLI and runtime hardcode x86-64 open(2) flag values, so the symlink " +
+                "guard would be absent on this host. Install on linux/amd64 until issue #603 is resolved.");
+        }
+    }
+
+    /// <summary>The image architecture this host can execute, named the way an OCI platform names it.</summary>
+    internal static string HostImageArchitecture() => RuntimeInformation.OSArchitecture switch
+    {
+        System.Runtime.InteropServices.Architecture.X64 => "amd64",
+        System.Runtime.InteropServices.Architecture.Arm64 => "arm64",
+        var other => throw new InstallerException(
+            $"CameraAgent images are published for linux/amd64 and linux/arm64; this host reports {other}.")
+    };
+
+    private async Task<ResolvedRelease> ResolveVerifiedManifestAsync(
+        TrainInputs inputs,
+        DistributionManifestKind expectedKind,
+        CancellationToken cancellationToken)
+    {
+        var resolvedManifest = inputs.Manifest is not null
+            ? new ResolvedManifest(DistributionLocator.Parse(inputs.Manifest), null, null, null)
+            : await ResolveManifestFromIndexAsync(inputs, cancellationToken).ConfigureAwait(false);
+        var manifestSource = resolvedManifest.Manifest;
+        var signatureSource = resolvedManifest.Signature ?? manifestSource.AppendToName(".sig");
+        var manifestBytes = await ReadMetadataAsync(
+            manifestSource, DistributionVerifier.MaximumManifestBytes, inputs.NoDownload, cancellationToken).ConfigureAwait(false);
+        var signatureBytes = await ReadMetadataAsync(
+            signatureSource, DistributionVerifier.MaximumSignatureTextBytes, inputs.NoDownload, cancellationToken).ConfigureAwait(false);
+        DistributionReleaseManifest manifest;
+        try
+        {
+            manifest = DistributionVerifier.VerifyManifest(manifestBytes.Bytes, signatureBytes.Bytes, trustRoot);
+        }
+        catch (DistributionValidationException) when (!inputs.NoDownload && (manifestBytes.FromCache || signatureBytes.FromCache))
+        {
+            DeleteCachedMetadata(manifestBytes);
+            DeleteCachedMetadata(signatureBytes);
+            manifestBytes = await ReadMetadataAsync(
+                manifestSource, DistributionVerifier.MaximumManifestBytes, noDownload: false, cancellationToken, bypassCache: true).ConfigureAwait(false);
+            signatureBytes = await ReadMetadataAsync(
+                signatureSource, DistributionVerifier.MaximumSignatureTextBytes, noDownload: false, cancellationToken, bypassCache: true).ConfigureAwait(false);
+            manifest = DistributionVerifier.VerifyManifest(manifestBytes.Bytes, signatureBytes.Bytes, trustRoot);
+        }
+        if (resolvedManifest.Reference is { } reference &&
+            (manifestBytes.Bytes.Length != reference.ManifestLength ||
+             Convert.ToHexStringLower(SHA256.HashData(manifestBytes.Bytes)) != reference.ManifestSha256))
+        {
+            throw new InstallerException($"The {inputs.Train} manifest does not match its signed index entry.");
+        }
+        if (manifest.ManifestKind != expectedKind || manifest.Release.Train != inputs.Train)
+        {
+            throw new InstallerException(
+                $"The signed distribution manifest does not belong to the {inputs.Train} train.");
+        }
+        return new ResolvedRelease(
+            manifest,
+            manifestSource,
+            Convert.ToHexStringLower(SHA256.HashData(manifestBytes.Bytes)),
+            manifestBytes.Bytes.Length,
+            resolvedManifest.Reference,
+            resolvedManifest.IndexState);
+    }
+
+    private static DistributionVerificationEvidence CreateEvidence(
+        ResolvedRelease resolved,
+        DistributionArtifact artifact,
+        AcquiredAsset asset)
+    {
+        var provenance = resolved.Manifest.Artifacts.Single(static value => value.Role == DistributionArtifactRole.Provenance);
+        return new DistributionVerificationEvidence(
+            resolved.Manifest.ManifestKind.ToString(),
+            resolved.Manifest.Release.Train,
+            resolved.Manifest.Release.Version,
+            resolved.Manifest.Release.Tag,
+            resolved.ManifestSha256,
+            resolved.ManifestLength,
+            resolved.Manifest.Signing.KeyId,
+            artifact.AssetName,
+            artifact.Sha256,
+            artifact.Length,
+            resolved.Source.Uri,
+            asset.ResolvedUri,
+            "verified",
+            DateTimeOffset.UtcNow,
+            provenance.AssetName,
+            provenance.Sha256);
+    }
+
     public void Dispose() => client.Dispose();
 
     private async Task<ResolvedManifest> ResolveManifestFromIndexAsync(
-        InstallRequest request,
+        TrainInputs inputs,
         CancellationToken cancellationToken)
     {
-        var indexSource = DistributionLocator.Parse(request.CatalogIndex!);
+        var indexSource = DistributionLocator.Parse(inputs.Index!);
         var signatureSource = indexSource.AppendToName(".sig");
         var indexBytes = await ReadMetadataAsync(
-            indexSource, DistributionVerifier.MaximumManifestBytes, request.NoDownload, cancellationToken).ConfigureAwait(false);
+            indexSource, DistributionVerifier.MaximumManifestBytes, inputs.NoDownload, cancellationToken).ConfigureAwait(false);
         var signatureBytes = await ReadMetadataAsync(
-            signatureSource, DistributionVerifier.MaximumSignatureTextBytes, request.NoDownload, cancellationToken).ConfigureAwait(false);
+            signatureSource, DistributionVerifier.MaximumSignatureTextBytes, inputs.NoDownload, cancellationToken).ConfigureAwait(false);
         DistributionReleaseIndex index;
         try
         {
             index = DistributionVerifier.VerifyIndex(indexBytes.Bytes, signatureBytes.Bytes, trustRoot);
         }
-        catch (DistributionValidationException) when (!request.NoDownload && (indexBytes.FromCache || signatureBytes.FromCache))
+        catch (DistributionValidationException) when (!inputs.NoDownload && (indexBytes.FromCache || signatureBytes.FromCache))
         {
             DeleteCachedMetadata(indexBytes);
             DeleteCachedMetadata(signatureBytes);
@@ -149,20 +258,25 @@ internal sealed class DistributionCatalogAcquirer : IDisposable
                 signatureSource, DistributionVerifier.MaximumSignatureTextBytes, noDownload: false, cancellationToken, bypassCache: true).ConfigureAwait(false);
             index = DistributionVerifier.VerifyIndex(indexBytes.Bytes, signatureBytes.Bytes, trustRoot);
         }
-        if (index.Train != "catalog")
+        if (index.Train != inputs.Train)
         {
-            throw new InstallerException("The signed release index is not for the catalog train.");
+            throw new InstallerException($"The signed release index is not for the {inputs.Train} train.");
         }
-        var indexState = ValidateIndexRollback(request.Channel, index, indexBytes.Bytes);
-        var version = request.CatalogVersion ?? index.DefaultVersion;
+        var indexState = ValidateIndexRollback(inputs.Train, inputs.Channel, index, indexBytes.Bytes);
+        var version = inputs.Version ?? index.DefaultVersion;
         var reference = index.Releases.SingleOrDefault(release => release.Version == version)
-            ?? throw new InstallerException($"Catalog version '{version}' is not present in the signed release index.");
-        var manifest = ResolveIndexedAsset(request, indexSource, reference.Tag, reference.ManifestAsset);
-        var signature = ResolveIndexedAsset(request, indexSource, reference.Tag, reference.SignatureAsset);
+            ?? throw new InstallerException(
+                $"{inputs.Train} version '{version}' is not present in the signed release index.");
+        var manifest = ResolveIndexedAsset(inputs, indexSource, reference.Tag, reference.ManifestAsset);
+        var signature = ResolveIndexedAsset(inputs, indexSource, reference.Tag, reference.SignatureAsset);
         return new ResolvedManifest(manifest, signature, reference, indexState);
     }
 
-    private IndexRollbackState ValidateIndexRollback(DistributionChannel channel, DistributionReleaseIndex index, byte[] bytes)
+    private IndexRollbackState ValidateIndexRollback(
+        string train,
+        DistributionChannel channel,
+        DistributionReleaseIndex index,
+        byte[] bytes)
     {
         SafeFileSystem.CreateOwnerDirectory(stateRoot);
         var channelName = channel switch
@@ -173,7 +287,7 @@ internal sealed class DistributionCatalogAcquirer : IDisposable
             DistributionChannel.Prerelease => "prerelease",
             _ => throw new InstallerException("The distribution channel is unsupported.")
         };
-        var statePath = Path.Combine(stateRoot, $"catalog-{channelName}.txt");
+        var statePath = Path.Combine(stateRoot, $"{train}-{channelName}.txt");
         using var indexLock = OperationLock.Acquire(statePath + ".lock");
         var hash = Convert.ToHexStringLower(SHA256.HashData(bytes));
         if (File.Exists(statePath))
@@ -214,12 +328,12 @@ internal sealed class DistributionCatalogAcquirer : IDisposable
     }
 
     private static DistributionLocator ResolveIndexedAsset(
-        InstallRequest request,
+        TrainInputs inputs,
         DistributionLocator index,
         string tag,
         string assetName)
     {
-        if (request.AssetBaseUrl is { } configured)
+        if (inputs.AssetBaseUrl is { } configured)
         {
             return DistributionLocator.Parse(configured).Resolve($"{tag}/{assetName}");
         }
@@ -594,12 +708,12 @@ internal sealed class DistributionCatalogAcquirer : IDisposable
     }
 
     private static DistributionLocator ResolveAssetSource(
-        InstallRequest request,
+        TrainInputs inputs,
         DistributionLocator manifest,
         string assetName,
         bool allowConfiguredBase)
     {
-        if (allowConfiguredBase && request.AssetBaseUrl is { } configured)
+        if (allowConfiguredBase && inputs.AssetBaseUrl is { } configured)
         {
             return DistributionLocator.Parse(configured).Resolve(assetName);
         }
@@ -804,6 +918,33 @@ internal sealed class DistributionCatalogAcquirer : IDisposable
         }
     }
 
+    /// <summary>The train-specific inputs an acquisition uses, so one acquirer serves the catalog and image trains.</summary>
+    private sealed record TrainInputs(
+        string Train,
+        string? Manifest,
+        string? Index,
+        string? Version,
+        string? AssetBaseUrl,
+        DistributionChannel Channel,
+        bool NoDownload,
+        string? OperatorAsset)
+    {
+        public static TrainInputs ForCatalog(InstallRequest request) => new(
+            "catalog", request.CatalogManifest, request.CatalogIndex, request.CatalogVersion,
+            request.AssetBaseUrl, request.Channel, request.NoDownload, request.CatalogBundle);
+
+        public static TrainInputs ForImage(InstallRequest request) => new(
+            "image", request.ImageManifest, request.ImageIndex, request.ImageVersion,
+            request.AssetBaseUrl, request.Channel, request.NoDownload, null);
+    }
+
+    private sealed record ResolvedRelease(
+        DistributionReleaseManifest Manifest,
+        DistributionLocator Source,
+        string ManifestSha256,
+        int ManifestLength,
+        DistributionReleaseReference? Reference,
+        IndexRollbackState? IndexState);
     private sealed record MetadataBytes(byte[] Bytes, string? CachePath, bool FromCache);
     private sealed record AcquiredAsset(string Path, Uri ResolvedUri);
     private sealed record ResolvedManifest(
@@ -860,6 +1001,88 @@ internal sealed class AcquiredCatalog(
         if (temporaryRoot is not null && Directory.Exists(temporaryRoot))
         {
             Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+}
+
+/// <summary>
+/// The retained record of which signed CameraAgent image release an installation consumed, so an operator can
+/// correlate the running container with the release train, the signing key, the evidence assets, and the exact
+/// compatibility boundaries the release declared, without a source checkout or a network call.
+/// </summary>
+internal sealed record CameraAgentImageReleaseEvidence(
+    int SchemaVersion,
+    DistributionVerificationEvidence Distribution,
+    string Component,
+    string Repository,
+    string ManifestDigest,
+    string PlatformOperatingSystem,
+    string PlatformArchitecture,
+    string PlatformManifestDigest,
+    string ImageId,
+    string SourceRevision,
+    string SourceTree,
+    DistributionImageCompatibility Compatibility,
+    string SbomAsset,
+    string ProvenanceAsset,
+    string VulnerabilityScanAsset,
+    DateTimeOffset RecordedUtc);
+
+/// <summary>The verified signed CameraAgent image release selected for this host.</summary>
+internal sealed record AcquiredImage(
+    string ArchivePath,
+    string ArchiveSha256,
+    DistributionImagePlatform Platform,
+    DistributionImageIdentity Image,
+    DistributionReleaseIdentity Release,
+    DistributionVerificationEvidence Evidence)
+{
+    public const string EvidenceFileName = "image-distribution.json";
+
+    public CameraAgentImageReleaseEvidence ToEvidence() => new(
+        DeploymentSchemaVersions.ImageReleaseEvidence,
+        Evidence,
+        Image.Component,
+        Image.Repository,
+        Image.ManifestDigest,
+        Platform.OperatingSystem,
+        Platform.Architecture,
+        Platform.ManifestDigest,
+        Platform.OfflineArchiveImageId!,
+        Image.SourceRevision,
+        Image.SourceTree,
+        Image.Compatibility,
+        Image.SbomAsset,
+        Image.ProvenanceAsset,
+        Image.VulnerabilityScanAsset,
+        DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// Retains the release record beside the other deployment evidence once the image it describes is the one the
+    /// instance runs. Writing it earlier would leave a refused or reverted operation asserting a release the
+    /// running container does not carry.
+    /// </summary>
+    public Task WriteEvidenceAsync(InstallationPaths paths, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        return SafeFileSystem.WriteJsonAtomicAsync(
+            Path.Combine(paths.DeploymentStateRoot, EvidenceFileName),
+            ToEvidence(),
+            DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Withdraws the retained record when the instance no longer runs the image it describes, so a rollback or a
+    /// reverted upgrade never leaves evidence contradicting the running container.
+    /// </summary>
+    public static void RemoveEvidence(InstallationPaths paths)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        var path = Path.Combine(paths.DeploymentStateRoot, EvidenceFileName);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
         }
     }
 }

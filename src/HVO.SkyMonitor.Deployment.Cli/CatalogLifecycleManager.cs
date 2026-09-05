@@ -704,7 +704,7 @@ internal static class CatalogLifecycleManager
             NoDownload = request.NoDownload
         };
         synthetic.Validate();
-        using var acquirer = new DistributionCatalogAcquirer();
+        using var acquirer = new DistributionAcquirer();
         return await acquirer.AcquireAsync(synthetic, cancellationToken).ConfigureAwait(false);
     }
 

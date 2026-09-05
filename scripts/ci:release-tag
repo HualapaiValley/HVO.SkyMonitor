@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Resolve the immutable naming a signed distribution train uses, so the workflow, release script, and runbook
+# cannot drift apart on tag or manifest names.
+set -euo pipefail
+
+usage() {
+    printf 'Usage: scripts/ci:release-tag <train> <version>\n' >&2
+    printf '       scripts/ci:release-tag --manifest <train>\n' >&2
+    printf '       scripts/ci:release-tag --index <train> <sequence>\n' >&2
+    exit 2
+}
+
+case "${1:-}" in
+    --manifest)
+        case "${2:-}" in
+            installer) printf 'release-manifest.json\n' ;;
+            catalog) printf 'catalog-manifest.json\n' ;;
+            image) printf 'image-manifest.json\n' ;;
+            *) usage ;;
+        esac
+        ;;
+    --index)
+        [[ -n "${3:-}" ]] || usage
+        case "${2:-}" in
+            installer|catalog|image) printf '%s-index-%s\n' "$2" "$3" ;;
+            *) usage ;;
+        esac
+        ;;
+    installer) [[ -n "${2:-}" ]] || usage; printf 'installer-v%s\n' "$2" ;;
+    catalog) [[ -n "${2:-}" ]] || usage; printf 'catalog-%s\n' "$2" ;;
+    image) [[ -n "${2:-}" ]] || usage; printf 'image-v%s\n' "$2" ;;
+    *) usage ;;
+esac

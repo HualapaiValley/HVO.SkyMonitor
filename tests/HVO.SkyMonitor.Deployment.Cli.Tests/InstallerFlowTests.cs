@@ -263,6 +263,125 @@ public sealed class InstallerFlowTests
         }
     }
 
+    [TestMethod]
+    public async Task InstallAsync_AirGappedSignedImageRelease_InstallsTheSignedImageAndRetainsItsReleaseEvidence()
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the signed image release contract.");
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-signed-image-{Guid.NewGuid():N}");
+        var previousTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
+        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
+        var imageId = $"sha256:{new string('b', 64)}";
+        using var release = SignedImageReleaseFixture.Create(root, imageId, SignedImageReleaseFixture.ContractLabels);
+        var instanceId = Guid.Parse("2b7f6a3c-1d54-4e0a-9c31-6f2b0a5d4e18");
+        var request = new InstallRequest
+        {
+            InstanceId = instanceId,
+            FriendlyName = "Signed Camera",
+            OwnerEmail = "owner@example.test",
+            ProductRoot = root,
+            CatalogBundle = bundle,
+            ImageManifest = release.ManifestPath,
+            NoDownload = true,
+            Port = 55317
+        };
+        var runner = new InstallerProcessRunner(imageId, root, instanceId);
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var result = await CameraAgentInstaller.InstallAsync(
+                request, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None, release.CreateAcquirer);
+
+            Assert.AreEqual(imageId, result.Image.ImageId);
+            Assert.AreEqual("archive", result.Image.Source);
+            Assert.AreEqual("cameraagent-state-v2", result.Image.UpgradeCompatibility);
+            var evidencePath = Path.Combine(result.InstanceRoot, "state", "deployment", "image-distribution.json");
+            Assert.IsTrue(File.Exists(evidencePath), "The signed image release evidence was not retained.");
+            using var evidence = JsonDocument.Parse(await File.ReadAllBytesAsync(evidencePath));
+            var evidenceRoot = evidence.RootElement;
+            Assert.AreEqual(imageId, evidenceRoot.GetProperty("imageId").GetString());
+            Assert.AreEqual("image", evidenceRoot.GetProperty("distribution").GetProperty("releaseTrain").GetString());
+            Assert.AreEqual("image-v1.2.3", evidenceRoot.GetProperty("distribution").GetProperty("releaseTag").GetString());
+            Assert.AreEqual("verified", evidenceRoot.GetProperty("distribution").GetProperty("verificationResult").GetString());
+            Assert.AreEqual(
+                release.TrustRoot.KeyId,
+                evidenceRoot.GetProperty("distribution").GetProperty("signingKeyId").GetString());
+            Assert.AreEqual(
+                DistributionAcquirer.HostImageArchitecture(),
+                evidenceRoot.GetProperty("platformArchitecture").GetString());
+            Assert.AreEqual(
+                "cameraagent-state-v2",
+                evidenceRoot.GetProperty("compatibility").GetProperty("stateContract").GetString());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previousTestRoot);
+            if (Directory.Exists(root))
+            {
+                SafeFileSystem.MakeTreeOwnerWritable(root);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task InstallAsync_SignedReleaseThatContradictsTheImageLabels_FailsBeforeComposeStarts()
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the signed image release contract.");
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-signed-image-drift-{Guid.NewGuid():N}");
+        var previousTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
+        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
+        var imageId = $"sha256:{new string('b', 64)}";
+        var drifted = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
+        {
+            ["io.hvo.skymonitor.raw-ingress-schema"] = "13"
+        };
+        using var release = SignedImageReleaseFixture.Create(root, imageId, drifted);
+        var instanceId = Guid.Parse("6c1de0b2-3a48-4f7d-8e5b-91c0f2a7d640");
+        var request = new InstallRequest
+        {
+            InstanceId = instanceId,
+            FriendlyName = "Signed Camera",
+            OwnerEmail = "owner@example.test",
+            ProductRoot = root,
+            CatalogBundle = bundle,
+            ImageManifest = release.ManifestPath,
+            NoDownload = true,
+            Port = 55319
+        };
+        var runner = new InstallerProcessRunner(imageId, root, instanceId);
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                request, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None, release.CreateAcquirer));
+
+            StringAssert.Contains(exception.Message, "raw ingress schema", StringComparison.Ordinal);
+            Assert.AreEqual(0, runner.ComposeUpCount);
+            // A refused release must leave no evidence claiming the instance runs it.
+            Assert.IsFalse(File.Exists(Path.Combine(
+                root, "cameraagents", instanceId.ToString("D"), "state", "deployment", "image-distribution.json")));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previousTestRoot);
+            if (Directory.Exists(root))
+            {
+                SafeFileSystem.MakeTreeOwnerWritable(root);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private sealed class InstallerOwnerClient : IOwnerBootstrapClient
     {
         private int stateReadCount;
@@ -327,6 +446,10 @@ public sealed class InstallerFlowTests
             if (arguments.SequenceEqual(["compose", "version", "--short"], StringComparer.Ordinal))
             {
                 return Success("2.40.0");
+            }
+            if (arguments is ["image", "load", "--input", ..])
+            {
+                return Success($"Loaded image ID: {imageId}\n");
             }
             if (arguments.Count == 3 && arguments[0] == "image" && arguments[1] == "inspect")
             {
