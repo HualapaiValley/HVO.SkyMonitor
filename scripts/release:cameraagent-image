@@ -217,16 +217,27 @@ case "$(uname -m)" in
 esac
 if [[ "$host_architecture" == amd64 ]]; then
     host_image_id="$amd64_image_id"
+    host_manifest_digest="$amd64_manifest"
 else
     host_image_id="$arm64_image_id"
+    host_manifest_digest="$arm64_manifest"
 fi
-docker image load --input "$work/linux-${host_architecture}.tar" >/dev/null
-printf 'Smoke-testing linux/%s image %s\n' "$host_architecture" "$host_image_id" >&2
-docker run --rm --entrypoint /bin/sh "$host_image_id" -c \
+# A daemon backed by the containerd image store names a loaded image by its manifest digest and the classic store
+# by its configuration digest, so take the reference the daemon reports and require it to be one the release signed.
+loaded_reference="$(docker image load --input "$work/linux-${host_architecture}.tar" \
+    | sed -n 's/^Loaded image ID: //p;s/^Loaded image: //p' | head -n 1)"
+[[ -n "$loaded_reference" ]] || { printf 'Docker did not report a loaded image.\n' >&2; exit 1; }
+if [[ "$loaded_reference" != "$host_image_id" && "$loaded_reference" != "$host_manifest_digest" ]]; then
+    printf 'Docker loaded %s, which is neither the derived image ID %s nor the manifest digest %s.\n' \
+        "$loaded_reference" "$host_image_id" "$host_manifest_digest" >&2
+    exit 1
+fi
+printf 'Smoke-testing linux/%s loaded as %s\n' "$host_architecture" "$loaded_reference" >&2
+docker run --rm --entrypoint /bin/sh "$loaded_reference" -c \
     'test -f /app/HVO.SkyMonitor.CameraAgent.dll && test -x /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner' \
     >/dev/null
 docker run --rm --network none --entrypoint /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner \
-    "$host_image_id" --capabilities >/dev/null
+    "$loaded_reference" --capabilities >/dev/null
 
 scan_report="$work/image-vulnerability-scan.json"
 if [[ "$scanner" == trivy ]]; then

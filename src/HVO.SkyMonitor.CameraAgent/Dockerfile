@@ -49,6 +49,10 @@ RUN case "${TARGETARCH}" in amd64) rid=linux-x64 ;; arm64) rid=linux-arm64 ;; *)
     && dotnet publish ../HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj \
         --no-restore -c Release -r "${rid}" -o /app/replay-runner
 
+# Apply the runtime permissions here so the runtime stage copies them in. A recursive chmod after the copy forces
+# an overlay copy-up of the entire payload, which rewrites every published file a second time.
+RUN chmod -R a+rX /app/publish /app/replay-runner
+
 # Stage 2: Runtime
 FROM ${DOTNET_ASPNET_IMAGE}
 ARG HVO_SOURCE_REVISION=unknown
@@ -74,10 +78,9 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
 # Install health-check and ASI SDK runtime dependencies. The proprietary SDK is mounted separately.
 RUN apt-get update && apt-get install -y curl libusb-1.0-0 && rm -rf /var/lib/apt/lists/*
 
-# Copy published application
+# Copy published application. The build stage already applied the runtime permissions.
 COPY --from=build /app/publish .
 COPY --from=build /app/replay-runner /app/replay-runner
-RUN chmod -R a+rX /app
 
 # Set environment
 ENV ASPNETCORE_ENVIRONMENT=Production \

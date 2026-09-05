@@ -169,6 +169,94 @@ public sealed class SignedImageReleaseTests
         StringAssert.Contains(exception.Message, "not the immutable image the release signed", StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    public async Task PrepareImageAsync_DaemonThatNamesTheImageByItsManifestDigest_ResolvesTheSignedRelease()
+    {
+        using var fixture = ImageDistributionFixture.Create();
+        var architecture = DistributionAcquirer.HostImageArchitecture();
+        var platform = fixture.Image.Platforms.Single(candidate => candidate.Architecture == architecture);
+        // The containerd image store knows the manifest digest and not the configuration digest.
+        var runner = new StoreScopedProcessRunner(
+            architecture,
+            platform.ManifestDigest,
+            ImageDistributionFixture.DefaultLabels());
+
+        var result = await new DockerClient(runner).PrepareImageAsync(
+            ImageRequest(platform.OfflineArchiveImageId!), allowMutation: false, fixture.Image, CancellationToken.None);
+
+        Assert.AreEqual(platform.ManifestDigest, result.Image.ImageId);
+        Assert.AreEqual(platform.ManifestDigest, result.Image.ImmutableReference);
+    }
+
+    [TestMethod]
+    public async Task PrepareImageAsync_DaemonThatKnowsNeitherSignedIdentity_IsRejected()
+    {
+        using var fixture = ImageDistributionFixture.Create();
+        var architecture = DistributionAcquirer.HostImageArchitecture();
+        var platform = fixture.Image.Platforms.Single(candidate => candidate.Architecture == architecture);
+        var runner = new StoreScopedProcessRunner(
+            architecture,
+            $"sha256:{new string('f', 64)}",
+            ImageDistributionFixture.DefaultLabels());
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => new DockerClient(runner).PrepareImageAsync(
+                ImageRequest(platform.OfflineArchiveImageId!), allowMutation: false, fixture.Image, CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "could not inspect", StringComparison.Ordinal);
+    }
+
+    /// <summary>A daemon that knows exactly one image reference, as a specific image store would name it.</summary>
+    private sealed class StoreScopedProcessRunner(
+        string architecture,
+        string knownReference,
+        IReadOnlyDictionary<string, string> labels) : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(
+            string fileName,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (arguments is ["context", "inspect", ..])
+            {
+                return Task.FromResult(new ProcessResult(0, "unix:///var/run/docker.sock", string.Empty));
+            }
+            var effective = arguments.Count >= 2 && arguments[0] == "--host" ? arguments.Skip(2).ToArray() : arguments;
+            if (effective is ["info", ..])
+            {
+                return Task.FromResult(new ProcessResult(
+                    0,
+                    $"{{\"OSType\":\"linux\",\"Architecture\":\"{architecture}\",\"ID\":\"daemon-1\",\"Name\":\"host\",\"ServerVersion\":\"29.0\"}}",
+                    string.Empty));
+            }
+            if (effective is ["compose", ..])
+            {
+                return Task.FromResult(new ProcessResult(0, "2.40.0", string.Empty));
+            }
+            if (effective is ["image", "inspect", var reference])
+            {
+                return reference == knownReference
+                    ? Task.FromResult(new ProcessResult(
+                        0,
+                        JsonSerializer.Serialize(new[]
+                        {
+                            new
+                            {
+                                Id = knownReference,
+                                Architecture = architecture,
+                                Os = "linux",
+                                RepoDigests = Array.Empty<string>(),
+                                Config = new { Labels = labels }
+                            }
+                        }),
+                        string.Empty))
+                    : Task.FromResult(new ProcessResult(1, string.Empty, $"No such image: {reference}"));
+            }
+            return Task.FromResult(new ProcessResult(1, string.Empty, "unexpected command"));
+        }
+    }
+
     private static InstallRequest BaseRequest() => new()
     {
         FriendlyName = "Camera",
