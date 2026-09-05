@@ -229,8 +229,11 @@ if [[ "$scanner" == trivy ]]; then
     mkdir -p "$trivy_cache"
     scan_one() {
         local archive="$1" destination="$2" expected_image_id="$3"
+        # Run as the invoking user so the scanner's cache stays removable by the cleanup trap.
         docker run --rm \
-            --volume "$trivy_cache:/root/.cache/trivy" \
+            --user "$(id -u):$(id -g)" \
+            --env "TRIVY_CACHE_DIR=/tmp/trivy-cache" \
+            --volume "$trivy_cache:/tmp/trivy-cache" \
             --volume "$archive:/scan/image.tar:ro" \
             "$trivy_image" image --quiet --format json --scanners vuln --input /scan/image.tar >"$destination"
         # The scanner must say which image it scanned, so the signed coverage claim rests on the scanner's own
@@ -249,7 +252,7 @@ if [[ "$scanner" == trivy ]]; then
     }
     scan_one "$work/linux-amd64.tar" "$work/trivy-amd64.json" "$amd64_image_id"
     scan_one "$work/linux-arm64.tar" "$work/trivy-arm64.json" "$arm64_image_id"
-    trivy_version="$(docker run --rm "$trivy_image" --version | head -n 1 | awk '{print $2}')"
+    trivy_version="$(docker run --rm --user "$(id -u):$(id -g)" "$trivy_image" --version | head -n 1 | awk '{print $2}')"
     jq --null-input \
         --arg scannerVersion "$trivy_version" \
         --arg scannedUtc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
