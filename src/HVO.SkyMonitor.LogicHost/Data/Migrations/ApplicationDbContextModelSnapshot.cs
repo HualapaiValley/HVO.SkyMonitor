@@ -2680,7 +2680,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<string>("RunnerId")
                         .IsRequired()
                         .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
 
                     b.Property<string>("RuntimeImage")
                         .IsRequired()

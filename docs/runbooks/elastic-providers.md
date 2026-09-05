@@ -86,7 +86,14 @@ processes on the host on demand. Absent and disabled by default.
   registration. Deployment-wide scaling decisions are serialized under a
   database application lock and the intents are committed before the
   processes launch, so two replicas cannot both fill the same shortfall;
-  in-flight work on every replica's instances counts toward demand. `SampleInterval` and `RetireGrace` are validated even
+  in-flight work on every replica's instances counts toward demand;
+  retirements are reserved as `Stopping` under the same lock, and a warm
+  instance lost while the pool is at `MaxInstances` is replaced by retiring
+  one excess instance first. Intents that could not be launched (a failed
+  launch, or host shutdown mid-batch) are closed immediately as
+  `launch-aborted`. Abandonment closes the instance row and retires the
+  registration in one transaction, and an abandoned runner's heartbeat is
+  refused as well as its re-registration. `SampleInterval` and `RetireGrace` are validated even
   while disabled because that cleanup consumes them.
 - The entitlement bound is each backlogged observatory's remaining headroom
   (its limit minus its unexpired leases from any worker) plus the work

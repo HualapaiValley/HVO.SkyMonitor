@@ -193,6 +193,8 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonWarmMinimum), (lostWarm.Provision, lostWarm.Reason), "an excess instance does not satisfy the warm minimum; a warm replacement is provisioned");
         var warmSatisfied = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, minWarm: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, InFlight: 0, WarmInstances: 1), startup);
         Assert.AreEqual(ElasticScalingDecision.Steady, warmSatisfied);
+        var atCapacity = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, minWarm: 2), new ElasticScalingInput(0, TimeSpan.Zero, 2, 0, 0, TimeSpan.Zero, null, 0, InFlight: 0, WarmInstances: 1), startup);
+        Assert.AreEqual((0, 1, ElasticScalingPolicy.ReasonWarmMinimum), (atCapacity.Provision, atCapacity.Retire, atCapacity.Reason), "at capacity an excess instance is replaced by a warm one");
 
         var daily = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { InstanceMinutesToday = 60 }, startup);
         Assert.AreEqual((0, 0, ElasticScalingPolicy.ReasonDailyLimit), (daily.Provision, daily.Retire, daily.Reason), "the daily limit blocks new instances");
@@ -214,7 +216,7 @@ public sealed class CentralElasticProviderOptionsTests
         var accepted = ElasticScalingPolicy.Decide(options, lateBacklog with { OldestBacklogAge = TimeSpan.FromSeconds(10) }, TimeSpan.FromSeconds(20));
         Assert.AreEqual(2, accepted.Provision);
 
-        var idle = new ElasticScalingInput(0, TimeSpan.Zero, 2, 0, 2, TimeSpan.FromMinutes(3), null, 0);
+        var idle = new ElasticScalingInput(0, TimeSpan.Zero, 2, 0, 2, TimeSpan.FromMinutes(3), null, 0, InFlight: 0, WarmInstances: 1);
         var retire = ElasticScalingPolicy.Decide(options, idle, TimeSpan.FromSeconds(20));
         Assert.AreEqual((0, 1, ElasticScalingPolicy.ReasonIdle), (retire.Provision, retire.Retire, retire.Reason), "scale down to the warm minimum only");
         var notYet = ElasticScalingPolicy.Decide(options, idle with { LongestIdle = TimeSpan.FromMinutes(1) }, TimeSpan.FromSeconds(20));

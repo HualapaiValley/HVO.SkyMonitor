@@ -63,7 +63,14 @@ internal static class ElasticScalingPolicy
         // The warm minimum is a count of instances that never self-terminate: when fewer than that carry the warm
         // designation (a warm instance was lost, or the minimum was raised), replacements are provisioned even while
         // excess capacity is running, within the instance maximum.
-        var warmShortfall = Math.Max(0, Math.Min(Math.Min(options.MinWarmInstances, options.MaxInstances) - input.WarmInstances, options.MaxInstances - active));
+        var warmMissing = Math.Max(0, Math.Min(options.MinWarmInstances, options.MaxInstances) - input.WarmInstances);
+        var warmShortfall = Math.Min(warmMissing, Math.Max(0, options.MaxInstances - active));
+        if (warmMissing > 0 && warmShortfall == 0 && input.Running - input.WarmInstances > 0)
+        {
+            // At capacity with too few warm instances: retire one excess (self-terminating) instance so the next sample
+            // can provision its warm replacement instead of waiting for the excess instance to exit on its own.
+            return new ElasticScalingDecision(0, 1, ReasonWarmMinimum);
+        }
         if (desired > active || warmShortfall > 0)
         {
             if (options.MaxInstanceMinutesPerDay > 0 && input.InstanceMinutesToday >= options.MaxInstanceMinutesPerDay)

@@ -15,7 +15,8 @@ internal sealed class CentralElasticRunnerInstanceConfiguration : IEntityTypeCon
         builder.Property(instance => instance.Provider).HasMaxLength(64).IsRequired();
         builder.Property(instance => instance.HostName).HasMaxLength(256).IsRequired();
         builder.Property(instance => instance.InstanceId).HasMaxLength(128).IsRequired();
-        builder.Property(instance => instance.RunnerId).HasMaxLength(128).IsRequired();
+        // Runner ids are case-sensitive protocol identifiers: the same binary collation as CentralProcessingRunners.
+        builder.Property(instance => instance.RunnerId).HasMaxLength(128).IsRequired().UseCollation("Latin1_General_100_BIN2");
         builder.Property(instance => instance.ProcessArchitecture).HasMaxLength(32).IsRequired();
         builder.Property(instance => instance.RuntimeImage).HasMaxLength(256).IsRequired();
         builder.Property(instance => instance.State).HasMaxLength(32).IsRequired();

@@ -299,37 +299,45 @@ internal sealed partial class ElasticRunnerAutoscaler(
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         starting = current.Count(row => row.State == nameof(ElasticRunnerInstanceState.Starting)) + lockedOthers.Where(item => item.State == nameof(ElasticRunnerInstanceState.Starting)).Sum(item => item.Count);
         running = current.Count(row => row.State == nameof(ElasticRunnerInstanceState.Running)) + lockedOthers.Where(item => item.State == nameof(ElasticRunnerInstanceState.Running)).Sum(item => item.Count);
-        input = input with { Running = running, Starting = starting };
+        warmLive = await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+            .CountAsync(instance => instance.Provider == provider.Name && instance.KeepWarm && liveStates.Contains(instance.State), cancellationToken).ConfigureAwait(false);
+        input = input with { Running = running, Starting = starting, WarmInstances = warmLive };
         var decision = ElasticScalingPolicy.Decide(settings, input, provider.EstimateStartup());
         if (decision.Provision == 0 && decision.Retire == 0 && decision.Reason is not "steady" && backlog > 0)
         {
             telemetry.RecordRejectedPlacement(provider.Name, decision.Reason);
             Log.PlacementRejected(logger, decision.Reason, backlog, (long)oldestAge.TotalSeconds);
         }
-        // Durable intents are recorded under the lock; the processes are launched after it commits.
+        // Durable intents and retirement reservations are recorded under the lock; processes launch and drain after
+        // it commits, so another replica's decision already sees the reserved capacity change.
         var intents = new List<(CentralElasticRunnerInstance Row, ElasticRunnerProvisionRequest Request)>();
         for (var i = 0; i < decision.Provision; i++)
         {
             intents.Add(CreateIntent(dbContext, settings, now, warmLive + i));
         }
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await scaling.CommitAsync(cancellationToken).ConfigureAwait(false);
-        foreach (var (row, request) in intents)
-        {
-            await LaunchAsync(dbContext, settings, row, request, now, cancellationToken).ConfigureAwait(false);
-        }
-        var retired = 0;
-        var idleRetired = 0;
-        // Idle scale-down retires only instances idle beyond the delay; the daily-limit drain covers every active
-        // instance (idle first, then busy running ones, then registering ones).
+        // Idle scale-down retires only instances idle beyond the delay; a warm-minimum replacement retires one excess
+        // instance (idle first); the daily-limit drain covers every active instance (idle, then busy, then registering).
         var idleRows = idle.Select(item => (item.Row, item.IdleFor)).ToList();
-        var retiring = (decision.Reason == ElasticScalingPolicy.ReasonDailyLimit
-                ? idleRows
-                    .Concat(current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Running) && !idleRows.Any(item => item.Row == row)).Select(row => (Row: row, IdleFor: TimeSpan.Zero)))
-                    .Concat(current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Starting)).Select(row => (Row: row, IdleFor: TimeSpan.Zero)))
-                : idleRows)
+        var busyRunning = current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Running) && !idleRows.Any(item => item.Row == row)).Select(row => (Row: row, IdleFor: TimeSpan.Zero));
+        var startingRows = current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Starting)).Select(row => (Row: row, IdleFor: TimeSpan.Zero));
+        var retiring = (decision.Reason switch
+        {
+            ElasticScalingPolicy.ReasonDailyLimit => idleRows.Concat(busyRunning).Concat(startingRows),
+            ElasticScalingPolicy.ReasonWarmMinimum => idleRows.Where(item => !item.Row.KeepWarm).Concat(busyRunning.Where(item => !item.Row.KeepWarm)),
+            _ => idleRows.AsEnumerable()
+        })
             .Take(decision.Retire)
             .ToList();
+        foreach (var item in retiring)
+        {
+            item.Row.State = nameof(ElasticRunnerInstanceState.Stopping);
+            item.Row.UpdatedAtUtc = now;
+        }
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await scaling.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await LaunchAllAsync(dbContext, settings, intents, now, cancellationToken).ConfigureAwait(false);
+        var retired = 0;
+        var idleRetired = 0;
         await provider.RetireAsync(retiring.Select(item => item.Row.InstanceId).ToArray(), settings.RetireGrace, cancellationToken).ConfigureAwait(false);
         foreach (var item in retiring)
         {
@@ -410,7 +418,32 @@ internal sealed partial class ElasticRunnerAutoscaler(
         return (row, request);
     }
 
-    /// <summary>Launches a recorded intent; a failed launch closes the intent and a failed record retires the process.</summary>
+    /// <summary>
+    /// Launches every committed intent in order; when a launch throws or the host cancels, the remaining intents (and
+    /// the interrupted one) are closed through a non-cancelable path so no replica counts an instance that never ran.
+    /// </summary>
+    private async Task LaunchAllAsync(
+        ApplicationDbContext dbContext, CentralElasticProviderOptions settings,
+        List<(CentralElasticRunnerInstance Row, ElasticRunnerProvisionRequest Request)> intents, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        for (var i = 0; i < intents.Count; i++)
+        {
+            try
+            {
+                await LaunchAsync(dbContext, settings, intents[i].Row, intents[i].Request, now, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                foreach (var (row, _) in intents.Skip(i + 1))
+                {
+                    await StopAsync(dbContext, row, now, ElasticRunnerInstanceState.Stopped, "launch-aborted", CancellationToken.None).ConfigureAwait(false);
+                }
+                throw;
+            }
+        }
+    }
+
+    /// <summary>Launches a recorded intent; a failed or cancelled launch closes the intent and a failed record retires the process.</summary>
     private async Task LaunchAsync(
         ApplicationDbContext dbContext, CentralElasticProviderOptions settings, CentralElasticRunnerInstance row, ElasticRunnerProvisionRequest request,
         DateTimeOffset now, CancellationToken cancellationToken)
@@ -420,7 +453,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         {
             instance = await provider.ProvisionAsync(request, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception)
         {
             await StopAsync(dbContext, row, now, ElasticRunnerInstanceState.Stopped, "provision-failed", CancellationToken.None).ConfigureAwait(false);
             throw;
@@ -440,6 +473,10 @@ internal sealed partial class ElasticRunnerAutoscaler(
         telemetry.RecordProvision(provider.Name);
     }
 
+    /// <summary>
+    /// Closes an instance row and retires its registration in one transaction, so a runner can never observe the
+    /// registration retired while the row still reads live (or the reverse) between the two writes.
+    /// </summary>
     private static async Task StopAsync(
         ApplicationDbContext dbContext, CentralElasticRunnerInstance row, DateTimeOffset now, ElasticRunnerInstanceState state, string reason, CancellationToken cancellationToken)
     {
@@ -447,14 +484,24 @@ internal sealed partial class ElasticRunnerAutoscaler(
         row.Reason = reason;
         row.StoppedAtUtc = now;
         row.UpdatedAtUtc = now;
-        await dbContext.CentralProcessingRunners
-            .Where(runner => runner.RunnerId == row.RunnerId && runner.Status != CentralProcessingRunnerStatus.Retired)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(runner => runner.Status, CentralProcessingRunnerStatus.Retired)
-                .SetProperty(runner => runner.RetiredAtUtc, now)
-                .SetProperty(runner => runner.UpdatedAtUtc, now), cancellationToken)
-            .ConfigureAwait(false);
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        var ownTransaction = dbContext.Database.CurrentTransaction is null
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        await using (ownTransaction)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await dbContext.CentralProcessingRunners
+                .Where(runner => runner.RunnerId == row.RunnerId && runner.Status != CentralProcessingRunnerStatus.Retired)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(runner => runner.Status, CentralProcessingRunnerStatus.Retired)
+                    .SetProperty(runner => runner.RetiredAtUtc, now)
+                    .SetProperty(runner => runner.UpdatedAtUtc, now), cancellationToken)
+                .ConfigureAwait(false);
+            if (ownTransaction is not null)
+            {
+                await ownTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>Instance minutes consumed today (UTC), the daily cost/resource accounting the policy is bounded by.</summary>

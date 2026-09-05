@@ -187,6 +187,19 @@ internal sealed partial class CentralProcessingRunnerRegistry(
         runner.UpdatedAtUtc = now;
         runner.AvailableSlots = request.AvailableSlots;
         runner.WarmState = (CentralProcessingRunnerWarmState)request.WarmState;
+        // An abandoned elastic instance (#430) must not keep heartbeating: its registration is retired here and the
+        // runner is told so; its re-registration is then denied and the runner exits.
+        if (await dbContext.CentralElasticRunnerInstances.AsNoTracking()
+                .AnyAsync(instance => instance.RunnerId == runnerId && instance.State == "Abandoned", cancellationToken)
+                .ConfigureAwait(false))
+        {
+            runner.Status = CentralProcessingRunnerStatus.Retired;
+            runner.RetiredAtUtc = now;
+            runner.UpdatedAtUtc = now;
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            throw CentralProcessingRunnerRejectedException.Create(
+                ProcessingRunnerReasonCodes.RegistrationRetired, "The runner was abandoned by its launching host.");
+        }
         var wasStale = runner.Status == CentralProcessingRunnerStatus.Stale;
         runner.Status = CentralProcessingRunnerStatus.Active;
         var capabilities = context.Capabilities;
