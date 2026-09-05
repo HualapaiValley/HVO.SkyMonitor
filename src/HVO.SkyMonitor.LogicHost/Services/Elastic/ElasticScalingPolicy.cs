@@ -16,7 +16,8 @@ internal sealed record ElasticScalingInput(
     int? Capacity = null,
     int CleanupBacklog = 0,
     int IncompatibleActive = 0,
-    int UncoveredBacklog = 0);
+    int UncoveredBacklog = 0,
+    bool CleanupUncovered = false);
 
 internal sealed record ElasticScalingDecision(int Provision, int Retire, string Reason)
 {
@@ -84,18 +85,29 @@ internal static class ElasticScalingPolicy
                 entitlementBound = true;
             }
         }
-        // Expired leases whose attempts are exhausted are terminal cleanup the claim exempts from pool, entitlement,
-        // and fairness bounds: they only need one instance to exist, and never trigger the queue-deadline rule.
-        if (input.CleanupBacklog > 0 && needed < 1)
-        {
-            needed = 1;
-        }
-        // Work no active instance can claim (recipe or input size outside every registration) needs new instances
-        // whatever the registered capacity; instances still starting register with the template and will cover it.
+        // Executable work no active instance can claim (recipe or input size outside every registration's allocated
+        // slots) needs new instances whatever the aggregate capacity; instances still starting register with the
+        // template and will cover it. It stays within the entitlement bound: instances that could not claim until
+        // headroom returns are never provisioned for it.
         if (input.UncoveredBacklog > 0)
         {
             var uncoveredInstances = Math.Max(0, (int)Math.Ceiling(input.UncoveredBacklog / (double)perInstance) - input.Starting);
-            needed = Math.Max(needed, compatibleActive + uncoveredInstances);
+            var raised = compatibleActive + uncoveredInstances;
+            if (input.EntitledConcurrency is { } entitledForUncovered)
+            {
+                raised = Math.Min(raised, InstancesFor(Math.Max(0, entitledForUncovered)));
+            }
+            needed = Math.Max(needed, raised);
+        }
+        var executableNeeded = needed;
+        // Expired leases whose attempts are exhausted are terminal cleanup the claim exempts from pool, entitlement,
+        // fairness, and deadline bounds: however many there are, they need one instance able to claim them (an
+        // instance still starting will), never more.
+        var cleanupShortfall = 0;
+        if (input.CleanupBacklog > 0 && (input.CleanupUncovered || compatibleActive == 0))
+        {
+            cleanupShortfall = Math.Max(0, 1 - input.Starting);
+            needed = Math.Max(needed, compatibleActive + cleanupShortfall);
         }
         var desired = Math.Clamp(Math.Max(needed, options.MinWarmInstances), 0, options.MaxInstances);
         // The warm minimum is a count of instances that never self-terminate: when fewer than that carry the warm
@@ -118,10 +130,12 @@ internal static class ElasticScalingPolicy
             {
                 return new ElasticScalingDecision(0, 0, ReasonDailyLimit);
             }
-            if (input.Backlog > 0 && needed > compatibleActive && startupEstimate + input.OldestBacklogAge > options.QueueDeadline)
+            if (input.Backlog > 0 && executableNeeded > compatibleActive && startupEstimate + input.OldestBacklogAge > options.QueueDeadline)
             {
-                // Provider startup cannot meet the deadline for the oldest work: keep it local, only top up the warm minimum.
-                return new ElasticScalingDecision(warmShortfall, 0, ReasonColdStartExceedsDeadline);
+                // Provider startup cannot meet the deadline for the oldest executable work: keep it local, only top up
+                // the warm minimum and the one instance terminal cleanup needs (cleanup is exempt from the deadline).
+                var exempt = Math.Min(Math.Max(warmShortfall, cleanupShortfall), Math.Max(0, options.MaxInstances - active));
+                return new ElasticScalingDecision(exempt, 0, ReasonColdStartExceedsDeadline);
             }
             // Room is bounded by every active instance, compatible or not; when incompatible instances fill the limit,
             // one is retired so the next sample can provision an instance able to claim the work.
@@ -135,10 +149,10 @@ internal static class ElasticScalingPolicy
                 var reason = needed > compatibleActive ? (entitlementBound ? ReasonEntitlementBound : ReasonBacklog) : ReasonWarmMinimum;
                 return new ElasticScalingDecision(provision, 0, reason);
             }
-            if (input.UncoveredBacklog > 0 && input.Starting == 0)
+            if ((input.UncoveredBacklog > 0 || cleanupShortfall > 0) && input.Starting == 0 && active <= options.MaxInstances)
             {
                 // The limit is full of instances serving other work: the uncovered work is reported, not served by
-                // retiring a useful instance.
+                // retiring a useful instance. A fleet above a lowered limit falls through to idle scale-down instead.
                 return new ElasticScalingDecision(0, 0, ReasonInstanceLimit);
             }
         }

@@ -145,15 +145,17 @@ requirements the instance cannot satisfy are excluded and logged once as
 event 2242) and includes expired leases the claim would reclaim. Backlog is counted with the claim's own readiness query (recipe filter,
 the probed runner's transfer limit, input and graph-execution readiness),
 so no instance is provisioned for work no runner could claim. Registered
-capacity counts per job: an instance counts when it can claim at least one
-job queued for this provider (its pool scope plus terminal cleanup) by
-recipe and by its own transfer limit; an instance that can claim none of
-it covers nothing, and when such instances fill `MaxInstances` one is
-retired as `incompatible-replacement` so the next sample can provision one
-that can. Jobs no active instance can claim are an uncovered shortfall that
-provisions new instances; when the limit is full of instances serving other
-work the decision reads `instance-limit` and the work is reported, not
-served by retiring a useful instance. Expired
+slots are allocated job by job (largest inputs first) to the registrations
+able to claim each job by recipe and transfer limit; an instance that can
+claim nothing covers nothing, and when such instances fill `MaxInstances`
+one is retired as `incompatible-replacement` so the next sample can
+provision one that can. Executable jobs no registration can take within its
+slots are an uncovered shortfall that provisions new instances within the
+entitlement bound; terminal cleanup no instance can claim needs exactly one
+instance, exempt from the deadline; when the limit is full of instances
+serving other work the decision reads `instance-limit` and the work is
+reported, not served by retiring a useful instance, while a fleet above a
+lowered limit retires its idle excess first. Expired
 leases whose attempts are exhausted are terminal cleanup the claim exempts
 from pool and entitlement bounds, so they are counted apart from executable
 backlog and only ensure one instance exists, while the published backlog

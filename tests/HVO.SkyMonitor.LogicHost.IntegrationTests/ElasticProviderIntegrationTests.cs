@@ -630,6 +630,46 @@ public sealed class ElasticProviderIntegrationTests
     }
 
     [TestMethod]
+    public async Task RegisteredSlotsAreAllocatedByWhatEachInstanceCanClaim()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        // A ten-slot instance that takes only small inputs and a one-slot instance that takes anything.
+        foreach (var (slots, limit) in new[] { (10, 16L), (1, ProcessingRunnerProtocol.MaximumTransferBytes) })
+        {
+            var instanceId = Guid.NewGuid().ToString("N")[..16];
+            var runnerId = $"elastic-scripted-{instanceId}";
+            provider.MarkAlive(instanceId, runnerId);
+            await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+            await using var scope = factory.Services.CreateAsyncScope();
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId, slots, maxTransferBytes: limit), CancellationToken.None).ConfigureAwait(false);
+        }
+        await SeedPreviewJobAsync("elastic-class-small").ConfigureAwait(false);
+        for (var i = 0; i < 10; i++)
+        {
+            await SeedPreviewJobAsync("elastic-class-large", new byte[64]).ConfigureAwait(false);
+        }
+        var settings = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 5,
+            MaxConcurrencyPerInstance = 1,
+            ScaleToZeroAfter = TimeSpan.FromMinutes(10),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        };
+        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Should().Be(new ElasticScalingDecision(3, 0, ElasticScalingPolicy.ReasonBacklog), "eleven aggregate slots do not cover ten large jobs: one fits the one-slot instance, nine are uncovered, three more instances fit the limit");
+        provider.Retired.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task AnIncompatibleInstanceAtTheLimitIsReplacedByOneThatCanClaim()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);

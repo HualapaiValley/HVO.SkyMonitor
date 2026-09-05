@@ -260,6 +260,14 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.AreEqual((0, 0, ElasticScalingPolicy.ReasonInstanceLimit), (uncoveredAtLimit.Provision, uncoveredAtLimit.Retire, uncoveredAtLimit.Reason), "at the limit a useful instance is not retired for one job it cannot claim; the uncovered work is reported");
         var uncoveredStarting = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(6, TimeSpan.FromSeconds(5), 1, 1, 0, TimeSpan.Zero, null, 0, Capacity: 11, UncoveredBacklog: 1), startup);
         Assert.AreEqual(ElasticScalingDecision.Steady, uncoveredStarting, "an instance still starting registers with the template and will cover the job");
+        var uncoveredEntitled = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1), new ElasticScalingInput(10, TimeSpan.FromSeconds(5), 0, 0, 0, TimeSpan.Zero, EntitledConcurrency: 0, 0, UncoveredBacklog: 10), startup);
+        Assert.AreEqual((0, 0), (uncoveredEntitled.Provision, uncoveredEntitled.Retire), "uncovered executable work stays within the entitlement bound: no instance is provisioned for work it could not claim");
+        var manyCleanup = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 0, 0, 0, TimeSpan.Zero, null, 0, CleanupBacklog: 100, CleanupUncovered: true), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (manyCleanup.Provision, manyCleanup.Reason), "a hundred exhausted leases need one instance, never the whole limit");
+        var cleanupBesideDeadline = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1, queueDeadline: TimeSpan.FromSeconds(1)), new ElasticScalingInput(50, TimeSpan.FromHours(1), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 1, CleanupBacklog: 1, CleanupUncovered: true), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonColdStartExceedsDeadline), (cleanupBesideDeadline.Provision, cleanupBesideDeadline.Reason), "old executable backlog stays local past the deadline, but the one instance cleanup needs is still provisioned");
+        var loweredLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1, scaleToZero: TimeSpan.FromSeconds(1)), new ElasticScalingInput(3, TimeSpan.FromSeconds(5), 5, 0, 2, TimeSpan.FromMinutes(1), null, 0, Capacity: 3, IncompatibleActive: 2, UncoveredBacklog: 1), startup);
+        Assert.AreEqual((0, 2, ElasticScalingPolicy.ReasonIdle), (loweredLimit.Provision, loweredLimit.Retire, loweredLimit.Reason), "a fleet above a lowered maximum retires its idle excess (two idle here) instead of reporting the limit forever");
     }
 
     [TestMethod]
