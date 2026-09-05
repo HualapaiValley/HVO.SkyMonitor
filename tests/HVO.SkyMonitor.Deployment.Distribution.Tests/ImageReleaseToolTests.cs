@@ -571,4 +571,41 @@ public sealed class ImageReleaseToolTests
 
         await AssertRejectedAsync(arguments, "lists an invalid scanned subject");
     }
+
+    /// <summary>
+    /// The signature covers the exact manifest bytes, so identical inputs must produce identical bytes. The
+    /// component inventories are gathered into a dictionary before they reach the artifact list, and dictionary
+    /// enumeration order is not a documented guarantee, so this pins the ordering rather than trusting it.
+    /// </summary>
+    [TestMethod]
+    public async Task CreateImage_IdenticalInputs_ProduceIdenticalSignedManifestBytes()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var first = Path.Combine(fixture.Root, "first");
+        var second = Path.Combine(fixture.Root, "second");
+
+        Assert.AreEqual(0, await ReleaseTool.Program.Main(fixture.CreateArguments(first)));
+        Assert.AreEqual(0, await ReleaseTool.Program.Main(fixture.CreateArguments(second)));
+
+        var firstNames = Directory.GetFiles(first).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray();
+        CollectionAssert.AreEqual(
+            firstNames,
+            Directory.GetFiles(second).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray());
+        foreach (var name in firstNames)
+        {
+            CollectionAssert.AreEqual(
+                await File.ReadAllBytesAsync(Path.Combine(first, name!)),
+                await File.ReadAllBytesAsync(Path.Combine(second, name!)),
+                name);
+        }
+
+        // The component inventories must sit in a stable, data-derived position in the signed artifact list.
+        var manifestBytes = await File.ReadAllBytesAsync(Path.Combine(first, "image-manifest.json"));
+        using var document = JsonDocument.Parse(manifestBytes);
+        var inventories = document.RootElement.GetProperty("artifacts").EnumerateArray()
+            .Where(static artifact => artifact.GetProperty("role").GetString() == "ComponentSbom")
+            .Select(static artifact => artifact.GetProperty("architecture").GetString())
+            .ToArray();
+        CollectionAssert.AreEqual(ExpectedArchitectures, inventories);
+    }
 }

@@ -287,12 +287,16 @@ if [[ "$scanner" == trivy ]]; then
         # Keep the two in step -- this one runs first, so a looser rule here would let a bad inventory reach the
         # push, and the release would then fail after publishing an immutable identity instead of before.
         jq --exit-status --arg imageId "$expected_image_id" --argjson floor "$inventory_component_floor" '
-            def claims: [ .packages[]? | .annotations[]? | .comment? // ""
+            # Non-string members are coerced to "" rather than left to raise a jq type error. The run already
+            # fails closed either way, because jq exits non-zero, but the operator should see this rule name the
+            # problem instead of a jq diagnostic, and the coercion matches the string reader in the release tool.
+            def s: if type == "string" then . else "" end;
+            def claims: [ .packages[]? | .annotations[]? | .comment? | s
                           | select(startswith("ImageID: ")) | ltrimstr("ImageID: ") ];
             def components: [ .packages[]?
-                              | select([.annotations[]? | .comment? // "" | select(startswith("ImageID: "))] | length == 0)
-                              | select(((.name // "") | gsub("^\\s+|\\s+$"; "")) != "")
-                              | select(((.versionInfo // "") | gsub("^\\s+|\\s+$"; "")) != "") ];
+                              | select([.annotations[]? | .comment? | s | select(startswith("ImageID: "))] | length == 0)
+                              | select(((.name | s) | gsub("^\\s+|\\s+$"; "")) != "")
+                              | select(((.versionInfo | s) | gsub("^\\s+|\\s+$"; "")) != "") ];
             # Mirrors ValidateInventoryFiles, including its structural requirements: when "files" is present it
             # must be an array of objects, and every "checksums" member must itself be an array. Without the type
             # checks jq would iterate the values of an object and accept a nested entry the C# validator rejects.
@@ -316,10 +320,11 @@ if [[ "$scanner" == trivy ]]; then
             exit 1
         }
         printf 'linux/%s inventory: %s components\n' "$architecture" \
-            "$(jq '[ .packages[]?
-                     | select([.annotations[]? | .comment? // "" | select(startswith("ImageID: "))] | length == 0)
-                     | select(((.name // "") | gsub("^\\s+|\\s+$"; "")) != "")
-                     | select(((.versionInfo // "") | gsub("^\\s+|\\s+$"; "")) != "") ] | length' "$inventory")" >&2
+            "$(jq 'def s: if type == "string" then . else "" end;
+                   [ .packages[]?
+                     | select([.annotations[]? | .comment? | s | select(startswith("ImageID: "))] | length == 0)
+                     | select(((.name | s) | gsub("^\\s+|\\s+$"; "")) != "")
+                     | select(((.versionInfo | s) | gsub("^\\s+|\\s+$"; "")) != "") ] | length' "$inventory")" >&2
     }
     scan_one amd64 "$amd64_image_id"
     scan_one arm64 "$arm64_image_id"

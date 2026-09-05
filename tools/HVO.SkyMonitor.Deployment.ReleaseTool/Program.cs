@@ -361,12 +361,15 @@ internal static partial class Program
 
         var payloads = inspected
             .Select(platform => (DistributionArtifactRole.ImageArchive, platform.AssetName, "application/x-tar", (string?)"linux", (string?)platform.Architecture))
-            .Concat(inventories.Select(inventory => (
+            // Ordered explicitly: these entries become the signed artifacts array, and dictionary enumeration
+            // order is not a documented guarantee. The signature covers the exact manifest bytes, so the order
+            // has to come from the data rather than from a hash table.
+            .Concat(inventories.Keys.Order(StringComparer.Ordinal).Select(architecture => (
                 DistributionArtifactRole.ComponentSbom,
-                ComponentInventoryAsset(inventory.Key),
+                ComponentInventoryAsset(architecture),
                 "application/spdx+json",
                 (string?)"linux",
-                (string?)inventory.Key)))
+                (string?)architecture)))
             .Concat(
             [
                 (DistributionArtifactRole.Sbom, sbomName, "application/spdx+json", (string?)null, (string?)null),
