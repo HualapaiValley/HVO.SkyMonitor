@@ -159,7 +159,9 @@ files while CameraAgent is running. `/health` reports `raw-ingress` as healthy
 only after schema verification, integrity checking, reconciliation, and a
 passive checkpoint complete.
 
-The protected deployment-location history and dedicated stable-application Data
+The protected deployment-location history, the protected manual-coordinate record
+`manual-deployment-location.v1.protected` that carries the governing local seed
+when an owner has entered coordinates, and the dedicated stable-application Data
 Protection key ring are under `<raw-ingress-root>/.location/`; the non-secret
 initialization marker is `<raw-ingress-root>/.deployment-location.v1.identity`.
 Back up and restore those paths with the raw-ingress evidence. Loss of the protected history or its key ring makes

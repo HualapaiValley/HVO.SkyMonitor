@@ -1,8 +1,12 @@
 using System.Security.Claims;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -94,10 +98,151 @@ public sealed class CameraAgentSkyMapUiServiceTests
         Assert.AreEqual("The sky map projection is unavailable.", result.Message);
     }
 
+    [TestMethod]
+    public async Task GetManualLocationAsync_WhenTheOperationsReadPolicyFails_DeniesWithoutReadingTheStoreAsync()
+    {
+        var store = new RecordingDeploymentLocationStore();
+        var authorization = CreateAuthorization(out var principal, succeeded: false);
+        var service = CreateService(new RecordingProjection(), principal, authorization.Object, store);
+
+        var result = await service.GetManualLocationAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, result.Kind);
+        Assert.AreEqual(0, store.Reads);
+    }
+
+    [TestMethod]
+    public async Task GetManualLocationAsync_WhenAuthorized_ReturnsTheProtectedManualStateAsync()
+    {
+        var store = new RecordingDeploymentLocationStore();
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateService(new RecordingProjection(), principal, authorization.Object, store);
+
+        var result = await service.GetManualLocationAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Success, result.Kind);
+        Assert.IsTrue(result.Value!.Supported);
+        Assert.AreEqual(1, store.Reads);
+    }
+
+    [TestMethod]
+    public async Task ApplyManualLocationAsync_WhenTheMutatePolicyFails_DeniesWithoutTouchingTheStoreAsync()
+    {
+        var store = new RecordingDeploymentLocationStore();
+        var authorization = CreateAuthorization(out var principal, succeeded: false);
+        var service = CreateService(new RecordingProjection(), principal, authorization.Object, store);
+
+        var result = await ApplyAsync(service).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, result.Kind);
+        Assert.IsEmpty(store.Requests);
+        authorization.Verify(
+            service => service.AuthorizeAsync(
+                principal, null, CameraAgentAuthorizationPolicyNames.OperationsMutateV1),
+            Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ApplyManualLocationAsync_WhenAuthorized_PassesTheOwnerIdAsTheRecordedActorAsync()
+    {
+        var store = new RecordingDeploymentLocationStore();
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateService(new RecordingProjection(), principal, authorization.Object, store);
+
+        var result = await ApplyAsync(service).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Success, result.Kind);
+        var request = store.Requests.Single();
+        Assert.AreEqual("owner-id", request.Actor);
+        Assert.AreEqual("key-1", request.IdempotencyKey);
+        Assert.AreEqual(4L, request.ExpectedVersion);
+        Assert.AreEqual(2L, request.ExpectedManualSequence);
+        Assert.AreEqual("America/Phoenix", request.TimeZoneId);
+    }
+
+    [TestMethod]
+    public async Task ApplyManualLocationAsync_MapsRejectedCommandsToTheirOperatorResultKindAsync()
+    {
+        var store = new RecordingDeploymentLocationStore
+        {
+            Status = ManualDeploymentLocationStatus.Conflict,
+            ReasonCode = ManualDeploymentLocationContract.ExpectedVersionConflictReasonCode
+        };
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateService(new RecordingProjection(), principal, authorization.Object, store);
+
+        var conflict = await ApplyAsync(service).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Conflict, conflict.Kind);
+        Assert.Contains("Refresh before retrying", conflict.Message!, StringComparison.Ordinal);
+
+        store.Status = ManualDeploymentLocationStatus.Invalid;
+        store.ReasonCode = null;
+        store.FieldPath = "location.timeZoneId";
+
+        var invalid = await ApplyAsync(service).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Invalid, invalid.Kind);
+        Assert.Contains("IANA identifier", invalid.Message!, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("manual.expectedManualSequenceConflict", "Another coordinate entry was recorded")]
+    [DataRow("manual.supersededEntry", "a configuration change has since superseded")]
+    [DataRow("manual.idempotencyKeyConflict", "already recorded with different coordinates")]
+    public async Task ApplyManualLocationAsync_DescribesEachConflictReasonDistinctlyAsync(
+        string reasonCode,
+        string expected)
+    {
+        var store = new RecordingDeploymentLocationStore
+        {
+            Status = ManualDeploymentLocationStatus.Conflict,
+            ReasonCode = reasonCode
+        };
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateService(new RecordingProjection(), principal, authorization.Object, store);
+
+        var result = await ApplyAsync(service).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Conflict, result.Kind);
+        Assert.Contains(expected, result.Message!, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ApplyManualLocationAsync_WhenTheStoreFails_ReturnsAFixedUnavailableStateAsync()
+    {
+        var store = new RecordingDeploymentLocationStore { Throw = true };
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateService(new RecordingProjection(), principal, authorization.Object, store);
+
+        var result = await ApplyAsync(service).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Unavailable, result.Kind);
+        Assert.AreEqual("The coordinate change could not be completed.", result.Message);
+    }
+
+    private static async Task<OperatorUiResult<ManualDeploymentLocationResult>> ApplyAsync(
+        CameraAgentSkyMapUiService service)
+        => await service.ApplyManualLocationAsync(
+            31.5,
+            -110.25,
+            1400,
+            "America/Phoenix",
+            4,
+            2,
+            "key-1",
+            "relocated",
+            CancellationToken.None).ConfigureAwait(false);
+
     private static Mock<IAuthorizationService> CreateAuthorization(out ClaimsPrincipal principal, bool succeeded)
     {
         var user = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, "owner-id")], "test"));
+            [
+                new Claim(ClaimTypes.NameIdentifier, "owner-id"),
+                new Claim(
+                    CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+            ],
+            IdentityConstants.ApplicationScheme));
         principal = user;
         var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
         authorization
@@ -109,13 +254,79 @@ public sealed class CameraAgentSkyMapUiServiceTests
     private static CameraAgentSkyMapUiService CreateService(
         ICameraAgentSkyMapProjection projection,
         ClaimsPrincipal principal,
-        IAuthorizationService authorization)
+        IAuthorizationService authorization,
+        IDeploymentLocationStore? store = null)
         => new(
             new StubAuthenticationStateProvider(principal),
             authorization,
             projection,
+            store ?? new RecordingDeploymentLocationStore(),
             new FixedTimeProvider(Now),
             NullLogger<CameraAgentSkyMapUiService>.Instance);
+
+    private sealed class RecordingDeploymentLocationStore : IDeploymentLocationStore
+    {
+        private static readonly ManualDeploymentLocationState State = new(
+            Supported: true,
+            LocationId: "hvo-observatory",
+            ActiveVersion: 4,
+            KnownVersion: 4,
+            NextVersion: 5,
+            PendingVersion: null,
+            ManualSequence: 2,
+            CentralAcknowledgementRequired: false,
+            StagedAcknowledgementPending: false,
+            CandidateAwaitingAcknowledgement: false,
+            Override: null,
+            OverrideSupersededAtUtc: null,
+            History: []);
+
+        internal int Reads { get; private set; }
+
+        internal List<ManualDeploymentLocationRequest> Requests { get; } = [];
+
+        internal ManualDeploymentLocationStatus Status { get; set; } = ManualDeploymentLocationStatus.Applied;
+
+        internal string? ReasonCode { get; set; }
+
+        internal string? FieldPath { get; set; }
+
+        internal bool Throw { get; set; }
+
+        public DeploymentLocationSnapshot? Active => null;
+
+        public ManualDeploymentLocationState Manual
+        {
+            get
+            {
+                Reads++;
+                return State;
+            }
+        }
+
+        public ValueTask<ManualDeploymentLocationResult> ApplyManualAsync(
+            ManualDeploymentLocationRequest request,
+            CancellationToken cancellationToken)
+        {
+            if (Throw)
+            {
+                throw new InvalidOperationException("fixture failure");
+            }
+            Requests.Add(request);
+            return ValueTask.FromResult(
+                new ManualDeploymentLocationResult(Status, ReasonCode, FieldPath, State));
+        }
+
+        public ValueTask<DeploymentLocationSnapshot> InitializeAsync(
+            DeploymentLocationSeed seed,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public DeploymentLocationSnapshot Resolve(
+            CaptureLocationProvenance provenance,
+            DateTimeOffset? effectiveUtc = null)
+            => throw new NotSupportedException();
+    }
 
     private sealed class StubAuthenticationStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
     {

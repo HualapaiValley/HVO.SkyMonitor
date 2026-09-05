@@ -35,13 +35,13 @@
     {
         <p class="sky-summary" role="note">@_state.Summary</p>
 
-        <section class="sky-grid" aria-label="Sky map facts">
+        <section class="sky-grid" aria-label="Sky map facts and observer coordinates">
             <article class="sky-card" aria-labelledby="sky-observer">
                 <header>
-                    <div><p class="eyebrow">Authoritative deployment coordinates</p><h2 id="sky-observer">Observer location</h2></div>
-                    <span class="state-chip state-chip--readonly">Read only</span>
+                    <div><p class="eyebrow">Authoritative deployment coordinates</p><h2 id="sky-observer" tabindex="-1">Observer location</h2></div>
+                    <span class="state-chip @(_manual is { Supported: true } ? "state-chip--open" : "state-chip--readonly")">@(_manual is { Supported: true } ? "Owner editable" : "Read only")</span>
                 </header>
-                <p class="truth-note">Coordinates are owned by the versioned startup configuration or a central acknowledgement and <strong>cannot be edited here</strong>. This page never geocodes, never reads browser location, and never writes deployment state.</p>
+                <p class="truth-note">These values are the active immutable deployment version. They are owned by the protected local version store, never by this page's own state, and an owner edit appends a new version rather than rewriting this one. Nothing here geocodes, reads browser location, or uses the network.</p>
                 <dl class="fact-grid">
                     <div><dt>Latitude</dt><dd>@Number(_state.Observer.LatitudeDegrees, 6)&deg;</dd></div>
                     <div><dt>Longitude</dt><dd>@Number(_state.Observer.LongitudeDegrees, 6)&deg; east-positive</dd></div>
@@ -58,8 +58,124 @@
                     <div><dt>Effective at instant</dt><dd>@(_state.Observer.EffectiveAtInstant ? "Yes" : "No: the scene uses coordinates outside their effective window")</dd></div>
                     <div><dt>Staged acknowledgement</dt><dd>@(_state.Observer.StagedAcknowledgementPending ? "A central acknowledgement is staged and activates at the next start" : "None")</dd></div>
                     <div><dt>Canonical identity</dt><dd class="mono">@_state.Observer.CanonicalSha256</dd></div>
+                    <div><dt>Pending manual version</dt><dd>@PendingManualSummary()</dd></div>
                 </dl>
             </article>
+
+            <article class="sky-card sky-card--wide" aria-labelledby="sky-observer-edit">
+                <header>
+                    <div><p class="eyebrow">Audited local mutation</p><h2 id="sky-observer-edit">Edit observer coordinates</h2></div>
+                    @if (_manual is { Supported: true } editable)
+                    {
+                        <span class="state-chip state-chip--readonly">Expected version @editable.KnownVersion</span>
+                    }
+                </header>
+                @if (_manual is not { Supported: true })
+                {
+                    <p class="empty-copy">This CameraAgent's deployment-location owner does not expose the audited local mutation contract, so coordinates remain read only here.</p>
+                }
+                else
+                {
+                    <p class="truth-note">
+                        Saving appends deployment version @_manual.NextVersion through the protected local owner. It becomes the
+                        active version at the <strong>next CameraAgent start</strong>: every capture recorded by the running process
+                        keeps version @_manual.ActiveVersion, and every capture after the restart carries the new version. Earlier
+                        versions and the captures bound to them are never rewritten. The entry is offline: no geocoding, tiles,
+                        browser location, or network request is made.
+                    </p>
+                    @if (_manual.CentralAcknowledgementRequired)
+                    {
+                        <p class="truth-note">Central integration is enabled, so the new version is proposed to LogicHost first and activates only after it is acknowledged and this agent restarts. LogicHost can acknowledge or reject the local proposal; it never replaces these coordinates with its own.</p>
+                    }
+                    @if (_manual.StagedAcknowledgementPending)
+                    {
+                        <p class="truth-note">A central acknowledgement is already staged. It activates first at the next start, and this manual entry is then proposed as its successor.</p>
+                    }
+                    @if (_manual.OverrideSupersededAtUtc is { } supersededAtUtc)
+                    {
+                        <p class="truth-note">A previous manual entry was superseded at @supersededAtUtc.ToString("u") because the startup configuration seed itself changed. Configured coordinates currently govern this deployment.</p>
+                    }
+                    @if (_manualMessage is not null && !_confirming)
+                    {
+                        @* While the modal is open the same notice is announced inside it instead. *@
+                        <p class="truth-note @(_manualMessageIsError ? "manual-error" : "manual-ok")" role="@(_manualMessageIsError ? "alert" : "status")">@_manualMessage</p>
+                    }
+                    <fieldset class="coordinate-form" disabled="@(_busy || _loading)">
+                        <legend class="visually-hidden">Manual observer coordinates</legend>
+                        <div class="coordinate-field">
+                            <label for="sky-map-latitude">Latitude (degrees)</label>
+                            <input id="sky-map-latitude" class="form-control" inputmode="decimal" autocomplete="off" @bind="_latitudeInput" @bind:after="FormChanged" />
+                        </div>
+                        <div class="coordinate-field">
+                            <label for="sky-map-longitude">Longitude (degrees, east positive)</label>
+                            <input id="sky-map-longitude" class="form-control" inputmode="decimal" autocomplete="off" @bind="_longitudeInput" @bind:after="FormChanged" />
+                        </div>
+                        <div class="coordinate-field">
+                            <label for="sky-map-elevation">Elevation (metres)</label>
+                            <input id="sky-map-elevation" class="form-control" inputmode="decimal" autocomplete="off" @bind="_elevationInput" @bind:after="FormChanged" />
+                        </div>
+                        <div class="coordinate-field">
+                            <label for="sky-map-time-zone">Time zone (IANA identifier)</label>
+                            <input id="sky-map-time-zone" class="form-control" autocomplete="off" @bind="_timeZoneInput" @bind:after="FormChanged" />
+                        </div>
+                        <div class="coordinate-field coordinate-field--wide">
+                            <label for="sky-map-reason">Reason (recorded with the version)</label>
+                            <input id="sky-map-reason" class="form-control" autocomplete="off" @bind="_reasonInput" @bind:after="FormChanged" />
+                        </div>
+                    </fieldset>
+                    <div class="coordinate-actions">
+                        <button id="@EditTriggerId" type="button" class="btn btn-primary" disabled="@(_busy || _loading)" @onclick="BeginEdit">Save coordinates</button>
+                    </div>
+
+                    <h3>Recorded manual changes</h3>
+                    @if (_manual.History.Count == 0)
+                    {
+                        <p class="empty-copy">No manual coordinate change has been recorded on this CameraAgent.</p>
+                    }
+                    else
+                    {
+                        <div class="table-scroll">
+                            <table class="facts-table">
+                                <caption class="visually-hidden">Audited manual coordinate changes, newest first</caption>
+                                <thead><tr><th scope="col">Recorded</th><th scope="col">Actor</th><th scope="col">Expected version</th><th scope="col">Latitude</th><th scope="col">Longitude</th><th scope="col">Elevation</th><th scope="col">Time zone</th><th scope="col">Reason</th></tr></thead>
+                                <tbody>
+                                    @foreach (var entry in _manual.History)
+                                    {
+                                        <tr @key="entry.Sequence">
+                                            <th scope="row">@entry.RecordedAtUtc.ToString("u")</th>
+                                            <td>@entry.Actor</td>
+                                            <td>@entry.ExpectedVersion</td>
+                                            <td>@Number(entry.LatitudeDegrees, 6)&deg;</td>
+                                            <td>@Number(entry.LongitudeDegrees, 6)&deg;</td>
+                                            <td>@Number(entry.ElevationMeters, 2) m</td>
+                                            <td>@entry.TimeZoneId</td>
+                                            <td>@(entry.Reason ?? "Not recorded")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                }
+            </article>
+
+            @if (_confirming && _manual is { Supported: true } confirming)
+            {
+                <dialog class="confirmation-panel" aria-labelledby="coordinate-heading" aria-describedby="coordinate-description"
+                        @oncancel="CancelEdit" @ref="_confirmationDialog">
+                    <div>
+                        <p class="eyebrow">Deployment-version confirmation</p>
+                        <h2 id="coordinate-heading">Append manual version @confirming.NextVersion?</h2>
+                        <p id="coordinate-description">Captures recorded by the running process keep version @confirming.ActiveVersion. The entered coordinates become active at the next CameraAgent start@(confirming.CentralAcknowledgementRequired ? ", after LogicHost acknowledges the proposal" : string.Empty).</p>
+                        @if (_manualMessage is not null)
+                        {
+                            @* The open modal makes the card behind it inert, so the outcome has to be announced here. *@
+                            <p class="truth-note @(_manualMessageIsError ? "manual-error" : "manual-ok")" role="alert">@_manualMessage</p>
+                        }
+                    </div>
+                    <div><button type="button" class="btn btn-primary" disabled="@_busy" @onclick="ConfirmEditAsync">Confirm change</button><button type="button" class="btn btn-outline-light" disabled="@_busy" autofocus @onclick="CancelEdit">Cancel</button></div>
+                </dialog>
+            }
 
             <article class="sky-card" aria-labelledby="sky-catalog">
                 <header><div><p class="eyebrow">Installed read-only snapshot</p><h2 id="sky-catalog">Catalog identity</h2></div></header>

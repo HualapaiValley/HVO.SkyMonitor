@@ -36,6 +36,20 @@ public interface IDeploymentLocationStore
 
     DeploymentLocationSnapshot? Staged => null;
 
+    /// <summary>The audited local manual coordinate state, or the unsupported state for stores without the contract.</summary>
+    ManualDeploymentLocationState Manual => ManualDeploymentLocationState.Unsupported;
+
+    /// <summary>
+    /// Records an operator-entered coordinate change as the governing local seed. The new version is
+    /// appended by the next startup reconciliation, so captures in this process lifetime keep the
+    /// deployment version they were already stamped with.
+    /// </summary>
+    ValueTask<ManualDeploymentLocationResult> ApplyManualAsync(
+        ManualDeploymentLocationRequest request,
+        CancellationToken cancellationToken)
+        => ValueTask.FromException<ManualDeploymentLocationResult>(
+            new NotSupportedException("This deployment-location store does not support manual coordinate mutation."));
+
     ValueTask<DeploymentLocationSnapshot> InitializeAsync(
         DeploymentLocationSeed seed,
         CancellationToken cancellationToken);
@@ -61,6 +75,7 @@ public sealed class ProtectedDeploymentLocationStore(
     DeploymentLocationTelemetry? telemetry = null) : IDeploymentLocationStore, IDisposable
 {
     private const int CurrentSchemaVersion = 1;
+    private const int CurrentManualSchemaVersion = 1;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         RespectRequiredConstructorParameters = true,
@@ -72,12 +87,19 @@ public sealed class ProtectedDeploymentLocationStore(
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<ProtectedDeploymentLocationStore> _logger = logger;
     private DeploymentLocationHistory? _history;
+    private ManualDeploymentLocationRecord? _manual;
+    private DeploymentLocationSeed? _configurationSeed;
 
     public DeploymentLocationSnapshot? Active => Volatile.Read(ref _history)?.Snapshots[^1];
 
     public DeploymentLocationSnapshot? Candidate => Volatile.Read(ref _history)?.Candidate;
 
     public DeploymentLocationSnapshot? Staged => Volatile.Read(ref _history)?.Staged;
+
+    public ManualDeploymentLocationState Manual => ProjectManual(
+        Volatile.Read(ref _history),
+        Volatile.Read(ref _manual),
+        Volatile.Read(ref _configurationSeed));
 
     public DeploymentLocationSourceKind ResolveSourceKind(DeploymentLocationSnapshot deployment)
     {
@@ -109,7 +131,26 @@ public sealed class ProtectedDeploymentLocationStore(
         try
         {
             seed = NormalizeSeed(seed);
-            var (path, markerPath) = EnsureStatePaths();
+            var (path, markerPath, manualPath) = EnsureStatePaths();
+            var configurationSeed = seed;
+            var manual = File.Exists(manualPath)
+                ? await ReadManualAsync(manualPath, cancellationToken).ConfigureAwait(false)
+                : null;
+            var supersedeManual = false;
+            if (manual is not null && manual.SupersededAtUtc is null)
+            {
+                if (GovernsConfiguration(manual, configurationSeed))
+                {
+                    // The operator's local entry outranks the unchanged startup seed until the
+                    // configured seed itself changes, so a restart does not silently revert it.
+                    seed = manual.Seed;
+                }
+                else
+                {
+                    // Deferred until the protected history is validated so a failed startup mutates nothing.
+                    supersedeManual = true;
+                }
+            }
             var historyExists = File.Exists(path);
             if (!historyExists && (File.Exists(markerPath) || HasLocationBearingEvidence()))
             {
@@ -173,6 +214,16 @@ public sealed class ProtectedDeploymentLocationStore(
             {
                 await WriteMarkerAsync(markerPath, snapshot.Active, cancellationToken).ConfigureAwait(false);
             }
+            if (supersedeManual)
+            {
+                manual = manual! with { SupersededAtUtc = ToMilliseconds(_timeProvider.GetUtcNow()) };
+                await WriteManualAsync(manualPath, manual, cancellationToken).ConfigureAwait(false);
+                DeploymentLocationLog.ManualOverrideSuperseded(_logger, configurationSeed.LocationId);
+            }
+            // Written before the history so any reader that observes the new history also observes the
+            // manual state it was reconciled against.
+            Volatile.Write(ref _configurationSeed, configurationSeed);
+            Volatile.Write(ref _manual, manual);
             Volatile.Write(ref _history, snapshot.History);
             if (snapshot.Appended)
             {
@@ -235,13 +286,200 @@ public sealed class ProtectedDeploymentLocationStore(
             }
             var updated = history with { Staged = deployment };
             ValidateHistory(updated);
-            var (path, _) = EnsureStatePaths();
+            var (path, _, _) = EnsureStatePaths();
             await WriteAsync(path, updated, cancellationToken).ConfigureAwait(false);
             Volatile.Write(ref _history, updated);
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    public async ValueTask<ManualDeploymentLocationResult> ApplyManualAsync(
+        ManualDeploymentLocationRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var started = Stopwatch.GetTimestamp();
+        var outcome = "failed";
+        using var activity = DeploymentLocationTelemetry.ActivitySource.StartActivity("deployment-location.manual");
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var history = _history
+                ?? throw new InvalidOperationException("Deployment-location history has not been initialized.");
+            var configurationSeed = _configurationSeed
+                ?? throw new InvalidOperationException("Deployment-location history has not been initialized.");
+            var manual = _manual;
+            var actor = request.Actor?.Trim() ?? string.Empty;
+            var idempotencyKey = request.IdempotencyKey?.Trim() ?? string.Empty;
+            var reason = string.IsNullOrWhiteSpace(request.Reason) ? null : request.Reason.Trim();
+            if (string.IsNullOrEmpty(actor) || actor.Length > ManualDeploymentLocationContract.MaximumActorLength ||
+                string.IsNullOrEmpty(idempotencyKey) ||
+                idempotencyKey.Length > ManualDeploymentLocationContract.MaximumIdempotencyKeyLength ||
+                reason is { Length: > ManualDeploymentLocationContract.MaximumReasonLength })
+            {
+                outcome = "invalid";
+                return ManualOutcome(
+                    ManualDeploymentLocationStatus.Invalid,
+                    ManualDeploymentLocationContract.InvalidCommandReasonCode,
+                    "manual.command",
+                    history,
+                    manual,
+                    configurationSeed);
+            }
+            var knownVersion = KnownVersion(history);
+            var probe = DeploymentLocationSnapshot.Create(
+                history.LocationId,
+                knownVersion + 1,
+                ManualDeploymentLocationContract.SourceLabel,
+                horizontalAccuracyMeters: null,
+                ToMilliseconds(_timeProvider.GetUtcNow()),
+                null,
+                request.LatitudeDegrees,
+                request.LongitudeDegrees,
+                request.ElevationMeters,
+                request.TimeZoneId ?? string.Empty);
+            var validation = probe.Validate();
+            if (!validation.IsValid)
+            {
+                outcome = "invalid";
+                return ManualOutcome(
+                    ManualDeploymentLocationStatus.Invalid,
+                    validation.ReasonCode,
+                    validation.FieldPath,
+                    history,
+                    manual,
+                    configurationSeed);
+            }
+            if (probe.ElevationMeters < ManualDeploymentLocationContract.MinimumElevationMeters ||
+                probe.ElevationMeters > ManualDeploymentLocationContract.MaximumElevationMeters)
+            {
+                outcome = "invalid";
+                return ManualOutcome(
+                    ManualDeploymentLocationStatus.Invalid,
+                    CaptureContractReasonCodes.InvalidLocation,
+                    "location.elevationMeters",
+                    history,
+                    manual,
+                    configurationSeed);
+            }
+            var entries = manual?.Entries ?? [];
+            var replay = entries.FirstOrDefault(item =>
+                string.Equals(item.IdempotencyKey, idempotencyKey, StringComparison.Ordinal));
+            if (replay is not null)
+            {
+                if (!SameCoordinates(replay, probe))
+                {
+                    outcome = "conflict";
+                    return ManualOutcome(
+                        ManualDeploymentLocationStatus.Conflict,
+                        ManualDeploymentLocationContract.IdempotencyKeyConflictReasonCode,
+                        "manual.idempotencyKey",
+                        history,
+                        manual,
+                        configurationSeed);
+                }
+                if (!GovernsConfiguration(manual!, configurationSeed)
+                    || replay.Sequence <= manual!.SupersededThroughSequence)
+                {
+                    // The key was recorded, but a configuration change superseded it, so replaying it
+                    // would report success for coordinates that will never govern. The watermark keeps
+                    // that true after a later entry makes the record govern again.
+                    outcome = "conflict";
+                    return ManualOutcome(
+                        ManualDeploymentLocationStatus.Conflict,
+                        ManualDeploymentLocationContract.SupersededEntryReasonCode,
+                        "manual.idempotencyKey",
+                        history,
+                        manual,
+                        configurationSeed);
+                }
+                outcome = "replayed";
+                return ManualOutcome(
+                    ManualDeploymentLocationStatus.Replayed, null, null, history, manual, configurationSeed);
+            }
+            if (request.ExpectedVersion != knownVersion)
+            {
+                outcome = "conflict";
+                return ManualOutcome(
+                    ManualDeploymentLocationStatus.Conflict,
+                    ManualDeploymentLocationContract.ExpectedVersionConflictReasonCode,
+                    "manual.expectedVersion",
+                    history,
+                    manual,
+                    configurationSeed);
+            }
+            // The history version alone cannot detect a competing pending manual entry, because the
+            // command deliberately never touches the history.
+            if (request.ExpectedManualSequence != ManualSequence(manual, configurationSeed))
+            {
+                outcome = "conflict";
+                return ManualOutcome(
+                    ManualDeploymentLocationStatus.Conflict,
+                    ManualDeploymentLocationContract.ExpectedManualSequenceConflictReasonCode,
+                    "manual.expectedManualSequence",
+                    history,
+                    manual,
+                    configurationSeed);
+            }
+            var governing = GoverningSeed(history, manual, configurationSeed);
+            if (SameCoordinates(governing.Coordinates, probe))
+            {
+                outcome = "unchanged";
+                return ManualOutcome(
+                    ManualDeploymentLocationStatus.Unchanged, null, null, history, manual, configurationSeed);
+            }
+            var record = new ManualDeploymentLocationRecord(
+                CurrentManualSchemaVersion,
+                history.LocationId,
+                NormalizeSeed(new DeploymentLocationSeed(
+                    history.LocationId,
+                    ManualDeploymentLocationContract.SourceLabel,
+                    null,
+                    null,
+                    null,
+                    new ObservatoryLocation(
+                        probe.LatitudeDegrees, probe.LongitudeDegrees, probe.ElevationMeters, probe.TimeZoneId),
+                    DeploymentLocationSourceKind.Manual)),
+                configurationSeed,
+                SupersededAtUtc: null,
+                manual is null || GovernsConfiguration(manual, configurationSeed)
+                    ? manual?.SupersededThroughSequence ?? 0
+                    : entries[^1].Sequence,
+                [
+                    .. entries.TakeLast(ManualDeploymentLocationContract.MaximumRetainedEntries - 1),
+                    new ManualDeploymentLocationAuditEntry(
+                        entries.Count == 0 ? 1 : entries[^1].Sequence + 1,
+                        ToMilliseconds(_timeProvider.GetUtcNow()),
+                        actor,
+                        reason,
+                        idempotencyKey,
+                        request.ExpectedVersion,
+                        probe.LatitudeDegrees,
+                        probe.LongitudeDegrees,
+                        probe.ElevationMeters,
+                        probe.TimeZoneId)
+                ]);
+            ValidateManual(record);
+            var (_, _, manualPath) = EnsureStatePaths();
+            await WriteManualAsync(manualPath, record, cancellationToken).ConfigureAwait(false);
+            Volatile.Write(ref _manual, record);
+            DeploymentLocationLog.ManualEntryRecorded(_logger, history.LocationId, record.Entries[^1].Sequence);
+            outcome = "applied";
+            return ManualOutcome(
+                ManualDeploymentLocationStatus.Applied, null, null, history, record, configurationSeed);
+        }
+        finally
+        {
+            _gate.Release();
+            telemetry?.Record("manual", outcome, Stopwatch.GetElapsedTime(started));
+            activity?.SetTag("operation", "manual");
+            activity?.SetTag("outcome", outcome);
+            activity?.SetStatus(outcome is "applied" or "replayed" or "unchanged"
+                ? ActivityStatusCode.Ok
+                : ActivityStatusCode.Error);
         }
     }
 
@@ -310,9 +548,18 @@ public sealed class ProtectedDeploymentLocationStore(
         var effectiveFrom = seed.EffectiveFromUtc.HasValue
             ? ToMilliseconds(seed.EffectiveFromUtc.Value)
             : now;
-        var latestProposedEffectiveFrom = history?.Candidate?.EffectiveFromUtc > latest?.EffectiveFromUtc
+        // The floor must include the instant the latest version was activated, not only its declared
+        // effective-from: activating a staged version and appending in the same startup would otherwise
+        // produce equal activation and supersession instants and fail the chronology invariant.
+        var latestFloor = latest is null
+            ? (DateTimeOffset?)null
+            : history!.ActivatedAtUtc.TryGetValue(latest.Version, out var latestActivated)
+                && latestActivated > latest.EffectiveFromUtc
+                    ? latestActivated
+                    : latest.EffectiveFromUtc;
+        var latestProposedEffectiveFrom = history?.Candidate?.EffectiveFromUtc > latestFloor
             ? history.Candidate.EffectiveFromUtc
-            : latest?.EffectiveFromUtc;
+            : latestFloor;
         if (!seed.EffectiveFromUtc.HasValue
             && latestProposedEffectiveFrom.HasValue
             && effectiveFrom <= latestProposedEffectiveFrom.Value)
@@ -362,7 +609,11 @@ public sealed class ProtectedDeploymentLocationStore(
             return new ReconciledLocation(candidateHistory, latest!, Appended: false);
         }
 
-        EnsureEffectiveAtStartup(snapshot, now);
+        // When the floor above pushed the effective-from past `now`, the reconciler synthesized that
+        // instant itself; the startup check exists to reject a declared window that misses startup.
+        EnsureEffectiveAtStartup(
+            snapshot,
+            !seed.EffectiveFromUtc.HasValue && effectiveFrom > now ? effectiveFrom : now);
         var updated = new DeploymentLocationHistory(
             CurrentSchemaVersion,
             seed.LocationId,
@@ -568,7 +819,7 @@ public sealed class ProtectedDeploymentLocationStore(
         RawIngressFileStore.SyncDirectory(keyDirectory);
     }
 
-    private (string StatePath, string MarkerPath) EnsureStatePaths()
+    private (string StatePath, string MarkerPath, string ManualPath) EnsureStatePaths()
     {
         var root = Path.GetFullPath(_options.RawIngressRoot);
         var parent = Path.GetDirectoryName(root)
@@ -592,13 +843,17 @@ public sealed class ProtectedDeploymentLocationStore(
             RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
         }
         var path = Path.GetFullPath(Path.Combine(directory, "deployment-location.v1.protected"));
+        // The manual record is a separate protected file rather than a field of the history document:
+        // the history schema stays byte-compatible so an installer rollback to a baseline image can
+        // still open it, and the baseline simply ignores this sidecar.
+        var manualPath = Path.GetFullPath(Path.Combine(directory, "manual-deployment-location.v1.protected"));
         var rootPrefix = string.Concat(Path.TrimEndingDirectorySeparator(root), Path.DirectorySeparatorChar);
-        if (!path.StartsWith(rootPrefix,
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (!path.StartsWith(rootPrefix, comparison) || !manualPath.StartsWith(rootPrefix, comparison))
         {
             throw new InvalidOperationException("Deployment-location state path escapes the CameraAgent data root.");
         }
-        return (path, Path.Combine(root, ".deployment-location.v1.identity"));
+        return (path, Path.Combine(root, ".deployment-location.v1.identity"), manualPath);
     }
 
     private static void ValidateHistory(DeploymentLocationHistory history)
@@ -906,6 +1161,225 @@ public sealed class ProtectedDeploymentLocationStore(
         return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
+    private static long KnownVersion(DeploymentLocationHistory history)
+        => Math.Max(
+            history.Snapshots[^1].Version,
+            Math.Max(history.Candidate?.Version ?? 0, history.Staged?.Version ?? 0));
+
+    private static bool GovernsConfiguration(
+        ManualDeploymentLocationRecord record,
+        DeploymentLocationSeed configurationSeed)
+        => record.SupersededAtUtc is null
+           && record.SchemaVersion == CurrentManualSchemaVersion
+           && string.Equals(record.LocationId, configurationSeed.LocationId, StringComparison.Ordinal)
+           && record.BaselineConfigurationSeed == configurationSeed;
+
+    private static long ManualSequence(
+        ManualDeploymentLocationRecord? manual,
+        DeploymentLocationSeed? configurationSeed)
+        => manual is not null
+           && configurationSeed is not null
+           && GovernsConfiguration(manual, configurationSeed)
+           && manual.Entries.Count > 0
+            ? manual.Entries[^1].Sequence
+            : 0;
+
+    private static DeploymentLocationSeed GoverningSeed(
+        DeploymentLocationHistory history,
+        ManualDeploymentLocationRecord? manual,
+        DeploymentLocationSeed configurationSeed)
+        => manual is not null && GovernsConfiguration(manual, configurationSeed)
+            ? manual.Seed
+            : history.ConfigurationSeed;
+
+    private static bool SameCoordinates(ObservatoryLocation coordinates, DeploymentLocationSnapshot snapshot)
+        => coordinates.LatitudeDegrees == snapshot.LatitudeDegrees
+           && coordinates.LongitudeDegrees == snapshot.LongitudeDegrees
+           && coordinates.ElevationMeters == snapshot.ElevationMeters
+           && string.Equals(coordinates.TimeZoneId, snapshot.TimeZoneId, StringComparison.Ordinal);
+
+    private static bool SameCoordinates(
+        ManualDeploymentLocationAuditEntry entry,
+        DeploymentLocationSnapshot snapshot)
+        => entry.LatitudeDegrees == snapshot.LatitudeDegrees
+           && entry.LongitudeDegrees == snapshot.LongitudeDegrees
+           && entry.ElevationMeters == snapshot.ElevationMeters
+           && string.Equals(entry.TimeZoneId, snapshot.TimeZoneId, StringComparison.Ordinal);
+
+    private ManualDeploymentLocationResult ManualOutcome(
+        ManualDeploymentLocationStatus status,
+        string? reasonCode,
+        string? fieldPath,
+        DeploymentLocationHistory history,
+        ManualDeploymentLocationRecord? manual,
+        DeploymentLocationSeed configurationSeed)
+        => new(status, reasonCode, fieldPath, ProjectManual(history, manual, configurationSeed));
+
+    private ManualDeploymentLocationState ProjectManual(
+        DeploymentLocationHistory? history,
+        ManualDeploymentLocationRecord? manual,
+        DeploymentLocationSeed? configurationSeed)
+    {
+        var centralAcknowledgementRequired = _options.CentralIntegration.Mode == CentralIntegrationMode.Enabled;
+        if (history is null)
+        {
+            // No history means no version to append to, so reporting the contract as available would
+            // offer an entry form whose every command fails.
+            return ManualDeploymentLocationState.Unsupported;
+        }
+        var governs = manual is not null
+            && configurationSeed is not null
+            && GovernsConfiguration(manual, configurationSeed);
+        ManualDeploymentLocationOverride? governing = null;
+        if (governs && manual!.Entries.Count > 0)
+        {
+            var latest = manual.Entries[^1];
+            governing = new ManualDeploymentLocationOverride(
+                latest.LatitudeDegrees,
+                latest.LongitudeDegrees,
+                latest.ElevationMeters,
+                latest.TimeZoneId,
+                !SameCoordinates(manual.Seed.Coordinates, history.Snapshots[^1]),
+                latest.RecordedAtUtc,
+                latest.Actor,
+                latest.Reason);
+        }
+        var knownVersion = KnownVersion(history);
+        return new ManualDeploymentLocationState(
+            Supported: true,
+            LocationId: history.LocationId,
+            ActiveVersion: history.Snapshots[^1].Version,
+            KnownVersion: knownVersion,
+            NextVersion: knownVersion + 1,
+            // Only the candidate or staged snapshot that carries this manual entry names its version.
+            // A candidate created before the newest entry describes a different one.
+            PendingVersion: (history.Staged ?? history.Candidate) is { } pendingSnapshot
+                && governs
+                && SameCoordinates(manual!.Seed.Coordinates, pendingSnapshot)
+                    ? pendingSnapshot.Version
+                    : null,
+            ManualSequence: ManualSequence(manual, configurationSeed),
+            CentralAcknowledgementRequired: centralAcknowledgementRequired,
+            StagedAcknowledgementPending: history.Staged is not null,
+            CandidateAwaitingAcknowledgement: history.Candidate is not null,
+            Override: governing,
+            OverrideSupersededAtUtc: manual?.SupersededAtUtc,
+            History: manual is null
+                ? []
+                : [.. manual.Entries
+                    .Reverse()
+                    .Take(ManualDeploymentLocationContract.MaximumProjectedEntries)]);
+    }
+
+    private async ValueTask<ManualDeploymentLocationRecord> ReadManualAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            RawIngressFileStore.EnsureNoSymbolicLinks(Path.GetDirectoryName(path)!, path);
+            var protectedPayload = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+            var plaintext = _protector.Unprotect(protectedPayload);
+            var record = JsonSerializer.Deserialize<ManualDeploymentLocationRecord>(plaintext, SerializerOptions)
+                ?? throw new InvalidDataException("Protected manual deployment-location state is empty.");
+            ValidateManual(record);
+            return record;
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException or
+            System.Security.Cryptography.CryptographicException)
+        {
+            throw new InvalidDataException("Protected manual deployment-location state is unreadable.", exception);
+        }
+    }
+
+    private async ValueTask WriteManualAsync(
+        string path,
+        ManualDeploymentLocationRecord record,
+        CancellationToken cancellationToken)
+    {
+        var plaintext = JsonSerializer.SerializeToUtf8Bytes(record, SerializerOptions);
+        var protectedPayload = _protector.Protect(plaintext);
+        EnsureProtectionKeysDurable(path);
+        await WriteDurableAsync(path, protectedPayload, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void ValidateManual(ManualDeploymentLocationRecord record)
+    {
+        if (record.SchemaVersion != CurrentManualSchemaVersion || string.IsNullOrWhiteSpace(record.LocationId) ||
+            record.Seed is null || record.BaselineConfigurationSeed is null ||
+            record.Entries is null || record.Entries.Count == 0)
+        {
+            throw new InvalidDataException("Protected manual deployment-location state has an unsupported schema.");
+        }
+        if (record.Seed != NormalizeSeed(record.Seed) ||
+            record.BaselineConfigurationSeed != NormalizeSeed(record.BaselineConfigurationSeed) ||
+            record.Seed.Coordinates is null || record.BaselineConfigurationSeed.Coordinates is null ||
+            !string.Equals(record.Seed.LocationId, record.LocationId, StringComparison.Ordinal) ||
+            !string.Equals(record.BaselineConfigurationSeed.LocationId, record.LocationId, StringComparison.Ordinal) ||
+            record.Seed.SourceKind != DeploymentLocationSourceKind.Manual ||
+            !Enum.IsDefined(record.BaselineConfigurationSeed.SourceKind) ||
+            !string.Equals(
+                record.Seed.Source, ManualDeploymentLocationContract.SourceLabel, StringComparison.Ordinal) ||
+            record.Seed.HorizontalAccuracyMeters is not null ||
+            record.Seed.EffectiveFromUtc is not null || record.Seed.EffectiveUntilUtc is not null ||
+            record.SupersededAtUtc is { } superseded && superseded.Offset != TimeSpan.Zero)
+        {
+            throw new InvalidDataException(
+                "Protected manual deployment-location state failed integrity validation.");
+        }
+        if (record.SupersededThroughSequence < 0 ||
+            record.SupersededThroughSequence > record.Entries[^1].Sequence)
+        {
+            throw new InvalidDataException(
+                "Protected manual deployment-location supersession watermark is invalid.");
+        }
+        if (record.Entries.Count > ManualDeploymentLocationContract.MaximumRetainedEntries)
+        {
+            throw new InvalidDataException(
+                "Protected manual deployment-location audit history exceeds its retained bound.");
+        }
+        var previous = 0L;
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in record.Entries)
+        {
+            if (entry.Sequence <= previous || !keys.Add(entry.IdempotencyKey) || !IsValidManualEntry(entry))
+            {
+                throw new InvalidDataException(
+                    "Protected manual deployment-location audit history failed integrity validation.");
+            }
+            previous = entry.Sequence;
+        }
+        if (!SameCoordinates(record.Seed.Coordinates, record.Entries[^1]))
+        {
+            throw new InvalidDataException(
+                "Protected manual deployment-location state does not match its audit history.");
+        }
+    }
+
+    private static bool SameCoordinates(
+        ObservatoryLocation coordinates,
+        ManualDeploymentLocationAuditEntry entry)
+        => coordinates.LatitudeDegrees == entry.LatitudeDegrees
+           && coordinates.LongitudeDegrees == entry.LongitudeDegrees
+           && coordinates.ElevationMeters == entry.ElevationMeters
+           && string.Equals(coordinates.TimeZoneId, entry.TimeZoneId, StringComparison.Ordinal);
+
+    private static bool IsValidManualEntry(ManualDeploymentLocationAuditEntry entry)
+        => entry.Sequence >= 1
+           && entry.RecordedAtUtc.Offset == TimeSpan.Zero
+           && entry.ExpectedVersion >= 1
+           && !string.IsNullOrWhiteSpace(entry.Actor)
+           && entry.Actor.Length <= ManualDeploymentLocationContract.MaximumActorLength
+           && !string.IsNullOrWhiteSpace(entry.IdempotencyKey)
+           && entry.IdempotencyKey.Length <= ManualDeploymentLocationContract.MaximumIdempotencyKeyLength
+           && entry.Reason is null or { Length: <= ManualDeploymentLocationContract.MaximumReasonLength }
+           && double.IsFinite(entry.LatitudeDegrees) && entry.LatitudeDegrees is >= -90 and <= 90
+           && double.IsFinite(entry.LongitudeDegrees) && entry.LongitudeDegrees is >= -180 and <= 180
+           // The manual elevation bound is deliberately not applied here: it is command policy, and
+           // enforcing it on the read path would make an existing record unreadable if it ever tightened.
+           && double.IsFinite(entry.ElevationMeters)
+           && DeploymentLocationSnapshot.IsPortableTimeZoneId(entry.TimeZoneId);
+
     private void EnsurePhysicalStatePath(string path)
         => RawIngressFileStore.EnsureNoSymbolicLinks(Path.GetFullPath(_options.RawIngressRoot), path);
 
@@ -948,6 +1422,17 @@ public sealed class ProtectedDeploymentLocationStore(
 
     private sealed record DeploymentLocationMarker(int SchemaVersion, string LocationId, long Version);
 
+    private sealed record ManualDeploymentLocationRecord(
+        [property: JsonRequired] int SchemaVersion,
+        [property: JsonRequired] string LocationId,
+        [property: JsonRequired] DeploymentLocationSeed Seed,
+        [property: JsonRequired] DeploymentLocationSeed BaselineConfigurationSeed,
+        [property: JsonRequired] DateTimeOffset? SupersededAtUtc,
+        // Every entry at or below this sequence was superseded by a configuration change and can never
+        // govern again, even after a later entry makes the record itself governing.
+        [property: JsonRequired] long SupersededThroughSequence,
+        [property: JsonRequired] IReadOnlyList<ManualDeploymentLocationAuditEntry> Entries);
+
     private sealed record ReconciledLocation(
         DeploymentLocationHistory History,
         DeploymentLocationSnapshot Active,
@@ -963,4 +1448,12 @@ internal static partial class DeploymentLocationLog
     [LoggerMessage(7302, LogLevel.Information,
         "Deployment location {LocationId} version {Version} loaded from protected history")]
     internal static partial void VersionLoaded(ILogger logger, string locationId, long version);
+
+    [LoggerMessage(7305, LogLevel.Information,
+        "Deployment location {LocationId} manual coordinate entry {Sequence} recorded; the next start appends its deployment version")]
+    internal static partial void ManualEntryRecorded(ILogger logger, string locationId, long sequence);
+
+    [LoggerMessage(7306, LogLevel.Warning,
+        "Deployment location {LocationId} manual override superseded by a changed startup configuration seed")]
+    internal static partial void ManualOverrideSuperseded(ILogger logger, string locationId);
 }

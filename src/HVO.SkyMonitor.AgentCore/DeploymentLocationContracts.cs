@@ -98,6 +98,10 @@ public sealed record DeploymentLocationSnapshot(
     public ObservatoryLocation ToObservatoryLocation()
         => new(LatitudeDegrees, LongitudeDegrees, ElevationMeters, TimeZoneId);
 
+    /// <summary>Returns whether the identifier is a portable IANA time zone this host can resolve.</summary>
+    public static bool IsPortableTimeZoneId(string timeZoneId)
+        => DeploymentLocationContract.IsPortableTimeZone(timeZoneId);
+
     /// <summary>Returns whether the UTC instant lies in this snapshot's declared half-open interval.</summary>
     public bool IsEffectiveAt(DateTimeOffset utc)
     {
