@@ -30,23 +30,27 @@ internal sealed class CameraAgentInstaller
         Func<Uri, IOwnerBootstrapClient> ownerClientFactory,
         uint uid,
         uint gid,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<DistributionAcquirer>? distributionFactory = null)
     {
         request.Validate();
+        distributionFactory ??= CreateDistributionAcquirer;
         var identityRequest = request;
         var docker = new DockerClient(processRunner);
         var instanceId = request.InstanceId ?? Guid.NewGuid();
         var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
         if (request.DryRun)
         {
-            using var dryRunAcquirer = new DistributionCatalogAcquirer();
+            using var dryRunAcquirer = distributionFactory();
             using var dryRunCatalog = await dryRunAcquirer.AcquireAsync(request, cancellationToken).ConfigureAwait(false);
+            var dryRunImage = await dryRunAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
             return await PlanAsync(
-                    request with { CatalogBundle = dryRunCatalog.BundlePath },
+                    ApplySignedImage(request with { CatalogBundle = dryRunCatalog.BundlePath }, dryRunImage),
                     dryRunCatalog.Evidence,
                     paths,
                     instanceId,
                     docker,
+                    dryRunImage?.Image,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -61,9 +65,12 @@ internal sealed class CameraAgentInstaller
         if (File.Exists(paths.ResultPath))
             _ = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
 
-        using var catalogAcquirer = new DistributionCatalogAcquirer();
+        using var catalogAcquirer = distributionFactory();
         using var acquiredCatalog = await catalogAcquirer.AcquireAsync(request, cancellationToken).ConfigureAwait(false);
-        request = request with { CatalogBundle = acquiredCatalog.BundlePath };
+        // The signed image release is resolved, its platform selected, and its archive verified before the Docker
+        // daemon is contacted, so an unsupported architecture or tampered archive fails with nothing yet mutated.
+        var acquiredImage = await catalogAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
+        request = ApplySignedImage(request with { CatalogBundle = acquiredCatalog.BundlePath }, acquiredImage);
 
         var preflightDaemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
         ValidateCatalogInput(request.CatalogBundle!);
@@ -180,6 +187,10 @@ internal sealed class CameraAgentInstaller
             {
                 state = await RecordPhaseAsync(paths, state, InstallationPhase.Image, cancellationToken).ConfigureAwait(false);
             }
+            if (acquiredImage is not null)
+            {
+                await acquiredImage.WriteEvidenceAsync(paths, cancellationToken).ConfigureAwait(false);
+            }
             var effectiveRequest = await StageImageArchiveAsync(
                 request,
                 paths,
@@ -188,6 +199,7 @@ internal sealed class CameraAgentInstaller
             var (daemon, image) = await docker.PrepareImageAsync(
                 effectiveRequest,
                 allowMutation: retainedCompletedResult is null,
+                acquiredImage?.Image,
                 cancellationToken)
                 .ConfigureAwait(false);
             if (!IsValid(image, request.ReplayProfile))
@@ -465,12 +477,29 @@ internal sealed class CameraAgentInstaller
         }
     }
 
+    private static DistributionAcquirer CreateDistributionAcquirer() => new();
+
+    /// <summary>
+    /// Rewrites the request to install exactly the immutable image the signed release resolved for this host.
+    /// A request that already names an operator-supplied image is returned unchanged.
+    /// </summary>
+    private static InstallRequest ApplySignedImage(InstallRequest request, AcquiredImage? image)
+        => image is null
+            ? request
+            : request with
+            {
+                ImageReference = image.Platform.OfflineArchiveImageId!,
+                ImageArchive = image.ArchivePath,
+                ImageArchiveSha256 = image.ArchiveSha256
+            };
+
     private static async Task<InstallationResult> PlanAsync(
         InstallRequest request,
         DistributionVerificationEvidence? catalogDistribution,
         InstallationPaths finalPaths,
         Guid instanceId,
         DockerClient docker,
+        DistributionImageIdentity? signedImage,
         CancellationToken cancellationToken)
     {
         var temporaryRoot = Path.Combine(Path.GetTempPath(), $"hvo-installer-plan-{Guid.NewGuid():N}");
@@ -483,7 +512,7 @@ internal sealed class CameraAgentInstaller
                 InstallRoot = finalPaths.CatalogRoot,
                 Distribution = catalogDistribution
             };
-            var (daemon, image) = await docker.PrepareImageAsync(request, allowMutation: false, cancellationToken)
+            var (daemon, image) = await docker.PrepareImageAsync(request, allowMutation: false, signedImage, cancellationToken)
                 .ConfigureAwait(false);
             if (!IsValid(image, request.ReplayProfile))
                 throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");

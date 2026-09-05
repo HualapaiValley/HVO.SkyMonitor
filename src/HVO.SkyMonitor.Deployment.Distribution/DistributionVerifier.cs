@@ -171,8 +171,9 @@ public static partial class DistributionVerifier
         {
             throw new DistributionValidationException("The distribution release identity is invalid.");
         }
-        if (manifest.ManifestKind == DistributionManifestKind.CatalogRelease && manifest.Catalog is null ||
-            manifest.ManifestKind == DistributionManifestKind.InstallerRelease && manifest.Catalog is not null)
+        var expectedCatalogCount = manifest.ManifestKind == DistributionManifestKind.CatalogRelease ? 1 : 0;
+        var expectedImageCount = manifest.ManifestKind == DistributionManifestKind.ImageRelease ? 1 : 0;
+        if ((manifest.Catalog is null ? 0 : 1) != expectedCatalogCount || manifest.Images.Count != expectedImageCount)
         {
             throw new DistributionValidationException("The distribution manifest kind does not match its payload identity.");
         }
@@ -187,7 +188,9 @@ public static partial class DistributionVerifier
         }
         if (CountRole(manifest, DistributionArtifactRole.Checksums) != 1 ||
             CountRole(manifest, DistributionArtifactRole.Sbom) != 1 ||
-            CountRole(manifest, DistributionArtifactRole.Provenance) != 1)
+            CountRole(manifest, DistributionArtifactRole.Provenance) != 1 ||
+            CountRole(manifest, DistributionArtifactRole.VulnerabilityScan) !=
+                (manifest.ManifestKind == DistributionManifestKind.ImageRelease ? 1 : 0))
         {
             throw new DistributionValidationException("The distribution manifest omits required evidence assets.");
         }
@@ -213,11 +216,68 @@ public static partial class DistributionVerifier
         }
     }
 
+    /// <summary>
+    /// Validates the image release payload. Every platform must carry an offline archive asset and the immutable
+    /// image ID that archive loads, so an air-gapped installation can select, verify, and load its own architecture
+    /// from signed metadata alone, and so a substituted archive fails before Docker is asked to load it.
+    /// </summary>
+    private static void ValidateImageRelease(DistributionReleaseManifest manifest, HashSet<string> names)
+    {
+        var image = manifest.Images[0];
+        if (manifest.Release.Train != "image" || manifest.Release.Tag != $"image-v{manifest.Release.Version}" ||
+            image.Component != "CameraAgent" || !ImageRepositoryRegex().IsMatch(image.Repository) ||
+            image.SourceRevision != manifest.Release.SourceRevision || image.SourceTree != manifest.Release.SourceTree ||
+            manifest.Artifacts.Any(static artifact => artifact.Role is DistributionArtifactRole.Installer or
+                DistributionArtifactRole.CatalogBundle or DistributionArtifactRole.Attribution))
+        {
+            throw new DistributionValidationException("The image release identity is invalid.");
+        }
+        if (image.SbomAsset != SingleRoleAsset(manifest, DistributionArtifactRole.Sbom) ||
+            image.ProvenanceAsset != SingleRoleAsset(manifest, DistributionArtifactRole.Provenance) ||
+            image.VulnerabilityScanAsset != SingleRoleAsset(manifest, DistributionArtifactRole.VulnerabilityScan))
+        {
+            throw new DistributionValidationException("The signed image evidence assets do not match the release artifacts.");
+        }
+        var archives = manifest.Artifacts.Where(static artifact => artifact.Role == DistributionArtifactRole.ImageArchive).ToArray();
+        if (archives.Length != image.Platforms.Count ||
+            image.Platforms.Select(static platform => $"{platform.OperatingSystem}/{platform.Architecture}")
+                .Distinct(StringComparer.Ordinal).Count() != image.Platforms.Count ||
+            image.Platforms.Select(static platform => platform.ManifestDigest)
+                .Distinct(StringComparer.Ordinal).Count() != image.Platforms.Count)
+        {
+            throw new DistributionValidationException("The image release does not declare one distinct archive per platform.");
+        }
+        foreach (var platform in image.Platforms)
+        {
+            if (platform.OfflineArchiveAsset is not { } archiveAsset || !names.Contains(archiveAsset) ||
+                platform.OfflineArchiveImageId is not { } imageId || !DigestRegex().IsMatch(imageId) ||
+                archives.SingleOrDefault(artifact => artifact.AssetName == archiveAsset) is not { } archive ||
+                archive.OperatingSystem != platform.OperatingSystem || archive.Architecture != platform.Architecture)
+            {
+                throw new DistributionValidationException("The image release platform does not identify a signed offline archive.");
+            }
+        }
+        var compatibility = image.Compatibility;
+        if (compatibility.StateContract != "cameraagent-state-v2" ||
+            !GitOidRegex().IsMatch(compatibility.MinimumCompatibleRevision) ||
+            !ContractIdentityRegex().IsMatch(compatibility.IdentityMigration) ||
+            compatibility.RawIngressSchema <= 0 || compatibility.CatalogManifestVersion <= 0 ||
+            !ContractIdentityRegex().IsMatch(compatibility.ConfigurationContract) ||
+            !ContractIdentityRegex().IsMatch(compatibility.CatalogContract) ||
+            compatibility.ReplayRunnerContract is { } replay && !ContractIdentityRegex().IsMatch(replay))
+        {
+            throw new DistributionValidationException("The signed image compatibility identity is invalid.");
+        }
+    }
+
+    private static string SingleRoleAsset(DistributionReleaseManifest manifest, DistributionArtifactRole role)
+        => manifest.Artifacts.Single(artifact => artifact.Role == role).AssetName;
+
     private static void Validate(DistributionReleaseIndex index, DistributionTrustRoot root)
     {
         if (index.SchemaVersion != DistributionSchemaVersions.ReleaseIndex || index.ManifestKind != "release-index" ||
             index.Signing.Algorithm != DistributionTrustRoot.Algorithm || index.Signing.KeyId != root.KeyId ||
-            index.Train is not ("installer" or "catalog") || index.Sequence < 1 || index.CreatedUtc == default ||
+            index.Train is not ("installer" or "catalog" or "image") || index.Sequence < 1 || index.CreatedUtc == default ||
             index.CreatedUtc.Offset != TimeSpan.Zero ||
             index.Releases.Count == 0 || !index.Releases.Any(release => release.Version == index.DefaultVersion))
         {
@@ -231,7 +291,7 @@ public static partial class DistributionVerifier
                 !TagRegex().IsMatch(release.Tag) || !AssetNameRegex().IsMatch(release.ManifestAsset) ||
                 !AssetNameRegex().IsMatch(release.SignatureAsset) || release.ManifestLength <= 0 ||
                 release.ManifestLength > MaximumManifestBytes || !Sha256Regex().IsMatch(release.ManifestSha256) ||
-                release.Tag != $"{index.Train}-{(index.Train == "installer" ? "v" : string.Empty)}{release.Version}")
+                release.Tag != $"{index.Train}-{(index.Train == "catalog" ? string.Empty : "v")}{release.Version}")
             {
                 throw new DistributionValidationException("The signed release index contains an invalid entry.");
             }
@@ -240,6 +300,17 @@ public static partial class DistributionVerifier
 
     private static void ValidateReleaseShape(DistributionReleaseManifest manifest, HashSet<string> names)
     {
+        if (manifest.ManifestKind == DistributionManifestKind.ImageRelease)
+        {
+            ValidateImageRelease(manifest, names);
+            return;
+        }
+
+        if (manifest.Artifacts.Any(static artifact => artifact.Role == DistributionArtifactRole.ImageArchive))
+        {
+            throw new DistributionValidationException("Only an image release may publish image archives.");
+        }
+
         if (manifest.ManifestKind == DistributionManifestKind.InstallerRelease)
         {
             var installers = manifest.Artifacts.Where(static artifact => artifact.Role == DistributionArtifactRole.Installer).ToArray();
@@ -348,6 +419,12 @@ public static partial class DistributionVerifier
 
     [GeneratedRegex("^sha256:[a-f0-9]{64}$", RegexOptions.CultureInvariant)]
     private static partial Regex DigestRegex();
+
+    [GeneratedRegex("^[a-z0-9][a-z0-9.-]{0,63}(:[0-9]{1,5})?(/[a-z0-9]+([._-][a-z0-9]+)*){1,6}$", RegexOptions.CultureInvariant)]
+    private static partial Regex ImageRepositoryRegex();
+
+    [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.CultureInvariant)]
+    private static partial Regex ContractIdentityRegex();
 
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$", RegexOptions.CultureInvariant)]
     private static partial Regex AssetNameRegex();

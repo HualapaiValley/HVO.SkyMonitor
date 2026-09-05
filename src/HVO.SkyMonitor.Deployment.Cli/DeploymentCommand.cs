@@ -150,6 +150,9 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public string? ImageReference { get; init; }
     public string? ImageArchive { get; init; }
     public string? ImageArchiveSha256 { get; init; }
+    public string? ImageManifest { get; init; }
+    public string? ImageIndex { get; init; }
+    public string? ImageVersion { get; init; }
     public bool NoDownload { get; init; }
     public bool MigrationBackwardCompatible { get; init; }
     public Guid? ConfirmationInstanceId { get; init; }
@@ -218,11 +221,34 @@ internal sealed record LifecycleRequest : DeploymentCommand
             AssetBaseUrl,
             Channel
         });
+        // The signed image-release selection is appended only when it is used, so every operation receipt written
+        // before this train existed keeps the identity it was journaled with and stays resumable.
+        if (ImageManifest is not null || ImageIndex is not null || ImageVersion is not null)
+        {
+            value += JsonSerializer.Serialize(new { ImageManifest, ImageIndex, ImageVersion });
+        }
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
     private void ValidateImage()
     {
+        if (ImageManifest is not null && ImageIndex is not null)
+        {
+            throw new InstallUsageException("--image-manifest cannot be combined with --image-index.");
+        }
+        if (ImageVersion is not null && ImageIndex is null)
+        {
+            throw new InstallUsageException("--image-version requires --image-index.");
+        }
+        if (ImageManifest is not null || ImageIndex is not null)
+        {
+            if (ImageReference is not null || ImageArchive is not null)
+            {
+                throw new InstallUsageException(
+                    "--image-ref and --image-archive cannot be combined with a signed image release.");
+            }
+            return;
+        }
         if (ImageReference is null ||
             !System.Text.RegularExpressions.Regex.IsMatch(
                 ImageReference,
@@ -244,14 +270,18 @@ internal sealed record LifecycleRequest : DeploymentCommand
 
     private void ValidateOperationOptions()
     {
+        var hasSignedImage = ImageManifest is not null || ImageIndex is not null || ImageVersion is not null;
         var hasImage = ImageReference is not null || ImageArchive is not null || ImageArchiveSha256 is not null ||
-                       NoDownload || MigrationBackwardCompatible;
-        var hasCatalogSource = CatalogBundle is not null || CatalogManifest is not null || CatalogIndex is not null ||
-                               AssetBaseUrl is not null || Channel != DistributionChannel.Local;
+                       hasSignedImage || NoDownload || MigrationBackwardCompatible;
+        var hasCatalogBundleSource = CatalogBundle is not null || CatalogManifest is not null || CatalogIndex is not null;
+        // A signed image upgrade resolves its release through the same locator and channel options the catalog train
+        // uses, so those two options belong to an image upgrade as well and are only rejected without one.
+        var hasCatalogSource = hasCatalogBundleSource || AssetBaseUrl is not null || Channel != DistributionChannel.Local;
         switch (Operation)
         {
             case LifecycleOperationKind.Upgrade:
-                Reject(hasCatalogSource || CatalogVersion is not null || ConfirmationInstanceId is not null,
+                Reject((hasSignedImage ? hasCatalogBundleSource : hasCatalogSource) ||
+                       CatalogVersion is not null || ConfirmationInstanceId is not null,
                     "Image upgrade does not accept catalog or purge options.");
                 break;
             case LifecycleOperationKind.CatalogInstall:

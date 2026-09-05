@@ -94,9 +94,14 @@ internal static class CommandLine
                 CatalogVersion = Get(values, "--catalog-version"),
                 AssetBaseUrl = Get(values, "--asset-base-url"),
                 Channel = ParseChannel(Get(values, "--channel")),
-                ImageReference = RequireOrPrompt(values, "--image-ref", "Immutable CameraAgent image digest or ID: "),
+                ImageReference = Get(values, "--image-manifest") is null && Get(values, "--image-index") is null
+                    ? RequireOrPrompt(values, "--image-ref", "Immutable CameraAgent image digest or ID: ")
+                    : Get(values, "--image-ref") ?? string.Empty,
                 ImageArchive = Get(values, "--image-archive"),
                 ImageArchiveSha256 = Get(values, "--image-archive-sha256"),
+                ImageManifest = Get(values, "--image-manifest"),
+                ImageIndex = Get(values, "--image-index"),
+                ImageVersion = Get(values, "--image-version"),
                 PasswordFile = Get(values, "--password-file"),
                 LatitudeDegrees = ParseDouble(Get(values, "--latitude"), 0, "--latitude"),
                 LongitudeDegrees = ParseDouble(Get(values, "--longitude"), 0, "--longitude"),
@@ -125,7 +130,8 @@ internal static class CommandLine
         {
             "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
             "--product-root", "--catalog-bundle", "--catalog-manifest", "--catalog-index", "--catalog-version", "--asset-base-url", "--channel", "--image-ref", "--image-archive",
-            "--image-archive-sha256", "--password-file", "--latitude", "--longitude",
+            "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
+            "--password-file", "--latitude", "--longitude",
             "--elevation", "--time-zone", "--replay-profile"
         };
         var unknown = options.FirstOrDefault(option => !known.Contains(option));
@@ -231,7 +237,8 @@ internal static class CommandLine
         var known = new HashSet<string>(StringComparer.Ordinal)
         {
             "--instance-id", "--confirm-instance-id", "--product-root", "--image-ref", "--image-archive",
-            "--image-archive-sha256", "--catalog-bundle", "--catalog-manifest", "--catalog-index",
+            "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
+            "--catalog-bundle", "--catalog-manifest", "--catalog-index",
             "--catalog-version", "--asset-base-url", "--channel"
         };
         var unknown = values.Keys.FirstOrDefault(option => !known.Contains(option));
@@ -247,6 +254,9 @@ internal static class CommandLine
             ImageReference = Get(values, "--image-ref"),
             ImageArchive = Get(values, "--image-archive"),
             ImageArchiveSha256 = Get(values, "--image-archive-sha256"),
+            ImageManifest = Get(values, "--image-manifest"),
+            ImageIndex = Get(values, "--image-index"),
+            ImageVersion = Get(values, "--image-version"),
             NoDownload = flags.Contains("--no-download"),
             MigrationBackwardCompatible = flags.Contains("--migration-backward-compatible"),
             ConfirmationInstanceId = ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),

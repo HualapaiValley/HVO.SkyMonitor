@@ -10,6 +10,7 @@ public static class DeploymentSchemaVersions
     public const int LifecycleOperation = 1;
     public const int StatePreflightReport = 1;
     public const int StateResetEvidence = 1;
+    public const int ImageReleaseEvidence = 1;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<DeploymentComponent>))]

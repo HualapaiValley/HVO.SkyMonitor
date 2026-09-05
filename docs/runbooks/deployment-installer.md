@@ -80,6 +80,72 @@ JSON config may be supplied with `--config`; value options cannot be mixed with
 it. Flags such as `--dry-run`, `--json`, `--no-download`, and the explicit non-loopback HTTP
 acknowledgement may still be applied.
 
+## Signed Image Release
+
+`--image-ref` and `--image-archive` name an image the operator has already
+established. `--image-manifest`, `--image-index`, and `--image-version` instead
+consume the signed CameraAgent image train described in
+[release-distribution.md](release-distribution.md), and the two forms are
+mutually exclusive: a signed release resolves the image, so an installation
+never both trusts a release and accepts an operator-supplied image.
+
+An air-gapped installation receives the release directory on local media and
+needs neither registry access nor a source checkout:
+
+```bash
+hvo-skymonitor cameraagent install \
+  --channel local \
+  --image-manifest /media/hvo/image-v1.4.0/image-manifest.json \
+  --catalog-manifest /media/hvo/catalog-release/catalog-manifest.json \
+  --no-download \
+  --friendly-name "North All-Sky Camera" \
+  --owner-email admin@home.lan \
+  --latitude 35.2 --longitude -114.1 --elevation 800 --time-zone America/Phoenix
+```
+
+Online, use an immutable versioned manifest URL, or `--image-index` with
+`--image-version` to resolve a documented default from a signed index snapshot.
+A non-GitHub mirror also requires `--asset-base-url`. Signed indexes are
+rollback-protected per train, so an older image index is refused just as an older
+catalog index is.
+
+The installation resolves the release, selects the platform matching this host,
+and verifies the offline archive against its signed length and checksum **before
+the Docker daemon is contacted**. An unsupported architecture, a release that
+does not publish this host's architecture, a tampered archive, a mismatched
+signature, or a rolled-back index therefore fails while nothing has been loaded,
+started, or written to instance state. After Docker resolves the image, the
+labels it actually carries are compared against the signed compatibility record,
+and every contradicted boundary is reported in one message.
+
+The selected release is retained beside the other deployment evidence:
+
+```text
+<instance-root>/state/deployment/image-distribution.json
+```
+
+It records the release train, tag, version, manifest checksum, signing key,
+asset name and checksum, resolved source URI, verification result, the platform
+and immutable image ID that were installed, the source revision and tree, the
+SBOM, provenance, and vulnerability-scan asset names, and the exact compatibility
+boundaries the release declared. An operator can correlate a running container
+with its release without network access.
+
+An upgrade accepts the same options and writes the same evidence before the
+operation begins:
+
+```bash
+hvo-skymonitor cameraagent upgrade \
+  --instance-id <uuid> \
+  --channel local \
+  --image-manifest /media/hvo/image-v1.5.0/image-manifest.json \
+  --no-download \
+  --migration-backward-compatible
+```
+
+Rollback continues to use the retained previous image identity and never
+consults a release train.
+
 ## Local Replay Runner
 
 Archived replay remains in the CameraAgent process by default. Select the

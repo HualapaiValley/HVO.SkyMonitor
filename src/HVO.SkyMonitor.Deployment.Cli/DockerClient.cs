@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -18,6 +19,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     public async Task<(DockerDaemonIdentity Daemon, ImageInstallationIdentity Image)> PrepareImageAsync(
         InstallRequest request,
         bool allowMutation,
+        DistributionImageIdentity? signedImage,
         CancellationToken cancellationToken)
     {
         var identity = await ReadDaemonIdentityAsync(cancellationToken).ConfigureAwait(false);
@@ -98,7 +100,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         var rawIngressSchema = Label(labels, "io.hvo.skymonitor.raw-ingress-schema");
         var catalogManifestVersion = Label(labels, "io.hvo.skymonitor.catalog-manifest-version");
 
-        return (identity, new ImageInstallationIdentity(
+        var installationIdentity = new ImageInstallationIdentity(
             request.ImageArchive is null ? "registry" : "archive",
             request.ImageReference,
             imageId,
@@ -113,7 +115,62 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             MinimumCompatibleRevision: minimumCompatibleRevision,
             IdentityMigration: identityMigration,
             RawIngressSchema: rawIngressSchema,
-            CatalogManifestVersion: catalogManifestVersion));
+            CatalogManifestVersion: catalogManifestVersion);
+        if (signedImage is not null)
+        {
+            EnsureSignedImageAgreement(signedImage, installationIdentity);
+        }
+        return (identity, installationIdentity);
+    }
+
+    /// <summary>
+    /// Requires the image Docker actually resolved to carry exactly the identity and compatibility boundaries the
+    /// signed release declared. The labels are the installation's compatibility authority, so a mismatch means the
+    /// running bytes are not the released image and the deployment stops before any state is touched.
+    /// </summary>
+    private static void EnsureSignedImageAgreement(DistributionImageIdentity signed, ImageInstallationIdentity actual)
+    {
+        var platform = signed.Platforms.SingleOrDefault(candidate =>
+            candidate.OperatingSystem == "linux" && candidate.Architecture == actual.Architecture)
+            ?? throw new InstallerException(
+                $"The signed CameraAgent image release does not publish linux/{actual.Architecture}.");
+        if (platform.OfflineArchiveImageId is { } signedImageId && actual.ImageId != signedImageId)
+        {
+            throw new InstallerException("The prepared CameraAgent image is not the immutable image the release signed.");
+        }
+        var mismatches = new List<string>();
+        Compare(mismatches, "component", signed.Component, actual.Component);
+        Compare(mismatches, "source revision", signed.SourceRevision, actual.SourceRevision);
+        Compare(mismatches, "state compatibility", signed.Compatibility.StateContract, actual.UpgradeCompatibility);
+        Compare(mismatches, "minimum compatible revision", signed.Compatibility.MinimumCompatibleRevision, actual.MinimumCompatibleRevision);
+        Compare(mismatches, "identity migration", signed.Compatibility.IdentityMigration, actual.IdentityMigration);
+        Compare(
+            mismatches,
+            "raw ingress schema",
+            signed.Compatibility.RawIngressSchema.ToString(CultureInfo.InvariantCulture),
+            actual.RawIngressSchema);
+        Compare(
+            mismatches,
+            "catalog manifest version",
+            signed.Compatibility.CatalogManifestVersion.ToString(CultureInfo.InvariantCulture),
+            actual.CatalogManifestVersion);
+        Compare(mismatches, "configuration contract", signed.Compatibility.ConfigurationContract, actual.ConfigurationContract);
+        Compare(mismatches, "catalog contract", signed.Compatibility.CatalogContract, actual.CatalogContract);
+        Compare(mismatches, "replay runner contract", signed.Compatibility.ReplayRunnerContract, actual.ReplayRunnerContract);
+        if (mismatches.Count != 0)
+        {
+            throw new InstallerException(
+                "The prepared CameraAgent image does not carry the compatibility identity the release signed: " +
+                string.Join("; ", mismatches) + ".");
+        }
+    }
+
+    private static void Compare(List<string> mismatches, string boundary, string? expected, string? actual)
+    {
+        if (!string.Equals(expected, actual, StringComparison.Ordinal))
+        {
+            mismatches.Add($"{boundary} signed '{expected ?? "(absent)"}' but image declares '{actual ?? "(absent)"}'");
+        }
     }
 
     private async Task<HashSet<string>> ReadLoadedImageIdsAsync(string output, CancellationToken cancellationToken)

@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# Build, smoke-test, scan, and assemble the signed CameraAgent multi-architecture image release candidate.
+#
+# The release train published by .github/workflows/release.yml runs exactly these steps. Running this script
+# locally produces the same candidate directory with an ephemeral signing key so the release logic can be
+# validated without registry credentials, signing keys, or an OIDC identity.
+set -euo pipefail
+
+usage() {
+    cat >&2 <<'USAGE'
+Usage: scripts/release:cameraagent-image --version <version> --output <directory> [options]
+
+Required:
+  --version <version>         Immutable release version (release tag becomes image-v<version>).
+  --output <directory>        Candidate directory to create. Must not exist.
+
+Options:
+  --repository <reference>    Image repository recorded in the signed release.
+                              Default: ghcr.io/roysalisbury/hvo.skymonitor/cameraagent
+  --revision <sha>            Source revision to build and label. Default: HEAD.
+  --index-digest <digest>     Multi-architecture manifest digest from the registry publication.
+                              Default: the canonical index digest computed from the platform archives.
+  --push                      Push the multi-architecture image to --repository and take the authoritative
+                              index digest from the registry. Requires registry credentials and one builder
+                              that can build both platforms. Only a real release run exercises this.
+  --amd64-builder <name>      buildx builder for linux/amd64. Default: HVO_RELEASE_AMD64_BUILDER or "default".
+  --arm64-builder <name>      buildx builder for linux/arm64. Default: HVO_RELEASE_ARM64_BUILDER, required.
+  --scanner <trivy|none>      Vulnerability scanner. Default: trivy.
+  --unscanned-dry-run         Permit --scanner none. Forces a version ending in "-dryrun" and never
+                              produces a publishable release.
+  --sign-key <pem>            Sign the candidate with this local private key (ephemeral/local releases only).
+  --allow-dirty               Permit a modified worktree. Only valid with --unscanned-dry-run.
+  --keep-work                 Keep the intermediate build directory.
+
+Environment:
+  HVO_RELEASE_TRIVY_IMAGE     Trivy scanner image reference. Default: the pinned reference below.
+USAGE
+    exit 2
+}
+
+repository="ghcr.io/roysalisbury/hvo.skymonitor/cameraagent"
+version=""
+output=""
+revision=""
+index_digest=""
+amd64_builder="${HVO_RELEASE_AMD64_BUILDER:-default}"
+arm64_builder="${HVO_RELEASE_ARM64_BUILDER:-}"
+scanner="trivy"
+unscanned_dry_run=0
+sign_key=""
+allow_dirty=0
+keep_work=0
+push=0
+
+# Pinned by tag and digest so a release scan is reproducible and the scanner itself is immutable.
+trivy_image="${HVO_RELEASE_TRIVY_IMAGE:-aquasec/trivy:0.68.0}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --version) version="${2:-}"; shift 2 ;;
+        --output) output="${2:-}"; shift 2 ;;
+        --repository) repository="${2:-}"; shift 2 ;;
+        --revision) revision="${2:-}"; shift 2 ;;
+        --index-digest) index_digest="${2:-}"; shift 2 ;;
+        --amd64-builder) amd64_builder="${2:-}"; shift 2 ;;
+        --arm64-builder) arm64_builder="${2:-}"; shift 2 ;;
+        --scanner) scanner="${2:-}"; shift 2 ;;
+        --sign-key) sign_key="${2:-}"; shift 2 ;;
+        --unscanned-dry-run) unscanned_dry_run=1; shift ;;
+        --allow-dirty) allow_dirty=1; shift ;;
+        --keep-work) keep_work=1; shift ;;
+        --push) push=1; shift ;;
+        -h|--help) usage ;;
+        *) printf 'Unknown option: %s\n' "$1" >&2; usage ;;
+    esac
+done
+
+[[ -n "$version" && -n "$output" ]] || usage
+if [[ -e "$output" ]]; then
+    printf 'Release output already exists: %s\n' "$output" >&2
+    exit 1
+fi
+[[ -n "$arm64_builder" ]] || {
+    printf 'A linux/arm64 builder is required. Pass --arm64-builder or set HVO_RELEASE_ARM64_BUILDER.\n' >&2
+    printf 'Every published CameraAgent release carries linux/amd64 and linux/arm64.\n' >&2
+    exit 1
+}
+if [[ "$scanner" == none ]]; then
+    [[ "$unscanned_dry_run" == 1 ]] || {
+        printf 'A published CameraAgent image release requires a vulnerability scan. Use --scanner trivy,\n' >&2
+        printf 'or --scanner none --unscanned-dry-run for a local dry run that must never be published.\n' >&2
+        exit 1
+    }
+    [[ "$version" == *-dryrun ]] || {
+        printf 'An unscanned dry run requires a version ending in "-dryrun"; got "%s".\n' "$version" >&2
+        exit 1
+    }
+elif [[ "$scanner" != trivy ]]; then
+    printf 'Unsupported scanner: %s\n' "$scanner" >&2
+    exit 1
+fi
+[[ "$allow_dirty" == 0 || "$unscanned_dry_run" == 1 ]] || {
+    printf '--allow-dirty is only permitted for an unscanned dry run.\n' >&2
+    exit 1
+}
+if [[ "$push" == 1 ]]; then
+    [[ "$unscanned_dry_run" == 0 ]] || { printf '--push cannot be combined with an unscanned dry run.\n' >&2; exit 1; }
+    [[ "$amd64_builder" == "$arm64_builder" ]] || {
+        printf '--push requires one builder that builds linux/amd64 and linux/arm64.\n' >&2
+        exit 1
+    }
+    [[ -z "$index_digest" ]] || { printf '--push resolves the index digest; do not pass --index-digest.\n' >&2; exit 1; }
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if [[ "$allow_dirty" == 0 ]] && ! git diff-index --quiet HEAD --; then
+    printf 'The worktree is modified; a release candidate must build an exact committed revision.\n' >&2
+    exit 1
+fi
+revision="${revision:-$(git rev-parse HEAD)}"
+[[ "$revision" =~ ^[a-f0-9]{40}$ ]] || { printf 'The revision must be a 40-character object ID.\n' >&2; exit 1; }
+tree="$(git rev-parse "${revision}^{tree}")"
+created="$(date -u -d "$(git show -s --format=%cI "$revision")" +%Y-%m-%dT%H:%M:%SZ)"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/hvo-image-release.XXXXXX")"
+cleanup() {
+    if [[ "$keep_work" == 1 ]]; then
+        printf 'Intermediate build directory retained: %s\n' "$work" >&2
+    else
+        rm -rf "$work"
+    fi
+}
+trap cleanup EXIT
+
+release_tool() {
+    dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
+        --no-build --configuration Release -- "$@"
+}
+
+dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
+    --configuration Release -warnaserror >/dev/null
+
+build_platform() {
+    local architecture="$1" builder="$2" destination="$3"
+    printf 'Building linux/%s with builder %s\n' "$architecture" "$builder" >&2
+    docker buildx build \
+        --builder "$builder" \
+        --platform "linux/${architecture}" \
+        --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
+        --build-arg "HVO_SOURCE_REVISION=${revision}" \
+        --provenance false \
+        --output "type=docker,dest=${destination}" \
+        .
+}
+
+if [[ "$push" == 1 ]]; then
+    printf 'Publishing the multi-architecture image to %s:%s\n' "$repository" "$version" >&2
+    docker buildx build \
+        --builder "$amd64_builder" \
+        --platform linux/amd64,linux/arm64 \
+        --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
+        --build-arg "HVO_SOURCE_REVISION=${revision}" \
+        --provenance false \
+        --tag "${repository}:${version}" \
+        --metadata-file "$work/push-metadata.json" \
+        --push \
+        .
+    index_digest="$(jq -r '."containerimage.digest"' "$work/push-metadata.json")"
+    [[ "$index_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+        printf 'The registry did not report a multi-architecture manifest digest.\n' >&2
+        exit 1
+    }
+    printf 'Published multi-architecture digest %s\n' "$index_digest" >&2
+fi
+
+build_platform amd64 "$amd64_builder" "$work/linux-amd64.tar"
+build_platform arm64 "$arm64_builder" "$work/linux-arm64.tar"
+
+describe() {
+    release_tool describe-image-archive --archive "$1"
+}
+
+IFS=$'\t' read -r amd64_manifest amd64_image_id _ _ < <(describe "$work/linux-amd64.tar")
+IFS=$'\t' read -r arm64_manifest arm64_image_id _ _ < <(describe "$work/linux-arm64.tar")
+printf 'linux/amd64 manifest %s image %s\n' "$amd64_manifest" "$amd64_image_id" >&2
+printf 'linux/arm64 manifest %s image %s\n' "$arm64_manifest" "$arm64_image_id" >&2
+
+if [[ -z "$index_digest" ]]; then
+    index_digest="$(release_tool image-index-digest \
+        --linux-amd64 "$work/linux-amd64.tar" --linux-arm64 "$work/linux-arm64.tar")"
+    printf 'Computed canonical multi-architecture index digest %s\n' "$index_digest" >&2
+fi
+
+# Smoke-test the architecture this host can execute. The other architecture's runtime smoke belongs to a host of
+# that architecture; the CameraAgent ARM64 advisory workflow owns that evidence.
+case "$(uname -m)" in
+    x86_64) host_architecture=amd64 ;;
+    aarch64|arm64) host_architecture=arm64 ;;
+    *) printf 'Unsupported host architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
+esac
+if [[ "$host_architecture" == amd64 ]]; then
+    host_image_id="$amd64_image_id"
+else
+    host_image_id="$arm64_image_id"
+fi
+docker image load --input "$work/linux-${host_architecture}.tar" >/dev/null
+printf 'Smoke-testing linux/%s image %s\n' "$host_architecture" "$host_image_id" >&2
+docker run --rm --entrypoint /bin/sh "$host_image_id" -c \
+    'test -f /app/HVO.SkyMonitor.CameraAgent.dll && test -x /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner' \
+    >/dev/null
+docker run --rm --network none --entrypoint /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner \
+    "$host_image_id" --capabilities >/dev/null
+
+scan_report="$work/image-vulnerability-scan.json"
+if [[ "$scanner" == trivy ]]; then
+    printf 'Scanning both published archives with %s\n' "$trivy_image" >&2
+    trivy_cache="$work/trivy-cache"
+    mkdir -p "$trivy_cache"
+    scan_one() {
+        local archive="$1" destination="$2"
+        docker run --rm \
+            --volume "$trivy_cache:/root/.cache/trivy" \
+            --volume "$archive:/scan/image.tar:ro" \
+            "$trivy_image" image --quiet --format json --scanners vuln --input /scan/image.tar >"$destination"
+    }
+    scan_one "$work/linux-amd64.tar" "$work/trivy-amd64.json"
+    scan_one "$work/linux-arm64.tar" "$work/trivy-arm64.json"
+    trivy_version="$(docker run --rm "$trivy_image" --version | head -n 1 | awk '{print $2}')"
+    jq --null-input \
+        --arg scannerVersion "${trivy_version:-unknown}" \
+        --arg scannedUtc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg amd64 "$amd64_image_id" \
+        --arg arm64 "$arm64_image_id" \
+        --slurpfile amd64Report "$work/trivy-amd64.json" \
+        --slurpfile arm64Report "$work/trivy-arm64.json" '
+        def findings(report): [report[0].Results[]? | .Vulnerabilities[]? ];
+        def count(all; severity): [all[] | select(.Severity == severity)] | length;
+        (findings($amd64Report) + findings($arm64Report)) as $all
+        | {
+            schemaVersion: 1,
+            scanner: "trivy",
+            scannerVersion: $scannerVersion,
+            scannedUtc: $scannedUtc,
+            subjects: [
+              { imageId: $amd64, architecture: "amd64", findings: (findings($amd64Report) | length) },
+              { imageId: $arm64, architecture: "arm64", findings: (findings($arm64Report) | length) }
+            ],
+            summary: {
+              critical: count($all; "CRITICAL"),
+              high: count($all; "HIGH"),
+              medium: count($all; "MEDIUM"),
+              low: count($all; "LOW"),
+              unknown: count($all; "UNKNOWN")
+            },
+            findings: [ $all[] | { id: .VulnerabilityID, package: .PkgName, severity: .Severity } ] | unique
+          }' >"$scan_report"
+else
+    jq --null-input \
+        --arg scannedUtc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg amd64 "$amd64_image_id" \
+        --arg arm64 "$arm64_image_id" '
+        {
+          schemaVersion: 1,
+          scanner: "dry-run-unscanned",
+          scannerVersion: "0",
+          scannedUtc: $scannedUtc,
+          status: "not-scanned",
+          subjects: [ { imageId: $amd64, architecture: "amd64" }, { imageId: $arm64, architecture: "arm64" } ],
+          summary: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+          findings: []
+        }' >"$scan_report"
+fi
+printf 'Vulnerability summary: %s\n' "$(jq -c .summary "$scan_report")" >&2
+
+signing_key_id=""
+public_key=""
+if [[ -n "$sign_key" ]]; then
+    public_key="$work/public.pem"
+    openssl pkey -in "$sign_key" -pubout -out "$public_key"
+    signing_key_id="p256-sha256:$(openssl pkey -pubin -in "$public_key" -outform DER | sha256sum | cut -d' ' -f1)"
+fi
+
+create_arguments=(
+    create-image
+    --version "$version"
+    --revision "$revision"
+    --tree "$tree"
+    --created-utc "$created"
+    --repository "$repository"
+    --index-digest "$index_digest"
+    --linux-amd64 "$work/linux-amd64.tar"
+    --linux-arm64 "$work/linux-arm64.tar"
+    --dockerfile src/HVO.SkyMonitor.CameraAgent/Dockerfile
+    --scan-report "$scan_report"
+    --notices THIRD-PARTY-NOTICES.md
+    --output "$output"
+)
+if [[ -n "$signing_key_id" ]]; then
+    create_arguments+=(--signing-key-id "$signing_key_id")
+fi
+release_tool "${create_arguments[@]}"
+
+if [[ -n "$sign_key" ]]; then
+    release_tool sign-local --manifest "$output/image-manifest.json" --private-key "$sign_key" \
+        --signature "$output/image-manifest.json.sig"
+    release_tool sign-local --manifest "$output/SHA256SUMS" --private-key "$sign_key" \
+        --signature "$output/SHA256SUMS.sig" --metadata-kind detached
+    release_tool verify --manifest "$output/image-manifest.json" --signature "$output/image-manifest.json.sig" \
+        --asset-root "$output" --public-key "$public_key"
+    release_tool verify-signature --input "$output/SHA256SUMS" --signature "$output/SHA256SUMS.sig" \
+        --public-key "$public_key"
+    cp "$public_key" "$output/release-public-key.pem"
+    printf 'Candidate signed and verified with local key %s\n' "$signing_key_id" >&2
+fi
+
+printf 'Signed CameraAgent image release candidate written to %s\n' "$output"

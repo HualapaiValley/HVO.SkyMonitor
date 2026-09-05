@@ -6,15 +6,24 @@ GitHub Releases are the initial source of truth for self-contained installer
 archives, production catalog bundles, signed manifests and indexes, checksums,
 SBOMs, provenance, licenses, and attribution. GHCR remains the source for
 CameraAgent and LogicHost images, which are selected only by immutable digest.
-Installer and catalog trains have independent versions, tags, index sequences,
-retention, and rollback histories:
+The CameraAgent image train publishes the multi-architecture image itself: the
+signed release names the immutable registry digest and carries a loadable OCI
+archive per supported architecture, so an air-gapped installation never needs
+registry access. Installer, catalog, and image trains have independent versions,
+tags, index sequences, retention, and rollback histories:
 
 ```text
 installer-v<version>
 catalog-<package-version>
+image-v<version>
 installer-index-<sequence>
 catalog-index-<sequence>
+image-index-<sequence>
 ```
+
+`scripts/ci:release-tag` owns this naming. The release workflow, the release
+script, and this runbook resolve tags and manifest file names through it rather
+than repeating the patterns.
 
 Published tags and asset names are immutable identities. Never use `latest`, a
 branch/raw URL, Git LFS, or a mutable container tag. Never delete an asset named
@@ -109,3 +118,71 @@ and retained signed-index sequence/hash state rejects rollback.
 Do not make an observatory MinIO deployment a bootstrap dependency. Future
 S3/MinIO/CDN mirrors remain interchangeable only because release identity is
 location-independent.
+
+## CameraAgent Image Train
+
+The image train publishes one signed release per CameraAgent image:
+
+```text
+image-manifest.json                              signed release manifest
+image-manifest.json.sig                          detached P-256 signature
+cameraagent-image-v<version>-linux-amd64.tar     loadable OCI archive
+cameraagent-image-v<version>-linux-arm64.tar     loadable OCI archive
+image-sbom.spdx.json                             SPDX 2.3 document
+image-provenance.json                            source, Dockerfile, platform, and label provenance
+image-vulnerability-scan.json                    scanner identity, coverage, and severity summary
+THIRD-PARTY-NOTICES.md                           notices
+SHA256SUMS + SHA256SUMS.sig                      checksum list and signature
+```
+
+The signed manifest records the repository, the multi-architecture manifest
+digest, and, for each published platform, its OCI manifest digest, its offline
+archive asset, and the immutable image ID that archive loads. It also restates
+the image's compatibility labels — state contract, minimum compatible revision,
+identity migration, raw-ingress schema, catalog manifest version, configuration
+contract, catalog contract, and replay-runner contract. An installation compares
+those signed values against the labels the image actually carries and refuses to
+proceed on any disagreement, so the release metadata is a claim that the running
+bytes must satisfy rather than a description that is trusted on its own.
+
+Every platform identity written into the manifest is derived from the archive
+bytes: the release tool parses the OCI layout, verifies that each metadata blob
+hashes to the name it is stored under, and reads the platform, digests, and
+labels out of the image configuration. It never records a caller-supplied
+assertion about the image, and `hvo-release verify` re-derives the same facts
+from the published archives.
+
+A published image release must carry a vulnerability scan. The release tool
+refuses a candidate whose scan report does not name a scanner and scan time,
+cover exactly the published image IDs, and record zero critical findings.
+
+### Building a candidate
+
+```bash
+HVO_RELEASE_ARM64_BUILDER=<arm64-capable buildx builder> \
+  ./scripts/release:cameraagent-image --version <version> --output <candidate>
+```
+
+The script builds each platform with `docker buildx --output type=docker`,
+derives the platform identities, loads and smoke-tests the architecture the
+build host can execute, scans both archives with a pinned Trivy container, and
+assembles the candidate. `--sign-key <pem>` signs and re-verifies the candidate
+with a local key for rehearsal; a publishable release is signed only by the
+production key through the workflow below.
+
+### Publishing
+
+Run the `Signed Distribution Release` workflow with `train: image`. The workflow
+sets up QEMU and Buildx, signs in to the registry with the workflow token, and
+runs the same script with `--push`, so the signed multi-architecture digest is
+the digest the registry returned rather than a locally computed one. Signing,
+index creation, immutable publication, and anonymous public re-verification then
+follow the same path the installer and catalog trains use.
+
+Only a real publishing run can prove the credentialed steps: the registry push
+and the digest it returns, Key Vault signing under the production identity, the
+GitHub Release creation and its collision refusal, and anonymous verification
+through public release URLs. Everything before those steps — the multi-platform
+build, the identity derivation, the smoke check, the scan gate, candidate
+assembly, signing, and end-to-end verification — is exercised locally by the
+script and by the release-tool contract tests.

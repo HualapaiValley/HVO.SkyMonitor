@@ -10,6 +10,7 @@ on:
         options:
           - installer
           - catalog
+          - image
       version:
         description: Exact immutable release version
         required: true
@@ -43,6 +44,7 @@ jobs:
       contents: read
       actions: read
       checks: read
+      packages: write
     steps:
       - name: Require explicit main-branch publication
         env:
@@ -52,7 +54,13 @@ jobs:
         run: |
           [[ "$GITHUB_REF" == "refs/heads/main" && "$CONFIRM" == "PUBLISH" ]]
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
-          if [[ "${{ inputs.train }}" == installer ]]; then package_tag="installer-v${{ inputs.version }}"; else package_tag="catalog-${{ inputs.version }}"; fi
+          # The repository is not checked out yet, so this step repeats the naming scripts/ci:release-tag owns.
+          case "${{ inputs.train }}" in
+            installer) package_tag="installer-v${{ inputs.version }}" ;;
+            image) package_tag="image-v${{ inputs.version }}" ;;
+            catalog) package_tag="catalog-${{ inputs.version }}" ;;
+            *) exit 1 ;;
+          esac
           main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
           if gh release view "$package_tag" >/dev/null 2>&1; then
             [[ "$(gh release view "$package_tag" --json targetCommitish --jq .targetCommitish)" == "$SOURCE_SHA" ]]
@@ -88,10 +96,22 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
           git merge-base --is-ancestor "$SOURCE_SHA" origin/main
           [[ "$VERSION" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,126}[A-Za-z0-9])?$ ]]
-          if [[ "$TRAIN" == installer ]]; then package_tag="installer-v$VERSION"; else package_tag="catalog-$VERSION"; fi
+          package_tag="$(scripts/ci:release-tag "$TRAIN" "$VERSION")"
           if ! gh release view "$package_tag" >/dev/null 2>&1; then
             [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
           fi
+      - name: Set up QEMU for multi-architecture image builds
+        if: inputs.train == 'image'
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - name: Set up Buildx for multi-architecture image builds
+        if: inputs.train == 'image'
+        id: buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Sign in to the image registry
+        if: inputs.train == 'image'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -110,7 +130,12 @@ jobs:
           tree=$(git rev-parse "HEAD^{tree}")
           created=$(date -u -d "$(git show -s --format=%cI '${{ inputs.source_sha }}')" +%Y-%m-%dT%H:%M:%SZ)
           candidate="$RUNNER_TEMP/candidate"
-          if [[ "$TRAIN" == "installer" ]]; then
+          if [[ "$TRAIN" == "image" ]]; then
+            HVO_RELEASE_AMD64_BUILDER='${{ steps.buildx.outputs.name }}' \
+            HVO_RELEASE_ARM64_BUILDER='${{ steps.buildx.outputs.name }}' \
+              ./scripts/release:cameraagent-image \
+                --version "$VERSION" --revision "$SOURCE_SHA" --scanner trivy --push --output "$candidate"
+          elif [[ "$TRAIN" == "installer" ]]; then
             dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-x64 --output "$RUNNER_TEMP/linux-x64"
             dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-arm64 --output "$RUNNER_TEMP/linux-arm64"
             dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release -- create-installer \
@@ -177,7 +202,7 @@ jobs:
           git fetch --no-tags origin main
           [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]]
           git merge-base --is-ancestor "$SOURCE_SHA" origin/main
-          if [[ "$TRAIN" == installer ]]; then package_tag="installer-v$VERSION"; else package_tag="catalog-$VERSION"; fi
+          package_tag="$(scripts/ci:release-tag "$TRAIN" "$VERSION")"
           if ! gh release view "$package_tag" >/dev/null 2>&1; then
             [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
           fi
@@ -201,7 +226,7 @@ jobs:
           set -euo pipefail
           tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release --)
           candidate="$RUNNER_TEMP/candidate"
-          if [[ "$TRAIN" == "installer" ]]; then manifest="$candidate/release-manifest.json"; else manifest="$candidate/catalog-manifest.json"; fi
+          manifest="$candidate/$(scripts/ci:release-tag --manifest "$TRAIN")"
           sign_file() {
             local input="$1" output="$2"
             local digest value
@@ -210,7 +235,7 @@ jobs:
             "${tool[@]}" write-azure-signature --value "$value" --signature "$output"
             "${tool[@]}" verify-signature --input "$input" --signature "$output"
           }
-          if [[ "$TRAIN" == "installer" ]]; then package_tag="installer-v$VERSION"; else package_tag="catalog-$VERSION"; fi
+          package_tag="$(scripts/ci:release-tag "$TRAIN" "$VERSION")"
           existing_package="$RUNNER_TEMP/existing-package"
           if gh release view "$package_tag" >/dev/null 2>&1; then
             [[ "$(gh release view "$package_tag" --json targetCommitish --jq .targetCommitish)" == "${{ inputs.source_sha }}" ]]
@@ -234,12 +259,12 @@ jobs:
             previous=$((INDEX_SEQUENCE - 1))
             previous_root="$RUNNER_TEMP/previous-index"
             mkdir -m 700 "$previous_root"
-            gh release download "$TRAIN-index-$previous" --dir "$previous_root" --pattern "$TRAIN-release-index.json*"
+            gh release download "$(scripts/ci:release-tag --index "$TRAIN" "$previous")" --dir "$previous_root" --pattern "$TRAIN-release-index.json*"
             index_args+=(--previous-index "$previous_root/$TRAIN-release-index.json" --previous-index-signature "$previous_root/$TRAIN-release-index.json.sig")
           fi
           "${tool[@]}" "${index_args[@]}"
           index_path="$RUNNER_TEMP/index/$TRAIN-release-index.json"
-          index_tag="$TRAIN-index-$INDEX_SEQUENCE"
+          index_tag="$(scripts/ci:release-tag --index "$TRAIN" "$INDEX_SEQUENCE")"
           existing_index="$RUNNER_TEMP/existing-index"
           if gh release view "$index_tag" >/dev/null 2>&1; then
             [[ "$(gh release view "$index_tag" --json targetCommitish --jq .targetCommitish)" == "${{ inputs.source_sha }}" ]]
@@ -306,8 +331,8 @@ jobs:
           dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
           dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-restore --configuration Release -warnaserror
           tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release --)
-          if [[ "$TRAIN" == "installer" ]]; then tag="installer-v$VERSION"; else tag="catalog-$VERSION"; fi
-          index_tag="$TRAIN-index-$INDEX_SEQUENCE"
+          tag="$(scripts/ci:release-tag "$TRAIN" "$VERSION")"
+          index_tag="$(scripts/ci:release-tag --index "$TRAIN" "$INDEX_SEQUENCE")"
           package_check="$RUNNER_TEMP/package-check"
           index_check="$RUNNER_TEMP/index-check"
           mkdir -m 700 "$package_check" "$index_check"
@@ -319,7 +344,7 @@ jobs:
               cmp "$source_file" "$check_root/$(basename "$source_file")"
             done
             if [[ "$kind" == "package" ]]; then
-              if [[ "$TRAIN" == "installer" ]]; then manifest="release-manifest.json"; else manifest="catalog-manifest.json"; fi
+              manifest="$(scripts/ci:release-tag --manifest "$TRAIN")"
               "${tool[@]}" verify --manifest "$check_root/$manifest" --signature "$check_root/$manifest.sig" --asset-root "$check_root"
               "${tool[@]}" verify-signature --input "$check_root/SHA256SUMS" --signature "$check_root/SHA256SUMS.sig"
             else
@@ -360,7 +385,8 @@ jobs:
           dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
           dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-restore --configuration Release -warnaserror
           tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release --)
-          if [[ "$TRAIN" == "installer" ]]; then tag="installer-v$VERSION" manifest="release-manifest.json"; else tag="catalog-$VERSION" manifest="catalog-manifest.json"; fi
+          tag="$(scripts/ci:release-tag "$TRAIN" "$VERSION")"
+          manifest="$(scripts/ci:release-tag --manifest "$TRAIN")"
           public="$RUNNER_TEMP/public"
           mkdir -m 700 "$public"
           download() {
@@ -380,7 +406,7 @@ jobs:
           INDEX_SEQUENCE: ${{ inputs.index_sequence }}
         run: |
           set -euo pipefail
-          index_tag="$TRAIN-index-$INDEX_SEQUENCE"
+          index_tag="$(scripts/ci:release-tag --index "$TRAIN" "$INDEX_SEQUENCE")"
           if [[ "$(gh release view "$index_tag" --json isDraft --jq .isDraft)" == true ]]; then
             gh release edit "$index_tag" --draft=false --latest=false
           fi
