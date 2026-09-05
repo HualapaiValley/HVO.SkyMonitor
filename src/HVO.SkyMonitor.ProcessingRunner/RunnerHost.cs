@@ -48,6 +48,13 @@ internal sealed class RunnerHost(
         // the runner lifetime token until the grace period has drained active jobs, so a deployment restart does not
         // abandon work that could still complete.
         using var claimStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stopRequest.Token);
+        // A retirement requested while the host was still registering has already written the stop file: it is
+        // honoured before any claim slot opens, so a retiring runner never leases work it would be forced to abandon.
+        if (!string.IsNullOrWhiteSpace(options.StopFile) && File.Exists(options.StopFile))
+        {
+            log.Info("stop-requested", "Stop file present before claiming started; retiring without claiming.");
+            await claimStop.CancelAsync().ConfigureAwait(false);
+        }
         var heartbeat = HeartbeatLoopAsync(_lifetime.Token);
         var slots = Enumerable.Range(0, options.MaxConcurrency)
             .Select(slot => SlotLoopAsync(slot, claimStop.Token))

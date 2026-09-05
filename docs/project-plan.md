@@ -248,6 +248,7 @@ normative requirements:
 | `ELASTIC-008` | Accounting covers instance minutes, cold starts, retirements by reason, and rejected placements, and usage records attribute every attempt to the instance's runner id. |
 | `ELASTIC-009` | `ElasticProviders` is absent and disabled by default; a disabled host never calls a provider adapter, and provider outage, cold capacity, or quota exhaustion only creates bounded, visible backlog that never affects CameraAgent acquisition or live processing. |
 | `ELASTIC-010` | Evidence covers cold and warm start, drain throughput with 1, 2, and 4 instances, scale-to-zero and cleanup timing, and host CPU/memory (`ElasticProviderPerformanceEvidenceTests`). |
+| `ELASTIC-011` | Multi-replica and drain hardening (#600): the owner heartbeat is persisted before reconciliation and renewed during blocking drains; retirements are reserved under the runner's claim lock after a fresh lease check and the claim path refuses reserved or abandoned instances; expired leases count as backlog; backlog is filtered by the capabilities a provisioned instance registers; the child receives the retirement grace; stop times, owner-loss cleanup, LogicHost URL scheme, runner-protocol dependency, and registered-concurrency sizing are exact. |
 
 ### 3.3 Acquisition and raw evidence
 

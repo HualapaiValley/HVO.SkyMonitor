@@ -168,13 +168,40 @@ internal sealed class CentralElasticProviderOptions
         if (Provider == CentralElasticProviderKind.LocalProcess)
         {
             if (string.IsNullOrWhiteSpace(LocalProcess.Executable) || string.IsNullOrWhiteSpace(LocalProcess.LogicHostUrl)
-                || !Uri.TryCreate(LocalProcess.LogicHostUrl, UriKind.Absolute, out _)
+                || !Uri.TryCreate(LocalProcess.LogicHostUrl, UriKind.Absolute, out var logicHostUrl)
                 || string.IsNullOrWhiteSpace(LocalProcess.ClientId) || string.IsNullOrWhiteSpace(LocalProcess.ClientSecretFile)
                 || LocalProcess.IdleShutdown < TimeSpan.Zero)
             {
                 error = "ElasticProviders:LocalProcess requires Executable, an absolute LogicHostUrl, ClientId, and ClientSecretFile.";
                 return false;
             }
+            // The child applies the runner's rule (https unless loopback or explicitly insecure); the host rejects the
+            // same configurations at startup instead of cycling through children that exit on it.
+            if (logicHostUrl.Scheme != Uri.UriSchemeHttp && logicHostUrl.Scheme != Uri.UriSchemeHttps)
+            {
+                error = "ElasticProviders:LocalProcess:LogicHostUrl must use http or https.";
+                return false;
+            }
+            if (logicHostUrl.Scheme == Uri.UriSchemeHttp && !logicHostUrl.IsLoopback && !LocalProcess.AllowInsecureHttp)
+            {
+                error = "ElasticProviders:LocalProcess:LogicHostUrl must use https unless it is loopback or AllowInsecureHttp is true.";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Elastic instances register through the runner protocol: enabling provisioning while <c>ProcessingRunners</c> is
+    /// disabled would only launch children whose registration is refused until <see cref="RegistrationTimeout"/>.
+    /// </summary>
+    public bool ValidateRunnerProtocol(bool runnerProtocolEnabled, out string? error)
+    {
+        error = null;
+        if (Enabled && !runnerProtocolEnabled)
+        {
+            error = "ElasticProviders:Enabled requires ProcessingRunners:Enabled=true; provisioned instances register through the runner protocol.";
+            return false;
         }
         return true;
     }

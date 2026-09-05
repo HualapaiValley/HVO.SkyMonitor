@@ -140,6 +140,9 @@ public sealed partial class Program
         builder.Services.AddOptions<CentralElasticProviderOptions>()
             .Bind(builder.Configuration.GetSection(CentralElasticProviderOptions.SectionName))
             .Validate(options => options.Validate(out _), "ElasticProviders configuration is invalid.")
+            .Validate<IOptions<CentralProcessingRunnerOptions>>(
+                (options, runners) => options.ValidateRunnerProtocol(runners.Value.Enabled, out _),
+                "ElasticProviders:Enabled requires ProcessingRunners:Enabled=true; provisioned instances register through the runner protocol.")
             .ValidateOnStart();
         builder.Services.AddOptions<CentralProcessingRunnerOptions>()
             .Bind(builder.Configuration.GetSection(CentralProcessingRunnerOptions.SectionName))
