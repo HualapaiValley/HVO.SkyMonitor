@@ -424,8 +424,8 @@ declaration and requires the current contract, matching an in-place upgrade. `--
 host already holds and is read from the local Docker image store. `--image-manifest`, `--image-index`, and
 `--image-version` instead name a signed image release from the train above and are resolved exactly as an
 upgrade resolves one: the same signature and index verification, the same rollback protection, the same
-offline-archive identification, and the same platform selection, which follows the architecture of the process
-running the command. `--asset-base-url`, `--channel`, and `--no-download` apply to them as they do to an
+offline-archive identification, and the same platform selection, which follows the host operating system's
+architecture. `--asset-base-url`, `--channel`, and `--no-download` apply to them as they do to an
 upgrade and are rejected without `--image-manifest` or `--image-index`. A local-media manifest is read from disk
 whether or not `--no-download` is given, so the flag matters only for an `https://` manifest or index. A signed release and `--image-ref` are mutually
 exclusive here for the same reason install and upgrade refuse the combination.

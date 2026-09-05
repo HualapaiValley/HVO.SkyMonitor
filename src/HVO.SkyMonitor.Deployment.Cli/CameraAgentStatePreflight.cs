@@ -560,13 +560,16 @@ internal static class CameraAgentStatePreflight
     /// <list type="bullet">
     /// <item>No wal-index and no recovery state: the instance is stopped and checkpointed, and
     /// <c>immutable=1</c> reads it while creating nothing.</item>
-    /// <item>A wal-index already exists: the instance is running, so the files are already present and owned by
-    /// the runtime identity, and an in-place read-only open creates nothing while observing a consistent snapshot
-    /// through that index.</item>
-    /// <item>Recovery state without a wal-index: the instance crashed and is not running, so an in-place open
-    /// would create the index. The database and its recovery files are read through a private copy, which cannot
-    /// be torn because no writer holds them, and the pending journal replays into the copy rather than here.</item>
+    /// <item>A wal-index <em>and</em> its log both exist: the files are already present and owned by the runtime
+    /// identity, and an in-place read-only open creates nothing while observing a consistent snapshot through that
+    /// index. A wal-index without its log does not qualify — an in-place open there creates the log — so it falls
+    /// to the first case, which is correct because with no log there is no pending content to read.</item>
+    /// <item>Recovery state without a usable wal-index: an in-place open would create one. The database and its
+    /// recovery files are read through a private copy, which cannot be torn because no writer holds them, and the
+    /// pending journal replays into the copy rather than here.</item>
     /// </list>
+    /// A clean shutdown between the probe and the open would leave the third case reading a checkpointed
+    /// database; preflight cannot observe a running instance without contacting Docker, which it must not do.
     /// </summary>
     private sealed class ReadOnlyDatabase : IDisposable
     {
@@ -582,12 +585,12 @@ internal static class CameraAgentStatePreflight
 
         public static ReadOnlyDatabase Open(string databasePath)
         {
-            if (File.Exists(databasePath + "-shm"))
+            var recoveryFiles = new[] { databasePath + "-wal", databasePath + "-journal" }
+                .Where(File.Exists).ToArray();
+            if (File.Exists(databasePath + "-shm") && File.Exists(databasePath + "-wal"))
             {
                 return new ReadOnlyDatabase(OpenConnection(databasePath, SqliteOpenMode.ReadOnly), null);
             }
-            var recoveryFiles = new[] { databasePath + "-wal", databasePath + "-journal" }
-                .Where(File.Exists).ToArray();
             if (recoveryFiles.Length == 0)
             {
                 return new ReadOnlyDatabase(

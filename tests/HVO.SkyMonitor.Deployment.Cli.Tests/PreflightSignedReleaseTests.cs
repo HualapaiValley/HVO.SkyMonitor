@@ -10,6 +10,19 @@ using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
+/// <summary>The states the raw-ingress journal can be in when a preflight reads it.</summary>
+public enum RawIngressJournalShape
+{
+    /// <summary>Stopped and checkpointed: no wal-index and no log.</summary>
+    Checkpointed,
+
+    /// <summary>Running: a writer holds the journal, so the wal-index and its log are both present.</summary>
+    Live,
+
+    /// <summary>A wal-index that outlived its log, which an in-place read-only open would recreate.</summary>
+    WalIndexWithoutLog
+}
+
 /// <summary>
 /// The operator-facing <c>cameraagent preflight</c> command reading its candidate from a signed image release.
 /// The command answers whether the persisted state satisfies the boundaries that release declares, so it
@@ -455,6 +468,39 @@ public sealed class PreflightSignedReleaseTests
             StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A journal carrying recovery state must not gain a file either. The wal-index legitimately changes content
+    /// as readers register, so this pins the set of paths rather than their bytes; the checkpointed shape above
+    /// pins the bytes.
+    /// </summary>
+    [TestMethod]
+    [DataRow(RawIngressJournalShape.Live)]
+    [DataRow(RawIngressJournalShape.WalIndexWithoutLog)]
+    public async Task ExecuteAsync_JournalCarryingRecoveryState_CreatesNoFileBesideTheDatabase(
+        RawIngressJournalShape shape)
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync(shape);
+        using var release = SignedImageReleaseFixture.Create(
+            instance.Root, $"sha256:{new string('c', 64)}", SignedImageReleaseFixture.ContractLabels);
+        var before = SnapshotPaths(instance.Root);
+
+        var report = await CameraAgentStatePreflightManager.ExecuteAsync(
+            instance.Request(release.ManifestPath),
+            new RefusingProcessRunner(),
+            CancellationToken.None,
+            release.CreateAcquirer);
+
+        // Reading the shape correctly is half the guarantee: schema 12 is what makes the report compatible.
+        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
+        CollectionAssert.AreEqual(before, SnapshotPaths(instance.Root), "preflight must create no file");
+    }
+
+    private static string[] SnapshotPaths(string root)
+        => Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
+            .Select(path => Path.GetRelativePath(root, path))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
     private static string CachedManifestPath(NetworkImageReleaseFixture fixture)
         => Directory.EnumerateFiles(
                 Path.Combine(fixture.CacheRoot, "v1", "metadata"), "*", SearchOption.AllDirectories)
@@ -476,10 +522,13 @@ public sealed class PreflightSignedReleaseTests
             .Select(path =>
             {
                 var relative = Path.GetRelativePath(root, path);
-                var mode = File.GetUnixFileMode(path);
-                return File.Exists(path)
-                    ? $"{relative}:{mode}:{Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path)))}"
-                    : $"{relative}/:{mode}";
+                if (File.Exists(path))
+                {
+                    return $"{relative}:{File.GetUnixFileMode(path)}:" +
+                        Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path)));
+                }
+                // A dangling link resolves to no mode at all, so it is recorded by name.
+                return Directory.Exists(path) ? $"{relative}/:{File.GetUnixFileMode(path)}" : $"{relative}?";
             })
             .Order(StringComparer.Ordinal)
             .ToArray();
@@ -519,6 +568,8 @@ public sealed class PreflightSignedReleaseTests
     /// <summary>An installed instance whose persisted state matches the current durable boundaries.</summary>
     private sealed class InstalledInstanceFixture : IDisposable
     {
+        private SqliteConnection? writer;
+
         private InstalledInstanceFixture(string root, Guid instanceId, InstallationPaths paths)
         {
             Root = root;
@@ -533,7 +584,8 @@ public sealed class PreflightSignedReleaseTests
         public CameraAgentStatePreflightRequest Request(string manifestPath)
             => new(InstanceId, Root, null, Json: false) { ImageManifest = manifestPath };
 
-        public static async Task<InstalledInstanceFixture> CreateCurrentAsync()
+        public static async Task<InstalledInstanceFixture> CreateCurrentAsync(
+            RawIngressJournalShape shape = RawIngressJournalShape.Checkpointed)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-preflight-release-{Guid.NewGuid():N}");
             var instanceId = Guid.NewGuid();
@@ -554,22 +606,60 @@ public sealed class PreflightSignedReleaseTests
             }
             fixture.WriteIdentityDatabase();
             fixture.WriteRawIngressDatabase();
-            // A preflight runs against a stopped instance, whose journal has been checkpointed and carries no
-            // wal-index beside it. Releasing the pooled writers reproduces that shape, so the read-only guarantee
-            // below is asserted against the state an operator actually preflights.
-            SqliteConnection.ClearAllPools();
-            foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
-            {
-                Assert.IsFalse(
-                    File.Exists(CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot) + suffix),
-                    $"the fixture must model a checkpointed journal, but left {suffix} behind");
-            }
+            fixture.ShapeRawIngressJournal(shape);
             await fixture.WriteInstanceManifestAsync().ConfigureAwait(false);
             return fixture;
         }
 
+        /// <summary>
+        /// Puts the raw-ingress journal into one of the three shapes a preflight can meet. Which one it is decides
+        /// how the database may be read without writing beside it, so each is reproduced exactly rather than
+        /// approximated.
+        /// </summary>
+        private void ShapeRawIngressJournal(RawIngressJournalShape shape)
+        {
+            var database = CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot);
+            if (shape == RawIngressJournalShape.Live)
+            {
+                // A running instance holds the journal open, so the wal-index and its log are both present.
+                writer = new SqliteConnection($"Data Source={database}");
+                writer.Open();
+                using var command = writer.CreateCommand();
+                command.CommandText = "INSERT INTO raw_capture (id) VALUES (1);";
+                command.ExecuteNonQuery();
+                AssertJournalFiles(database, "-wal", "-shm");
+                return;
+            }
+
+            var walIndex = File.Exists(database + "-shm") ? File.ReadAllBytes(database + "-shm") : null;
+            SqliteConnection.ClearAllPools();
+            if (shape == RawIngressJournalShape.WalIndexWithoutLog)
+            {
+                // A wal-index outliving its log: an in-place read-only open would recreate the log here.
+                File.WriteAllBytes(database + "-shm", walIndex ?? []);
+                if (File.Exists(database + "-wal")) File.Delete(database + "-wal");
+                AssertJournalFiles(database, "-shm");
+                return;
+            }
+            // A stopped, checkpointed instance: the shape an operator preflights before an upgrade.
+            AssertJournalFiles(database);
+        }
+
+        private static void AssertJournalFiles(string database, params string[] expected)
+        {
+            foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
+            {
+                Assert.AreEqual(
+                    expected.Contains(suffix, StringComparer.Ordinal),
+                    File.Exists(database + suffix),
+                    $"the fixture did not reproduce the requested journal shape at {suffix}");
+            }
+        }
+
         public void Dispose()
         {
+            writer?.Dispose();
+            SqliteConnection.ClearAllPools();
             if (!Directory.Exists(Root))
             {
                 return;
