@@ -137,7 +137,10 @@ when it finishes:
   the coordinator a structured `STARTED` message before substantive work, then
   milestone, blocker, at-least-thirty-minute, and completion messages. Review
   messages also identify the exact range and actual provider/model/effort. A
-  long review posts an interim note after thirty minutes.
+  long review posts an interim note after thirty minutes. Each agent also posts
+  the same milestones on the owning issue or PR ledger. If its harness cannot,
+  the coordinator posts a clearly attributed proxy entry before relaying the
+  event to the main conversation.
 - The coordinator immediately relays delegated starts, milestones, blockers,
   and completions to the main conversation, then arms exactly one persistent
   status monitor on a five-minute cadence while delegated agents, review

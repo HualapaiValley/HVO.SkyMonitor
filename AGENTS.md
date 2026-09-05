@@ -168,8 +168,9 @@ rather than depending on a vendor-specific agent feature.
   substantive work, then milestone, blocker, at-least-thirty-minute, and
   completion messages. Each message includes the task, current step, next step,
   blocker, and, for reviews, the exact range plus actual provider, model, and
-  effort. Implementing agents also post these milestones on the issue until a
-  draft PR exists, then append them to the PR's review ledger. All repository
-  comments use UTC. Long gates and reviews get an interim note rather than
-  silence. These messages supplement, but never replace, the final completion
-  report or a resumable blocked handoff.
+  effort. Every delegated agent also posts these milestones on the owning issue
+  or PR ledger; when its harness cannot write there, the coordinator posts a
+  clearly attributed proxy entry. Use the issue until a draft PR exists, then
+  the PR review ledger. All repository comments use UTC. Long gates and reviews
+  get an interim note rather than silence. These messages supplement, but never
+  replace, the final completion report or a resumable blocked handoff.

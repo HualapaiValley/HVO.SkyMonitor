@@ -80,10 +80,10 @@ The canonical exact-range route is a coordinator-launched local review agent,
 or an equivalent runner that can inspect the requested immutable Git range.
 The dispatch configuration, not prose in a PR mention, binds the model and
 reasoning effort. A provider-side PR bot may provide an additional full audit of
-the current PR head, but it is not correction or base-sync convergence evidence
-unless its execution route demonstrably enforces the requested range and its
-report attests that range. Never rerun a bot merely to repair a range-less
-report when a local exact-range reviewer is available.
+the current PR head, but it is not initial, correction, or base-sync convergence
+evidence unless its execution route demonstrably enforces the requested range
+and its report attests that range. Never rerun a bot merely to repair a
+range-less report when a local exact-range reviewer is available.
 
 Choose the capability profile before choosing a provider or model:
 
@@ -101,14 +101,17 @@ A base-sync review with no merge-created changes may use `standard`; conflicts
 or newly interacting boundaries require `deep`.
 
 At dispatch, map the profile to a model identifier that the current harness
-actually exposes. For the current Codex family, use `gpt-5.6-sol` for `deep`,
-`gpt-5.6-terra` for `standard`, and `gpt-5.6-luna` for `fast`, or their documented
-successors. Pin the reasoning effort separately. If a provider such as the
-current Copilot reviewer offers one provider-managed model and no effort
-control, record those fields as `provider-managed`; use it only when that fixed
-capability satisfies the selected profile, and never claim that a requested
-model was enforced. Prefer the other provider when the required profile cannot
-be selected or verified.
+actually exposes. Current Codex documentation maps demanding work to `gpt-5.6`,
+balanced read-heavy work to `gpt-5.6-terra`, and narrow repeatable work to
+`gpt-5.6-luna`; use those identifiers or documented successors only where the
+launcher advertises them. A harness may expose a different provider-specific
+identifier such as `gpt-5.6-sol`; use it only when that exact identifier appears
+in the launcher's available-model list. Pin the reasoning effort separately. If
+a provider such as the current Copilot reviewer offers one provider-managed
+model and no effort control, record those fields as `provider-managed`; use it
+only when that fixed capability satisfies the selected profile, and never claim
+that a requested model was enforced. Prefer the other provider when the
+required profile cannot be selected or verified.
 
 The current providers are Copilot and Codex. Provider is independent of
 capability profile: select for required capability first, availability second.

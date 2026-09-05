@@ -260,12 +260,15 @@ every finding under the bounded review protocol.
 ```text
 Research only; do not edit. Follow `.agents/skills/pr-lifecycle/SKILL.md`.
 Before substantive work, send the coordinator `STARTED` with the requested
-capability profile, actual provider/model/effort, exact range, current step,
-next step, and blocker; append the same acknowledgement to the PR ledger when
-possible. Use the model and effort pinned by the dispatch. If the actual values
-do not match, or the selected capability cannot be verified, stop and report
-the mismatch rather than silently inheriting defaults. Report an intentionally
-fixed provider model as `provider-managed`, as required by the skill.
+capability profile, actual provider/model/effort, current step, next step, and
+blocker. For a review, include the exact immutable range and append the same
+acknowledgement to the PR ledger. For issue-only research, identify the issue
+and base commit or worktree fingerprint instead, and post on the issue. If the
+harness cannot post, ask the coordinator to add an attributed proxy entry. Use
+the model and effort pinned by the dispatch. If the actual values do not match,
+or the selected capability cannot be verified, stop and report the mismatch
+rather than silently inheriting defaults. Report an intentionally fixed
+provider model as `provider-managed`, as required by the skill.
 Review mode: <initial|correction|base-sync>. Base reviewed SHA: <SHA or merge
 base>. Head SHA: <SHA>. In initial mode, audit the complete PR diff
 against current code, tests, durable formats, architecture boundaries,
