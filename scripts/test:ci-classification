@@ -927,6 +927,10 @@ grep -Fxq "    if: github.ref == 'refs/heads/main'" <<< "$badges_job" || {
   printf 'Coverage badges must publish only from main.\n' >&2
   exit 1
 }
+grep -Fxq '    continue-on-error: true' <<< "$badges_job" || {
+  printf 'The coverage badge job must tolerate a hard external-request timeout.\n' >&2
+  exit 1
+}
 grep -Fxq '    permissions: {}' <<< "$badges_job" || {
   printf 'Coverage badge publication must not receive repository permissions.\n' >&2
   exit 1
@@ -946,8 +950,8 @@ if grep -Fq 'secrets.COVERAGE_GIST_ID' <<< "$badges_job"; then
   exit 1
 fi
 badge_continue_count="$(grep -Fc 'continue-on-error: true' <<< "$badges_job" || true)"
-if (( badge_continue_count != 2 )); then
-  printf 'Both coverage badge publication steps must remain best-effort.\n' >&2
+if (( badge_continue_count != 3 )); then
+  printf 'The coverage badge job and both publication steps must remain best-effort.\n' >&2
   exit 1
 fi
 grep -Fq 'Report unconfigured coverage badge publication' <<< "$badges_job" || {

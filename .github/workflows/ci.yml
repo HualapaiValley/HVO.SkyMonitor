@@ -840,6 +840,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 5
+    continue-on-error: true
     needs: coverage
     permissions: {}
     env:
@@ -882,7 +883,7 @@ jobs:
       - name: Report coverage badge publication failure
         if: always() && env.BADGE_GIST_TOKEN != '' && env.BADGE_GIST_ID != '' && (steps.line_badge.outcome == 'failure' || steps.branch_badge.outcome == 'failure')
         run: |
-          echo '::warning title=Coverage badge publication failed::Required CI remains authoritative; rotate GIST_TOKEN or inspect the coverage Gist before relying on the badges.'
+          echo '::warning title=Coverage badge publication failed::Required CI remains authoritative; rotate GIST_TOKEN or inspect the coverage Gist before relying on the badges. A hard job timeout remains non-fatal at the job boundary.'
           printf '### Coverage badge publication\n\nPublication failed. Required CI remains authoritative until the badge credential or Gist is repaired.\n' >> "$GITHUB_STEP_SUMMARY"
 
   required:
