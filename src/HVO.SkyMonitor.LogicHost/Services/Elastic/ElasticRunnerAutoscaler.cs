@@ -243,7 +243,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var liveRunnerIds = liveRows.Select(item => item.RunnerId).ToList();
         var registrations = await dbContext.CentralProcessingRunners.AsNoTracking()
             .Where(runner => liveRunnerIds.Contains(runner.RunnerId))
-            .Select(runner => new { runner.RunnerId, runner.Status, runner.RegisteredAtUtc, runner.AvailableSlots, runner.MaxConcurrency, runner.EligibleRecipesJson })
+            .Select(runner => new { runner.RunnerId, runner.Status, runner.RegisteredAtUtc, runner.AvailableSlots, runner.MaxConcurrency, runner.EligibleRecipesJson, runner.MaxTransferBytes })
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var registered = registrations.ToDictionary(runner => runner.RunnerId, StringComparer.Ordinal);
         var leasesByRunner = await dbContext.CentralDerivativeJobs.AsNoTracking()
@@ -394,16 +394,19 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var cleanupOldest = cleanupBacklog == 0 ? TimeSpan.Zero : now - claimable.Where(row => row.IsCleanup).Min(row => row.AvailableSince ?? now);
         // The age published outward covers everything retained; the policy's deadline rule sees executable work only.
         var reportedAge = oldestAge > cleanupOldest ? oldestAge : cleanupOldest;
-        // Registered capacity counts only instances that can claim what is queued in this provider's pool scope: an
-        // adopted instance registered before a recipe was placed (or with different capabilities) covers none of
-        // that recipe's backlog, so its slots never make the demand look covered; it contributes nothing.
-        var backlogRecipes = executable.Select(row => row.RecipeName).Distinct(StringComparer.Ordinal).ToList();
-        bool CanClaimBacklog(string eligibleRecipesJson)
+        // Registered capacity counts only instances that can claim everything queued for this provider (executable
+        // work in its pool scope and terminal cleanup, which the claim hands to any pool): an adopted instance
+        // registered before a recipe was placed, with different capabilities, or with a transfer limit below the
+        // largest claimable job's inputs covers none of that work, so its slots never make the demand look covered.
+        var relevant = executable.Concat(claimable.Where(row => row.IsCleanup)).ToList();
+        var backlogRecipes = relevant.Select(row => row.RecipeName).Distinct(StringComparer.Ordinal).ToList();
+        var largestInputBytes = relevant.Count == 0 ? 0L : relevant.Max(row => row.InputBytes);
+        bool CanClaimBacklog(string eligibleRecipesJson, long maxTransferBytes)
         {
             var eligible = ParseEligibleRecipes(eligibleRecipesJson);
-            return backlogRecipes.All(recipe => eligible.Contains(recipe, StringComparer.Ordinal));
+            return maxTransferBytes >= largestInputBytes && backlogRecipes.All(recipe => eligible.Contains(recipe, StringComparer.Ordinal));
         }
-        var compatibleRunning = registeredRunning.Where(runner => CanClaimBacklog(runner.EligibleRecipesJson)).ToList();
+        var compatibleRunning = registeredRunning.Where(runner => CanClaimBacklog(runner.EligibleRecipesJson, runner.MaxTransferBytes)).ToList();
         var registeredRunningCount = registeredRunning.Count;
         var compatibleRunningCount = compatibleRunning.Count;
         var compatibleRunningConcurrency = compatibleRunning.Sum(runner => runner.MaxConcurrency);
@@ -464,10 +467,10 @@ internal sealed partial class ElasticRunnerAutoscaler(
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var lockedRegistered = await dbContext.CentralProcessingRunners.AsNoTracking()
             .Where(runner => lockedRunningIds.Contains(runner.RunnerId) && runner.Status == CentralProcessingRunnerStatus.Active)
-            .Select(runner => new { runner.MaxConcurrency, runner.EligibleRecipesJson })
+            .Select(runner => new { runner.MaxConcurrency, runner.EligibleRecipesJson, runner.MaxTransferBytes })
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         registeredRunningCount = lockedRegistered.Count;
-        var lockedCompatible = lockedRegistered.Where(runner => CanClaimBacklog(runner.EligibleRecipesJson)).ToList();
+        var lockedCompatible = lockedRegistered.Where(runner => CanClaimBacklog(runner.EligibleRecipesJson, runner.MaxTransferBytes)).ToList();
         compatibleRunningCount = lockedCompatible.Count;
         compatibleRunningConcurrency = lockedCompatible.Sum(runner => runner.MaxConcurrency);
         incompatibleRunning = registeredRunningCount - compatibleRunningCount;
@@ -509,7 +512,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
             .OrderByDescending(item => item.IdleFor);
         var incompatibleNotBusy = current.Where(row => row.State == nameof(ElasticRunnerInstanceState.Running) && !busyNow.Contains(row)
                 && registered.TryGetValue(row.RunnerId, out var incompatibleRegistration) && incompatibleRegistration.Status == CentralProcessingRunnerStatus.Active
-                && !CanClaimBacklog(incompatibleRegistration.EligibleRecipesJson))
+                && !CanClaimBacklog(incompatibleRegistration.EligibleRecipesJson, incompatibleRegistration.MaxTransferBytes))
             .Select(row => (Row: row, IdleFor: now - (row.LastBusyAtUtc ?? row.RegisteredAtUtc ?? row.StartedAtUtc)))
             .OrderByDescending(item => item.IdleFor);
         var candidates = decision.Reason switch
@@ -540,7 +543,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
                     break;
                 }
                 var candidateConcurrency = registered.TryGetValue(item.Row.RunnerId, out var candidateRegistration) && candidateRegistration.Status == CentralProcessingRunnerStatus.Active
-                    ? (CanClaimBacklog(candidateRegistration.EligibleRecipesJson) ? candidateRegistration.MaxConcurrency : 0)
+                    ? (CanClaimBacklog(candidateRegistration.EligibleRecipesJson, candidateRegistration.MaxTransferBytes) ? candidateRegistration.MaxConcurrency : 0)
                     : perInstance;
                 if (decision.Reason is ElasticScalingPolicy.ReasonIdle or ElasticScalingPolicy.ReasonWarmMinimum
                     && remainingCapacity - candidateConcurrency < capacityFloor)
@@ -612,6 +615,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         public string RecipeName { get; init; } = string.Empty;
         public bool IsCleanup { get; init; }
         public DateTimeOffset? AvailableSince { get; init; }
+        public long InputBytes { get; init; }
     }
 
 #pragma warning disable CA2100 // The text is the constant CreateClaimableSql template; every runtime value is a SqlParameter.

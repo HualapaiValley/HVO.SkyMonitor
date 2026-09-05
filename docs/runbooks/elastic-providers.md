@@ -145,8 +145,9 @@ requirements the instance cannot satisfy are excluded and logged once as
 event 2242) and includes expired leases the claim would reclaim. Backlog is counted with the claim's own readiness query (recipe filter,
 the probed runner's transfer limit, input and graph-execution readiness),
 so no instance is provisioned for work no runner could claim. Registered
-capacity counts only instances whose registered recipes cover the recipes
-queued in this provider's pool scope; an instance that cannot claim the
+capacity counts only instances whose registered recipes cover every recipe
+queued for this provider (its pool scope plus terminal cleanup) and whose
+transfer limit admits the largest claimable job's inputs; an instance that cannot claim the
 backlog covers nothing, and when such instances fill `MaxInstances` one is
 retired as `incompatible-replacement` so the next sample can provision one
 that can. Expired

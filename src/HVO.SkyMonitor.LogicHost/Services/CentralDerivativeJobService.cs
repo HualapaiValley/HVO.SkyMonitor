@@ -1416,7 +1416,11 @@ internal sealed partial class CentralDerivativeJobService(
     internal static string CreateClaimableSql() => $"""
         SELECT sourceFrame.[ObservatoryId] AS [ObservatoryId], job.[RecipeName] AS [RecipeName],
             CASE WHEN job.[Status] = N'Leased' AND job.[AttemptCount] >= job.[MaxAttempts] THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS [IsCleanup],
-            CASE WHEN job.[Status] = N'Leased' THEN job.[LeaseExpiresAtUtc] ELSE job.[AvailableAtUtc] END AS [AvailableSince]
+            CASE WHEN job.[Status] = N'Leased' THEN job.[LeaseExpiresAtUtc] ELSE job.[AvailableAtUtc] END AS [AvailableSince],
+            (SELECT COALESCE(SUM(sized.[ByteLength]), 0)
+             FROM [CentralDerivativeJobInputs] AS sizedInput
+             INNER JOIN [CentralArtifacts] AS sized ON sized.[Id] = sizedInput.[CentralArtifactId]
+             WHERE sizedInput.[CentralDerivativeJobId] = job.[Id]) AS [InputBytes]
         FROM [CentralDerivativeJobs] AS job WITH (NOLOCK)
         INNER JOIN [CentralArtifacts] AS sourceArtifact ON sourceArtifact.[Id] = job.[SourceCentralArtifactId]
         INNER JOIN [CentralFrames] AS sourceFrame ON sourceFrame.[Id] = sourceArtifact.[CentralFrameId]

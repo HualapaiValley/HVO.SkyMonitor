@@ -553,6 +553,60 @@ public sealed class ElasticProviderIntegrationTests
     }
 
     [TestMethod]
+    public async Task AnAdoptedInstanceThatCannotClaimCleanupOrOversizedInputsDoesNotCoverThem()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        var settings = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 2,
+            MaxConcurrencyPerInstance = 1,
+            ScaleToZeroAfter = TimeSpan.FromMinutes(10),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        };
+        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+
+        // Cleanup-only demand for a recipe the adopted instance never registered: it needs an instance that can claim it.
+        var withoutRecipe = Guid.NewGuid().ToString("N")[..16];
+        var withoutRecipeRunner = $"elastic-scripted-{withoutRecipe}";
+        provider.MarkAlive(withoutRecipe, withoutRecipeRunner);
+        await SeedScriptedInstanceAsync(factory, withoutRecipe, withoutRecipeRunner, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(withoutRecipeRunner, 10, withoutRecipe: BuiltInProcessingRecipes.EncodedPreview), CancellationToken.None).ConfigureAwait(false);
+        }
+        var cleanupSource = await SeedPreviewJobAsync("elastic-cleanup-incompatible").ConfigureAwait(false);
+        await SetLeaseAsync(factory, cleanupSource, "elastic-scripted-crashed", DateTimeOffset.UtcNow.AddMinutes(-1), exhausted: true).ConfigureAwait(false);
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Provision.Should().Be(1, "terminal cleanup needs an instance registered with the recipe; the adopted instance without it covers nothing");
+        provider.Provisioned.Should().HaveCount(1);
+
+        // A registration whose transfer limit is below the queued job's inputs cannot claim it either.
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        provider = new ScriptedProvider();
+        autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var small = Guid.NewGuid().ToString("N")[..16];
+        var smallRunner = $"elastic-scripted-{small}";
+        provider.MarkAlive(small, smallRunner);
+        await SeedScriptedInstanceAsync(factory, small, smallRunner, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(smallRunner, 10, maxTransferBytes: 1), CancellationToken.None).ConfigureAwait(false);
+        }
+        await SeedPreviewJobAsync("elastic-oversized").ConfigureAwait(false);
+        decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+        decision.Provision.Should().Be(1, "the adopted instance's one-byte transfer limit excludes the queued job's inputs, so its ten slots cover nothing");
+    }
+
+    [TestMethod]
     public async Task AnIncompatibleInstanceAtTheLimitIsReplacedByOneThatCanClaim()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
@@ -712,9 +766,9 @@ public sealed class ElasticProviderIntegrationTests
             TimeProvider.System,
             services.GetRequiredService<ILogger<ElasticRunnerAutoscaler>>());
 
-    private static ProcessingRunnerRegistrationRequest ScriptedRegistration(string runnerId, int maxConcurrency = 1, string? withoutRecipe = null)
+    private static ProcessingRunnerRegistrationRequest ScriptedRegistration(string runnerId, int maxConcurrency = 1, string? withoutRecipe = null, long? maxTransferBytes = null)
     {
-        var capabilities = ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, ProcessingRunnerProtocol.MaximumTransferBytes, null, null, null, null);
+        var capabilities = ProcessingRunnerCapabilities.CreateForCurrentProcess(maxConcurrency, maxTransferBytes ?? ProcessingRunnerProtocol.MaximumTransferBytes, null, null, null, null);
         if (withoutRecipe is not null)
         {
             capabilities = capabilities with { BuiltInRecipes = capabilities.BuiltInRecipes.Where(recipe => recipe.Name != withoutRecipe).ToArray() };
@@ -756,13 +810,14 @@ public sealed class ElasticProviderIntegrationTests
             .ConfigureAwait(false);
     }
 
-    private static async Task SetLeaseAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory, Guid sourceArtifactId, string owner, DateTimeOffset leaseExpiresAtUtc)
+    private static async Task SetLeaseAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory, Guid sourceArtifactId, string owner, DateTimeOffset leaseExpiresAtUtc, bool exhausted = false)
     {
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         await db.CentralDerivativeJobs
             .Where(job => job.SourceCentralArtifactId == sourceArtifactId && job.RecipeName == BuiltInProcessingRecipes.EncodedPreview)
             .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.AttemptCount, job => exhausted ? job.MaxAttempts : job.AttemptCount)
                 .SetProperty(job => job.Status, CentralDerivativeJobStatus.Leased)
                 .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)
                 .SetProperty(job => job.LeaseOwner, owner)
