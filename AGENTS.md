@@ -174,7 +174,8 @@ rather than depending on a vendor-specific agent feature.
   preserving current step, next step, and blocker, and do not repeat a milestone
   that was already relayed. During a coordination experiment, record per active
   hour the slot bytes read and written, metadata polls, changed-body fetches,
-  durable comments, estimated transcript tokens, and coordinator service time.
+  estimated transcript tokens, and coordinator service time, plus the durable
+  comment count for each issue.
 - On every wake, record for each issue or PR the implementing agent's last
   activity timestamp and current step, the PR head SHA, draft state, merge
   state, the first line and timestamp of the latest ledger comment, and the

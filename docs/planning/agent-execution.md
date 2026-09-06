@@ -236,8 +236,8 @@ and PR ledgers.
    comments newer than the last processed comment ID or timestamp. Reread an
    epic body only after an intentional revision. Never rescan the full epic on a
    routine wake. During a trial, total per active hour the metadata polls,
-   changed-body fetches, slot bytes read and written, durable comments, estimated
-   transcript tokens, and coordinator service time.
+   changed-body fetches, slot bytes read and written, estimated transcript
+   tokens, and coordinator service time; also count durable comments per issue.
 6. Treat a missed delivery window as a signaling gap, not proof that work
    failed. Report the gap, withhold new shared-resource authority when state is
    stale, poll directly, and ask the peer to repair or replace its monitor. Long

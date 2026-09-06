@@ -31,7 +31,7 @@ Record these fields for every bounded trial:
 | --- | --- |
 | Delivery | Scheduled due time, body timestamp, API `updated_at`, and lateness |
 | Response | Peer acknowledgement sequence and API-to-API response latency |
-| Context cost | Slot bytes read and written, metadata polls, changed-body fetches, durable comments, estimated transcript tokens, and coordinator service time per active hour |
+| Context cost | Slot bytes read and written, metadata polls, changed-body fetches, estimated transcript tokens, and coordinator service time per active hour; durable-comment count per issue |
 | Reliability | On-time, late, missed, duplicated, and out-of-order wakes plus repair latency |
 | Safety | Worktree, base, branch, Docker, review, and finalization-lock collisions or prevented collisions |
 | Throughput | Concurrent implementation issues, idle time caused by coordination, and rework avoided |

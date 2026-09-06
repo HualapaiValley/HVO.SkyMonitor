@@ -106,7 +106,8 @@ keep durable decisions append-only. Explicitly negotiate and record format
 experiments before relying on them. Keep unchanged operator heartbeats to one
 nonduplicative line per active item while retaining current/next/blocker, and
 measure slot bytes read/written plus poll, fetch, durable-comment, transcript,
-and coordinator-time costs per active hour.
+and coordinator-time costs. Aggregate time-based costs per active hour and
+durable-comment counts per issue.
 ```
 
 ## 3. Foundation and Contracts Prompt
