@@ -875,7 +875,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   # The release script's own container smoke deliberately prevents building a broken signed candidate. Instead,
   # this campaign-only shim forwards every Docker command to the real daemon and changes exactly one inspection
   # result after the healthy candidate is running. The lifecycle therefore passes every acquisition, agreement,
-  # state, backup, drain, stop, and Compose gate, then fails inside the ordinary candidate-container verifier. All
+  # state, drain, stop, backup, and Compose gate, then fails inside the ordinary candidate-container verifier. All
   # automatic recovery calls see unmodified Docker results. Production code and candidate bytes remain untouched.
   signed_docker_shim_root="$root/signed-docker-shim"
   mkdir -m 700 "$signed_docker_shim_root"

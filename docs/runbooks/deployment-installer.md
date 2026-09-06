@@ -217,7 +217,7 @@ real image and health, and the exact CLI reports the assertions read, under
 Every trust or integrity refusal in the scenario happens before the upgrade
 mutates anything. The separate post-mutation failure runs only after the signed
 candidate has passed acquisition, image-label agreement, state compatibility,
-backup, drain, stop, Compose-up, application health, and installation-identity
+capture drain, Compose stop, backup, Compose-up, application health, and installation-identity
 verification. A campaign-local Docker shim then records the real healthy,
 unprivileged candidate inspection and reports an impossible privileged runtime
 to the candidate-container verifier exactly once. The existing lifecycle catch
