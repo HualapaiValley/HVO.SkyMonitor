@@ -17,8 +17,8 @@ internal sealed class DistributionAcquirer : IDisposable
     private const int MaximumRedirects = 5;
     private const int MaximumAttempts = 3;
     private const long MaximumCacheBytes = 40L * 1024 * 1024 * 1024;
-    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan AssetAttemptTimeout = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DefaultAssetAttemptTimeout = TimeSpan.FromMinutes(30);
     private static readonly HashSet<string> CatalogFiles = new(StringComparer.Ordinal)
     {
         "manifest.json", "hyg_v42.sqlite", "LICENSE-HYG.md", "ATTRIBUTION-HYG.md"
@@ -28,18 +28,37 @@ internal sealed class DistributionAcquirer : IDisposable
     private readonly string cacheRoot;
     private readonly string stateRoot;
     private readonly DistributionTrustRoot trustRoot;
+    private readonly TimeSpan requestTimeout;
+    private readonly TimeSpan assetAttemptTimeout;
 
     public DistributionAcquirer(
         HttpMessageHandler? handler = null,
         string? cacheRoot = null,
         DistributionTrustRoot? trustRoot = null,
         string? stateRoot = null)
+        : this(handler, cacheRoot, trustRoot, stateRoot, DefaultRequestTimeout, DefaultAssetAttemptTimeout)
+    {
+    }
+
+    /// <summary>
+    /// Test seam: the attempt timeouts keep their production defaults through the public constructor; tests shorten
+    /// them so a stalled transfer can be proved without waiting for the real durations.
+    /// </summary>
+    internal DistributionAcquirer(
+        HttpMessageHandler? handler,
+        string? cacheRoot,
+        DistributionTrustRoot? trustRoot,
+        string? stateRoot,
+        TimeSpan requestTimeout,
+        TimeSpan assetAttemptTimeout)
     {
         client = CreateClient(handler);
         client.Timeout = Timeout.InfiniteTimeSpan;
         this.cacheRoot = cacheRoot ?? DefaultCacheRoot();
         this.stateRoot = stateRoot ?? (cacheRoot is null ? DefaultStateRoot() : Path.Combine(cacheRoot, "test-state"));
         this.trustRoot = trustRoot ?? DistributionTrustRoot.Production;
+        this.requestTimeout = requestTimeout;
+        this.assetAttemptTimeout = assetAttemptTimeout;
     }
 
     public async Task<AcquiredCatalog> AcquireAsync(InstallRequest request, CancellationToken cancellationToken)
@@ -553,17 +572,36 @@ internal sealed class DistributionAcquirer : IDisposable
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(RequestTimeout);
+                timeout.CancelAfter(requestTimeout);
                 using var transfer = await SendWithPolicyAsync(uri, null, timeout.Token).ConfigureAwait(false);
                 return await ReadBoundedAsync(transfer.Response, maximumBytes, timeout.Token).ConfigureAwait(false);
             }
-            catch (Exception exception) when (attempt < MaximumAttempts && !cancellationToken.IsCancellationRequested &&
-                                               exception is HttpRequestException or TaskCanceledException)
+            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Only the attempt timeout this method imposed can have fired: the caller's own token is unsignalled.
+                // A stalled mirror is a distribution failure, never an operator cancellation.
+                if (attempt >= MaximumAttempts)
+                {
+                    throw StalledTransfer("metadata", uri, requestTimeout, attempt, exception);
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException) when (attempt < MaximumAttempts && !cancellationToken.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
             }
         }
     }
+
+    /// <summary>
+    /// Names a transfer that stalled past the acquirer's own per-attempt timeout on every attempt. Raised as an
+    /// installer failure so the CLI reports the distribution source rather than exiting as if the operator had
+    /// cancelled; genuine caller cancellation never reaches this path.
+    /// </summary>
+    private static InstallerException StalledTransfer(string kind, Uri uri, TimeSpan attemptTimeout, int attempts, Exception cause)
+        => new(
+            $"The distribution {kind} download from '{uri.Host}' stalled past the {attemptTimeout.TotalSeconds:0}-second attempt timeout on each of {attempts} attempts; the source did not respond.",
+            cause);
 
     private async Task<Uri> DownloadAssetAsync(
         Uri source,
@@ -589,7 +627,7 @@ internal sealed class DistributionAcquirer : IDisposable
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(AssetAttemptTimeout);
+                timeout.CancelAfter(assetAttemptTimeout);
                 using var transfer = await SendWithPolicyAsync(source, existingLength == 0 ? null : existingLength, timeout.Token)
                     .ConfigureAwait(false);
                 var response = transfer.Response;
@@ -638,7 +676,17 @@ internal sealed class DistributionAcquirer : IDisposable
                 }
                 return transfer.ResolvedUri;
             }
-            catch (Exception exception) when (attempt < MaximumAttempts && exception is HttpRequestException or TaskCanceledException)
+            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Same discrimination as the metadata path: the caller's token is unsignalled, so the attempt timeout
+                // fired. Exhausted attempts surface as an attributed distribution failure, not as cancellation.
+                if (attempt >= MaximumAttempts)
+                {
+                    throw StalledTransfer("asset", source, assetAttemptTimeout, attempt, exception);
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException) when (attempt < MaximumAttempts)
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
             }
@@ -667,7 +715,7 @@ internal sealed class DistributionAcquirer : IDisposable
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             }
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(RequestTimeout);
+            timeout.CancelAfter(requestTimeout);
             var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             if ((int)response.StatusCode is >= 300 and <= 399)
             {

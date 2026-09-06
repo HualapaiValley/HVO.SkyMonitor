@@ -140,6 +140,77 @@ public sealed class DistributionAcquirerTests
         Assert.IsFalse(File.Exists(Path.Combine(fixture.CacheRoot, "test-state", "catalog-stable.txt")));
     }
 
+    [TestMethod]
+    public async Task AcquireAsync_StalledMetadataDownload_IsReportedAsDistributionFailureNotCancellation()
+    {
+        using var fixture = CatalogDistributionFixture.Create();
+        var manifestUri = fixture.NetworkAssets.Keys.Single(static uri => uri.AbsolutePath.EndsWith("catalog-manifest.json", StringComparison.Ordinal));
+        using var handler = new StallingHandler(fixture.NetworkAssets, manifestUri);
+        using var acquirer = new DistributionAcquirer(
+            handler, fixture.CacheRoot, fixture.TrustRoot, null, TimeSpan.FromMilliseconds(250), TimeSpan.FromMinutes(30));
+        using var caller = new CancellationTokenSource();
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => acquirer.AcquireAsync(fixture.NetworkRequest(noDownload: false), caller.Token));
+
+        // The stall is attributed to the distribution source, after every attempt, and never to the operator.
+        StringAssert.Contains(exception.Message, "stalled", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, manifestUri.Host, StringComparison.Ordinal);
+        Assert.AreEqual(3, handler.StalledRequests);
+        Assert.IsFalse(caller.IsCancellationRequested);
+    }
+
+    [TestMethod]
+    public async Task AcquireAsync_StalledAssetDownload_IsReportedAsDistributionFailureNotCancellation()
+    {
+        using var fixture = CatalogDistributionFixture.Create();
+        using var handler = new StallingHandler(fixture.NetworkAssets, fixture.BundleUri);
+        using var acquirer = new DistributionAcquirer(
+            handler, fixture.CacheRoot, fixture.TrustRoot, null, TimeSpan.FromSeconds(30), TimeSpan.FromMilliseconds(250));
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => acquirer.AcquireAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "stalled", StringComparison.Ordinal);
+        Assert.AreEqual(3, handler.StalledRequests);
+        Assert.IsFalse(Directory.EnumerateFiles(fixture.CacheRoot, fixture.AssetName, SearchOption.AllDirectories).Any());
+    }
+
+    [TestMethod]
+    public async Task AcquireAsync_CallerCancellationDuringStall_StillPropagatesAsCancellation()
+    {
+        using var fixture = CatalogDistributionFixture.Create();
+        var manifestUri = fixture.NetworkAssets.Keys.Single(static uri => uri.AbsolutePath.EndsWith("catalog-manifest.json", StringComparison.Ordinal));
+        using var handler = new StallingHandler(fixture.NetworkAssets, manifestUri);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var caller = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => acquirer.AcquireAsync(fixture.NetworkRequest(noDownload: false), caller.Token));
+
+        // The operator's cancellation is not retried and is not rewritten as a distribution failure.
+        Assert.AreEqual(1, handler.StalledRequests);
+    }
+
+    /// <summary>
+    /// Serves every fixture asset normally except one URI, whose request never completes until the token the
+    /// acquirer hands the handler fires, exactly like a mirror that accepts the connection and then goes quiet.
+    /// </summary>
+    private sealed class StallingHandler(IReadOnlyDictionary<Uri, byte[]> responses, Uri stalledUri) : FixtureHandler(responses)
+    {
+        public int StalledRequests { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri == stalledUri)
+            {
+                StalledRequests++;
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            return await base.SendAsync(request, cancellationToken);
+        }
+    }
+
     private class FixtureHandler(IReadOnlyDictionary<Uri, byte[]> responses) : HttpMessageHandler
     {
         protected IReadOnlyDictionary<Uri, byte[]> Responses { get; } = responses;
