@@ -403,14 +403,13 @@ digest, not a replacement.
 ### What the installed instance records
 
 An installation's retained release evidence (`image-distribution.json`) names the
-file-level SBOM, the provenance, and the vulnerability scan, but not the
-per-platform component inventory. Component-level triage therefore starts from
-the signed release assets rather than from the instance's own evidence file.
-Extending that record is a change to durable installation state and to the
-installer's acquisition path, which
-[#597](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/597) excluded; it is
-tracked by
-[#645](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/645).
+file-level SBOM, the provenance, the vulnerability scan, and the per-platform
+component inventory published for the installed architecture
+(`componentInventoryAsset`), so component-level triage can start from the
+instance's own evidence file and read the inventory the release signed for that
+platform. A release published before inventories existed records no inventory,
+and a version-1 evidence record written by an earlier installer has no such
+member; both remain valid.
 
 Without `--push` there is no registry, so the signed multi-architecture digest is
 a canonical index computed from the two platform manifests. It is a stable

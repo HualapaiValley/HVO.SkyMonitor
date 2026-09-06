@@ -52,6 +52,103 @@ public sealed class SignedImageReleaseTests
         Assert.AreEqual("verified", acquired.Evidence.VerificationResult);
     }
 
+    /// <summary>
+    /// The retained release evidence must name the component inventory published for the installed platform, so
+    /// an operator triaging a CVE on the instance can read it from the instance rather than re-deriving it from
+    /// the release. The evidence is a durable installation record, so the addition is versioned.
+    /// </summary>
+    [TestMethod]
+    public async Task AcquireImageAsync_ReleaseWithComponentInventories_RecordsThePlatformInventoryInTheEvidence()
+    {
+        using var fixture = ImageDistributionFixture.Create(withComponentInventories: true);
+        using var acquirer = new DistributionAcquirer(cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot);
+
+        var acquired = await acquirer.AcquireImageAsync(fixture.LocalRequest(), CancellationToken.None);
+
+        Assert.IsNotNull(acquired);
+        var architecture = acquired.Platform.Architecture;
+        var evidence = acquired.ToEvidence();
+        Assert.AreEqual(2, evidence.SchemaVersion, "the evidence record is versioned as the durable-state change it is");
+        using var document = JsonDocument.Parse(
+            JsonSerializer.SerializeToUtf8Bytes(evidence, DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence));
+        Assert.AreEqual(
+            $"image-components-linux-{architecture}.spdx.json",
+            document.RootElement.GetProperty("componentInventoryAsset").GetString(),
+            "the evidence names exactly the inventory the release signed for the installed platform");
+        Assert.AreEqual("image-sbom.spdx.json", document.RootElement.GetProperty("sbomAsset").GetString());
+        Assert.AreEqual("image-vulnerability-scan.json", document.RootElement.GetProperty("vulnerabilityScanAsset").GetString());
+    }
+
+    /// <summary>A version-1 image release publishes no inventory, and installing it must remain valid.</summary>
+    [TestMethod]
+    public async Task AcquireImageAsync_Version1ReleaseWithoutAnInventory_RecordsEvidenceWithoutOne()
+    {
+        using var fixture = ImageDistributionFixture.Create();
+        using var acquirer = new DistributionAcquirer(cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot);
+
+        var acquired = await acquirer.AcquireImageAsync(fixture.LocalRequest(), CancellationToken.None);
+
+        Assert.IsNotNull(acquired);
+        var evidence = acquired.ToEvidence();
+        Assert.AreEqual(2, evidence.SchemaVersion);
+        using var document = JsonDocument.Parse(
+            JsonSerializer.SerializeToUtf8Bytes(evidence, DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence));
+        Assert.IsTrue(document.RootElement.TryGetProperty("componentInventoryAsset", out var inventory));
+        Assert.AreEqual(JsonValueKind.Null, inventory.ValueKind, "a release without an inventory records none, explicitly");
+    }
+
+    /// <summary>
+    /// An evidence file written before the inventory existed has schema version 1 and no inventory member at all;
+    /// it must still read back as a valid record so an existing installation is not invalidated by the upgrade.
+    /// </summary>
+    [TestMethod]
+    public void ImageReleaseEvidence_Version1DocumentWithoutTheInventoryMember_StillDeserializes()
+    {
+        const string version1 = """
+            {
+              "schemaVersion": 1,
+              "distribution": {
+                "train": "image", "tag": "image-v1.2.3", "version": "1.2.3",
+                "manifestSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                "signingKeyId": "p256-sha256:key", "assetName": "cameraagent-image-v1.2.3-linux-amd64.tar",
+                "assetSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                "sourceUri": "file:///release/image-manifest.json", "verificationResult": "verified",
+                "verifiedUtc": "2026-08-24T00:00:00+00:00"
+              },
+              "component": "CameraAgent",
+              "repository": "ghcr.io/roysalisbury/hvo.skymonitor/cameraagent",
+              "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "platformOperatingSystem": "linux",
+              "platformArchitecture": "amd64",
+              "platformManifestDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "imageId": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "sourceTree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "compatibility": {
+                "stateContract": "cameraagent-state-v2", "minimumCompatibleRevision": "7777777777777777777777777777777777777777",
+                "identityMigration": "20260827053715_InitialIdentity", "rawIngressSchema": 12, "catalogManifestVersion": 2,
+                "configurationContract": "cameraagent-install-v1", "catalogContract": "hyg-v42-production-p3-s2",
+                "replayRunnerContract": "local-replay-runner-v1"
+              },
+              "sbomAsset": "image-sbom.spdx.json",
+              "provenanceAsset": "image-provenance.json",
+              "vulnerabilityScanAsset": "image-vulnerability-scan.json",
+              "recordedUtc": "2026-08-24T00:00:00+00:00"
+            }
+            """;
+
+        var evidence = JsonSerializer.Deserialize(version1, DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence);
+
+        Assert.IsNotNull(evidence);
+        Assert.AreEqual(1, evidence.SchemaVersion);
+        Assert.AreEqual("image-sbom.spdx.json", evidence.SbomAsset);
+        using var document = JsonDocument.Parse(
+            JsonSerializer.SerializeToUtf8Bytes(evidence, DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence));
+        Assert.IsTrue(
+            !document.RootElement.TryGetProperty("componentInventoryAsset", out var inventory) || inventory.ValueKind == JsonValueKind.Null,
+            "a version-1 record carries no inventory");
+    }
+
     [TestMethod]
     public async Task AcquireImageAsync_ReleaseWithoutThisHostArchitecture_NamesWhatItPublishes()
     {
@@ -350,7 +447,9 @@ public sealed class SignedImageReleaseTests
             NoDownload = true
         };
 
-        public static ImageDistributionFixture Create(IReadOnlyList<string>? publishedArchitectures = null)
+        public static ImageDistributionFixture Create(
+            IReadOnlyList<string>? publishedArchitectures = null,
+            bool withComponentInventories = false)
         {
             var architectures = publishedArchitectures ?? ["amd64", "arm64"];
             var root = Path.Combine(Path.GetTempPath(), $"hvo-image-distribution-{Guid.NewGuid():N}");
@@ -373,12 +472,24 @@ public sealed class SignedImageReleaseTests
                 artifacts.Add(new DistributionArtifact(
                     DistributionArtifactRole.ImageArchive, assetName, "application/x-tar", content.Length,
                     Convert.ToHexStringLower(SHA256.HashData(content)), "linux", architecture));
+                // A version-2 image release publishes one signed component inventory per platform, bound to the
+                // platform it describes; a version-1 release has none.
+                string? inventoryAsset = null;
+                if (withComponentInventories)
+                {
+                    inventoryAsset = $"image-components-linux-{architecture}.spdx.json";
+                    var inventoryContent = Encoding.UTF8.GetBytes(inventoryAsset);
+                    artifacts.Add(new DistributionArtifact(
+                        DistributionArtifactRole.ComponentSbom, inventoryAsset, "application/spdx+json", inventoryContent.Length,
+                        Convert.ToHexStringLower(SHA256.HashData(inventoryContent)), "linux", architecture));
+                }
                 platforms.Add(new DistributionImagePlatform(
                     "linux",
                     architecture,
                     $"sha256:{Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"manifest-{architecture}")))}",
                     assetName,
-                    imageId));
+                    imageId,
+                    inventoryAsset));
             }
             artifacts.Add(Evidence(DistributionArtifactRole.Sbom, "image-sbom.spdx.json"));
             artifacts.Add(Evidence(DistributionArtifactRole.Provenance, "image-provenance.json"));
@@ -400,7 +511,9 @@ public sealed class SignedImageReleaseTests
                     "cameraagent-state-v2", MinimumRevision, "20260827053715_InitialIdentity", 12, 2,
                     "cameraagent-install-v1", "hyg-v42-production-p3-s2", "local-replay-runner-v1"));
             var manifest = new DistributionReleaseManifest(
-                DistributionSchemaVersions.ReleaseManifest,
+                withComponentInventories
+                    ? DistributionSchemaVersions.ReleaseManifestWithComponentSboms
+                    : DistributionSchemaVersions.ReleaseManifest,
                 DistributionManifestKind.ImageRelease,
                 new DistributionReleaseIdentity(
                     "image", "1.2.3", "image-v1.2.3", "RoySalisbury/HVO.SkyMonitor", Revision, new string('b', 40),

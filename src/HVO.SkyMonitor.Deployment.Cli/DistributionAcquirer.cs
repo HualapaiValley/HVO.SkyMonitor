@@ -1190,6 +1190,13 @@ internal sealed class AcquiredCatalog(
 /// correlate the running container with the release train, the signing key, the evidence assets, and the exact
 /// compatibility boundaries the release declared, without a source checkout or a network call.
 /// </summary>
+/// <summary>
+/// The release record retained beside an installed instance's deployment state. Schema version 1 named the
+/// file-level SBOM, provenance, and vulnerability-scan assets; version 2 adds the per-platform component inventory
+/// as an optional member. A version-1 document (no <c>componentInventoryAsset</c> member) still deserializes with a
+/// null inventory, so an existing installation stays valid; a release published before inventories existed writes a
+/// version-2 record with the member explicitly null.
+/// </summary>
 internal sealed record CameraAgentImageReleaseEvidence(
     int SchemaVersion,
     DistributionVerificationEvidence Distribution,
@@ -1206,6 +1213,7 @@ internal sealed record CameraAgentImageReleaseEvidence(
     string SbomAsset,
     string ProvenanceAsset,
     string VulnerabilityScanAsset,
+    string? ComponentInventoryAsset,
     DateTimeOffset RecordedUtc);
 
 /// <summary>
@@ -1244,6 +1252,9 @@ internal sealed record AcquiredImage(
         Image.SbomAsset,
         Image.ProvenanceAsset,
         Image.VulnerabilityScanAsset,
+        // The inventory published for exactly the platform that was installed, so CVE triage on the instance can
+        // name its own component list; a version-1 release publishes none and records none.
+        Platform.ComponentSbomAsset,
         DateTimeOffset.UtcNow);
 
     /// <summary>
