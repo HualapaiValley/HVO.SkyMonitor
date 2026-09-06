@@ -198,21 +198,27 @@ every transition the retained release record has to follow:
 | Refused: release contradicts the image labels | `cameraagent upgrade --image-manifest <contradicting>` | still absent |
 | State-compatibility preflight on what the sequence left behind | `cameraagent preflight` | still absent |
 
-Each refusal targets its own gate. The five acquisition-stage refusals share the
-acquirer's single diagnostic, because the CLI deliberately does not surface the
-inner verification cause; what separates them is that each derived release varies
-exactly one trust or integrity condition against a release the instance has
-already accepted, and that each is required to leave every durable deployment
-record — the release record, the instance manifest, the installation result and
-state, the retained preflight report, and the lifecycle journal — byte-identical.
-Only the label-agreement refusal has a diagnostic of its own, and the campaign
-asserts it. Every transition reads the running image back through `status`, whose
-`status` outcome (rather than `drifted`) means the container really carries the
-recorded image. Every step retains the release record, the
-instance manifest, the installation result, the lifecycle journal, a state
-inventory with modes, deployment checksums, the container log, the container's
-real image and health, and the exact CLI reports the assertions read, under
-`TestResults/issue-598/<run>/`.
+Each refusal targets its own gate. The production-trust-root refusal and the
+four derived-release refusals share the acquirer's single diagnostic, because
+the CLI deliberately does not surface the inner verification cause; what
+separates the derived releases is that each varies exactly one trust or
+integrity condition against a release the instance has already accepted, and
+that each is required to leave every durable deployment record — the release
+record, the instance manifest, the installation result and state, the retained
+preflight report, the staged image archive, and the lifecycle journal —
+byte-identical. Only the label-agreement refusal has a diagnostic of its own; the
+campaign asserts it together with the incomplete `Prepared`/`Running` journal
+entry that refusal leaves behind
+([#638](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/638) owns making
+it terminal), because `mutationStarted=false` alone cannot distinguish a refusal
+from a completed upgrade. Every transition reads the running image back through
+`status`, whose `status` outcome (rather than `drifted`) means the container
+really carries the recorded image. Every step retains the release record, the
+instance manifest, the installation result and state, the retained preflight
+report, the lifecycle journal and its candidate diagnostics when present, a
+state inventory with modes, deployment checksums, the container log, the
+container's real image and health, and the exact CLI reports the assertions
+read, under `TestResults/issue-598/<run>/`.
 
 Every trust or integrity refusal in the scenario happens before the upgrade
 mutates anything. The separate post-mutation failure runs only after the signed
@@ -244,8 +250,11 @@ refused during acquisition:
 
 - a manifest signed by a key the trust root does not hold, and release B's
   manifest presented with the trusted key's real signature over release A. Both
-  fail signature verification, from two directions: a signature the trusted key
-  cannot verify at all, and a signature it verifies but not over these bytes.
+  fail signature verification: a signature the trusted key cannot verify at all,
+  and a signature it verifies but not over these bytes. The forged case is the
+  one that isolates signature verification, because nothing else can refuse it.
+  The untrusted case also declares the untrusted key's identity, so it would
+  still be refused by the declared-key comparison if verification were removed.
 - a manifest declaring a key identity the trust root does not carry, signed by
   the key it does. `VerifyManifest` verifies the signature before comparing
   `signing.keyId`, so this is the only way to reach that comparison — the release
@@ -255,8 +264,11 @@ refused during acquisition:
   length and checksum: the only case that fails on the acquired bytes rather than
   on the metadata.
 
-None of the five writes, rewrites, or resurrects the retained release record, and
-each is required to leave every durable deployment record byte-identical.
+None of the four derived releases or the label-agreement refusal writes,
+rewrites, or resurrects the retained release record. The four derived releases
+must leave every durable deployment record and the lifecycle journal
+byte-identical; the label-agreement refusal legitimately journals its refused
+operation and must leave every other durable record byte-identical.
 
 Each refused release is a manifest and signature in its own directory that names
 the real published archives through `--asset-base-url`, so nothing copies or
