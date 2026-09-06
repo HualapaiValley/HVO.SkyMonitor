@@ -725,6 +725,14 @@ Compose, image, and identity records before capture resumes. Noncurrent manifest
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
 
+Capture-admission initialization is a CameraAgent startup responsibility that
+runs after configuration initialization and before the processing and capture
+workers; it does not depend on the camera capture worker reaching its loop. The
+lifecycle client treats uninitialized `Initializing` or `Unavailable` snapshots
+as transient startup observations. Once capture admission is initialized, a
+`Running` or terminal `Unavailable` snapshot fails a drain confirmation after
+the first state read instead of consuming the full drain deadline.
+
 Uninstall removes only the selected Compose runtime and preserves config,
 secrets, state, evidence, rollback identities, and shared catalogs. Purge is a
 separate operation and requires `--confirm-instance-id <same-uuid>` after
