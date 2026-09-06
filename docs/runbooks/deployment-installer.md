@@ -213,12 +213,15 @@ entry that refusal leaves behind
 it terminal), because `mutationStarted=false` alone cannot distinguish a refusal
 from a completed upgrade. Every transition reads the running image back through
 `status`, whose `status` outcome (rather than `drifted`) means the container
-really carries the recorded image. Every step retains the release record, the
-instance manifest, the installation result and state, the retained preflight
-report, the lifecycle journal and its candidate diagnostics when present, a
-state inventory with modes, deployment checksums, the container log, the
-container's real image and health, and the exact CLI reports the assertions
-read, under `TestResults/issue-598/<run>/`.
+really carries the recorded image. Every step retains, under
+`TestResults/issue-598/<run>/`, the release record when it exists and an
+explicit `image-distribution.absent` marker when it does not, the instance
+manifest, the installation result and state, the retained preflight report, the
+lifecycle journal and its candidate diagnostics once a lifecycle operation has
+created them, a state inventory with modes, deployment and Compose checksums
+(the staged image archive appears there by SHA-256 rather than as a copied
+file), the container log, the container's real image and health, and the exact
+CLI reports the assertions read.
 
 Every trust or integrity refusal in the scenario happens before the upgrade
 mutates anything. The separate post-mutation failure runs only after the signed
