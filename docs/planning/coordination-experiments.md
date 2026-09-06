@@ -31,7 +31,7 @@ Record these fields for every bounded trial:
 | --- | --- |
 | Delivery | Scheduled due time, body timestamp, API `updated_at`, and lateness |
 | Response | Peer acknowledgement sequence and API-to-API response latency |
-| Context cost | Complete slot bytes written, body fetches, durable comments, and estimated transcript tokens per active hour |
+| Context cost | Slot bytes read and written, metadata polls, changed-body fetches, durable comments, estimated transcript tokens, and coordinator service time per active hour |
 | Reliability | On-time, late, missed, duplicated, and out-of-order wakes plus repair latency |
 | Safety | Worktree, base, branch, Docker, review, and finalization-lock collisions or prevented collisions |
 | Throughput | Concurrent implementation issues, idle time caused by coordination, and rework avoided |
@@ -41,6 +41,16 @@ For routine slot polling, retain the exact comment ID and last `updated_at`.
 Read the body only after the timestamp changes. Advance a cursor for newer
 durable comments and read a full body only by exact comment ID. This controls
 model input; merely storing all history on GitHub does not.
+
+For these measurements, a scheduled wake is one due time declared by the
+previous accepted slot while the channel is active. Delivery time is the API
+`updated_at`, and delivery is on time when that value is within 30 seconds
+before or after the declared due time. The denominator is every scheduled wake
+in the trial, excluding the immediate baseline that follows an intentional
+active-set restart. Measure recovery from the first coordinator detection of a
+late wake until the next fresh peer update. Prefer harness token usage; when it
+is unavailable, record UTF-8 bytes divided by four as an explicitly approximate
+token estimate.
 
 ## Experiment log
 
@@ -100,6 +110,10 @@ model input; merely storing all history on GitHub does not.
   API-to-API response latency. The second pair was 343/444 bytes with 85 seconds
   latency. A later 371-byte coordinator request received a 582-byte reply in
   112 seconds because the reply retained a redundant legacy header.
+- **Raw evidence:** the exact slot IDs, due/body/API timestamps, complete bodies,
+  byte counts, acknowledgements, and latency calculations for five pairs are in
+  the append-only
+  [#664 sample ledger](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/664#issuecomment-5557392531).
 - **Outcome:** required operational meaning survived, but the whole-comment byte
   cap must include headers and all stable boilerplate.
 - **Next variation:** `C1.1` omits the legacy header and repeated stable facts,
@@ -135,11 +149,14 @@ Try one bounded change at a time and record it before changing the default:
 
 Evaluate after at least 20 scheduled wakes and three implementation-issue
 handoffs. Keep the channel when it has zero unreported gaps, zero ambiguous
-resource grants, zero coordination-caused collisions, at least 95% on-time
-delivery or recovery within one cadence, routine bodies at or below 500 bytes,
-and demonstrable parallel-lane or avoided-rework value. Also target less than
-two minutes of coordinator attention and fewer than 5,000 estimated transcript
-tokens per active hour.
+resource grants, zero coordination-caused collisions, and at least 95% of
+scheduled deliveries are on time by the definition above. Separately require
+every late or missed wake to be reported at the next monitor wake and followed
+by a fresh peer update within five minutes of detection. Every routine body in
+the format under evaluation, produced after that format's explicit acceptance,
+must remain at or below 500 bytes. Also require demonstrable parallel-lane or
+avoided-rework value while targeting less than two minutes of coordinator
+attention and fewer than 5,000 estimated transcript tokens per active hour.
 
 Simplify or retire the mechanism if stale state causes unsafe authority, missed
 wakes repeatedly exceed one cadence, the payload cannot remain bounded, or the

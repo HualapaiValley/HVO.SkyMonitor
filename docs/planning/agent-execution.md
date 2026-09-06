@@ -191,7 +191,10 @@ when it finishes:
 - The coordinator relays a short note to the main conversation on every wake,
   even when nothing changed. It uses the literal status `still running, no
   change` when applicable, converts every reported time to MST (fixed UTC-7,
-  without daylight-saving adjustment), and labels it `MST`.
+  without daylight-saving adjustment), and labels it `MST`. When nothing
+  changed, use one compact line per active item that still names the current
+  step, next step, and blocker. Do not repeat a milestone already relayed
+  immediately unless its state changed.
 - For each item, the coordinator states what just finished, what is running now,
   the next step, and any blocker. It reads milestone reports and summarizes
   their substance, such as the root cause, accepted findings, or gate result,
@@ -232,7 +235,9 @@ and PR ledgers.
    metadata first, fetch the body only after it changes, and fetch durable
    comments newer than the last processed comment ID or timestamp. Reread an
    epic body only after an intentional revision. Never rescan the full epic on a
-   routine wake.
+   routine wake. During a trial, total per active hour the metadata polls,
+   changed-body fetches, slot bytes read and written, durable comments, estimated
+   transcript tokens, and coordinator service time.
 6. Treat a missed delivery window as a signaling gap, not proof that work
    failed. Report the gap, withhold new shared-resource authority when state is
    stale, poll directly, and ask the peer to repair or replace its monitor. Long
