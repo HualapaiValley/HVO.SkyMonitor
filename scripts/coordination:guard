@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  scripts/coordination:guard authorize --registry FILE --command FILE \
+    --participant ID [--receipts FILE]
+  scripts/coordination:guard render-live --registry FILE --participant ID \
+    --lease-generation N --current-body FILE --expected-sha256 SHA256 \
+    --live-line 'LIVE <UTC> / <MST>'
+
+The command is read-only: it validates enrollment, command targeting, lease
+ownership, idempotent receipts, and an optimistic-CAS input before another
+wrapper performs a durable write.
+EOF
+}
+
+fail() {
+    printf '%s\n' "$*" >&2
+    exit 1
+}
+
+require_value() {
+    local option="$1"
+    local value="${2:-}"
+    [[ -n "$value" ]] || fail "Missing value for $option."
+}
+
+validate_participant_id() {
+    local participant_id="$1"
+    local participant_lower
+    [[ ${#participant_id} -le 160 ]] || fail "Participant ID is too long."
+    [[ "$participant_id" =~ ^[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] ||
+        fail "Participant ID must be <harness>:<provider>:<host>:<session-short-id>."
+    participant_lower="$(printf '%s' "$participant_id" | tr '[:upper:]' '[:lower:]')"
+    [[ ! "$participant_lower" =~ (token|bearer|password|secret|api[_-]?key) ]] ||
+        fail "Participant ID appears to contain credential material."
+}
+
+sha256_file() {
+    if command -v sha256sum >/dev/null; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+registry=""
+command_file=""
+participant_id=""
+receipts_file=""
+lease_generation=""
+current_body=""
+expected_sha256=""
+live_line=""
+
+[[ $# -ge 1 ]] || {
+    usage >&2
+    exit 2
+}
+mode="$1"
+shift
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --registry|--command|--participant|--receipts|--lease-generation|--current-body|--expected-sha256|--live-line)
+            require_value "$1" "${2:-}"
+            case "$1" in
+                --registry) registry="$2" ;;
+                --command) command_file="$2" ;;
+                --participant) participant_id="$2" ;;
+                --receipts) receipts_file="$2" ;;
+                --lease-generation) lease_generation="$2" ;;
+                --current-body) current_body="$2" ;;
+                --expected-sha256) expected_sha256="$2" ;;
+                --live-line) live_line="$2" ;;
+            esac
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *) fail "Unknown option: $1" ;;
+    esac
+done
+
+[[ -f "$registry" ]] || fail "Registry file is required."
+jq -e '.participants | type == "array"' "$registry" >/dev/null ||
+    fail "Registry must contain a participants array."
+validate_participant_id "$participant_id"
+
+participant_json="$(jq -cer --arg id "$participant_id" '
+    [.participants[] | select(.id == $id)] as $matches
+    | if ($matches | length) == 1 then $matches[0] else error("participant-not-unique") end
+' "$registry" 2>/dev/null)" || fail "Participant is not registered exactly once."
+
+jq -e '
+    (.status | ascii_downcase) == "active"
+    and (.joinState | ascii_downcase) == "joined"
+    and (.joinAckId | type == "string" and length > 0)
+    and (.lease.generation | type == "number")
+' <<<"$participant_json" >/dev/null || fail "Participant is not fully joined and active."
+
+expires_at="$(jq -r '.lease.expiresAt // empty' <<<"$participant_json")"
+if [[ -n "$expires_at" ]]; then
+    jq -ne --arg expires "$expires_at" '($expires | fromdateiso8601) > now' >/dev/null 2>&1 ||
+        fail "Participant lease is invalid or expired."
+fi
+
+case "$mode" in
+    authorize)
+        [[ -f "$command_file" ]] || fail "Command file is required."
+        command_id="$(jq -er '.commandId' "$command_file")" || fail "Command ID is required."
+        [[ "$command_id" =~ ^CMD-[A-Z0-9][A-Z0-9-]*$ ]] || fail "Invalid command ID."
+        target_id="$(jq -er '.targetParticipantId' "$command_file")" || fail "Command target is required."
+        command_generation="$(jq -er '.leaseGeneration' "$command_file")" || fail "Command lease generation is required."
+        registry_generation="$(jq -er '.lease.generation' <<<"$participant_json")"
+
+        [[ "$target_id" == "$participant_id" ]] || fail "Command targets another participant."
+        [[ "$command_generation" == "$registry_generation" ]] || fail "Command lease generation is stale."
+
+        if [[ -n "$receipts_file" ]]; then
+            [[ -f "$receipts_file" ]] || fail "Receipts file does not exist."
+            jq -e 'type == "array"' "$receipts_file" >/dev/null || fail "Receipts must be a JSON array."
+            if jq -e --arg command "$command_id" --arg participant "$participant_id" '
+                any(.[]; .commandId == $command and .participantId == $participant)
+            ' "$receipts_file" >/dev/null; then
+                printf 'ALREADY_CONSUMED %s %s\n' "$command_id" "$participant_id"
+                exit 0
+            fi
+        fi
+
+        printf 'AUTHORIZED %s %s lease=%s\n' "$command_id" "$participant_id" "$registry_generation"
+        ;;
+    render-live)
+        [[ "$lease_generation" =~ ^[1-9][0-9]*$ ]] || fail "A positive lease generation is required."
+        [[ -f "$current_body" ]] || fail "Current body file is required."
+        [[ "$expected_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "Expected SHA-256 is invalid."
+        [[ "$live_line" =~ ^LIVE[[:space:]].+MST$ ]] || fail "LIVE line must contain UTC and end with MST."
+
+        registry_generation="$(jq -er '.lease.generation' <<<"$participant_json")"
+        [[ "$lease_generation" == "$registry_generation" ]] || fail "Slot lease generation is stale."
+        actual_sha256="$(sha256_file "$current_body")"
+        [[ "$actual_sha256" == "$expected_sha256" ]] || fail "Current body changed; skip this tick and re-read."
+        owner_line_count="$(grep -Ec '^OWNER ' "$current_body" || true)"
+        [[ "$owner_line_count" == 1 ]] ||
+            fail "Slot must contain exactly one OWNER line."
+        grep -Fqx "OWNER $participant_id LEASE $lease_generation" "$current_body" ||
+            fail "Slot owner or lease marker does not match the participant."
+
+        if sed '$d' "$current_body" | grep -Eq '^LIVE .* MST$'; then
+            fail "Only the trailing line may contain mutable liveness."
+        fi
+        if tail -n 1 "$current_body" | grep -Eq '^LIVE .* MST$'; then
+            sed '$d' "$current_body"
+        else
+            sed -n '1,$p' "$current_body"
+        fi
+        printf '%s\n' "$live_line"
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

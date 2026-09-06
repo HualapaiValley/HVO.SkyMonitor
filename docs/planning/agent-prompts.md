@@ -34,6 +34,13 @@ at most two active implementation issues.
 
 ## 2. Universal Implementation Prompt
 
+Before giving this prompt to a session that will join roadmap coordination, use
+the canonical bounded `JOIN REQUEST` template in
+`docs/planning/agent-execution.md`. Wait for the coordinator's participant-bound
+`JOIN ACK`, return `JOINED ACK`, and only then send a separate implementation or
+review command. For unrelated operator-assigned work, name the existing issue/PR
+and keep the session outside the roadmap pool unless enrollment is intentional.
+
 ```text
 Implement GitHub issue <NUMBER> in HVO.SkyMonitor.
 
@@ -80,12 +87,17 @@ merge, the roadmap coordinator automatically selects, claims, and begins the
 next candidate-ready issue after posting its synopsis and `READY` signal, unless
 the operator asked to pause or a real decision/blocker prevents continuation.
 Non-coordinator implementing agents return completion state to the coordinator
-instead of selecting from the queue. Before substantive work, send the
-coordinator a `STARTED` message containing the task, current step, next step,
-and blocker; for reviews also include the exact range and actual
-provider/model/effort. Repeat at every milestone, at least every thirty minutes,
-on a blocker, and at completion. Also post milestones on the issue until the
-draft PR exists, then in the PR's append-only review ledger, using UTC. The
+instead of selecting from the queue. Before receiving coordination work, each
+session identifies itself as `<harness>:<provider>:<host>:<session-short-id>`
+and completes the execution protocol's `JOIN REQUEST` -> `JOIN ACK` -> `JOINED
+ACK` handshake. Loading repository instructions is not enrollment. After a
+participant-bound command is received and before substantive work, send the
+coordinator a `STARTED <command-id>` receipt containing the participant ID,
+task, current step, next step, and blocker; for reviews also include the exact
+range and actual provider/model/effort. Repeat at every milestone, at least
+every thirty minutes, on a blocker, and at completion. Also post milestones on
+the issue until the draft PR exists, then in the PR's append-only review ledger,
+using UTC. The
 coordinator relays these events immediately and supplies the independent
 five-minute operator heartbeat. The heartbeat monitor must actively wake or
 message the coordinator on every cadence; buffered output that requires a

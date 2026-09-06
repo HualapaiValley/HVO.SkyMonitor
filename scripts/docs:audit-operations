@@ -181,6 +181,15 @@ require_source_reference 'is_deployment_path()' scripts/ci:classify
 # shellcheck disable=SC2016 # The deployment source must retain this literal shell expression.
 require_source_reference 'deploy_transport_copy "$bundle/$file"' scripts/deploy/catalog.sh
 require_source_reference 'deploy_transport_catalog_install' scripts/deploy/catalog.sh
+require_source_reference '<harness>:<provider>:<host>:<session-short-id>' AGENTS.md
+require_source_reference 'UNREGISTERED/WAIT' AGENTS.md
+require_source_reference 'JOIN REQUEST' docs/planning/agent-execution.md
+require_source_reference 'JOIN ACK <ack-id>' docs/planning/agent-execution.md
+require_source_reference 'JOINED ACK <ack-id>' docs/planning/agent-execution.md
+require_source_reference 'targetParticipantId' docs/planning/agent-execution.md
+require_source_reference 'scripts/coordination:guard' docs/planning/agent-execution.md
+require_source_reference 'scripts/pr:review-request' .agents/skills/pr-lifecycle/SKILL.md
+require_source_reference 'scripts/pr:dispatch-review' .agents/skills/pr-lifecycle/SKILL.md
 
 for document in "${DOCS[@]}"; do
     while IFS= read -r target; do
