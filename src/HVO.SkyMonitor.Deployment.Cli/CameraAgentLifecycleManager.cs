@@ -196,13 +196,14 @@ internal sealed class CameraAgentLifecycleManager
                     cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception) when (!request.DryRun)
+        catch (Exception exception) when (!request.DryRun && exception is not OperationCanceledException)
         {
             // Every gate between the journal entry above and the mutation record (release label agreement, the
             // already-active and contract checks, the state preflight, the owner-state read, Compose staging) runs
             // before the instance is touched. A refusal there is settled as terminal so the journal never reports a
             // running operation that never started, which would otherwise block rollback, uninstall, and any other
-            // upgrade behind a --resume the same gate would refuse again.
+            // upgrade behind a --resume the same gate would refuse again. A cancellation is not a refusal: its
+            // unmutated journal stays resumable and, like any unmutated record, never blocks another operation.
             await SettleRefusedOperationAsync(paths, operation, exception).ConfigureAwait(false);
             throw;
         }
@@ -1044,8 +1045,13 @@ internal sealed class CameraAgentLifecycleManager
         var existing = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
         var hash = request.ComputeRequestSha256();
         // A refused operation is terminal: it mutated nothing, so it neither blocks a new operation nor offers
-        // anything to resume.
-        if (existing is { Status: not InstallationStatus.Completed } && !IsRefused(existing))
+        // anything to resume. Any other incomplete record whose mutation flag is clear is unmutated by construction
+        // (the flag is recorded before the first mutation and cleared only after a completed restore), including a
+        // pre-mutation refusal journalled by an earlier release or an interrupted, cancelled, or crashed
+        // preparation: a fresh operation of any kind may supersede it, while --resume of the matching request still
+        // continues it. Only an operation that started mutating demands --resume.
+        if (existing is { Status: not InstallationStatus.Completed } && !IsRefused(existing) &&
+            (existing.MutationStarted || request.Resume))
         {
             if (!request.Resume) throw new InstallerException("An incomplete lifecycle operation exists; rerun the same command with --resume.");
             if (existing.Kind != kind || existing.InstanceId != manifest.InstanceId || existing.RequestSha256 != hash)
@@ -1108,27 +1114,38 @@ internal sealed class CameraAgentLifecycleManager
         => state is { Status: InstallationStatus.Failed, FailureCode: RefusedFailureCode, MutationStarted: false };
 
     /// <summary>
-    /// Records an operation that failed before its mutation record as refused. The retained journal, not the
-    /// caller's copy, decides: only the same operation, still running and still unmutated, is settled, so an
-    /// operation that started mutating keeps its recovery journal and an already-failed one is left alone.
+    /// Records an operation that failed before its mutation record as refused. Both the operation as
+    /// <see cref="BeginAsync"/> returned it and the retained journal must be unmutated: a resumed operation that had
+    /// mutated, was restored, and then failed again keeps its recovery journal, because the journal's current flag
+    /// is not a history of mutation. The retained journal decides the rest: only the same operation, still running,
+    /// is settled, so an already-failed one is left alone. Settlement is best-effort: its own failure leaves the
+    /// journal as it was and never replaces the refusal the caller is about to rethrow.
     /// </summary>
     internal static async Task SettleRefusedOperationAsync(
         InstallationPaths paths,
         LifecycleOperationState begun,
         Exception exception)
     {
-        var retained = await ReadOperationAsync(paths.LifecycleStatePath, CancellationToken.None).ConfigureAwait(false);
-        if (retained is null || retained.OperationId != begun.OperationId || retained.MutationStarted ||
-            retained.Status != InstallationStatus.Running)
+        if (begun.MutationStarted) return;
+        try
         {
-            return;
+            var retained = await ReadOperationAsync(paths.LifecycleStatePath, CancellationToken.None).ConfigureAwait(false);
+            if (retained is null || retained.OperationId != begun.OperationId || retained.MutationStarted ||
+                retained.Status != InstallationStatus.Running)
+            {
+                return;
+            }
+            await RecordAsync(paths, retained with
+            {
+                Status = InstallationStatus.Failed,
+                FailureCode = RefusedFailureCode,
+                FailureMessage = Redaction.SafeDiagnostic(exception.Message)
+            }, CancellationToken.None).ConfigureAwait(false);
         }
-        await RecordAsync(paths, retained with
+        catch (Exception settlement) when (settlement is not OutOfMemoryException)
         {
-            Status = InstallationStatus.Failed,
-            FailureCode = RefusedFailureCode,
-            FailureMessage = Redaction.SafeDiagnostic(exception.Message)
-        }, CancellationToken.None).ConfigureAwait(false);
+            // The unmutated journal stays as it was; the original refusal remains the diagnostic the operator sees.
+        }
     }
 
     internal static async Task<LifecycleOperationState> RecordAsync(

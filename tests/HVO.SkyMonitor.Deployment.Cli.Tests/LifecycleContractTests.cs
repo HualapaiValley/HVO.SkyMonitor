@@ -825,6 +825,12 @@ public sealed class LifecycleContractTests
             fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer));
         StringAssert.Contains(resumeRefusal.Message, "No incomplete matching lifecycle operation exists", StringComparison.Ordinal);
         Assert.AreEqual(refusedJournal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
+        // Nor does a --resume of a different kind find anything to continue.
+        var uninstallResumeRefusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Uninstall) with { Resume = true }, fixture.Runner, _ => lifecycle, null,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(uninstallResumeRefusal.Message, "No incomplete matching lifecycle operation exists", StringComparison.Ordinal);
+        Assert.AreEqual(refusedJournal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
 
         // A different upgrade proceeds without --resume and supersedes the refused entry.
         var operatorReference = $"ghcr.io/example/cameraagent@sha256:{new string('c', 64)}";
@@ -924,6 +930,195 @@ public sealed class LifecycleContractTests
         var completed = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
         Assert.AreEqual(LifecycleOperationKind.Uninstall, completed!.Kind);
         Assert.AreEqual(LifecycleOperationPhase.Completed, completed.Phase);
+    }
+
+    [TestMethod]
+    public async Task SettleRefusedOperation_ResumedMutatedOperationRestoredBeforeFailureIsNotRefused()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        // The operation as BeginAsync returned it on --resume: it had started mutating before the interruption.
+        var begun = new LifecycleOperationState(
+            DeploymentSchemaVersions.LifecycleOperation, Guid.NewGuid(), LifecycleOperationKind.Upgrade,
+            fixture.InstanceId, new string('5', 64), LifecycleOperationPhase.Mutating, InstallationStatus.Running,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, fixture.Manifest.Image,
+            fixture.Manifest.Image with { ImageId = $"sha256:{new string('6', 64)}" }, fixture.Manifest.Catalog,
+            MutationStarted: true);
+        // The journal after the resumed run restored the original runtime and cleared the flag, immediately before
+        // its next mutation record: the only window in which a failure reaches the wrapper on such an operation.
+        var restored = begun with { Phase = LifecycleOperationPhase.Prepared, MutationStarted = false };
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            fixture.Paths.LifecycleStatePath, restored, DeploymentJsonContext.Default.LifecycleOperationState, CancellationToken.None);
+        var journal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
+
+        await CameraAgentLifecycleManager.SettleRefusedOperationAsync(
+            fixture.Paths, begun, new IOException("simulated recovery-record write failure"));
+
+        // The journal's current flag is not a history of mutation: the record keeps its recovery semantics.
+        Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(InstallationStatus.Running, retained!.Status);
+        Assert.IsNull(retained.FailureCode);
+
+        // The same journal state behind an operation that never mutated is a refusal.
+        await CameraAgentLifecycleManager.SettleRefusedOperationAsync(
+            fixture.Paths, restored, new InstallerException("simulated pre-mutation refusal"));
+        retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(InstallationStatus.Failed, retained!.Status);
+        Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, retained.FailureCode);
+        Assert.IsFalse(retained.MutationStarted);
+
+        // A record that is not the begun operation, or is no longer running, is never touched.
+        var journalAfterRefusal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
+        await CameraAgentLifecycleManager.SettleRefusedOperationAsync(
+            fixture.Paths, restored with { OperationId = Guid.NewGuid() }, new InstallerException("other"));
+        await CameraAgentLifecycleManager.SettleRefusedOperationAsync(
+            fixture.Paths, restored, new InstallerException("already failed"));
+        Assert.AreEqual(journalAfterRefusal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
+    }
+
+    [TestMethod]
+    public async Task RollbackAsync_ProceedsWithoutResumeAfterLegacyPreMutationRefusalJournal()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        var candidateImageId = $"sha256:{new string('5', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
+        var lifecycle = new FakeLifecycleClient();
+        var upgraded = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = candidateReference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual("completed", upgraded.Outcome);
+        var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
+        // The journal an earlier release left behind for a label-agreement refusal: running, unmutated, no code.
+        var legacyRequest = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = $"ghcr.io/example/cameraagent@sha256:{new string('e', 64)}",
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+        var legacy = new LifecycleOperationState(
+            DeploymentSchemaVersions.LifecycleOperation, Guid.NewGuid(), LifecycleOperationKind.Upgrade,
+            fixture.InstanceId, legacyRequest.ComputeRequestSha256(), LifecycleOperationPhase.Prepared, InstallationStatus.Running,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, manifest.Image, null, manifest.Catalog);
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            fixture.Paths.LifecycleStatePath, legacy, DeploymentJsonContext.Default.LifecycleOperationState, CancellationToken.None);
+
+        var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => lifecycle,
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
+
+        Assert.AreEqual("completed", rolledBack.Outcome);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        var superseding = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreNotEqual(legacy.OperationId, superseding!.OperationId);
+        Assert.AreEqual(LifecycleOperationKind.Rollback, superseding.Kind);
+
+        // --resume of the matching request still continues an unmutated incomplete record: crash-between-records
+        // recovery keeps its operation ID.
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            fixture.Paths.LifecycleStatePath, legacy with { OriginalImage = fixture.Manifest.Image },
+            DeploymentJsonContext.Default.LifecycleOperationState, CancellationToken.None);
+        var manifestNow = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
+        var resumed = await CameraAgentLifecycleManager.BeginAsync(
+            legacyRequest with { Resume = true }, fixture.Paths, LifecycleOperationKind.Upgrade, manifestNow, CancellationToken.None);
+        Assert.AreEqual(legacy.OperationId, resumed.OperationId);
+    }
+
+    [TestMethod]
+    public async Task UpgradeAsync_SettlementFailureNeverReplacesTheRefusal()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        var candidateImageId = $"sha256:{new string('9', 64)}";
+        var contradicting = CandidateContractLabels();
+        contradicting["io.hvo.skymonitor.minimum-compatible-revision"] = new string('6', 40);
+        using var release = SignedImageReleaseFixture.Create(fixture.Root, candidateImageId, contradicting);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateImageId, candidateImageId, fixture.Uid, fixture.Gid);
+        // Once the journal has been opened, replace it with bytes the settlement cannot read, so the settlement's
+        // own failure competes with the gate's refusal. (The owner-directory normalisation inside the atomic
+        // writer defeats a read-only directory as the fault, so the fault is the retained bytes themselves.)
+        const string corrupted = "{";
+        fixture.Runner.OnCandidateInspect = () => File.WriteAllText(fixture.Paths.LifecycleStatePath, corrupted);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageManifest = release.ManifestPath,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer));
+
+        StringAssert.Contains(exception.Message, "minimum compatible revision", StringComparison.Ordinal);
+        // The settlement failed and changed nothing; the journal is exactly what the fault left.
+        Assert.AreEqual(corrupted, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
+    }
+
+    [TestMethod]
+    public async Task UpgradeAsync_CancellationBeforeMutationIsNotRefusedAndDoesNotBlock()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        var candidateImageId = $"sha256:{new string('5', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.OnCandidateInspect = () => throw new OperationCanceledException("simulated cancellation during preparation");
+        var lifecycle = new FakeLifecycleClient();
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = candidateReference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(InstallationStatus.Running, retained!.Status);
+        Assert.IsNull(retained.FailureCode);
+        Assert.IsFalse(retained.MutationStarted);
+
+        // The cancelled, unmutated operation is resumable and blocks nothing else.
+        fixture.Runner.OnCandidateInspect = null;
+        var uninstalled = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Uninstall), fixture.Runner, _ => lifecycle, null,
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual("completed", uninstalled.Outcome);
+    }
+
+    [TestMethod]
+    public async Task CatalogGarbageCollection_RefusedSelectionHoldsNoReference()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        const string candidateVersion = "hyg-v4.2-p3-s2-r2";
+        var candidate = fixture.Manifest.Catalog with { PackageVersion = candidateVersion };
+        var refused = new LifecycleOperationState(
+            DeploymentSchemaVersions.LifecycleOperation, Guid.NewGuid(), LifecycleOperationKind.CatalogSelect,
+            fixture.InstanceId, new string('5', 64), LifecycleOperationPhase.CandidateValidated, InstallationStatus.Failed,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, fixture.Manifest.Image, null, fixture.Manifest.Catalog, candidate,
+            FailureCode: CameraAgentLifecycleManager.RefusedFailureCode, FailureMessage: "refused");
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            fixture.Paths.LifecycleStatePath, refused, DeploymentJsonContext.Default.LifecycleOperationState, CancellationToken.None);
+
+        Assert.IsFalse(await CatalogLifecycleManager.IsReferencedAsync(fixture.Paths, candidateVersion, CancellationToken.None));
+
+        // The same record while it was still running did hold the reference.
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            fixture.Paths.LifecycleStatePath, refused with { Status = InstallationStatus.Running, FailureCode = null, FailureMessage = null },
+            DeploymentJsonContext.Default.LifecycleOperationState, CancellationToken.None);
+        Assert.IsTrue(await CatalogLifecycleManager.IsReferencedAsync(fixture.Paths, candidateVersion, CancellationToken.None));
     }
 
     [TestMethod]
@@ -1589,6 +1784,7 @@ public sealed class LifecycleContractTests
         public bool OmitOwnershipLabel { get; set; }
         public bool RejectNextStop { get; set; }
         public bool RejectNextBackup { get; set; }
+        public Action? OnCandidateInspect { get; set; }
         public List<string> Events { get; } = [];
         public List<string> LoggedContainers { get; } = [];
 
@@ -1656,6 +1852,7 @@ public sealed class LifecycleContractTests
             if (arguments is ["image", "inspect", var inspectedReference] && candidateImageId is not null)
             {
                 var isCandidate = inspectedReference == candidateReference;
+                if (isCandidate) OnCandidateInspect?.Invoke();
                 var inspectedImageId = isCandidate ? candidateImageId : initialImageId;
                 var inspectedDigest = isCandidate ? candidateReference : initialReference;
                 var labels = new Dictionary<string, string>

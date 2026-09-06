@@ -167,7 +167,7 @@ internal static class CatalogLifecycleManager
                     lifecycleControlToken, verificationToken, candidate, operation, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception) when (!request.DryRun)
+        catch (Exception exception) when (!request.DryRun && exception is not OperationCanceledException)
         {
             // A catalog selection refused between its journal entry and its mutation record is settled as terminal
             // for the same reason as an image transition: nothing was touched, so nothing may report itself running.
@@ -605,7 +605,7 @@ internal static class CatalogLifecycleManager
         return recoveredOperationId;
     }
 
-    private static async Task<bool> IsReferencedAsync(
+    internal static async Task<bool> IsReferencedAsync(
         InstallationPaths paths,
         string version,
         CancellationToken cancellationToken)
@@ -682,7 +682,8 @@ internal static class CatalogLifecycleManager
         {
             var operation = await CameraAgentLifecycleManager.ReadOperationAsync(path, cancellationToken).ConfigureAwait(false)
                 ?? throw new InstallerException("A retained lifecycle operation is empty.");
-            if (operation.Status != InstallationStatus.Completed &&
+            // A refused selection is terminal and never selected its candidate, so it holds no reference.
+            if (operation.Status != InstallationStatus.Completed && !CameraAgentLifecycleManager.IsRefused(operation) &&
                 (operation.OriginalCatalog?.PackageVersion == version || operation.CandidateCatalog?.PackageVersion == version))
             {
                 return true;

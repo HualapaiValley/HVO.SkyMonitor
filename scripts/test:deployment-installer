@@ -1336,16 +1336,21 @@ SIGNED_DOCKER_SHIM
   test "$(jq -er '.lifecycleCondition' "$signed_instance_root/instance-manifest.json")" = Uninstalled
   test "$(signed_record_fingerprint)" = absent
   test ! -e "$signed_evidence_path"
-  if docker inspect "$signed_container" >/dev/null 2>&1; then
-    printf 'The signed instance container survived its uninstall.\n' >&2
-    exit 1
-  fi
+  # The local-runner profile runs two containers, so both must be gone.
+  for signed_uninstalled_container in "$signed_container" "$signed_container-replay"; do
+    if docker inspect "$signed_uninstalled_container" >/dev/null 2>&1; then
+      printf 'Container %s survived the signed instance uninstall.\n' "$signed_uninstalled_container" >&2
+      exit 1
+    fi
+  done
+  rm -rf "$signed_evidence_root/11-post-refusal-uninstall"
   mkdir -p "$signed_evidence_root/11-post-refusal-uninstall"
   cp "$root/signed-uninstall.json" "$signed_evidence_root/11-post-refusal-uninstall/signed-uninstall.json"
   cp "$signed_lifecycle_state" "$signed_evidence_root/11-post-refusal-uninstall/lifecycle.json"
   cp "$signed_instance_root/instance-manifest.json" "$signed_evidence_root/11-post-refusal-uninstall/instance-manifest.json"
   printf 'image-distribution.json is absent\n' >"$signed_evidence_root/11-post-refusal-uninstall/image-distribution.absent"
-  printf 'container %s is absent\n' "$signed_container" >"$signed_evidence_root/11-post-refusal-uninstall/container-runtime.txt"
+  printf 'container %s is absent\ncontainer %s-replay is absent\n' "$signed_container" "$signed_container" \
+    >"$signed_evidence_root/11-post-refusal-uninstall/container-runtime.txt"
 
   {
     printf 'signed release campaign\n'
