@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  scripts/pr:review-request --repo OWNER/REPO --pr N --issue N \
+    --mode initial|correction|base-sync --round N --command-id CMD-ID \
+    --participant-id ID --acceptance-file FILE --lens-file FILE \
+    --profile fast|standard|deep --primary PROVIDER --fallback PROVIDER \
+    --route TEXT --model MODEL --effort EFFORT --tests-file FILE \
+    --evidence-file FILE [--call-sites-file FILE] [--instructions-file FILE] \
+    [--evidence-pack FILE] [--output FILE]
+
+  scripts/pr:review-request --repo OWNER/REPO --pr N \
+    --recorded-comment COMMENT_ID [--output FILE]
+
+The normal mode derives target/head SHAs, the previous reviewed head, exact
+range, and prior-finding checklist from live PR data. Caller-provided files hold
+issue-specific lenses and evidence pointers. The recorded-comment form replays
+an immutable historical request for range-validation dry runs.
+EOF
+}
+
+fail() {
+    printf '%s\n' "$*" >&2
+    exit 1
+}
+
+require_file() {
+    local option="$1"
+    local path="$2"
+    [[ -f "$path" ]] || fail "$option requires a readable file: $path"
+}
+
+repo=""
+pr=""
+issue=""
+mode=""
+round=""
+command_id=""
+participant_id=""
+acceptance_file=""
+lens_file=""
+profile=""
+primary=""
+fallback=""
+route=""
+model=""
+effort=""
+tests_file=""
+evidence_file=""
+call_sites_file=""
+instructions_file=""
+evidence_pack=""
+output_file=""
+recorded_comment=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo|--pr|--issue|--mode|--round|--command-id|--participant-id|--acceptance-file|--lens-file|--profile|--primary|--fallback|--route|--model|--effort|--tests-file|--evidence-file|--call-sites-file|--instructions-file|--evidence-pack|--output|--recorded-comment)
+            [[ -n "${2:-}" ]] || fail "Missing value for $1."
+            case "$1" in
+                --repo) repo="$2" ;;
+                --pr) pr="$2" ;;
+                --issue) issue="$2" ;;
+                --mode) mode="$2" ;;
+                --round) round="$2" ;;
+                --command-id) command_id="$2" ;;
+                --participant-id) participant_id="$2" ;;
+                --acceptance-file) acceptance_file="$2" ;;
+                --lens-file) lens_file="$2" ;;
+                --profile) profile="$2" ;;
+                --primary) primary="$2" ;;
+                --fallback) fallback="$2" ;;
+                --route) route="$2" ;;
+                --model) model="$2" ;;
+                --effort) effort="$2" ;;
+                --tests-file) tests_file="$2" ;;
+                --evidence-file) evidence_file="$2" ;;
+                --call-sites-file) call_sites_file="$2" ;;
+                --instructions-file) instructions_file="$2" ;;
+                --evidence-pack) evidence_pack="$2" ;;
+                --output) output_file="$2" ;;
+                --recorded-comment) recorded_comment="$2" ;;
+            esac
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *) fail "Unknown option: $1" ;;
+    esac
+done
+
+[[ "$repo" =~ ^[^/]+/[^/]+$ ]] || fail "--repo OWNER/REPO is required."
+[[ "$pr" =~ ^[1-9][0-9]*$ ]] || fail "--pr must be a positive number."
+
+emit() {
+    if [[ -n "$output_file" ]]; then
+        printf '%s\n' "$1" > "$output_file"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+if [[ -n "$recorded_comment" ]]; then
+    [[ "$recorded_comment" =~ ^[1-9][0-9]*$ ]] || fail "Recorded comment ID is invalid."
+    recorded_body="$(gh api "repos/$repo/issues/comments/$recorded_comment" --jq .body)"
+    recorded_request="$(awk '
+        /^```text[[:space:]]*$/ { capture = 1; next }
+        capture && /^```[[:space:]]*$/ { exit }
+        capture { print }
+    ' <<<"$recorded_body")"
+    [[ -n "$recorded_request" ]] || fail "Recorded comment has no fenced review request."
+    grep -Fq 'Exact review range:' <<<"$recorded_request" || fail "Recorded request has no exact range."
+    emit "$recorded_request"
+    exit 0
+fi
+
+[[ "$issue" =~ ^[1-9][0-9]*$ ]] || fail "--issue must be a positive number."
+[[ "$mode" =~ ^(initial|correction|base-sync)$ ]] || fail "--mode is invalid."
+[[ "$round" =~ ^[0-3]$ ]] || fail "--round must be 0 through 3."
+[[ "$command_id" =~ ^CMD-[A-Z0-9][A-Z0-9-]*$ ]] || fail "--command-id is invalid."
+[[ "$participant_id" =~ ^[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || fail "--participant-id is invalid."
+[[ "$profile" =~ ^(fast|standard|deep)$ ]] || fail "--profile is invalid."
+[[ "$effort" =~ ^(medium|high|xhigh|max)$ ]] || fail "--effort is invalid for review."
+[[ -n "$primary" && -n "$fallback" && -n "$route" && -n "$model" ]] || fail "Provider, route, model, and effort are required."
+require_file --acceptance-file "$acceptance_file"
+require_file --lens-file "$lens_file"
+require_file --tests-file "$tests_file"
+require_file --evidence-file "$evidence_file"
+[[ -z "$call_sites_file" ]] || require_file --call-sites-file "$call_sites_file"
+[[ -z "$instructions_file" ]] || require_file --instructions-file "$instructions_file"
+
+pr_json="$(gh pr view "$pr" --repo "$repo" --json baseRefOid,headRefOid,title)"
+target_base="$(jq -er '.baseRefOid' <<<"$pr_json")"
+current_head="$(jq -er '.headRefOid' <<<"$pr_json")"
+[[ "$target_base" =~ ^[0-9a-f]{40}$ && "$current_head" =~ ^[0-9a-f]{40}$ ]] || fail "PR SHAs are not immutable full SHAs."
+merge_base="$(git merge-base "$target_base" "$current_head")" ||
+    fail "Cannot calculate the PR merge base from local commit objects."
+[[ "$merge_base" =~ ^[0-9a-f]{40}$ ]] || fail "PR merge base is not a full SHA."
+
+comments_stream="$(gh api --method GET --paginate "repos/$repo/issues/$pr/comments?per_page=100")"
+comments_json="$(jq -cs '[.[][]]' <<<"$comments_stream")"
+
+previous_head="none"
+prior_report=""
+prior_checklist="none"
+if [[ "$mode" != initial ]]; then
+    prior_report="$(jq -r '
+        [.[] | select(.body | test("(?i)(review (started and )?completed|review complete|verdict:[[:space:]]*(clean|converged|corrections required))"))]
+        | last | .body // empty
+    ' <<<"$comments_json")"
+    [[ -n "$prior_report" ]] || fail "No prior completed review was found in the PR ledger."
+    previous_range="$(printf '%s\n' "$prior_report" | grep -Eo '[0-9a-f]{40}\.\.[0-9a-f]{40}' | tail -n 1 || true)"
+    [[ -n "$previous_range" ]] || fail "Prior review does not attest a full-SHA range."
+    previous_head="${previous_range##*..}"
+
+    prior_checklist="$(printf '%s\n' "$prior_report" |
+        grep -Ei '(^|[^[:alnum:]])([HMLS][0-9]+)([^[:alnum:]]|$)|finding|unresolved|verified (corrected|deferred)' |
+        tail -n 40 || true)"
+    [[ -n "$prior_checklist" ]] || prior_checklist="none; prior report states no findings"
+fi
+
+case "$mode" in
+    initial) exact_range="$merge_base..$current_head (complete merge-base-to-head PR diff)" ;;
+    correction) exact_range="$previous_head..$current_head (correction delta and its concrete interactions)" ;;
+    base-sync) exact_range="merge resolution $previous_head..$current_head and complete PR diff $target_base..$current_head" ;;
+esac
+
+if [[ "$mode" == correction && -z "$evidence_pack" ]]; then
+    fail "Correction review requires --evidence-pack."
+fi
+if [[ "$mode" == correction && ( -z "$call_sites_file" || -z "$instructions_file" ) ]]; then
+    fail "Correction review requires changed-symbol call sites and applicable instruction excerpts."
+fi
+
+if [[ -n "$evidence_pack" ]]; then
+    pack_dir="$(dirname "$evidence_pack")"
+    [[ -d "$pack_dir" ]] || fail "Evidence-pack directory does not exist: $pack_dir"
+    {
+        printf '# Bounded Review Evidence Pack\n\n'
+        printf 'Mode: %s\nTarget base: %s\nPrevious reviewed head: %s\nCurrent head: %s\nExact range: %s\n\n' \
+            "$mode" "$target_base" "$previous_head" "$current_head" "$exact_range"
+        if [[ "$previous_head" != none ]]; then
+            printf '## Delta files and size\n\n```text\n'
+            git diff --stat "$previous_head..$current_head"
+            git diff --name-only "$previous_head..$current_head"
+            printf '```\n\n'
+        fi
+        printf '## Prior full report\n\n%s\n\n' "${prior_report:-none}"
+        printf '## Carried-finding checklist\n\n%s\n\n' "$prior_checklist"
+        printf '## Relevant tests and results\n\n%s\n\n' "$(<"$tests_file")"
+        printf '## Evidence pointers\n\n%s\n\n' "$(<"$evidence_file")"
+        printf '## Changed-symbol call sites\n\n%s\n\n' "$([[ -n "$call_sites_file" ]] && cat "$call_sites_file" || printf 'none supplied for this mode')"
+        printf '## Applicable instruction excerpts\n\n%s\n' "$([[ -n "$instructions_file" ]] && cat "$instructions_file" || printf 'see repository canonical instructions')"
+    } > "$evidence_pack"
+fi
+
+request="$(printf '%s\n' \
+    "Review mode: $mode" \
+    "Issue and PR: #$issue / #$pr" \
+    "Dispatch command ID and target participant ID: $command_id / $participant_id" \
+    "Acceptance criteria: $(<"$acceptance_file")" \
+    "Target base SHA: $target_base" \
+    "PR merge-base SHA: $merge_base" \
+    "Previous reviewed head SHA: $previous_head" \
+    "Current head SHA: $current_head" \
+    "Exact review range: $exact_range" \
+    "Correction rereview count: $round/3" \
+    "Required capability lens: $(<"$lens_file")" \
+    "Requested capability profile: $profile" \
+    "Primary provider: $primary" \
+    "Fallback provider: $fallback" \
+    "Execution route: $route" \
+    "Requested model and reasoning effort: $model / $effort" \
+    "Actual provider, model, and reasoning effort: pending dispatch/completion ledger" \
+    "Tests and failure modes to evaluate: $(<"$tests_file")" \
+    "Local evidence: $(<"$evidence_file")" \
+    "Prior findings and dispositions: $prior_checklist" \
+    "Prior-finding verification checklist: $prior_checklist" \
+    "Evidence pack: ${evidence_pack:-not required for this mode}" \
+    "Expected output: exact-range attestation; itemized prior-finding dispositions; findings by severity with paths and minimal fixes; CLEAN, corrections required, or INCOMPLETE with remaining work" \
+    "Start acknowledgement: acknowledge on this PR within 15 minutes with command ID, participant ID, route, provider, model, effort, and exact range.")"
+
+emit "$request"

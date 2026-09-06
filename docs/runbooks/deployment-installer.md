@@ -153,7 +153,11 @@ published without a registry push that value is a computed index digest and is
 not resolvable with `docker pull`.
 
 An upgrade accepts the same options and writes the same evidence before the
-operation begins:
+operation begins. It selects the platform from the architecture recorded for
+the instance's Docker daemon at installation, not from the machine running the
+CLI, so a remote or cross-architecture daemon is served the archive it can run;
+a release that does not publish that architecture is refused, naming what it
+publishes, before anything is downloaded:
 
 ```bash
 hvo-skymonitor cameraagent upgrade \
@@ -589,8 +593,9 @@ declaration and requires the current contract, matching an in-place upgrade. `--
 host already holds and is read from the local Docker image store. `--image-manifest`, `--image-index`, and
 `--image-version` instead name a signed image release from the train above and are resolved exactly as an
 upgrade resolves one: the same signature and index verification, the same rollback protection, the same
-offline-archive identification, and the same platform selection, which follows the host operating system's
-architecture. `--asset-base-url`, `--channel`, and `--no-download` apply to them as they do to an
+offline-archive identification, and the same platform selection, which follows the architecture recorded for the
+instance's Docker daemon rather than the machine running the CLI, so the report describes exactly the platform the
+upgrade acquires. `--asset-base-url`, `--channel`, and `--no-download` apply to them as they do to an
 upgrade and are rejected without `--image-manifest` or `--image-index`. A local-media manifest is read from disk
 whether or not `--no-download` is given, so the flag matters only for an `https://` manifest or index. A signed release and `--image-ref` are mutually
 exclusive here for the same reason install and upgrade refuse the combination.
@@ -719,6 +724,14 @@ the exact command with `--resume`. A failed candidate restores the exact prior
 Compose, image, and identity records before capture resumes. Noncurrent manifests
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
+
+Capture-admission initialization is a CameraAgent startup responsibility that
+runs after configuration initialization and before the processing and capture
+workers; it does not depend on the camera capture worker reaching its loop. The
+lifecycle client treats uninitialized `Initializing` or `Unavailable` snapshots
+as transient startup observations. Once capture admission is initialized, a
+`Running` or terminal `Unavailable` snapshot fails a drain confirmation after
+the first state read instead of consuming the full drain deadline.
 
 Uninstall removes only the selected Compose runtime and preserves config,
 secrets, state, evidence, rollback identities, and shared catalogs. Purge is a

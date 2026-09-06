@@ -125,6 +125,92 @@ token estimate.
 - **Decision:** use `C1.1` for the continuing bounded trial. Keep `C1` as the
   fallback until the decision thresholds below are evaluated.
 
+### E-005: provider-name collision and enrollment
+
+- **Observation:** an OpenCode session using Claude for an unrelated ARM64 task
+  and a Claude Code session implementing #628 were both described as `Claude`.
+  Two sessions then consumed the same protocol authorization and independently
+  created duplicate issues #673 and #674.
+- **Root cause:** provider name was treated as participant identity, and an
+  agent that loaded `AGENTS.md` could infer that it belonged to the active
+  roadmap pool without an explicit enrollment boundary.
+- **Repair:** retain #674, close #673 as its duplicate, and require immutable
+  harness/provider/host/session identities, a three-message join handshake,
+  participant-bound command IDs and receipts, and single-writer slot leases.
+  The unrelated ARM64 work remains outside epic #513 unless explicitly
+  enrolled.
+- **Decision:** loading repository instructions never enrolls a session. A new
+  participant receives no roadmap claim or actionable command before `JOINED
+  ACK`; provider-only names are display labels. `C1.2` remains disabled until
+  the identity, lease, idempotency, and compare-and-swap tests land in #674.
+
+### E-006: correction-review context cost
+
+- **Observation:** PR #676 correction rereview 1/3 changed one test-fixture
+  file, verified one material ARM64 finding across 41 fixture consumers, and
+  used 44,282 reviewer tokens. The review was substantively justified, but its
+  execution cost dominated the compact coordinator messages.
+- **Decision:** record tokens, elapsed time, diff size, mode/profile, and
+  findings per round. Correction dispatch includes a bounded evidence pack with
+  the previous full report, complete carried-finding checklist, exact delta,
+  changed-symbol call sites, relevant tests, and applicable instructions. It
+  may omit unrelated history and repeated gates but never reachable code.
+- **Safety floor:** a budget limit returns `INCOMPLETE` and escalates; it cannot
+  imply `CLEAN`. Narrow test/docs corrections with no carried material finding
+  may use an advertised `gpt-5.6-luna`/high route; ordinary code uses
+  `gpt-5.6-terra`/high when available; security, durability, data-loss,
+  acceptance, and material-correctness work remains deep on the strongest
+  supported route.
+- **Next measurement:** collect at least three post-change correction rounds
+  before changing defaults. Compare median tokens per changed line and verified
+  finding together with incomplete reports, reopened findings, CI defects, and
+  post-merge follow-ups.
+
+### E-007: detached reviewer lifetime under a command harness
+
+- **Observation:** the first live #679 dispatch proved request-comment-before-
+  launch ordering, then emitted `thread.started` and `turn.started` but the
+  reviewer disappeared as soon as the dispatcher command returned. `nohup` did
+  not preserve the child because the command harness reaped its descendants.
+- **Repair:** keep the dispatcher alive with `wait` until the resumed reviewer
+  exits, record a process-terminal ledger entry, and reject exit zero without a
+  result file. The operator heartbeat continues independently while the
+  dispatcher tool session remains active.
+- **Decision:** a detached child is not a portable persistence mechanism. A
+  dispatch is not complete merely because its PID briefly exists; require the
+  durable request, STARTED launch ledger, terminal process ledger, and inspected
+  reviewer report.
+
+### E-008: resumed CLI nested-sandbox failure
+
+- **Observation:** the corrected #679 live dispatcher remained active through
+  process completion and produced its report, but the enrolled Codex CLI could
+  not start a no-op command because nested `bwrap` loopback setup returned
+  `RTM_NEWADDR: Operation not permitted`. The attempt used 80,158 input tokens
+  (68,608 cached) yet inspected no files and correctly returned `INCOMPLETE`.
+- **Repair:** count neither the process exit nor its report file as a review
+  verdict. Record `INCOMPLETE`, avoid repeating the failed route, and enroll a
+  collaboration-agent fallback before issuing a fresh exact-range command.
+- **Decision:** never add a sandbox-bypass flag just to obtain a review. An
+  unsandboxed CLI is eligible only when external isolation was separately
+  verified and recorded; otherwise use the enrolled harness-native review
+  route. Measure failed-route tokens as coordination overhead.
+
+### E-009: concurrent dispatcher reservation race
+
+- **Observation:** durable request and reservation comments made sequential
+  retries safe, but two dispatcher processes could read the ledger before
+  either reservation was visible, post two reservations, and launch the same
+  enrolled participant twice.
+- **Repair:** acquire one nonblocking, host-local `flock` keyed to the immutable
+  participant/session identity before reading the ledger, and hold it through
+  terminal process state. A contender returns `DISPATCH_BUSY`; a delayed-ledger
+  concurrency test proves that only one reservation and one launch occur.
+- **Decision:** the participant ID binds a session to one host, so host-local
+  serialization plus the durable ledger is the dispatch boundary. Session
+  migration requires a new identity and join; reusing one participant identity
+  on two hosts is invalid.
+
 ## Candidate improvements
 
 Try one bounded change at a time and record it before changing the default:

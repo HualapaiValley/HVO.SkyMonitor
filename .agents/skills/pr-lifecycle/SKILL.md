@@ -5,10 +5,12 @@ description: Manage a pull request from draft creation through review, correctio
 
 # Pull Request Lifecycle
 
-This skill is the canonical detailed PR procedure for this repository. It
-supplements the mandatory invariants in `AGENTS.md` and the validation and
-handoff rules in `docs/planning/agent-execution.md`. User instructions take
-precedence; identify any conflict before changing PR state.
+This skill is the independently loaded PR-lifecycle entry point. The complete
+operating procedure lives in `docs/planning/agent-execution.md`; this file keeps
+the non-negotiable PR contracts, selection matrix, and guards needed before a
+harness follows that procedure. `AGENTS.md` remains the repository-wide entry
+point. User instructions take precedence; identify any conflict before changing
+PR state.
 
 ## Ownership and State
 
@@ -20,7 +22,7 @@ local implementation
   -> local candidate evidence
   -> draft PR
   -> review convergence or documented unavailability waiver
-  -> final target-branch synchronization and integration review
+  -> final target-branch synchronization and review if the target advanced
   -> ready for review
   -> classifier-selected protected CI
   -> merge, synchronize main, and clean up
@@ -51,6 +53,7 @@ Every review request must state:
 ```text
 Review mode: initial | correction | base-sync
 Issue and PR:
+Dispatch command ID and target participant ID:
 Acceptance criteria:
 Target base SHA:
 Previous reviewed head SHA:
@@ -73,6 +76,32 @@ Expected output:
 Start acknowledgement: acknowledge on this PR within 15 minutes and identify
   the execution route, provider, model, effort, and exact range.
 ```
+
+Generate this block with `scripts/pr:review-request`; inspect it before launch.
+Dispatch it with `scripts/pr:dispatch-review`, which must receive the durable
+request comment ID, hold the host-local participant/session dispatch lock, post
+a durable launch reservation, revalidate the current participant lease, and
+only then resume the same previously joined CLI session and append STARTED
+metadata. A concurrent dispatcher for that participant returns `DISPATCH_BUSY`;
+retry it only after the active dispatcher records terminal state and releases
+the lock. Bootstrap the session without review work, complete
+`JOIN REQUEST` -> `JOIN ACK` -> `JOINED ACK`, and pass its full local resume ID
+only to the launcher; the public participant identity retains the non-secret
+short ID. The dispatcher must stay alive and wait for the resumed reviewer;
+some harnesses reap detached descendants as soon as the parent command returns
+even when `nohup` was used. A retry resumes from an already-posted request,
+returns `ALREADY_CONSUMED` after STARTED, and requires explicit recovery if it
+finds only a reservation; it never launches a second reviewer automatically.
+The participant identity binds the session to one host; migrating it to another
+host requires a new identity and join rather than reuse across host-local locks.
+Do not reconstruct ranges or causal ordering in an ad hoc shell pipeline when
+these scripts support the route.
+
+If a resumed CLI reports that its nested read-only sandbox cannot execute, mark
+the attempt `INCOMPLETE` and use an explicitly enrolled collaboration-agent or
+other provider route. Do not bypass the sandbox merely to make the review run;
+any intentionally unsandboxed route requires separately verified external
+isolation and an explicit ledger record.
 
 ## Review Execution and Agent Selection
 
@@ -100,6 +129,13 @@ material-correctness finding keeps the review at `deep` until verified resolved.
 A base-sync review with no merge-created changes may use `standard`; conflicts
 or newly interacting boundaries require `deep`.
 
+Tier A/B receives one initial exact-range review and only finding-driven
+correction rereviews. `standard` is the default for Tier A and ordinary Tier B;
+concurrency, durability, security, CI-control, or cross-boundary Tier B risk is
+`deep`. Tier C/M remains `deep` unless its issue-specific evidence requires a
+stronger supported effort. Finalization does not create a review round when the
+fresh target SHA is unchanged as described below.
+
 At dispatch, map the profile to a model identifier that the current harness
 actually exposes. Current Codex documentation maps demanding work to `gpt-5.6`,
 balanced read-heavy work to `gpt-5.6-terra`, and narrow repeatable work to
@@ -118,6 +154,14 @@ capability profile: select for required capability first, availability second.
 Record requested profile, requested model/effort, execution route, and actual
 provider/model/effort in the append-only ledger. A missing actual value is
 `unknown`, not an inferred alias.
+
+For a narrow test-only or docs-only Tier A/B correction with no carried
+material finding, the least-cost currently advertised standard-capable route
+may use `gpt-5.6-luna` at high effort. Ordinary code corrections use
+`gpt-5.6-terra` at high effort when that identifier is available. Security,
+durability, data-loss, unresolved acceptance, or material-correctness findings
+remain `deep` on the strongest supported route. Never substitute an identifier
+the launcher does not advertise.
 
 Review modes have fixed ranges:
 
@@ -140,6 +184,18 @@ does not provide that evidence is an incomplete response, not convergence.
 Ask the same provider to correct the report within the active acquisition
 window; if it cannot, use the fallback/unavailability path without incrementing
 the correction-round count or changing the head.
+
+Before a correction launch, build a bounded evidence pack containing the exact
+delta, changed-symbol call sites, previous round's full report, complete
+carried-finding checklist, relevant tests/results, and applicable instruction
+excerpts. Limit unrelated preloaded history, documentation, and repeated green
+gates, but never restrict code reachable from the delta; the reviewer may read
+every caller or interaction needed. Record elapsed time, actual reviewer token
+usage when available, diff files/lines, mode/profile, and findings for each
+round. Budget exhaustion returns `INCOMPLETE` with remaining work and escalates;
+it can never imply `CLEAN`. Compare at least three post-change correction rounds
+before changing the default model mapping, including safety outcomes rather
+than token cost alone.
 
 ## Bounded Review Acquisition
 
@@ -247,9 +303,15 @@ protected CI, or merge.
    With `gh api`, use an explicit `--method GET` when passing query fields, or
    put the encoded query in the URL; otherwise `-f` fields default to a POST and
    can accidentally target issue creation instead of performing a read.
-2. Fetch the target branch and merge it into the topic branch. Do not rebase or
-   force-push reviewed history.
-3. Resolve conflicts, run affected local gates, and obtain a base-sync review.
+2. Fetch the target branch and compare its exact SHA with the target-base SHA
+   already covered by the converged review. When they are equal, append `base
+   unchanged at <sha>; no merge and no base-sync review required` and proceed
+   without changing the head. When the target advanced at all, merge it into the
+   topic branch; do not rebase or force-push reviewed history.
+3. After an advancing-target merge, resolve conflicts, run affected local gates,
+   and obtain a base-sync review. Use `standard` when there was no conflict,
+   shared-file/contract overlap, or material changed interaction; use `deep` for
+   any of those conditions.
 4. Fetch again and prove the target base and PR head are current, mergeable, and
    reviewed. If either moved, repeat synchronization or review as applicable.
    At this draft pre-ready gate, use the provider's structural mergeability
