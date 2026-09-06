@@ -488,39 +488,76 @@ public sealed class RollingCombinationWindowLineageTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    public async Task LiveExecutionResolvesTheWindowAfterAcceptance()
+    public async Task LiveExecutionRetentionProtectsEligibleCandidateUntilWindowPins()
     {
-        // A pass-through calibration leaves the compatibility axes alone, so the raw identity would still
-        // admit every earlier capture. Only the moment the window is resolved can decide this case, which
-        // isolates it from the identity the window is compared against.
         var root = CreateRoot();
         ICameraModule? module = null;
         try
         {
-            using var provider = CreateProvider(root);
-            var configuration = CreateConfiguration(syntheticReferences: false);
+            var fault = new ArmableNodeFaultInjector("revision-barrier");
+            using var provider = CreateProvider(root, fault, maximumWindowInputs: 128);
+            var configuration = CreateRevisionBarrierConfiguration(SyntheticCalibration);
             module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
-            var (excludedReceipt, _) = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
+            _ = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
             using var store = CreateStore(root);
-            var excludedCalibration = await store.ReadNodeAsync(
-                excludedReceipt.Manifest.Descriptor.Capture.CaptureId,
-                "calibration",
-                CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(excludedCalibration);
-            Assert.HasCount(1, excludedCalibration.Outputs);
-            var excludedArtifactId = excludedCalibration.Outputs[0].ArtifactId;
+            var calibrations = await ReadOutputsAsync(root, "calibration").ConfigureAwait(false);
+            Assert.HasCount(CaptureCount, calibrations);
+            var oldestCandidate = calibrations[0];
+            foreach (var output in calibrations.Skip(WindowSize - 1))
+            {
+                await store.SetOutputAvailabilityAsync(
+                    output.OutputIdentitySha256, "Missing", "candidate-gap-test", CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            foreach (var output in await ReadOutputsAsync(root, RollingNodeId).ConfigureAwait(false))
+            {
+                await store.SetOutputAvailabilityAsync(
+                    output.OutputIdentitySha256, "Missing", "candidate-gap-test", CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            var expiredControl = await InsertIneligibleOutputsAsync(root, 508).ConfigureAwait(false);
 
             var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(
                 configuration,
                 await CreateSubmissionAsync(module, CaptureCount, CancellationToken.None).ConfigureAwait(false),
                 CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
-            await store.SetOutputAvailabilityAsync(
-                excludedCalibration.Outputs[0].OutputIdentitySha256,
-                "Missing",
-                "rolling-window-test",
-                CancellationToken.None).ConfigureAwait(false);
-            await DrainOneAsync(provider, configuration).ConfigureAwait(false);
+            var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+            var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+                static lane => lane.Name == "standard");
+            var handler = provider.GetServices<ICaptureLaneHandler>().Single(
+                static candidate => candidate.Lane == "standard");
+            var firstLease = await laneStore.ClaimAsync(
+                standard, "candidate-retention-1", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(firstLease);
+            fault.Arm();
+            var firstResult = await handler.HandleAsync(firstLease.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, firstResult.Outcome);
+            Assert.IsEmpty(await ReadPinsAsync(root, firstLease.Context.Execution!.ExecutionId).ConfigureAwait(false));
+
+            var holds = await store.ReadRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(holds.Any(hold => hold.ArtifactId == oldestCandidate.ArtifactId));
+            Assert.IsFalse(holds.Any(hold => hold.ArtifactId == expiredControl.ArtifactId));
+            var heldPaths = holds.SelectMany(static hold => new[]
+                {
+                    hold.PayloadRelativePath,
+                    hold.SidecarRelativePath
+                })
+                .Select(path => Path.GetFullPath(Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar))))
+                .ToHashSet(StringComparer.Ordinal);
+            _ = await provider.GetRequiredService<CaptureProcessingPersistence>().ExpireOutputsAsync(
+                root, DateTimeOffset.MaxValue, heldPaths, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(File.Exists(Path.Combine(
+                root, oldestCandidate.PayloadRelativePath.Replace('/', Path.DirectorySeparatorChar))));
+            Assert.IsFalse(File.Exists(expiredControl.PayloadPath));
+
+            await laneStore.ReleaseAsync(firstLease, CancellationToken.None).ConfigureAwait(false);
+            var secondLease = await laneStore.ClaimAsync(
+                standard, "candidate-retention-2", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(secondLease);
+            var secondResult = await handler.HandleAsync(secondLease.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, secondResult.Outcome, secondResult.Reason);
+            await laneStore.CompleteAsync(secondLease, CancellationToken.None).ConfigureAwait(false);
 
             var rolling = await store.ReadNodeAsync(
                 receipt.Manifest.Descriptor.Capture.CaptureId,
@@ -530,9 +567,20 @@ public sealed class RollingCombinationWindowLineageTests
             Assert.HasCount(1, rolling.Outputs);
             var sources = rolling.Outputs[0].Descriptor!.Artifact.SourceArtifactIds;
             Assert.HasCount(WindowSize, sources);
+            Assert.Contains(oldestCandidate.ArtifactId, sources);
 
-            // A window frozen at acceptance would still name the predecessor, which was eligible then.
-            Assert.DoesNotContain(excludedArtifactId, sources);
+            var live = (await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().ReadExecutionsAsync(
+                    ProcessingGraphExecutionClass.Live, 256, CancellationToken.None).ConfigureAwait(false))
+                .Single(execution => execution.CaptureId == receipt.Manifest.Descriptor.Capture.CaptureId);
+            var detail = await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
+                .ReadExecutionDetailAsync(live.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(detail);
+            var historicalInputs = detail.Nodes.Single(static node => node.NodeId == RollingNodeId).Inputs
+                .Where(static input => input.Kind == ProcessingGraphExecutionInputKind.ProcessingOutput)
+                .OrderBy(static input => input.WindowPosition)
+                .ToArray();
+            Assert.HasCount(WindowSize - 1, historicalInputs);
+            Assert.Contains(oldestCandidate.ArtifactId, historicalInputs.Select(static input => input.ArtifactId));
         }
         finally
         {
@@ -597,6 +645,84 @@ public sealed class RollingCombinationWindowLineageTests
         Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
         await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
         provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().NotifyLiveWorkChanged();
+    }
+
+    private sealed record OutputReference(
+        string OutputIdentitySha256,
+        Guid ArtifactId,
+        string PayloadRelativePath,
+        long CaptureSequence);
+
+    private sealed record IneligibleOutputControl(Guid ArtifactId, string PayloadPath);
+
+    private static async Task<OutputReference[]> ReadOutputsAsync(string root, string nodeId)
+    {
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output_identity_sha256, artifact_id, payload_relative_path, capture_sequence
+            FROM processing_outputs
+            WHERE node_id = $node AND availability_state = 'Available'
+            ORDER BY capture_sequence, output_identity_sha256;
+            """;
+        command.Parameters.AddWithValue("$node", nodeId);
+        var outputs = new List<OutputReference>();
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        while (await reader.ReadAsync().ConfigureAwait(false))
+        {
+            outputs.Add(new OutputReference(
+                reader.GetString(0),
+                Guid.ParseExact(reader.GetString(1), "N"),
+                reader.GetString(2),
+                reader.GetInt64(3)));
+        }
+        return outputs.ToArray();
+    }
+
+    private static async Task<IneligibleOutputControl> InsertIneligibleOutputsAsync(string root, int count)
+    {
+        var directory = Path.Combine(root, "ineligible");
+        Directory.CreateDirectory(directory);
+        var controlPayload = Path.Combine(directory, "0001.bin");
+        var controlSidecar = Path.Combine(directory, "0001.json");
+        await File.WriteAllBytesAsync(controlPayload, [1]).ConfigureAwait(false);
+        await File.WriteAllTextAsync(controlSidecar, "{}").ConfigureAwait(false);
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync().ConfigureAwait(false);
+        for (var ordinal = 1; ordinal <= count; ordinal++)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO processing_outputs(
+                    output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
+                    payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
+                    algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
+                    committed_unix_ms)
+                VALUES ($output, $capture, 'rolling-window-agent', 'calibration', $artifact,
+                        'Calibrated', 'ineligible', $payload, $sidecar, X'7B7D', $recipe,
+                        X'5B5D', X'7B7D', 1, $sequence, $committed);
+                """;
+            command.Parameters.AddWithValue(
+                "$output", string.Concat("F", ordinal.ToString("D63", CultureInfo.InvariantCulture)));
+            command.Parameters.AddWithValue(
+                "$capture", Guid.Parse($"90000000-0000-0000-0000-{ordinal:D12}").ToString("N"));
+            command.Parameters.AddWithValue(
+                "$artifact", Guid.Parse($"80000000-0000-0000-0000-{ordinal:D12}").ToString("N"));
+            command.Parameters.AddWithValue("$payload", $"ineligible/{ordinal:D4}.bin");
+            command.Parameters.AddWithValue("$sidecar", $"ineligible/{ordinal:D4}.json");
+            command.Parameters.AddWithValue("$recipe", new string('F', 64));
+            command.Parameters.AddWithValue("$sequence", CaptureCount);
+            command.Parameters.AddWithValue("$committed", FixtureUtc.ToUnixTimeMilliseconds() + ordinal);
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        await transaction.CommitAsync().ConfigureAwait(false);
+        return new IneligibleOutputControl(
+            Guid.Parse("80000000-0000-0000-0000-000000000001"), controlPayload);
     }
 
     private static async Task<string[]> ReadPinsAsync(string root, Guid executionId)
@@ -677,7 +803,8 @@ public sealed class RollingCombinationWindowLineageTests
 
     private static ServiceProvider CreateProvider(
         string root,
-        ICaptureProcessingFaultInjector? faultInjector = null)
+        ICaptureProcessingFaultInjector? faultInjector = null,
+        int maximumWindowInputs = 32)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -689,6 +816,8 @@ public sealed class RollingCombinationWindowLineageTests
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
                 ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
+                ["CameraAgent:ProcessingGraphs:MaximumWindowInputs"] = maximumWindowInputs.ToString(
+                    CultureInfo.InvariantCulture),
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1"
             }).Build());
         if (faultInjector is not null)

@@ -173,10 +173,14 @@ is unbounded; what is bounded is how many eligible-but-incompatible candidates
 the selector can look past, by its candidate limit of
 `min(512, 4 x MaximumWindowInputs)`. The durable processing-output retention
 root uses that same candidate bound per agent/node while never retaining fewer
-than the previous fixed floor of 100. This protects every output the selector
-can inspect between raw acceptance and live-node execution; the node's
-transaction then replaces its active pins with the exact selected window before
-reading those outputs.
+than the previous fixed floor of 100. For every unresolved live output window,
+retention also applies the live selector's agent, sequence, revision,
+publication, completion, and legacy-plan eligibility rules before reserving its
+bounded candidate set. Current-capture and ineligible outputs therefore cannot
+displace a candidate from the reservation between raw acceptance and live-node
+execution. The node's transaction then replaces its active pins with the exact
+selected window before reading those outputs; replay continues to freeze and
+pin its window atomically at submission.
 
 A trailing window is still allowed to be shorter than its maximum - a freshly
 started agent has no history - and the combination records only the sources it
