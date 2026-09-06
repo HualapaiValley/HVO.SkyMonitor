@@ -210,6 +210,14 @@ recreates the service. The self-contained installer performs the same authority
 transition. Neither workflow silently chooses the owner's durable password; the
 operator completes the required first-login replacement in CameraAgent.
 
+During an installer-managed restart, authenticated capture lifecycle commands
+may reach CameraAgent before capture-admission initialization completes. The
+endpoint reports that bounded startup window as `503 Service Unavailable` with
+`Retry-After`; the deployment client retries the same idempotent command within
+its existing drain deadline. HTTP `500` remains a terminal CameraAgent fault,
+not an initialization retry signal. This control traffic does not depend on
+LogicHost or change the owner-bootstrap boundary.
+
 ### Owner bootstrap status contract
 
 `GET /api/internal/owner-bootstrap/status` requires the configured local owner,

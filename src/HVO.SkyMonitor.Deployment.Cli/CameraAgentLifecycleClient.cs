@@ -49,9 +49,10 @@ internal sealed class CameraAgentLifecycleClient(
     // capture-control version: the operation journal is the transactional
     // authority, the CameraAgent completes a command that already matches its
     // durable state as a no-op, and the drained-boundary poll verifies the
-    // outcome. Each command carries a fresh command id so a retried or
-    // lost-acknowledgement command never replays an earlier idempotency record,
-    // and names its lifecycle operation in the recorded reason.
+    // outcome. Each lifecycle operation carries a fresh command id that is reused
+    // across its transient-response retries, so a lost acknowledgement cannot
+    // create multiple durable command records. The reason names the surrounding
+    // lifecycle operation.
     public async Task<LifecycleContinuity> PauseAndDrainAsync(
         Guid operationId,
         string verificationToken,
@@ -61,7 +62,7 @@ internal sealed class CameraAgentLifecycleClient(
         // The CameraAgent holds a pause until in-flight captures drain, so the
         // command and the boundary poll share one drain budget.
         var deadline = DateTimeOffset.UtcNow + _budgets.DrainDeadline;
-        await PostCommandAsync(client, "pause", operationId, _budgets.DrainDeadline, cancellationToken).ConfigureAwait(false);
+        await PostCommandAsync(client, "pause", operationId, deadline, cancellationToken).ConfigureAwait(false);
         // An acknowledged pause is itself evidence that the CameraAgent drained,
         // so the confirming poll keeps at least one read budget even when the
         // command consumed the shared drain budget.
@@ -86,33 +87,56 @@ internal sealed class CameraAgentLifecycleClient(
         // The CameraAgent acknowledges a resume only after its startup
         // initialization completes and any draining pause releases the command
         // gate, so a resume after a restart shares the drain-sized budget.
-        await PostCommandAsync(client, "resume", operationId, _budgets.DrainDeadline, cancellationToken).ConfigureAwait(false);
+        await PostCommandAsync(
+            client,
+            "resume",
+            operationId,
+            DateTimeOffset.UtcNow + _budgets.DrainDeadline,
+            cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task PostCommandAsync(
+    private async Task PostCommandAsync(
         HttpClient client,
         string action,
         Guid operationId,
-        TimeSpan budget,
+        DateTimeOffset deadline,
         CancellationToken cancellationToken)
     {
+        var commandId = Guid.NewGuid();
         try
         {
-            using var response = await WithBudgetAsync(
-                budget,
-                token => client.PostAsJsonAsync(
-                    new Uri($"/api/internal/deployment/lifecycle/{action}", UriKind.Relative),
-                    new
-                    {
-                        operationId = Guid.NewGuid(),
-                        reason = $"transactional lifecycle operation {operationId:D} {action}"
-                    },
-                    token),
-                cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            while (true)
             {
-                throw new InstallerException(
-                    $"CameraAgent rejected the lifecycle {action} command with status {(int)response.StatusCode}.");
+                var remaining = deadline - DateTimeOffset.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    throw new BudgetExceededException();
+                }
+                using var response = await WithBudgetAsync(
+                    remaining,
+                    token => client.PostAsJsonAsync(
+                        new Uri($"/api/internal/deployment/lifecycle/{action}", UriKind.Relative),
+                        new
+                        {
+                            operationId = commandId,
+                            reason = $"transactional lifecycle operation {operationId:D} {action}"
+                        },
+                        token),
+                    cancellationToken).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    return;
+                }
+                if (!IsTransientCommandStatus(response.StatusCode))
+                {
+                    throw new InstallerException(
+                        $"CameraAgent rejected the lifecycle {action} command with status {(int)response.StatusCode}.");
+                }
+                var retryDelay = RetryDelay(response, deadline);
+                if (retryDelay > TimeSpan.Zero)
+                {
+                    await Task.Delay(WholeMilliseconds(retryDelay), cancellationToken).ConfigureAwait(false);
+                }
             }
         }
         catch (BudgetExceededException)
@@ -124,6 +148,22 @@ internal sealed class CameraAgentLifecycleClient(
             throw new InstallerException(
                 $"CameraAgent did not accept the lifecycle {action} command: {Redaction.SafeDiagnostic(exception.Message)}", exception);
         }
+    }
+
+    private TimeSpan RetryDelay(HttpResponseMessage response, DateTimeOffset deadline)
+    {
+        var delay = response.Headers.RetryAfter?.Delta;
+        if (!delay.HasValue && response.Headers.RetryAfter?.Date is { } retryAt)
+        {
+            delay = retryAt - DateTimeOffset.UtcNow;
+        }
+        var remaining = deadline - DateTimeOffset.UtcNow;
+        var selected = delay ?? _budgets.DrainPollInterval;
+        if (selected <= TimeSpan.Zero || remaining <= TimeSpan.Zero)
+        {
+            return TimeSpan.Zero;
+        }
+        return selected < remaining ? selected : remaining;
     }
 
     // A restarted CameraAgent reports "Initializing", or "Unavailable" before its
@@ -295,6 +335,9 @@ internal sealed class CameraAgentLifecycleClient(
 
     private static bool IsTransient(HttpStatusCode status)
         => (int)status >= 500 || status is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests;
+
+    private static bool IsTransientCommandStatus(HttpStatusCode status)
+        => status != HttpStatusCode.InternalServerError && IsTransient(status);
 
     private static LifecycleContinuity Parse(JsonElement root)
     {
