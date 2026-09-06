@@ -166,9 +166,19 @@ when it finishes:
   do not satisfy operator-visible reporting.
 - The monitor collects state; the coordinator owns delivery. Do not delegate
   the delivery obligation to an observer that cannot inspect sibling work or
-  send to the main conversation. If the observer lacks either capability, keep
-  collection in a coordinator-owned background loop or poll directly on every
-  wake.
+  signal the coordinator. A timer or background shell loop whose output remains
+  buffered until someone manually polls it is only a collector and does not
+  satisfy the monitor requirement. When the harness lacks a native scheduled
+  wake, use one delegated observer that sends the coordinator a message every
+  five minutes, and keep the coordinator waiting on the mailbox or equivalent
+  event path between active work. If no signaling observer is available, poll
+  directly until one is available rather than claiming a buffered loop is a
+  working monitor.
+- Prove the signaling path after every start or active-set restart: require an
+  immediate baseline message and relay it to the main conversation. Treat a
+  late scheduled signal as a monitor failure, report the gap, repair or replace
+  the monitor, and have the coordinator poll directly until the replacement
+  proves its signaling path with a new immediate baseline.
 - On every wake, the monitor records, per issue or PR: the agent's last activity
   timestamp and current step; the PR head SHA, draft state, and merge state; the
   first line and timestamp of the latest ledger comment; and the state of shared
