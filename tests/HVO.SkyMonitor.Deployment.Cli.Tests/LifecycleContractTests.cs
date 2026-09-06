@@ -689,6 +689,109 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    public async Task UpgradeAsync_SignedReleaseResumeAfterLostAcknowledgementRetainsReleaseRecord()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        var candidateImageId = $"sha256:{new string('9', 64)}";
+        using var release = SignedImageReleaseFixture.Create(fixture.Root, candidateImageId, CandidateContractLabels());
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateImageId, candidateImageId, fixture.Uid, fixture.Gid);
+        var lifecycle = new FakeLifecycleClient { RejectNextResume = true };
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageManifest = release.ManifestPath,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+        var evidencePath = Path.Combine(fixture.Paths.DeploymentStateRoot, "image-distribution.json");
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer));
+
+        // The record is settled with the durable commit, before the resume whose acknowledgement was lost.
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(LifecycleOperationPhase.Committed, retained!.Phase);
+        Assert.AreEqual(candidateImageId, await ReadEvidenceImageIdAsync(evidencePath));
+
+        // A failure between the commit and the record write leaves no record; the resumed run must repair it rather
+        // than return completed while the instance runs a release the retained evidence does not name.
+        File.Delete(evidencePath);
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            request with { Resume = true }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer);
+
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.AreEqual(candidateImageId, result.Image!.ImageId);
+        Assert.AreEqual(candidateImageId, await ReadEvidenceImageIdAsync(evidencePath));
+        retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(LifecycleOperationPhase.Completed, retained!.Phase);
+    }
+
+    [TestMethod]
+    public async Task UpgradeAsync_ImageReferenceUpgradeOfSignedInstanceWithdrawsReleaseRecord()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        var signedImageId = $"sha256:{new string('9', 64)}";
+        using var release = SignedImageReleaseFixture.Create(fixture.Root, signedImageId, CandidateContractLabels());
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            signedImageId, signedImageId, fixture.Uid, fixture.Gid);
+        var lifecycle = new FakeLifecycleClient();
+        var evidencePath = Path.Combine(fixture.Paths.DeploymentStateRoot, "image-distribution.json");
+
+        var signed = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageManifest = release.ManifestPath,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer);
+        Assert.AreEqual("completed", signed.Outcome);
+        Assert.AreEqual(signedImageId, await ReadEvidenceImageIdAsync(evidencePath));
+
+        // Move the instance to an operator-supplied image that no signed release named.
+        var operatorReference = $"ghcr.io/example/cameraagent@sha256:{new string('c', 64)}";
+        var operatorImageId = $"sha256:{new string('d', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, signedImageId, signedImageId,
+            operatorReference, operatorImageId, fixture.Uid, fixture.Gid);
+        var moved = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = operatorReference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+
+        Assert.AreEqual("completed", moved.Outcome);
+        Assert.AreEqual(operatorImageId, moved.Image!.ImageId);
+        Assert.IsFalse(File.Exists(evidencePath), "The superseded release record survived an upgrade to an image no signed release named.");
+    }
+
+    /// <summary>
+    /// The signed compatibility record must agree with the labels the fake daemon reports for the candidate image,
+    /// whose revision differs from the fixture's default, or the label-agreement gate refuses the release.
+    /// </summary>
+    private static Dictionary<string, string> CandidateContractLabels()
+        => new(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
+        {
+            ["org.opencontainers.image.revision"] = new string('9', 40)
+        };
+
+    private static async Task<string?> ReadEvidenceImageIdAsync(string evidencePath)
+    {
+        using var evidence = JsonDocument.Parse(await File.ReadAllBytesAsync(evidencePath));
+        return evidence.RootElement.GetProperty("imageId").GetString();
+    }
+
+    [TestMethod]
     public async Task ReinstallAsync_PreservedInstanceVerifiesOwnerBeforeCommit()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
@@ -1365,6 +1468,8 @@ public sealed class LifecycleContractTests
             }
             if (arguments is ["compose", "version", ..]) return Task.FromResult(new ProcessResult(0, "v2", string.Empty));
             if (arguments is ["image", "pull", ..]) return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+            if (arguments is ["image", "load", ..] && candidateImageId is not null)
+                return Task.FromResult(new ProcessResult(0, $"Loaded image ID: {candidateImageId}\n", string.Empty));
             if (arguments is ["image", "inspect", var inspectedReference] && candidateImageId is not null)
             {
                 var isCandidate = inspectedReference == candidateReference;

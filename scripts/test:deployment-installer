@@ -1129,6 +1129,45 @@ SIGNED_DOCKER_SHIM
   assert_signed_running_image "$signed_image_b" "$signed_digest_b" signed-status-upgrade
   test "$(signed_record_fingerprint)" != "$signed_record_before"
   signed_record_before="$(signed_record_fingerprint)"
+
+  # An operator-supplied image that no signed release named must withdraw the retained record, otherwise the record
+  # keeps naming a release the instance no longer runs. Release A's image is still loaded from the candidate build,
+  # so the instance is moved to it by the identity the daemon reported at install rather than through a manifest.
+  "$signed_cli" cameraagent upgrade \
+    --instance-id "$signed_instance_id" \
+    --product-root "$root/product" \
+    --image-ref "$(jq -er '.image.imageId' "$root/signed-install.json")" \
+    --no-download \
+    --migration-backward-compatible \
+    --json >"$root/signed-image-reference-upgrade.json"
+  read_signed_status signed-status-image-reference-upgrade
+  capture_signed_state 03d-image-reference-upgrade signed-image-reference-upgrade signed-status-image-reference-upgrade
+  test "$(jq -er '.outcome' "$root/signed-image-reference-upgrade.json")" = completed
+  assert_signed_installed_identity \
+    "$(jq -er '.image.imageId' "$root/signed-image-reference-upgrade.json")" "$signed_image_a" "$signed_digest_a"
+  test ! -e "$signed_evidence_path"
+  test "$(signed_record_fingerprint)" = absent
+  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-image-reference-upgrade
+
+  # Returning to the signed candidate through its manifest records it again, so the remaining transitions start from
+  # the state they always did: release B running with its record present.
+  "$signed_cli" cameraagent upgrade \
+    --instance-id "$signed_instance_id" \
+    --product-root "$root/product" \
+    --channel local \
+    --image-manifest "$signed_manifest_b" \
+    --no-download \
+    --migration-backward-compatible \
+    --json >"$root/signed-reupgrade.json"
+  read_signed_status signed-status-reupgrade
+  capture_signed_state 03e-signed-upgrade-release-b signed-reupgrade signed-status-reupgrade
+  test "$(jq -er '.outcome' "$root/signed-reupgrade.json")" = completed
+  assert_signed_installed_identity \
+    "$(jq -er '.image.imageId' "$root/signed-reupgrade.json")" "$signed_image_b" "$signed_digest_b"
+  assert_signed_evidence_names "$signed_version_b" "$signed_image_b" "$signed_revision_b"
+  test "$(jq -er '.distribution.assetName' "$signed_evidence_path")" = "$signed_archive_b"
+  assert_signed_running_image "$signed_image_b" "$signed_digest_b" signed-status-reupgrade
+  test "$(signed_record_fingerprint)" = "$signed_record_before"
   signed_durable_before="$(signed_durable_fingerprint)"
 
   # Four acquisition-stage refusals. Each derived release varies exactly one trust or integrity condition against

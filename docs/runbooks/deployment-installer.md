@@ -190,6 +190,8 @@ every transition the retained release record has to follow:
 | Preflight the candidate release | `cameraagent preflight --image-manifest <b>` | unchanged; nothing is acquired or started |
 | Candidate verification fails after mutation | `cameraagent upgrade --image-manifest <b>` through the campaign-only verifier fault | byte-identical; still names the restored superseded release and image |
 | Resume the same upgrade to the candidate release | `cameraagent upgrade --image-manifest <b> --resume` | present, naming the new release and the new image |
+| Upgrade to an operator-supplied image no signed release named | `cameraagent upgrade --image-ref <a-image>` | withdrawn (absent) |
+| Upgrade back to the candidate release | `cameraagent upgrade --image-manifest <b>` | present again, naming the candidate release and image |
 | Refused: signed by a key the trust root does not hold | `cameraagent upgrade --image-manifest <untrusted>` | unchanged; still names the running release |
 | Refused: declares a key identity the trust root does not carry | `cameraagent upgrade --image-manifest <declared-key>` | unchanged |
 | Refused: the trusted key's signature over a different release | `cameraagent upgrade --image-manifest <forged>` | unchanged |
@@ -237,14 +239,13 @@ Docker results, and neither production code nor either signed candidate is
 changed to create the fault.
 
 The campaign proves that the retained record follows the image the instance runs
-across every transition above, but that guarantee has two known exceptions it
-does not cover, tracked by
-[#642](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/642): a signed
-upgrade whose final resume is lost and is then completed with `--resume` returns
-`completed` without writing the record, and an `--image-ref` upgrade of an
-instance installed from a signed release keeps the superseded record. Until
-those close, treat a record that survived either of those paths as unverified
-rather than authoritative.
+across every transition above. The record is settled as soon as an upgrade or
+rollback commit is durable and again on `--resume`, so a signed upgrade whose
+final resume acknowledgement is lost still records its release when completed
+with `--resume` (proved by `LifecycleContractTests`, because the campaign cannot
+lose a real acknowledgement on demand), and an `--image-ref` upgrade of an
+instance installed from a signed release withdraws the superseded record
+(transition `03d` above, against a real container).
 
 The refusals bracket the trust decision from several sides. The release
 contradicting the image labels is genuinely signed and is refused by the
