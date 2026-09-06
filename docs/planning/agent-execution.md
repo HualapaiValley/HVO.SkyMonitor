@@ -203,6 +203,48 @@ when it finishes:
   still leaves the full handoff, and every agent still provides its final
   completion report.
 
+#### Cross-provider coordinator channel
+
+When two active coordinators cannot send direct harness messages, the owning
+roadmap epic may act as a bounded control plane. It does not replace the issue
+and PR ledgers.
+
+1. Create or nominate exactly two fixed mutable comments, one owned by each
+   coordinator. Record both comment IDs, owners, format version, cadence, and
+   activation time once in an append-only epic protocol comment. A coordinator
+   writes only its own slot.
+2. Update each slot every five minutes while either side has active work. Send
+   `no work available` or request `report status` when there is no richer
+   instruction; unchanged work still reports `still running, no change`. Each
+   record carries a monotonically increasing sequence and acknowledges the last
+   peer sequence observed so lost or duplicated delivery is visible.
+3. Use a compact delta record for routine liveness. The complete body should be
+   at most 500 UTF-8 bytes and must preserve: format version, sequence and
+   acknowledgement, authoritative UTC plus operator-facing fixed MST time,
+   current step, next step, blocker, shared-resource owner, any request, and the
+   next due time. Reference a durable comment ID instead of repeating a grant,
+   review report, or long rationale.
+4. Keep claims, authority grants, review findings, milestones, blockers, and
+   handoffs append-only on the owning issue, PR, or epic. Mutable slots contain
+   only the latest control state and may be overwritten. Relay material changes
+   immediately; do not repeat the same full milestone in the next heartbeat.
+5. Retain the exact slot IDs and last `updated_at` values. Poll only that
+   metadata first, fetch the body only after it changes, and fetch durable
+   comments newer than the last processed comment ID or timestamp. Reread an
+   epic body only after an intentional revision. Never rescan the full epic on a
+   routine wake.
+6. Treat a missed delivery window as a signaling gap, not proof that work
+   failed. Report the gap, withhold new shared-resource authority when state is
+   stale, poll directly, and ask the peer to repair or replace its monitor. Long
+   work must be detached from any harness primitive that suppresses scheduled
+   wakes and polled on each tick.
+7. Negotiate a format or transport change through the existing channel, require
+   an explicit acceptance or counterproposal, and keep the previous format as
+   fallback until the new one completes a bounded trial. Record payload size,
+   latency, missed wakes, repair time, ambiguity, resource/collision outcomes,
+   and coordinator effort in
+   [the coordination experiment log](coordination-experiments.md).
+
 ### Validation ladder
 
 Record commands and the source commit or worktree fingerprint they validate.
