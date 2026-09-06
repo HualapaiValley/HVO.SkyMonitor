@@ -616,14 +616,23 @@ a copy can tear and report a busy instance as unreadable. Unlike install and upg
 report names the resolved release tag beside the immutable image ID it selected; install and upgrade record the
 same tag in the report they retain, which is the only release evidence a refused operation leaves behind.
 
-**A compatible signed-release preflight is not a promise that the upgrade will proceed.** It compares persisted
-state against the boundaries the release *declares*. Further gates run only during the upgrade itself: the
-labels the loaded image actually carries are compared against the signed record; the candidate's component,
-configuration, catalog, and replay-runner contract identities and its architecture are required to match this
-instance; a candidate identical to the image already running is refused outright; and a candidate declaring a
-state migration still requires `--migration-backward-compatible`. A release that declares a different
-configuration or catalog contract, or that the instance already runs, therefore preflights clean and is still
-refused at upgrade time.
+A signed-release preflight also evaluates the upgrade's contract-identity gate from the signed declaration,
+because every value that gate compares is in the release manifest and the instance manifest. The candidate's
+component, configuration contract, and catalog contract must match this instance, and a LocalRunner instance
+additionally requires the release to declare the local replay-runner contract; an in-process instance imposes no
+runner requirement. Each mismatch is a blocking finding under the `contract-identity` boundary with its own code
+(`contract-component`, `contract-configuration`, `contract-catalog`, `contract-replay-runner`), naming the
+declared and required identities. The release's platform is selected for the instance's recorded daemon
+architecture before this evaluation, so an architecture mismatch is reported as a resolution error rather than a
+finding. A release built for another configuration or catalog contract, or one omitting the runner contract a
+LocalRunner instance needs, therefore no longer preflights clean only to be refused after acquisition.
+
+**A compatible signed-release preflight is still not a promise that the upgrade will proceed.** It compares
+persisted state and the declared contract identities against this instance. Gates that need the image itself run
+only during the upgrade: the labels the loaded image actually carries are compared against the signed record; a
+candidate identical to the image already running is refused outright; and a candidate declaring a state migration
+still requires `--migration-backward-compatible`. A release the instance already runs therefore preflights clean
+and is still refused at upgrade time.
 
 Rollback state is retained per operating-system user
 (`$XDG_STATE_HOME/hvo/skymonitor/distribution`, else `~/.local/state/...`), so run the preflight as the same
@@ -633,7 +642,8 @@ The command exits `0` when compatible and `1` with error code `state-incompatibl
 names its boundary code, path, observed
 value, expected value, and remediation. The checked boundaries are the selected catalog manifest version and
 catalog identity, the Identity migration lineage recorded in `__EFMigrationsHistory`, the raw-ingress
-`PRAGMA user_version`, and the ownership and mode of every writable Compose bind source.
+`PRAGMA user_version`, the ownership and mode of every writable Compose bind source, and, for a signed release,
+the contract identities described above.
 
 An in-place upgrade requires a candidate that declares `cameraagent-state-v2`. Installing an image, and
 rolling back to one, are not state migrations and therefore also accept the superseded declaration. Any

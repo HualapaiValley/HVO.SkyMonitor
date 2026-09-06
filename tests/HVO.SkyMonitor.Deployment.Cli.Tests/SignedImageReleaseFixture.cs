@@ -117,7 +117,8 @@ internal sealed class SignedImageReleaseFixture : IDisposable
                 int.Parse(labels["io.hvo.skymonitor.catalog-manifest-version"], CultureInfo.InvariantCulture),
                 labels["io.hvo.skymonitor.configuration-contract"],
                 labels["io.hvo.skymonitor.catalog-contract"],
-                labels["io.hvo.skymonitor.replay-runner-contract"]));
+                // A release built without the local replay runner publishes no runner contract at all.
+                labels.TryGetValue("io.hvo.skymonitor.replay-runner-contract", out var replayRunner) ? replayRunner : null));
         var manifest = new DistributionReleaseManifest(
             DistributionSchemaVersions.ReleaseManifest,
             DistributionManifestKind.ImageRelease,
