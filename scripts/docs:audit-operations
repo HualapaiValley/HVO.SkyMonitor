@@ -130,28 +130,37 @@ fi
 # pinned as literals, so editing the matrix without the runbook fails here.
 category_matrix=scripts/test-categories/Program.cs
 if ! category_totals="$(awk '
-    /\] = Counts\(/ {
+    /^[[:space:]]*\/\// {
+        next
+    }
+    /^[[:space:]]*static .*Counts\($/ {
+        next
+    }
+    /Counts\(/ {
+        if ($0 !~ /^[[:space:]]*\["tests\/[^"]+\.csproj"\] = Counts\([a-z]+: [0-9]+(, [a-z]+: [0-9]+)*\),?[[:space:]]*$/) {
+            printf "unrecognized category matrix row: %s\n", $0 > "/dev/stderr"
+            failed = 1
+            exit 1
+        }
         rows++
         counts = $0
         sub(/^.*Counts\(/, "", counts)
-        sub(/\).*$/, "", counts)
-        pairs = split(counts, pair, ",")
+        sub(/\),?[[:space:]]*$/, "", counts)
+        pairs = split(counts, pair, ", ")
         for (position = 1; position <= pairs; position++) {
-            if (pair[position] ~ /^[[:space:]]*$/) {
-                continue
-            }
-            if (match(pair[position], /^[[:space:]]*(unit|integration|manual|soak|external|hardware):[[:space:]]*[0-9]+[[:space:]]*$/)) {
-                split(pair[position], parts, ":")
-                gsub(/[[:space:]]/, "", parts[1])
-                gsub(/[[:space:]]/, "", parts[2])
-                totals[parts[1]] += parts[2]
-            } else {
-                printf "unrecognized category count in matrix row %d: %s\n", rows, pair[position] > "/dev/stderr"
+            split(pair[position], parts, ": ")
+            if (parts[1] !~ /^(unit|integration|manual|soak|external|hardware)$/) {
+                printf "unrecognized category in matrix row %d: %s\n", rows, pair[position] > "/dev/stderr"
+                failed = 1
                 exit 1
             }
+            totals[parts[1]] += parts[2]
         }
     }
     END {
+        if (failed) {
+            exit 1
+        }
         if (rows == 0) {
             print "no category matrix rows were found" > "/dev/stderr"
             exit 1
@@ -181,8 +190,8 @@ require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCe
 require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
-require_source_reference "${category_unit} Unit cases" docs/runbooks/ci-pipeline.md
-require_source_reference "${category_integration} Integration-category cases" docs/runbooks/ci-pipeline.md
+require_source_reference "| **Unit Tests** | ${category_unit} Unit cases" docs/runbooks/ci-pipeline.md
+require_source_reference "| **Integration Tests** | ${category_integration} Integration-category cases" docs/runbooks/ci-pipeline.md
 require_source_reference "Current discovery is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, and \`Hardware=${category_hardware}\`." docs/runbooks/ci-pipeline.md
 require_source_reference 'six Unit-category boundary cases' docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md
