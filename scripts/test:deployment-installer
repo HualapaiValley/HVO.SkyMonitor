@@ -1253,13 +1253,16 @@ SIGNED_DOCKER_SHIM
   jq -er '.message | test("does not carry the compatibility identity the release signed")' \
     "$root/signed-contradicting-error.json" >/dev/null
   jq -er '.message | test("minimum compatible revision signed")' "$root/signed-contradicting-error.json" >/dev/null
-  # The label-agreement gate runs after the operation is journalled but before any mutation. A completed upgrade
-  # also records mutationStarted=false, so the fields that discriminate this refusal from a completed upgrade are
-  # the phase and status it leaves behind: Prepared and Running, the incomplete journal entry #638 owns. When #638
-  # makes the refusal record a terminal failure, this pin moves with it.
+  # The label-agreement gate runs after the operation is journalled but before any mutation, so the refusal is
+  # settled as a terminal failure: Failed, carrying the lifecycle-refused code and the gate's own diagnostic, with
+  # mutationStarted=false. A journal that still reported the refused operation as Running would block rollback,
+  # uninstall, and every other upgrade behind a --resume the same gate refuses again (#638).
   test "$(jq -er '.kind' "$signed_lifecycle_state")" = Upgrade
   test "$(jq -er '.phase' "$signed_lifecycle_state")" = Prepared
-  test "$(jq -er '.status' "$signed_lifecycle_state")" = Running
+  test "$(jq -er '.status' "$signed_lifecycle_state")" = Failed
+  test "$(jq -er '.failureCode' "$signed_lifecycle_state")" = lifecycle-refused
+  jq -er '.failureMessage | test("does not carry the compatibility identity the release signed")' \
+    "$signed_lifecycle_state" >/dev/null
   test "$(jq -er '.mutationStarted' "$signed_lifecycle_state")" = false
   assert_signed_installed_identity \
     "$(jq -er '.image.imageId' "$signed_instance_root/instance-manifest.json")" "$signed_image_a" "$signed_digest_a"
@@ -1271,6 +1274,34 @@ SIGNED_DOCKER_SHIM
   test "$(signed_record_set_fingerprint)" = "$signed_records_before"
   test "$(signed_durable_fingerprint)" != "$signed_durable_before"
   signed_durable_before="$(signed_durable_fingerprint)"
+
+  # The refused operation is terminal, so resuming the refused command finds nothing to resume. The refusal must
+  # come from the journal, not from the label gate again, and it must leave every durable record, the journal
+  # included, byte-identical.
+  if "$signed_cli" cameraagent upgrade \
+    --instance-id "$signed_instance_id" \
+    --product-root "$root/product" \
+    --channel local \
+    --image-manifest "$signed_manifest_contradicting" \
+    --asset-base-url "$signed_workspace/release-b" \
+    --no-download \
+    --migration-backward-compatible \
+    --resume \
+    --json >"$root/signed-contradicting-resume.json" 2>"$root/signed-contradicting-resume-error.json"; then
+    printf 'A refused upgrade was resumed.\n' >&2
+    exit 1
+  fi
+  read_signed_status signed-status-contradicting-resume
+  capture_signed_state 09b-refused-upgrade-resume-refusal signed-contradicting-resume-error \
+    signed-status-contradicting-resume
+  test ! -s "$root/signed-contradicting-resume.json"
+  test "$(jq -er '.errorCode' "$root/signed-contradicting-resume-error.json")" = installation-failed
+  jq -er '.message | test("No incomplete matching lifecycle operation exists")' \
+    "$root/signed-contradicting-resume-error.json" >/dev/null
+  test "$(signed_record_fingerprint)" = "$signed_record_before"
+  test ! -e "$signed_evidence_path"
+  test "$(signed_durable_fingerprint)" = "$signed_durable_before"
+  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-contradicting-resume
 
   # The state-compatibility preflight must still pass on the instance the signed lifecycle left behind, so the
   # scenario cannot have reached its end by weakening the gate it shares with the operator-supplied image path.
@@ -1288,6 +1319,38 @@ SIGNED_DOCKER_SHIM
   test "$(signed_durable_fingerprint)" = "$signed_durable_before"
   test ! -e "$signed_evidence_path"
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-preflight
+
+  # The instance the refusal left behind is operable without --resume: an ordinary uninstall completes, the journal
+  # moves to the completed uninstall, the withdrawn release record stays absent, and the container is gone. The
+  # container is removed by the operation itself, so this transition retains its evidence without the running
+  # container the earlier captures require.
+  "$signed_cli" cameraagent uninstall \
+    --instance-id "$signed_instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/signed-uninstall.json"
+  test "$(jq -er '.outcome' "$root/signed-uninstall.json")" = completed
+  test "$(jq -er '.lifecycleCondition' "$root/signed-uninstall.json")" = Uninstalled
+  test "$(jq -er '.kind' "$signed_lifecycle_state")" = Uninstall
+  test "$(jq -er '.phase' "$signed_lifecycle_state")" = Completed
+  test "$(jq -er '.status' "$signed_lifecycle_state")" = Completed
+  test "$(jq -er '.lifecycleCondition' "$signed_instance_root/instance-manifest.json")" = Uninstalled
+  test "$(signed_record_fingerprint)" = absent
+  test ! -e "$signed_evidence_path"
+  # The local-runner profile runs two containers, so both must be gone.
+  for signed_uninstalled_container in "$signed_container" "$signed_container-replay"; do
+    if docker inspect "$signed_uninstalled_container" >/dev/null 2>&1; then
+      printf 'Container %s survived the signed instance uninstall.\n' "$signed_uninstalled_container" >&2
+      exit 1
+    fi
+  done
+  rm -rf "$signed_evidence_root/11-post-refusal-uninstall"
+  mkdir -p "$signed_evidence_root/11-post-refusal-uninstall"
+  cp "$root/signed-uninstall.json" "$signed_evidence_root/11-post-refusal-uninstall/signed-uninstall.json"
+  cp "$signed_lifecycle_state" "$signed_evidence_root/11-post-refusal-uninstall/lifecycle.json"
+  cp "$signed_instance_root/instance-manifest.json" "$signed_evidence_root/11-post-refusal-uninstall/instance-manifest.json"
+  printf 'image-distribution.json is absent\n' >"$signed_evidence_root/11-post-refusal-uninstall/image-distribution.absent"
+  printf 'container %s is absent\ncontainer %s-replay is absent\n' "$signed_container" "$signed_container" \
+    >"$signed_evidence_root/11-post-refusal-uninstall/container-runtime.txt"
 
   {
     printf 'signed release campaign\n'
@@ -1320,7 +1383,7 @@ SIGNED_DOCKER_SHIM
     (cd "$signed_workspace/release-$signed_slot" && sha256sum --check --status SHA256SUMS)
   done
 
-  printf 'Signed CameraAgent image install, upgrade, rollback, and refusal contract passed for instance %s.\n' \
+  printf 'Signed CameraAgent image install, upgrade, rollback, refusal, and post-refusal uninstall contract passed for instance %s.\n' \
     "$signed_instance_id"
   printf 'Signed release campaign evidence retained under %s.\n' "$signed_evidence_root"
 fi
