@@ -1033,6 +1033,10 @@ internal sealed class RawCaptureIngress :
                 }
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch
         {
             _laneState.SetUnhealthy("lane-state-unavailable");

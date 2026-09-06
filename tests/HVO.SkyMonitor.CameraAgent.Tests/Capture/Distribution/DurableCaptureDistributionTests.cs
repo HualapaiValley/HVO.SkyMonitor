@@ -625,6 +625,75 @@ public sealed class DurableCaptureDistributionTests
     }
 
     [TestMethod]
+    public async Task CanceledLaneStateRefresh_PreservesHealthAndLeaseRemainsRecoverable()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var fault = new CancelAtLaneFaultInjector(CaptureLaneFaultPoint.AfterClaimCommitted, cancellation);
+        using var fixture = CreateFixture(
+            new CaptureDistributionOptions { LeaseSeconds = 1 },
+            fault);
+        await fixture.AcceptAsync(0).ConfigureAwait(false);
+        Assert.AreEqual(CaptureLaneAvailability.Healthy, fixture.LaneState.Snapshot.Availability);
+        Assert.AreEqual("accepting", fixture.LaneState.Snapshot.Reason);
+        var standard = fixture.Policy.Definitions.Single(static lane => lane.Name == "standard");
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await fixture.Store.ClaimAsync(
+                standard,
+                "shutdown-owner",
+                fixture.Configuration,
+                cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneAvailability.Healthy, fixture.LaneState.Snapshot.Availability);
+        Assert.AreEqual("accepting", fixture.LaneState.Snapshot.Reason);
+        using (var interrupted = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            Assert.AreEqual(1L, await ScalarLongAsync(
+                interrupted, "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'leased';").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarLongAsync(
+                interrupted, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+        }
+
+        fixture.Time.Advance(TimeSpan.FromSeconds(2));
+        var recovered = await fixture.ClaimAsync("standard", "recovery-owner").ConfigureAwait(false);
+        Assert.IsNotNull(recovered);
+        Assert.AreEqual(2, recovered.Attempt);
+        await fixture.Store.CompleteAsync(recovered, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneAvailability.Healthy, fixture.LaneState.Snapshot.Availability);
+        Assert.AreEqual("accepting", fixture.LaneState.Snapshot.Reason);
+        using var completed = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual(0L, await ScalarLongAsync(
+            completed, "SELECT COUNT(*) FROM capture_lane_work WHERE state IN ('pending', 'leased', 'retry_wait');").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarLongAsync(
+            completed, "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'completed';").ConfigureAwait(false));
+        Assert.AreEqual(0L, await ScalarLongAsync(
+            completed, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task LaneStateRefreshFailure_MarksHealthUnhealthyAndPropagates()
+    {
+        using var fixture = CreateFixture(new CaptureDistributionOptions());
+        await fixture.AcceptAsync(0).ConfigureAwait(false);
+        Assert.AreEqual(CaptureLaneAvailability.Healthy, fixture.LaneState.Snapshot.Availability);
+        using (var corrupt = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            using var command = corrupt.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE capture_lane_definitions RENAME TO unavailable_capture_lane_definitions;";
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+
+        await Assert.ThrowsAsync<SqliteException>(async () =>
+            await fixture.Ingress.RefreshOperationsQueueSnapshotsAsync(CancellationToken.None)
+                .ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneAvailability.Unhealthy, fixture.LaneState.Snapshot.Availability);
+        Assert.AreEqual("lane-state-unavailable", fixture.LaneState.Snapshot.Reason);
+    }
+
+    [TestMethod]
     public async Task CameraModuleRunner_DurableLaneOutagesDoNotChangeCaptureCadence()
     {
         foreach (var cadenceMode in new[] { CaptureCadenceMode.MinimumStartInterval, CaptureCadenceMode.Continuous })
@@ -2126,6 +2195,21 @@ public sealed class DurableCaptureDistributionTests
             {
                 Injected.TrySetResult();
                 throw new InvalidOperationException("Injected capture lane fault.");
+            }
+        }
+    }
+
+    private sealed class CancelAtLaneFaultInjector(
+        CaptureLaneFaultPoint point,
+        CancellationTokenSource cancellation) : ICaptureLaneFaultInjector
+    {
+        private int _armed = 1;
+
+        public void Inject(CaptureLaneFaultPoint current)
+        {
+            if (current == point && Interlocked.Exchange(ref _armed, 0) == 1)
+            {
+                cancellation.Cancel();
             }
         }
     }
