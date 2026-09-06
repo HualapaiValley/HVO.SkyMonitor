@@ -886,7 +886,7 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_RecoversValidUnjournaledPairAndRepairsMissingIndex()
+    public async Task RawIngressRecovery_RepairsMissingAndMismatchedCompatibilityIndex()
     {
         var root = CreateRoot();
         try
@@ -909,20 +909,51 @@ public sealed class RawCaptureIngressTests
             var recoveryUtc = new DateTimeOffset(2030, 1, 2, 8, 9, 10, TimeSpan.FromHours(5));
             var timeProvider = new FixedTimeProvider(recoveryUtc);
             var state = new RawIngressState(timeProvider);
-            using var recovered = CreateIngress(root, state, timeProvider: timeProvider);
+            using (var recovered = CreateIngress(root, state, timeProvider: timeProvider))
+            {
+                await recovered.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 
-            await recovered.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-
-            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
-            Assert.AreEqual(1, state.Snapshot.PendingCount);
-            Assert.IsTrue(File.Exists(indexPath));
-            StringAssert.Contains(await File.ReadAllTextAsync(indexPath).ConfigureAwait(false),
-                accepted.Manifest.Descriptor.Artifact.ArtifactId.ToString(), StringComparison.OrdinalIgnoreCase);
+                Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+                Assert.AreEqual(1, state.Snapshot.PendingCount);
+                Assert.IsTrue(File.Exists(indexPath));
+                StringAssert.Contains(await File.ReadAllTextAsync(indexPath).ConfigureAwait(false),
+                    accepted.Manifest.Descriptor.Artifact.ArtifactId.ToString(), StringComparison.OrdinalIgnoreCase);
+            }
             using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
             Assert.AreEqual(
                 recoveryUtc.ToUniversalTime().ToUnixTimeMilliseconds(),
                 await ScalarLongAsync(connection, "SELECT committed_unix_ms FROM raw_captures;").ConfigureAwait(false));
+
+            var descriptor = accepted.Manifest.Descriptor;
+            var mismatchedLines = new[]
+            {
+                "{ malformed",
+                CreateCompatibilityIndexLine(descriptor, 1.5, descriptor.Layout.PixelFormat.ToString()),
+                CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height + 1, descriptor.Layout.PixelFormat.ToString()),
+                CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height, null, includePixelFormat: false),
+                CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height, 1),
+                CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height, CameraPixelFormat.Mono16.ToString())
+            };
+            await File.WriteAllLinesAsync(indexPath, mismatchedLines).ConfigureAwait(false);
+            var manifestJson = CaptureContractJson.Serialize(accepted.Manifest);
+
+            await RawIngressFileStore.EnsureCompatibilityIndexAsync(
+                root, manifestJson, CancellationToken.None).ConfigureAwait(false);
+
+            var repairedLines = await File.ReadAllLinesAsync(indexPath).ConfigureAwait(false);
+            Assert.HasCount(mismatchedLines.Length + 1, repairedLines);
+            CollectionAssert.AreEqual(mismatchedLines, repairedLines[..mismatchedLines.Length]);
+            using (var document = JsonDocument.Parse(repairedLines[^1]))
+            {
+                Assert.IsTrue(RawIngressFileStore.MatchesIndexEntry(document.RootElement, descriptor));
+            }
+
+            await RawIngressFileStore.EnsureCompatibilityIndexAsync(
+                root, manifestJson, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.HasCount(mismatchedLines.Length + 1,
+                await File.ReadAllLinesAsync(indexPath).ConfigureAwait(false));
         }
         finally
         {
@@ -2856,6 +2887,27 @@ public sealed class RawCaptureIngressTests
 
     private static DateTimeOffset Timestamp(int hour)
         => new(2026, 7, 14, hour, 0, 0, TimeSpan.Zero);
+
+    private static string CreateCompatibilityIndexLine(
+        ReconstructionDescriptor descriptor,
+        object height,
+        object? pixelFormat,
+        bool includePixelFormat = true)
+    {
+        var entry = new Dictionary<string, object?>
+        {
+            ["artifactId"] = descriptor.Artifact.ArtifactId,
+            ["role"] = descriptor.Artifact.Role.ToString(),
+            ["timestampUtc"] = descriptor.Timing.ExposureStartedUtc,
+            ["width"] = descriptor.Layout.Width,
+            ["height"] = height
+        };
+        if (includePixelFormat)
+        {
+            entry["pixelFormat"] = pixelFormat;
+        }
+        return JsonSerializer.Serialize(entry, WebJson);
+    }
 
     private static string GetNotificationMarker(string root)
         => Path.Combine(root, "capture-distributor-notified");
