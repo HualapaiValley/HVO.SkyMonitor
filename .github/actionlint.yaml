@@ -3,3 +3,4 @@ self-hosted-runner:
     - skymonitor-soak
     - hvo-skymonitor
     - hvo-skymonitor-arm64
+    - m5-mac
