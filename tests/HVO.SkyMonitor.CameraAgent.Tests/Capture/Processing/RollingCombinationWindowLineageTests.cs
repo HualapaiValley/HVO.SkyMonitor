@@ -89,6 +89,258 @@ public sealed class RollingCombinationWindowLineageTests
 
     [TestMethod]
     [TestCategory("Integration")]
+    public async Task LiveRetryReplacesItsUnreleasedWindowPinsWithoutStaleOrDuplicateRows()
+    {
+        var root = CreateRoot();
+        ICameraModule? module = null;
+        try
+        {
+            var fault = new ArmableNodeFaultInjector(RollingNodeId);
+            using var provider = CreateProvider(root, fault);
+            var configuration = CreateConfiguration(syntheticReferences: false);
+            module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
+            _ = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
+            var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(
+                configuration,
+                await CreateSubmissionAsync(module, CaptureCount, CancellationToken.None).ConfigureAwait(false),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+
+            var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+            var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+                static lane => lane.Name == "standard");
+            var handler = provider.GetServices<ICaptureLaneHandler>().Single(
+                static candidate => candidate.Lane == "standard");
+            var firstLease = await laneStore.ClaimAsync(
+                standard, "rolling-window-retry-1", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(firstLease);
+            Assert.AreEqual(1, firstLease.Attempt);
+            Assert.IsNotNull(firstLease.Context.Execution);
+            fault.Arm();
+            var firstResult = await handler.HandleAsync(firstLease.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, firstResult.Outcome);
+            var firstPins = await ReadPinsAsync(root, firstLease.Context.Execution.ExecutionId).ConfigureAwait(false);
+            Assert.HasCount(WindowSize - 1, firstPins);
+            var staleIdentity = firstPins[^1].Split('|')[^1];
+
+            await laneStore.ReleaseAsync(firstLease, CancellationToken.None).ConfigureAwait(false);
+            using var store = CreateStore(root);
+            await store.SetOutputAvailabilityAsync(
+                staleIdentity, "Missing", "retry-pin-test", CancellationToken.None).ConfigureAwait(false);
+
+            var secondLease = await laneStore.ClaimAsync(
+                standard, "rolling-window-retry-2", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(secondLease);
+            Assert.AreEqual(2, secondLease.Attempt);
+            Assert.IsNotNull(secondLease.Context.Execution);
+            var secondResult = await handler.HandleAsync(secondLease.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, secondResult.Outcome, secondResult.Reason);
+            var secondPins = await ReadPinsAsync(root, secondLease.Context.Execution.ExecutionId).ConfigureAwait(false);
+
+            Assert.HasCount(WindowSize - 1, secondPins);
+            Assert.IsFalse(secondPins.Any(pin => pin.EndsWith(staleIdentity, StringComparison.Ordinal)));
+            Assert.AreEqual(
+                WindowSize - 1,
+                secondPins.Select(static pin => pin.Split('|')[^1]).Distinct(StringComparer.Ordinal).Count());
+            Assert.AreEqual(
+                WindowSize - 1,
+                await CountUnreleasedPinsAsync(root, secondLease.Context.Execution.ExecutionId).ConfigureAwait(false));
+            await laneStore.CompleteAsync(secondLease, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (module is not null)
+            {
+                await module.DisposeAsync().ConfigureAwait(false);
+            }
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task LiveRetryUsesItsOwnRevisionCompatibilityAfterShiftedReplayCompletes()
+    {
+        var root = CreateRoot();
+        ICameraModule? module = null;
+        try
+        {
+            var fault = new ArmableNodeFaultInjector("revision-barrier");
+            using var provider = CreateProvider(root, fault);
+            var configuration = CreateRevisionBarrierConfiguration(SyntheticCalibration);
+            module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
+            _ = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            var receipt = await ingress.AcceptAsync(
+                configuration,
+                await CreateSubmissionAsync(module, CaptureCount, CancellationToken.None).ConfigureAwait(false),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+            var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+                static lane => lane.Name == "standard");
+            var handler = provider.GetServices<ICaptureLaneHandler>().Single(
+                static candidate => candidate.Lane == "standard");
+            var firstLease = await laneStore.ClaimAsync(
+                standard, "revision-reference-live-1", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(firstLease);
+            fault.Arm();
+            var firstResult = await handler.HandleAsync(firstLease.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, firstResult.Outcome);
+
+            using (var store = CreateStore(root))
+            {
+                var calibration = await store.ReadNodeAsync(
+                    receipt.Manifest.Descriptor.Capture.CaptureId,
+                    "calibration",
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(calibration);
+                Assert.AreEqual(DurableProcessingNodeStatus.Completed, calibration.Status);
+                Assert.IsNull(await store.ReadNodeAsync(
+                    receipt.Manifest.Descriptor.Capture.CaptureId,
+                    RollingNodeId,
+                    CancellationToken.None).ConfigureAwait(false));
+            }
+
+            var shiftedConfiguration = CreateRevisionBarrierConfiguration(SyntheticCalibration);
+            var shiftedPipeline = shiftedConfiguration.Pipeline with
+            {
+                Steps = shiftedConfiguration.Pipeline.Steps.Select(static step =>
+                    string.Equals(step.Id, "calibration", StringComparison.Ordinal)
+                        ? step with
+                        {
+                            Options = JsonSerializer.SerializeToElement(new
+                            {
+                                strategy = "None",
+                                outputVariant = "synthetic-corrected"
+                            })
+                        }
+                        : step).ToArray()
+            };
+            var shiftedRevision = await operations.CreateRevisionAsync(
+                "shifted-calibration",
+                "v1",
+                shiftedPipeline,
+                "shifted-create-key",
+                "revision-reference-test",
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+            _ = await operations.ValidateRevisionAsync(
+                shiftedRevision.RevisionId,
+                "shifted-validate-key",
+                "revision-reference-test",
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+            var replay = await operations.SubmitReplayAsync(
+                new ProcessingReplaySubmission(
+                    receipt.Manifest.Descriptor.Capture.CaptureId,
+                    shiftedRevision.RevisionId,
+                    receipt.Manifest.Descriptor.Artifact.ArtifactId),
+                "shifted-replay-key",
+                "revision-reference-test",
+                CancellationToken.None).ConfigureAwait(false);
+
+            // Production correctly gives every standard-lane row priority over replay. Temporarily hide this
+            // already-leased row so the fixture can construct the defensive cross-revision interleaving, then
+            // restore its exact lease before asking the lane store to retry it.
+            await SetStandardLaneStateAsync(root, firstLease.WorkId, "completed").ConfigureAwait(false);
+            var replayWorker = provider.GetRequiredService<ProcessingReplayWorker>();
+            await replayWorker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                while (true)
+                {
+                    var detail = await operations.ReadExecutionDetailAsync(
+                        replay.Execution.ExecutionId, timeout.Token).ConfigureAwait(false);
+                    Assert.IsNotNull(detail);
+                    if (detail.Execution.Status == ProcessingGraphExecutionStatus.Completed)
+                    {
+                        break;
+                    }
+                    Assert.AreNotEqual(
+                        ProcessingGraphExecutionStatus.Failed,
+                        detail.Execution.Status,
+                        detail.Execution.FailureReason);
+                    await Task.Delay(25, timeout.Token).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                await replayWorker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                await SetStandardLaneStateAsync(root, firstLease.WorkId, "leased").ConfigureAwait(false);
+            }
+
+            Guid replayCalibrationArtifactId;
+            using (var referenceStore = CreateStore(root))
+            {
+                var replayReference = await referenceStore.ReadExecutionNodeAsync(
+                    replay.Execution.ExecutionId,
+                    receipt.Manifest.Descriptor.Capture.CaptureId,
+                    "calibration",
+                    CancellationToken.None).ConfigureAwait(false);
+                var liveReference = await referenceStore.ReadExecutionNodeAsync(
+                    firstLease.Context.Execution!.ExecutionId,
+                    receipt.Manifest.Descriptor.Capture.CaptureId,
+                    "calibration",
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(replayReference);
+                Assert.IsNotNull(liveReference);
+                Assert.HasCount(1, replayReference.Outputs);
+                Assert.HasCount(1, liveReference.Outputs);
+                Assert.AreEqual(liveReference.Outputs[0].Artifact.Role, replayReference.Outputs[0].Artifact.Role);
+                Assert.AreEqual(liveReference.Outputs[0].Artifact.Variant, replayReference.Outputs[0].Artifact.Variant);
+                Assert.AreNotEqual(liveReference.Outputs[0].Compatibility, replayReference.Outputs[0].Compatibility);
+                replayCalibrationArtifactId = replayReference.Outputs[0].ArtifactId;
+            }
+
+            await laneStore.ReleaseAsync(firstLease, CancellationToken.None).ConfigureAwait(false);
+            var secondLease = await laneStore.ClaimAsync(
+                standard, "revision-reference-live-2", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(secondLease);
+            Assert.AreEqual(2, secondLease.Attempt);
+            var secondResult = await handler.HandleAsync(secondLease.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, secondResult.Outcome, secondResult.Reason);
+            await laneStore.CompleteAsync(secondLease, CancellationToken.None).ConfigureAwait(false);
+
+            var live = (await operations.ReadExecutionsAsync(
+                    ProcessingGraphExecutionClass.Live, 256, CancellationToken.None).ConfigureAwait(false))
+                .Single(execution => execution.CaptureId == receipt.Manifest.Descriptor.Capture.CaptureId);
+            var liveDetail = await operations.ReadExecutionDetailAsync(
+                live.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(liveDetail);
+            var historicalInputs = liveDetail.Nodes.Single(static node => node.NodeId == RollingNodeId).Inputs
+                .Where(static input => input.Kind == ProcessingGraphExecutionInputKind.ProcessingOutput)
+                .OrderBy(static input => input.WindowPosition)
+                .ToArray();
+            Assert.HasCount(WindowSize - 1, historicalInputs);
+            CollectionAssert.AreEqual(
+                Enumerable.Range(-(WindowSize - 1), WindowSize - 1).ToArray(),
+                historicalInputs.Select(static input => input.WindowPosition).ToArray());
+            using var finalStore = CreateStore(root);
+            var rolling = await finalStore.ReadNodeAsync(
+                receipt.Manifest.Descriptor.Capture.CaptureId,
+                RollingNodeId,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(rolling);
+            var sourceArtifactIds = rolling.Outputs.Single().Descriptor!.Artifact.SourceArtifactIds;
+            Assert.HasCount(WindowSize, sourceArtifactIds);
+            Assert.DoesNotContain(replayCalibrationArtifactId, sourceArtifactIds);
+        }
+        finally
+        {
+            if (module is not null)
+            {
+                await module.DisposeAsync().ConfigureAwait(false);
+            }
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
     public async Task ReplayExecutionKeepsItsFrozenWindowPins()
     {
         var root = CreateRoot();
@@ -385,6 +637,21 @@ public sealed class RollingCombinationWindowLineageTests
             await command.ExecuteScalarAsync().ConfigureAwait(false), CultureInfo.InvariantCulture);
     }
 
+    private static async Task SetStandardLaneStateAsync(string root, long workId, string state)
+    {
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE capture_lane_work SET state = $state
+            WHERE work_id = $work AND lane_name = 'standard';
+            """;
+        command.Parameters.AddWithValue("$state", state);
+        command.Parameters.AddWithValue("$work", workId);
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+    }
+
     private static string CreateRoot()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
@@ -408,7 +675,9 @@ public sealed class RollingCombinationWindowLineageTests
             RawIngressReserveBytes = 0
         }));
 
-    private static ServiceProvider CreateProvider(string root)
+    private static ServiceProvider CreateProvider(
+        string root,
+        ICaptureProcessingFaultInjector? faultInjector = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -422,7 +691,41 @@ public sealed class RollingCombinationWindowLineageTests
                 ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1"
             }).Build());
+        if (faultInjector is not null)
+        {
+            services.AddSingleton<ICaptureProcessingFaultInjector>(faultInjector);
+        }
         return services.BuildServiceProvider();
+    }
+
+    private static CameraModuleConfig CreateRevisionBarrierConfiguration(
+        SyntheticCalibrationModelV1 syntheticCalibration)
+    {
+        var configuration = CreateConfiguration();
+        return configuration with
+        {
+            Pipeline = configuration.Pipeline with
+            {
+                Steps =
+                [
+                    configuration.Pipeline.Steps[0] with
+                    {
+                        Options = JsonSerializer.SerializeToElement(new
+                        {
+                            strategy = "SyntheticReferences",
+                            outputVariant = "synthetic-corrected",
+                            syntheticCalibration
+                        })
+                    },
+                    new CaptureProcessingStepConfig(
+                        "Telemetry",
+                        "revision-barrier",
+                        Order: 22,
+                        DependsOn: ["calibration"]),
+                    configuration.Pipeline.Steps[1]
+                ]
+            }
+        };
     }
 
     private static CameraModuleConfig CreateConfiguration(bool syntheticReferences = true)
@@ -479,6 +782,23 @@ public sealed class RollingCombinationWindowLineageTests
         Gain = 1,
         TemperatureC = -10
     };
+
+    private sealed class ArmableNodeFaultInjector(string nodeId) : ICaptureProcessingFaultInjector
+    {
+        private int _armed;
+
+        internal void Arm() => Volatile.Write(ref _armed, 1);
+
+        public void Inject(CaptureProcessingFaultPoint point, string candidateNodeId)
+        {
+            if (point == CaptureProcessingFaultPoint.BeforeNodeExecution &&
+                string.Equals(candidateNodeId, nodeId, StringComparison.Ordinal) &&
+                Interlocked.Exchange(ref _armed, 0) == 1)
+            {
+                throw new InvalidOperationException("Injected one-shot revision barrier failure.");
+            }
+        }
+    }
 
     private static async Task<CaptureLoopSubmission> CreateSubmissionAsync(
         ICameraModule module,

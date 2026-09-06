@@ -171,12 +171,19 @@ is the smaller of the node's configured window size and
 Ineligible captures are filtered before any limit applies, so skipping past them
 is unbounded; what is bounded is how many eligible-but-incompatible candidates
 the selector can look past, by its candidate limit of
-`min(512, 4 x MaximumWindowInputs)`. A trailing window
-is still allowed to be shorter than its maximum - a freshly started agent has no
-history - and the combination records only the sources it actually used, with
-`stackCount` reporting that count. A live node that resolves fewer inputs than
-its effective window logs event 2085 with the resolved and effective counts, so
-a persistently short stack is visible to an operator. Replay does not log it: a
+`min(512, 4 x MaximumWindowInputs)`. The durable processing-output retention
+root uses that same candidate bound per agent/node while never retaining fewer
+than the previous fixed floor of 100. This protects every output the selector
+can inspect between raw acceptance and live-node execution; the node's
+transaction then replaces its active pins with the exact selected window before
+reading those outputs.
+
+A trailing window is still allowed to be shorter than its maximum - a freshly
+started agent has no history - and the combination records only the sources it
+actually used, with `stackCount` reporting that count. A live node that resolves
+fewer inputs than its effective window logs event 2085 with the resolved and
+effective counts, so a persistently short stack is visible to an operator. Replay
+does not log it: a
 frozen window is short only because the archive was.
 
 ## Sequencing, idempotency, conflict, and acknowledgement

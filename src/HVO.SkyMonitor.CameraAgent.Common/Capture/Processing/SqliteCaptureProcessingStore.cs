@@ -189,6 +189,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     internal const int MaximumGalleryInputsPerNode = 8;
     internal const int MaximumProductQueryCount = 128;
     internal const int MaximumOutputSourceCount = LayeredPresentationJson.MaximumSourceArtifactCount;
+    internal const int MinimumProcessingOutputRetentionCount = 100;
+    private const int MinimumProcessingRetentionHoldSafetyCount = 4096;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private static readonly string LegacySchema5Sql = CreateLegacySchema5Sql();
     private static readonly string LegacySchema6Sql = CreateLegacySchema6Sql();
@@ -211,6 +213,13 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     internal string StorageRoot => _root;
     /// <summary>The shared upper bound on a durable window's inputs, applied to live and replay alike.</summary>
     internal int MaximumWindowInputs => _executionOptions.MaximumWindowInputs;
+    private int ProcessingOutputRetentionCount => Math.Max(
+        MinimumProcessingOutputRetentionCount,
+        ProcessingOutputWindowSelector.GetCandidateScanCount(_executionOptions.MaximumWindowInputs));
+    private int ProcessingRetentionHoldSafetyCount => checked(
+        MinimumProcessingRetentionHoldSafetyCount *
+        ((ProcessingOutputRetentionCount + MinimumProcessingOutputRetentionCount - 1) /
+         MinimumProcessingOutputRetentionCount));
     internal static string LegacySchema5SqlForTests => LegacySchema5Sql;
     internal static string LegacySchema6SqlForTests => LegacySchema6Sql;
 
@@ -2012,7 +2021,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                        WHERE newer.agent_id = output.agent_id AND newer.node_id = output.node_id
                          AND (newer.capture_sequence > output.capture_sequence OR
                               (newer.capture_sequence = output.capture_sequence AND
-                               newer.output_identity_sha256 > output.output_identity_sha256))) < 100
+                               newer.output_identity_sha256 > output.output_identity_sha256))) < $maximum_outputs
                      OR EXISTS (
                        SELECT 1
                        FROM raw_captures raw
@@ -2025,6 +2034,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             LIMIT 129;
             """;
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$maximum_outputs", ProcessingOutputRetentionCount);
         var values = new Dictionary<Guid, bool>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -2092,7 +2102,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 WHERE state = 'committed'
             ), roots(artifact_id) AS (
                 SELECT artifact_id FROM ranked
-                WHERE rank <= 100 OR EXISTS (
+                WHERE rank <= $maximum_outputs OR EXISTS (
                     SELECT 1 FROM raw_captures raw
                     JOIN capture_lane_work work ON work.raw_capture_row_id = raw.raw_capture_row_id
                     WHERE raw.capture_id = ranked.capture_id AND work.lane_name = 'standard'
@@ -2118,8 +2128,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             UNION
             SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path
             FROM raw_captures WHERE raw_artifact_id IN held
-            LIMIT 4097;
+            LIMIT $maximum_holds_plus_one;
             """;
+        command.Parameters.AddWithValue("$maximum_outputs", ProcessingOutputRetentionCount);
+        command.Parameters.AddWithValue("$maximum_holds_plus_one", ProcessingRetentionHoldSafetyCount + 1);
         var holds = new List<ProcessingRetentionHold>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -2129,7 +2141,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 reader.GetString(1),
                 reader.GetString(2)));
         }
-        if (holds.Count > 4096)
+        if (holds.Count > ProcessingRetentionHoldSafetyCount)
             throw new InvalidDataException("Processing retention lineage exceeds its safety bound.");
         return holds;
     }
