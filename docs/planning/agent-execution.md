@@ -577,10 +577,13 @@ mode-specific range, prior reviewed head, and carried-finding checklist from PR
 data. The caller supplies the acceptance lens, profile/provider/model/effort,
 tests, and evidence pointers. Inspect the generated request before launch. Use
 `scripts/pr:dispatch-review` to validate the joined participant and targeted
-command, post the durable request, wait for the returned comment ID, launch the
-configured Codex or Claude CLI, and append actual launch metadata. Its dry-run
-must post and launch nothing. Hand-written dispatch is allowed only when the
-script cannot represent a route, and the ledger records that limitation.
+command, post the durable request, wait for the returned comment ID, resume the
+same enrolled Codex or Claude CLI session, and append actual launch metadata.
+Create that session with an identity-only bootstrap, complete the join exchange,
+then issue the separate review command; never treat a newly launched one-shot
+reviewer as pre-enrolled. Its dry-run must post and launch nothing. Hand-written
+dispatch is allowed only when the script cannot represent a route, and the
+ledger records that limitation.
 
 Tier A/B gets one full initial exact-range review and only finding-driven
 correction rereviews. `standard` is the default for Tier A and ordinary Tier B;

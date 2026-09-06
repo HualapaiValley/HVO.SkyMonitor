@@ -79,8 +79,11 @@ Start acknowledgement: acknowledge on this PR within 15 minutes and identify
 
 Generate this block with `scripts/pr:review-request`; inspect it before launch.
 Dispatch it with `scripts/pr:dispatch-review`, which must receive the durable
-request comment ID before it launches a reviewer and then append the launch
-metadata. A retry resumes from an already-posted request and returns
+request comment ID before it resumes the same previously joined CLI session and
+then append the launch metadata. Bootstrap the session without review work,
+complete `JOIN REQUEST` -> `JOIN ACK` -> `JOINED ACK`, and pass its full local
+resume ID only to the launcher; the public participant identity retains the
+non-secret short ID. A retry resumes from an already-posted request and returns
 `ALREADY_CONSUMED` after a launch receipt instead of starting a second review.
 Do not reconstruct ranges or causal ordering in an ad hoc shell pipeline when
 these scripts support the route.

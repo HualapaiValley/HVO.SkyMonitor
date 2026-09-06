@@ -7,11 +7,11 @@ Usage:
   scripts/pr:dispatch-review --repo OWNER/REPO --pr N --request FILE \
     --runner codex|claude --model MODEL --effort EFFORT --worktree DIR \
     --log-file FILE --registry FILE --command FILE [--receipts FILE] \
-    --participant-id ID [--dry-run]
+    --participant-id ID --resume-session SESSION_ID [--dry-run]
 
 The dispatcher validates enrollment and command targeting, posts the durable
-request, waits for its returned comment ID, launches the exact configured CLI,
-then appends launch metadata. --dry-run posts and launches nothing.
+request, waits for its returned comment ID, resumes the exact enrolled CLI
+session, then appends launch metadata. --dry-run posts and launches nothing.
 EOF
 }
 
@@ -32,11 +32,12 @@ registry=""
 command_file=""
 receipts_file=""
 participant_id=""
+resume_session=""
 dry_run=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --repo|--pr|--request|--runner|--model|--effort|--worktree|--log-file|--registry|--command|--receipts|--participant-id)
+        --repo|--pr|--request|--runner|--model|--effort|--worktree|--log-file|--registry|--command|--receipts|--participant-id|--resume-session)
             [[ -n "${2:-}" ]] || fail "Missing value for $1."
             case "$1" in
                 --repo) repo="$2" ;;
@@ -51,6 +52,7 @@ while [[ $# -gt 0 ]]; do
                 --command) command_file="$2" ;;
                 --receipts) receipts_file="$2" ;;
                 --participant-id) participant_id="$2" ;;
+                --resume-session) resume_session="$2" ;;
             esac
             shift 2
             ;;
@@ -75,6 +77,11 @@ done
 [[ -d "$review_worktree" ]] || fail "--worktree directory does not exist."
 [[ -d "$(dirname "$log_file")" ]] || fail "Log directory does not exist."
 [[ -f "$registry" && -f "$command_file" ]] || fail "Registry and command files are required."
+[[ "$resume_session" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{7,159}$ ]] ||
+    fail "--resume-session must identify the previously joined CLI session."
+session_short="${participant_id##*:}"
+[[ "$resume_session" == "$session_short"* ]] ||
+    fail "Resume session does not match the participant session-short-id."
 
 guard_args=(authorize --registry "$registry" --command "$command_file" --participant "$participant_id")
 [[ -z "$receipts_file" ]] || guard_args+=(--receipts "$receipts_file")
@@ -100,11 +107,11 @@ ledger_body="$(printf '%s\n\nCommand: %s\nTarget participant: %s\n\n%s\n%s\n%s\n
 case "$runner" in
     codex)
         output_file="${log_file%.*}.final.md"
-        launch=(codex exec -C "$review_worktree" --model "$model" -c "model_reasoning_effort=\"$effort\"" --sandbox read-only --json --output-last-message "$output_file" -)
+        launch=(codex exec resume --model "$model" -c "model_reasoning_effort=\"$effort\"" --json --output-last-message "$output_file" "$resume_session" -)
         actual_provider="Codex/OpenAI"
         ;;
     claude)
-        launch=(claude --print --model "$model" --effort "$effort" --permission-mode plan --output-format stream-json)
+        launch=(claude --resume "$resume_session" --print --model "$model" --effort "$effort" --permission-mode plan --output-format stream-json)
         actual_provider="Claude Code/Anthropic"
         ;;
 esac
@@ -139,7 +146,7 @@ existing_request="$(jq -cs --arg command "$command_id" --arg participant "$parti
 existing_launch="$(jq -cs --arg command "$command_id" --arg participant "$participant_id" '
     [ .[][]
       | select((.body // "") | contains("## Review launch — STARTED"))
-      | select((.body // "") | contains("Command " + $command + " for participant " + $participant + " launched"))
+      | select((.body // "") | contains("Command " + $command + " for participant " + $participant + " "))
     ] | last // empty
 ' <<<"$comments_json")"
 
@@ -163,11 +170,14 @@ else
 fi
 
 launch_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+launch_from="$PWD"
+cd "$review_worktree"
 nohup "${launch[@]}" < "$request_file" > "$log_file" 2>&1 &
 review_pid=$!
+cd "$launch_from"
 kill -0 "$review_pid" 2>/dev/null || fail "Reviewer process did not start."
 
-launch_body="$(printf '## Review launch — STARTED\n\nCommand %s for participant %s launched only after request comment %s returned at %s. Launch UTC: %s. Route: %s %s. Actual configured provider/model/effort: %s / %s / %s. PID: %s. Log: %s. Request: %s' "$command_id" "$participant_id" "$comment_id" "$comment_created" "$launch_utc" "$runner" "$runner_version" "$actual_provider" "$model" "$effort" "$review_pid" "$log_file" "$comment_url")"
+launch_body="$(printf '## Review launch — STARTED\n\nCommand %s for participant %s resumed the previously joined session %s only after request comment %s returned at %s. Launch UTC: %s. Route: %s %s. Actual configured provider/model/effort: %s / %s / %s. PID: %s. Log: %s. Request: %s' "$command_id" "$participant_id" "$session_short" "$comment_id" "$comment_created" "$launch_utc" "$runner" "$runner_version" "$actual_provider" "$model" "$effort" "$review_pid" "$log_file" "$comment_url")"
 launch_json="$(gh api --method POST "repos/$repo/issues/$pr/comments" -f body="$launch_body")"
 
 jq -n \

@@ -84,7 +84,8 @@ initial_head="$(git -C "$repo_root" rev-parse HEAD~1)"
 correction_head="$(git -C "$repo_root" rev-parse HEAD)"
 new_base="$initial_head"
 sync_head="$correction_head"
-participant='codex:openai:hvo-dev-02:review0001'
+participant='codex-cli:openai:hvo-dev-02:01a0beef'
+resume_session='01a0beef-0000-4000-8000-000000000001'
 
 write_pr_fixture() {
     local target="$1" head="$2" comments_file="${3:-}"
@@ -138,15 +139,18 @@ $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" --dry-run > "$work_root/dry-run.txt"
+    --participant-id "$participant" --resume-session "$resume_session" \
+    --dry-run > "$work_root/dry-run.txt"
 [[ ! -s "$MOCK_EVENT_LOG" ]]
 grep -Fq 'DRY-RUN: no comment posted and no reviewer launched.' "$work_root/dry-run.txt"
+grep -Fq 'codex exec resume' "$work_root/dry-run.txt"
 
 $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" > "$work_root/dispatch-result.json"
+    --participant-id "$participant" --resume-session "$resume_session" \
+    > "$work_root/dispatch-result.json"
 
 for _ in $(seq 1 50); do
     grep -Fq CODEX_LAUNCH "$MOCK_EVENT_LOG" && break
@@ -164,7 +168,8 @@ $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" > "$work_root/retry-result.txt"
+    --participant-id "$participant" --resume-session "$resume_session" \
+    > "$work_root/retry-result.txt"
 grep -Fqx "ALREADY_CONSUMED CMD-REVIEW-001 $participant launch-comment=9002" "$work_root/retry-result.txt"
 [[ "$(<"$MOCK_POST_COUNT")" == 2 ]]
 
