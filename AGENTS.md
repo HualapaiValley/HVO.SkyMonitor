@@ -85,6 +85,12 @@ must not redefine its policy inconsistently.
   capacity permits; raise that limit only after explicitly verifying capacity.
   The roadmap coordinator records claims in the owning roadmap epic and never
   lets agents edit the same worktree.
+- Treat those implementation slots as shared capacity, not per-component
+  reservations. Fill them from the highest-priority Current initiative in
+  `docs/roadmap.md`; do not start a lower-horizon issue while candidate-ready
+  work remains there unless the active epic records a real blocking dependency.
+  Follow the lane and unrelated-component failure rules in section 4 of
+  `docs/planning/agent-execution.md`.
 - Every PR uses a draft-first convergence cycle. Protected CI must not run until
   review has converged and the target branch has been finally synchronized and
   integration-reviewed. Use a coordinator-launched local review agent, or an

@@ -99,6 +99,20 @@ reason.
   execution session. Only that coordinator selects or claims the next issue;
   implementing agents return completion/blocker state to it rather than
   independently consuming the queue.
+- Implementation slots are shared capacity, not entitlements for different
+  components or initiatives. Fill them from the highest-priority Current
+  initiative before selecting a lower roadmap horizon. A lower-horizon issue
+  may move ahead only when the active epic records it as a real blocking
+  dependency.
+- When an active epic defines parallel lanes, those lanes coordinate work only
+  within that initiative. An empty lane takes another non-overlapping ready
+  issue from the same initiative or remains empty; it does not automatically
+  advance to Next, Future, Research, or Deferred work.
+- A required compatibility check may block a merge, but an unrelated failure
+  from another component does not make that component's backlog a dependency.
+  First determine whether the active change caused the failure. Correct a real
+  cross-boundary regression in the active issue; otherwise correct the CI
+  classification or leave the independently owned defect in its roadmap order.
 - Keep one implementing agent per issue branch. Use research, review, failure
   analysis, and evidence agents concurrently when their work does not overlap.
 - The roadmap coordinator may maintain at most two active implementation issues
