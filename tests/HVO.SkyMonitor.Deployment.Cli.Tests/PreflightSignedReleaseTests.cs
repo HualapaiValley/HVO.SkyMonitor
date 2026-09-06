@@ -7,6 +7,7 @@ using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
 using HVO.SkyMonitor.Deployment.Distribution;
 using Microsoft.Data.Sqlite;
+using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
@@ -33,8 +34,8 @@ public enum JournalShape
 /// The operator-facing <c>cameraagent preflight</c> command reading its candidate from a signed image release.
 /// The command answers whether the persisted state satisfies the boundaries that release declares, so it
 /// resolves the release exactly as the upgrade does while remaining strictly read-only: nothing is pulled,
-/// loaded, started, or written, including into the distribution download cache. The upgrade's own
-/// contract-identity and image-label-agreement gates run only during the upgrade and are out of scope here.
+/// loaded, started, or written, including into the distribution download cache. The upgrade's contract-identity
+/// gate is evaluated from the signed declaration; only its image-label-agreement gate runs during the upgrade.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -253,6 +254,147 @@ public sealed class PreflightSignedReleaseTests
         Assert.IsTrue(finding.Blocking);
         Assert.AreEqual("12", finding.Observed);
         Assert.AreEqual("13", finding.Expected);
+    }
+
+    /// <summary>
+    /// The upgrade's contract-identity gate, reached from the signed declaration: a release declaring another
+    /// configuration contract verifies cleanly (the verifier checks only the identity's shape) and used to preflight
+    /// clean, then be refused after acquisition. It is now a blocking finding naming both contracts.
+    /// </summary>
+    [TestMethod]
+    public async Task ExecuteAsync_ReleaseDeclaringAnotherConfigurationContract_IsReportedIncompatible()
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
+        var drifted = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
+        {
+            ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v2"
+        };
+        using var release = SignedImageReleaseFixture.Create(instance.Root, $"sha256:{new string('c', 64)}", drifted);
+        var runner = new RefusingProcessRunner();
+
+        var report = await CameraAgentStatePreflightManager.ExecuteAsync(
+            instance.Request(release.ManifestPath), runner, CancellationToken.None, release.CreateAcquirer);
+
+        Assert.IsFalse(report.Compatible);
+        var finding = report.Findings.Single(static value => value.Code == "contract-configuration");
+        Assert.IsTrue(finding.Blocking);
+        Assert.AreEqual("contract-identity", finding.Boundary);
+        Assert.AreEqual("io.hvo.skymonitor.configuration-contract", finding.Path);
+        Assert.AreEqual("cameraagent-install-v2", finding.Observed);
+        Assert.AreEqual("cameraagent-install-v1", finding.Expected);
+        Assert.AreEqual(0, runner.Invocations, "the contract identities come from the signed record, never the image");
+        StringAssert.Contains(
+            CameraAgentStatePreflight.Render(report),
+            "[blocking] contract-configuration (contract-identity) at io.hvo.skymonitor.configuration-contract: observed cameraagent-install-v2; expected cameraagent-install-v1.",
+            StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_ReleaseDeclaringAnotherCatalogContract_IsReportedIncompatible()
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
+        var drifted = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
+        {
+            ["io.hvo.skymonitor.catalog-contract"] = "hyg-v43-production-p3-s2"
+        };
+        using var release = SignedImageReleaseFixture.Create(instance.Root, $"sha256:{new string('c', 64)}", drifted);
+
+        var report = await CameraAgentStatePreflightManager.ExecuteAsync(
+            instance.Request(release.ManifestPath),
+            new RefusingProcessRunner(),
+            CancellationToken.None,
+            release.CreateAcquirer);
+
+        Assert.IsFalse(report.Compatible);
+        var finding = report.Findings.Single(static value => value.Code == "contract-catalog");
+        Assert.IsTrue(finding.Blocking);
+        Assert.AreEqual("hyg-v43-production-p3-s2", finding.Observed);
+        Assert.AreEqual("hyg-v42-production-p3-s2", finding.Expected);
+        // The persisted-state boundaries are unaffected by an identity mismatch and still report clean.
+        Assert.AreEqual(1, report.Findings.Count(static value => value.Blocking));
+    }
+
+    /// <summary>
+    /// A LocalRunner instance dispatches archived replay to the local runner, so its candidate must declare the
+    /// runner contract; a release built without it preflights clean today and is refused at upgrade time.
+    /// </summary>
+    [TestMethod]
+    public async Task ExecuteAsync_LocalRunnerInstanceWithAReleaseOmittingTheReplayRunnerContract_IsReportedIncompatible()
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync(
+            replayProfile: ContractReplayProfile.LocalRunner);
+        var withoutRunner = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal);
+        withoutRunner.Remove("io.hvo.skymonitor.replay-runner-contract");
+        using var release = SignedImageReleaseFixture.Create(instance.Root, $"sha256:{new string('c', 64)}", withoutRunner);
+
+        var report = await CameraAgentStatePreflightManager.ExecuteAsync(
+            instance.Request(release.ManifestPath),
+            new RefusingProcessRunner(),
+            CancellationToken.None,
+            release.CreateAcquirer);
+
+        Assert.IsFalse(report.Compatible, CameraAgentStatePreflight.Render(report));
+        var finding = report.Findings.Single(static value => value.Code == "contract-replay-runner");
+        Assert.IsTrue(finding.Blocking);
+        Assert.AreEqual("io.hvo.skymonitor.replay-runner-contract", finding.Path);
+        Assert.AreEqual("none", finding.Observed);
+        Assert.AreEqual("local-replay-runner-v1", finding.Expected);
+    }
+
+    /// <summary>The same release is a valid candidate for an in-process instance, which imposes no runner requirement.</summary>
+    [TestMethod]
+    public async Task ExecuteAsync_InProcessInstanceWithAReleaseOmittingTheReplayRunnerContract_IsCompatible()
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
+        var withoutRunner = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal);
+        withoutRunner.Remove("io.hvo.skymonitor.replay-runner-contract");
+        using var release = SignedImageReleaseFixture.Create(instance.Root, $"sha256:{new string('c', 64)}", withoutRunner);
+
+        var report = await CameraAgentStatePreflightManager.ExecuteAsync(
+            instance.Request(release.ManifestPath),
+            new RefusingProcessRunner(),
+            CancellationToken.None,
+            release.CreateAcquirer);
+
+        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
+        Assert.IsFalse(report.Findings.Any(static value => value.Boundary == "contract-identity"));
+    }
+
+    /// <summary>
+    /// The component identity is compared too, for parity with the upgrade gate. Release verification already
+    /// refuses a manifest whose image is not the CameraAgent component, so this mismatch cannot arrive through a
+    /// verified release and is proved against the evaluation directly.
+    /// </summary>
+    [TestMethod]
+    public async Task Evaluate_CandidateDeclaringAnotherComponent_IsReportedIncompatible()
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
+        var requirements = new CameraAgentStateRequirements(
+            CameraAgentStateContract.Current, new string('7', 40), CurrentIdentityMigration,
+            CurrentRawIngressSchema, CurrentCatalogManifestVersion);
+
+        var report = CameraAgentStatePreflight.Evaluate(
+            instance.Paths,
+            instance.InstanceId,
+            $"sha256:{new string('c', 64)}",
+            "image-v1.2.3",
+            requirements,
+            CameraAgentStateContract.LegacyUnbounded,
+            RuntimeUid,
+            RuntimeGid,
+            ContractReplayProfile.InProcess,
+            CameraAgentStateContractPolicy.RequireCurrent,
+            new CameraAgentContractIdentity(
+                "LogicHost", "cameraagent-install-v1", "hyg-v42-production-p3-s2", null),
+            "cameraagent-install-v1");
+
+        Assert.IsFalse(report.Compatible);
+        var finding = report.Findings.Single(static value => value.Code == "contract-component");
+        Assert.IsTrue(finding.Blocking);
+        Assert.AreEqual("io.hvo.skymonitor.component", finding.Path);
+        Assert.AreEqual("LogicHost", finding.Observed);
+        Assert.AreEqual("CameraAgent", finding.Expected);
+        Assert.AreEqual(1, report.Findings.Count(static value => value.Blocking));
     }
 
     [TestMethod]
@@ -615,7 +757,8 @@ public sealed class PreflightSignedReleaseTests
 
         public static async Task<InstalledInstanceFixture> CreateCurrentAsync(
             JournalShape shape = JournalShape.Checkpointed,
-            string? daemonArchitecture = null)
+            string? daemonArchitecture = null,
+            ContractReplayProfile replayProfile = ContractReplayProfile.InProcess)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-preflight-release-{Guid.NewGuid():N}");
             var instanceId = Guid.NewGuid();
@@ -637,7 +780,7 @@ public sealed class PreflightSignedReleaseTests
             fixture.WriteIdentityDatabase();
             fixture.WriteRawIngressDatabase();
             fixture.ShapeJournals(shape);
-            await fixture.WriteInstanceManifestAsync(daemonArchitecture).ConfigureAwait(false);
+            await fixture.WriteInstanceManifestAsync(daemonArchitecture, replayProfile).ConfigureAwait(false);
             return fixture;
         }
 
@@ -763,7 +906,9 @@ public sealed class PreflightSignedReleaseTests
             command.ExecuteNonQuery();
         }
 
-        private Task WriteInstanceManifestAsync(string? daemonArchitecture = null)
+        private Task WriteInstanceManifestAsync(
+            string? daemonArchitecture = null,
+            ContractReplayProfile replayProfile = ContractReplayProfile.InProcess)
         {
             var applicationIdentity = Guid.NewGuid();
             var catalog = new CatalogInstallationIdentity(
@@ -787,7 +932,8 @@ public sealed class PreflightSignedReleaseTests
                 new string('3', 64), catalog, image, null,
                 new DockerDaemonIdentity("daemon", "host", architecture, "29.7.2"),
                 CameraAgentStateContract.LegacyUnbounded, DateTimeOffset.UtcNow,
-                LifecycleCondition: InstanceLifecycleCondition.Installed);
+                LifecycleCondition: InstanceLifecycleCondition.Installed,
+                ReplayProfile: replayProfile);
             return SafeFileSystem.WriteJsonAtomicAsync(
                 Paths.ManifestPath, manifest, DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
         }

@@ -1598,9 +1598,9 @@ internal sealed class CameraAgentLifecycleManager
            IsSha256(image.ImageId["sha256:".Length..]) && image.Architecture is "amd64" or "arm64" &&
            image.Architecture == daemonArchitecture &&
            (image.ArchiveSha256 is null || IsSha256(image.ArchiveSha256)) &&
-           image.Component == "CameraAgent" && image.ConfigurationContract == configurationContract &&
-            image.CatalogContract == "hyg-v42-production-p3-s2" && IsSourceRevision(image.SourceRevision) &&
-            (!requireReplayRunner || image.ReplayRunnerContract == "local-replay-runner-v1") &&
+           image.Component == CameraAgentImageContract.Component && image.ConfigurationContract == configurationContract &&
+            image.CatalogContract == CameraAgentImageContract.CatalogContract && IsSourceRevision(image.SourceRevision) &&
+            (!requireReplayRunner || image.ReplayRunnerContract == CameraAgentImageContract.ReplayRunnerContract) &&
            (image.Distribution is null || IsValidDistribution(image.Distribution) &&
             image.Distribution.ManifestKind == DistributionManifestKind.InstallerRelease.ToString() &&
             image.Distribution.ReleaseTrain == "installer" &&
