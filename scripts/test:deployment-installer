@@ -522,12 +522,12 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   signed_workspace="${HVO_INSTALLER_SIGNED_WORKSPACE:-$root/signed}"
   mkdir -p "$signed_workspace"
   chmod 700 "$signed_workspace"
-  # git reports worktrees by absolute path, so a relative workspace would never match the membership check below
-  # and its checkout would be deleted without being deregistered.
-  signed_workspace="$(cd "$signed_workspace" && pwd)"
+  # git reports worktrees by their resolved physical path, so a relative or symlinked workspace would never match
+  # the membership check below and its checkout would be deleted without being deregistered.
+  signed_workspace="$(cd "$signed_workspace" && pwd -P)"
   signed_evidence_root="${HVO_INSTALLER_SIGNED_EVIDENCE_ROOT:-TestResults/issue-598/$(date -u +%Y%m%dT%H%M%SZ)}"
   mkdir -p "$signed_evidence_root"
-  signed_evidence_root="$(cd "$signed_evidence_root" && pwd)"
+  signed_evidence_root="$(cd "$signed_evidence_root" && pwd -P)"
 
   # The production signing key is unavailable outside the release workflow, so the campaign signs with an ephemeral
   # key and publishes a campaign CLI whose embedded trust root is that key. Nothing else about verification changes:
@@ -570,6 +570,14 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     local source_worktree="$signed_workspace/source-$slot"
     local manifest="$signed_workspace/release-$slot/image-manifest.json"
     if [[ -f "$manifest" ]]; then
+      # A reused workspace must hold the candidate that was asked for, otherwise a stale build from an earlier
+      # revision would only be caught later by a bare identity assertion after the CLI publish work.
+      if [[ "$(jq -er '.images[0].sourceRevision' "$manifest")" != "$revision" ||
+            "$(jq -er '.release.version' "$manifest")" != "$version" ]]; then
+        printf 'The retained %s candidate in %s does not match the requested revision %s and version %s; clear the workspace.\n' \
+          "$slot" "$signed_workspace" "$revision" "$version" >&2
+        exit 1
+      fi
       printf 'Reusing the retained %s release candidate in %s.\n' "$version" "$signed_workspace" >&2
       register_signed_images "$manifest"
       return 0
@@ -763,7 +771,10 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     else
       printf 'image-distribution.json is absent\n' >"$destination/image-distribution.absent"
     fi
-    for retained in instance-manifest.json state/deployment/installation-result.json; do
+    for retained in instance-manifest.json \
+      state/deployment/installation-result.json \
+      state/deployment/installation-state.json \
+      state/deployment/state-preflight.json; do
       if [[ -f "$signed_instance_root/$retained" ]]; then
         cp "$signed_instance_root/$retained" "$destination/$(basename "$retained")"
       fi
@@ -802,22 +813,32 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   }
 
   # A refused operation and a read-only preflight must leave every durable deployment record alone, not only the
-  # release record, so the whole set is fingerprinted together. The verified image archive is excluded because a
-  # successful upgrade legitimately replaces it and hashing it repeatedly buys nothing.
-  signed_durable_fingerprint() {
+  # release record, so the whole set is fingerprinted together. The staged image archive belongs to that set: only
+  # the install path writes it, so every refusal, upgrade, rollback, and preflight must leave the bytes an
+  # air-gapped reinstall would load untouched.
+  signed_record_set_fingerprint() {
     local relative
     {
       for relative in instance-manifest.json \
         state/deployment/installation-result.json \
         state/deployment/installation-state.json \
         state/deployment/state-preflight.json \
-        state/deployment/image-distribution.json; do
+        state/deployment/image-distribution.json \
+        state/deployment/image-archive.tar; do
         if [[ -f "$signed_instance_root/$relative" ]]; then
           printf '%s %s\n' "$(sha256sum "$signed_instance_root/$relative" | cut -d ' ' -f 1)" "$relative"
         else
           printf 'absent %s\n' "$relative"
         fi
       done
+    } | sha256sum | cut -d ' ' -f 1
+  }
+
+  # The lifecycle journal joins the record set for operations that must not journal anything. The label-agreement
+  # refusal legitimately journals its refused operation, so it compares the record set on its own.
+  signed_durable_fingerprint() {
+    {
+      printf '%s records\n' "$(signed_record_set_fingerprint)"
       if [[ -f "$signed_lifecycle_state" ]]; then
         printf '%s lifecycle\n' "$(sha256sum "$signed_lifecycle_state" | cut -d ' ' -f 1)"
       else
@@ -867,9 +888,20 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     test "$(jq -er '.healthy' "$root/$evidence_name.json")" = true
   }
 
+  # The continuity endpoint is read moments after the agent has been restored, so one transient connection failure
+  # must not abort the campaign as an unattributed non-zero exit. A bounded retry keeps the read honest and names
+  # the failure if it persists.
   read_signed_continuity() {
-    curl --silent --show-error --fail --header "@$root/signed-lifecycle.header" \
-      "http://127.0.0.1:$signed_port/api/internal/deployment/lifecycle/state" >"$root/$1.json"
+    local attempt
+    for attempt in 1 2 3 4 5; do
+      if curl --silent --show-error --fail --header "@$root/signed-lifecycle.header" \
+        "http://127.0.0.1:$signed_port/api/internal/deployment/lifecycle/state" >"$root/$1.json"; then
+        return 0
+      fi
+      sleep 1
+    done
+    printf 'The lifecycle continuity endpoint did not answer within %s attempts while reading %s.\n' "$attempt" "$1" >&2
+    exit 1
   }
 
   # The release script's own container smoke deliberately prevents building a broken signed candidate. Instead,
@@ -1040,6 +1072,11 @@ SIGNED_DOCKER_SHIM
     signed-continuity-post-mutation-resumed
   test ! -s "$root/signed-post-mutation-failure.json"
   test -s "$signed_candidate_inspection"
+  # The recovery boundary always writes candidate diagnostics once mutation has started, so the retained copy must
+  # exist and must name the candidate container the lifecycle read logs from.
+  test -s "$signed_evidence_root/03b-post-mutation-failure-restore/candidate-diagnostics.txt"
+  grep -Fq "container=$signed_container" \
+    "$signed_evidence_root/03b-post-mutation-failure-restore/candidate-diagnostics.txt"
   test "$(jq -er '.errorCode' "$root/signed-post-mutation-failure-error.json")" = installation-failed
   jq -er '.message | test("retained journal and diagnostics identify the recovery boundary")' \
     "$root/signed-post-mutation-failure-error.json" >/dev/null
@@ -1094,11 +1131,12 @@ SIGNED_DOCKER_SHIM
   signed_record_before="$(signed_record_fingerprint)"
   signed_durable_before="$(signed_durable_fingerprint)"
 
-  # Three acquisition-stage refusals. Each derived release differs from the release just accepted in exactly one
-  # field, so each isolates one gate even though the CLI reports them all through one acquirer diagnostic: a
-  # signature made by a key the trust root does not hold, that key's real signature over other bytes, and a
-  # release naming the other candidate's archive under this release's signed length and checksum. None of them
-  # may touch the instance, the retained record, or the lifecycle journal.
+  # Four acquisition-stage refusals. Each derived release varies exactly one trust or integrity condition against
+  # the release just accepted, so each isolates one gate even though the CLI reports them all through one acquirer
+  # diagnostic: a signature made by a key the trust root does not hold, a manifest declaring a key identity the
+  # trust root does not carry under the trusted key's real signature, the trusted key's real signature over other
+  # bytes, and a release naming the other candidate's archive under this release's signed length and checksum.
+  # None of them may touch the instance, the retained record, or the lifecycle journal.
   refuse_signed_acquisition() {
     local label="$1" manifest="$2" asset_base="$3" evidence_label="$4" failure="$5"
     if "$signed_cli" cameraagent upgrade \
@@ -1148,6 +1186,7 @@ SIGNED_DOCKER_SHIM
   signed_record_before="$(signed_record_fingerprint)"
   test "$signed_record_before" = absent
   signed_durable_before="$(signed_durable_fingerprint)"
+  signed_records_before="$(signed_record_set_fingerprint)"
 
   # A release whose signed compatibility record contradicts the image it names is refused after acquisition and
   # before any mutation, and it records nothing: a refused upgrade never resurrects a withdrawn release record.
@@ -1170,17 +1209,23 @@ SIGNED_DOCKER_SHIM
   jq -er '.message | test("does not carry the compatibility identity the release signed")' \
     "$root/signed-contradicting-error.json" >/dev/null
   jq -er '.message | test("minimum compatible revision signed")' "$root/signed-contradicting-error.json" >/dev/null
-  # The label-agreement gate runs after the operation is journalled but before any mutation, so the journal records
-  # an upgrade that never touched the instance.
+  # The label-agreement gate runs after the operation is journalled but before any mutation. A completed upgrade
+  # also records mutationStarted=false, so the fields that discriminate this refusal from a completed upgrade are
+  # the phase and status it leaves behind: Prepared and Running, the incomplete journal entry #638 owns. When #638
+  # makes the refusal record a terminal failure, this pin moves with it.
   test "$(jq -er '.kind' "$signed_lifecycle_state")" = Upgrade
+  test "$(jq -er '.phase' "$signed_lifecycle_state")" = Prepared
+  test "$(jq -er '.status' "$signed_lifecycle_state")" = Running
   test "$(jq -er '.mutationStarted' "$signed_lifecycle_state")" = false
   assert_signed_installed_identity \
     "$(jq -er '.image.imageId' "$signed_instance_root/instance-manifest.json")" "$signed_image_a" "$signed_digest_a"
   test "$(signed_record_fingerprint)" = "$signed_record_before"
   test ! -e "$signed_evidence_path"
   assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-contradicting
-  # The label-agreement refusal legitimately journals its operation, so only the records it must not touch are
-  # compared here rather than the whole durable set.
+  # The label-agreement refusal legitimately journals its operation, so the journal must have changed while every
+  # other durable record, including the staged archive, stays byte-identical.
+  test "$(signed_record_set_fingerprint)" = "$signed_records_before"
+  test "$(signed_durable_fingerprint)" != "$signed_durable_before"
   signed_durable_before="$(signed_durable_fingerprint)"
 
   # The state-compatibility preflight must still pass on the instance the signed lifecycle left behind, so the

@@ -236,9 +236,9 @@ to end. The signed-release installer campaign
 signed lifecycle on `linux/amd64`: both architectures of both candidates are
 built, identity-derived, scanned, and signed, and the amd64 archive is the one that an
 installation consumes and runs. The arm64 archive of each candidate is published
-and verifiable but is never installed, so arm64 remains unqualified end to end
-and no open issue currently tracks qualifying it; open one before treating an
-arm64 installation as supported.
+and verifiable but is never installed, so arm64 remains unqualified end to end.
+[#651](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/651) tracks
+qualifying it; until it closes, do not treat an arm64 installation as supported.
 
 A published image release must carry a vulnerability scan. The release tool
 refuses a candidate whose scan report does not name a supported scanner and scan
@@ -279,7 +279,10 @@ the image labels. It asserts the retained
 `image-distribution.json` after each transition. Nothing else about verification
 is changed, and the substitution is proved to redirect trust rather than remove
 it: the unmodified product CLI must refuse the same release, and the campaign CLI
-must refuse the same release re-signed by a second key.
+must refuse four derived releases — the same release re-signed by a second key,
+a manifest declaring a key identity the trust root does not carry, the trusted
+key's real signature over a different release, and a release naming an archive
+it did not sign.
 
 The ephemeral key therefore establishes the lifecycle, verification,
 post-mutation automatic-restore, and compatibility-agreement behaviour of the
