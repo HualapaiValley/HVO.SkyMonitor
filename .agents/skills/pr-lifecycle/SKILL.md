@@ -83,10 +83,12 @@ request comment ID before it resumes the same previously joined CLI session and
 then append the launch metadata. Bootstrap the session without review work,
 complete `JOIN REQUEST` -> `JOIN ACK` -> `JOINED ACK`, and pass its full local
 resume ID only to the launcher; the public participant identity retains the
-non-secret short ID. A retry resumes from an already-posted request and returns
-`ALREADY_CONSUMED` after a launch receipt instead of starting a second review.
-Do not reconstruct ranges or causal ordering in an ad hoc shell pipeline when
-these scripts support the route.
+non-secret short ID. The dispatcher must stay alive and wait for the resumed
+reviewer; some harnesses reap detached descendants as soon as the parent command
+returns even when `nohup` was used. A retry resumes from an already-posted
+request and returns `ALREADY_CONSUMED` after a launch receipt instead of
+starting a second review. Do not reconstruct ranges or causal ordering in an ad
+hoc shell pipeline when these scripts support the route.
 
 ## Review Execution and Agent Selection
 

@@ -11,7 +11,9 @@ Usage:
 
 The dispatcher validates enrollment and command targeting, posts the durable
 request, waits for its returned comment ID, resumes the exact enrolled CLI
-session, then appends launch metadata. --dry-run posts and launches nothing.
+session, appends launch metadata, and remains alive until that reviewer exits so
+the invoking harness cannot reap a detached child. --dry-run posts and launches
+nothing.
 EOF
 }
 
@@ -180,6 +182,24 @@ kill -0 "$review_pid" 2>/dev/null || fail "Reviewer process did not start."
 launch_body="$(printf '## Review launch — STARTED\n\nCommand %s for participant %s resumed the previously joined session %s only after request comment %s returned at %s. Launch UTC: %s. Route: %s %s. Actual configured provider/model/effort: %s / %s / %s. PID: %s. Log: %s. Request: %s' "$command_id" "$participant_id" "$session_short" "$comment_id" "$comment_created" "$launch_utc" "$runner" "$runner_version" "$actual_provider" "$model" "$effort" "$review_pid" "$log_file" "$comment_url")"
 launch_json="$(gh api --method POST "repos/$repo/issues/$pr/comments" -f body="$launch_body")"
 
+if wait "$review_pid"; then
+    review_exit=0
+else
+    review_exit=$?
+fi
+review_completed_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+case "$runner" in
+    codex) result_file="$output_file" ;;
+    claude) result_file="$log_file" ;;
+esac
+if [[ "$review_exit" -eq 0 && -s "$result_file" ]]; then
+    process_conclusion="COMPLETED"
+else
+    process_conclusion="ERROR"
+fi
+completion_body="$(printf '## Review process — %s\n\nCommand %s for participant %s exited at %s with code %s. Result: %s. Log: %s. This process result is not a review verdict; the coordinator must inspect and post the reviewer report.' "$process_conclusion" "$command_id" "$participant_id" "$review_completed_utc" "$review_exit" "$result_file" "$log_file")"
+completion_json="$(gh api --method POST "repos/$repo/issues/$pr/comments" -f body="$completion_body")"
+
 jq -n \
     --arg commandId "$command_id" \
     --arg participantId "$participant_id" \
@@ -187,5 +207,12 @@ jq -n \
     --arg requestCreatedAt "$comment_created" \
     --arg launchCommentId "$(jq -r '.id' <<<"$launch_json")" \
     --arg launchUtc "$launch_utc" \
+    --arg completionCommentId "$(jq -r '.id' <<<"$completion_json")" \
+    --arg completedUtc "$review_completed_utc" \
+    --arg conclusion "$process_conclusion" \
+    --arg exitCode "$review_exit" \
+    --arg resultFile "$result_file" \
     --arg pid "$review_pid" \
-    '{commandId:$commandId,participantId:$participantId,requestCommentId:$requestCommentId,requestCreatedAt:$requestCreatedAt,launchCommentId:$launchCommentId,launchUtc:$launchUtc,pid:($pid|tonumber)}'
+    '{commandId:$commandId,participantId:$participantId,requestCommentId:$requestCommentId,requestCreatedAt:$requestCreatedAt,launchCommentId:$launchCommentId,launchUtc:$launchUtc,completionCommentId:$completionCommentId,completedUtc:$completedUtc,conclusion:$conclusion,exitCode:($exitCode|tonumber),resultFile:$resultFile,pid:($pid|tonumber)}'
+
+[[ "$process_conclusion" == COMPLETED ]] || fail "Reviewer process failed or produced no result."

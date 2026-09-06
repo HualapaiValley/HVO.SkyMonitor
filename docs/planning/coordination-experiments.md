@@ -166,6 +166,21 @@ token estimate.
   finding together with incomplete reports, reopened findings, CI defects, and
   post-merge follow-ups.
 
+### E-007: detached reviewer lifetime under a command harness
+
+- **Observation:** the first live #679 dispatch proved request-comment-before-
+  launch ordering, then emitted `thread.started` and `turn.started` but the
+  reviewer disappeared as soon as the dispatcher command returned. `nohup` did
+  not preserve the child because the command harness reaped its descendants.
+- **Repair:** keep the dispatcher alive with `wait` until the resumed reviewer
+  exits, record a process-terminal ledger entry, and reject exit zero without a
+  result file. The operator heartbeat continues independently while the
+  dispatcher tool session remains active.
+- **Decision:** a detached child is not a portable persistence mechanism. A
+  dispatch is not complete merely because its PID briefly exists; require the
+  durable request, STARTED launch ledger, terminal process ledger, and inspected
+  reviewer report.
+
 ## Candidate improvements
 
 Try one bounded change at a time and record it before changing the default:
