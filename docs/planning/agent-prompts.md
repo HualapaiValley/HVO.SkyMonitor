@@ -91,10 +91,12 @@ five-minute operator heartbeat. The heartbeat monitor must actively wake or
 message the coordinator on every cadence; buffered output that requires a
 remembered manual poll is insufficient. When no native wake exists, use one
 observer that messages the coordinator, prove it with an immediate baseline,
-and keep the coordinator waiting on that signal path. Long gate or review runs
-get an interim note rather than silence. This does not replace the final
-completion report. If blocked, leave the required handoff in the issue and its
-owning roadmap epic.
+and keep the coordinator waiting on that signal path. If no signaling observer
+is available, poll directly. Treat a late signal as monitor failure: report the
+gap, repair or replace the monitor, and poll directly until its replacement
+emits a new immediate baseline. Long gate or review runs get an interim note
+rather than silence. This does not replace the final completion report. If
+blocked, leave the required handoff in the issue and its owning roadmap epic.
 ```
 
 ## 3. Foundation and Contracts Prompt

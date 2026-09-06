@@ -176,8 +176,9 @@ when it finishes:
   working monitor.
 - Prove the signaling path after every start or active-set restart: require an
   immediate baseline message and relay it to the main conversation. Treat a
-  late scheduled signal as a monitor failure, report the gap, and repair or
-  replace the monitor before relying on it again.
+  late scheduled signal as a monitor failure, report the gap, repair or replace
+  the monitor, and have the coordinator poll directly until the replacement
+  proves its signaling path with a new immediate baseline.
 - On every wake, the monitor records, per issue or PR: the agent's last activity
   timestamp and current step; the PR head SHA, draft state, and merge state; the
   first line and timestamp of the latest ledger comment; and the state of shared
