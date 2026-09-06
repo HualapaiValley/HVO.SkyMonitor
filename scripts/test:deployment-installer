@@ -1167,7 +1167,12 @@ SIGNED_DOCKER_SHIM
   assert_signed_evidence_names "$signed_version_b" "$signed_image_b" "$signed_revision_b"
   test "$(jq -er '.distribution.assetName' "$signed_evidence_path")" = "$signed_archive_b"
   assert_signed_running_image "$signed_image_b" "$signed_digest_b" signed-status-reupgrade
-  test "$(signed_record_fingerprint)" = "$signed_record_before"
+  # Re-acquiring the same release rewrites the record with fresh acquisition and verification timestamps; every
+  # other field must match the record the first upgrade to release B retained.
+  diff <(jq -S 'del(.recordedUtc, .distribution.verifiedUtc)' \
+      "$signed_evidence_root/03c-resumed-upgrade-release-b/image-distribution.json") \
+    <(jq -S 'del(.recordedUtc, .distribution.verifiedUtc)' "$signed_evidence_path") >/dev/null
+  signed_record_before="$(signed_record_fingerprint)"
   signed_durable_before="$(signed_durable_fingerprint)"
 
   # Four acquisition-stage refusals. Each derived release varies exactly one trust or integrity condition against
