@@ -33,8 +33,14 @@ internal sealed class CameraAgentLifecycleManager
         {
             return await ListAsync(request.ProductRoot, cancellationToken).ConfigureAwait(false);
         }
+        var instanceId = request.InstanceId!.Value;
+        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
         // A signed image upgrade resolves and verifies its release before the instance is touched, so an unsupported
         // architecture, a missing platform, or a tampered archive fails while the running instance is untouched.
+        // The platform is selected for the architecture of the Docker daemon the instance was installed against,
+        // which the manifest records and which the candidate is later required to match, not for the architecture
+        // of the process running this CLI: a remote or cross-architecture daemon is served the archive it can run,
+        // and a release that does not publish that architecture is refused before anything is downloaded.
         using var imageAcquirer = request.Operation == LifecycleOperationKind.Upgrade &&
                                   (request.ImageManifest is not null || request.ImageIndex is not null)
             ? distributionFactory()
@@ -42,7 +48,9 @@ internal sealed class CameraAgentLifecycleManager
         AcquiredImage? signedImage = null;
         if (imageAcquirer is not null)
         {
-            signedImage = await imageAcquirer.AcquireImageAsync(ImageSelectionRequest(request), cancellationToken)
+            var daemonArchitecture = (await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false))
+                .DockerDaemon.Architecture;
+            signedImage = await imageAcquirer.AcquireImageAsync(ImageSelectionRequest(request), daemonArchitecture, cancellationToken)
                 .ConfigureAwait(false)
                 ?? throw new InstallerException("The signed CameraAgent image release did not resolve a candidate image.");
             request = request with
@@ -52,8 +60,6 @@ internal sealed class CameraAgentLifecycleManager
                 ImageArchiveSha256 = signedImage.ArchiveSha256
             };
         }
-        var instanceId = request.InstanceId!.Value;
-        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
         if (request.Operation is not null && uid == 0)
             throw new InstallerException("Run lifecycle operations as the Docker-capable runtime user, not as root.");
         if (request.Operation == LifecycleOperationKind.Purge && !Directory.Exists(paths.InstanceRoot))

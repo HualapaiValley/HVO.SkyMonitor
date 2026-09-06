@@ -47,10 +47,76 @@ public sealed class LifecycleContractTests
                 request, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None,
                 release.CreateAcquirer));
 
-        StringAssert.Contains(exception.Message, "does not support this host", StringComparison.Ordinal);
+        // The upgrade selects for the instance's recorded daemon, which this fixture records as the process
+        // architecture by default (on amd64 and arm64 runners alike), so the release that publishes only the other
+        // architecture is refused and the refusal names the daemon as the selecting authority.
+        StringAssert.Contains(exception.Message, "does not support the instance's recorded Docker daemon's", StringComparison.Ordinal);
         // The release is resolved before the instance is touched, so no lifecycle operation is journaled.
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
         Assert.IsFalse(File.Exists(Path.Combine(fixture.Paths.DeploymentStateRoot, "image-distribution.json")));
+    }
+
+    [TestMethod]
+    public async Task UpgradeAsync_SignedReleaseSelectsTheRecordedDaemonArchitectureNotTheProcess()
+    {
+        // The instance was installed against a daemon whose architecture differs from the CLI process (a remote or
+        // cross-architecture DOCKER_HOST). The release publishes only that architecture.
+        var daemonArchitecture = DistributionAcquirer.HostImageArchitecture() == "amd64" ? "arm64" : "amd64";
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner,
+            daemonArchitecture: daemonArchitecture);
+        var candidateImageId = $"sha256:{new string('9', 64)}";
+        using var release = SignedImageReleaseFixture.Create(
+            fixture.Root, candidateImageId, CandidateContractLabels(), publishedArchitectures: [daemonArchitecture]);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateImageId, candidateImageId, fixture.Uid, fixture.Gid);
+
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageManifest = release.ManifestPath,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None, release.CreateAcquirer);
+
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.AreEqual(candidateImageId, result.Image!.ImageId);
+        Assert.AreEqual(daemonArchitecture, result.Image.Architecture);
+    }
+
+    [TestMethod]
+    public async Task UpgradeAsync_SignedReleaseWithoutTheRecordedDaemonArchitecture_FailsBeforeAnyDownload()
+    {
+        // The release publishes only the CLI process's architecture, which the recorded daemon cannot run: the
+        // refusal names the published platforms and the daemon, and nothing is acquired or journalled.
+        var processArchitecture = DistributionAcquirer.HostImageArchitecture();
+        var daemonArchitecture = processArchitecture == "amd64" ? "arm64" : "amd64";
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed, daemonArchitecture: daemonArchitecture);
+        using var release = SignedImageReleaseFixture.Create(
+            fixture.Root, $"sha256:{new string('b', 64)}", SignedImageReleaseFixture.ContractLabels,
+            publishedArchitectures: [processArchitecture]);
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageManifest = release.ManifestPath,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            CameraAgentLifecycleManager.ExecuteAsync(
+                request, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None,
+                release.CreateAcquirer));
+
+        StringAssert.Contains(exception.Message, $"linux/{processArchitecture}", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, $"linux/{daemonArchitecture}", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "Docker daemon", StringComparison.Ordinal);
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
+        Assert.IsFalse(Directory.Exists(Path.Combine(fixture.Root, "distribution-cache", "images")),
+            "nothing may be acquired for a platform the recorded daemon cannot run");
     }
 
     [TestMethod]
@@ -1658,8 +1724,13 @@ public sealed class LifecycleContractTests
             InstanceLifecycleCondition condition,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile replayProfile =
                 HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
-            bool seedCatalogSelection = true)
+            bool seedCatalogSelection = true,
+            string? daemonArchitecture = null)
         {
+            // By default the fixture records the architecture of the process running the tests, as a real
+            // installation on this machine would, so host-relative tests stay deterministic on amd64 and arm64
+            // runners alike; tests that prove daemon-over-process selection pass a different value explicitly.
+            daemonArchitecture ??= DistributionAcquirer.HostImageArchitecture();
             var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
             Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
             var root = Path.Combine(Path.GetTempPath(), $"hvo-lifecycle-{Guid.NewGuid():N}");
@@ -1687,7 +1758,10 @@ public sealed class LifecycleContractTests
             }
             var uid = NativeLinux.getuid();
             var gid = NativeLinux.getgid();
-            var daemon = new DockerDaemonIdentity("daemon", "host", "amd64", "29.7.2");
+            // The recorded daemon architecture and the installed image's architecture agree, as a real installation
+            // guarantees; a test that records an architecture other than the process's proves that the daemon, not
+            // the CLI process, selects the signed platform.
+            var daemon = new DockerDaemonIdentity("daemon", "host", daemonArchitecture, "29.7.2");
             var catalog = new CatalogInstallationIdentity(
                 ProductionCatalog.CatalogId, ProductionCatalog.PackageVersion, "2", "3",
                 ProductionCatalog.DatabaseSha256, ProductionCatalog.DatabaseLength, ProductionCatalog.RowCount,
@@ -1698,7 +1772,7 @@ public sealed class LifecycleContractTests
                 : ComposeDeployment.TemplateVersion;
             var image = new ImageInstallationIdentity(
                 "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}",
-                "amd64", null, UpgradeCompatibility: "backward-compatible", SourceRevision: new string('8', 40),
+                daemonArchitecture, null, UpgradeCompatibility: "backward-compatible", SourceRevision: new string('8', 40),
                 Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1",
                 CatalogContract: "hyg-v42-production-p3-s2",
                 ReplayRunnerContract: localRunner ? "local-replay-runner-v1" : null);

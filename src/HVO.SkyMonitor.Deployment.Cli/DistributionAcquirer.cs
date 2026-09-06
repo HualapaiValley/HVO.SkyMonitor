@@ -104,7 +104,26 @@ internal sealed class DistributionAcquirer : IDisposable
     /// the installer asks Docker to load or start anything. Returns <c>null</c> when the operator supplied the image
     /// directly instead of naming a signed release.
     /// </summary>
-    public async Task<AcquiredImage?> AcquireImageAsync(InstallRequest request, CancellationToken cancellationToken)
+    public Task<AcquiredImage?> AcquireImageAsync(InstallRequest request, CancellationToken cancellationToken)
+        => AcquireImageAsync(request, HostImageArchitecture(), ThisHostAuthority, cancellationToken);
+
+    /// <summary>
+    /// Acquires the signed CameraAgent image release for the architecture of the Docker daemon an instance was
+    /// installed against, which is the architecture the candidate must carry, rather than the architecture of the
+    /// process running the CLI. A remote or cross-architecture daemon is therefore served the archive it can run,
+    /// and a release that does not publish that architecture is refused before anything is downloaded.
+    /// </summary>
+    public Task<AcquiredImage?> AcquireImageAsync(
+        InstallRequest request,
+        string daemonArchitecture,
+        CancellationToken cancellationToken)
+        => AcquireImageAsync(request, DaemonImageArchitecture(daemonArchitecture), RecordedDaemonAuthority, cancellationToken);
+
+    private async Task<AcquiredImage?> AcquireImageAsync(
+        InstallRequest request,
+        string targetArchitecture,
+        string selectingAuthority,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         var inputs = TrainInputs.ForImage(request);
@@ -117,7 +136,7 @@ internal sealed class DistributionAcquirer : IDisposable
         {
             var resolved = await ResolveVerifiedManifestAsync(
                 inputs, DistributionManifestKind.ImageRelease, readOnly: false, cancellationToken).ConfigureAwait(false);
-            var (image, platform) = SelectHostPlatform(resolved.Manifest);
+            var (image, platform) = SelectPlatform(resolved.Manifest, targetArchitecture, selectingAuthority);
             var artifact = resolved.Manifest.Artifacts.Single(value =>
                 value.Role == DistributionArtifactRole.ImageArchive && value.AssetName == platform.OfflineArchiveAsset);
             var assetSource = ResolveAssetSource(inputs, resolved.Source, artifact.AssetName, resolved.Reference is null);
@@ -149,7 +168,24 @@ internal sealed class DistributionAcquirer : IDisposable
     /// state is committed. The read-only <c>cameraagent preflight</c> uses this to name the release an upgrade
     /// would install without leaving anything behind. Returns <c>null</c> when no signed release was named.
     /// </summary>
-    public async Task<ResolvedImageRelease?> ResolveImageAsync(InstallRequest request, CancellationToken cancellationToken)
+    public Task<ResolvedImageRelease?> ResolveImageAsync(InstallRequest request, CancellationToken cancellationToken)
+        => ResolveImageAsync(request, HostImageArchitecture(), ThisHostAuthority, cancellationToken);
+
+    /// <summary>
+    /// Resolves the signed release for the architecture of the instance's recorded Docker daemon, so a read-only
+    /// preflight names exactly the platform an upgrade of that instance will acquire.
+    /// </summary>
+    public Task<ResolvedImageRelease?> ResolveImageAsync(
+        InstallRequest request,
+        string daemonArchitecture,
+        CancellationToken cancellationToken)
+        => ResolveImageAsync(request, DaemonImageArchitecture(daemonArchitecture), RecordedDaemonAuthority, cancellationToken);
+
+    private async Task<ResolvedImageRelease?> ResolveImageAsync(
+        InstallRequest request,
+        string targetArchitecture,
+        string selectingAuthority,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         var inputs = TrainInputs.ForImage(request);
@@ -162,7 +198,7 @@ internal sealed class DistributionAcquirer : IDisposable
         {
             var resolved = await ResolveVerifiedManifestAsync(
                 inputs, DistributionManifestKind.ImageRelease, readOnly: true, cancellationToken).ConfigureAwait(false);
-            var (image, platform) = SelectHostPlatform(resolved.Manifest);
+            var (image, platform) = SelectPlatform(resolved.Manifest, targetArchitecture, selectingAuthority);
             // An acquisition also requires the release to publish exactly one offline archive for the selected
             // platform. Proving it here costs no download and keeps a malformed release from resolving cleanly
             // and then failing partway through the upgrade it was resolved for.
@@ -184,23 +220,42 @@ internal sealed class DistributionAcquirer : IDisposable
         }
     }
 
+    private const string ThisHostAuthority = "this host's";
+    private const string RecordedDaemonAuthority = "the instance's recorded Docker daemon's";
+
     /// <summary>
-    /// Selects the published platform this host can execute. A release that does not publish this host's
-    /// architecture names what it does publish instead of failing generically.
+    /// Selects the published platform for the architecture that will execute the image: the CLI process for an
+    /// install, or the instance's recorded Docker daemon for an upgrade and its preflight. A release that does not
+    /// publish that architecture names what it does publish and which authority selected, instead of failing
+    /// generically or, worse, later at <c>docker image load</c> after the wrong archive was downloaded.
     /// </summary>
-    private static (DistributionImageIdentity Image, DistributionImagePlatform Platform) SelectHostPlatform(
-        DistributionReleaseManifest manifest)
+    private static (DistributionImageIdentity Image, DistributionImagePlatform Platform) SelectPlatform(
+        DistributionReleaseManifest manifest,
+        string architecture,
+        string selectingAuthority)
     {
         var image = manifest.Images[0];
-        var architecture = HostImageArchitecture();
         var platform = image.Platforms.SingleOrDefault(candidate =>
             candidate.OperatingSystem == "linux" && candidate.Architecture == architecture)
             ?? throw new InstallerException(
                 $"The signed CameraAgent image release {manifest.Release.Tag} publishes " +
                 $"{string.Join(", ", image.Platforms.Select(static value => $"{value.OperatingSystem}/{value.Architecture}"))} " +
-                $"and does not support this host's linux/{architecture} architecture.");
+                $"and does not support {selectingAuthority} linux/{architecture} architecture.");
         return (image, platform);
     }
+
+    /// <summary>
+    /// The image architecture an instance's recorded Docker daemon executes, named the way an OCI platform names
+    /// it. The installer records the daemon's architecture already normalized, but an edited or foreign manifest
+    /// is refused here rather than being matched against nothing.
+    /// </summary>
+    internal static string DaemonImageArchitecture(string daemonArchitecture) => daemonArchitecture switch
+    {
+        "amd64" or "x86_64" => "amd64",
+        "arm64" or "aarch64" => "arm64",
+        var other => throw new InstallerException(
+            $"CameraAgent images are published for linux/amd64 and linux/arm64; the instance's recorded Docker daemon reports '{other}'.")
+    };
 
     /// <summary>The image architecture this host can execute, named the way an OCI platform names it.</summary>
     internal static string HostImageArchitecture() => RuntimeInformation.OSArchitecture switch
