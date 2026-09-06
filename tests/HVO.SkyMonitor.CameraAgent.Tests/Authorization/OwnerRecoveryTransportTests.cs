@@ -205,9 +205,12 @@ public sealed class OwnerRecoveryTransportTests
         }
 
         using var socket = Bind(Path.Combine(root, OwnerRecoveryTransport.SocketFileName), TransientSocketMode);
+        var markerPath = Path.Combine(root, "listening");
+        var stagingMarkerPath = $"{markerPath}.{Environment.ProcessId}.tmp";
         await File.WriteAllTextAsync(
-            Path.Combine(root, "listening"),
+            stagingMarkerPath,
             Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture)).ConfigureAwait(false);
+        File.Move(stagingMarkerPath, markerPath);
         await Task.Delay(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
     }
 
