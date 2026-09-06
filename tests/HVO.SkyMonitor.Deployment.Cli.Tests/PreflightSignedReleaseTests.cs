@@ -272,7 +272,28 @@ public sealed class PreflightSignedReleaseTests
                 CancellationToken.None,
                 release.CreateAcquirer));
 
-        StringAssert.Contains(exception.Message, "does not support this host", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "does not support the instance's recorded Docker daemon's", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_SignedImageRelease_SelectsTheRecordedDaemonArchitectureNotTheProcess()
+    {
+        // The instance's recorded daemon architecture differs from the CLI process; the release publishes only the
+        // daemon's architecture. The preflight must select exactly what the upgrade will acquire, without Docker.
+        var daemonArchitecture = DistributionAcquirer.HostImageArchitecture() == "amd64" ? "arm64" : "amd64";
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync(daemonArchitecture: daemonArchitecture);
+        var candidateImageId = $"sha256:{new string('c', 64)}";
+        using var release = SignedImageReleaseFixture.Create(
+            instance.Root, candidateImageId, SignedImageReleaseFixture.ContractLabels, [daemonArchitecture]);
+        var runner = new RefusingProcessRunner();
+
+        var report = await CameraAgentStatePreflightManager.ExecuteAsync(
+            instance.Request(release.ManifestPath), runner, CancellationToken.None, release.CreateAcquirer);
+
+        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
+        Assert.AreEqual(candidateImageId, report.CandidateImageId);
+        Assert.AreEqual("image-v1.2.3", report.CandidateRelease);
+        Assert.AreEqual(0, runner.Invocations, "preflight must not contact Docker to learn the daemon architecture");
     }
 
     /// <summary>
@@ -593,7 +614,8 @@ public sealed class PreflightSignedReleaseTests
             => new(InstanceId, Root, null, Json: false) { ImageManifest = manifestPath };
 
         public static async Task<InstalledInstanceFixture> CreateCurrentAsync(
-            JournalShape shape = JournalShape.Checkpointed)
+            JournalShape shape = JournalShape.Checkpointed,
+            string? daemonArchitecture = null)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-preflight-release-{Guid.NewGuid():N}");
             var instanceId = Guid.NewGuid();
@@ -615,7 +637,7 @@ public sealed class PreflightSignedReleaseTests
             fixture.WriteIdentityDatabase();
             fixture.WriteRawIngressDatabase();
             fixture.ShapeJournals(shape);
-            await fixture.WriteInstanceManifestAsync().ConfigureAwait(false);
+            await fixture.WriteInstanceManifestAsync(daemonArchitecture).ConfigureAwait(false);
             return fixture;
         }
 
@@ -741,14 +763,16 @@ public sealed class PreflightSignedReleaseTests
             command.ExecuteNonQuery();
         }
 
-        private Task WriteInstanceManifestAsync()
+        private Task WriteInstanceManifestAsync(string? daemonArchitecture = null)
         {
             var applicationIdentity = Guid.NewGuid();
             var catalog = new CatalogInstallationIdentity(
                 ProductionCatalog.CatalogId, ProductionCatalog.PackageVersion, "2", "3",
                 ProductionCatalog.DatabaseSha256, ProductionCatalog.DatabaseLength, ProductionCatalog.RowCount,
                 Paths.CatalogRoot, new string('a', 64), "local-offline");
-            var architecture = DistributionAcquirer.HostImageArchitecture();
+            // The recorded daemon architecture is what a signed-release preflight must select on; the installed
+            // image's architecture agrees with it, as a real installation guarantees.
+            var architecture = daemonArchitecture ?? DistributionAcquirer.HostImageArchitecture();
             var image = new ImageInstallationIdentity(
                 "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('9', 64)}", architecture, null,
                 UpgradeCompatibility: CameraAgentStateContract.LegacyUnbounded, SourceRevision: new string('8', 40),
