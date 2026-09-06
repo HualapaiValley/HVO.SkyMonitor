@@ -134,19 +134,25 @@ require_file --evidence-file "$evidence_file"
 [[ -z "$call_sites_file" ]] || require_file --call-sites-file "$call_sites_file"
 [[ -z "$instructions_file" ]] || require_file --instructions-file "$instructions_file"
 
-pr_json="$(gh pr view "$pr" --repo "$repo" --json baseRefOid,headRefOid,title,comments)"
+pr_json="$(gh pr view "$pr" --repo "$repo" --json baseRefOid,headRefOid,title)"
 target_base="$(jq -er '.baseRefOid' <<<"$pr_json")"
 current_head="$(jq -er '.headRefOid' <<<"$pr_json")"
 [[ "$target_base" =~ ^[0-9a-f]{40}$ && "$current_head" =~ ^[0-9a-f]{40}$ ]] || fail "PR SHAs are not immutable full SHAs."
+merge_base="$(git merge-base "$target_base" "$current_head")" ||
+    fail "Cannot calculate the PR merge base from local commit objects."
+[[ "$merge_base" =~ ^[0-9a-f]{40}$ ]] || fail "PR merge base is not a full SHA."
+
+comments_stream="$(gh api --method GET --paginate "repos/$repo/issues/$pr/comments?per_page=100")"
+comments_json="$(jq -cs '[.[][]]' <<<"$comments_stream")"
 
 previous_head="none"
 prior_report=""
 prior_checklist="none"
 if [[ "$mode" != initial ]]; then
     prior_report="$(jq -r '
-        [.comments[] | select(.body | test("(?i)(review (started and )?completed|review complete|verdict:[[:space:]]*(clean|converged|corrections required))"))]
+        [.[] | select(.body | test("(?i)(review (started and )?completed|review complete|verdict:[[:space:]]*(clean|converged|corrections required))"))]
         | last | .body // empty
-    ' <<<"$pr_json")"
+    ' <<<"$comments_json")"
     [[ -n "$prior_report" ]] || fail "No prior completed review was found in the PR ledger."
     previous_range="$(printf '%s\n' "$prior_report" | grep -Eo '[0-9a-f]{40}\.\.[0-9a-f]{40}' | tail -n 1 || true)"
     [[ -n "$previous_range" ]] || fail "Prior review does not attest a full-SHA range."
@@ -159,7 +165,7 @@ if [[ "$mode" != initial ]]; then
 fi
 
 case "$mode" in
-    initial) exact_range="$target_base..$current_head (complete PR diff)" ;;
+    initial) exact_range="$merge_base..$current_head (complete merge-base-to-head PR diff)" ;;
     correction) exact_range="$previous_head..$current_head (correction delta and its concrete interactions)" ;;
     base-sync) exact_range="merge resolution $previous_head..$current_head and complete PR diff $target_base..$current_head" ;;
 esac
@@ -199,6 +205,7 @@ request="$(printf '%s\n' \
     "Dispatch command ID and target participant ID: $command_id / $participant_id" \
     "Acceptance criteria: $(<"$acceptance_file")" \
     "Target base SHA: $target_base" \
+    "PR merge-base SHA: $merge_base" \
     "Previous reviewed head SHA: $previous_head" \
     "Current head SHA: $current_head" \
     "Exact review range: $exact_range" \

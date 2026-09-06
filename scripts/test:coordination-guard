@@ -83,4 +83,18 @@ if $guard render-live --registry "$work_root/registry.json" --participant "$part
     exit 1
 fi
 
+printf 'C1.2 | S12\nOWNER %s LEASE 2\nOWNER %s LEASE 1\n#628 active\nLIVE 2026-09-06T17:00:00Z / 10:00:00 MST\n' \
+    "$participant_a" "$participant_b" > "$work_root/two-owners.txt"
+two_owners_sha="$(sha256_file "$work_root/two-owners.txt")"
+for owner in "$participant_a" "$participant_b"; do
+    generation=2
+    [[ "$owner" == "$participant_a" ]] || generation=1
+    if $guard render-live --registry "$work_root/registry.json" --participant "$owner" \
+        --lease-generation "$generation" --current-body "$work_root/two-owners.txt" \
+        --expected-sha256 "$two_owners_sha" --live-line "$live_line" >/dev/null 2>&1; then
+        printf 'A participant rendered liveness for a slot with multiple owners.\n' >&2
+        exit 1
+    fi
+done
+
 printf 'Coordination enrollment, targeting, idempotency, lease, and CAS guards passed.\n'

@@ -20,7 +20,11 @@ if [[ "$1" == api && "$*" == *issues/comments/* ]]; then
     exit 0
 fi
 if [[ "$1" == api && "$*" == *'--method GET'* && "$*" == *issues/700/comments* ]]; then
-    [[ ! -f "$MOCK_LEDGER" ]] && printf '[]\n' || printf '%s\n' "$(<"$MOCK_LEDGER")"
+    if [[ -n "${MOCK_PAGINATED_LEDGER:-}" ]]; then
+        printf '%s\n' "$(<"$MOCK_PAGINATED_LEDGER")"
+    else
+        [[ ! -f "$MOCK_LEDGER" ]] && printf '[]\n' || printf '%s\n' "$(<"$MOCK_LEDGER")"
+    fi
     exit 0
 fi
 if [[ "$1" == api && "$*" == *'--method POST'* ]]; then
@@ -37,6 +41,11 @@ if [[ "$1" == api && "$*" == *'--method POST'* ]]; then
         fi
         shift
     done
+    if [[ "${MOCK_FAIL_POST_NUMBER:-0}" == "$count" ]]; then
+        printf 'GH_POST_FAIL_%s\n' "$count" >> "$MOCK_EVENT_LOG"
+        printf 'Mock POST failure %s.\n' "$count" >&2
+        exit 1
+    fi
     response="$(jq -n --argjson id "$((9000 + count))" --arg created "2026-09-06T17:00:0${count}Z" \
         --arg url "https://example.invalid/comment/${count}" --arg body "$body" \
         '{id:$id,created_at:$created,html_url:$url,body:$body}')"
@@ -46,6 +55,11 @@ if [[ "$1" == api && "$*" == *'--method POST'* ]]; then
         jq -n --argjson item "$response" '[$item]' > "$MOCK_LEDGER.next"
     fi
     mv "$MOCK_LEDGER.next" "$MOCK_LEDGER"
+    if [[ "${MOCK_REPLACE_LEASE_ON_RESERVATION:-false}" == true &&
+        "$body" == *'## Review launch — STARTING (durable reservation)'* ]]; then
+        jq '.participants[0].lease.generation = 2' "$MOCK_REGISTRY" > "$MOCK_REGISTRY.next"
+        mv "$MOCK_REGISTRY.next" "$MOCK_REGISTRY"
+    fi
     printf '%s\n' "$response"
     exit 0
 fi
@@ -74,6 +88,7 @@ export MOCK_PR_JSON="$work_root/pr.json"
 export MOCK_COMMENT_BODY="$work_root/comment.txt"
 export MOCK_LEDGER="$work_root/ledger.json"
 export MOCK_REVIEW_RESULT="$work_root/logs/review.final.md"
+export MOCK_REGISTRY="$work_root/registry.json"
 
 printf 'Acceptance fixture.\n' > "$work_root/acceptance.txt"
 printf 'Concurrency and exact-range fixture.\n' > "$work_root/lens.txt"
@@ -92,12 +107,12 @@ resume_session='01a0beef-0000-4000-8000-000000000001'
 
 write_pr_fixture() {
     local target="$1" head="$2" comments_file="${3:-}"
+    jq -n --arg base "$target" --arg head "$head" \
+        '{baseRefOid:$base,headRefOid:$head,title:"fixture"}' > "$MOCK_PR_JSON"
     if [[ -n "$comments_file" ]]; then
-        jq -n --arg base "$target" --arg head "$head" --rawfile body "$comments_file" \
-            '{baseRefOid:$base,headRefOid:$head,title:"fixture",comments:[{body:$body}]}' > "$MOCK_PR_JSON"
+        jq -n --rawfile body "$comments_file" '[{body:$body}]' > "$MOCK_LEDGER"
     else
-        jq -n --arg base "$target" --arg head "$head" \
-            '{baseRefOid:$base,headRefOid:$head,title:"fixture",comments:[]}' > "$MOCK_PR_JSON"
+        printf '[]\n' > "$MOCK_LEDGER"
     fi
 }
 
@@ -112,7 +127,19 @@ common_args=(
 
 write_pr_fixture "$base" "$initial_head"
 $request_tool "${common_args[@]}" --mode initial --output "$work_root/initial.request"
-grep -Fqx "Exact review range: $base..$initial_head (complete PR diff)" "$work_root/initial.request"
+initial_merge_base="$(git -C "$repo_root" merge-base "$base" "$initial_head")"
+grep -Fqx "PR merge-base SHA: $initial_merge_base" "$work_root/initial.request"
+grep -Fqx "Exact review range: $initial_merge_base..$initial_head (complete merge-base-to-head PR diff)" "$work_root/initial.request"
+
+merge_commit="$(git -C "$repo_root" rev-list --merges --max-count=1 HEAD)"
+divergent_head="$(git -C "$repo_root" rev-parse "$merge_commit^1")"
+divergent_target="$(git -C "$repo_root" rev-parse "$merge_commit^2")"
+divergent_base="$(git -C "$repo_root" merge-base "$divergent_target" "$divergent_head")"
+write_pr_fixture "$divergent_target" "$divergent_head"
+$request_tool "${common_args[@]}" --mode initial --output "$work_root/divergent.request"
+grep -Fqx "Target base SHA: $divergent_target" "$work_root/divergent.request"
+grep -Fqx "PR merge-base SHA: $divergent_base" "$work_root/divergent.request"
+grep -Fqx "Exact review range: $divergent_base..$divergent_head (complete merge-base-to-head PR diff)" "$work_root/divergent.request"
 
 printf '## Initial review completed — verdict: corrections required\nRange attested: %s..%s\nFinding M1 unresolved.\n' "$base" "$initial_head" > "$work_root/initial-report.txt"
 write_pr_fixture "$base" "$correction_head" "$work_root/initial-report.txt"
@@ -122,6 +149,17 @@ $request_tool "${common_args[@]}" --mode correction --round 1 \
 grep -Fqx "Exact review range: $initial_head..$correction_head (correction delta and its concrete interactions)" "$work_root/correction.request"
 grep -Fq 'Finding M1 unresolved.' "$work_root/correction-pack.md"
 grep -Fq 'All changed-symbol callers inspected.' "$work_root/correction-pack.md"
+
+jq -n '[range(0;100) | {body:("filler-" + tostring)}]' > "$work_root/comments-page-1.json"
+jq -n --rawfile body "$work_root/initial-report.txt" '[{body:$body}]' > "$work_root/comments-page-2.json"
+printf '%s\n%s\n' "$(<"$work_root/comments-page-1.json")" "$(<"$work_root/comments-page-2.json")" > "$work_root/comments-pages.json"
+export MOCK_PAGINATED_LEDGER="$work_root/comments-pages.json"
+write_pr_fixture "$base" "$correction_head"
+$request_tool "${common_args[@]}" --mode correction --round 1 \
+    --call-sites-file "$work_root/call-sites.txt" --instructions-file "$work_root/instructions.txt" \
+    --evidence-pack "$work_root/paginated-pack.md" --output "$work_root/paginated.request"
+grep -Fq 'Finding M1 unresolved.' "$work_root/paginated-pack.md"
+unset MOCK_PAGINATED_LEDGER
 
 printf '## Correction review completed — verdict: CLEAN\nRange attested: %s..%s\nM1 verified corrected.\n' "$initial_head" "$correction_head" > "$work_root/correction-report.txt"
 write_pr_fixture "$new_base" "$sync_head" "$work_root/correction-report.txt"
@@ -160,12 +198,14 @@ for _ in $(seq 1 50); do
     sleep 0.02
 done
 request_return_line="$(grep -n 'GH_POST_RETURN_1' "$MOCK_EVENT_LOG" | cut -d: -f1)"
+reservation_return_line="$(grep -n 'GH_POST_RETURN_2' "$MOCK_EVENT_LOG" | cut -d: -f1)"
 launch_line="$(grep -n CODEX_LAUNCH "$MOCK_EVENT_LOG" | cut -d: -f1)"
-[[ -n "$request_return_line" && -n "$launch_line" && "$request_return_line" -lt "$launch_line" ]] || {
-    printf 'Reviewer launch did not follow the durable request return.\n' >&2
+[[ -n "$request_return_line" && -n "$reservation_return_line" && -n "$launch_line" &&
+    "$request_return_line" -lt "$reservation_return_line" && "$reservation_return_line" -lt "$launch_line" ]] || {
+    printf 'Reviewer launch did not follow the durable request and reservation returns.\n' >&2
     exit 1
 }
-jq -e '.requestCommentId == "9001" and .launchCommentId == "9002" and .completionCommentId == "9003" and .conclusion == "COMPLETED" and .exitCode == 0' "$work_root/dispatch-result.json" >/dev/null
+jq -e '.requestCommentId == "9001" and .reservationCommentId == "9002" and .launchCommentId == "9003" and .completionCommentId == "9004" and .conclusion == "COMPLETED" and .exitCode == 0' "$work_root/dispatch-result.json" >/dev/null
 complete_line="$(grep -n CODEX_COMPLETE "$MOCK_EVENT_LOG" | cut -d: -f1)"
 [[ -n "$complete_line" && "$launch_line" -lt "$complete_line" ]]
 
@@ -175,7 +215,58 @@ $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
     --participant-id "$participant" --resume-session "$resume_session" \
     > "$work_root/retry-result.txt"
-grep -Fqx "ALREADY_CONSUMED CMD-REVIEW-001 $participant launch-comment=9002" "$work_root/retry-result.txt"
-[[ "$(<"$MOCK_POST_COUNT")" == 3 ]]
+grep -Fqx "ALREADY_CONSUMED CMD-REVIEW-001 $participant launch-comment=9003" "$work_root/retry-result.txt"
+[[ "$(<"$MOCK_POST_COUNT")" == 4 ]]
 
-printf 'Review request range, evidence-pack, replay, dry-run, dispatch ordering, harness-lifetime, and retry tests passed.\n'
+printf '[]\n' > "$MOCK_LEDGER"
+: > "$MOCK_EVENT_LOG"
+: > "$MOCK_POST_COUNT"
+rm -f "$MOCK_REVIEW_RESULT"
+jq -n --arg participant "$participant" '{participants:[{id:$participant,status:"ACTIVE",joinState:"JOINED",joinAckId:"JOINACK-REVIEW-001",lease:{generation:1,expiresAt:null}}]}' > "$MOCK_REGISTRY"
+jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-LEASE",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command-lease.json"
+sed 's/CMD-REVIEW-001/CMD-REVIEW-LEASE/g' "$work_root/initial.request" > "$work_root/lease.request"
+export MOCK_REPLACE_LEASE_ON_RESERVATION=true
+if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/lease.request" \
+    --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
+    --log-file "$work_root/logs/lease.jsonl" --registry "$MOCK_REGISTRY" \
+    --command "$work_root/command-lease.json" --receipts "$work_root/receipts.json" \
+    --participant-id "$participant" --resume-session "$resume_session" >/dev/null 2>&1; then
+    printf 'A replaced lease launched a reviewer.\n' >&2
+    exit 1
+fi
+unset MOCK_REPLACE_LEASE_ON_RESERVATION
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG" || true)" == 0 ]]
+grep -Fq '## Review launch — ABORTED' "$MOCK_LEDGER"
+
+printf '[]\n' > "$MOCK_LEDGER"
+: > "$MOCK_EVENT_LOG"
+: > "$MOCK_POST_COUNT"
+rm -f "$MOCK_REVIEW_RESULT"
+jq -n --arg participant "$participant" '{participants:[{id:$participant,status:"ACTIVE",joinState:"JOINED",joinAckId:"JOINACK-REVIEW-001",lease:{generation:1,expiresAt:null}}]}' > "$MOCK_REGISTRY"
+jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-POSTFAIL",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command-postfail.json"
+sed 's/CMD-REVIEW-001/CMD-REVIEW-POSTFAIL/g' "$work_root/initial.request" > "$work_root/postfail.request"
+export MOCK_FAIL_POST_NUMBER=3
+if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/postfail.request" \
+    --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
+    --log-file "$work_root/logs/postfail.jsonl" --registry "$MOCK_REGISTRY" \
+    --command "$work_root/command-postfail.json" --receipts "$work_root/receipts.json" \
+    --participant-id "$participant" --resume-session "$resume_session" > "$work_root/postfail-result.json" 2>/dev/null; then
+    printf 'A missing STARTED receipt was accepted as complete.\n' >&2
+    exit 1
+fi
+unset MOCK_FAIL_POST_NUMBER
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]]
+[[ "$(grep -Fc CODEX_COMPLETE "$MOCK_EVENT_LOG")" == 1 ]]
+grep -Fq '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER"
+grep -Fq '## Review process — ERROR' "$MOCK_LEDGER"
+if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/postfail.request" \
+    --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
+    --log-file "$work_root/logs/postfail.jsonl" --registry "$MOCK_REGISTRY" \
+    --command "$work_root/command-postfail.json" --receipts "$work_root/receipts.json" \
+    --participant-id "$participant" --resume-session "$resume_session" >/dev/null 2>&1; then
+    printf 'A reserved command retried without recovery.\n' >&2
+    exit 1
+fi
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]]
+
+printf 'Review request merge-base/pagination, evidence-pack/replay, dispatch reservation, lease-race, failed-receipt, harness-lifetime, and retry tests passed.\n'

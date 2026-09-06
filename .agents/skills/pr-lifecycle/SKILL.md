@@ -79,16 +79,18 @@ Start acknowledgement: acknowledge on this PR within 15 minutes and identify
 
 Generate this block with `scripts/pr:review-request`; inspect it before launch.
 Dispatch it with `scripts/pr:dispatch-review`, which must receive the durable
-request comment ID before it resumes the same previously joined CLI session and
-then append the launch metadata. Bootstrap the session without review work,
-complete `JOIN REQUEST` -> `JOIN ACK` -> `JOINED ACK`, and pass its full local
-resume ID only to the launcher; the public participant identity retains the
-non-secret short ID. The dispatcher must stay alive and wait for the resumed
-reviewer; some harnesses reap detached descendants as soon as the parent command
-returns even when `nohup` was used. A retry resumes from an already-posted
-request and returns `ALREADY_CONSUMED` after a launch receipt instead of
-starting a second review. Do not reconstruct ranges or causal ordering in an ad
-hoc shell pipeline when these scripts support the route.
+request comment ID, post a durable launch reservation, revalidate the current
+participant lease, and only then resume the same previously joined CLI session
+and append STARTED metadata. Bootstrap the session without review work, complete
+`JOIN REQUEST` -> `JOIN ACK` -> `JOINED ACK`, and pass its full local resume ID
+only to the launcher; the public participant identity retains the non-secret
+short ID. The dispatcher must stay alive and wait for the resumed reviewer;
+some harnesses reap detached descendants as soon as the parent command returns
+even when `nohup` was used. A retry resumes from an already-posted request,
+returns `ALREADY_CONSUMED` after STARTED, and requires explicit recovery if it
+finds only a reservation; it never launches a second reviewer automatically.
+Do not reconstruct ranges or causal ordering in an ad hoc shell pipeline when
+these scripts support the route.
 
 If a resumed CLI reports that its nested read-only sandbox cannot execute, mark
 the attempt `INCOMPLETE` and use an explicitly enrolled collaboration-agent or

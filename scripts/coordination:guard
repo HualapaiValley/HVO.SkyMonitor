@@ -144,6 +144,9 @@ case "$mode" in
         [[ "$lease_generation" == "$registry_generation" ]] || fail "Slot lease generation is stale."
         actual_sha256="$(sha256_file "$current_body")"
         [[ "$actual_sha256" == "$expected_sha256" ]] || fail "Current body changed; skip this tick and re-read."
+        owner_line_count="$(grep -Ec '^OWNER ' "$current_body" || true)"
+        [[ "$owner_line_count" == 1 ]] ||
+            fail "Slot must contain exactly one OWNER line."
         grep -Fqx "OWNER $participant_id LEASE $lease_generation" "$current_body" ||
             fail "Slot owner or lease marker does not match the participant."
 
