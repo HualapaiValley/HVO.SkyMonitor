@@ -97,6 +97,17 @@ gap, repair or replace the monitor, and poll directly until its replacement
 emits a new immediate baseline. Long gate or review runs get an interim note
 rather than silence. This does not replace the final completion report. If
 blocked, leave the required handoff in the issue and its owning roadmap epic.
+When another active coordinator cannot receive direct harness messages, use the
+execution protocol's two fixed mutable epic slots. Send a compact sequenced
+status every five minutes even for `no work available` or `report status`,
+acknowledge the peer sequence, and keep the full body near or below 500 UTF-8
+bytes. Poll exact slot metadata first and read the body only when it changed;
+keep durable decisions append-only. Explicitly negotiate and record format
+experiments before relying on them. Keep unchanged operator heartbeats to one
+nonduplicative line per active item while retaining current/next/blocker, and
+measure slot bytes read/written plus poll, fetch, durable-comment, transcript,
+and coordinator-time costs. Aggregate time-based costs per active hour and
+durable-comment counts per issue.
 ```
 
 ## 3. Foundation and Contracts Prompt
