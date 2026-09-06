@@ -141,9 +141,13 @@ The selected release is retained beside the other deployment evidence:
 It records the release train, tag, version, manifest checksum, signing key,
 asset name and checksum, resolved source URI, verification result, the platform
 and immutable image ID that were installed, the source revision and tree, the
-SBOM, provenance, and vulnerability-scan asset names, and the exact compatibility
-boundaries the release declared. An operator can correlate a running container
-with its release without network access.
+SBOM, provenance, and vulnerability-scan asset names, the per-platform component
+inventory asset published for the installed architecture (absent for a release
+published before inventories existed), and the exact compatibility boundaries
+the release declared. An operator can correlate a running container with its
+release, and name the component inventory to triage against, without network
+access. The record is schema version 2; a version-1 record written by an earlier
+installer has no inventory member and remains valid.
 
 The record follows the image the instance actually runs. It is written only once
 the image has been prepared and accepted, a refused install or upgrade leaves
