@@ -47,8 +47,9 @@ public sealed class LifecycleContractTests
                 request, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None,
                 release.CreateAcquirer));
 
-        // The upgrade selects for the instance's recorded daemon (which this fixture records as the process
-        // architecture), so the refusal names the daemon as the selecting authority.
+        // The upgrade selects for the instance's recorded daemon, which this fixture records as the process
+        // architecture by default (on amd64 and arm64 runners alike), so the release that publishes only the other
+        // architecture is refused and the refusal names the daemon as the selecting authority.
         StringAssert.Contains(exception.Message, "does not support the instance's recorded Docker daemon's", StringComparison.Ordinal);
         // The release is resolved before the instance is touched, so no lifecycle operation is journaled.
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
@@ -1724,8 +1725,12 @@ public sealed class LifecycleContractTests
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile replayProfile =
                 HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
             bool seedCatalogSelection = true,
-            string daemonArchitecture = "amd64")
+            string? daemonArchitecture = null)
         {
+            // By default the fixture records the architecture of the process running the tests, as a real
+            // installation on this machine would, so host-relative tests stay deterministic on amd64 and arm64
+            // runners alike; tests that prove daemon-over-process selection pass a different value explicitly.
+            daemonArchitecture ??= DistributionAcquirer.HostImageArchitecture();
             var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
             Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
             var root = Path.Combine(Path.GetTempPath(), $"hvo-lifecycle-{Guid.NewGuid():N}");
