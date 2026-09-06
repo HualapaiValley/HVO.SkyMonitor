@@ -267,8 +267,11 @@ signed only by the production key through the workflow below.
 campaign builds two candidates from two committed revisions, signs both with one
 ephemeral key, and publishes a campaign-only deployment CLI, built from the same
 committed revision, whose embedded trust root is that ephemeral public key. It
-then installs from the first candidate, upgrades to the second, rolls back, and
-refuses five releases it must not accept: one signed by a key the trust root does
+then installs from the first candidate, forces candidate verification to fail
+after the second candidate is running, proves the lifecycle automatically
+restores the first image, Compose model, capture, and byte-identical retained
+release record, resumes the same upgrade to the second candidate, rolls back,
+and refuses five releases it must not accept: one signed by a key the trust root does
 not hold, one declaring a key identity it does not carry, one carrying the
 trusted key's real signature over a different release, one naming an archive that
 is not the one it signed, and one whose signed compatibility record contradicts
@@ -278,9 +281,12 @@ is changed, and the substitution is proved to redirect trust rather than remove
 it: the unmodified product CLI must refuse the same release, and the campaign CLI
 must refuse the same release re-signed by a second key.
 
-The ephemeral key therefore establishes the lifecycle, verification, and
-compatibility-agreement behaviour of the signed image train against real
-containers. It establishes nothing about the production key itself — that the
+The ephemeral key therefore establishes the lifecycle, verification,
+post-mutation automatic-restore, and compatibility-agreement behaviour of the
+signed image train against real containers. The post-mutation fault is injected
+only into one campaign-local Docker inspection response after a healthy candidate
+is running; production code, release bytes, and every recovery response remain
+unchanged. It establishes nothing about the production key itself — that the
 committed public key matches the Key Vault private key, that the workflow
 identity can sign with it, that a Key Vault signature verifies against the
 committed trust root, or that custody and rotation behave as described above.
