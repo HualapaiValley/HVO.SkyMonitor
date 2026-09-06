@@ -116,7 +116,8 @@ internal static class StorageLifecycleLock
 /// staging. Sites that hold only the configuration gate: <c>CaptureDistributionService</c> configured-basic refresh.
 /// The configuration gate must never be held while waiting for the lifecycle lock.
 /// Retention initializes raw ingress before acquiring the lifecycle lock and reads its holds under that lock without
-/// recursively initializing.
+/// recursively initializing. Its production processing-hold composite likewise uses an explicit non-initializing
+/// calibration-library read while the lifecycle lock is owned.
 /// </remarks>
 internal static class RawIngressLifecycleLock
 {
