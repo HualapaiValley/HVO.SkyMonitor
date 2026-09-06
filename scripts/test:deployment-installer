@@ -899,16 +899,17 @@ if [[ "${HVO_INSTALLER_TEST_INJECT_CANDIDATE_VERIFY_FAILURE:-0}" == 1 &&
   inspected_image="$(jq -er '.[0].Image' <<<"$inspect_json")"
   if [[ "$inspected_image" == "${HVO_INSTALLER_TEST_INJECT_IMAGE_ID:-}" ||
         "$inspected_image" == "${HVO_INSTALLER_TEST_INJECT_MANIFEST_DIGEST:-}" ]]; then
-    jq -e '.[0].State.Running == true and .[0].State.Health.Status == "healthy" and
-      .[0].HostConfig.Privileged == false' <<<"$inspect_json" >/dev/null
-    jq '.[0] | {
-      image: .Image,
-      running: .State.Running,
-      health: .State.Health.Status,
-      privileged: .HostConfig.Privileged
-    }' <<<"$inspect_json" >"$HVO_INSTALLER_TEST_INJECT_EVIDENCE"
-    jq '.[0].HostConfig.Privileged = true' <<<"$inspect_json"
-    exit 0
+    if jq -e '.[0].State.Running == true and .[0].State.Health.Status == "healthy" and
+      .[0].HostConfig.Privileged == false' <<<"$inspect_json" >/dev/null; then
+      jq '.[0] | {
+        image: .Image,
+        running: .State.Running,
+        health: .State.Health.Status,
+        privileged: .HostConfig.Privileged
+      }' <<<"$inspect_json" >"$HVO_INSTALLER_TEST_INJECT_EVIDENCE"
+      jq '.[0].HostConfig.Privileged = true' <<<"$inspect_json"
+      exit 0
+    fi
   fi
   printf '%s\n' "$inspect_json"
   exit 0
