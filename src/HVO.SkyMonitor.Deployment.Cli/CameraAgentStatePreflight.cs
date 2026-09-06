@@ -744,11 +744,13 @@ internal static class CameraAgentStatePreflightManager
         {
             policy = CameraAgentStateContractPolicy.RequireCurrent;
             using var acquirer = (distributionFactory ?? CreateDistributionAcquirer)();
-            var release = await acquirer.ResolveImageAsync(request.ImageSelection(), cancellationToken)
+            var release = await acquirer.ResolveImageAsync(
+                                  request.ImageSelection(), manifest.DockerDaemon.Architecture, cancellationToken)
                               .ConfigureAwait(false)
                           ?? throw new InstallerException(
                               "The signed CameraAgent image release did not resolve a candidate image.");
-            // The release is verified and its platform selected exactly as an upgrade does, but the offline
+            // The release is verified and its platform selected exactly as an upgrade does, for the instance's
+            // recorded Docker daemon architecture rather than this process's, but the offline
             // archive is deliberately not acquired and Docker is never contacted: the signed compatibility record
             // is the candidate declaration, and an upgrade refuses any image that contradicts it. That keeps the
             // command read-only and lets an operator evaluate a release the host has not received yet. It reports
