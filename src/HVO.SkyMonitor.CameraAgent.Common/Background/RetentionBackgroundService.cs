@@ -98,6 +98,11 @@ public sealed class RetentionBackgroundService(
             var rawIngressGate = _rawIngressHolds is not null && PathsEqual(plan.StorageRoot, _hostOptions.RawIngressRoot)
                 ? RawIngressLifecycleLock.ForRoot(plan.StorageRoot)
                 : null;
+            if (rawIngressGate is not null && _rawIngressHolds is RawCaptureIngress rawIngress)
+            {
+                // Initialization takes this same lifecycle lock so it must complete before retention owns the lock.
+                await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            }
             if (rawIngressGate is not null)
             {
                 await rawIngressGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -317,7 +322,9 @@ public sealed class RetentionBackgroundService(
         }
         if (_rawIngressHolds is not null)
         {
-            var holds = await _rawIngressHolds.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
+            var holds = _rawIngressHolds is RawCaptureIngress rawIngress
+                ? await rawIngress.GetRetentionHoldsUnderLifecycleLockAsync(normalizedRoot, cancellationToken).ConfigureAwait(false)
+                : await _rawIngressHolds.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
             foreach (var hold in holds)
             {
                 cancellationToken.ThrowIfCancellationRequested();

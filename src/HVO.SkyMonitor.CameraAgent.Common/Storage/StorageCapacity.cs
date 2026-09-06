@@ -101,7 +101,8 @@ internal static class StorageLifecycleLock
 /// <remarks>
 /// Lock order (outermost first) for every site that holds more than one lock:
 /// <list type="number">
-/// <item><description><c>RawCaptureIngress._acceptGate</c> (accept path only).</description></item>
+/// <item><description><c>RawCaptureIngress._acceptGate</c> (accept path only) or
+/// <c>RawCaptureIngress._initializeGate</c> (initialization only); the two are never held together.</description></item>
 /// <item><description><see cref="RawIngressLifecycleLock"/> for the storage root.</description></item>
 /// <item><description><see cref="StorageLifecycleLock"/> for the same root (retention acquires it under the
 /// raw-ingress lifecycle lock).</description></item>
@@ -114,6 +115,8 @@ internal static class StorageLifecycleLock
 /// <c>RetentionBackgroundService</c>, and <c>ProcessingGraphOperationsCoordinator</c> activation, rollback, and
 /// staging. Sites that hold only the configuration gate: <c>CaptureDistributionService</c> configured-basic refresh.
 /// The configuration gate must never be held while waiting for the lifecycle lock.
+/// Retention initializes raw ingress before acquiring the lifecycle lock and reads its holds under that lock without
+/// recursively initializing.
 /// </remarks>
 internal static class RawIngressLifecycleLock
 {

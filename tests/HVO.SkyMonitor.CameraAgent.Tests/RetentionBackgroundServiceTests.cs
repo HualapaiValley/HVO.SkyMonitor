@@ -178,6 +178,90 @@ public sealed class RetentionBackgroundServiceTests
     }
 
     [TestMethod]
+    public async Task ApplyRetentionAsync_AfterRawIngressInvalidation_InitializesBeforeTakingLifecycleLockAsync()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var ingressOptions = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressReserveBytes = 0,
+                RawIngressSqliteBusyTimeoutSeconds = 1
+            });
+            var ingressState = new RawIngressState(TimeProvider.System);
+            using var ingressTelemetry = new RawIngressTelemetry(ingressState);
+            using var ingress = new RawCaptureIngress(
+                ingressOptions,
+                new FixedCapacityProvider(50),
+                ingressState,
+                TimeProvider.System,
+                ingressTelemetry,
+                NullLogger<RawCaptureIngress>.Instance,
+                new NullRawIngressFaultInjector());
+            var exposureStartedUtc = new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            var payload = new byte[] { 41, 42, 43, 44 };
+            var captureConfiguration = new CameraModuleConfig(
+                new ObservatoryLocation(35, -113, 500, "UTC"),
+                new CameraModuleDescriptor("Test"),
+                new CameraRigConfig(
+                    new SensorProfile("test-sensor", 2, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+                    new OpticsProfile("EquidistantFisheye", 0, 180, 0),
+                    new RigOrientation(90, 0, 0),
+                    new PipelineExposureProfile(
+                        TimeSpan.FromSeconds(1),
+                        TimeSpan.FromSeconds(1),
+                        TimeSpan.FromSeconds(1),
+                        1,
+                        1)),
+                CapturePipelineConfig.Empty,
+                AgentId: "retention-lock-test");
+            var frame = new CameraFrame(
+                exposureStartedUtc,
+                2,
+                2,
+                CameraPixelFormat.Mono8,
+                payload,
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, double.NaN, "Test"),
+                2);
+            var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
+            var submission = new CaptureLoopSubmission(
+                new CaptureRequest(exposureStartedUtc, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint),
+                new CaptureResult(frame, setpoint, TimeSpan.Zero, CaptureMode.Still, false),
+                exposureStartedUtc,
+                TimeSpan.FromSeconds(1),
+                TimeSpan.Zero);
+            var receipt = await ingress.AcceptAsync(
+                captureConfiguration, submission, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            var sidecarPath = Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json");
+            ingress.InvalidateEvidence();
+
+            var service = new RetentionBackgroundService(
+                new StubConfigurationAccessor(),
+                ingressOptions,
+                new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
+                new SqliteArtifactOutbox(),
+                new FixedCapacityProvider(50),
+                new StoragePressureState(),
+                NullLogger<RetentionBackgroundService>.Instance,
+                ingress);
+
+            await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            CollectionAssert.AreEqual(payload, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
+            Assert.IsTrue(File.Exists(sidecarPath));
+            Assert.AreEqual(RawIngressAvailability.Accepting, ingressState.Snapshot.Availability);
+            Assert.AreEqual(0L, ingressState.Snapshot.QuarantineCount);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task ApplyRetentionAsync_AfterAcknowledgementDeletesExpiredArtifact()
     {
         var root = CreateRoot();
