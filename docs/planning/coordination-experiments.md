@@ -181,6 +181,21 @@ token estimate.
   durable request, STARTED launch ledger, terminal process ledger, and inspected
   reviewer report.
 
+### E-008: resumed CLI nested-sandbox failure
+
+- **Observation:** the corrected #679 live dispatcher remained active through
+  process completion and produced its report, but the enrolled Codex CLI could
+  not start a no-op command because nested `bwrap` loopback setup returned
+  `RTM_NEWADDR: Operation not permitted`. The attempt used 80,158 input tokens
+  (68,608 cached) yet inspected no files and correctly returned `INCOMPLETE`.
+- **Repair:** count neither the process exit nor its report file as a review
+  verdict. Record `INCOMPLETE`, avoid repeating the failed route, and enroll a
+  collaboration-agent fallback before issuing a fresh exact-range command.
+- **Decision:** never add a sandbox-bypass flag just to obtain a review. An
+  unsandboxed CLI is eligible only when external isolation was separately
+  verified and recorded; otherwise use the enrolled harness-native review
+  route. Measure failed-route tokens as coordination overhead.
+
 ## Candidate improvements
 
 Try one bounded change at a time and record it before changing the default:

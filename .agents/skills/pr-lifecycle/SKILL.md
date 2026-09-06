@@ -90,6 +90,12 @@ request and returns `ALREADY_CONSUMED` after a launch receipt instead of
 starting a second review. Do not reconstruct ranges or causal ordering in an ad
 hoc shell pipeline when these scripts support the route.
 
+If a resumed CLI reports that its nested read-only sandbox cannot execute, mark
+the attempt `INCOMPLETE` and use an explicitly enrolled collaboration-agent or
+other provider route. Do not bypass the sandbox merely to make the review run;
+any intentionally unsandboxed route requires separately verified external
+isolation and an explicit ledger record.
+
 ## Review Execution and Agent Selection
 
 The canonical exact-range route is a coordinator-launched local review agent,
