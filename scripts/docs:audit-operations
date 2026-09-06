@@ -111,6 +111,19 @@ require_source_reference() {
     fi
 }
 
+# Match a Markdown table row inside the runbook's Required Checks section only,
+# anchored at the start of the line, so prose elsewhere cannot satisfy the pin.
+require_required_check_row() {
+    local check="$1"
+    local value="$2"
+    local section
+    section="$(awk '/^## Required Checks/ { in_section = 1; next } /^## / { in_section = 0 } in_section' docs/runbooks/ci-pipeline.md)"
+    if ! grep -Eq -- "^\\| ${check} \\| ${value}" <<< "$section"; then
+        printf 'Required Checks row %s in docs/runbooks/ci-pipeline.md does not begin with %s.\n' "$check" "$value" >&2
+        exit 1
+    fi
+}
+
 coverage_line="$(jq -er '.aggregate.line * 100' scripts/coverage/baseline.json)"
 coverage_branch="$(jq -er '.aggregate.branch * 100' scripts/coverage/baseline.json)"
 LC_ALL=C printf -v coverage_line_percent '%.4f' "$coverage_line"
@@ -127,43 +140,76 @@ if [[ ! "$coverage_report_count" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # The runbook's category totals are derived from the category matrix rather than
-# pinned as literals, so editing the matrix without the runbook fails here.
+# pinned as literals, so editing the matrix without the runbook fails here. Rows
+# may span lines and carry comments; each logical entry must still be exactly
+# ["tests/….csproj"] = Counts(name: N, …), with recognized category names.
 category_matrix=scripts/test-categories/Program.cs
 if ! category_totals="$(awk '
+    function fail(message) {
+        print message > "/dev/stderr"
+        failed = 1
+        exit 1
+    }
+    function process_row(row,    pairs, pair, parts, position) {
+        gsub(/[[:space:]]+/, " ", row)
+        sub(/^ /, "", row)
+        sub(/ $/, "", row)
+        if (row !~ /^\["tests\/[^"]+\.csproj"\] = Counts\( ?[a-z]+ ?: ?[0-9]+( ?, ?[a-z]+ ?: ?[0-9]+)* ?\) ?,?$/) {
+            fail("unrecognized category matrix row: " row)
+        }
+        rows++
+        sub(/^.*Counts\(/, "", row)
+        sub(/\).*$/, "", row)
+        pairs = split(row, pair, ",")
+        for (position = 1; position <= pairs; position++) {
+            split(pair[position], parts, ":")
+            gsub(/ /, "", parts[1])
+            gsub(/ /, "", parts[2])
+            if (parts[1] !~ /^(unit|integration|manual|soak|external|hardware)$/) {
+                fail("unrecognized category in matrix row " rows ": " pair[position])
+            }
+            totals[parts[1]] += parts[2]
+        }
+    }
+    in_block_comment {
+        if ($0 ~ /\*\//) {
+            in_block_comment = 0
+        }
+        next
+    }
+    /^[[:space:]]*\/\*/ {
+        if ($0 !~ /\*\//) {
+            in_block_comment = 1
+        }
+        next
+    }
     /^[[:space:]]*\/\// {
         next
     }
     /^[[:space:]]*static .*Counts\($/ {
         next
     }
-    /Counts\(/ {
-        if ($0 !~ /^[[:space:]]*\["tests\/[^"]+\.csproj"\] = Counts\([a-z]+: [0-9]+(, [a-z]+: [0-9]+)*\),?[[:space:]]*$/) {
-            printf "unrecognized category matrix row: %s\n", $0 > "/dev/stderr"
-            failed = 1
-            exit 1
+    collecting || /Counts\(/ {
+        line = $0
+        sub(/\/\/.*$/, "", line)
+        row = collecting ? row " " line : line
+        collecting = 1
+        if (row ~ /\)/) {
+            collecting = 0
+            process_row(row)
+            row = ""
         }
-        rows++
-        counts = $0
-        sub(/^.*Counts\(/, "", counts)
-        sub(/\),?[[:space:]]*$/, "", counts)
-        pairs = split(counts, pair, ", ")
-        for (position = 1; position <= pairs; position++) {
-            split(pair[position], parts, ": ")
-            if (parts[1] !~ /^(unit|integration|manual|soak|external|hardware)$/) {
-                printf "unrecognized category in matrix row %d: %s\n", rows, pair[position] > "/dev/stderr"
-                failed = 1
-                exit 1
-            }
-            totals[parts[1]] += parts[2]
-        }
+        next
     }
     END {
         if (failed) {
             exit 1
         }
+        if (collecting) {
+            fail("unterminated category matrix row: " row)
+        }
         if (rows == 0) {
-            print "no category matrix rows were found" > "/dev/stderr"
-            exit 1
+            fail("no category matrix rows were found")
         }
         printf "%d %d %d %d %d %d %d\n", rows, totals["unit"], totals["integration"], totals["manual"], totals["soak"], totals["external"], totals["hardware"]
     }' "$category_matrix")"; then
@@ -190,8 +236,8 @@ require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCe
 require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
-require_source_reference "| **Unit Tests** | ${category_unit} Unit cases" docs/runbooks/ci-pipeline.md
-require_source_reference "| **Integration Tests** | ${category_integration} Integration-category cases" docs/runbooks/ci-pipeline.md
+require_required_check_row '\*\*Unit Tests\*\*' "${category_unit} Unit cases"
+require_required_check_row '\*\*Integration Tests\*\*' "${category_integration} Integration-category cases"
 require_source_reference "Current discovery is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, and \`Hardware=${category_hardware}\`." docs/runbooks/ci-pipeline.md
 require_source_reference 'six Unit-category boundary cases' docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md
