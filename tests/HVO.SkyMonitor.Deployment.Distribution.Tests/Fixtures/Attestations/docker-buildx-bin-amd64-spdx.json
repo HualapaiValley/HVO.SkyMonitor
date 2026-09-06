@@ -1,0 +1,16 @@
+{
+  "_comment": "Recorded verbatim from the public image docker/buildx-bin:latest. Platform manifest (attestation subject): sha256:108c5ca2dfc2cc3fd57674065f8c1e1d5e53c860163fcb1d15df54dfffaee806. Source blob: sha256:a6c714976582c539be99d926540df0114f6b2e6b801dd8add631164ebe787038. The predicate body is elided; the release tool's attestation check reads only _type, predicateType, and subject.",
+  "_type": "https://in-toto.io/Statement/v1",
+  "predicateType": "https://spdx.dev/Document",
+  "subject": [
+    {
+      "name": "pkg:docker/docker/buildx-bin@latest?platform=linux%2Famd64",
+      "digest": {
+        "sha256": "108c5ca2dfc2cc3fd57674065f8c1e1d5e53c860163fcb1d15df54dfffaee806"
+      }
+    }
+  ],
+  "predicate": {
+    "_elided": true
+  }
+}

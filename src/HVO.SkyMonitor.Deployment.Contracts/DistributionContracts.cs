@@ -4,7 +4,23 @@ namespace HVO.SkyMonitor.Deployment.Contracts;
 
 public static class DistributionSchemaVersions
 {
+    /// <summary>
+    /// The release-manifest shape every train has published since the first signed release. It carries exactly one
+    /// <see cref="DistributionArtifactRole.Sbom"/> document and no per-platform component inventory.
+    /// </summary>
     public const int ReleaseManifest = 1;
+
+    /// <summary>
+    /// An image release that additionally publishes one <see cref="DistributionArtifactRole.ComponentSbom"/>
+    /// inventory per published platform, bound to that platform through
+    /// <see cref="DistributionImagePlatform.ComponentSbomAsset"/>. The addition is purely additive: version 1 stays
+    /// a valid, verifiable shape, and only an image release may declare version 2.
+    /// </summary>
+    public const int ReleaseManifestWithComponentSboms = 2;
+
+    /// <summary>The newest release-manifest version this build produces and verifies.</summary>
+    public const int MaximumReleaseManifest = ReleaseManifestWithComponentSboms;
+
     public const int ReleaseIndex = 1;
 }
 
@@ -24,6 +40,7 @@ public enum DistributionArtifactRole
     ImageArchive,
     Checksums,
     Sbom,
+    ComponentSbom,
     Provenance,
     License,
     Attribution,
@@ -69,12 +86,19 @@ public sealed record DistributionCatalogIdentity(
     string TopologyIdentity,
     string TopologySha256);
 
+/// <summary>
+/// One published platform of an image release. <paramref name="ComponentSbomAsset"/> names the SPDX component
+/// inventory for exactly this platform's image and is present only in release-manifest version
+/// <see cref="DistributionSchemaVersions.ReleaseManifestWithComponentSboms"/> or later; a version 1 manifest leaves
+/// it null and remains verifiable.
+/// </summary>
 public sealed record DistributionImagePlatform(
     string OperatingSystem,
     string Architecture,
     string ManifestDigest,
     string? OfflineArchiveAsset,
-    string? OfflineArchiveImageId);
+    string? OfflineArchiveImageId,
+    string? ComponentSbomAsset = null);
 
 /// <summary>
 /// The durable-state, configuration, catalog, and replay boundaries the published image declares through its

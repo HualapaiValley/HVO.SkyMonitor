@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-09-05
+Status date: 2026-09-06
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -37,57 +37,37 @@ The planning horizons are:
 | Deferred | Retained work with an explicit reason not to schedule it now. |
 | Delivered | Completed outcome retained for context and dependency history. |
 
+Implementation capacity follows horizon and table order. Fill available slots
+from the highest-priority Current initiative before selecting Next, Future,
+Research, or Deferred work. A lower-horizon issue may move ahead only when the
+active epic records it as a real blocking dependency; component independence or
+an unrelated failure in a broad validation plan is not enough.
+
 ## Current
 
 | ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
 | --- | --- | --- | --- | --- |
-| `RM-005` | Local-first processing graphs and distributed runners | Generalize immutable graphs, durable CameraAgent jobs and replay, central graph execution, self-hosted runners, fairness, and optional elastic providers. | [Epic #421](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/421); [#422](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/422)-[#430](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/430) | Consumes `RM-004` product semantics and the delivered provider-neutral object-store application boundary. Current MinIO deployment and test infrastructure is an accepted temporary baseline; any backend change invalidates affected central evidence. Live CameraAgent processing remains immediate and in-process; only explicit archived replay or central work may use external runners. #430 delivered the `elastic-provider-v1` boundaries with the `local-process` proof adapter (cloud adapters deferred behind the same boundary), completing the epic. #600 hardened the autoscaler's multi-replica ownership, lease-aware retirement, backlog sizing, and startup validation. |
-| `RM-017` | Standalone CameraAgent product completion | Advance the delivered standalone foundation into independently testable, installable, operable, recoverable, observable, and releasable CameraAgent software, including coherent authenticated local workflows, named graph and replay operation, bounded immutable execution-evidence export, component-scoped quality gates, and signed multi-architecture distribution. | [Epic #513](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/513); [Standalone CameraAgent Product Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/2) | #532 delivered explicit product/test ownership after the `RM-005` CameraAgent edge checkpoint through #425, #515 delivered the offline observatory shell, account workflows, and owner-only local recovery foundation (PR #550; review discoveries continue in #554 and #555), #514 delivered current sky facts, observing-day archive browsing, product listing and lineage detail, and transient date-range review over the existing durable schema (PR #560), and #517 delivered the Operations workspace with typed schedule and rig forms, pipeline summary, automations, data and storage, and sky map and catalog sections over the existing durable contracts (PR #565; prerequisites recorded in #563 and #564), and #507 delivered the `cameraagent-state-v2` compatibility contract, the consolidated deployment preflight, runtime-identity bind-source creation, and the operator-approved CameraAgent-only state reset (PR #561), #516 delivered the named-graph, execution, and exact archived-replay workflows over the delivered `RM-005` contracts (PR #568), #536 delivered the `hvo-cameraagent-execution-evidence-v1` export contract with its read-only projection, golden fixtures, and W6 bounds (PR #569), #533 delivered component-scoped CI lanes, coverage floors, and the plan-derived Required CI aggregation (PR #572), #564 delivered the audited local mutation contract for manual observer coordinates (PR #577), and #537 delivered the bounded durable graph-execution evidence export lane with conformance-sink validation and W6 evidence (PR #576), and #563 delivered the versioned durable local automation contract, its separate rollback-safe SQLite store, the runner, owner-only endpoints, and the operations automations section (PR #583), and #534 delivered the signed `image` distribution train with derive-from-bytes identity verification, signed installer image acquisition that fails before any Docker contact, and the release workflow image branch (PR #595; acceptance partially met, carried by #597, #598, #599, #602, and #603), and #603 delivered per-architecture Linux `open(2)` flag selection for the CameraAgent runtime, the SQLite catalog, and the deployment CLI, with a source-level guard and the deployment CLI added to the native arm64 lane (PR #606), #602 delivered the owner-bootstrap completion for the dual standalone smoke (PR #607), and #614 delivered benign handling of cancelled raw-ingress accepts and initializations with a dedicated cancellation counter (PR #616), and #608 delivered run-time resolution of live derived processing windows so the rolling combination spans its configured window again, with W6 timing evidence (PR #615), and #599 delivered signed-release resolution in the standalone preflight with a mutation-verified read-only guarantee (PR #623). The retained [operations prototype at `fdca7f1`](https://github.com/RoySalisbury/HVO.SkyMonitor/commit/fdca7f10e7b2771a90fe02e23a3107d56f93cc06) guides visual hierarchy and interaction only, not runtime contracts. The export contract and release convergence also require #426-#428; #429 and #430 do not block completion. LogicHost product work is excluded, and existing optional integration remains compatibility and regression evidence only. Separately managed extensions, formats, notifications, hardware qualification, environmental-source acquisition, profiling, and native-CI evidence remain outside this completion claim. |
+| `RM-017` | Standalone CameraAgent product completion | Close the remaining edge durability, lifecycle, release-integrity, test-reliability, multi-architecture, and final standalone evidence gaps so CameraAgent is independently installable, operable, recoverable, observable, and releasable. | [Epic #513](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/513); [Standalone CameraAgent Product Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/2) | This is the only active implementation initiative. The delivered product foundation includes #507, #514-#517, #532-#534, #536-#537, #563-#564, #597-#599, #602-#603, #608, and #614. Epic #513 owns the two CameraAgent-only lane orders and native subissues; #535 is formally blocked by every accepted open milestone prerequisite. LogicHost product and LogicHost-only test work are excluded. Existing optional cross-host behavior remains compatibility evidence, never a CameraAgent correctness dependency. |
 
-`RM-005` remains Current beside `RM-017`. #422-#425 delivered the CameraAgent
-edge checkpoint, #426-#427 delivered central processing graph delivery and
-durable graph execution (PR #546), #547 and #549 hardened that merged execution
-boundary (PRs #548, #552), and #428 delivered the `processing-runner-v1`
-protocol, LogicHost runner registry and endpoints, and the self-hosted
-`HVO.SkyMonitor.ProcessingRunner` service and image, and #429 delivered
-per-observatory entitlements, weighted fair scheduling with starvation
-prevention, runner pools, usage records, and per-observatory signals. The
-RM-005 tail (#430 elastic provider adapters, delivered as the local-process proof adapter behind provider-neutral boundaries)
-continues on the LogicHost side without touching active `RM-017` files. #428's
-runner identity unblocks #536; #430 does not block `RM-017`.
-
-`RM-017` is Current beside the partially paused `RM-005`; #532, #515, #514,
-#517, #507, #516, #536, #533, #564, #537, #563, and #534 are delivered. The
-follow-ups found during #534 evidence precede #535: #603 (per-architecture
-`open(2)` flags for arm64; PR #606), #602 (the dual standalone smoke never
-completed the owner's first-login password replacement; PR #607), and #614 (a
-cancelled raw-ingress accept or initialization logged at Error or Critical,
-failing the arm64 publish smoke; PR #616) and #608 (a runtime regression
-from #519: live executions froze the rolling-combination window at acceptance
-and compared calibrated candidates against the raw identity, so combined frames
-collapsed to one source; PR #615) and #599 (signed release accepted by
-the standalone preflight through a read-only resolution; PR #623) are
-delivered. #598 (signed upgrade and rollback in the installer campaign;
-claimed) and #597 (component-level image SBOM and registry attestation;
-claimed) remain, with #624 (the single-agent smoke's arrival budget on the
-shared host) to be decided before final-mode evidence and hygiene follow-ups
-#618, #619, #620, #621, #625, #626, #627, #628, #629, and #630 tracked beside
-them. #535 closes the initiative after them. One coordinator owns both queues and the shared
-two-issue global capacity.
-`RM-018` remains Future and blocked by completed `RM-017`.
+Both default implementation slots remain inside `RM-017`: one follows release
+integrity and distribution, and one follows runtime stability and focused test
+reliability. If one lane empties, its slot takes the next ready CameraAgent item
+from the other lane or helps prepare #535; it does not advance to LogicHost.
+Live order, claims, delivery state, and blockers stay in epic #513 rather than
+being copied into this portfolio summary.
 
 ## Next
 
 | ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
 | --- | --- | --- | --- | --- |
-| `RM-016` | Provider-neutral LogicHost object storage | Replace the archived MinIO local baseline with an HVO-owned durable filesystem provider behind `IObjectStore`, while retaining optional S3 portability and qualifying one exact same-host Linux topology. | [Epic #499](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/499); required children [#584](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/584), [#592](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/592), [#585](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/585), [#586](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/586), and [#506](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/506) | Starts after `RM-005` closes; production scope is LogicHost plus host-neutral filesystem primitives beside `RM-017`. #504 delivered the initial boundary and #505 recorded the SeaweedFS 4.44 no-go. The active order is #584 -> #592 -> #585 -> #586 -> #506. The default is one LogicHost replica with a same-host Linux ext4 bind mount; no legacy MinIO migration, CameraAgent production/state change, remote filesystem certification, bundled replacement S3 server, or cloud dependency is included. The first release exposes only the qualified filesystem profile; S3 remains development/qualification-only until #589. Shared CI and combined Testcontainers edits require explicit ownership coordination and affected CameraAgent/combined regression evidence. |
+| `RM-005` | Local-first processing graphs and distributed runners | Close the delivered initiative after its remaining LogicHost-only test and heterogeneous-fleet follow-ups are dispositioned. | [Epic #421](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/421); remaining [#632](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/632) and [#613](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/613) | Native delivery children #422-#430 are complete. #632 and #613 are paused and formally blocked by RM-017 final issue #535. Neither may change CameraAgent or be pulled into its active queue merely because a broad CI plan selects LogicHost. Close #421 after both are complete or explicitly dispositioned. |
+| `RM-016` | Provider-neutral LogicHost object storage | Replace the archived MinIO local baseline with an HVO-owned durable filesystem provider behind `IObjectStore`, while retaining optional S3 portability and qualifying one exact same-host Linux topology. | [Epic #499](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/499); required children [#584](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/584), [#592](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/592), [#585](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/585), [#586](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/586), and [#506](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/506) | Starts only after `RM-017` and `RM-005` close. #584 is formally blocked by #535 and #421; the active order then remains #584 -> #592 -> #585 -> #586 -> #506. Production scope is LogicHost plus narrow host-neutral filesystem primitives. No legacy MinIO migration, CameraAgent production/state change, remote filesystem certification, bundled replacement S3 server, or cloud dependency is included. |
 
-`RM-016` is the approved automatic successor to `RM-005`. It may begin while
-`RM-017` continues because its required path does not change CameraAgent
-production behavior, durable state, installer, or release artifacts. Any shared
-project, CI-classifier, architecture-test, or combined-fixture edit must be
-claimed and coordinated with the `RM-017` owner and rerun affected CameraAgent
-and combined evidence. The detailed provider decision and support envelope are recorded in
+`RM-005` is the first post-CameraAgent queue. `RM-016` follows its closure; it
+does not run beside `RM-017`. Shared CI, architecture-test, or combined-fixture
+changes still require affected regression evidence, but that evidence does not
+transfer product ownership between hosts. The detailed provider decision and
+support envelope are recorded in
 [`planning/object-storage-provider-decision.md`](planning/object-storage-provider-decision.md).
 
 The deferred CameraAgent storage/upload naming cleanup
@@ -160,18 +140,18 @@ RM-005 #426-#427 delivered central graph execution, hardened by #547 and #549
     +-> RM-005 #429 delivered fair scheduling and entitlements, and #430 delivered the elastic provider boundaries with the local-process adapter
 
 RM-017 standalone CameraAgent product completion
-  +-> RM-018 LogicHost network operations and distribution
-
-RM-005 completion
-  +-> RM-016 provider-neutral LogicHost object storage
-    +-> #584 provider selection and durable identity
-      +-> #592 host-neutral filesystem durability primitives
-        +-> #585 LogicHost filesystem provider
-          +-> #586 same-host Linux ext4 qualification
-            +-> #506 adoption and MinIO removal
-    +-> RM-019 future remote-filesystem, external S3, and Azure Blob profiles
-
-RM-005 #429-#430 fairness and optional provider work does not block RM-017.
+  +-> #535 final standalone evidence
+    +-> close milestone 2 and epic #513
+      +-> RM-005 LogicHost-only closure tail #632 and #613
+        +-> close epic #421
+          +-> RM-016 provider-neutral LogicHost object storage
+            +-> #584 provider selection and durable identity
+              +-> #592 host-neutral filesystem durability primitives
+                +-> #585 LogicHost filesystem provider
+                  +-> #586 same-host Linux ext4 qualification
+                    +-> #506 adoption and MinIO removal
+            +-> RM-019 future remote-filesystem, external S3, and Azure Blob profiles
+      +-> RM-018 LogicHost network operations and distribution
 
 RM-003 deployment, RM-011 direct ZWO enablement, and RM-014 CameraAgent
 presentation are delivered inputs to RM-017; RM-017 extends rather than
@@ -180,11 +160,12 @@ reopens them.
 RM-009 environmental source research is independently plannable.
 RM-010, RM-012, and RM-013 remain trigger- or capacity-dependent.
 RM-015 follows the RM-003 deployment foundation but remains separate.
-RM-016 is the approved successor to RM-005 and does not block standalone
-RM-017. Its required production changes are LogicHost or host-neutral
+RM-005 and RM-016 are post-RM-017 work and do not block standalone CameraAgent
+completion. Their remaining production changes are LogicHost or host-neutral
 infrastructure work and must not change CameraAgent behavior, state, or
 contracts. Shared CI, architecture tests, and combined fixtures still require
-ownership coordination and affected CameraAgent/combined regression evidence.
+affected CameraAgent/combined regression evidence without becoming active
+CameraAgent dependencies.
 Post-RM-017 #587 may adopt the shared filesystem primitives without replacing
 CameraAgent's storage contract. RM-016 epic #499 blocks RM-018 issue #540 and
 must close before the first production LogicHost release; RM-019 does not.
