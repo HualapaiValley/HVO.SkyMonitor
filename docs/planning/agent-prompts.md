@@ -87,9 +87,14 @@ provider/model/effort. Repeat at every milestone, at least every thirty minutes,
 on a blocker, and at completion. Also post milestones on the issue until the
 draft PR exists, then in the PR's append-only review ledger, using UTC. The
 coordinator relays these events immediately and supplies the independent
-five-minute operator heartbeat. Long gate or review runs get an interim note
-rather than silence. This does not replace the final completion report. If
-blocked, leave the required handoff in the issue and its owning roadmap epic.
+five-minute operator heartbeat. The heartbeat monitor must actively wake or
+message the coordinator on every cadence; buffered output that requires a
+remembered manual poll is insufficient. When no native wake exists, use one
+observer that messages the coordinator, prove it with an immediate baseline,
+and keep the coordinator waiting on that signal path. Long gate or review runs
+get an interim note rather than silence. This does not replace the final
+completion report. If blocked, leave the required handoff in the issue and its
+owning roadmap epic.
 ```
 
 ## 3. Foundation and Contracts Prompt
