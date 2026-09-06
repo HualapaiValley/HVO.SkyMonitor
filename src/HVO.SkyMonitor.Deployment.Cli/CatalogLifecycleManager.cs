@@ -160,6 +160,37 @@ internal static class CatalogLifecycleManager
             throw new InstallerException("The requested catalog package is already selected.");
         var operation = await CameraAgentLifecycleManager.BeginAsync(
             request, paths, request.Operation!.Value, manifest, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await SelectAsync(
+                    request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory, ownerClientFactory,
+                    lifecycleControlToken, verificationToken, candidate, operation, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!request.DryRun && exception is not OperationCanceledException)
+        {
+            // A catalog selection refused between its journal entry and its mutation record is settled as terminal
+            // for the same reason as an image transition: nothing was touched, so nothing may report itself running.
+            await CameraAgentLifecycleManager.SettleRefusedOperationAsync(paths, operation, exception).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async Task<LifecycleResult> SelectAsync(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        InstallationResult installationResult,
+        ComposeFiles compose,
+        DockerClient docker,
+        Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
+        Func<Uri, IOwnerBootstrapClient>? ownerClientFactory,
+        string lifecycleControlToken,
+        string verificationToken,
+        CatalogInstallationIdentity candidate,
+        LifecycleOperationState operation,
+        CancellationToken cancellationToken)
+    {
         if (operation is { MutationStarted: true, Phase: LifecycleOperationPhase.Committed, CandidateCatalog: not null })
         {
             candidate = operation.CandidateCatalog;
@@ -574,7 +605,7 @@ internal static class CatalogLifecycleManager
         return recoveredOperationId;
     }
 
-    private static async Task<bool> IsReferencedAsync(
+    internal static async Task<bool> IsReferencedAsync(
         InstallationPaths paths,
         string version,
         CancellationToken cancellationToken)
@@ -651,7 +682,8 @@ internal static class CatalogLifecycleManager
         {
             var operation = await CameraAgentLifecycleManager.ReadOperationAsync(path, cancellationToken).ConfigureAwait(false)
                 ?? throw new InstallerException("A retained lifecycle operation is empty.");
-            if (operation.Status != InstallationStatus.Completed &&
+            // A refused selection is terminal and never selected its candidate, so it holds no reference.
+            if (operation.Status != InstallationStatus.Completed && !CameraAgentLifecycleManager.IsRefused(operation) &&
                 (operation.OriginalCatalog?.PackageVersion == version || operation.CandidateCatalog?.PackageVersion == version))
             {
                 return true;

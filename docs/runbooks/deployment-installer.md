@@ -198,7 +198,9 @@ every transition the retained release record has to follow:
 | Refused: names an archive that is not the one it signed | `cameraagent upgrade --image-manifest <mismatched>` | unchanged |
 | Rollback to the retained previous image | `cameraagent rollback` | absent |
 | Refused: release contradicts the image labels | `cameraagent upgrade --image-manifest <contradicting>` | still absent |
+| Refused: resuming the refused upgrade | `cameraagent upgrade --image-manifest <contradicting> --resume` | still absent; the journal is byte-identical |
 | State-compatibility preflight on what the sequence left behind | `cameraagent preflight` | still absent |
+| Uninstall without `--resume` after the refusal | `cameraagent uninstall` | still absent; the container is gone |
 
 Each refusal targets its own gate. The production-trust-root refusal and the
 four derived-release refusals share the acquirer's single diagnostic, because
@@ -208,12 +210,15 @@ integrity condition against a release the instance has already accepted, and
 that each is required to leave every durable deployment record — the release
 record, the instance manifest, the installation result and state, the retained
 preflight report, the staged image archive, and the lifecycle journal —
-byte-identical. Only the label-agreement refusal has a diagnostic of its own; the
-campaign asserts it together with the incomplete `Prepared`/`Running` journal
-entry that refusal leaves behind
-([#638](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/638) owns making
-it terminal), because `mutationStarted=false` alone cannot distinguish a refusal
-from a completed upgrade. Every transition reads the running image back through
+byte-identical. Only the label-agreement refusal has a diagnostic of its own,
+and it is the only refusal that runs after the lifecycle journal has been
+opened. The campaign asserts that the journal records it as a terminal
+refusal: `status` is `Failed`, `failureCode` is `lifecycle-refused`, the
+`failureMessage` carries the gate's diagnostic, and `mutationStarted` is
+`false`. That record blocks nothing: resuming the refused command is refused
+because no incomplete operation exists, and the closing uninstall runs without
+`--resume` (the `LifecycleContractTests` prove the same for a rollback and a
+different upgrade). Every transition reads the running image back through
 `status`, whose `status` outcome (rather than `drifted`) means the container
 really carries the recorded image. Every step retains, under
 `TestResults/issue-598/<run>/`, the release record when it exists and an
@@ -272,7 +277,7 @@ None of the four derived releases or the label-agreement refusal writes,
 rewrites, or resurrects the retained release record. The four derived releases
 must leave every durable deployment record and the lifecycle journal
 byte-identical; the label-agreement refusal legitimately journals its refused
-operation and must leave every other durable record byte-identical.
+operation as terminal and must leave every other durable record byte-identical.
 
 Each refused release is a manifest and signature in its own directory that names
 the real published archives through `--asset-base-url`, so nothing copies or
@@ -318,8 +323,9 @@ What the campaign establishes: the whole signed image lifecycle — manifest and
 signature verification, asset length and checksum verification, platform
 selection, the agreement between the signed compatibility record and the labels
 the image actually carries, automatic exact restore after a post-mutation
-candidate-verification failure, and the retained release record across install,
-upgrade, rollback, and refusal — against real multi-architecture release
+candidate-verification failure, the terminal journal a pre-mutation refusal
+leaves behind, and the retained release record across install, upgrade,
+rollback, refusal, and the closing uninstall — against real multi-architecture release
 candidates, a real Docker daemon, and a real running CameraAgent.
 
 The manifest's declared-key-identity comparison is included: reaching it needs a
