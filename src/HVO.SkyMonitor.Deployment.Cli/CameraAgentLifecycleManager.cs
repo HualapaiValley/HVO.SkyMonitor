@@ -227,6 +227,10 @@ internal sealed class CameraAgentLifecycleManager
                     operation with { ExpectedOwnerBootstrapState = verifiedOwnerState },
                     cancellationToken).ConfigureAwait(false);
             }
+            // The commit is durable, so the retained release record is settled again here: a run that lost its final
+            // resume acknowledgement, or failed between the commit and the record write, must not leave the record
+            // naming a release the instance no longer runs.
+            await SettleReleaseRecordAsync(paths, signedImage, cancellationToken).ConfigureAwait(false);
             var committedLifecycle = CreateLifecycleClient(installationResult.Url, lifecycleClientFactory);
             await committedLifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
@@ -555,17 +559,11 @@ internal sealed class CameraAgentLifecycleManager
                 cancellationToken).ConfigureAwait(false);
             operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Committed }, cancellationToken)
                 .ConfigureAwait(false);
+            // The retained release record follows the image the instance actually runs. It is settled as soon as the
+            // commit is durable and before the final resume, so a lost resume acknowledgement cannot separate the
+            // two; the committed-resume branch above settles it again on --resume.
+            await SettleReleaseRecordAsync(paths, signedImage, cancellationToken).ConfigureAwait(false);
             await candidateLifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
-            // The retained release record follows the image the instance actually runs: an upgrade from a signed
-            // release records it, and a rollback withdraws whatever the superseded upgrade recorded.
-            if (signedImage is not null)
-            {
-                await signedImage.WriteEvidenceAsync(paths, cancellationToken).ConfigureAwait(false);
-            }
-            else if (rollback)
-            {
-                AcquiredImage.RemoveEvidence(paths);
-            }
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
             return Result(operation.Kind, "completed", operation.OperationId, paths, committed, manifest.DockerDaemon, true, true);
         }
@@ -914,6 +912,23 @@ internal sealed class CameraAgentLifecycleManager
             cancellationToken).ConfigureAwait(false);
         await docker.VerifyContainerAsync(compose, paths, image, uid, gid, cancellationToken).ConfigureAwait(false);
         return verifiedOwnerState;
+    }
+
+    /// <summary>
+    /// Makes the retained release record follow the image the instance now runs. A signed release writes its record;
+    /// any other image the instance was moved to, whether a rollback target or an operator-supplied reference,
+    /// withdraws the record because no signed release named the image now running. The step is idempotent and runs
+    /// both when a commit first becomes durable and on the committed-resume branch, so an interruption between the
+    /// commit and the record is repaired by <c>--resume</c> instead of leaving evidence that contradicts the container.
+    /// </summary>
+    private static Task SettleReleaseRecordAsync(InstallationPaths paths, AcquiredImage? signedImage, CancellationToken cancellationToken)
+    {
+        if (signedImage is not null)
+        {
+            return signedImage.WriteEvidenceAsync(paths, cancellationToken);
+        }
+        AcquiredImage.RemoveEvidence(paths);
+        return Task.CompletedTask;
     }
 
     private static DistributionAcquirer CreateDistributionAcquirer() => new();
