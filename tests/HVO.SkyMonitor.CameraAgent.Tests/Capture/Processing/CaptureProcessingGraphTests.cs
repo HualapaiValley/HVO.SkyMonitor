@@ -36,6 +36,27 @@ public sealed class CaptureProcessingGraphTests
         Assert.IsTrue(configurationIndex < hostedTypes.IndexOf(typeof(DerivedProductReconciliationService)));
         Assert.IsTrue(configurationIndex < hostedTypes.IndexOf(typeof(ProjectedSceneStageReconciliationService)));
     }
+
+    [TestMethod]
+    public void AddCameraAgentInfrastructure_InitializesCaptureAdmissionBeforeDependentHostedServices()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        var hostedTypes = services
+            .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
+            .Select(static descriptor => descriptor.ImplementationType)
+            .ToList();
+
+        var configurationIndex = hostedTypes.IndexOf(typeof(CameraAgentConfigurationInitializer));
+        var admissionIndex = hostedTypes.IndexOf(typeof(CaptureAdmissionInitializationService));
+        Assert.IsGreaterThanOrEqualTo(0, configurationIndex);
+        Assert.IsGreaterThanOrEqualTo(0, admissionIndex);
+        Assert.IsTrue(configurationIndex < admissionIndex);
+        Assert.IsTrue(admissionIndex < hostedTypes.IndexOf(typeof(CaptureProcessingStateRefreshService)));
+        Assert.IsTrue(admissionIndex < hostedTypes.IndexOf(typeof(CameraCaptureService)));
+    }
+
     private static readonly string[] ExpectedTopologicalOrder = ["first", "middle", "last"];
     private static readonly string[] ExpectedProducerConsumerOrder = ["producer", "consumer"];
     private static readonly string[] ExpectedProducerDependency = ["producer"];
