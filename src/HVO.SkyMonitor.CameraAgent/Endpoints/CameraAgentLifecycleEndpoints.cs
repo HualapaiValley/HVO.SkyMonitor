@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -10,6 +11,8 @@ namespace HVO.SkyMonitor.CameraAgent.Endpoints;
 
 internal static class CameraAgentLifecycleEndpoints
 {
+    private const int InitializationRetryAfterSeconds = 1;
+
     internal static IEndpointRouteBuilder MapCameraAgentLifecycleEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/internal/deployment/lifecycle").AllowAnonymous();
@@ -50,7 +53,7 @@ internal static class CameraAgentLifecycleEndpoints
         IConfiguration configuration,
         CaptureAdmissionCoordinator coordinator,
         CancellationToken cancellationToken)
-        => ExecuteAsync(request, context, configuration, coordinator.PauseAsync, "pause", cancellationToken);
+        => ExecuteAsync(request, context, configuration, coordinator, coordinator.PauseAsync, "pause", cancellationToken);
 
     private static Task<IResult> ResumeAsync(
         LifecycleControlRequest request,
@@ -58,18 +61,24 @@ internal static class CameraAgentLifecycleEndpoints
         IConfiguration configuration,
         CaptureAdmissionCoordinator coordinator,
         CancellationToken cancellationToken)
-        => ExecuteAsync(request, context, configuration, coordinator.ResumeAsync, "resume", cancellationToken);
+        => ExecuteAsync(request, context, configuration, coordinator, coordinator.ResumeAsync, "resume", cancellationToken);
 
     private static async Task<IResult> ExecuteAsync(
         LifecycleControlRequest request,
         HttpContext context,
         IConfiguration configuration,
+        CaptureAdmissionCoordinator coordinator,
         Func<string, long?, string, string?, CancellationToken, Task<CaptureControlCommandResult>> command,
         string action,
         CancellationToken cancellationToken)
     {
         if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
         if (request.OperationId == Guid.Empty) return Results.BadRequest();
+        if (!coordinator.Snapshot.IsInitialized)
+        {
+            context.Response.Headers.RetryAfter = InitializationRetryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
         try
         {
             return Results.Ok(await command(

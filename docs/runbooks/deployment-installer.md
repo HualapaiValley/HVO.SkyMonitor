@@ -729,7 +729,13 @@ Capture-admission initialization is a CameraAgent startup responsibility that
 runs after configuration initialization and before the processing and capture
 workers; it does not depend on the camera capture worker reaching its loop. The
 lifecycle client treats uninitialized `Initializing` or `Unavailable` snapshots
-as transient startup observations. Once capture admission is initialized, a
+as transient startup observations. An authenticated pause or resume request made
+before that initialization completes returns `503 Service Unavailable` with a
+one-second `Retry-After` header and does not try to initialize capture admission
+on the request thread. The installer retries that response, `408`, `429`, and
+non-`500` 5xx responses with one idempotent command ID inside the existing drain
+deadline, honoring `Retry-After` when present. A `500` or a non-transient status
+remains terminal. Once capture admission is initialized, a
 `Running` or terminal `Unavailable` snapshot fails a drain confirmation after
 the first state read instead of consuming the full drain deadline.
 
