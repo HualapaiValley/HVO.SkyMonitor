@@ -13,7 +13,8 @@ The dispatcher validates enrollment and command targeting, posts the durable
 request, waits for its returned comment ID, resumes the exact enrolled CLI
 session, appends launch metadata, and remains alive until that reviewer exits so
 the invoking harness cannot reap a detached child. --dry-run posts and launches
-nothing.
+nothing. Live dispatches require `flock` and hold one host-local lock for the
+enrolled participant/session until the dispatcher records terminal state.
 EOF
 }
 
@@ -133,6 +134,31 @@ fi
 
 command -v "$runner" >/dev/null || fail "Reviewer CLI is not installed: $runner"
 runner_version="$($runner --version | head -n 1)"
+command -v flock >/dev/null || fail "flock is required for serialized review dispatch."
+
+# A participant identity binds one immutable session to one host. Serialize all
+# live dispatches for that participant on the host so two wrappers cannot both
+# observe an empty ledger and launch. The lock is held through terminal state;
+# after release, a retry re-reads the durable ledger before it can launch.
+lock_root="${HVO_REVIEW_DISPATCH_LOCK_DIR:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/hvo-review-dispatch-$UID}"
+old_umask="$(umask)"
+umask 077
+mkdir -p -- "$lock_root"
+umask "$old_umask"
+[[ -d "$lock_root" && ! -L "$lock_root" && -O "$lock_root" ]] ||
+    fail "Dispatch lock directory must be an owned, non-symlink directory: $lock_root"
+if command -v sha256sum >/dev/null; then
+    lock_key="$(printf '%s' "$participant_id" | sha256sum | awk '{print $1}')"
+else
+    lock_key="$(printf '%s' "$participant_id" | shasum -a 256 | awk '{print $1}')"
+fi
+lock_file="$lock_root/$lock_key.lock"
+exec {dispatch_lock_fd}> "$lock_file"
+if ! flock -n "$dispatch_lock_fd"; then
+    printf 'DISPATCH_BUSY %s %s; participant/session dispatcher already active on this host\n' \
+        "$command_id" "$participant_id" >&2
+    exit 1
+fi
 
 # The request is durable input. A separate pre-launch reservation prevents a
 # retry from starting a second reviewer if the process or a later ledger POST

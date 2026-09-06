@@ -20,6 +20,10 @@ if [[ "$1" == api && "$*" == *issues/comments/* ]]; then
     exit 0
 fi
 if [[ "$1" == api && "$*" == *'--method GET'* && "$*" == *issues/700/comments* ]]; then
+    if [[ -n "${MOCK_LEDGER_GET_DELAY:-}" ]]; then
+        printf 'GH_GET_STARTED\n' >> "$MOCK_EVENT_LOG"
+        sleep "$MOCK_LEDGER_GET_DELAY"
+    fi
     if [[ -n "${MOCK_PAGINATED_LEDGER:-}" ]]; then
         printf '%s\n' "$(<"$MOCK_PAGINATED_LEDGER")"
     else
@@ -89,6 +93,7 @@ export MOCK_COMMENT_BODY="$work_root/comment.txt"
 export MOCK_LEDGER="$work_root/ledger.json"
 export MOCK_REVIEW_RESULT="$work_root/logs/review.final.md"
 export MOCK_REGISTRY="$work_root/registry.json"
+export HVO_REVIEW_DISPATCH_LOCK_DIR="$work_root/dispatch-locks"
 
 printf 'Acceptance fixture.\n' > "$work_root/acceptance.txt"
 printf 'Concurrency and exact-range fixture.\n' > "$work_root/lens.txt"
@@ -221,6 +226,47 @@ grep -Fqx "ALREADY_CONSUMED CMD-REVIEW-001 $participant launch-comment=9003" "$w
 printf '[]\n' > "$MOCK_LEDGER"
 : > "$MOCK_EVENT_LOG"
 : > "$MOCK_POST_COUNT"
+export MOCK_REVIEW_RESULT="$work_root/logs/concurrent.final.md"
+rm -f "$MOCK_REVIEW_RESULT"
+jq -n --arg participant "$participant" '{participants:[{id:$participant,status:"ACTIVE",joinState:"JOINED",joinAckId:"JOINACK-REVIEW-001",lease:{generation:1,expiresAt:null}}]}' > "$MOCK_REGISTRY"
+jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-CONCURRENT",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command-concurrent.json"
+sed 's/CMD-REVIEW-001/CMD-REVIEW-CONCURRENT/g' "$work_root/initial.request" > "$work_root/concurrent.request"
+export MOCK_LEDGER_GET_DELAY=0.5
+$dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/concurrent.request" \
+    --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
+    --log-file "$work_root/logs/concurrent.jsonl" --registry "$MOCK_REGISTRY" \
+    --command "$work_root/command-concurrent.json" --receipts "$work_root/receipts.json" \
+    --participant-id "$participant" --resume-session "$resume_session" \
+    > "$work_root/concurrent-first.json" 2> "$work_root/concurrent-first.err" &
+first_dispatch_pid=$!
+for _ in $(seq 1 100); do
+    grep -Fq GH_GET_STARTED "$MOCK_EVENT_LOG" && break
+    sleep 0.01
+done
+grep -Fq GH_GET_STARTED "$MOCK_EVENT_LOG" || {
+    wait "$first_dispatch_pid" || true
+    printf 'First concurrent dispatcher did not enter the delayed ledger read.\n' >&2
+    exit 1
+}
+if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/concurrent.request" \
+    --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
+    --log-file "$work_root/logs/concurrent.jsonl" --registry "$MOCK_REGISTRY" \
+    --command "$work_root/command-concurrent.json" --receipts "$work_root/receipts.json" \
+    --participant-id "$participant" --resume-session "$resume_session" \
+    > "$work_root/concurrent-second.out" 2> "$work_root/concurrent-second.err"; then
+    wait "$first_dispatch_pid" || true
+    printf 'A concurrent dispatcher acquired the same participant/session.\n' >&2
+    exit 1
+fi
+grep -Fq "DISPATCH_BUSY CMD-REVIEW-CONCURRENT $participant" "$work_root/concurrent-second.err"
+wait "$first_dispatch_pid"
+unset MOCK_LEDGER_GET_DELAY
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]]
+[[ "$(grep -Fc '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER")" == 1 ]]
+
+printf '[]\n' > "$MOCK_LEDGER"
+: > "$MOCK_EVENT_LOG"
+: > "$MOCK_POST_COUNT"
 rm -f "$MOCK_REVIEW_RESULT"
 jq -n --arg participant "$participant" '{participants:[{id:$participant,status:"ACTIVE",joinState:"JOINED",joinAckId:"JOINACK-REVIEW-001",lease:{generation:1,expiresAt:null}}]}' > "$MOCK_REGISTRY"
 jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-LEASE",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command-lease.json"
@@ -269,4 +315,4 @@ if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_r
 fi
 [[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]]
 
-printf 'Review request merge-base/pagination, evidence-pack/replay, dispatch reservation, lease-race, failed-receipt, harness-lifetime, and retry tests passed.\n'
+printf 'Review request merge-base/pagination, evidence-pack/replay, serialized dispatch, reservation, lease-race, failed-receipt, harness-lifetime, and retry tests passed.\n'

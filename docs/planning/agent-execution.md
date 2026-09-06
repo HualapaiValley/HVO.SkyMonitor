@@ -582,10 +582,17 @@ generated request before launch. Use
 `scripts/pr:dispatch-review` to validate the joined participant and targeted
 command, post the durable request, wait for the returned comment ID, resume the
 same enrolled Codex or Claude CLI session, and append actual launch metadata.
-Before process start it posts a durable launch reservation and revalidates the
+Every live dispatcher first acquires a nonblocking host-local `flock` keyed to
+the enrolled participant/session and holds it through the process-terminal
+ledger write. A simultaneous invocation returns `DISPATCH_BUSY`; retry it only
+after the active dispatcher exits, when it must re-read durable state. Before
+process start the owner posts a durable launch reservation and revalidates the
 registry, current time, participant, command, and lease. A retry after STARTED
 is already consumed; a reservation without STARTED requires explicit recovery
-and never launches automatically. Create the CLI session with an identity-only
+and never launches automatically. Because a participant identity binds one
+session to one host, moving a session to another host requires a new identity
+and join rather than reusing the identity across host-local locks. Create the
+CLI session with an identity-only
 bootstrap, complete the join exchange, then issue the separate review command;
 never treat a newly launched one-shot reviewer as pre-enrolled. Keep the
 dispatcher process alive until its resumed reviewer exits; `nohup` alone is not

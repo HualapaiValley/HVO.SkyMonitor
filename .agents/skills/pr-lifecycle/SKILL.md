@@ -79,9 +79,12 @@ Start acknowledgement: acknowledge on this PR within 15 minutes and identify
 
 Generate this block with `scripts/pr:review-request`; inspect it before launch.
 Dispatch it with `scripts/pr:dispatch-review`, which must receive the durable
-request comment ID, post a durable launch reservation, revalidate the current
-participant lease, and only then resume the same previously joined CLI session
-and append STARTED metadata. Bootstrap the session without review work, complete
+request comment ID, hold the host-local participant/session dispatch lock, post
+a durable launch reservation, revalidate the current participant lease, and
+only then resume the same previously joined CLI session and append STARTED
+metadata. A concurrent dispatcher for that participant returns `DISPATCH_BUSY`;
+retry it only after the active dispatcher records terminal state and releases
+the lock. Bootstrap the session without review work, complete
 `JOIN REQUEST` -> `JOIN ACK` -> `JOINED ACK`, and pass its full local resume ID
 only to the launcher; the public participant identity retains the non-secret
 short ID. The dispatcher must stay alive and wait for the resumed reviewer;
@@ -89,6 +92,8 @@ some harnesses reap detached descendants as soon as the parent command returns
 even when `nohup` was used. A retry resumes from an already-posted request,
 returns `ALREADY_CONSUMED` after STARTED, and requires explicit recovery if it
 finds only a reservation; it never launches a second reviewer automatically.
+The participant identity binds the session to one host; migrating it to another
+host requires a new identity and join rather than reuse across host-local locks.
 Do not reconstruct ranges or causal ordering in an ad hoc shell pipeline when
 these scripts support the route.
 

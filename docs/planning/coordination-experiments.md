@@ -196,6 +196,21 @@ token estimate.
   verified and recorded; otherwise use the enrolled harness-native review
   route. Measure failed-route tokens as coordination overhead.
 
+### E-009: concurrent dispatcher reservation race
+
+- **Observation:** durable request and reservation comments made sequential
+  retries safe, but two dispatcher processes could read the ledger before
+  either reservation was visible, post two reservations, and launch the same
+  enrolled participant twice.
+- **Repair:** acquire one nonblocking, host-local `flock` keyed to the immutable
+  participant/session identity before reading the ledger, and hold it through
+  terminal process state. A contender returns `DISPATCH_BUSY`; a delayed-ledger
+  concurrency test proves that only one reservation and one launch occur.
+- **Decision:** the participant ID binds a session to one host, so host-local
+  serialization plus the durable ledger is the dispatch boundary. Session
+  migration requires a new identity and join; reusing one participant identity
+  on two hosts is invalid.
+
 ## Candidate improvements
 
 Try one bounded change at a time and record it before changing the default:
