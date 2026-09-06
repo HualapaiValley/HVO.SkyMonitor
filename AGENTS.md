@@ -154,6 +154,28 @@ rather than depending on a vendor-specific agent feature.
   baseline signal before relying on it. If a scheduled signal is late, report
   the delivery gap, replace or repair the monitor, and poll directly until the
   replacement proves its signaling path with a new baseline.
+- When active coordinators cannot message each other directly, use two fixed
+  mutable status comments on the owning roadmap epic, one written by each
+  coordinator. Each side updates its own slot every five minutes even when the
+  message is only `still running, no change`, `no work available`, or `report
+  status`, and acknowledges the last sequence it observed from the other slot.
+  Keep claims, grants, findings, milestones, and handoffs in their append-only
+  issue, PR, or epic ledgers; the two status slots are current control state
+  only.
+- Keep routine coordinator records compact and delta-oriented, with a target of
+  at most 500 UTF-8 bytes for the complete comment body. Include format version,
+  sequence and acknowledgement, UTC/MST time, current/next/blocker per active
+  item, shared-resource owner, request, and next due time. Poll an exact slot's
+  `updated_at` first and read its body only when it changes; advance durable
+  comment cursors rather than rereading the epic. Coordinate and record any
+  format experiment before depending on it; use
+  `docs/planning/coordination-experiments.md` as the evidence and decision log.
+- Keep an unchanged operator heartbeat to one compact line per active item while
+  preserving current step, next step, and blocker, and do not repeat a milestone
+  that was already relayed. During a coordination experiment, record per active
+  hour the slot bytes read and written, metadata polls, changed-body fetches,
+  estimated transcript tokens, and coordinator service time, plus the durable
+  comment count for each issue.
 - On every wake, record for each issue or PR the implementing agent's last
   activity timestamp and current step, the PR head SHA, draft state, merge
   state, the first line and timestamp of the latest ledger comment, and the
