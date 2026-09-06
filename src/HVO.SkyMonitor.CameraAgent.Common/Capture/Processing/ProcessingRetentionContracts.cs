@@ -26,19 +26,43 @@ internal interface IProcessingOutputExpiration
 
 internal interface IAcceptanceRetentionControl : IProcessingRetentionHolds;
 
+internal interface IRawIngressLifecycleProcessingRetentionHolds
+{
+    ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsUnderLifecycleLockAsync(
+        string storageRoot,
+        CancellationToken cancellationToken);
+}
+
 internal sealed class CompositeProcessingRetentionHolds(
     CaptureProcessingPersistence persistence,
     CameraAgentClearReferenceLoader clearReferences,
     SqliteCalibrationLibraryStore calibrationLibrary,
-    IAcceptanceRetentionControl? acceptanceControl = null) : IProcessingRetentionHolds, IProcessingOutputExpiration
+    IAcceptanceRetentionControl? acceptanceControl = null) :
+    IProcessingRetentionHolds,
+    IRawIngressLifecycleProcessingRetentionHolds,
+    IProcessingOutputExpiration
 {
-    public async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
+    public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
+        CancellationToken cancellationToken)
+        => GetRetentionHoldsCoreAsync(storageRoot, initializeRawIngress: true, cancellationToken);
+
+    ValueTask<IReadOnlyList<ProcessingRetentionHold>>
+        IRawIngressLifecycleProcessingRetentionHolds.GetRetentionHoldsUnderLifecycleLockAsync(
+            string storageRoot,
+            CancellationToken cancellationToken)
+        => GetRetentionHoldsCoreAsync(storageRoot, initializeRawIngress: false, cancellationToken);
+
+    private async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsCoreAsync(
+        string storageRoot,
+        bool initializeRawIngress,
         CancellationToken cancellationToken)
     {
         var persisted = await persistence.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         var configured = await clearReferences.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
-        var calibration = await calibrationLibrary.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
+        var calibration = initializeRawIngress
+            ? await calibrationLibrary.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false)
+            : await calibrationLibrary.GetRetentionHoldsUnderLifecycleLockAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         var acceptance = acceptanceControl is null
             ? []
             : await acceptanceControl.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
