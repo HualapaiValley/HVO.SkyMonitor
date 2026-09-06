@@ -5,6 +5,8 @@ internal enum RawIngressFaultPoint
     AfterMigrationTransactionBegan,
     BeforeMigrationCommit,
     BeforeInitializationLifecycleLock,
+    BeforeIdentityReservation,
+    AfterIdentityReservation,
     ValidationCompleted,
     PayloadPartiallyWritten,
     PayloadWritten,
