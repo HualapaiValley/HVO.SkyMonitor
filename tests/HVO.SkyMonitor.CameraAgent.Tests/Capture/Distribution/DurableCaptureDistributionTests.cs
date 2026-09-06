@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
@@ -543,6 +544,84 @@ public sealed class DurableCaptureDistributionTests
             null,
             ["optional-lane-remained-pending", "standard-lane-drained", "upload-lane-drained", "leased-work-released-on-shutdown"])
             .ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task ServiceOwnedShutdownAbort_CompletesAndReleasesDurableWorkForRecovery()
+    {
+        using var fixture = CreateFixture(new CaptureDistributionOptions
+        {
+            PollIntervalMilliseconds = 60_000,
+            ShutdownDrainSeconds = 1
+        });
+        await fixture.AcceptAsync(0).ConfigureAwait(false);
+        var fault = new OneShotLaneFaultInjector(CaptureLaneFaultPoint.BeforeHandler);
+        var logger = new EventIdLogger<CaptureDistributionService>();
+        using var standard = new StandardCaptureLaneHandler(
+            new EmptyPipelineFactory(),
+            NullLogger<StandardCaptureLaneHandler>.Instance,
+            fixture.Ingress);
+        using var service = new CaptureDistributionService(
+            new ConfigurationAccessor(fixture.Configuration),
+            fixture.Ingress,
+            fixture.Store,
+            fixture.Policy,
+            [standard],
+            standard,
+            fixture.Options,
+            TimeProvider.System,
+            fault,
+            fixture.LaneTelemetry,
+            fixture.LaneState,
+            logger);
+
+        await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await fault.Injected.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await WaitForCountAsync(
+            fixture.Root,
+            "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'pending' AND attempt_count = 1;",
+            1).ConfigureAwait(false);
+
+        await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.Contains(2059, logger.EventIds);
+
+        using (var connection = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            Assert.AreEqual(0L, await ScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'leased';").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'pending';").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarLongAsync(
+                connection, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+        }
+
+        using var recoveredService = new CaptureDistributionService(
+            new ConfigurationAccessor(fixture.Configuration),
+            fixture.Ingress,
+            fixture.Store,
+            fixture.Policy,
+            [new SuccessfulLaneHandler("standard")],
+            standard,
+            fixture.Options,
+            TimeProvider.System,
+            new NullCaptureLaneFaultInjector(),
+            fixture.LaneTelemetry,
+            fixture.LaneState,
+            NullLogger<CaptureDistributionService>.Instance);
+        await recoveredService.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await WaitForCountAsync(
+            fixture.Root,
+            "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'completed';",
+            1).ConfigureAwait(false);
+        await recoveredService.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        using var verification = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual(1L, await ScalarLongAsync(
+            verification, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
+        Assert.AreEqual(2L, await ScalarLongAsync(
+            verification, "SELECT attempt_count FROM capture_lane_work;").ConfigureAwait(false));
+        Assert.AreEqual(0L, await ScalarLongAsync(
+            verification, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -2039,13 +2118,35 @@ public sealed class DurableCaptureDistributionTests
     {
         private int _armed = 1;
 
+        public TaskCompletionSource Injected { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public void Inject(CaptureLaneFaultPoint current)
         {
             if (current == point && Interlocked.Exchange(ref _armed, 0) == 1)
             {
+                Injected.TrySetResult();
                 throw new InvalidOperationException("Injected capture lane fault.");
             }
         }
+    }
+
+    private sealed class EventIdLogger<T> : ILogger<T>
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<int> _eventIds = new();
+
+        public IReadOnlyCollection<int> EventIds => _eventIds.ToArray();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => _eventIds.Enqueue(eventId.Id);
     }
 
     private static ArtifactManifestV2 CreateV1MigrationManifest(

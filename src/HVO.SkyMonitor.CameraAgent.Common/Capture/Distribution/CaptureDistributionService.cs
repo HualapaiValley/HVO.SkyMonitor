@@ -145,9 +145,13 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
             await _abort.CancelAsync().ConfigureAwait(false);
-            await Task.WhenAny(
+            var stopped = await Task.WhenAny(
                 workers,
                 Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, CancellationToken.None)).ConfigureAwait(false);
+            if (stopped == workers)
+            {
+                await workers.ConfigureAwait(false);
+            }
             _logger.CaptureLaneDrainAborted();
         }
     }
@@ -170,8 +174,22 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
         => _ephemeral.Writer.WriteAsync(
             new FrameProcessingItem(configuration, submission), cancellationToken);
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A failed durable claim must not terminate independent lane recovery.")]
     private async Task RunLaneAsync(
+        CaptureLaneDefinition lane,
+        ICaptureLaneHandler handler,
+        ChannelReader<bool> signal)
+    {
+        try
+        {
+            await RunLaneLoopAsync(lane, handler, signal).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_abort.IsCancellationRequested)
+        {
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A failed durable claim must not terminate independent lane recovery.")]
+    private async Task RunLaneLoopAsync(
         CaptureLaneDefinition lane,
         ICaptureLaneHandler handler,
         ChannelReader<bool> signal)
