@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  scripts/pr:dispatch-review --repo OWNER/REPO --pr N --request FILE \
+    --runner codex|claude --model MODEL --effort EFFORT --worktree DIR \
+    --log-file FILE --registry FILE --command FILE [--receipts FILE] \
+    --participant-id ID [--dry-run]
+
+The dispatcher validates enrollment and command targeting, posts the durable
+request, waits for its returned comment ID, launches the exact configured CLI,
+then appends launch metadata. --dry-run posts and launches nothing.
+EOF
+}
+
+fail() {
+    printf '%s\n' "$*" >&2
+    exit 1
+}
+
+repo=""
+pr=""
+request_file=""
+runner=""
+model=""
+effort=""
+review_worktree=""
+log_file=""
+registry=""
+command_file=""
+receipts_file=""
+participant_id=""
+dry_run=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo|--pr|--request|--runner|--model|--effort|--worktree|--log-file|--registry|--command|--receipts|--participant-id)
+            [[ -n "${2:-}" ]] || fail "Missing value for $1."
+            case "$1" in
+                --repo) repo="$2" ;;
+                --pr) pr="$2" ;;
+                --request) request_file="$2" ;;
+                --runner) runner="$2" ;;
+                --model) model="$2" ;;
+                --effort) effort="$2" ;;
+                --worktree) review_worktree="$2" ;;
+                --log-file) log_file="$2" ;;
+                --registry) registry="$2" ;;
+                --command) command_file="$2" ;;
+                --receipts) receipts_file="$2" ;;
+                --participant-id) participant_id="$2" ;;
+            esac
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *) fail "Unknown option: $1" ;;
+    esac
+done
+
+[[ "$repo" =~ ^[^/]+/[^/]+$ ]] || fail "--repo OWNER/REPO is required."
+[[ "$pr" =~ ^[1-9][0-9]*$ ]] || fail "--pr must be a positive number."
+[[ "$runner" =~ ^(codex|claude)$ ]] || fail "--runner must be codex or claude."
+[[ "$effort" =~ ^(medium|high|xhigh|max)$ ]] || fail "--effort is invalid for review."
+[[ -n "$model" ]] || fail "--model is required."
+[[ -f "$request_file" ]] || fail "--request file does not exist."
+[[ -d "$review_worktree" ]] || fail "--worktree directory does not exist."
+[[ -d "$(dirname "$log_file")" ]] || fail "Log directory does not exist."
+[[ -f "$registry" && -f "$command_file" ]] || fail "Registry and command files are required."
+
+guard_args=(authorize --registry "$registry" --command "$command_file" --participant "$participant_id")
+[[ -z "$receipts_file" ]] || guard_args+=(--receipts "$receipts_file")
+authorization="$("$(dirname "${BASH_SOURCE[0]}")/coordination:guard" "${guard_args[@]}")"
+if [[ "$authorization" == ALREADY_CONSUMED* ]]; then
+    printf '%s\n' "$authorization"
+    exit 0
+fi
+[[ "$authorization" == AUTHORIZED* ]] || fail "Coordination authorization failed."
+
+command_id="$(jq -er '.commandId' "$command_file")"
+grep -Fq "Dispatch command ID and target participant ID: $command_id / $participant_id" "$request_file" ||
+    fail "Request command/participant binding does not match authorization."
+grep -Fq "Requested model and reasoning effort: $model / $effort" "$request_file" ||
+    fail "Request model/effort does not match launcher configuration."
+
+request_body="$(<"$request_file")"
+ledger_body="$(printf '%s\n\nCommand: %s\nTarget participant: %s\n\n%s\n%s\n%s\n\n%s' \
+    '## Review request — generated dispatch' "$command_id" "$participant_id" \
+    '```text' "$request_body" '```' \
+    'The dispatcher must receive this comment ID before launching.')"
+
+case "$runner" in
+    codex)
+        output_file="${log_file%.*}.final.md"
+        launch=(codex exec -C "$review_worktree" --model "$model" -c "model_reasoning_effort=\"$effort\"" --sandbox read-only --json --output-last-message "$output_file" -)
+        actual_provider="Codex/OpenAI"
+        ;;
+    claude)
+        launch=(claude --print --model "$model" --effort "$effort" --permission-mode plan --output-format stream-json)
+        actual_provider="Claude Code/Anthropic"
+        ;;
+esac
+
+print_launch() {
+    printf 'Launch command:'
+    printf ' %q' "${launch[@]}"
+    printf ' < %q > %q 2>&1 &\n' "$request_file" "$log_file"
+}
+
+if $dry_run; then
+    printf '%s\n' "$ledger_body"
+    print_launch
+    printf 'DRY-RUN: no comment posted and no reviewer launched.\n'
+    exit 0
+fi
+
+command -v "$runner" >/dev/null || fail "Reviewer CLI is not installed: $runner"
+runner_version="$($runner --version | head -n 1)"
+
+# The returned request comment is the durable launch receipt. A retry after the
+# request POST but before launch resumes from that comment; a retry after a
+# launch receipt performs no second launch.
+comments_json="$(gh api --method GET --paginate "repos/$repo/issues/$pr/comments?per_page=100")"
+existing_request="$(jq -cs --arg command "$command_id" --arg participant "$participant_id" '
+    [ .[][]
+      | select((.body // "") | contains("## Review request — generated dispatch"))
+      | select((.body // "") | contains("Command: " + $command + "\n"))
+      | select((.body // "") | contains("Target participant: " + $participant + "\n"))
+    ] | last // empty
+' <<<"$comments_json")"
+existing_launch="$(jq -cs --arg command "$command_id" --arg participant "$participant_id" '
+    [ .[][]
+      | select((.body // "") | contains("## Review launch — STARTED"))
+      | select((.body // "") | contains("Command " + $command + " for participant " + $participant + " launched"))
+    ] | last // empty
+' <<<"$comments_json")"
+
+if [[ -n "$existing_launch" ]]; then
+    printf 'ALREADY_CONSUMED %s %s launch-comment=%s\n' \
+        "$command_id" "$participant_id" "$(jq -er '.id' <<<"$existing_launch")"
+    exit 0
+fi
+
+if [[ -n "$existing_request" ]]; then
+    [[ "$(jq -r '.body' <<<"$existing_request")" == "$ledger_body" ]] ||
+        fail "Existing request receipt does not match this command payload."
+    comment_id="$(jq -er '.id' <<<"$existing_request")"
+    comment_created="$(jq -er '.created_at' <<<"$existing_request")"
+    comment_url="$(jq -er '.html_url' <<<"$existing_request")"
+else
+    post_json="$(gh api --method POST "repos/$repo/issues/$pr/comments" -f body="$ledger_body")"
+    comment_id="$(jq -er '.id' <<<"$post_json")"
+    comment_created="$(jq -er '.created_at' <<<"$post_json")"
+    comment_url="$(jq -er '.html_url' <<<"$post_json")"
+fi
+
+launch_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+nohup "${launch[@]}" < "$request_file" > "$log_file" 2>&1 &
+review_pid=$!
+kill -0 "$review_pid" 2>/dev/null || fail "Reviewer process did not start."
+
+launch_body="$(printf '## Review launch — STARTED\n\nCommand %s for participant %s launched only after request comment %s returned at %s. Launch UTC: %s. Route: %s %s. Actual configured provider/model/effort: %s / %s / %s. PID: %s. Log: %s. Request: %s' "$command_id" "$participant_id" "$comment_id" "$comment_created" "$launch_utc" "$runner" "$runner_version" "$actual_provider" "$model" "$effort" "$review_pid" "$log_file" "$comment_url")"
+launch_json="$(gh api --method POST "repos/$repo/issues/$pr/comments" -f body="$launch_body")"
+
+jq -n \
+    --arg commandId "$command_id" \
+    --arg participantId "$participant_id" \
+    --arg requestCommentId "$comment_id" \
+    --arg requestCreatedAt "$comment_created" \
+    --arg launchCommentId "$(jq -r '.id' <<<"$launch_json")" \
+    --arg launchUtc "$launch_utc" \
+    --arg pid "$review_pid" \
+    '{commandId:$commandId,participantId:$participantId,requestCommentId:$requestCommentId,requestCreatedAt:$requestCreatedAt,launchCommentId:$launchCommentId,launchUtc:$launchUtc,pid:($pid|tonumber)}'

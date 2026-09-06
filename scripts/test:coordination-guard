@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+guard="$repo_root/scripts/coordination:guard"
+work_root="$(mktemp -d)"
+trap 'rm -rf "$work_root"' EXIT
+
+participant_a='claude-code:anthropic:hvo-dev-03:793293ad'
+participant_b='opencode:anthropic:hvo-dev-03:2f583d10'
+coordinator='codex:openai:hvo-dev-02:01a07407'
+
+sha256_file() {
+    if command -v sha256sum >/dev/null; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+jq -n \
+    --arg a "$participant_a" \
+    --arg b "$participant_b" \
+    --arg c "$coordinator" \
+    '{participants:[
+        {id:$a,status:"ACTIVE",joinState:"JOINED",joinAckId:"JOINACK-001",lease:{generation:2,expiresAt:null}},
+        {id:$b,status:"ACTIVE",joinState:"JOINED",joinAckId:"JOINACK-002",lease:{generation:1,expiresAt:null}},
+        {id:$c,status:"ACTIVE",joinState:"JOINED",joinAckId:"BOOTSTRAP-001",lease:{generation:4,expiresAt:null}}
+    ]}' > "$work_root/registry.json"
+
+jq -n --arg target "$participant_a" \
+    '{commandId:"CMD-SYNC-004",targetParticipantId:$target,leaseGeneration:2}' > "$work_root/command.json"
+printf '[]\n' > "$work_root/receipts-empty.json"
+jq -n --arg participant "$participant_a" \
+    '[{commandId:"CMD-SYNC-004",participantId:$participant,state:"STARTED"}]' > "$work_root/receipts-used.json"
+
+authorized="$($guard authorize --registry "$work_root/registry.json" --command "$work_root/command.json" --participant "$participant_a" --receipts "$work_root/receipts-empty.json")"
+[[ "$authorized" == "AUTHORIZED CMD-SYNC-004 $participant_a lease=2" ]]
+
+already="$($guard authorize --registry "$work_root/registry.json" --command "$work_root/command.json" --participant "$participant_a" --receipts "$work_root/receipts-used.json")"
+[[ "$already" == "ALREADY_CONSUMED CMD-SYNC-004 $participant_a" ]]
+
+if $guard authorize --registry "$work_root/registry.json" --command "$work_root/command.json" --participant "$participant_b" >/dev/null 2>&1; then
+    printf 'A second Claude session consumed another participant command.\n' >&2
+    exit 1
+fi
+
+if $guard authorize --registry "$work_root/registry.json" --command "$work_root/command.json" --participant 'opencode:anthropic:hvo-dev-04:unregistered' >/dev/null 2>&1; then
+    printf 'An unregistered session consumed a command.\n' >&2
+    exit 1
+fi
+
+jq '.participants[0].lease.generation = 3' "$work_root/registry.json" > "$work_root/replaced-registry.json"
+if $guard authorize --registry "$work_root/replaced-registry.json" --command "$work_root/command.json" --participant "$participant_a" >/dev/null 2>&1; then
+    printf 'A replaced lease consumed a stale command.\n' >&2
+    exit 1
+fi
+
+printf 'C1.2 | S12\nOWNER %s LEASE 2\n#628 active\nLIVE 2026-09-06T17:00:00Z / 10:00:00 MST\n' "$participant_a" > "$work_root/slot.txt"
+slot_sha="$(sha256_file "$work_root/slot.txt")"
+live_line='LIVE 2026-09-06T17:05:00Z / 10:05:00 MST'
+$guard render-live --registry "$work_root/registry.json" --participant "$participant_a" \
+    --lease-generation 2 --current-body "$work_root/slot.txt" --expected-sha256 "$slot_sha" \
+    --live-line "$live_line" > "$work_root/rendered-1.txt"
+rendered_sha="$(sha256_file "$work_root/rendered-1.txt")"
+$guard render-live --registry "$work_root/registry.json" --participant "$participant_a" \
+    --lease-generation 2 --current-body "$work_root/rendered-1.txt" --expected-sha256 "$rendered_sha" \
+    --live-line "$live_line" > "$work_root/rendered-2.txt"
+cmp "$work_root/rendered-1.txt" "$work_root/rendered-2.txt"
+
+if $guard render-live --registry "$work_root/registry.json" --participant "$participant_a" \
+    --lease-generation 2 --current-body "$work_root/slot.txt" \
+    --expected-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --live-line "$live_line" >/dev/null 2>&1; then
+    printf 'A lost-update input passed the optimistic CAS guard.\n' >&2
+    exit 1
+fi
+
+if $guard render-live --registry "$work_root/registry.json" --participant "$participant_b" \
+    --lease-generation 1 --current-body "$work_root/slot.txt" --expected-sha256 "$slot_sha" \
+    --live-line "$live_line" >/dev/null 2>&1; then
+    printf 'A second writer modified another participant slot.\n' >&2
+    exit 1
+fi
+
+printf 'Coordination enrollment, targeting, idempotency, lease, and CAS guards passed.\n'

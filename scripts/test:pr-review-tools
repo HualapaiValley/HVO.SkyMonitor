@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+request_tool="$repo_root/scripts/pr:review-request"
+dispatch_tool="$repo_root/scripts/pr:dispatch-review"
+work_root="$(mktemp -d)"
+trap 'rm -rf "$work_root"' EXIT
+mkdir -p "$work_root/bin" "$work_root/logs"
+
+cat > "$work_root/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1 $2" == "pr view" ]]; then
+    printf '%s\n' "$(<"$MOCK_PR_JSON")"
+    exit 0
+fi
+if [[ "$1" == api && "$*" == *issues/comments/* ]]; then
+    printf '%s\n' "$(<"$MOCK_COMMENT_BODY")"
+    exit 0
+fi
+if [[ "$1" == api && "$*" == *'--method GET'* && "$*" == *issues/700/comments* ]]; then
+    [[ ! -f "$MOCK_LEDGER" ]] && printf '[]\n' || printf '%s\n' "$(<"$MOCK_LEDGER")"
+    exit 0
+fi
+if [[ "$1" == api && "$*" == *'--method POST'* ]]; then
+    count=0
+    [[ ! -f "$MOCK_POST_COUNT" ]] || count="$(<"$MOCK_POST_COUNT")"
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$MOCK_POST_COUNT"
+    printf 'GH_POST_RETURN_%s\n' "$count" >> "$MOCK_EVENT_LOG"
+    body=''
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == -f && "${2:-}" == body=* ]]; then
+            body="${2#body=}"
+            break
+        fi
+        shift
+    done
+    response="$(jq -n --argjson id "$((9000 + count))" --arg created "2026-09-06T17:00:0${count}Z" \
+        --arg url "https://example.invalid/comment/${count}" --arg body "$body" \
+        '{id:$id,created_at:$created,html_url:$url,body:$body}')"
+    if [[ -f "$MOCK_LEDGER" ]]; then
+        jq --argjson item "$response" '. + [$item]' "$MOCK_LEDGER" > "$MOCK_LEDGER.next"
+    else
+        jq -n --argjson item "$response" '[$item]' > "$MOCK_LEDGER.next"
+    fi
+    mv "$MOCK_LEDGER.next" "$MOCK_LEDGER"
+    printf '%s\n' "$response"
+    exit 0
+fi
+printf 'Unexpected mocked gh invocation: %s\n' "$*" >&2
+exit 1
+EOF
+
+cat > "$work_root/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == --version ]]; then
+    printf 'codex-cli test\n'
+    exit 0
+fi
+printf 'CODEX_LAUNCH\n' >> "$MOCK_EVENT_LOG"
+while IFS= read -r _; do :; done
+EOF
+chmod +x "$work_root/bin/gh" "$work_root/bin/codex"
+
+export PATH="$work_root/bin:$PATH"
+export MOCK_EVENT_LOG="$work_root/events.log"
+export MOCK_POST_COUNT="$work_root/post-count"
+export MOCK_PR_JSON="$work_root/pr.json"
+export MOCK_COMMENT_BODY="$work_root/comment.txt"
+export MOCK_LEDGER="$work_root/ledger.json"
+
+printf 'Acceptance fixture.\n' > "$work_root/acceptance.txt"
+printf 'Concurrency and exact-range fixture.\n' > "$work_root/lens.txt"
+printf 'Focused tests passed.\n' > "$work_root/tests.txt"
+printf 'Evidence retained in the fixture.\n' > "$work_root/evidence.txt"
+printf 'All changed-symbol callers inspected.\n' > "$work_root/call-sites.txt"
+printf 'Follow AGENTS.md and the PR lifecycle skill.\n' > "$work_root/instructions.txt"
+
+base="$(git -C "$repo_root" rev-parse HEAD~2)"
+initial_head="$(git -C "$repo_root" rev-parse HEAD~1)"
+correction_head="$(git -C "$repo_root" rev-parse HEAD)"
+new_base="$initial_head"
+sync_head="$correction_head"
+participant='codex:openai:hvo-dev-02:review0001'
+
+write_pr_fixture() {
+    local target="$1" head="$2" comments_file="${3:-}"
+    if [[ -n "$comments_file" ]]; then
+        jq -n --arg base "$target" --arg head "$head" --rawfile body "$comments_file" \
+            '{baseRefOid:$base,headRefOid:$head,title:"fixture",comments:[{body:$body}]}' > "$MOCK_PR_JSON"
+    else
+        jq -n --arg base "$target" --arg head "$head" \
+            '{baseRefOid:$base,headRefOid:$head,title:"fixture",comments:[]}' > "$MOCK_PR_JSON"
+    fi
+}
+
+common_args=(
+    --repo RoySalisbury/HVO.SkyMonitor --pr 700 --issue 699 --round 0
+    --command-id CMD-REVIEW-001 --participant-id "$participant"
+    --acceptance-file "$work_root/acceptance.txt" --lens-file "$work_root/lens.txt"
+    --profile standard --primary Codex --fallback Copilot --route local
+    --model gpt-5.6-terra --effort high --tests-file "$work_root/tests.txt"
+    --evidence-file "$work_root/evidence.txt"
+)
+
+write_pr_fixture "$base" "$initial_head"
+$request_tool "${common_args[@]}" --mode initial --output "$work_root/initial.request"
+grep -Fqx "Exact review range: $base..$initial_head (complete PR diff)" "$work_root/initial.request"
+
+printf '## Initial review completed — verdict: corrections required\nRange attested: %s..%s\nFinding M1 unresolved.\n' "$base" "$initial_head" > "$work_root/initial-report.txt"
+write_pr_fixture "$base" "$correction_head" "$work_root/initial-report.txt"
+$request_tool "${common_args[@]}" --mode correction --round 1 \
+    --call-sites-file "$work_root/call-sites.txt" --instructions-file "$work_root/instructions.txt" \
+    --evidence-pack "$work_root/correction-pack.md" --output "$work_root/correction.request"
+grep -Fqx "Exact review range: $initial_head..$correction_head (correction delta and its concrete interactions)" "$work_root/correction.request"
+grep -Fq 'Finding M1 unresolved.' "$work_root/correction-pack.md"
+grep -Fq 'All changed-symbol callers inspected.' "$work_root/correction-pack.md"
+
+printf '## Correction review completed — verdict: CLEAN\nRange attested: %s..%s\nM1 verified corrected.\n' "$initial_head" "$correction_head" > "$work_root/correction-report.txt"
+write_pr_fixture "$new_base" "$sync_head" "$work_root/correction-report.txt"
+$request_tool "${common_args[@]}" --mode base-sync --round 1 --output "$work_root/base-sync.request"
+grep -Fqx "Exact review range: merge resolution $correction_head..$sync_head and complete PR diff $new_base..$sync_head" "$work_root/base-sync.request"
+
+printf '%s\n%s\n%s\nExact review range: %s..%s\n%s\n%s\n' \
+    prefix '```text' 'Review mode: initial' "$base" "$initial_head" '```' suffix > "$MOCK_COMMENT_BODY"
+$request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 --output "$work_root/replayed.request"
+grep -Fqx "Exact review range: $base..$initial_head" "$work_root/replayed.request"
+
+jq -n --arg participant "$participant" '{participants:[{id:$participant,status:"ACTIVE",joinState:"JOINED",joinAckId:"JOINACK-REVIEW-001",lease:{generation:1,expiresAt:null}}]}' > "$work_root/registry.json"
+jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-001",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command.json"
+printf '[]\n' > "$work_root/receipts.json"
+
+: > "$MOCK_EVENT_LOG"
+$dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
+    --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
+    --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
+    --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
+    --participant-id "$participant" --dry-run > "$work_root/dry-run.txt"
+[[ ! -s "$MOCK_EVENT_LOG" ]]
+grep -Fq 'DRY-RUN: no comment posted and no reviewer launched.' "$work_root/dry-run.txt"
+
+$dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
+    --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
+    --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
+    --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
+    --participant-id "$participant" > "$work_root/dispatch-result.json"
+
+for _ in $(seq 1 50); do
+    grep -Fq CODEX_LAUNCH "$MOCK_EVENT_LOG" && break
+    sleep 0.02
+done
+request_return_line="$(grep -n 'GH_POST_RETURN_1' "$MOCK_EVENT_LOG" | cut -d: -f1)"
+launch_line="$(grep -n CODEX_LAUNCH "$MOCK_EVENT_LOG" | cut -d: -f1)"
+[[ -n "$request_return_line" && -n "$launch_line" && "$request_return_line" -lt "$launch_line" ]] || {
+    printf 'Reviewer launch did not follow the durable request return.\n' >&2
+    exit 1
+}
+jq -e '.requestCommentId == "9001" and .launchCommentId == "9002"' "$work_root/dispatch-result.json" >/dev/null
+
+$dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
+    --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
+    --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
+    --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
+    --participant-id "$participant" > "$work_root/retry-result.txt"
+grep -Fqx "ALREADY_CONSUMED CMD-REVIEW-001 $participant launch-comment=9002" "$work_root/retry-result.txt"
+[[ "$(<"$MOCK_POST_COUNT")" == 2 ]]
+
+printf 'Review request range, evidence-pack, replay, dry-run, dispatch ordering, and retry tests passed.\n'

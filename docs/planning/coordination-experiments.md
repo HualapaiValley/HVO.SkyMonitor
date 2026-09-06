@@ -125,6 +125,47 @@ token estimate.
 - **Decision:** use `C1.1` for the continuing bounded trial. Keep `C1` as the
   fallback until the decision thresholds below are evaluated.
 
+### E-005: provider-name collision and enrollment
+
+- **Observation:** an OpenCode session using Claude for an unrelated ARM64 task
+  and a Claude Code session implementing #628 were both described as `Claude`.
+  Two sessions then consumed the same protocol authorization and independently
+  created duplicate issues #673 and #674.
+- **Root cause:** provider name was treated as participant identity, and an
+  agent that loaded `AGENTS.md` could infer that it belonged to the active
+  roadmap pool without an explicit enrollment boundary.
+- **Repair:** retain #674, close #673 as its duplicate, and require immutable
+  harness/provider/host/session identities, a three-message join handshake,
+  participant-bound command IDs and receipts, and single-writer slot leases.
+  The unrelated ARM64 work remains outside epic #513 unless explicitly
+  enrolled.
+- **Decision:** loading repository instructions never enrolls a session. A new
+  participant receives no roadmap claim or actionable command before `JOINED
+  ACK`; provider-only names are display labels. `C1.2` remains disabled until
+  the identity, lease, idempotency, and compare-and-swap tests land in #674.
+
+### E-006: correction-review context cost
+
+- **Observation:** PR #676 correction rereview 1/3 changed one test-fixture
+  file, verified one material ARM64 finding across 41 fixture consumers, and
+  used 44,282 reviewer tokens. The review was substantively justified, but its
+  execution cost dominated the compact coordinator messages.
+- **Decision:** record tokens, elapsed time, diff size, mode/profile, and
+  findings per round. Correction dispatch includes a bounded evidence pack with
+  the previous full report, complete carried-finding checklist, exact delta,
+  changed-symbol call sites, relevant tests, and applicable instructions. It
+  may omit unrelated history and repeated gates but never reachable code.
+- **Safety floor:** a budget limit returns `INCOMPLETE` and escalates; it cannot
+  imply `CLEAN`. Narrow test/docs corrections with no carried material finding
+  may use an advertised `gpt-5.6-luna`/high route; ordinary code uses
+  `gpt-5.6-terra`/high when available; security, durability, data-loss,
+  acceptance, and material-correctness work remains deep on the strongest
+  supported route.
+- **Next measurement:** collect at least three post-change correction rounds
+  before changing defaults. Compare median tokens per changed line and verified
+  finding together with incomplete reports, reopened findings, CI defects, and
+  post-merge follow-ups.
+
 ## Candidate improvements
 
 Try one bounded change at a time and record it before changing the default:
