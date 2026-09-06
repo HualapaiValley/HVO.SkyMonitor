@@ -98,6 +98,16 @@ public sealed class RetentionBackgroundService(
             var rawIngressGate = _rawIngressHolds is not null && PathsEqual(plan.StorageRoot, _hostOptions.RawIngressRoot)
                 ? RawIngressLifecycleLock.ForRoot(plan.StorageRoot)
                 : null;
+            var processingHoldsUnderLifecycleLock = rawIngressGate is not null && _processingHolds is not null
+                ? _processingHolds as IRawIngressLifecycleProcessingRetentionHolds
+                    ?? throw new InvalidOperationException(
+                        "Processing retention holds used under the raw-ingress lifecycle lock must provide a non-initializing read path.")
+                : null;
+            if (rawIngressGate is not null && _rawIngressHolds is RawCaptureIngress rawIngress)
+            {
+                // Initialization takes this same lifecycle lock so it must complete before retention owns the lock.
+                await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            }
             if (rawIngressGate is not null)
             {
                 await rawIngressGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -150,7 +160,8 @@ public sealed class RetentionBackgroundService(
                 }
 
                 var cutoffDate = evaluatedUtc.UtcDateTime.Date.AddDays(-effectiveRetentionDays);
-                var pending = await ReadPendingArtifactsAsync(plan.StorageRoot, cancellationToken).ConfigureAwait(false);
+                var pending = await ReadPendingArtifactsAsync(
+                    plan.StorageRoot, processingHoldsUnderLifecycleLock, cancellationToken).ConfigureAwait(false);
                 pending = AddPolicyRetentionHolds(plan, evaluatedUtc, pending, cancellationToken);
                 var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDate, pending, cancellationToken);
                 var indexGate = FrameIndexLock.ForRoot(plan.StorageRoot);
@@ -302,6 +313,7 @@ public sealed class RetentionBackgroundService(
 
     private async Task<PendingArtifacts> ReadPendingArtifactsAsync(
         string storageRoot,
+        IRawIngressLifecycleProcessingRetentionHolds? processingHoldsUnderLifecycleLock,
         CancellationToken cancellationToken)
     {
         var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(storageRoot));
@@ -317,7 +329,9 @@ public sealed class RetentionBackgroundService(
         }
         if (_rawIngressHolds is not null)
         {
-            var holds = await _rawIngressHolds.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
+            var holds = _rawIngressHolds is RawCaptureIngress rawIngress
+                ? await rawIngress.GetRetentionHoldsUnderLifecycleLockAsync(normalizedRoot, cancellationToken).ConfigureAwait(false)
+                : await _rawIngressHolds.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
             foreach (var hold in holds)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -328,7 +342,10 @@ public sealed class RetentionBackgroundService(
         }
         if (_processingHolds is not null)
         {
-            var holds = await _processingHolds.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
+            var holds = processingHoldsUnderLifecycleLock is null
+                ? await _processingHolds.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false)
+                : await processingHoldsUnderLifecycleLock.GetRetentionHoldsUnderLifecycleLockAsync(
+                    normalizedRoot, cancellationToken).ConfigureAwait(false);
             foreach (var hold in holds)
             {
                 cancellationToken.ThrowIfCancellationRequested();

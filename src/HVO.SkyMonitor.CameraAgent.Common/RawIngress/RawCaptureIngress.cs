@@ -116,12 +116,18 @@ internal sealed class RawCaptureIngress :
             return;
         }
         await _initializeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        SemaphoreSlim? lifecycleGate = null;
+        var lifecycleAcquired = false;
         try
         {
             if (_initialized)
             {
                 return;
             }
+            _faultInjector.Inject(RawIngressFaultPoint.BeforeInitializationLifecycleLock);
+            lifecycleGate = RawIngressLifecycleLock.ForRoot(_options.RawIngressRoot);
+            await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            lifecycleAcquired = true;
             var wasUnhealthy = _state.Snapshot.Availability == RawIngressAvailability.Unhealthy;
             try
             {
@@ -229,6 +235,10 @@ internal sealed class RawCaptureIngress :
         }
         finally
         {
+            if (lifecycleAcquired)
+            {
+                lifecycleGate!.Release();
+            }
             _initializeGate.Release();
         }
     }
@@ -728,6 +738,23 @@ internal sealed class RawCaptureIngress :
             return Array.Empty<RawIngressRetentionHold>();
         }
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsUnderLifecycleLockAsync(
+        string storageRoot,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
+        if (!PathsEqual(storageRoot, _options.RawIngressRoot))
+        {
+            return Array.Empty<RawIngressRetentionHold>();
+        }
+        if (!Volatile.Read(ref _journalValidated))
+        {
+            throw new InvalidOperationException(
+                "Raw ingress must be initialized before retention reads are made under the lifecycle lock.");
+        }
         return await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
     }
 

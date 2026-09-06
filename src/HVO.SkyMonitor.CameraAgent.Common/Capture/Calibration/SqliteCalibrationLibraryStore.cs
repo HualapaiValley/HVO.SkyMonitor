@@ -1304,6 +1304,17 @@ public sealed class SqliteCalibrationLibraryStore(
             return [];
         }
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await GetRetentionHoldsUnderLifecycleLockAsync(storageRoot, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsUnderLifecycleLockAsync(
+        string storageRoot,
+        CancellationToken cancellationToken)
+    {
+        if (!PathsEqual(_storageRoot, storageRoot))
+        {
+            return [];
+        }
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
