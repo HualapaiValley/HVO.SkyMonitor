@@ -299,11 +299,18 @@ internal sealed class RawCaptureIngress :
                 EnsureCapacity(frame.PixelData.Length);
             }
             var payloadSha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span));
+            _faultInjector.Inject(RawIngressFaultPoint.BeforeIdentityReservation);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Sequence reservation is the point of no cancellation. From here forward the identity may become
+            // externally visible in an immutable sidecar, so publication and journal commit must converge rather
+            // than consume a sequence without a durable capture or risk reusing a visible identity.
             var identity = await _journal.ReserveIdentityAsync(
                 configuration.AgentId,
                 stableIds.CaptureId,
                 stableIds.ArtifactId,
-                cancellationToken).ConfigureAwait(false);
+                CancellationToken.None).ConfigureAwait(false);
+            _faultInjector.Inject(RawIngressFaultPoint.AfterIdentityReservation);
             var paths = _files.GetPaths(
                 RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, frame),
                 identity.ArtifactId);
@@ -315,7 +322,7 @@ internal sealed class RawCaptureIngress :
                     paths,
                     frame.PixelData,
                     identity,
-                    cancellationToken).ConfigureAwait(false);
+                    CancellationToken.None).ConfigureAwait(false);
                 var expectedDescriptor = RawCaptureDescriptorFactory.Create(
                     configuration,
                     submission,
@@ -385,7 +392,7 @@ internal sealed class RawCaptureIngress :
                 _faultInjector.Inject(RawIngressFaultPoint.ValidationCompleted);
                 using (var payloadActivity = RawIngressTelemetry.ActivitySource.StartActivity("payload.publish"))
                 {
-                    await _files.PublishPayloadAsync(paths, frame.PixelData, cancellationToken).ConfigureAwait(false);
+                    await _files.PublishPayloadAsync(paths, frame.PixelData, CancellationToken.None).ConfigureAwait(false);
                     payloadPublished = true;
                     payloadActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 }
@@ -408,7 +415,7 @@ internal sealed class RawCaptureIngress :
                 manifestJson = CaptureContractJson.Serialize(manifest);
                 using (var sidecarActivity = RawIngressTelemetry.ActivitySource.StartActivity("sidecar.publish"))
                 {
-                    await _files.PublishSidecarAsync(paths, manifestJson, cancellationToken).ConfigureAwait(false);
+                    await _files.PublishSidecarAsync(paths, manifestJson, CancellationToken.None).ConfigureAwait(false);
                     sidecarActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 }
             }

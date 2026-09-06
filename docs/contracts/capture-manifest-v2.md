@@ -88,6 +88,13 @@ atomically published, flushed, and directory-synced. The raw-ingress journal's
 transaction immediately before the capture, context, and lane rows are inserted.
 Only a successful transaction commit produces a durable-success receipt or
 telemetry event; the pre-commit timestamp is not itself a success inference.
+Caller cancellation is honored through admission and immediately before capture
+sequence reservation. Reservation is the durable publication boundary: after it
+begins, payload, sidecar, and journal publication converge without the caller's
+cancellation token. This prevents an unpublished canceled capture from silently
+consuming a temporal-window position and prevents reuse of a sequence that may
+already be visible in immutable evidence. A retry of the stable capture identity
+returns that same sequence and evidence.
 
 Raw artifacts have no source artifacts. Derivatives require at least one source;
 source order is significant and duplicate or empty identifiers are invalid.
