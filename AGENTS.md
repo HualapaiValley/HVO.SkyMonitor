@@ -140,12 +140,20 @@ rather than depending on a vendor-specific agent feature.
 
 - The coordinator owns operator-visible reporting and arms exactly one
   persistent status monitor on a five-minute cadence. A delegated observer or
-  background loop may collect state, but responsibility for delivering every
-  update to the main conversation cannot be delegated. If the observer cannot
-  inspect all active work or reach the main conversation, the coordinator polls
-  directly. Start the monitor whenever delegated work, review acquisition, a
-  long gate, or CI becomes active; restart it whenever the active agent or PR
-  set changes; stop it when nothing remains active.
+  background loop may collect state, but the monitor qualifies only when every
+  cadence actively wakes or messages the coordinator. A process whose output
+  remains buffered until the coordinator remembers to poll it does not qualify,
+  even when its internal timer is correct. If the harness has no native wake
+  signal, use one delegated observer that sends the coordinator a heartbeat and
+  keep the coordinator waiting on that mailbox or event path between other
+  work. Responsibility for delivering every update to the main conversation
+  cannot be delegated. Start the monitor whenever delegated work, review
+  acquisition, a long gate, or CI becomes active; restart it whenever the active
+  agent or PR set changes; stop it when nothing remains active.
+- After starting or restarting the monitor, require and relay one immediate
+  baseline signal before relying on it. If a scheduled signal is late, report
+  the delivery gap, replace or repair the monitor, and poll directly until the
+  replacement proves its signaling path with a new baseline.
 - On every wake, record for each issue or PR the implementing agent's last
   activity timestamp and current step, the PR head SHA, draft state, merge
   state, the first line and timestamp of the latest ledger comment, and the
