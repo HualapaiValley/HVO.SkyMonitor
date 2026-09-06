@@ -126,6 +126,47 @@ if [[ ! "$coverage_report_count" =~ ^[1-9][0-9]*$ ]]; then
     exit 1
 fi
 
+# The runbook's category totals are derived from the category matrix rather than
+# pinned as literals, so editing the matrix without the runbook fails here.
+category_matrix=scripts/test-categories/Program.cs
+if ! category_totals="$(awk '
+    /\] = Counts\(/ {
+        rows++
+        counts = $0
+        sub(/^.*Counts\(/, "", counts)
+        sub(/\).*$/, "", counts)
+        pairs = split(counts, pair, ",")
+        for (position = 1; position <= pairs; position++) {
+            if (pair[position] ~ /^[[:space:]]*$/) {
+                continue
+            }
+            if (match(pair[position], /^[[:space:]]*(unit|integration|manual|soak|external|hardware):[[:space:]]*[0-9]+[[:space:]]*$/)) {
+                split(pair[position], parts, ":")
+                gsub(/[[:space:]]/, "", parts[1])
+                gsub(/[[:space:]]/, "", parts[2])
+                totals[parts[1]] += parts[2]
+            } else {
+                printf "unrecognized category count in matrix row %d: %s\n", rows, pair[position] > "/dev/stderr"
+                exit 1
+            }
+        }
+    }
+    END {
+        if (rows == 0) {
+            print "no category matrix rows were found" > "/dev/stderr"
+            exit 1
+        }
+        printf "%d %d %d %d %d %d %d\n", rows, totals["unit"], totals["integration"], totals["manual"], totals["soak"], totals["external"], totals["hardware"]
+    }' "$category_matrix")"; then
+    printf 'Could not derive the test category totals from %s.\n' "$category_matrix" >&2
+    exit 1
+fi
+read -r category_rows category_unit category_integration category_manual category_soak category_external category_hardware <<< "$category_totals"
+if [[ ! "$category_rows" =~ ^[1-9][0-9]*$ || ! "$category_unit" =~ ^[1-9][0-9]*$ || ! "$category_integration" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'Derived implausible test category totals from %s: %s\n' "$category_matrix" "$category_totals" >&2
+    exit 1
+fi
+
 require_source_reference '[HttpGet("detailed")]' src/HVO.SkyMonitor.LogicHost/Controllers/StatusController.cs
 require_source_reference '[HttpGet("protected")]' src/HVO.SkyMonitor.LogicHost/Controllers/StatusController.cs
 require_source_reference '/connect/token' src/HVO.SkyMonitor.LogicHost/Program.cs
@@ -140,12 +181,10 @@ require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCe
 require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
-require_source_reference 'Unit=3288' docs/runbooks/ci-pipeline.md
-require_source_reference 'Integration=656' docs/runbooks/ci-pipeline.md
-require_source_reference '3288 Unit cases' docs/runbooks/ci-pipeline.md
-require_source_reference '656 Integration-category cases' docs/runbooks/ci-pipeline.md
+require_source_reference "${category_unit} Unit cases" docs/runbooks/ci-pipeline.md
+require_source_reference "${category_integration} Integration-category cases" docs/runbooks/ci-pipeline.md
+require_source_reference "Current discovery is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, and \`Hardware=${category_hardware}\`." docs/runbooks/ci-pipeline.md
 require_source_reference 'six Unit-category boundary cases' docs/runbooks/ci-pipeline.md
-require_source_reference 'Manual=102' docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md
 require_source_reference "report count other than the expected $coverage_report_count" docs/runbooks/ci-pipeline.md
 require_source_reference "each of the $coverage_report_count category/project slots" docs/runbooks/ci-pipeline.md
