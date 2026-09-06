@@ -188,6 +188,45 @@ internal sealed class CameraAgentLifecycleManager
         if (rollback && manifest.PreviousImage is null) throw new InstallerException("No previous image is retained for rollback.");
         var operation = await BeginAsync(request, paths, rollback ? LifecycleOperationKind.Rollback : LifecycleOperationKind.Upgrade,
             manifest, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await ChangeImageAsync(
+                    request, paths, manifest, installationResult, compose, docker, processRunner, lifecycleClientFactory,
+                    uid, gid, ownerClientFactory, lifecycleControlToken, verificationToken, signedImage, rollback, operation,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!request.DryRun)
+        {
+            // Every gate between the journal entry above and the mutation record (release label agreement, the
+            // already-active and contract checks, the state preflight, the owner-state read, Compose staging) runs
+            // before the instance is touched. A refusal there is settled as terminal so the journal never reports a
+            // running operation that never started, which would otherwise block rollback, uninstall, and any other
+            // upgrade behind a --resume the same gate would refuse again.
+            await SettleRefusedOperationAsync(paths, operation, exception).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async Task<LifecycleResult> ChangeImageAsync(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        InstallationResult installationResult,
+        ComposeFiles compose,
+        DockerClient docker,
+        IProcessRunner processRunner,
+        Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
+        uint uid,
+        uint gid,
+        Func<Uri, IOwnerBootstrapClient>? ownerClientFactory,
+        string lifecycleControlToken,
+        string verificationToken,
+        AcquiredImage? signedImage,
+        bool rollback,
+        LifecycleOperationState operation,
+        CancellationToken cancellationToken)
+    {
         var owner = ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url);
         if (!operation.MutationStarted)
         {
@@ -973,6 +1012,12 @@ internal sealed class CameraAgentLifecycleManager
             NoDownload = noDownload
         };
 
+    /// <summary>
+    /// The failure code of a lifecycle operation refused before it mutated anything. Such a record is terminal: it
+    /// never blocks a later operation and cannot be resumed, because there is nothing to recover.
+    /// </summary>
+    internal const string RefusedFailureCode = "lifecycle-refused";
+
     internal static async Task<LifecycleOperationState> BeginAsync(
         LifecycleRequest request,
         InstallationPaths paths,
@@ -998,7 +1043,9 @@ internal sealed class CameraAgentLifecycleManager
         }
         var existing = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
         var hash = request.ComputeRequestSha256();
-        if (existing is { Status: not InstallationStatus.Completed })
+        // A refused operation is terminal: it mutated nothing, so it neither blocks a new operation nor offers
+        // anything to resume.
+        if (existing is { Status: not InstallationStatus.Completed } && !IsRefused(existing))
         {
             if (!request.Resume) throw new InstallerException("An incomplete lifecycle operation exists; rerun the same command with --resume.");
             if (existing.Kind != kind || existing.InstanceId != manifest.InstanceId || existing.RequestSha256 != hash)
@@ -1057,6 +1104,33 @@ internal sealed class CameraAgentLifecycleManager
             FailureMessage = Redaction.SafeDiagnostic(exception.Message)
         }, cancellationToken).ConfigureAwait(false);
 
+    internal static bool IsRefused(LifecycleOperationState state)
+        => state is { Status: InstallationStatus.Failed, FailureCode: RefusedFailureCode, MutationStarted: false };
+
+    /// <summary>
+    /// Records an operation that failed before its mutation record as refused. The retained journal, not the
+    /// caller's copy, decides: only the same operation, still running and still unmutated, is settled, so an
+    /// operation that started mutating keeps its recovery journal and an already-failed one is left alone.
+    /// </summary>
+    internal static async Task SettleRefusedOperationAsync(
+        InstallationPaths paths,
+        LifecycleOperationState begun,
+        Exception exception)
+    {
+        var retained = await ReadOperationAsync(paths.LifecycleStatePath, CancellationToken.None).ConfigureAwait(false);
+        if (retained is null || retained.OperationId != begun.OperationId || retained.MutationStarted ||
+            retained.Status != InstallationStatus.Running)
+        {
+            return;
+        }
+        await RecordAsync(paths, retained with
+        {
+            Status = InstallationStatus.Failed,
+            FailureCode = RefusedFailureCode,
+            FailureMessage = Redaction.SafeDiagnostic(exception.Message)
+        }, CancellationToken.None).ConfigureAwait(false);
+    }
+
     internal static async Task<LifecycleOperationState> RecordAsync(
         InstallationPaths paths,
         LifecycleOperationState state,
@@ -1098,7 +1172,8 @@ internal sealed class CameraAgentLifecycleManager
             value.Phase == LifecycleOperationPhase.Planned ||
             value.Status == InstallationStatus.Completed && value.Phase != LifecycleOperationPhase.Completed ||
             value.Phase == LifecycleOperationPhase.Completed && value.Status != InstallationStatus.Completed ||
-            value.Status == InstallationStatus.Completed && value.MutationStarted)
+            value.Status == InstallationStatus.Completed && value.MutationStarted ||
+            value.FailureCode == RefusedFailureCode && (value.Status != InstallationStatus.Failed || value.MutationStarted))
         {
             throw new InstallerException("The retained lifecycle operation is invalid or unsupported.");
         }

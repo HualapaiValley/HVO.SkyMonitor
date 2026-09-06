@@ -160,6 +160,37 @@ internal static class CatalogLifecycleManager
             throw new InstallerException("The requested catalog package is already selected.");
         var operation = await CameraAgentLifecycleManager.BeginAsync(
             request, paths, request.Operation!.Value, manifest, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await SelectAsync(
+                    request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory, ownerClientFactory,
+                    lifecycleControlToken, verificationToken, candidate, operation, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!request.DryRun)
+        {
+            // A catalog selection refused between its journal entry and its mutation record is settled as terminal
+            // for the same reason as an image transition: nothing was touched, so nothing may report itself running.
+            await CameraAgentLifecycleManager.SettleRefusedOperationAsync(paths, operation, exception).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async Task<LifecycleResult> SelectAsync(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        InstallationResult installationResult,
+        ComposeFiles compose,
+        DockerClient docker,
+        Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
+        Func<Uri, IOwnerBootstrapClient>? ownerClientFactory,
+        string lifecycleControlToken,
+        string verificationToken,
+        CatalogInstallationIdentity candidate,
+        LifecycleOperationState operation,
+        CancellationToken cancellationToken)
+    {
         if (operation is { MutationStarted: true, Phase: LifecycleOperationPhase.Committed, CandidateCatalog: not null })
         {
             candidate = operation.CandidateCatalog;
