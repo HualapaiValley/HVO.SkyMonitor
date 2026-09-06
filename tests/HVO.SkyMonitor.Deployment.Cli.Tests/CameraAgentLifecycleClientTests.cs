@@ -153,6 +153,86 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
+    [DataRow(408)]
+    [DataRow(429)]
+    [DataRow(501)]
+    [DataRow(502)]
+    [DataRow(503)]
+    [DataRow(504)]
+    public async Task Resume_RetriesTransientCommandStatusesWithinTheDrainBudget(int statusCode)
+    {
+        var operationId = Guid.NewGuid();
+        using var handler = new ScriptedHandler((request, sequence, cancellationToken) => sequence == 1
+            ? Task.FromResult(new HttpResponseMessage((HttpStatusCode)statusCode))
+            : CommandAsync(request, "resume", operationId, cancellationToken));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        await client.ResumeAsync(operationId, "lifecycle-token", CancellationToken.None);
+
+        Assert.AreEqual(2, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task Resume_ReusesOneCommandIdAcrossTransientResponses()
+    {
+        var operationId = Guid.NewGuid();
+        var commandIds = new List<Guid>();
+        using var handler = new ScriptedHandler(async (request, sequence, cancellationToken) =>
+        {
+            commandIds.Add(await AssertCommandAsync(request, "resume", operationId, cancellationToken));
+            return sequence switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
+                2 => new HttpResponseMessage(HttpStatusCode.TooManyRequests),
+                3 => new HttpResponseMessage(HttpStatusCode.BadGateway),
+                _ => new HttpResponseMessage(HttpStatusCode.OK)
+            };
+        });
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        await client.ResumeAsync(operationId, "lifecycle-token", CancellationToken.None);
+
+        Assert.AreEqual(4, handler.RequestCount);
+        Assert.AreEqual(1, commandIds.Distinct().Count());
+    }
+
+    [TestMethod]
+    public async Task Resume_RetriesUnavailableUntilTheDrainBudgetExpires()
+    {
+        var budgets = FastBudgets with
+        {
+            DrainDeadline = TimeSpan.FromMilliseconds(80),
+            DrainPollInterval = TimeSpan.FromMilliseconds(10)
+        };
+        using var handler = new ScriptedHandler((_, _, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, budgets);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "within its budget", StringComparison.Ordinal);
+        Assert.IsTrue(handler.RequestCount > 1, $"expected bounded retries, saw {handler.RequestCount} request(s)");
+    }
+
+    [TestMethod]
+    public async Task Resume_PropagatesCallerCancellationWhileWaitingToRetry()
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var handler = new ScriptedHandler(async (_, _, _) =>
+        {
+            await cancellation.CancelAsync();
+            return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        });
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(
+            () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", cancellation.Token));
+
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
     public async Task Resume_ReportsATransportFailureAsAnInstallerFailure()
     {
         using var handler = new ScriptedHandler((_, _, _) => throw new HttpRequestException("connection reset"));
@@ -379,6 +459,16 @@ public sealed class CameraAgentLifecycleClientTests
         Guid operationId,
         CancellationToken cancellationToken)
     {
+        _ = await AssertCommandAsync(request, action, operationId, cancellationToken);
+        return new HttpResponseMessage(HttpStatusCode.OK);
+    }
+
+    private static async Task<Guid> AssertCommandAsync(
+        HttpRequestMessage request,
+        string action,
+        Guid operationId,
+        CancellationToken cancellationToken)
+    {
         Assert.AreEqual(HttpMethod.Post, request.Method);
         Assert.AreEqual($"/api/internal/deployment/lifecycle/{action}", request.RequestUri?.AbsolutePath);
         Assert.AreEqual("lifecycle-token", request.Headers.GetValues("X-HVO-Installation-Token").Single());
@@ -391,7 +481,7 @@ public sealed class CameraAgentLifecycleClientTests
         Assert.AreNotEqual(Guid.Empty, commandId);
         Assert.IsFalse(payload.RootElement.TryGetProperty("expectedVersion", out _));
         StringAssert.Contains(payload.RootElement.GetProperty("reason").GetString(), operationId.ToString("D"), StringComparison.Ordinal);
-        return new HttpResponseMessage(HttpStatusCode.OK);
+        return commandId;
     }
 
     private static HttpResponseMessage State(
