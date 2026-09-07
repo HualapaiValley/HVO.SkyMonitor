@@ -117,6 +117,8 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3340`, `Integration=666`, `Manual=102`, `Soak=1`, `External=0`, and `Hardware=1`.
 
+These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project matrix in `scripts/test-categories/Program.cs` and fails when this runbook disagrees with it, while the Build check's category audit proves that matrix matches actual discovery. Update the matrix and this runbook in the same change.
+
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
 ## Local Validation

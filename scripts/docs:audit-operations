@@ -111,6 +111,161 @@ require_source_reference() {
     fi
 }
 
+# Match a Markdown table row inside the runbook's Required Checks section only,
+# anchored at the start of the line, so prose elsewhere cannot satisfy the pin.
+require_required_check_row() {
+    local check="$1"
+    local value="$2"
+    local section
+    # The pins are matched only inside the contiguous table under exactly one
+    # "## Required Checks" heading (a longer heading is a different section and a
+    # duplicate heading is an error), with HTML comments removed and fenced code
+    # blocks skipped, so a commented-out, quoted, or stray copy of an old row
+    # cannot satisfy them.
+    if ! section="$(awk '
+        function fail(message) {
+            print message > "/dev/stderr"
+            failed = 1
+            exit 1
+        }
+        # Remove HTML comments from a line, carrying comment state across lines,
+        # so neither a heading nor a row inside a comment is ever visible.
+        function strip_html_comments(line,    open_at, close_at, rest) {
+            while (1) {
+                if (in_comment) {
+                    close_at = index(line, "-->")
+                    if (close_at == 0) {
+                        return ""
+                    }
+                    line = substr(line, close_at + 3)
+                    in_comment = 0
+                }
+                open_at = index(line, "<!--")
+                if (open_at == 0) {
+                    return line
+                }
+                rest = substr(line, open_at + 4)
+                close_at = index(rest, "-->")
+                if (close_at == 0) {
+                    in_comment = 1
+                    return substr(line, 1, open_at - 1)
+                }
+                line = substr(line, 1, open_at - 1) substr(rest, close_at + 3)
+            }
+        }
+        # A fenced code block opens with three or more backticks or tildes (mawk
+        # cannot compile an interval before a group, so any indentation is accepted) and
+        # closes only with the same character, at least as many of them, and
+        # nothing else on the line; any other fence-looking line is content.
+        function fence_marker(line,    marker) {
+            if (line !~ /^ *(```+|~~~+)/) {
+                return ""
+            }
+            marker = line
+            sub(/^ */, "", marker)
+            # The delimiter is the initial run of the opener character only; an
+            # info string may begin with the other marker.
+            if (substr(marker, 1, 1) == "`") {
+                sub(/[^`].*$/, "", marker)
+            } else {
+                sub(/[^~].*$/, "", marker)
+            }
+            return marker
+        }
+        {
+            # Fenced content is inert: while fenced, the raw line is inspected only
+            # for a closing delimiter made solely of the opener character, at least
+            # as long as the opener, and never for HTML comments.
+            if (in_fence) {
+                marker = fence_marker($0)
+                if (marker != "" && substr(marker, 1, 1) == fence_char && length(marker) >= fence_length &&
+                    ((fence_char == "`" && $0 ~ /^ *`+[[:space:]]*$/) || (fence_char == "~" && $0 ~ /^ *~+[[:space:]]*$/))) {
+                    in_fence = 0
+                }
+                next
+            }
+            # A fence opener is recognized on the raw line before any HTML-comment
+            # processing (its info string may begin with "<!--"), unless the line
+            # is already inside a multi-line HTML comment.
+            if (!in_comment) {
+                marker = fence_marker($0)
+                if (marker != "") {
+                    in_fence = 1
+                    fence_char = substr(marker, 1, 1)
+                    fence_length = length(marker)
+                    next
+                }
+            }
+            line = strip_html_comments($0)
+            if (line ~ /^##[[:space:]]+Required Checks[[:space:]]*$/) {
+                headings++
+                in_section = 1
+                count = 0
+                next
+            }
+            if (line ~ /^##([[:space:]]|$)/) {
+                in_section = 0
+            }
+            if (in_section) {
+                section[++count] = line
+            }
+        }
+        END {
+            if (failed) {
+                exit 1
+            }
+            if (in_comment) {
+                fail("unterminated HTML comment in docs/runbooks/ci-pipeline.md")
+            }
+            if (in_fence) {
+                fail("unterminated fenced code block in docs/runbooks/ci-pipeline.md")
+            }
+            if (headings != 1) {
+                fail("expected exactly one \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md, found " headings + 0)
+            }
+            # The pins apply only to the canonical Required Checks table: the
+            # contiguous table whose header row normalizes to "| Check | Enforced
+            # behavior |" and whose delimiter row has one cell of three or more
+            # hyphens per column.
+            # Any other table or row-shaped line in the section is prose.
+            # The whole section is scanned first: exactly one canonical table may
+            # exist, and it is emitted only once its uniqueness is known, so a
+            # second valid table can never shadow or precede the real one.
+            tables = 0
+            for (i = 1; i < count; i++) {
+                header = section[i]
+                gsub(/[[:space:]]+/, " ", header)
+                sub(/^ /, "", header)
+                sub(/ $/, "", header)
+                if (header != "| Check | Enforced behavior |") {
+                    continue
+                }
+                # GFM requires at least three hyphens per delimiter cell; a header
+                # row without a valid delimiter is ordinary text, so keep looking.
+                if (section[i + 1] !~ /^\|[[:space:]]*:?---+:?[[:space:]]*\|[[:space:]]*:?---+:?[[:space:]]*\|[[:space:]]*$/) {
+                    continue
+                }
+                tables++
+                table_start = i
+            }
+            if (tables != 1) {
+                fail("expected exactly one canonical \"| Check | Enforced behavior |\" table under the \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md, found " tables + 0)
+            }
+            for (j = table_start; j <= count && section[j] ~ /^\|/; j++) {
+                print section[j]
+            }
+        }' docs/runbooks/ci-pipeline.md)"; then
+        printf 'Could not isolate the Required Checks section of docs/runbooks/ci-pipeline.md.\n' >&2
+        exit 1
+    fi
+    # The pin must be a complete active table row: the check cell, the value cell
+    # beginning with the expected text, and the row's closing pipe.
+    if ! grep -Eq -- "^\\| ${check} \\| ${value}[^|]*\\|[[:space:]]*$" <<< "$section"; then
+        printf 'Required Checks row %s in docs/runbooks/ci-pipeline.md is not a complete table row beginning with %s.\n' "$check" "$value" >&2
+        exit 1
+    fi
+}
+
 coverage_line="$(jq -er '.aggregate.line * 100' scripts/coverage/baseline.json)"
 coverage_branch="$(jq -er '.aggregate.branch * 100' scripts/coverage/baseline.json)"
 LC_ALL=C printf -v coverage_line_percent '%.4f' "$coverage_line"
@@ -123,6 +278,139 @@ coverage_report_count="$(awk '
 ' .github/workflows/ci.yml)"
 if [[ ! "$coverage_report_count" =~ ^[1-9][0-9]*$ ]]; then
     printf 'Could not derive the explicit coverage report count from .github/workflows/ci.yml.\n' >&2
+    exit 1
+fi
+
+# The runbook's category totals are derived from the category matrix rather than
+# pinned as literals, so editing the matrix without the runbook fails here.
+# Block and line comments are removed first, then each dictionary entry is
+# collected from its ["tests/….csproj"] key to its closing parenthesis, all
+# whitespace is dropped, and the entry must then be exactly
+# ["tests/….csproj"]=Counts(name:N,…), with recognized, non-repeating category
+# names and the comma separator after every entry, the final one included.
+category_matrix=scripts/test-categories/Program.cs
+if ! category_totals="$(awk '
+    function fail(message) {
+        print message > "/dev/stderr"
+        failed = 1
+        exit 1
+    }
+    function strip_comments(line,    kept, open_at, line_at, close_at, rest) {
+        kept = ""
+        while (1) {
+            if (in_block_comment) {
+                close_at = index(line, "*/")
+                if (close_at == 0) {
+                    return kept
+                }
+                # A comment is a token boundary, so it becomes a space, never nothing.
+                line = " " substr(line, close_at + 2)
+                in_block_comment = 0
+            }
+            # Lexically, whichever comment opener comes first owns the rest.
+            open_at = index(line, "/*")
+            line_at = index(line, "//")
+            if (line_at > 0 && (open_at == 0 || line_at < open_at)) {
+                return kept substr(line, 1, line_at - 1) " "
+            }
+            if (open_at == 0) {
+                return kept line
+            }
+            kept = kept substr(line, 1, open_at - 1) " "
+            rest = substr(line, open_at + 2)
+            close_at = index(rest, "*/")
+            if (close_at == 0) {
+                in_block_comment = 1
+                return kept
+            }
+            line = substr(rest, close_at + 2)
+        }
+    }
+    function process_entry(entry,    pairs, pair, parts, position, seen) {
+        # Whitespace runs collapse to one space between tokens; a token itself may
+        # not contain whitespace, so "1 70" or "1/*x*/70" is never read as 170.
+        gsub(/[[:space:]]+/, " ", entry)
+        sub(/^ /, "", entry)
+        sub(/ $/, "", entry)
+        if (entry !~ /^\[ ?"tests\/[^"]+\.csproj" ?\] ?= ?Counts ?\( ?[a-z]+ ?: ?[0-9]+( ?, ?[a-z]+ ?: ?[0-9]+)* ?\) ?,?$/) {
+            fail("unrecognized category matrix row: " entry)
+        }
+        gsub(/ /, "", entry)
+        rows++
+        # Every entry, including the final one, ends with the comma separator this
+        # matrix uses. The comma may also stand alone on the next line, which the
+        # main loop accepts before anything else follows.
+        separator_pending = (entry !~ /,$/)
+        sub(/^.*Counts\(/, "", entry)
+        sub(/\).*$/, "", entry)
+        pairs = split(entry, pair, ",")
+        for (position = 1; position <= pairs; position++) {
+            split(pair[position], parts, ":")
+            if (parts[1] !~ /^(unit|integration|manual|soak|external|hardware)$/) {
+                fail("unrecognized category in matrix row " rows ": " pair[position])
+            }
+            if (parts[1] in seen) {
+                fail("duplicate category in matrix row " rows ": " parts[1])
+            }
+            seen[parts[1]] = 1
+            totals[parts[1]] += parts[2]
+        }
+    }
+    {
+        line = strip_comments($0)
+        if (line ~ /^[[:space:]]*$/) {
+            next
+        }
+        if (!collecting) {
+            if (separator_pending && line ~ /^[[:space:]]*,[[:space:]]*$/) {
+                separator_pending = 0
+                next
+            }
+            if (separator_pending) {
+                fail("missing entry separator after a matrix row, before: " line)
+            }
+            # An entry starts at its dictionary key; whitespace after [ is legal,
+            # and the key may follow [ on the next line.
+            if (line !~ /\[[[:space:]]*"tests\// && line !~ /\[[[:space:]]*$/) {
+                # Only the Counts(...) factory declaration may invoke Counts outside an entry.
+                if (line ~ /(^|[^A-Za-z0-9_])Counts[[:space:]]*(\(|$)/ && line !~ /^[[:space:]]*static .*Counts[[:space:]]*\(?[[:space:]]*$/) {
+                    fail("unrecognized category matrix row: " line)
+                }
+                next
+            }
+            collecting = 1
+            entry = ""
+        }
+        entry = entry " " line
+        if (entry ~ /\)/) {
+            collecting = 0
+            process_entry(entry)
+        }
+    }
+    END {
+        if (failed) {
+            exit 1
+        }
+        if (in_block_comment) {
+            fail("unterminated block comment in the category matrix")
+        }
+        if (collecting) {
+            fail("unterminated category matrix row: " entry)
+        }
+        if (separator_pending) {
+            fail("the final category matrix row is missing its entry separator")
+        }
+        if (rows == 0) {
+            fail("no category matrix rows were found")
+        }
+        printf "%d %d %d %d %d %d %d\n", rows, totals["unit"], totals["integration"], totals["manual"], totals["soak"], totals["external"], totals["hardware"]
+    }' "$category_matrix")"; then
+    printf 'Could not derive the test category totals from %s.\n' "$category_matrix" >&2
+    exit 1
+fi
+read -r category_rows category_unit category_integration category_manual category_soak category_external category_hardware <<< "$category_totals"
+if [[ ! "$category_rows" =~ ^[1-9][0-9]*$ || ! "$category_unit" =~ ^[1-9][0-9]*$ || ! "$category_integration" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'Derived implausible test category totals from %s: %s\n' "$category_matrix" "$category_totals" >&2
     exit 1
 fi
 
@@ -140,12 +428,10 @@ require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCe
 require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
-require_source_reference 'Unit=3340' docs/runbooks/ci-pipeline.md
-require_source_reference '3340 Unit cases' docs/runbooks/ci-pipeline.md
-require_source_reference 'Integration=666' docs/runbooks/ci-pipeline.md
-require_source_reference '666 Integration-category cases' docs/runbooks/ci-pipeline.md
+require_required_check_row '\*\*Unit Tests\*\*' "${category_unit} Unit cases"
+require_required_check_row '\*\*Integration Tests\*\*' "${category_integration} Integration-category cases"
+require_source_reference "Current discovery is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, and \`Hardware=${category_hardware}\`." docs/runbooks/ci-pipeline.md
 require_source_reference 'seven Unit-category boundary cases' docs/runbooks/ci-pipeline.md
-require_source_reference 'Manual=102' docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md
 require_source_reference "report count other than the expected $coverage_report_count" docs/runbooks/ci-pipeline.md
 require_source_reference "each of the $coverage_report_count category/project slots" docs/runbooks/ci-pipeline.md
