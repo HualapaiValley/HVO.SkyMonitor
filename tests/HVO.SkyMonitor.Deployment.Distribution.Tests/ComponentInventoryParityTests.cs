@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -95,8 +96,10 @@ public sealed class ComponentInventoryParityTests
     }
 
     [TestMethod]
-    public async Task ComponentInventoryGate_AndReleaseToolValidator_AgreeOnEveryShape()
+    public async Task ReleaseShellGates_RejectUnsafeRegistryDataAndMatchInventoryValidator()
     {
+        await AssertRegistryBlobIntegrityAsync();
+
         using var fixture = ImageReleaseFixture.Create();
         var floor = ShellComponentFloor();
         var imageId = fixture.ImageIdFor("amd64");
@@ -112,6 +115,8 @@ public sealed class ComponentInventoryParityTests
             ("packages-object", Mutate(valid, node => node["packages"] = new JsonObject { ["a"] = new JsonObject() })),
             ("packages-missing", Mutate(valid, node => node.Remove("packages"))),
             ("package-string", Mutate(valid, node => node["packages"]!.AsArray().Add("a-string"))),
+            ("non-object-annotation", Mutate(valid, node =>
+                node["packages"]!.AsArray()[0]!["annotations"]!.AsArray().Insert(0, "a-string"))),
             ("root-array", "[1,2]"),
             ("foreign-second-subject", Mutate(valid, node => node["packages"]!.AsArray().Add(new JsonObject
             {
@@ -177,5 +182,93 @@ public sealed class ComponentInventoryParityTests
         var node = JsonNode.Parse(json)!.AsObject();
         mutate(node);
         return node.ToJsonString();
+    }
+
+    private static async Task AssertRegistryBlobIntegrityAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-registry-blob-{Guid.NewGuid():N}");
+        var tools = Path.Combine(root, "tools");
+        Directory.CreateDirectory(tools);
+        var blob = Path.Combine(root, "blob.json");
+        var destination = Path.Combine(root, "download.json");
+        var curlLog = Path.Combine(root, "curl.log");
+        var dockerConfig = Path.Combine(root, "docker-config");
+        Directory.CreateDirectory(dockerConfig);
+        var content = Encoding.UTF8.GetBytes("{\"subject\":\"known-registry-blob\"}\n");
+        await File.WriteAllBytesAsync(blob, content);
+        var curl = Path.Combine(tools, "curl");
+        await File.WriteAllTextAsync(curl, """
+            #!/usr/bin/env bash
+            set -euo pipefail
+            printf '%s\n' "$*" >> "$FAKE_CURL_LOG"
+            destination=""
+            while [[ $# -gt 0 ]]; do
+                if [[ "$1" == "--output" ]]; then
+                    destination="${2:-}"
+                    shift 2
+                else
+                    shift
+                fi
+            done
+            if [[ -n "$destination" ]]; then
+                cp "$FAKE_BLOB_SOURCE" "$destination"
+            fi
+            """, new UTF8Encoding(false));
+        File.SetUnixFileMode(curl, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        try
+        {
+            var mismatch = await RunRegistryBlobAsync(
+                tools, blob, curlLog, dockerConfig, destination, $"sha256:{new string('0', 64)}");
+            Assert.AreNotEqual(0, mismatch.ExitCode, "Digest-mismatched registry bytes must be rejected.");
+            StringAssert.Contains(mismatch.Diagnostics, "returned content digest", StringComparison.Ordinal);
+            Assert.IsFalse(File.Exists(destination), "Rejected registry bytes must not remain at the destination.");
+
+            var digest = $"sha256:{Convert.ToHexStringLower(SHA256.HashData(content))}";
+            var accepted = await RunRegistryBlobAsync(tools, blob, curlLog, dockerConfig, destination, digest);
+            Assert.AreEqual(0, accepted.ExitCode, accepted.Diagnostics);
+            CollectionAssert.AreEqual(content, await File.ReadAllBytesAsync(destination));
+            StringAssert.Contains(
+                await File.ReadAllTextAsync(curlLog),
+                $"--max-filesize {64 * 1024 * 1024}",
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task<(int ExitCode, string Diagnostics)> RunRegistryBlobAsync(
+        string tools,
+        string blob,
+        string curlLog,
+        string dockerConfig,
+        string destination,
+        string digest)
+    {
+        var root = RepositoryRoot();
+        var start = new ProcessStartInfo("bash")
+        {
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            WorkingDirectory = root
+        };
+        start.ArgumentList.Add("-c");
+        start.ArgumentList.Add("source \"$1\"; registry_blob \"$2\" \"$3\" \"$4\"");
+        start.ArgumentList.Add("registry-blob-contract");
+        start.ArgumentList.Add(Path.Combine(root, "scripts", "lib", "registry-blob.sh"));
+        start.ArgumentList.Add("registry.example/hvo/cameraagent");
+        start.ArgumentList.Add(digest);
+        start.ArgumentList.Add(destination);
+        start.Environment["PATH"] = tools + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+        start.Environment["FAKE_BLOB_SOURCE"] = blob;
+        start.Environment["FAKE_CURL_LOG"] = curlLog;
+        start.Environment["DOCKER_CONFIG"] = dockerConfig;
+        using var process = Process.Start(start)
+            ?? throw new AssertFailedException("bash is required by the CameraAgent image release.");
+        var diagnostics = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode, diagnostics);
     }
 }

@@ -324,7 +324,8 @@ selected by `deployment_catalog`, `deployment_shards`, or
 closed deployment path map is:
 
 - `.github/workflows/ci.yml`, `.dockerignore`, `.env.template`, `docker-compose.apps.yml`, and `global.json`
-- `scripts/ci:classify`, `scripts/ci:require`, and `scripts/test:ci-classification`
+- `scripts/ci:classify`, `scripts/ci:require`, `scripts/test:ci-classification`,
+  `scripts/release:cameraagent-image`, and `scripts/lib/**`
 - `scripts/deploy:environment` and `scripts/deploy/**`
 - `scripts/test:deploy-environment`, `scripts/test:deploy-environment-cli`, `scripts/test:deployment-installer`, `scripts/test:deployment-logichost-outage-contract`, and `scripts/test:deployment-normal-flow-contract`
 - `scripts/catalog:*`, `scripts/catalog/**`, and `scripts/infra:operation-lock`
@@ -491,7 +492,7 @@ including reduced. The table records only what varies.
 | LogicHost seam (controllers, services, data, infrastructure) | no | logichost, combined | no |
 | `tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/**` | no | logichost, combined | no |
 | Combined fixture or combined suite | no | cameraagent, logichost, combined | no |
-| `src/HVO.SkyMonitor.Deployment.*`, the release tool, or their tests | no | delivery | yes |
+| `src/HVO.SkyMonitor.Deployment.*`, the release tool, its release-validation shell/JQ helpers, or their tests | no for project paths; yes for repository-root scripts | delivery for project paths; complete for repository-root scripts | yes — release validation selects the installer suite |
 | `deploy/**`, `scripts/deploy*`, `scripts/catalog*`, or the other non-project deployment inputs | yes | every lane claimed by the complete matrix | yes |
 | `THIRD-PARTY-NOTICES.md` or a `docs/validation/*.json` a project copies | yes | every lane claimed by the complete matrix | no |
 | `docs/catalog/hyg-v42-attribution.md` or `hyg-v42-license.md` | no | delivery | no |
