@@ -191,6 +191,68 @@ public sealed class ProjectedSceneImageTransformTests
 
         Assert.AreEqual(first.SceneIdentitySha256, second.SceneIdentitySha256);
         CollectionAssert.AreEqual(ProjectedSceneJson.Serialize(first), ProjectedSceneJson.Serialize(second));
+
+        var boundaryTemplate = CreateGeometryScene([new PixelPoint(50, 50)], []);
+        var rightAscensionObject = boundaryTemplate.Objects[0] with
+        {
+            J2000Equatorial = new EquatorialPoint(24 - 1e-14, 0),
+            EquatorialOfDate = new EquatorialPoint(24 - 1e-14, 0)
+        };
+        var rightAscensionSource = new VisibleScene(
+            boundaryTemplate.Request,
+            [rightAscensionObject],
+            boundaryTemplate.Segments,
+            boundaryTemplate.ComputationProvenance);
+        var rightAscensionBoundary = ProjectedSceneJson.Create(
+            ProjectedSceneKind.Predicted, rightAscensionSource, transform, source,
+            "calibration-v1", "perspective-v1");
+
+        Assert.AreEqual(0, rightAscensionBoundary.Objects[0].J2000Equatorial.RightAscensionHours);
+        Assert.AreEqual(0, rightAscensionBoundary.Objects[0].EquatorialOfDate.RightAscensionHours);
+
+        var boundaryHorizontal = new AltAzPoint(90, 360 - 1e-13);
+        var normalizedBoundaryHorizontal = new AltAzPoint(90, 0);
+        var boundaryObject = boundaryTemplate.Objects[0] with
+        {
+            GeometricHorizontal = boundaryHorizontal,
+            ApparentHorizontal = boundaryHorizontal,
+            CameraDirection = CameraBasis.Create(90, 0).ToCamera(CameraBasis.FromHorizontal(normalizedBoundaryHorizontal))
+        };
+        var boundarySource = new VisibleScene(
+            boundaryTemplate.Request,
+            [boundaryObject],
+            boundaryTemplate.Segments,
+            boundaryTemplate.ComputationProvenance);
+        var boundary = ProjectedSceneJson.Create(
+            ProjectedSceneKind.Predicted, boundarySource, transform, source, "calibration-v1", "perspective-v1");
+
+        Assert.AreEqual(0, boundary.Objects[0].GeometricHorizontal.AzimuthDegrees);
+        Assert.AreEqual(0, boundary.Objects[0].ApparentHorizontal.AzimuthDegrees);
+
+        var invalidRightAscension = new VisibleScene(
+            boundaryTemplate.Request,
+            [rightAscensionObject with { J2000Equatorial = new EquatorialPoint(24, 0) }],
+            boundaryTemplate.Segments,
+            boundaryTemplate.ComputationProvenance);
+        Assert.ThrowsExactly<ArgumentException>(() => ProjectedSceneJson.Create(
+            ProjectedSceneKind.Predicted, invalidRightAscension, transform, source,
+            "calibration-v1", "perspective-v1"));
+
+        var invalidHorizontal = new AltAzPoint(90, 360);
+        var invalidAzimuth = new VisibleScene(
+            boundaryTemplate.Request,
+            [boundaryObject with
+            {
+                GeometricHorizontal = invalidHorizontal,
+                ApparentHorizontal = invalidHorizontal,
+                CameraDirection = CameraBasis.Create(90, 0)
+                    .ToCamera(CameraBasis.FromHorizontal(normalizedBoundaryHorizontal))
+            }],
+            boundaryTemplate.Segments,
+            boundaryTemplate.ComputationProvenance);
+        Assert.ThrowsExactly<ArgumentException>(() => ProjectedSceneJson.Create(
+            ProjectedSceneKind.Predicted, invalidAzimuth, transform, source,
+            "calibration-v1", "perspective-v1"));
     }
 
     private static ProjectedSceneImageTransformV1 Transform(

@@ -485,10 +485,19 @@ public sealed class ProjectedSceneStagingStoreTests
             await Task.WhenAll(
                 first.StageAsync(stageKey, sceneId, scene, CancellationToken.None).AsTask(),
                 second.StageAsync(stageKey, sceneId, scene, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            var directory = Path.Combine(root, "staging", "projected-scenes");
+            Assert.AreEqual(0, Directory.EnumerateFiles(directory, "*.tmp").Count());
+
             var changed = await CreateSceneAsync(FixtureUtc.AddSeconds(1), 10).ConfigureAwait(false);
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await second.StageAsync(stageKey, sceneId, changed, CancellationToken.None).ConfigureAwait(false))
                 .ConfigureAwait(false);
+            Assert.AreEqual(0, Directory.EnumerateFiles(directory, "*.tmp").Count());
+
+            using var bounded = CreateStore(root, maximumFileCount: 1);
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await bounded.StageAsync(new string('5', 64), new string('6', 64), changed, CancellationToken.None)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
         }
         finally
         {

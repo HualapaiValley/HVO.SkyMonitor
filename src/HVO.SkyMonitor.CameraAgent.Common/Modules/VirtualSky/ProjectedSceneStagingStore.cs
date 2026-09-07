@@ -235,6 +235,7 @@ internal sealed class ProjectedSceneStagingStore :
                         throw new InvalidDataException(
                             "Projected-scene stage conflicts with existing capture geometry.");
                     }
+                    File.Delete(temporary);
                 }
                 RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
             }

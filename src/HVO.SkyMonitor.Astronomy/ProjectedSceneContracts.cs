@@ -651,10 +651,10 @@ public static class ProjectedSceneJson
         value with { FromPixel = Normalize(value.FromPixel), ToPixel = Normalize(value.ToPixel) };
 
     private static EquatorialPoint Normalize(EquatorialPoint value) => new(
-        Normalize(value.RightAscensionHours), Normalize(value.DeclinationDegrees));
+        NormalizePeriodic(value.RightAscensionHours, 24), Normalize(value.DeclinationDegrees));
 
     private static AltAzPoint Normalize(AltAzPoint value) => new(
-        Normalize(value.AltitudeDegrees), Normalize(value.AzimuthDegrees));
+        Normalize(value.AltitudeDegrees), NormalizePeriodic(value.AzimuthDegrees, 360));
 
     private static EnuVector Normalize(EnuVector value) => new(
         Normalize(value.East), Normalize(value.North), Normalize(value.Up));
@@ -665,6 +665,16 @@ public static class ProjectedSceneJson
     {
         var rounded = Math.Round(value, GeneratedGeometryDecimalPlaces, MidpointRounding.ToEven);
         return rounded == 0 ? 0 : rounded;
+    }
+
+    private static double NormalizePeriodic(double value, double period)
+    {
+        if (value < 0 || value >= period)
+        {
+            return value;
+        }
+        var rounded = Normalize(value);
+        return rounded >= period ? 0 : rounded;
     }
 
     private static ProjectedSceneV1 Freeze(ProjectedSceneV1 scene) => scene with
