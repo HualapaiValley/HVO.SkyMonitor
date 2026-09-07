@@ -629,10 +629,12 @@ LocalRunner instance needs, therefore no longer preflights clean only to be refu
 
 **A compatible signed-release preflight is still not a promise that the upgrade will proceed.** It compares
 persisted state and the declared contract identities against this instance. Gates that need the image itself run
-only during the upgrade: the labels the loaded image actually carries are compared against the signed record; a
-candidate identical to the image already running is refused outright; and a candidate declaring a state migration
-still requires `--migration-backward-compatible`. A release the instance already runs therefore preflights clean
-and is still refused at upgrade time.
+only during the upgrade: the labels the loaded image actually carries are compared against the signed record, and
+a candidate declaring a state migration still requires `--migration-backward-compatible`. When either signed
+identity for the selected platform (`offlineArchiveImageId` or `manifestDigest`) equals the installed
+`manifest.image.imageId`, preflight remains compatible but includes the non-blocking
+`candidate-image-already-active` advisory. The advisory tells the operator that no upgrade action is needed; an
+attempted upgrade to that same image is still refused outright.
 
 Rollback state is retained per operating-system user
 (`$XDG_STATE_HOME/hvo/skymonitor/distribution`, else `~/.local/state/...`), so run the preflight as the same

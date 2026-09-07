@@ -135,7 +135,10 @@ internal static class CameraAgentStatePreflight
         ContractReplayProfile replayProfile,
         CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent,
         CameraAgentContractIdentity? candidateContracts = null,
-        string? instanceConfigurationContract = null)
+        string? instanceConfigurationContract = null,
+        string? installedImageId = null,
+        string? signedOfflineArchiveImageId = null,
+        string? signedPlatformManifestDigest = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(requirements);
@@ -145,6 +148,8 @@ internal static class CameraAgentStatePreflight
         {
             EvaluateContractIdentity(findings, candidateContracts, instanceConfigurationContract, replayProfile);
         }
+        EvaluateCandidateImageIdentity(
+            findings, installedImageId, signedOfflineArchiveImageId, signedPlatformManifestDigest);
         EvaluateCatalog(findings, paths, requirements);
         EvaluateIdentityLineage(findings, paths, requirements);
         EvaluateRawIngressSchema(findings, paths, requirements);
@@ -163,6 +168,29 @@ internal static class CameraAgentStatePreflight
             compatible,
             findings,
             DateTimeOffset.UtcNow);
+    }
+
+    private static void EvaluateCandidateImageIdentity(
+        List<CameraAgentStatePreflightFinding> findings,
+        string? installedImageId,
+        string? signedOfflineArchiveImageId,
+        string? signedPlatformManifestDigest)
+    {
+        if (string.IsNullOrWhiteSpace(installedImageId) ||
+            (!string.Equals(installedImageId, signedOfflineArchiveImageId, StringComparison.Ordinal) &&
+             !string.Equals(installedImageId, signedPlatformManifestDigest, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        findings.Add(new CameraAgentStatePreflightFinding(
+            "candidate-image-already-active",
+            "image-identity",
+            Blocking: false,
+            "instance-manifest.image.imageId",
+            installedImageId,
+            "a signed candidate identity different from the installed image",
+            "Choose another signed release, or take no upgrade action because this image is already active."));
     }
 
     /// <summary>
@@ -824,6 +852,8 @@ internal static class CameraAgentStatePreflightManager
         var candidateImageId = manifest.Image.ImageId;
         string? candidateRelease = null;
         CameraAgentContractIdentity? candidateContracts = null;
+        string? signedOfflineArchiveImageId = null;
+        string? signedPlatformManifestDigest = null;
         // Evaluating the installed image reports the instance as it stands; naming a candidate evaluates the
         // in-place upgrade, which additionally requires the current durable state contract.
         var policy = CameraAgentStateContractPolicy.AllowLegacy;
@@ -846,7 +876,9 @@ internal static class CameraAgentStatePreflightManager
             // upgrade-time check, so a clean report here is still not a promise the upgrade proceeds.
             requirements = CameraAgentStateRequirements.From(release.Image.Compatibility);
             candidateContracts = CameraAgentContractIdentity.From(release.Image);
-            candidateImageId = release.Platform.OfflineArchiveImageId ?? release.Platform.ManifestDigest;
+            signedOfflineArchiveImageId = release.Platform.OfflineArchiveImageId;
+            signedPlatformManifestDigest = release.Platform.ManifestDigest;
+            candidateImageId = signedOfflineArchiveImageId ?? signedPlatformManifestDigest;
             candidateRelease = release.Release.Tag;
         }
         else if (request.ImageReference is { Length: > 0 } reference)
@@ -881,7 +913,10 @@ internal static class CameraAgentStatePreflightManager
             manifest.ReplayProfile,
             policy,
             candidateContracts,
-            manifest.ComponentSchemaVersion);
+            manifest.ComponentSchemaVersion,
+            manifest.Image.ImageId,
+            signedOfflineArchiveImageId,
+            signedPlatformManifestDigest);
     }
 
     private static DistributionAcquirer CreateDistributionAcquirer() => new();
