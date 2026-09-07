@@ -2624,6 +2624,8 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     [DataRow("missing", "processing.missing-projected-scene")]
     [DataRow("tampered", "processing.invalid-projected-scene")]
+    [DataRow("sidecar-missing", "processing.missing-projected-scene")]
+    [DataRow("sidecar-tampered", "processing.invalid-projected-scene")]
     public async Task ReplayFailsClosedWhenPinnedProjectedSceneBytesAreMissingOrAltered(string fault, string expectedReason)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-{fault}-{Guid.NewGuid():N}");
@@ -2647,13 +2649,21 @@ public sealed class ProcessingGraphOperationsTests
                 stageKey, sceneId, await CreateProjectedSceneAsync().ConfigureAwait(false), CancellationToken.None)
                 .ConfigureAwait(false);
             var payloadPath = Path.Combine(root, live.PayloadRelativePath);
-            if (fault == "missing")
+            var sidecarPath = Path.Combine(root, live.SidecarRelativePath);
+            switch (fault)
             {
-                File.Delete(payloadPath);
-            }
-            else
-            {
-                await File.WriteAllBytesAsync(payloadPath, Encoding.UTF8.GetBytes("{\"tampered\":true}")).ConfigureAwait(false);
+                case "missing":
+                    File.Delete(payloadPath);
+                    break;
+                case "tampered":
+                    await File.WriteAllBytesAsync(payloadPath, Encoding.UTF8.GetBytes("{\"tampered\":true}")).ConfigureAwait(false);
+                    break;
+                case "sidecar-missing":
+                    File.Delete(sidecarPath);
+                    break;
+                default:
+                    await File.WriteAllBytesAsync(sidecarPath, Encoding.UTF8.GetBytes("{\"tampered\":true}")).ConfigureAwait(false);
+                    break;
             }
 
             var detail = await RunReplayToCompletionAsync(provider, submitted.Execution.ExecutionId).ConfigureAwait(false);
@@ -2695,6 +2705,11 @@ public sealed class ProcessingGraphOperationsTests
                     CancellationToken.None).ConfigureAwait(false);
                 executionId = submitted.Execution.ExecutionId;
                 Assert.HasCount(1, ReadOutputPins(root, executionId, "projected-scene"));
+                // Capacity accounting includes both frozen classes: the raw payload and the pinned scene payload.
+                var scenePayloadBytes = new FileInfo(Path.Combine(root, live.PayloadRelativePath)).Length;
+                var operational = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
+                    .ReadOperationalStateAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(8L + scenePayloadBytes, operational.ReplayPendingBytes, "pending bytes must count the raw payload and the pinned projected-scene payload");
             }
 
             // Host restart while the execution is still pending: the pin and its retained product survive.
@@ -2760,8 +2775,7 @@ public sealed class ProcessingGraphOperationsTests
             using var runnerStopping = new CancellationTokenSource();
             var runner = new LocalReplayRunnerServer(runnerOptions);
             await using var runnerLifetime = runner.ConfigureAwait(false);
-            var runnerTask = runner.RunAsync(runnerStopping.Token);
-            await WaitForPathAsync(socketPath).ConfigureAwait(false);
+            Task? runnerTask = null;
 
             ProcessingGraphExecutionDetail external;
             using (var provider = CreateProvider(root, new Dictionary<string, string?>
@@ -2775,10 +2789,24 @@ public sealed class ProcessingGraphOperationsTests
             }))
             {
                 await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-                external = await ExecuteReplayAsync(
-                    provider,
+                // Submit while no runner is attached: both pins are already durable at ordinals 0 and 1.
+                var submitted = await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().SubmitReplayAsync(
                     new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
-                    "projected-scene-local-runner").ConfigureAwait(false);
+                    "projected-scene-local-runner",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(Path.Exists(socketPath), "the runner must not be attached yet");
+                Assert.AreEqual((1, 0, live.OutputIdentity), ReadOutputPins(root, submitted.Execution.ExecutionId, "projected-scene").Single());
+                var pending = await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
+                    .ReadExecutionDetailAsync(submitted.Execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(pending);
+                CollectionAssert.AreEqual(
+                    ProjectedSceneReplayInputEvidence,
+                    pending.Nodes.Single().Inputs.Select(static input => $"{input.Ordinal}|{input.WindowPosition}|{input.Kind}").ToArray());
+
+                runnerTask = runner.RunAsync(runnerStopping.Token);
+                await WaitForPathAsync(socketPath).ConfigureAwait(false);
+                external = await RunReplayToCompletionAsync(provider, submitted.Execution.ExecutionId).ConfigureAwait(false);
             }
 
             foreach (var detail in new[] { inProcess, external })
@@ -2797,7 +2825,7 @@ public sealed class ProcessingGraphOperationsTests
             Assert.HasCount(1, ReadProjectedSceneOutputs(root, live.CaptureId), "both profiles reproduce the single immutable product");
 
             await runnerStopping.CancelAsync().ConfigureAwait(false);
-            await runnerTask.ConfigureAwait(false);
+            if (runnerTask is not null) await runnerTask.ConfigureAwait(false);
         }
         finally
         {
@@ -2807,7 +2835,7 @@ public sealed class ProcessingGraphOperationsTests
     }
 
     private sealed record ProjectedSceneLiveCapture(
-        Guid CaptureId, Guid ArtifactId, string RevisionId, string OutputIdentity, string PayloadRelativePath);
+        Guid CaptureId, Guid ArtifactId, string RevisionId, string OutputIdentity, string PayloadRelativePath, string SidecarRelativePath);
 
     private static async Task<ProjectedSceneLiveCapture> CompleteProjectedSceneLiveAsync(string root, string stageKey, string sceneId)
     {
@@ -2834,7 +2862,8 @@ public sealed class ProcessingGraphOperationsTests
             receipt.Manifest.Descriptor.Artifact.ArtifactId,
             registry.ActiveRevisionId,
             outputs[0].OutputIdentity,
-            outputs[0].PayloadRelativePath);
+            outputs[0].PayloadRelativePath,
+            outputs[0].SidecarRelativePath);
     }
 
     private static void DuplicateProjectedSceneOutput(string root, string outputIdentity)
@@ -2931,20 +2960,20 @@ public sealed class ProcessingGraphOperationsTests
         };
     }
 
-    private static List<(string OutputIdentity, string PayloadRelativePath)> ReadProjectedSceneOutputs(string root, Guid captureId)
+    private static List<(string OutputIdentity, string PayloadRelativePath, string SidecarRelativePath)> ReadProjectedSceneOutputs(string root, Guid captureId)
     {
         using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
         connection.Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT output_identity_sha256, payload_relative_path FROM processing_outputs
+            SELECT output_identity_sha256, payload_relative_path, sidecar_relative_path FROM processing_outputs
             WHERE capture_id = $capture AND node_id = 'projected-scene' AND availability_state = 'Available'
             ORDER BY output_identity_sha256;
             """;
         command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
         using var reader = command.ExecuteReader();
-        var outputs = new List<(string OutputIdentity, string PayloadRelativePath)>();
-        while (reader.Read()) outputs.Add((reader.GetString(0), reader.GetString(1)));
+        var outputs = new List<(string OutputIdentity, string PayloadRelativePath, string SidecarRelativePath)>();
+        while (reader.Read()) outputs.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
         return outputs;
     }
 

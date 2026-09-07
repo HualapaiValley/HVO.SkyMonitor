@@ -483,11 +483,24 @@ internal sealed partial class SqliteCaptureProcessingStore
         return new(rawInputsByNode, outputInputsByNode, pinnedRawInputs.Values.ToArray(), frozenOutputBytes, auxiliaryOutputNodes);
     }
 
+    /// <summary>The registered stable step type alias of the projected-scene step.</summary>
+    private const string ProjectedSceneStepAlias = "ProjectedScene";
+
+    /// <summary>
+    /// Identifies a revision node as the projected-scene step the way the pipeline factory does: the step type is
+    /// the registered alias (or, for legacy V1 pipelines, the implementation type name), and the node id is the
+    /// trimmed configured id or, when none is configured, the registration alias.
+    /// </summary>
     private static bool IsProjectedSceneNode(CapturePipelineConfig pipeline, string nodeId)
         => pipeline.Steps.Any(step =>
             step.Enabled is not false &&
-            string.Equals(step.Type, "ProjectedScene", StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(step.Id ?? step.Type, nodeId, StringComparison.OrdinalIgnoreCase));
+            (string.Equals(step.Type, ProjectedSceneStepAlias, StringComparison.OrdinalIgnoreCase) ||
+             pipeline.SchemaVersion == CapturePipelineSchemaVersions.LegacyV1 &&
+             step.Type.Contains("ProjectedSceneCaptureProcessingStep", StringComparison.Ordinal)) &&
+            string.Equals(
+                string.IsNullOrWhiteSpace(step.Id) ? ProjectedSceneStepAlias : step.Id.Trim(),
+                nodeId,
+                StringComparison.Ordinal));
 
     /// <summary>
     /// Resolves the exactly-one committed, available typed projected-scene product that live processing produced
