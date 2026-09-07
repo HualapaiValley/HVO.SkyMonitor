@@ -500,7 +500,7 @@ public sealed class TransientCandidateDeliveryServiceTests
 
         Assert.AreEqual(2, calls);
         Assert.AreEqual(TimeSpan.FromSeconds(2), service.GetWaitDelay(time.GetUtcNow()));
-        Assert.AreEqual(2, logger.Count(2524));
+        Assert.AreEqual(2, logger.Count(2256));
         journal.Verify(value => value.AcknowledgeAsync(
             entry.CandidateId, entry.EventId, acknowledgement, It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -770,8 +770,8 @@ public sealed class TransientCandidateDeliveryServiceTests
             await time.WaitForTimerCountAsync(2).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             Assert.AreEqual(1, readCalls);
             Assert.AreEqual(4, sendCalls);
-            Assert.AreEqual(2, logger.Count(2524));
-            Assert.AreEqual(1, logger.Count(2522));
+            Assert.AreEqual(2, logger.Count(2256));
+            Assert.AreEqual(1, logger.Count(2254));
 
             for (var index = 0; index < 100; index++)
             {
@@ -785,8 +785,8 @@ public sealed class TransientCandidateDeliveryServiceTests
             await time.WaitForTimerCountAsync(3).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             Assert.AreEqual(2, readCalls);
             Assert.AreEqual(4, sendCalls);
-            Assert.AreEqual(3, logger.Count(2524));
-            Assert.AreEqual(2, logger.Count(2522));
+            Assert.AreEqual(3, logger.Count(2256));
+            Assert.AreEqual(2, logger.Count(2254));
         }
         finally
         {

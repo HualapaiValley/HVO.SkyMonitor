@@ -124,7 +124,7 @@ antiforgery, paging, and sanitized-error behavior are integration tested.
 
 The normative runtime contract is
 [`cameraagent-environmental-acquisition-runtime-signals.json`](cameraagent-environmental-acquisition-runtime-signals.json).
-It reserves event IDs 2520-2529, lists every metric/span and bounded value, and
+It reserves event IDs 2520-2529 and 2552, lists every metric/span and bounded value, and
 defines independent `environmental-acquisition` health and privacy fields.
 
 ## Candidate Commands

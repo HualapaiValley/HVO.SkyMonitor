@@ -1589,7 +1589,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
     private static readonly Action<ILogger, int, Exception?> RunsSettled =
         LoggerMessage.Define<int>(
             LogLevel.Information,
-            new EventId(7401, "LocalAutomationRunsSettled"),
+            new EventId(7420, "LocalAutomationRunsSettled"),
             "Settled {InterruptedRuns} interrupted local automation runs during restart recovery.");
 
     private static readonly Action<ILogger, string, string, Exception?> RunCompletionLost =
@@ -1601,6 +1601,6 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
     private static readonly Action<ILogger, Exception?> CaptureSequenceUnavailable =
         LoggerMessage.Define(
             LogLevel.Warning,
-            new EventId(7402, "LocalAutomationCaptureSequenceUnavailable"),
+            new EventId(7421, "LocalAutomationCaptureSequenceUnavailable"),
             "The durable capture sequence is unavailable; capture-relative automations stay pending.");
 }

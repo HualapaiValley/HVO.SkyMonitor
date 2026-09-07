@@ -375,7 +375,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
     private static partial void AcquisitionCompleted(
         ILogger logger, string kind, string trigger, string outcome, string reason);
 
-    [LoggerMessage(2522, LogLevel.Error,
+    [LoggerMessage(2552, LogLevel.Error,
         "Environmental acquisition failed for kind {Kind}, trigger {Trigger}, outcome {Outcome}, and reason {Reason}.")]
     private static partial void AcquisitionFailed(
         ILogger logger, string kind, string trigger, string outcome, string reason);
