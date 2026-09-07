@@ -1917,7 +1917,8 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
     internal static async ValueTask ValidateExistingRuntimeSchemaAsync(
         string root,
         int busyTimeoutSeconds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? inspectionSourceOpenedSeam = null)
     {
         var normalizedRoot = Path.GetFullPath(root);
         var databasePath = Path.Combine(normalizedRoot, "journal", "raw-ingress.db");
@@ -1928,7 +1929,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         try
         {
             _ = await InspectRuntimeSchemaAsync(
-                normalizedRoot, databasePath, busyTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+                normalizedRoot, databasePath, busyTimeoutSeconds, inspectionSourceOpenedSeam, cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidDataException exception) when (exception.InnerException is SqliteException)
         {
@@ -1937,72 +1938,48 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
     }
 
     private ValueTask<RuntimeSchemaInspection> InspectRuntimeSchemaAsync(CancellationToken cancellationToken)
-        => InspectRuntimeSchemaAsync(_root, _databasePath, _busyTimeoutSeconds, cancellationToken);
+        => InspectRuntimeSchemaAsync(
+            _root, _databasePath, _busyTimeoutSeconds, inspectionSourceOpenedSeam: null, cancellationToken);
 
     private static async ValueTask<RuntimeSchemaInspection> InspectRuntimeSchemaAsync(
         string root,
         string databasePath,
         int busyTimeoutSeconds,
+        Action? inspectionSourceOpenedSeam,
         CancellationToken cancellationToken)
     {
-        EnsureDatabaseFilesArePhysical(root, databasePath);
-        var recoveryFiles = new[]
-        {
-            string.Concat(databasePath, "-wal"),
-            string.Concat(databasePath, "-journal")
-        }.Where(File.Exists).ToArray();
-        var hasRecoveryState = recoveryFiles.Length > 0 || File.Exists(string.Concat(databasePath, "-shm"));
-        DirectoryInfo? snapshotRoot = null;
         try
         {
-            var inspectionPath = databasePath;
-            var immutable = !hasRecoveryState;
-            if (!immutable)
-            {
-                snapshotRoot = Directory.CreateTempSubdirectory("hvo-transient-runtime-inspection-");
-                inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
-                File.Copy(databasePath, inspectionPath);
-                foreach (var recoveryFile in recoveryFiles)
+            return await SqliteInspectionSnapshot.InspectAsync(
+                databasePath,
+                busyTimeoutSeconds,
+                "hvo-transient-runtime-inspection-",
+                () => EnsureDatabaseFilesArePhysical(root, databasePath),
+                async (connection, token) =>
                 {
-                    File.Copy(
-                        recoveryFile,
-                        string.Concat(inspectionPath, recoveryFile.AsSpan(databasePath.Length)));
-                }
-            }
-            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-            {
-                DataSource = immutable
-                    ? string.Concat(new Uri(inspectionPath).AbsoluteUri, "?immutable=1")
-                    : inspectionPath,
-                Mode = immutable ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
-                Pooling = false,
-                DefaultTimeout = busyTimeoutSeconds
-            }.ToString());
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            var rawVersion = await ExecuteScalarLongAsync(
-                connection, "PRAGMA user_version;", null, cancellationToken).ConfigureAwait(false);
-            var runtimeObjectCount = await CountRuntimeSchemaObjectsAsync(
-                connection, null, cancellationToken).ConfigureAwait(false);
-            if (runtimeObjectCount > 0)
-            {
-                await ValidateRuntimeSchemaAsync(connection, null, cancellationToken).ConfigureAwait(false);
-            }
-            if (rawVersion == SqliteRawCaptureJournal.CurrentSchemaVersion)
-            {
-                await SqliteRawCaptureJournal.ValidateCanonicalSchemaDefinitionsAsync(
-                    connection, null, cancellationToken).ConfigureAwait(false);
-            }
-            return new(rawVersion, runtimeObjectCount);
+                    var rawVersion = await ExecuteScalarLongAsync(
+                        connection, "PRAGMA user_version;", null, token).ConfigureAwait(false);
+                    var runtimeObjectCount = await CountRuntimeSchemaObjectsAsync(
+                        connection, null, token).ConfigureAwait(false);
+                    if (runtimeObjectCount > 0)
+                    {
+                        await ValidateRuntimeSchemaAsync(connection, null, token).ConfigureAwait(false);
+                    }
+                    if (rawVersion == SqliteRawCaptureJournal.CurrentSchemaVersion)
+                    {
+                        await SqliteRawCaptureJournal.ValidateCanonicalSchemaDefinitionsAsync(
+                            connection, null, token).ConfigureAwait(false);
+                    }
+                    return new RuntimeSchemaInspection(rawVersion, runtimeObjectCount);
+                },
+                inspectionSourceOpenedSeam,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (SqliteException exception)
         {
             throw new InvalidDataException(
                 $"Transient runtime SQLite schema inspection failed for '{databasePath}'; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.",
                 exception);
-        }
-        finally
-        {
-            snapshotRoot?.Delete(recursive: true);
         }
     }
 
