@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.Processing;
@@ -206,6 +207,218 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
+    public async Task InitializeAsync_InspectionBackupsRemainCoherentWhenLastWriterCloses()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var databasePath = Path.Combine(root, "journal", "raw-ingress.db");
+            await new SqliteRawCaptureJournal(databasePath, 1)
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            SqliteConnection.ClearAllPools();
+            long schemaObjectCount;
+            using (var before = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                schemaObjectCount = await ScalarLongAsync(
+                    before,
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';").ConfigureAwait(false);
+            }
+            SqliteConnection.ClearAllPools();
+
+            // Transient runtime inspector: the last writer closes exactly at the inspection seam, so the
+            // write-ahead log is checkpointed away before the backup step opens its read transaction. Coherence
+            // comes from that read transaction, not from holding the source connection open, and the inspection
+            // still sees one committed image instead of a main file paired with side files copied at another instant.
+            var transientBarrier = await CreateWalWriterBarrierAsync(databasePath).ConfigureAwait(false);
+            await SqliteTransientRuntimeStore.ValidateExistingRuntimeSchemaAsync(
+                root,
+                1,
+                transientBarrier.CloseLastWriter,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(1, transientBarrier.SeamCount, "the transient inspection seam did not fire.");
+            AssertWalRemovedAtSeam(transientBarrier, "transient");
+            AssertDurableStateUnchanged(databasePath, transientBarrier, "transient");
+
+            // Raw-journal inspector: the same race, one method later in the same initialization.
+            var journalBarrier = await CreateWalWriterBarrierAsync(databasePath).ConfigureAwait(false);
+            await new SqliteRawCaptureJournal(
+                databasePath,
+                1,
+                inspectionSourceOpenedSeam: journalBarrier.CloseLastWriter)
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(1, journalBarrier.SeamCount, "the raw-journal inspection seam did not fire.");
+            AssertWalRemovedAtSeam(journalBarrier, "raw-journal");
+
+            SqliteConnection.ClearAllPools();
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(
+                12L,
+                await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(
+                schemaObjectCount,
+                await ScalarLongAsync(
+                    verify,
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_InspectionContentionIsOwnedByRawIngressNotReportedAsIntegrityFailure()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var databasePath = Path.Combine(root, "journal", "raw-ingress.db");
+            await new SqliteRawCaptureJournal(databasePath, 1)
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            SqliteConnection.ClearAllPools();
+
+            using (var blocker = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = databasePath,
+                Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false
+            }.ToString()))
+            {
+                await blocker.OpenAsync().ConfigureAwait(false);
+                using (var command = blocker.CreateCommand())
+                {
+                    // Exclusive locking mode keeps the file lock across statements, so every other connection,
+                    // including the read-only inspection source, is refused with SQLITE_BUSY.
+                    command.CommandText = "PRAGMA locking_mode = EXCLUSIVE;";
+                    Assert.AreEqual("exclusive", await command.ExecuteScalarAsync().ConfigureAwait(false));
+                    command.CommandText = "PRAGMA user_version = 12;";
+                    await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+
+                // Pre-validation must stay silent under contention. A lock is not corruption, and escaping here
+                // would mark the ingress Unhealthy and close the capture admission gate for a transient condition.
+                await SqliteTransientRuntimeStore.ValidateExistingRuntimeSchemaAsync(
+                    root, 1, null, CancellationToken.None).ConfigureAwait(false);
+
+                // Nothing is hidden by that silence: the journal inspects the same database immediately afterwards
+                // and reports the lock itself, so initialization still fails loudly while the lock is held.
+                var contended = await Assert.ThrowsExactlyAsync<SqliteException>(() =>
+                    new SqliteRawCaptureJournal(databasePath, 1)
+                        .InitializeAsync(CancellationToken.None)).ConfigureAwait(false);
+                Assert.AreEqual(SQLitePCL.raw.SQLITE_BUSY, contended.SqliteErrorCode);
+            }
+
+            SqliteConnection.ClearAllPools();
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = CreateIngress(root, state);
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    private static async Task<InspectionSeamWriterBarrier> CreateWalWriterBarrierAsync(string databasePath)
+    {
+        var writer = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false
+        }.ToString());
+        await writer.OpenAsync().ConfigureAwait(false);
+        using (var command = writer.CreateCommand())
+        {
+            command.CommandText = "PRAGMA journal_mode = WAL;";
+            Assert.AreEqual("wal", await command.ExecuteScalarAsync().ConfigureAwait(false));
+            // A committed write that leaves the canonical schema alone, so the write-ahead log holds real frames
+            // the inspection must still see after this connection closes.
+            command.CommandText = "PRAGMA user_version = 12;";
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        Assert.IsTrue(
+            File.Exists(string.Concat(databasePath, "-wal")),
+            "expected a live write-ahead log before the inspection.");
+        return new InspectionSeamWriterBarrier(databasePath, writer);
+    }
+
+    private static void AssertWalRemovedAtSeam(InspectionSeamWriterBarrier barrier, string label)
+        // Without this the coherence assertions below would also hold in a world where the log never vanished,
+        // which would quietly turn this permanent guard into a no-op if a future Microsoft.Data.Sqlite release
+        // touched the database during Open().
+        => Assert.IsNull(
+            barrier.DurableBytes["-wal"],
+            $"the {label} subcase did not exercise the coherence scenario: the write-ahead log was still present "
+                + "after the last writer closed at the inspection seam.");
+
+    private static void AssertDurableStateUnchanged(
+        string databasePath,
+        InspectionSeamWriterBarrier barrier,
+        string label)
+    {
+        // Recorded inside the seam, after the last writer closed and checkpointed. A read-only backup source may
+        // update -shm read marks, which is transient coordination state, so only durable files are compared.
+        foreach (var suffix in DurableDatabaseSuffixes)
+        {
+            var path = string.Concat(databasePath, suffix);
+            var expected = barrier.DurableBytes[suffix];
+            if (expected is null)
+            {
+                // The source connection disables checkpoint-on-close and never writes, so at most an empty
+                // write-ahead log may be re-created for a database whose header still declares WAL journalling.
+                if (!File.Exists(path))
+                {
+                    continue;
+                }
+                Assert.AreEqual(
+                    0L,
+                    new FileInfo(path).Length,
+                    $"the {label} inspection left content in '{path}'.");
+                continue;
+            }
+            CollectionAssert.AreEqual(
+                expected,
+                File.ReadAllBytes(path),
+                $"the {label} inspection mutated '{path}'.");
+        }
+    }
+
+    private static readonly string[] DurableDatabaseSuffixes = [string.Empty, "-wal", "-journal"];
+
+    private sealed class InspectionSeamWriterBarrier(string databasePath, SqliteConnection writer)
+    {
+        private readonly string _databasePath = databasePath;
+        private SqliteConnection? _writer = writer;
+        private int _seamCount;
+
+        internal Dictionary<string, byte[]?> DurableBytes { get; } = [];
+
+        internal int SeamCount => Volatile.Read(ref _seamCount);
+
+        internal void CloseLastWriter()
+        {
+            Interlocked.Increment(ref _seamCount);
+            var writer = Interlocked.Exchange(ref _writer, null);
+            if (writer is null)
+            {
+                return;
+            }
+            // Closing the last writer checkpoints and removes the write-ahead log. Before the shared inspection
+            // snapshot this deleted the file between the recovery-file enumeration and its copy.
+            writer.Dispose();
+            SqliteConnection.ClearAllPools();
+            foreach (var suffix in DurableDatabaseSuffixes)
+            {
+                var path = string.Concat(_databasePath, suffix);
+                DurableBytes[suffix] = File.Exists(path) ? File.ReadAllBytes(path) : null;
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task InitializeAsync_WhenProductionIngressRejectsSchema_FailsWithoutDatabaseMutation()
     {
         var root = CreateRoot();
@@ -261,7 +474,25 @@ public sealed class RawCaptureIngressTests
             SqliteConnection.ClearAllPools();
             CollectionAssert.AreEqual(databaseBefore, await File.ReadAllBytesAsync(databasePath).ConfigureAwait(false));
             CollectionAssert.AreEqual(walBefore, await File.ReadAllBytesAsync(walPath).ConfigureAwait(false));
-            CollectionAssert.AreEqual(shmBefore, await File.ReadAllBytesAsync(shmPath).ConfigureAwait(false));
+            Assert.IsFalse(
+                File.Exists(string.Concat(databasePath, "-journal")),
+                "the rejected inspection created a rollback journal.");
+            // -shm carries write-ahead log read marks, not durable content. The read-only inspection source may
+            // update them, so (as #558 established for the outbox) assert logical identity instead of shm bytes.
+            Assert.AreEqual(shmBefore.Length, new FileInfo(shmPath).Length);
+            using (var unchanged = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = databasePath,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false
+            }.ToString()))
+            {
+                await unchanged.OpenAsync().ConfigureAwait(false);
+                Assert.AreEqual(10L, await ScalarLongAsync(unchanged, "PRAGMA user_version;").ConfigureAwait(false));
+                Assert.AreEqual("unchanged", await ScalarStringAsync(
+                    unchanged, "SELECT value FROM legacy_capture;").ConfigureAwait(false));
+            }
+            SqliteConnection.ClearAllPools();
         }
         finally
         {
@@ -2496,18 +2727,30 @@ public sealed class RawCaptureIngressTests
     }
 
     private static Dictionary<string, byte[]> ReadDatabaseFiles(string databasePath)
-        => new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm", $"{databasePath}-journal" }
+        // -shm holds write-ahead log read marks rather than durable content, and a read-only inspection source may
+        // update them, so (as #558 established for the outbox) it is excluded from durable byte comparison.
+        => new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-journal" }
             .Where(File.Exists)
             .ToDictionary(static path => Path.GetFileName(path), File.ReadAllBytes, StringComparer.Ordinal);
 
     private static void AssertDatabaseFilesUnchanged(
-        IReadOnlyDictionary<string, byte[]> expected,
-        IReadOnlyDictionary<string, byte[]> actual)
+        Dictionary<string, byte[]> expected,
+        Dictionary<string, byte[]> actual)
     {
-        CollectionAssert.AreEquivalent(expected.Keys.ToArray(), actual.Keys.ToArray());
         foreach (var file in expected)
         {
+            Assert.IsTrue(actual.ContainsKey(file.Key), $"'{file.Key}' disappeared.");
             CollectionAssert.AreEqual(file.Value, actual[file.Key], file.Key);
+        }
+        foreach (var file in actual)
+        {
+            if (expected.ContainsKey(file.Key))
+            {
+                continue;
+            }
+            // A read-only inspection source re-creates the side files of a database whose header declares
+            // write-ahead logging. It never writes and never checkpoints on close, so any such file must be empty.
+            Assert.AreEqual(0, file.Value.Length, $"'{file.Key}' was created with content.");
         }
     }
 

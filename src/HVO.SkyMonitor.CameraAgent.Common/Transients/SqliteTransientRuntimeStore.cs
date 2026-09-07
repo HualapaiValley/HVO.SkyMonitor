@@ -1917,6 +1917,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
     internal static async ValueTask ValidateExistingRuntimeSchemaAsync(
         string root,
         int busyTimeoutSeconds,
+        Action? inspectionSourceOpenedSeam,
         CancellationToken cancellationToken)
     {
         var normalizedRoot = Path.GetFullPath(root);
@@ -1928,71 +1929,67 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         try
         {
             _ = await InspectRuntimeSchemaAsync(
-                normalizedRoot, databasePath, busyTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+                normalizedRoot, databasePath, busyTimeoutSeconds, inspectionSourceOpenedSeam, cancellationToken).ConfigureAwait(false);
         }
-        catch (InvalidDataException exception) when (exception.InnerException is SqliteException)
+        catch (Exception exception) when (
+            exception is InvalidDataException or IOException &&
+            exception.InnerException is SqliteException)
         {
-            // Raw ingress owns diagnostics for corruption in its canonical tables.
+            // Raw ingress owns diagnostics for corruption and for contention in its canonical tables. The inner
+            // SqliteException is what makes this safe to swallow: the security-critical symlink IOException from the
+            // physical-file check carries no inner exception and still escapes. Nothing is skipped either, because
+            // InitializeAsync repeats the runtime-schema checks under a transaction and the journal re-validates the
+            // raw schema moments later. Without this filter a pure lock during pre-validation would mark the ingress
+            // Unhealthy, log a Critical integrity failure, and close the capture admission gate.
         }
     }
 
     private ValueTask<RuntimeSchemaInspection> InspectRuntimeSchemaAsync(CancellationToken cancellationToken)
-        => InspectRuntimeSchemaAsync(_root, _databasePath, _busyTimeoutSeconds, cancellationToken);
+        => InspectRuntimeSchemaAsync(
+            _root, _databasePath, _busyTimeoutSeconds, inspectionSourceOpenedSeam: null, cancellationToken);
 
     private static async ValueTask<RuntimeSchemaInspection> InspectRuntimeSchemaAsync(
         string root,
         string databasePath,
         int busyTimeoutSeconds,
+        Action? inspectionSourceOpenedSeam,
         CancellationToken cancellationToken)
     {
-        EnsureDatabaseFilesArePhysical(root, databasePath);
-        var recoveryFiles = new[]
-        {
-            string.Concat(databasePath, "-wal"),
-            string.Concat(databasePath, "-journal")
-        }.Where(File.Exists).ToArray();
-        var hasRecoveryState = recoveryFiles.Length > 0 || File.Exists(string.Concat(databasePath, "-shm"));
-        DirectoryInfo? snapshotRoot = null;
         try
         {
-            var inspectionPath = databasePath;
-            var immutable = !hasRecoveryState;
-            if (!immutable)
-            {
-                snapshotRoot = Directory.CreateTempSubdirectory("hvo-transient-runtime-inspection-");
-                inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
-                File.Copy(databasePath, inspectionPath);
-                foreach (var recoveryFile in recoveryFiles)
+            return await SqliteInspectionSnapshot.InspectAsync(
+                databasePath,
+                busyTimeoutSeconds,
+                "hvo-transient-runtime-inspection-",
+                () => EnsureDatabaseFilesArePhysical(root, databasePath),
+                async (connection, token) =>
                 {
-                    File.Copy(
-                        recoveryFile,
-                        string.Concat(inspectionPath, recoveryFile.AsSpan(databasePath.Length)));
-                }
-            }
-            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-            {
-                DataSource = immutable
-                    ? string.Concat(new Uri(inspectionPath).AbsoluteUri, "?immutable=1")
-                    : inspectionPath,
-                Mode = immutable ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
-                Pooling = false,
-                DefaultTimeout = busyTimeoutSeconds
-            }.ToString());
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            var rawVersion = await ExecuteScalarLongAsync(
-                connection, "PRAGMA user_version;", null, cancellationToken).ConfigureAwait(false);
-            var runtimeObjectCount = await CountRuntimeSchemaObjectsAsync(
-                connection, null, cancellationToken).ConfigureAwait(false);
-            if (runtimeObjectCount > 0)
-            {
-                await ValidateRuntimeSchemaAsync(connection, null, cancellationToken).ConfigureAwait(false);
-            }
-            if (rawVersion == SqliteRawCaptureJournal.CurrentSchemaVersion)
-            {
-                await SqliteRawCaptureJournal.ValidateCanonicalSchemaDefinitionsAsync(
-                    connection, null, cancellationToken).ConfigureAwait(false);
-            }
-            return new(rawVersion, runtimeObjectCount);
+                    var rawVersion = await ExecuteScalarLongAsync(
+                        connection, "PRAGMA user_version;", null, token).ConfigureAwait(false);
+                    var runtimeObjectCount = await CountRuntimeSchemaObjectsAsync(
+                        connection, null, token).ConfigureAwait(false);
+                    if (runtimeObjectCount > 0)
+                    {
+                        await ValidateRuntimeSchemaAsync(connection, null, token).ConfigureAwait(false);
+                    }
+                    if (rawVersion == SqliteRawCaptureJournal.CurrentSchemaVersion)
+                    {
+                        await SqliteRawCaptureJournal.ValidateCanonicalSchemaDefinitionsAsync(
+                            connection, null, token).ConfigureAwait(false);
+                    }
+                    return new RuntimeSchemaInspection(rawVersion, runtimeObjectCount);
+                },
+                inspectionSourceOpenedSeam,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception) when (IsInspectionContention(exception))
+        {
+            // Contention is not corruption. The inspection now opens the live database, which the copy-based
+            // inspection never did, so exhausting the bounded snapshot retries is a transient startup failure and
+            // must not send an operator into the archive-and-dispose procedure.
+            throw new IOException(
+                $"Transient runtime SQLite schema inspection could not obtain a snapshot of '{databasePath}' because the database stayed locked; retry initialization once the competing writer has finished.",
+                exception);
         }
         catch (SqliteException exception)
         {
@@ -2000,11 +1997,11 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 $"Transient runtime SQLite schema inspection failed for '{databasePath}'; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.",
                 exception);
         }
-        finally
-        {
-            snapshotRoot?.Delete(recursive: true);
-        }
     }
+
+    private static bool IsInspectionContention(SqliteException exception)
+        => exception.SqliteErrorCode == SQLitePCL.raw.SQLITE_BUSY ||
+            exception.SqliteErrorCode == SQLitePCL.raw.SQLITE_LOCKED;
 
     private static async ValueTask ValidateRuntimeSchemaAsync(
         SqliteConnection connection,
