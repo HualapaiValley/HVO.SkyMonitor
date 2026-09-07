@@ -835,7 +835,7 @@ public sealed class CaptureProcessingGraphPerformanceTests
     {
         var steps = new[]
         {
-            new CaptureProcessingStepConfig("Perf", "normalize", 0),
+            new CaptureProcessingStepConfig("Perf", "normalize", 0, DependsOn: ["$raw"]),
             new CaptureProcessingStepConfig("Perf", "combine", 0, DependsOn: ["normalize"]),
             new CaptureProcessingStepConfig("Perf", "preview", 0, DependsOn: ["combine"]),
             new CaptureProcessingStepConfig("Perf", "annotate", 0, DependsOn: ["preview"]),
