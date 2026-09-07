@@ -1931,9 +1931,16 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             _ = await InspectRuntimeSchemaAsync(
                 normalizedRoot, databasePath, busyTimeoutSeconds, inspectionSourceOpenedSeam, cancellationToken).ConfigureAwait(false);
         }
-        catch (InvalidDataException exception) when (exception.InnerException is SqliteException)
+        catch (Exception exception) when (
+            exception is InvalidDataException or IOException &&
+            exception.InnerException is SqliteException)
         {
-            // Raw ingress owns diagnostics for corruption in its canonical tables.
+            // Raw ingress owns diagnostics for corruption and for contention in its canonical tables. The inner
+            // SqliteException is what makes this safe to swallow: the security-critical symlink IOException from the
+            // physical-file check carries no inner exception and still escapes. Nothing is skipped either, because
+            // InitializeAsync repeats the runtime-schema checks under a transaction and the journal re-validates the
+            // raw schema moments later. Without this filter a pure lock during pre-validation would mark the ingress
+            // Unhealthy, log a Critical integrity failure, and close the capture admission gate.
         }
     }
 

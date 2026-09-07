@@ -226,7 +226,9 @@ public sealed class RawCaptureIngressTests
             SqliteConnection.ClearAllPools();
 
             // Transient runtime inspector: the last writer closes exactly at the inspection seam, so the
-            // write-ahead log is checkpointed away right after the source connection pinned its snapshot.
+            // write-ahead log is checkpointed away before the backup step opens its read transaction. Coherence
+            // comes from that read transaction, not from holding the source connection open, and the inspection
+            // still sees one committed image instead of a main file paired with side files copied at another instant.
             var transientBarrier = await CreateWalWriterBarrierAsync(databasePath).ConfigureAwait(false);
             await SqliteTransientRuntimeStore.ValidateExistingRuntimeSchemaAsync(
                 root,
@@ -258,6 +260,60 @@ public sealed class RawCaptureIngressTests
                     verify,
                     "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_InspectionContentionIsOwnedByRawIngressNotReportedAsIntegrityFailure()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var databasePath = Path.Combine(root, "journal", "raw-ingress.db");
+            await new SqliteRawCaptureJournal(databasePath, 1)
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            SqliteConnection.ClearAllPools();
+
+            using (var blocker = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = databasePath,
+                Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false
+            }.ToString()))
+            {
+                await blocker.OpenAsync().ConfigureAwait(false);
+                using (var command = blocker.CreateCommand())
+                {
+                    // Exclusive locking mode keeps the file lock across statements, so every other connection,
+                    // including the read-only inspection source, is refused with SQLITE_BUSY.
+                    command.CommandText = "PRAGMA locking_mode = EXCLUSIVE;";
+                    Assert.AreEqual("exclusive", await command.ExecuteScalarAsync().ConfigureAwait(false));
+                    command.CommandText = "PRAGMA user_version = 12;";
+                    await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+
+                // Pre-validation must stay silent under contention. A lock is not corruption, and escaping here
+                // would mark the ingress Unhealthy and close the capture admission gate for a transient condition.
+                await SqliteTransientRuntimeStore.ValidateExistingRuntimeSchemaAsync(
+                    root, 1, null, CancellationToken.None).ConfigureAwait(false);
+
+                // Nothing is hidden by that silence: the journal inspects the same database immediately afterwards
+                // and reports the lock itself, so initialization still fails loudly while the lock is held.
+                var contended = await Assert.ThrowsExactlyAsync<SqliteException>(() =>
+                    new SqliteRawCaptureJournal(databasePath, 1)
+                        .InitializeAsync(CancellationToken.None)).ConfigureAwait(false);
+                Assert.AreEqual(SQLitePCL.raw.SQLITE_BUSY, contended.SqliteErrorCode);
+            }
+
+            SqliteConnection.ClearAllPools();
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = CreateIngress(root, state);
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
         }
         finally
         {
