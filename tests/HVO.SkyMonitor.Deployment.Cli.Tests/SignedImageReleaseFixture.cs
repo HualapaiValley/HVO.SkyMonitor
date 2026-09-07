@@ -55,7 +55,8 @@ internal sealed class SignedImageReleaseFixture : IDisposable
         string root,
         string imageId,
         IReadOnlyDictionary<string, string> labels,
-        IReadOnlyList<string>? publishedArchitectures = null)
+        IReadOnlyList<string>? publishedArchitectures = null,
+        string? platformManifestDigest = null)
     {
         var mediaRoot = Path.Combine(root, "release-media", $"image-v1.2.3-{Guid.NewGuid():N}");
         Directory.CreateDirectory(mediaRoot);
@@ -79,6 +80,7 @@ internal sealed class SignedImageReleaseFixture : IDisposable
             platforms.Add(new DistributionImagePlatform(
                 "linux",
                 architecture,
+                platformManifestDigest ??
                 $"sha256:{Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"manifest-{architecture}")))}",
                 assetName,
                 imageId));

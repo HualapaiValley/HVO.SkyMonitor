@@ -225,8 +225,44 @@ public sealed class PreflightSignedReleaseTests
         Assert.AreEqual($"sha256:{new string('c', 64)}", report.CandidateImageId);
         Assert.AreEqual(CameraAgentStateContract.Current, report.CandidateStateContract);
         Assert.AreEqual(new string('7', 40), report.MinimumCompatibleRevision);
+        Assert.IsFalse(report.Findings.Any(static finding => finding.Code == "candidate-image-already-active"));
         StringAssert.Contains(
             CameraAgentStatePreflight.Render(report), "Candidate signed release: image-v1.2.3", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(true, DisplayName = "offline archive image ID")]
+    [DataRow(false, DisplayName = "platform manifest digest")]
+    public async Task ExecuteAsync_SignedIdentityAlreadyInstalled_IsReportedAsAnAdvisory(
+        bool matchOfflineArchiveImageId)
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
+        var installedImageId = $"sha256:{new string('9', 64)}";
+        var differentImageId = $"sha256:{new string('c', 64)}";
+        using var release = SignedImageReleaseFixture.Create(
+            instance.Root,
+            matchOfflineArchiveImageId ? installedImageId : differentImageId,
+            SignedImageReleaseFixture.ContractLabels,
+            [DistributionAcquirer.HostImageArchitecture()],
+            platformManifestDigest: matchOfflineArchiveImageId ? null : installedImageId);
+
+        var report = await CameraAgentStatePreflightManager.ExecuteAsync(
+            instance.Request(release.ManifestPath),
+            new RefusingProcessRunner(),
+            CancellationToken.None,
+            release.CreateAcquirer);
+
+        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
+        var finding = report.Findings.Single(static value => value.Code == "candidate-image-already-active");
+        Assert.IsFalse(finding.Blocking);
+        Assert.AreEqual("image-identity", finding.Boundary);
+        Assert.AreEqual("instance-manifest.image.imageId", finding.Path);
+        Assert.AreEqual(installedImageId, finding.Observed);
+        Assert.AreEqual("a signed candidate identity different from the installed image", finding.Expected);
+        StringAssert.Contains(
+            CameraAgentStatePreflight.Render(report),
+            "[advisory] candidate-image-already-active (image-identity)",
+            StringComparison.Ordinal);
     }
 
     /// <summary>
