@@ -82,6 +82,7 @@ hvo_installer_register_owned_image_pair() {
 hvo_installer_verify_signed_candidate() {
   local release_root="$1" revision="$2" tree="$3" version="$4" tag="$5" public_key="$6"
   local manifest="$release_root/image-manifest.json"
+  local required_path
 
   for required_path in \
     "$manifest" \
@@ -104,6 +105,10 @@ hvo_installer_verify_signed_candidate() {
     --input "$release_root/SHA256SUMS" \
     --signature "$release_root/SHA256SUMS.sig" \
     --public-key "$public_key"
+  if ! (cd "$release_root" && sha256sum --check --status --strict SHA256SUMS); then
+    printf 'Signed candidate checksum list does not match the retained files in %s.\n' "$release_root" >&2
+    return 1
+  fi
   jq -e \
     --arg revision "$revision" \
     --arg tree "$tree" \
