@@ -55,6 +55,7 @@ public sealed class DockerClientTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task PrepareImageAsync_ArchiveDoesNotContainRequestedExistingImage_IsRejected()
     {
         var archive = Path.GetTempFileName();
@@ -115,6 +116,7 @@ public sealed class DockerClientTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task EnsureNoPathReferencesAsync_SymlinkAliasToDescendant_IsRejected()
     {
         var parent = Path.Combine(Path.GetTempPath(), $"hvo-docker-alias-{Guid.NewGuid():N}");

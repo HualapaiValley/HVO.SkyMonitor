@@ -208,6 +208,7 @@ public sealed class PreflightSignedReleaseTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_SignedImageRelease_EvaluatesTheSignedBoundariesAndNamesTheRelease()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
@@ -233,6 +234,7 @@ public sealed class PreflightSignedReleaseTests
     [TestMethod]
     [DataRow(true, DisplayName = "offline archive image ID")]
     [DataRow(false, DisplayName = "platform manifest digest")]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_SignedIdentityAlreadyInstalled_IsReportedAsAnAdvisory(
         bool matchOfflineArchiveImageId)
     {
@@ -270,6 +272,7 @@ public sealed class PreflightSignedReleaseTests
     /// instance is reported incompatible when the release declares a raw-ingress schema the state cannot serve.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_SignedReleaseDeclaringAnotherRawIngressSchema_IsReportedIncompatible()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
@@ -298,6 +301,7 @@ public sealed class PreflightSignedReleaseTests
     /// clean, then be refused after acquisition. It is now a blocking finding naming both contracts.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_ReleaseDeclaringAnotherConfigurationContract_IsReportedIncompatible()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
@@ -326,6 +330,7 @@ public sealed class PreflightSignedReleaseTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_ReleaseDeclaringAnotherCatalogContract_IsReportedIncompatible()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
@@ -355,6 +360,7 @@ public sealed class PreflightSignedReleaseTests
     /// runner contract; a release built without it preflights clean today and is refused at upgrade time.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_LocalRunnerInstanceWithAReleaseOmittingTheReplayRunnerContract_IsReportedIncompatible()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync(
@@ -379,6 +385,7 @@ public sealed class PreflightSignedReleaseTests
 
     /// <summary>The same release is a valid candidate for an in-process instance, which imposes no runner requirement.</summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_InProcessInstanceWithAReleaseOmittingTheReplayRunnerContract_IsCompatible()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
@@ -402,6 +409,7 @@ public sealed class PreflightSignedReleaseTests
     /// verified release and is proved against the evaluation directly.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task Evaluate_CandidateDeclaringAnotherComponent_IsReportedIncompatible()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
@@ -434,6 +442,7 @@ public sealed class PreflightSignedReleaseTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_ReleaseWithoutThisHostArchitecture_NamesWhatItPublishes()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
@@ -454,6 +463,7 @@ public sealed class PreflightSignedReleaseTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_SignedImageRelease_SelectsTheRecordedDaemonArchitectureNotTheProcess()
     {
         // The instance's recorded daemon architecture differs from the CLI process; the release publishes only the
@@ -479,6 +489,7 @@ public sealed class PreflightSignedReleaseTests
     /// the product root, the release media, or the distribution cache, and never invokes Docker at all.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_SignedImageRelease_WritesNothingAndNeverInvokesDocker()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
@@ -503,6 +514,7 @@ public sealed class PreflightSignedReleaseTests
     /// the very same fixture leaves cached metadata behind once the archive is actually acquired.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResolveImageAsync_NetworkRelease_LeavesTheDistributionCacheUntouched()
     {
         using var fixture = NetworkImageReleaseFixture.Create();
@@ -534,6 +546,7 @@ public sealed class PreflightSignedReleaseTests
     /// preflight can never advance the rollback floor for an upgrade that has not happened.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResolveImageAsync_SignedIndexRelease_DoesNotCommitRollbackState()
     {
         using var fixture = NetworkImageReleaseFixture.Create();
@@ -561,6 +574,7 @@ public sealed class PreflightSignedReleaseTests
     /// resolution, and refusing it changes nothing on disk.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResolveImageAsync_IndexBelowTheRetainedRollbackFloor_IsRefusedWithoutTouchingIt()
     {
         using var fixture = NetworkImageReleaseFixture.Create();
@@ -585,6 +599,7 @@ public sealed class PreflightSignedReleaseTests
     /// destroy the cache an acquisition is relying on. The same corruption drives an acquisition to replace it.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResolveImageAsync_CachedMetadataThatNoLongerVerifies_IsBypassedAndLeftInPlace()
     {
         using var fixture = NetworkImageReleaseFixture.Create();
@@ -627,6 +642,7 @@ public sealed class PreflightSignedReleaseTests
     /// silently resolves the wrong manifest.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_IndexedReleaseSelectedThroughTheCommandLine_ResolvesTheRequestedVersion()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
@@ -650,6 +666,7 @@ public sealed class PreflightSignedReleaseTests
     /// <c>RequireCurrent</c> policy has no reachable candidate it would admit and <c>AllowLegacy</c> would not.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_ReleaseDeclaringTheSupersededContract_IsRefusedByVerificationItself()
     {
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
@@ -682,6 +699,7 @@ public sealed class PreflightSignedReleaseTests
     [DataRow(JournalShape.LiveRawIngressWal)]
     [DataRow(JournalShape.WalIndexWithoutLog)]
     [DataRow(JournalShape.HotIdentityRollbackJournal)]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_JournalCarryingRecoveryState_CreatesNoFileBesideTheDatabase(
         JournalShape shape)
     {

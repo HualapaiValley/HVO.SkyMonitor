@@ -27,14 +27,11 @@ public sealed class NativeLinuxOpenFlagsTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void OpenDirectoryNoFollow_OpensARealDirectoryAndRefusesASymlinkOnThisArchitecture()
     {
         // The real-directory assertions discriminated on aarch64 while the x86 values were hard-coded (O_DIRECT on a
         // directory fails with EINVAL). The symlink assertions pin the O_NOFOLLOW guard going forward.
-        if (!OperatingSystem.IsLinux())
-        {
-            Assert.Inconclusive("Native directory opening is Linux-only.");
-        }
 
         var root = Directory.CreateTempSubdirectory("hvo-native-open-");
         try
@@ -62,12 +59,9 @@ public sealed class NativeLinuxOpenFlagsTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void FlushDirectory_FlushesARealDirectoryAndRefusesASymlinkedOne()
     {
-        if (!OperatingSystem.IsLinux())
-        {
-            Assert.Inconclusive("Native directory flushing is Linux-only.");
-        }
 
         var root = Directory.CreateTempSubdirectory("hvo-native-flush-");
         try

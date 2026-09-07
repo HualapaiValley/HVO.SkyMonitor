@@ -34,6 +34,7 @@ public sealed class UpgradePreflightTests
     ];
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_CapturedPre70Ecdd3State_ReportsEveryIncompatibleBoundaryWithoutStartingCameraAgent()
     {
         using var fixture = new PreflightFixture();
@@ -76,6 +77,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_CleanStateProducedByTheCandidateContract_IsCompatible()
     {
         using var fixture = new PreflightFixture();
@@ -93,6 +95,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_FreshInstanceWithoutPersistedDatabases_IsCompatible()
     {
         using var fixture = new PreflightFixture();
@@ -106,6 +109,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_SupersededUnboundedLabel_IsRejectedForUpgradeAndAcceptedForRollback()
     {
         using var fixture = new PreflightFixture();
@@ -141,6 +145,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_UninitializedPersistedDatabases_MatchTheRuntimeFreshInitialization()
     {
         using var fixture = new PreflightFixture();
@@ -158,6 +163,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task EnsureCompatibleAsync_LegacyState_FailsOnceWithTheCompleteBoundaryReport()
     {
         using var fixture = new PreflightFixture();
@@ -197,6 +203,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task EnsureCompatibleAsync_CompatibleState_RetainsTheReportWithoutThrowing()
     {
         using var fixture = new PreflightFixture();
@@ -226,6 +233,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_UndeclaredCandidateBoundaries_AreSkippedRatherThanCompared()
     {
         using var fixture = new PreflightFixture();
@@ -247,6 +255,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_IdentityDatabaseWithoutItsHistoryTable_IsAnInterruptedFreshStart()
     {
         using var fixture = new PreflightFixture();
@@ -264,6 +273,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_IdentitySchemaWithoutAnyRecordedMigration_IsAnIncompatibleLineage()
     {
         using var fixture = new PreflightFixture();
@@ -281,6 +291,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_PartiallyDeclaredCandidate_NamesOnlyTheOmittedBoundaries()
     {
         using var fixture = new PreflightFixture();
@@ -306,6 +317,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_BindSourceTighterThanOwnerOnly_IsReportedAsIncompatible()
     {
         using var fixture = new PreflightFixture();
@@ -334,6 +346,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task EnsureCompatibleAsync_JsonInvocation_LeavesStandardErrorToTheSingleJsonObject()
     {
         using var fixture = new PreflightFixture();
@@ -384,6 +397,7 @@ public sealed class UpgradePreflightTests
         CatalogManifestVersion: "2");
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void CreateRuntimeDirectory_PreCreatesNestedBindSourcesAndRestrictsAnAdoptedMode()
     {
         using var fixture = new PreflightFixture();
@@ -412,6 +426,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void CreateRuntimeDirectory_RejectsABindSourceOwnedByAnotherIdentity()
     {
         using var fixture = new PreflightFixture();
@@ -479,6 +494,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResetStateAsync_DeletesOnlyCameraAgentRuntimeStateAndPreservesDeploymentConfiguration()
     {
         var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
@@ -539,6 +555,7 @@ public sealed class UpgradePreflightTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResetStateAsync_RequiresAPreserveByDefaultUninstall()
     {
         var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
