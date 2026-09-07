@@ -228,6 +228,10 @@ require_required_check_row() {
             # behavior |" and whose delimiter row has one cell of three or more
             # hyphens per column.
             # Any other table or row-shaped line in the section is prose.
+            # The whole section is scanned first: exactly one canonical table may
+            # exist, and it is emitted only once its uniqueness is known, so a
+            # second valid table can never shadow or precede the real one.
+            tables = 0
             for (i = 1; i < count; i++) {
                 header = section[i]
                 gsub(/[[:space:]]+/, " ", header)
@@ -241,12 +245,15 @@ require_required_check_row() {
                 if (section[i + 1] !~ /^\|[[:space:]]*:?---+:?[[:space:]]*\|[[:space:]]*:?---+:?[[:space:]]*\|[[:space:]]*$/) {
                     continue
                 }
-                for (j = i; j <= count && section[j] ~ /^\|/; j++) {
-                    print section[j]
-                }
-                exit 0
+                tables++
+                table_start = i
             }
-            fail("the canonical \"| Check | Enforced behavior |\" table was not found under the \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md")
+            if (tables != 1) {
+                fail("expected exactly one canonical \"| Check | Enforced behavior |\" table under the \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md, found " tables + 0)
+            }
+            for (j = table_start; j <= count && section[j] ~ /^\|/; j++) {
+                print section[j]
+            }
         }' docs/runbooks/ci-pipeline.md)"; then
         printf 'Could not isolate the Required Checks section of docs/runbooks/ci-pipeline.md.\n' >&2
         exit 1
