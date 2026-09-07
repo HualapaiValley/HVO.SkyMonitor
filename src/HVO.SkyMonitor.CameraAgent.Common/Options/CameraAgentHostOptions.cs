@@ -834,6 +834,12 @@ public sealed class ProcessingGraphExecutionOptions : IValidatableObject
     [Range(1, 20)]
     public int ReplayMaximumAttempts { get; init; } = 5;
 
+    /// <summary>
+    /// Limits live and replay window inputs. Durable processing retention protects at least the newest 100
+    /// outputs per agent/node and expands to the selector's bounded candidate scan of
+    /// <c>min(512, 4 * MaximumWindowInputs)</c>. While a live window remains unresolved it also reserves that
+    /// window's exact eligible candidate set, so unrelated outputs cannot displace a candidate before pinning.
+    /// </summary>
     [Range(1, 128)]
     public int MaximumWindowInputs { get; init; } = 32;
 

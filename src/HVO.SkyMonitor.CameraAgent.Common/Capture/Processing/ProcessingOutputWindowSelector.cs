@@ -14,6 +14,11 @@ internal sealed record ProcessingFrozenOutputInput(
 
 internal static class ProcessingOutputWindowSelector
 {
+    internal const int MaximumCandidateScanCount = 512;
+
+    internal static int GetCandidateScanCount(int maximumAllowedInputs)
+        => Math.Min(MaximumCandidateScanCount, maximumAllowedInputs * 4);
+
     internal static string? ReadFirstProducerId(string dependenciesJson)
     {
         using var document = JsonDocument.Parse(dependenciesJson);
@@ -109,7 +114,8 @@ internal static class ProcessingOutputWindowSelector
         command.Parameters.AddWithValue("$revision", graphRevisionId);
         command.Parameters.AddWithValue("$source_plan", sourcePlanSha256);
         command.Parameters.AddWithValue("$include_unpublished", includeUnpublishedRevisionOutputs ? 1 : 0);
-        command.Parameters.AddWithValue("$candidates", Math.Min(512, Math.Max(maximumHistory, maximumAllowedInputs * 4)));
+        command.Parameters.AddWithValue(
+            "$candidates", Math.Max(maximumHistory, GetCandidateScanCount(maximumAllowedInputs)));
         var contracts = JsonSerializer.Deserialize<ProcessingGraphInputContract[]>(inputsJson, SerializerOptions)
             ?? throw new InvalidDataException("The derived processing window input contract is invalid.");
         var candidates = (await SqliteCaptureProcessingStore.ReadOutputRowsAsync(command, cancellationToken)
@@ -207,7 +213,7 @@ internal static class ProcessingOutputWindowSelector
                                                  AND legacy.node_id = output.node_id
             WHERE output.capture_id = $capture AND output.availability_state = 'Available'
               AND ((association.node_id = $node AND execution.graph_revision_id = $revision)
-                   OR (output.node_id = $node
+                   OR (association.output_identity_sha256 IS NULL AND output.node_id = $node
                        AND legacy.status = 'Completed' AND legacy.plan_sha256 = $source_plan))
             ORDER BY output.committed_unix_ms DESC, output.output_identity_sha256 DESC;
             """;

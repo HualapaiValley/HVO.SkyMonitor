@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -2331,6 +2332,93 @@ public sealed partial class DurableCaptureProcessingTests
         }
         finally
         {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(1, 1, 101, 100)]
+    [DataRow(128, 1, 513, 512)]
+    [DataRow(128, 9, 513, 4608)]
+    [TestCategory("Integration")]
+    public async Task ProcessingOutputRetention_CoversConfiguredWindowCandidateScanAcrossNodes(
+        int maximumWindowInputs,
+        int nodeCount,
+        int outputsPerNode,
+        int expectedHoldCount)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressReserveBytes = 0,
+                ProcessingGraphs = new ProcessingGraphExecutionOptions
+                {
+                    MaximumWindowInputs = maximumWindowInputs
+                }
+            });
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using var store = new SqliteCaptureProcessingStore(options);
+            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using (var connection = new SqliteConnection(
+                       $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False"))
+            {
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync().ConfigureAwait(false);
+                for (var nodeIndex = 0; nodeIndex < nodeCount; nodeIndex++)
+                {
+                    for (var sequence = 1; sequence <= outputsPerNode; sequence++)
+                    {
+                        var identityOrdinal = nodeIndex * outputsPerNode + sequence;
+                        using var insert = connection.CreateCommand();
+                        insert.Transaction = transaction;
+                        insert.CommandText = """
+                            INSERT INTO processing_outputs(
+                                output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
+                                payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
+                                algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
+                                committed_unix_ms)
+                            VALUES ($output, $capture, 'agent-a', $node, $artifact, 'Calibrated', 'retention-test',
+                                $payload, $sidecar, X'7B7D', $recipe, X'5B5D', X'7B7D', 1, $sequence, $sequence);
+                            """;
+                        insert.Parameters.AddWithValue(
+                            "$output", identityOrdinal.ToString("X64", CultureInfo.InvariantCulture));
+                        insert.Parameters.AddWithValue(
+                            "$capture", Guid.Parse($"60000000-0000-0000-0000-{identityOrdinal:D12}").ToString("N"));
+                        insert.Parameters.AddWithValue("$node", $"producer-{nodeIndex}");
+                        insert.Parameters.AddWithValue(
+                            "$artifact", Guid.Parse($"70000000-0000-0000-0000-{identityOrdinal:D12}").ToString("N"));
+                        insert.Parameters.AddWithValue("$payload", $"frames/{nodeIndex}/{sequence}.bin");
+                        insert.Parameters.AddWithValue("$sidecar", $"frames/{nodeIndex}/{sequence}.json");
+                        insert.Parameters.AddWithValue("$recipe", new string('B', 64));
+                        insert.Parameters.AddWithValue("$sequence", sequence);
+                        await insert.ExecuteNonQueryAsync().ConfigureAwait(false);
+                    }
+                }
+                await transaction.CommitAsync().ConfigureAwait(false);
+            }
+
+            var holds = await store.ReadRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
+            var firstRetainedCapture = Guid.Parse("60000000-0000-0000-0000-000000000002");
+            var firstPrunedCapture = Guid.Parse("60000000-0000-0000-0000-000000000001");
+            var firstRetainedState = await store.ReadGalleryRetentionStatesAsync(
+                firstRetainedCapture, CancellationToken.None).ConfigureAwait(false);
+            var firstPrunedState = await store.ReadGalleryRetentionStatesAsync(
+                firstPrunedCapture, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.HasCount(expectedHoldCount, holds);
+            Assert.IsTrue(holds.Any(static hold => hold.PayloadRelativePath == "frames/0/2.bin"));
+            Assert.IsFalse(holds.Any(static hold => hold.PayloadRelativePath == "frames/0/1.bin"));
+            Assert.IsTrue(firstRetainedState[Guid.Parse("70000000-0000-0000-0000-000000000002")]);
+            Assert.IsFalse(firstPrunedState[Guid.Parse("70000000-0000-0000-0000-000000000001")]);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
     }
