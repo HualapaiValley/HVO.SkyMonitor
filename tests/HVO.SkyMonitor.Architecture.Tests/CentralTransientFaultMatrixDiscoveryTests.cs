@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Text.Json;
-using FluentAssertions;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
@@ -26,9 +25,15 @@ public sealed class CentralTransientAcceptanceManifestTests
         foreach (var project in projects)
         {
             var discovered = await ListTestsAsync(repositoryRoot, project.Key).ConfigureAwait(false);
-            foreach (var test in project)
+            var missing = project
+                .Where(test => !discovered.Contains(test))
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+            if (missing.Length > 0)
             {
-                discovered.Should().Contain(test, $"{test} must be an MSTest-discovered test in {project.Key}");
+                Assert.Fail(
+                    $"Fault-matrix tests were not discovered in {project.Key}:{Environment.NewLine}" +
+                    string.Join(Environment.NewLine, missing));
             }
         }
     }
@@ -56,7 +61,22 @@ public sealed class CentralTransientAcceptanceManifestTests
 
     private static async Task<HashSet<string>> ListTestsAsync(string repositoryRoot, string project)
     {
-        var diagnosticPath = Path.Combine(Path.GetTempPath(), $"hvo-issue-116-discovery-{Guid.NewGuid():N}.log");
+        var projectPath = Path.Combine(repositoryRoot, project);
+        var projectName = Path.GetFileNameWithoutExtension(projectPath);
+        var testAssembly = Path.Combine(
+            Path.GetDirectoryName(projectPath)!,
+            "bin",
+            "Release",
+            "net10.0",
+            $"{projectName}.dll");
+        if (!File.Exists(testAssembly))
+        {
+            throw new InvalidOperationException(
+                $"Release test assembly '{testAssembly}' does not exist for {project}. " +
+                "Build HVO.SkyMonitor.v9.slnx in Release before running the architecture discovery guard.");
+        }
+
+        var discoveryPath = Path.Combine(Path.GetTempPath(), $"hvo-issue-116-discovery-{Guid.NewGuid():N}.txt");
         var startInfo = new ProcessStartInfo("dotnet")
         {
             WorkingDirectory = repositoryRoot,
@@ -66,8 +86,7 @@ public sealed class CentralTransientAcceptanceManifestTests
         };
         foreach (var argument in new[]
         {
-            "test", project, "--no-build", "--no-restore", "--configuration", "Release", "--list-tests",
-            "--diag", diagnosticPath
+            "vstest", testAssembly, "--ListFullyQualifiedTests", $"--ListTestsTargetPath:{discoveryPath}"
         })
         {
             startInfo.ArgumentList.Add(argument);
@@ -97,40 +116,40 @@ public sealed class CentralTransientAcceptanceManifestTests
                 var timedOutOutput = await outputTask.ConfigureAwait(false);
                 var timedOutError = await errorTask.ConfigureAwait(false);
                 throw new TimeoutException(
-                    $"dotnet test --list-tests timed out for {project}.{Environment.NewLine}{timedOutOutput}{Environment.NewLine}{timedOutError}",
+                    $"dotnet vstest --ListFullyQualifiedTests timed out for {project}." +
+                    FormatProcessOutput(timedOutOutput, timedOutError),
                     exception);
             }
 
             var output = await outputTask.ConfigureAwait(false);
             var error = await errorTask.ConfigureAwait(false);
-            Assert.AreEqual(0, process.ExitCode, $"dotnet test --list-tests failed for {project}: {error}");
-            const string marker = "Received message: ";
-            var discovered = new HashSet<string>(StringComparer.Ordinal);
-            await foreach (var line in File.ReadLinesAsync(diagnosticPath).ConfigureAwait(false))
+            if (process.ExitCode != 0)
             {
-                var markerIndex = line.IndexOf(marker, StringComparison.Ordinal);
-                if (markerIndex < 0)
-                {
-                    continue;
-                }
-                using var message = JsonDocument.Parse(line[(markerIndex + marker.Length)..]);
-                var root = message.RootElement;
-                if (!root.TryGetProperty("MessageType", out var messageType))
-                {
-                    continue;
-                }
-                if (messageType.ValueEquals("TestCasesFound"))
-                {
-                    AddDiscovered(root.GetProperty("Payload"), discovered);
-                }
-                else if (messageType.ValueEquals("TestDiscovery.Completed")
-                    && root.GetProperty("Payload").TryGetProperty("LastDiscoveredTests", out var final)
-                    && final.ValueKind == JsonValueKind.Array)
-                {
-                    AddDiscovered(final, discovered);
-                }
+                throw new InvalidOperationException(
+                    $"dotnet vstest --ListFullyQualifiedTests exited {process.ExitCode} for {project}." +
+                    FormatProcessOutput(output, error));
             }
-            Assert.IsNotEmpty(discovered, $"No tests were discovered for {project}. Output: {output}");
+
+            if (!File.Exists(discoveryPath))
+            {
+                throw new InvalidOperationException(
+                    $"dotnet vstest --ListFullyQualifiedTests exited successfully for {project}, " +
+                    $"but did not create discovery evidence at '{discoveryPath}'." +
+                    FormatProcessOutput(output, error));
+            }
+
+            var discovered = (await File.ReadAllLinesAsync(discoveryPath).ConfigureAwait(false))
+                .Select(line => line.Trim())
+                .Where(line => line.Length > 0)
+                .ToHashSet(StringComparer.Ordinal);
+            if (discovered.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"dotnet vstest --ListFullyQualifiedTests created empty discovery evidence for {project} " +
+                    $"at '{discoveryPath}'." +
+                    FormatProcessOutput(output, error));
+            }
+
             return discovered;
         }
         catch (Exception exception)
@@ -142,59 +161,20 @@ public sealed class CentralTransientAcceptanceManifestTests
         {
             try
             {
-                DeleteDiagnosticFiles(diagnosticPath);
+                File.Delete(discoveryPath);
             }
             catch (Exception cleanupFailure) when (
                 primaryFailure is not null && cleanupFailure is IOException or UnauthorizedAccessException)
             {
-                primaryFailure.Data[nameof(DeleteDiagnosticFiles)] = cleanupFailure;
+                primaryFailure.Data["DiscoveryEvidenceCleanup"] = cleanupFailure;
             }
         }
     }
 
-    private static void DeleteDiagnosticFiles(string diagnosticPath)
+    private static string FormatProcessOutput(string standardOutput, string standardError)
     {
-        var directory = Path.GetDirectoryName(diagnosticPath)!;
-        var stem = Path.GetFileNameWithoutExtension(diagnosticPath);
-        var diagnosticFiles = Directory.EnumerateFiles(directory, $"{stem}.*.log", SearchOption.TopDirectoryOnly)
-            .Append(diagnosticPath)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        var deleteFailures = new List<Exception>();
-        foreach (var file in diagnosticFiles)
-        {
-            try
-            {
-                File.Delete(file);
-            }
-            catch (IOException exception)
-            {
-                deleteFailures.Add(exception);
-            }
-            catch (UnauthorizedAccessException exception)
-            {
-                deleteFailures.Add(exception);
-            }
-        }
-
-        if (deleteFailures.Count > 0)
-        {
-            throw new IOException(
-                $"Unable to delete test discovery diagnostics for '{diagnosticPath}'.",
-                new AggregateException(deleteFailures));
-        }
-    }
-
-    private static void AddDiscovered(JsonElement payload, ISet<string> discovered)
-    {
-        foreach (var test in payload.EnumerateArray())
-        {
-            if (test.TryGetProperty("FullyQualifiedName", out var name)
-                && !string.IsNullOrWhiteSpace(name.GetString()))
-            {
-                discovered.Add(name.GetString()!);
-            }
-        }
+        return $"{Environment.NewLine}Standard output:{Environment.NewLine}{standardOutput}" +
+            $"{Environment.NewLine}Standard error:{Environment.NewLine}{standardError}";
     }
 
     private static string FindRepositoryRoot()
