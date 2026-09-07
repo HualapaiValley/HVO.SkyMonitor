@@ -499,7 +499,7 @@ public sealed class RollingCombinationWindowLineageTests
             var configuration = CreateRevisionBarrierConfiguration(SyntheticCalibration);
             module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
             _ = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
-            using var store = CreateStore(root);
+            using var store = CreateStore(root, maximumWindowInputs: 128);
             var calibrations = await ReadOutputsAsync(root, "calibration").ConfigureAwait(false);
             Assert.HasCount(CaptureCount, calibrations);
             var oldestCandidate = calibrations[0];
@@ -515,7 +515,7 @@ public sealed class RollingCombinationWindowLineageTests
                     output.OutputIdentitySha256, "Missing", "candidate-gap-test", CancellationToken.None)
                     .ConfigureAwait(false);
             }
-            var expiredControl = await InsertIneligibleOutputsAsync(root, 508).ConfigureAwait(false);
+            var expiredControl = await InsertIneligibleOutputsAsync(root, 512).ConfigureAwait(false);
 
             var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(
                 configuration,
@@ -794,11 +794,15 @@ public sealed class RollingCombinationWindowLineageTests
         }
     }
 
-    private static SqliteCaptureProcessingStore CreateStore(string root)
+    private static SqliteCaptureProcessingStore CreateStore(string root, int maximumWindowInputs = 32)
         => new(Options.Create(new CameraAgentHostOptions
         {
             RawIngressRoot = root,
-            RawIngressReserveBytes = 0
+            RawIngressReserveBytes = 0,
+            ProcessingGraphs = new ProcessingGraphExecutionOptions
+            {
+                MaximumWindowInputs = maximumWindowInputs
+            }
         }));
 
     private static ServiceProvider CreateProvider(

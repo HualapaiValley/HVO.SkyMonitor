@@ -191,58 +191,57 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     internal const int MaximumOutputSourceCount = LayeredPresentationJson.MaximumSourceArtifactCount;
     internal const int MinimumProcessingOutputRetentionCount = 100;
     private const int MinimumProcessingRetentionHoldSafetyCount = 4096;
-    private const string LiveOutputWindowCandidateCtesSql = """
-        WITH RECURSIVE pending_live_output_windows AS (
-            SELECT execution.execution_id, execution.graph_revision_id,
-                   raw.agent_id, raw.capture_sequence AS current_capture_sequence,
-                   window_node.node_id AS window_node_id,
-                   json_extract(window_node.dependencies_json, '$[0].producerId') AS producer_node_id,
-                   producer_node.plan_sha256 AS producer_plan_sha256
-            FROM processing_executions execution
-            JOIN raw_captures raw ON raw.capture_id = execution.capture_id
-            JOIN processing_execution_nodes window_node
-              ON window_node.execution_id = execution.execution_id
-            JOIN processing_execution_nodes producer_node
-              ON producer_node.execution_id = execution.execution_id
-             AND producer_node.node_id = json_extract(window_node.dependencies_json, '$[0].producerId')
-            WHERE execution.execution_class = 'Live'
-              AND execution.status IN ('Pending', 'Running')
-              AND window_node.window_json IS NOT NULL
-              AND window_node.status IN ('Pending', 'Running', 'RetryableFailure')
-              AND json_type(window_node.dependencies_json, '$[0].producerId') = 'text'
-        ), eligible_live_output_window_candidates AS (
-            SELECT DISTINCT pending.execution_id, pending.window_node_id,
-                   output.output_identity_sha256, output.artifact_id, output.capture_sequence
-            FROM pending_live_output_windows pending
-            JOIN processing_outputs output
-              ON output.agent_id = pending.agent_id
-             AND output.capture_sequence < pending.current_capture_sequence
-             AND output.availability_state = 'Available'
-            LEFT JOIN processing_execution_outputs association
-              ON association.output_identity_sha256 = output.output_identity_sha256
-            LEFT JOIN processing_executions source_execution
-              ON source_execution.execution_id = association.execution_id
-            LEFT JOIN processing_nodes legacy
-              ON legacy.capture_id = output.capture_id AND legacy.node_id = output.node_id
-            WHERE (association.node_id = pending.producer_node_id
-                   OR (output.node_id = pending.producer_node_id
-                       AND legacy.status = 'Completed'
-                       AND legacy.plan_sha256 = pending.producer_plan_sha256))
-              AND ((association.published_flag = 1
-                    AND ((source_execution.graph_revision_id = pending.graph_revision_id
-                          AND source_execution.status = 'Completed')
-                         OR (legacy.status = 'Completed'
-                             AND legacy.plan_sha256 = pending.producer_plan_sha256)))
-                   OR (association.output_identity_sha256 IS NULL
-                       AND legacy.status = 'Completed'
-                       AND legacy.plan_sha256 = pending.producer_plan_sha256))
-        ), ranked_live_output_window_candidates AS (
-            SELECT artifact_id,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY execution_id, window_node_id
-                       ORDER BY capture_sequence DESC, output_identity_sha256 DESC) AS candidate_rank
-            FROM eligible_live_output_window_candidates
-        )
+    private const string PendingLiveOutputWindowsSql = """
+        SELECT execution.graph_revision_id, raw.agent_id, raw.capture_sequence,
+               json_extract(window_node.dependencies_json, '$[0].producerId') AS producer_node_id,
+               producer_node.plan_sha256
+        FROM processing_executions execution
+        JOIN raw_captures raw ON raw.capture_id = execution.capture_id
+        JOIN processing_execution_nodes window_node
+          ON window_node.execution_id = execution.execution_id
+        JOIN processing_execution_nodes producer_node
+          ON producer_node.execution_id = execution.execution_id
+         AND producer_node.node_id = json_extract(window_node.dependencies_json, '$[0].producerId')
+        WHERE execution.execution_class = 'Live'
+          AND execution.status IN ('Pending', 'Running')
+          AND window_node.window_json IS NOT NULL
+          AND window_node.status IN ('Pending', 'Running', 'RetryableFailure')
+          AND json_type(window_node.dependencies_json, '$[0].producerId') = 'text';
+        """;
+    private const string InsertLiveOutputWindowCandidatesSql = """
+        INSERT OR IGNORE INTO temp_live_output_window_candidates(artifact_id)
+        SELECT candidate_output.artifact_id
+        FROM processing_outputs candidate_output
+        LEFT JOIN processing_nodes legacy
+          ON legacy.capture_id = candidate_output.capture_id
+         AND legacy.node_id = candidate_output.node_id
+        WHERE candidate_output.agent_id = $agent
+          AND candidate_output.capture_sequence < $current_capture_sequence
+          AND candidate_output.availability_state = 'Available'
+          AND (EXISTS (
+                SELECT 1
+                FROM processing_execution_outputs association
+                JOIN processing_executions source_execution
+                  ON source_execution.execution_id = association.execution_id
+                WHERE association.output_identity_sha256 = candidate_output.output_identity_sha256
+                  AND (association.node_id = $producer_node_id
+                       OR (candidate_output.node_id = $producer_node_id
+                           AND legacy.status = 'Completed'
+                           AND legacy.plan_sha256 = $producer_plan_sha256))
+                  AND association.published_flag = 1
+                  AND ((source_execution.graph_revision_id = $graph_revision_id
+                        AND source_execution.status = 'Completed')
+                       OR (legacy.status = 'Completed'
+                           AND legacy.plan_sha256 = $producer_plan_sha256)))
+               OR (NOT EXISTS (
+                     SELECT 1
+                     FROM processing_execution_outputs association
+                     WHERE association.output_identity_sha256 = candidate_output.output_identity_sha256)
+                   AND candidate_output.node_id = $producer_node_id
+                   AND legacy.status = 'Completed'
+                   AND legacy.plan_sha256 = $producer_plan_sha256))
+        ORDER BY candidate_output.capture_sequence DESC, candidate_output.output_identity_sha256 DESC
+        LIMIT $maximum_candidates;
         """;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private static readonly string LegacySchema5Sql = CreateLegacySchema5Sql();
@@ -2059,15 +2058,61 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         return details;
     }
 
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The statement concatenates fixed internal SQL constants and every value remains parameterized.")]
+    private async ValueTask PopulateLiveOutputWindowCandidateHoldsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        using (var reset = connection.CreateCommand())
+        {
+            reset.CommandText = """
+                CREATE TEMP TABLE IF NOT EXISTS temp_live_output_window_candidates(
+                    artifact_id TEXT PRIMARY KEY CHECK(length(artifact_id) = 32)
+                ) WITHOUT ROWID;
+                DELETE FROM temp_live_output_window_candidates;
+                """;
+            await reset.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        var windows = new List<(string RevisionId, string AgentId, long CaptureSequence,
+            string ProducerNodeId, string ProducerPlanSha256)>();
+        using (var read = connection.CreateCommand())
+        {
+            read.CommandText = PendingLiveOutputWindowsSql;
+            using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                windows.Add((
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetInt64(2),
+                    reader.GetString(3),
+                    reader.GetString(4)));
+            }
+        }
+        var maximumCandidates = ProcessingOutputWindowSelector.GetCandidateScanCount(
+            _executionOptions.MaximumWindowInputs);
+        foreach (var window in windows)
+        {
+            using var insert = connection.CreateCommand();
+            insert.CommandText = InsertLiveOutputWindowCandidatesSql;
+            insert.Parameters.AddWithValue("$agent", window.AgentId);
+            insert.Parameters.AddWithValue("$current_capture_sequence", window.CaptureSequence);
+            insert.Parameters.AddWithValue("$producer_node_id", window.ProducerNodeId);
+            insert.Parameters.AddWithValue("$producer_plan_sha256", window.ProducerPlanSha256);
+            insert.Parameters.AddWithValue("$graph_revision_id", window.RevisionId);
+            insert.Parameters.AddWithValue("$maximum_candidates", maximumCandidates);
+            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     internal async ValueTask<IReadOnlyDictionary<Guid, bool>> ReadGalleryRetentionStatesAsync(
         Guid captureId,
         CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await PopulateLiveOutputWindowCandidateHoldsAsync(connection, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = string.Concat(LiveOutputWindowCandidateCtesSql, """
+        command.CommandText = """
             SELECT output.artifact_id,
                    CASE WHEN (
                        SELECT COUNT(*)
@@ -2077,9 +2122,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                               (newer.capture_sequence = output.capture_sequence AND
                                newer.output_identity_sha256 > output.output_identity_sha256))) < $maximum_outputs
                      OR EXISTS (
-                       SELECT 1 FROM ranked_live_output_window_candidates candidate
-                       WHERE candidate.artifact_id = output.artifact_id
-                         AND candidate.candidate_rank <= $maximum_candidates)
+                       SELECT 1 FROM temp_live_output_window_candidates candidate
+                       WHERE candidate.artifact_id = output.artifact_id)
                      OR EXISTS (
                        SELECT 1
                        FROM raw_captures raw
@@ -2090,12 +2134,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             FROM processing_outputs output
             WHERE output.capture_id = $capture_id
             LIMIT 129;
-            """);
+            """;
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
         command.Parameters.AddWithValue("$maximum_outputs", ProcessingOutputRetentionCount);
-        command.Parameters.AddWithValue(
-            "$maximum_candidates",
-            ProcessingOutputWindowSelector.GetCandidateScanCount(_executionOptions.MaximumWindowInputs));
         var values = new Dictionary<Guid, bool>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -2120,7 +2161,6 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
     }
 
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The statement concatenates fixed internal SQL constants and every value remains parameterized.")]
     internal async ValueTask<IReadOnlyList<ProcessingRetentionHold>> ReadRetentionHoldsAsync(
         CancellationToken cancellationToken)
     {
@@ -2150,9 +2190,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             if (safetyReader.GetInt64(0) != 0 || safetyReader.GetInt64(1) >= 512)
                 throw new InvalidDataException("Processing retention lineage contains a cycle or exceeds its traversal bound.");
         }
+        await PopulateLiveOutputWindowCandidateHoldsAsync(connection, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = string.Concat(LiveOutputWindowCandidateCtesSql, """
-            , ranked AS (
+        command.CommandText = """
+            WITH RECURSIVE ranked AS (
                 SELECT artifact_id, capture_id, availability_state,
                        ROW_NUMBER() OVER (PARTITION BY agent_id, node_id ORDER BY capture_sequence DESC, output_identity_sha256 DESC) AS rank
                 FROM processing_outputs
@@ -2170,8 +2211,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                     WHERE raw.capture_id = ranked.capture_id AND work.lane_name = 'standard'
                       AND work.state NOT IN ('completed', 'abandoned'))
                 UNION
-                SELECT artifact_id FROM ranked_live_output_window_candidates
-                WHERE candidate_rank <= $maximum_candidates
+                SELECT artifact_id FROM temp_live_output_window_candidates
                 UNION
                 SELECT raw_artifact_id FROM raw_ranked WHERE rank <= 100
                 UNION
@@ -2194,11 +2234,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path
             FROM raw_captures WHERE raw_artifact_id IN held
             LIMIT $maximum_holds_plus_one;
-            """);
+            """;
         command.Parameters.AddWithValue("$maximum_outputs", ProcessingOutputRetentionCount);
-        command.Parameters.AddWithValue(
-            "$maximum_candidates",
-            ProcessingOutputWindowSelector.GetCandidateScanCount(_executionOptions.MaximumWindowInputs));
         command.Parameters.AddWithValue("$maximum_holds_plus_one", ProcessingRetentionHoldSafetyCount + 1);
         var holds = new List<ProcessingRetentionHold>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
