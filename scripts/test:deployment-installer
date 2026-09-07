@@ -6,6 +6,29 @@ if [[ -z "${HVO_PRODUCTION_CATALOG_BUNDLE:-}" || ! -d "$HVO_PRODUCTION_CATALOG_B
   exit 2
 fi
 
+normalize_image_architecture() {
+  case "$1" in
+    x86_64 | amd64) printf 'amd64\n' ;;
+    aarch64 | arm64) printf 'arm64\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+host_kernel_name="$(uname -s)"
+host_machine_architecture="$(uname -m)"
+if [[ "$host_kernel_name" != Linux ]]; then
+  printf 'The installer campaign requires a native Linux host; uname reported %s.\n' "$host_kernel_name" >&2
+  exit 2
+fi
+if ! host_image_architecture="$(normalize_image_architecture "$host_machine_architecture")"; then
+  printf 'Unsupported installer campaign machine architecture: %s.\n' "$host_machine_architecture" >&2
+  exit 2
+fi
+case "$host_image_architecture" in
+  amd64) host_cli_runtime=linux-x64 ;;
+  arm64) host_cli_runtime=linux-arm64 ;;
+esac
+
 root="$(mktemp -d "/tmp/hvo-i.XXXXXX")"
 publish_root="$root/publish"
 archive="$root/cameraagent.tar"
@@ -83,6 +106,19 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     exit 2
   fi
 fi
+docker_server_operating_system="$(docker info --format '{{.OSType}}')"
+docker_server_machine_architecture="$(docker info --format '{{.Architecture}}')"
+if ! docker_server_image_architecture="$(normalize_image_architecture "$docker_server_machine_architecture")"; then
+  printf 'Unsupported Docker server architecture: %s.\n' "$docker_server_machine_architecture" >&2
+  exit 2
+fi
+if [[ "$docker_server_operating_system" != linux ||
+      "$docker_server_image_architecture" != "$host_image_architecture" ]]; then
+  printf 'Installer qualification requires a native local Linux Docker daemon; host is %s/%s (%s), daemon is %s/%s (%s).\n' \
+    "$host_kernel_name" "$host_image_architecture" "$host_machine_architecture" "$docker_server_operating_system" \
+    "$docker_server_image_architecture" "$docker_server_machine_architecture" >&2
+  exit 2
+fi
 if [[ -n "$baseline_revision" ]]; then
   if [[ -n "$(git status --porcelain)" ]]; then
     printf 'HVO_INSTALLER_BASELINE_REVISION requires a clean candidate worktree.\n' >&2
@@ -123,9 +159,9 @@ else
   docker build --build-arg "HVO_SOURCE_REVISION=$(git rev-parse HEAD)" --tag "$install_tag" \
     --file src/HVO.SkyMonitor.CameraAgent/Dockerfile .
 fi
-dotnet restore "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime linux-x64
+dotnet restore "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime "$host_cli_runtime"
 dotnet publish "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
-  --no-restore --configuration Release --runtime linux-x64 --output "$publish_root"
+  --no-restore --configuration Release --runtime "$host_cli_runtime" --output "$publish_root"
 if [[ "${release_archive:-0}" == 1 ]]; then
   cp "$HVO_INSTALLER_RELEASE_ARCHIVE" "$archive"
   loaded_reference="$(docker image load --input "$archive" | sed -n 's/^Loaded image ID: //p;s/^Loaded image: //p' | head -n 1)"
@@ -136,6 +172,8 @@ else
   image_id="$(docker image inspect --format '{{.Id}}' "$install_tag")"
   docker image save --output "$archive" "$install_tag"
 fi
+test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id")" = \
+  "linux/$host_image_architecture"
 archive_sha256="$(sha256sum "$archive" | cut -d ' ' -f 1)"
 if [[ "${release_archive:-0}" != 1 ]]; then
   docker image rm "$install_tag"
@@ -562,7 +600,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   register_signed_images() {
     local manifest="$1" identity
     for identity in offlineArchiveImageId manifestDigest; do
-      signed_loaded_images+=("$(signed_amd64_identity "$manifest" "$identity")")
+      signed_loaded_images+=("$(signed_platform_identity "$manifest" "$identity")")
     done
   }
   build_signed_release() {
@@ -596,21 +634,22 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     # The cleanup trap tolerates an already-removed worktree, so the entry is left in place rather than trimmed.
     remove_signed_worktree "$source_worktree"
   }
-  signed_amd64_identity() {
-    jq -er --arg field "$2" \
-      '.images[0].platforms[] | select(.operatingSystem == "linux" and .architecture == "amd64") | .[$field]' "$1"
+  signed_platform_identity() {
+    jq -er --arg architecture "$host_image_architecture" --arg field "$2" \
+      '[.images[0].platforms[] | select(.operatingSystem == "linux" and .architecture == $architecture)]
+       | if length == 1 then .[0][$field] else error("expected exactly one native Linux platform") end' "$1"
   }
   build_signed_release a "$signed_revision_a" "$signed_version_a"
   build_signed_release b "$signed_revision_b" "$signed_version_b"
 
   signed_manifest_a="$signed_workspace/release-a/image-manifest.json"
   signed_manifest_b="$signed_workspace/release-b/image-manifest.json"
-  signed_image_a="$(signed_amd64_identity "$signed_manifest_a" offlineArchiveImageId)"
-  signed_image_b="$(signed_amd64_identity "$signed_manifest_b" offlineArchiveImageId)"
-  signed_digest_a="$(signed_amd64_identity "$signed_manifest_a" manifestDigest)"
-  signed_digest_b="$(signed_amd64_identity "$signed_manifest_b" manifestDigest)"
-  signed_archive_a="$(signed_amd64_identity "$signed_manifest_a" offlineArchiveAsset)"
-  signed_archive_b="$(signed_amd64_identity "$signed_manifest_b" offlineArchiveAsset)"
+  signed_image_a="$(signed_platform_identity "$signed_manifest_a" offlineArchiveImageId)"
+  signed_image_b="$(signed_platform_identity "$signed_manifest_b" offlineArchiveImageId)"
+  signed_digest_a="$(signed_platform_identity "$signed_manifest_a" manifestDigest)"
+  signed_digest_b="$(signed_platform_identity "$signed_manifest_b" manifestDigest)"
+  signed_archive_a="$(signed_platform_identity "$signed_manifest_a" offlineArchiveAsset)"
+  signed_archive_b="$(signed_platform_identity "$signed_manifest_b" offlineArchiveAsset)"
   # The upgrade must move the instance to different immutable bytes, otherwise the transition proves nothing.
   test "$signed_image_a" != "$signed_image_b"
   test "$signed_digest_a" != "$signed_digest_b"
@@ -666,7 +705,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
       .images[0].platforms |= map(if .offlineArchiveAsset == $was then .offlineArchiveAsset = $now else . end)
       | .artifacts |= map(if .assetName == $was then .assetName = $now else . end)' \
     "$signed_manifest_b" >"$signed_manifest_mismatched"
-  test "$(signed_amd64_identity "$signed_manifest_mismatched" offlineArchiveAsset)" = "$signed_archive_a"
+  test "$(signed_platform_identity "$signed_manifest_mismatched" offlineArchiveAsset)" = "$signed_archive_a"
   test "$(jq -er --arg name "$signed_archive_a" '[.artifacts[] | select(.assetName == $name)] | length' \
     "$signed_manifest_mismatched")" = 1
 
@@ -706,9 +745,9 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   # binaries built from one revision that differ only in the embedded trusted key, rather than comparing against
   # whatever revision the rest of the campaign happened to publish.
   signed_production_publish_root="$root/signed-publish-production"
-  dotnet restore "$signed_source/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime linux-x64
+  dotnet restore "$signed_source/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime "$host_cli_runtime"
   dotnet publish "$signed_source/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
-    --no-restore --configuration Release --runtime linux-x64 --output "$signed_production_publish_root"
+    --no-restore --configuration Release --runtime "$host_cli_runtime" --output "$signed_production_publish_root"
   signed_production_cli="$signed_production_publish_root/HVO.SkyMonitor.Deployment.Cli"
   cp "$signed_workspace/signing.pub.pem" "$signed_trust_pem"
   signed_production_key_id="$(grep -m1 -o 'p256-sha256:[0-9a-f]\{64\}' "$signed_trust_source")"
@@ -716,9 +755,9 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   sed -i "s|$signed_production_key_id|$signed_key_id|g" "$signed_trust_source"
   test "$(grep -c "$signed_production_key_id" "$signed_trust_source")" = 0
   signed_publish_root="$root/signed-publish"
-  dotnet restore "$signed_source/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime linux-x64
+  dotnet restore "$signed_source/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime "$host_cli_runtime"
   dotnet publish "$signed_source/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
-    --no-restore --configuration Release --runtime linux-x64 --output "$signed_publish_root"
+    --no-restore --configuration Release --runtime "$host_cli_runtime" --output "$signed_publish_root"
   signed_cli="$signed_publish_root/HVO.SkyMonitor.Deployment.Cli"
 
   signed_instance_id="$(tr -d '\n' </proc/sys/kernel/random/uuid)"
@@ -849,6 +888,8 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
 
   assert_signed_evidence_names() {
     local version="$1" image_id="$2" revision="$3"
+    local expected_archive="cameraagent-image-v${version}-linux-${host_image_architecture}.tar"
+    local expected_inventory="image-components-linux-${host_image_architecture}.spdx.json"
     test -f "$signed_evidence_path"
     test "$(jq -er '.distribution.releaseTrain' "$signed_evidence_path")" = image
     test "$(jq -er '.distribution.releaseVersion' "$signed_evidence_path")" = "$version"
@@ -858,7 +899,9 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     test "$(jq -er '.imageId' "$signed_evidence_path")" = "$image_id"
     test "$(jq -er '.sourceRevision' "$signed_evidence_path")" = "$revision"
     test "$(jq -er '.platformOperatingSystem' "$signed_evidence_path")" = linux
-    test "$(jq -er '.platformArchitecture' "$signed_evidence_path")" = amd64
+    test "$(jq -er '.distribution.assetName' "$signed_evidence_path")" = "$expected_archive"
+    test "$(jq -er '.platformArchitecture' "$signed_evidence_path")" = "$host_image_architecture"
+    test "$(jq -er '.componentInventoryAsset' "$signed_evidence_path")" = "$expected_inventory"
     test "$(jq -er '.component' "$signed_evidence_path")" = CameraAgent
   }
 
@@ -1359,6 +1402,11 @@ SIGNED_DOCKER_SHIM
     printf 'release %s revision %s image %s\n' "$signed_version_a" "$signed_revision_a" "$signed_image_a"
     printf 'release %s revision %s image %s\n' "$signed_version_b" "$signed_revision_b" "$signed_image_b"
     printf 'post-mutation verification injection: one healthy candidate container inspection reported privileged; exact rollback restored release %s and capture advanced\n' "$signed_version_a"
+    printf 'campaign host architecture: %s\n' "$host_machine_architecture"
+    printf 'campaign native platform: linux/%s\n' "$host_image_architecture"
+    printf 'campaign CLI runtime: %s\n' "$host_cli_runtime"
+    printf 'Docker server architecture: %s/%s (%s)\n' "$docker_server_operating_system" \
+      "$docker_server_image_architecture" "$docker_server_machine_architecture"
     printf 'arm64 builder: %s\n' "$signed_arm64_builder"
   } >"$signed_evidence_root/summary.txt"
   cp "$signed_manifest_a" "$signed_evidence_root/image-manifest-a.json"

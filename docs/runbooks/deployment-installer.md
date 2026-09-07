@@ -794,8 +794,13 @@ so a signed release can be proved against the bytes an operator receives:
 # published archive rather than a locally built image. The authenticated owner
 # recovery, upgrade, and rollback contract belongs to the baseline-revision run
 # and is not exercised here.
+case "$(uname -m)" in
+  x86_64) release_architecture=amd64 ;;
+  aarch64|arm64) release_architecture=arm64 ;;
+  *) printf 'Unsupported machine architecture: %s\n' "$(uname -m)" >&2; exit 2 ;;
+esac
 HVO_PRODUCTION_CATALOG_BUNDLE=<bundle> \
-HVO_INSTALLER_RELEASE_ARCHIVE=<candidate>/cameraagent-image-v<version>-linux-amd64.tar \
+HVO_INSTALLER_RELEASE_ARCHIVE=<candidate>/cameraagent-image-v<version>-linux-${release_architecture}.tar \
   ./scripts/test:deployment-installer
 
 # Two-agent standalone smoke against a published image. Diagnostic mode only:
@@ -829,6 +834,14 @@ HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1 \
 | `HVO_INSTALLER_SIGNED_WORKSPACE` | Durable directory for the signing key and the two candidates, created if absent and set to mode `0700`. Reused when it already holds them, including its signing key, so an iteration does not rebuild; leave it unset for citable evidence, which generates a fresh key and builds both candidates from scratch into a disposable directory |
 | `HVO_INSTALLER_SIGNED_EVIDENCE_ROOT` | Retained evidence directory. Default `TestResults/issue-598/<timestamp>` |
 
+The harness derives its native platform once from `uname -m`: `x86_64` selects
+`linux/amd64` and the `linux-x64` deployment CLI, while `aarch64` or `arm64`
+selects `linux/arm64` and the `linux-arm64` CLI. Any other architecture is
+refused. The Docker server must be local Linux of the same normalized
+architecture, and every archive loaded by the harness must report that native
+platform. An emulated image or an ARM host driving an x64 Docker server is not
+native qualification evidence.
+
 Every one of those preconditions — a clean worktree, `openssl`, two distinct
 ancestor revisions that both own the release train, and two distinct versions —
 is checked before any scenario runs, so a misconfigured invocation fails in
@@ -843,6 +856,111 @@ candidate builds. Hold the shared Docker window for the whole run. It never
 pushes to a registry, and CI never sets
 `HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN`, so this scenario is an operator-run gate
 rather than a CI-gated one.
+
+### Reusing signed candidates for native ARM64 qualification
+
+Candidate creation and native execution can use different hosts without
+weakening identity. First run the corrected campaign on an x64 host with an
+external, owner-private `HVO_INSTALLER_SIGNED_WORKSPACE`. That run builds and
+verifies both multi-architecture candidates. Copy the complete workspace — the
+two release directories, campaign signing key and public key, and untrusted test
+key pair — to an owner-private directory on the ARM64 host. Do not copy only the
+ARM64 archives: manifest verification, refusal derivations, and final
+`SHA256SUMS` checks require the complete candidates.
+
+On the ARM64 host, use a clean checkout that contains the same two exact Git
+objects and set the same base/candidate revisions and versions:
+
+```bash
+umask 077
+chmod 700 <external-signed-workspace>
+chmod 600 <external-signed-workspace>/*.pem
+
+HVO_PRODUCTION_CATALOG_BUNDLE=<exact-production-bundle> \
+HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1 \
+HVO_INSTALLER_SIGNED_BASE_REVISION=<release-a-sha> \
+HVO_INSTALLER_SIGNED_CANDIDATE_REVISION=<release-b-sha> \
+HVO_INSTALLER_SIGNED_VERSION_A=<version-a> \
+HVO_INSTALLER_SIGNED_VERSION_B=<version-b> \
+HVO_INSTALLER_SIGNED_WORKSPACE=<external-signed-workspace> \
+HVO_INSTALLER_SIGNED_EVIDENCE_ROOT=<external-evidence-root> \
+  ./scripts/test:deployment-installer
+```
+
+The retained manifests are checked against those exact revisions and versions
+before reuse. A complete campaign retains 16 transition directories: `01`,
+`02`, `03a` through `03e`, `04` through `07`, `08`, `09`, `09b`, `10`, and
+`11`. Every applicable `image-distribution.json` must name `linux/arm64`, the
+ARM64 archive and component inventory, and the expected immutable A/B identity.
+Retain `summary.txt`, the manifests, signed checksums, refusal artifacts,
+container evidence, host and Docker inventories, and before/after cleanup
+inventories. After mirroring the evidence, securely remove the copied ephemeral
+private-key workspace; retain only its public-key evidence. Never use a
+production CameraAgent host for this campaign.
+
+### First published ARM64 release smoke
+
+The first real image release, and each materially changed release process, must
+run the published archive path on a qualified native ARM64 host. This is not a
+release-production command: it downloads immutable public assets after the
+release exists, verifies them with the production trust root, and exercises the
+archive an operator receives.
+
+```bash
+set -euo pipefail
+umask 077
+release_tag=image-v<version>
+release_root="$(mktemp -d /srv/hvo/image-release-smoke.XXXXXX)"
+evidence_root=/srv/hvo/evidence/<issue-or-release>/<timestamp>
+mkdir -m 700 "$evidence_root"
+
+test "$(gh release view "$release_tag" --repo RoySalisbury/HVO.SkyMonitor \
+  --json isDraft --jq .isDraft)" = false
+gh release view "$release_tag" --repo RoySalisbury/HVO.SkyMonitor \
+  --json tagName,targetCommitish,url >"$evidence_root/release.json"
+gh release download "$release_tag" --repo RoySalisbury/HVO.SkyMonitor \
+  --dir "$release_root"
+
+dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
+dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
+  --no-restore --configuration Release -warnaserror
+release_tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
+  --no-build --configuration Release --)
+"${release_tool[@]}" verify \
+  --manifest "$release_root/image-manifest.json" \
+  --signature "$release_root/image-manifest.json.sig" \
+  --asset-root "$release_root"
+"${release_tool[@]}" verify-signature \
+  --input "$release_root/SHA256SUMS" \
+  --signature "$release_root/SHA256SUMS.sig"
+(cd "$release_root" && sha256sum --check SHA256SUMS)
+
+test "$(jq -er '[.images[0].platforms[] | select(.operatingSystem == "linux" and .architecture == "arm64")] | length' \
+  "$release_root/image-manifest.json")" = 1
+archive_name="$(jq -er '.images[0].platforms[] | select(.operatingSystem == "linux" and .architecture == "arm64") | .offlineArchiveAsset' \
+  "$release_root/image-manifest.json")"
+test "$archive_name" = "cameraagent-image-v<version>-linux-arm64.tar"
+test -f "$release_root/$archive_name"
+
+{
+  uname -a
+  docker info --format 'server={{.ServerVersion}} os={{.OSType}} architecture={{.Architecture}} id={{.ID}} root={{.DockerRootDir}}'
+  jq -er '.images[0].sourceRevision' "$release_root/image-manifest.json"
+  sha256sum "$release_root/$archive_name"
+} >"$evidence_root/host-release-inventory.txt"
+
+HVO_PRODUCTION_CATALOG_BUNDLE=<exact-production-bundle> \
+HVO_INSTALLER_RELEASE_ARCHIVE="$release_root/$archive_name" \
+  ./scripts/test:deployment-installer 2>&1 | tee "$evidence_root/deployment-installer.log"
+```
+
+Require an `aarch64`/`arm64` host, a local Linux ARM64 Docker daemon on qualified
+non-production storage, exit zero, a healthy unprivileged CameraAgent with
+capture advancing, and clean before/after container, network, image, process,
+and worktree inventories. Record the public release URL/tag, manifest source
+revision, archive checksum, catalog identity, host/daemon/storage inventory, and
+cleanup result. Until this post-release run exists, native signed-campaign
+qualification does not by itself prove a production-published ARM64 archive.
 
 ## Build Evidence
 
