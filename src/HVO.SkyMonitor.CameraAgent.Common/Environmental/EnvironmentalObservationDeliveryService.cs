@@ -107,11 +107,11 @@ public sealed class EnvironmentalObservationDeliveryService(
 {
     private static readonly Action<ILogger, string, Exception?> Settled = LoggerMessage.Define<string>(
         LogLevel.Debug,
-        new EventId(2510, nameof(Settled)),
+        new EventId(2520, nameof(Settled)),
         "Environmental delivery settled durable work with outcome {Outcome}");
     private static readonly Action<ILogger, string, long, Exception?> Retrying = LoggerMessage.Define<string, long>(
         LogLevel.Warning,
-        new EventId(2511, nameof(Retrying)),
+        new EventId(2521, nameof(Retrying)),
         "Environmental delivery scheduled bounded retry because {Reason} after {DelayMilliseconds} ms");
     private static readonly Action<ILogger, string, Exception?> OutboxUnavailable = LoggerMessage.Define<string>(
         LogLevel.Error,

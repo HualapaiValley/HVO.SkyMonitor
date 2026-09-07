@@ -209,6 +209,51 @@ public sealed class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void ProductionLogEventIdsAreUnique()
+    {
+        var root = RepositoryGraph.FindRepositoryRoot();
+        var declarationPattern = new System.Text.RegularExpressions.Regex(
+            """\b(?:EventId\s*=\s*|new\s+EventId\s*\(\s*)(?<id>\d+)""",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var declarations = new List<(int Id, string Path, int Line)>();
+
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+                     .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"))
+                     .Order(StringComparer.Ordinal))
+        {
+            var source = File.ReadAllText(file);
+            foreach (System.Text.RegularExpressions.Match match in declarationPattern.Matches(source))
+            {
+                var line = 1;
+                for (var index = 0; index < match.Index; index++)
+                {
+                    if (source[index] == '\n')
+                    {
+                        line++;
+                    }
+                }
+
+                declarations.Add((
+                    int.Parse(match.Groups["id"].Value, System.Globalization.CultureInfo.InvariantCulture),
+                    Path.GetRelativePath(root, file),
+                    line));
+            }
+        }
+
+        var duplicates = declarations
+            .GroupBy(declaration => declaration.Id)
+            .Where(group => group.Count() > 1)
+            .OrderBy(group => group.Key)
+            .Select(group => $"EventId {group.Key}: {string.Join(", ", group.Select(declaration => $"{declaration.Path}:{declaration.Line}"))}")
+            .ToArray();
+
+        Assert.IsEmpty(
+            duplicates,
+            $"Production log event IDs must be unique across src/:{Environment.NewLine}{string.Join(Environment.NewLine, duplicates)}");
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void EveryForbiddenProductionPairIsRejectedByTheAllowlist()
     {
         foreach (var source in AllowedProductionReferences.Keys)
