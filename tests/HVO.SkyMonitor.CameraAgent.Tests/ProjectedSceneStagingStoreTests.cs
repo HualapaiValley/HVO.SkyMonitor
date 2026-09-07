@@ -476,8 +476,22 @@ public sealed class ProjectedSceneStagingStoreTests
         var root = CreateRoot();
         try
         {
-            using var first = CreateStore(root);
-            using var second = CreateStore(root);
+            var publishArrivals = 0;
+            var publishersReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            ValueTask WaitForConcurrentPublisher(CancellationToken cancellationToken)
+            {
+                if (Interlocked.Increment(ref publishArrivals) == 2)
+                {
+                    publishersReady.TrySetResult(true);
+                }
+                return new ValueTask(publishersReady.Task.WaitAsync(cancellationToken));
+            }
+            Func<CancellationToken, ValueTask>? beforeNonLinuxPublish = OperatingSystem.IsLinux()
+                ? null
+                : WaitForConcurrentPublisher;
+
+            using var first = CreateStore(root, beforeNonLinuxPublish: beforeNonLinuxPublish);
+            using var second = CreateStore(root, beforeNonLinuxPublish: beforeNonLinuxPublish);
             var stageKey = new string('3', 64);
             var sceneId = new string('4', 64);
             var scene = await CreateSceneAsync(FixtureUtc, 10).ConfigureAwait(false);
@@ -486,6 +500,7 @@ public sealed class ProjectedSceneStagingStoreTests
                 first.StageAsync(stageKey, sceneId, scene, CancellationToken.None).AsTask(),
                 second.StageAsync(stageKey, sceneId, scene, CancellationToken.None).AsTask()).ConfigureAwait(false);
             var directory = Path.Combine(root, "staging", "projected-scenes");
+            Assert.AreEqual(OperatingSystem.IsLinux() ? 0 : 2, publishArrivals);
             Assert.AreEqual(0, Directory.EnumerateFiles(directory, "*.tmp").Count());
 
             var changed = await CreateSceneAsync(FixtureUtc.AddSeconds(1), 10).ConfigureAwait(false);
@@ -528,8 +543,10 @@ public sealed class ProjectedSceneStagingStoreTests
     private static ProjectedSceneStagingStore CreateStore(
         string root,
         int maximumFileCount = 128,
-        int maximumReconciliationEntries = 512) => new(
-        Options.Create(new CameraAgentHostOptions
+        int maximumReconciliationEntries = 512,
+        Func<CancellationToken, ValueTask>? beforeNonLinuxPublish = null)
+    {
+        var options = Options.Create(new CameraAgentHostOptions
         {
             RawIngressRoot = root,
             ProjectedSceneStaging = new ProjectedSceneStagingOptions
@@ -538,7 +555,12 @@ public sealed class ProjectedSceneStagingStoreTests
                 MaximumTotalBytes = 128L * 1024 * 1024,
                 MaximumReconciliationEntries = maximumReconciliationEntries
             }
-        }));
+        });
+        return new ProjectedSceneStagingStore(
+            options,
+            lifecycle: null,
+            beforeNonLinuxPublish: beforeNonLinuxPublish);
+    }
 
     private static async ValueTask<VisibleScene> CreateSceneAsync(DateTimeOffset utc, double rightAscensionHours)
     {

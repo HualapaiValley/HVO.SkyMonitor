@@ -103,11 +103,20 @@ internal sealed class ProjectedSceneStagingStore :
     private readonly string _cursorPath;
     private readonly ProjectedSceneStagingOptions _options;
     private readonly ProjectedSceneStageLifecycleCoordinator _lifecycle;
+    private readonly Func<CancellationToken, ValueTask>? _beforeNonLinuxPublish;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public ProjectedSceneStagingStore(
         IOptions<CameraAgentHostOptions> options,
         ProjectedSceneStageLifecycleCoordinator? lifecycle = null)
+        : this(options, lifecycle, beforeNonLinuxPublish: null)
+    {
+    }
+
+    internal ProjectedSceneStagingStore(
+        IOptions<CameraAgentHostOptions> options,
+        ProjectedSceneStageLifecycleCoordinator? lifecycle,
+        Func<CancellationToken, ValueTask>? beforeNonLinuxPublish)
     {
         ArgumentNullException.ThrowIfNull(options);
         _durableRoot = Path.GetFullPath(options.Value.RawIngressRoot);
@@ -115,6 +124,7 @@ internal sealed class ProjectedSceneStagingStore :
         _cursorPath = Path.Combine(_durableRoot, "journal", "projected-scene-stage.cursor");
         _options = options.Value.ProjectedSceneStaging;
         _lifecycle = lifecycle ?? new ProjectedSceneStageLifecycleCoordinator();
+        _beforeNonLinuxPublish = beforeNonLinuxPublish;
     }
 
     public async ValueTask StageAsync(
@@ -220,6 +230,10 @@ internal sealed class ProjectedSceneStagingStore :
                 finally
                 {
                     await stream.DisposeAsync().ConfigureAwait(false);
+                }
+                if (_beforeNonLinuxPublish is not null)
+                {
+                    await _beforeNonLinuxPublish(cancellationToken).ConfigureAwait(false);
                 }
                 try
                 {
