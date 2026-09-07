@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.Deployment;
@@ -52,9 +54,10 @@ public sealed class InstallerFlowTests
             ProductRoot = root,
             CatalogBundle = bundle,
             ImageReference = imageId,
-            Port = 55315
+            Port = SelectFreePort()
         };
         var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
+        var probe = new RecordingPortProbe();
         var owner = new InstallerOwnerClient();
         try
         {
@@ -64,7 +67,8 @@ public sealed class InstallerFlowTests
                 _ => owner,
                 RuntimeUid,
                 RuntimeGid,
-                CancellationToken.None);
+                CancellationToken.None,
+                portAvailabilityProbe: probe.Probe);
             owner.CurrentInstallationState = "owner-ready";
             var passwordSha256 = await SafeFileSystem.ComputeSha256Async(first.PasswordFile, CancellationToken.None);
             var manifestPath = Path.Combine(first.InstanceRoot, "instance-manifest.json");
@@ -85,7 +89,8 @@ public sealed class InstallerFlowTests
                 _ => owner,
                 RuntimeUid,
                 RuntimeGid,
-                CancellationToken.None));
+                CancellationToken.None,
+                portAvailabilityProbe: probe.Probe));
 
             StringAssert.Contains(legacy.Message, "invalid or unsupported", StringComparison.Ordinal);
             Assert.AreEqual(composeUpCount, runner.ComposeUpCount);
@@ -103,7 +108,8 @@ public sealed class InstallerFlowTests
                 _ => owner,
                 RuntimeUid,
                 RuntimeGid,
-                CancellationToken.None));
+                CancellationToken.None,
+                portAvailabilityProbe: probe.Probe));
             StringAssert.Contains(drift.Message, "retained immutable manifest", StringComparison.Ordinal);
             await File.WriteAllTextAsync(manifestPath, retainedManifest);
             await File.WriteAllTextAsync(statePath, retainedState);
@@ -125,7 +131,8 @@ public sealed class InstallerFlowTests
                 _ => owner,
                 RuntimeUid,
                 RuntimeGid,
-                CancellationToken.None);
+                CancellationToken.None,
+                portAvailabilityProbe: probe.Probe);
 
             Assert.AreEqual(InstallationOutcome.Installed, first.Outcome);
             Assert.AreEqual("owner-password-change-required", first.OwnerBootstrapState);
@@ -165,7 +172,8 @@ public sealed class InstallerFlowTests
                 _ => owner,
                 RuntimeUid,
                 RuntimeGid,
-                CancellationToken.None));
+                CancellationToken.None,
+                portAvailabilityProbe: probe.Probe));
             StringAssert.Contains(resultDrift.Message, "retained result", StringComparison.Ordinal);
             Assert.AreEqual(3, runner.ComposeUpCount);
             await File.WriteAllTextAsync(resultPath, legacyInProcessResultJson);
@@ -180,7 +188,8 @@ public sealed class InstallerFlowTests
                 _ => owner,
                 RuntimeUid,
                 RuntimeGid,
-                CancellationToken.None));
+                CancellationToken.None,
+                portAvailabilityProbe: probe.Probe));
             StringAssert.Contains(unsupported.Message, "invalid or unsupported", StringComparison.Ordinal);
         }
         finally
@@ -204,6 +213,13 @@ public sealed class InstallerFlowTests
             Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
         }
 
+        // The subject of this flow is the injected owner-authentication failure and its resume, not host socket
+        // admission, so an OS-selected port is held occupied for the whole scenario to prove the explicit probe keeps
+        // shared-host port state out of the contract.
+        using var occupiedPortListener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        occupiedPortListener.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        occupiedPortListener.Listen(1);
+        var occupiedPort = ((IPEndPoint)occupiedPortListener.LocalEndPoint!).Port;
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-resume-{Guid.NewGuid():N}");
         var previousTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
         Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
@@ -216,19 +232,27 @@ public sealed class InstallerFlowTests
             ProductRoot = root,
             CatalogBundle = bundle,
             ImageReference = imageId,
-            Port = 55316
+            Port = occupiedPort
         };
         var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
+        var probe = new RecordingPortProbe();
         var owner = new FailingOnceOwnerClient();
         try
         {
-            await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+            var ownerFailure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
                 request,
                 runner,
                 _ => owner,
                 RuntimeUid,
                 RuntimeGid,
-                CancellationToken.None));
+                CancellationToken.None,
+                portAvailabilityProbe: probe.Probe));
+            // Only the injected owner-authentication failure proves the intended phase was reached. Any other
+            // InstallerException, such as the port preflight refusal, must fail here instead of masquerading as it.
+            Assert.AreEqual("injected owner authentication failure", ownerFailure.Message);
+            Assert.AreEqual(1, probe.Invocations);
+            Assert.AreEqual("127.0.0.1", probe.LastBindAddress);
+            Assert.AreEqual(occupiedPort, probe.LastPort);
             var statePath = Path.Combine(
                 root,
                 "cameraagents",
@@ -248,11 +272,14 @@ public sealed class InstallerFlowTests
                 _ => owner,
                 RuntimeUid,
                 RuntimeGid,
-                CancellationToken.None);
+                CancellationToken.None,
+                portAvailabilityProbe: probe.Probe);
 
             Assert.AreEqual(InstallationOutcome.Installed, resumed.Outcome);
             Assert.AreEqual("owner-password-change-required", resumed.OwnerBootstrapState);
             Assert.AreEqual(3, runner.ComposeUpCount);
+            // Retained state keeps a resume from re-admitting the port, exactly as the production path does.
+            Assert.AreEqual(1, probe.Invocations);
         }
         finally
         {
@@ -290,14 +317,15 @@ public sealed class InstallerFlowTests
             CatalogBundle = bundle,
             ImageManifest = release.ManifestPath,
             NoDownload = true,
-            Port = 55317
+            Port = SelectFreePort()
         };
         var runner = new InstallerProcessRunner(imageId, root, instanceId);
+        var probe = new RecordingPortProbe();
         var owner = new InstallerOwnerClient();
         try
         {
             var result = await CameraAgentInstaller.InstallAsync(
-                request, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None, release.CreateAcquirer);
+                request, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None, release.CreateAcquirer, probe.Probe);
 
             Assert.AreEqual(imageId, result.Image.ImageId);
             Assert.AreEqual("archive", result.Image.Source);
@@ -360,14 +388,15 @@ public sealed class InstallerFlowTests
             CatalogBundle = bundle,
             ImageManifest = release.ManifestPath,
             NoDownload = true,
-            Port = 55319
+            Port = SelectFreePort()
         };
         var runner = new InstallerProcessRunner(imageId, root, instanceId);
+        var probe = new RecordingPortProbe();
         var owner = new InstallerOwnerClient();
         try
         {
             var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
-                request, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None, release.CreateAcquirer));
+                request, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None, release.CreateAcquirer, probe.Probe));
 
             StringAssert.Contains(exception.Message, "raw ingress schema", StringComparison.Ordinal);
             Assert.AreEqual(0, runner.ComposeUpCount);
@@ -383,6 +412,37 @@ public sealed class InstallerFlowTests
                 SafeFileSystem.MakeTreeOwnerWritable(root);
                 Directory.Delete(root, recursive: true);
             }
+        }
+    }
+
+    /// <summary>
+    /// Reserves an OS-selected loopback port and releases it, so no fixture depends on a fixed host port.
+    /// </summary>
+    private static int SelectFreePort()
+    {
+        using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        return ((IPEndPoint)socket.LocalEndPoint!).Port;
+    }
+
+    /// <summary>
+    /// Records the port admission the installer requested without binding a host socket. These flows assert identity,
+    /// resume, and signed-distribution behaviour, so shared-host socket state must not decide their outcome; every
+    /// production install still admits its port through the real socket bind.
+    /// </summary>
+    private sealed class RecordingPortProbe
+    {
+        public int Invocations { get; private set; }
+
+        public string? LastBindAddress { get; private set; }
+
+        public int LastPort { get; private set; }
+
+        public void Probe(string bindAddress, int port)
+        {
+            Invocations++;
+            LastBindAddress = bindAddress;
+            LastPort = port;
         }
     }
 

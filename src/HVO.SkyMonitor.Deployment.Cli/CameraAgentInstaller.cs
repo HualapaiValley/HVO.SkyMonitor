@@ -31,10 +31,15 @@ internal sealed class CameraAgentInstaller
         uint uid,
         uint gid,
         CancellationToken cancellationToken,
-        Func<DistributionAcquirer>? distributionFactory = null)
+        Func<DistributionAcquirer>? distributionFactory = null,
+        Action<string, int>? portAvailabilityProbe = null)
     {
         request.Validate();
         distributionFactory ??= CreateDistributionAcquirer;
+        // The public entry point never supplies a probe, so a production install always admits the port through the
+        // real socket bind below. Unit flows whose subject is identity, resume, or signed distribution can substitute
+        // an explicit probe so shared-host socket state cannot decide their outcome.
+        portAvailabilityProbe ??= EnsurePortAvailable;
         var identityRequest = request;
         var docker = new DockerClient(processRunner);
         var instanceId = request.InstanceId ?? Guid.NewGuid();
@@ -80,7 +85,7 @@ internal sealed class CameraAgentInstaller
         using var instanceLock = OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
         if (!File.Exists(paths.StatePath))
         {
-            EnsurePortAvailable(request.BindAddress, request.Port);
+            portAvailabilityProbe(request.BindAddress, request.Port);
         }
         EnsureStorageAvailable(request);
         if (string.Equals(request.ProductRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
