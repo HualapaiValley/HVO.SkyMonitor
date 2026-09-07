@@ -231,9 +231,10 @@ public sealed class RawCaptureIngressTests
             await SqliteTransientRuntimeStore.ValidateExistingRuntimeSchemaAsync(
                 root,
                 1,
-                CancellationToken.None,
-                transientBarrier.CloseLastWriter).ConfigureAwait(false);
+                transientBarrier.CloseLastWriter,
+                CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(1, transientBarrier.SeamCount, "the transient inspection seam did not fire.");
+            AssertWalRemovedAtSeam(transientBarrier, "transient");
             AssertDurableStateUnchanged(databasePath, transientBarrier, "transient");
 
             // Raw-journal inspector: the same race, one method later in the same initialization.
@@ -244,6 +245,7 @@ public sealed class RawCaptureIngressTests
                 inspectionSourceOpenedSeam: journalBarrier.CloseLastWriter)
                 .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(1, journalBarrier.SeamCount, "the raw-journal inspection seam did not fire.");
+            AssertWalRemovedAtSeam(journalBarrier, "raw-journal");
 
             SqliteConnection.ClearAllPools();
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
@@ -286,6 +288,15 @@ public sealed class RawCaptureIngressTests
             "expected a live write-ahead log before the inspection.");
         return new InspectionSeamWriterBarrier(databasePath, writer);
     }
+
+    private static void AssertWalRemovedAtSeam(InspectionSeamWriterBarrier barrier, string label)
+        // Without this the coherence assertions below would also hold in a world where the log never vanished,
+        // which would quietly turn this permanent guard into a no-op if a future Microsoft.Data.Sqlite release
+        // touched the database during Open().
+        => Assert.IsNull(
+            barrier.DurableBytes["-wal"],
+            $"the {label} subcase did not exercise the coherence scenario: the write-ahead log was still present "
+                + "after the last writer closed at the inspection seam.");
 
     private static void AssertDurableStateUnchanged(
         string databasePath,

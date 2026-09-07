@@ -138,6 +138,7 @@ internal sealed class RawCaptureIngress :
                 await SqliteTransientRuntimeStore.ValidateExistingRuntimeSchemaAsync(
                     _options.RawIngressRoot,
                     _options.RawIngressSqliteBusyTimeoutSeconds,
+                    inspectionSourceOpenedSeam: null,
                     cancellationToken).ConfigureAwait(false);
                 await _journal.InitializeAsync(_lanePolicy.Definitions, cancellationToken).ConfigureAwait(false);
                 Volatile.Write(ref _journalValidated, true);

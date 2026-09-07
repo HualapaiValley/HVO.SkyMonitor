@@ -1917,8 +1917,8 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
     internal static async ValueTask ValidateExistingRuntimeSchemaAsync(
         string root,
         int busyTimeoutSeconds,
-        CancellationToken cancellationToken,
-        Action? inspectionSourceOpenedSeam = null)
+        Action? inspectionSourceOpenedSeam,
+        CancellationToken cancellationToken)
     {
         var normalizedRoot = Path.GetFullPath(root);
         var databasePath = Path.Combine(normalizedRoot, "journal", "raw-ingress.db");
@@ -1975,6 +1975,15 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 inspectionSourceOpenedSeam,
                 cancellationToken).ConfigureAwait(false);
         }
+        catch (SqliteException exception) when (IsInspectionContention(exception))
+        {
+            // Contention is not corruption. The inspection now opens the live database, which the copy-based
+            // inspection never did, so exhausting the bounded snapshot retries is a transient startup failure and
+            // must not send an operator into the archive-and-dispose procedure.
+            throw new IOException(
+                $"Transient runtime SQLite schema inspection could not obtain a snapshot of '{databasePath}' because the database stayed locked; retry initialization once the competing writer has finished.",
+                exception);
+        }
         catch (SqliteException exception)
         {
             throw new InvalidDataException(
@@ -1982,6 +1991,10 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 exception);
         }
     }
+
+    private static bool IsInspectionContention(SqliteException exception)
+        => exception.SqliteErrorCode == SQLitePCL.raw.SQLITE_BUSY ||
+            exception.SqliteErrorCode == SQLitePCL.raw.SQLITE_LOCKED;
 
     private static async ValueTask ValidateRuntimeSchemaAsync(
         SqliteConnection connection,

@@ -14,10 +14,12 @@ internal static class SqliteInspectionSnapshot
 
     private const int MaxAttempts = 3;
 
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(50);
+
     /// <summary>
     /// Opens <paramref name="databasePath"/> read-only, backs it up into a private temporary database, and runs
     /// <paramref name="inspectAsync"/> against that backup. <paramref name="sourceOpenedSeam"/> runs once the
-    /// source connection has pinned its snapshot and before the backup step. The temporary directory is always
+    /// source connection is open and before the backup step, once per attempt. The temporary directory is always
     /// removed.
     /// </summary>
     internal static async ValueTask<TResult> InspectAsync<TResult>(
@@ -48,7 +50,9 @@ internal static class SqliteInspectionSnapshot
             catch (SqliteException exception) when (attempt < MaxAttempts && IsContention(exception))
             {
                 // Only transient lock contention is retried; corruption and schema failures propagate to the
-                // inspector that owns their diagnostics.
+                // inspector that owns their diagnostics. sqlite3_backup_step can return BUSY without ever invoking
+                // the busy handler, so the connection-local busy timeout alone does not space these attempts out.
+                await Task.Delay(RetryDelay * attempt, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -84,9 +88,11 @@ internal static class SqliteInspectionSnapshot
                 $"Raw ingress SQLite inspection could not disable checkpoint-on-close for '{databasePath}'.");
         }
         await ConfigureBusyTimeoutAsync(source, busyTimeoutSeconds, cancellationToken).ConfigureAwait(false);
-        // The source connection pins a consistent SQLite snapshot from here on; a writer closing now can no
-        // longer take the write-ahead log out from under the inspection. Tests bind this seam to close the last
-        // writer exactly here, which is the race that used to delete the copied write-ahead log.
+        // Coherence does not come from holding this connection open: it comes from the read transaction that the
+        // backup step below opens, which yields one committed image of the database however the write-ahead log has
+        // moved in the meantime. This is why no side file is copied and why nothing here needs an explicit
+        // BEGIN DEFERRED. Tests bind this seam to close the last writer exactly here, which is the race that used to
+        // delete the write-ahead log between the enumeration and the copy.
         sourceOpenedSeam?.Invoke();
         DirectoryInfo? snapshotRoot = null;
         try
@@ -136,9 +142,10 @@ internal static class SqliteInspectionSnapshot
         {
             snapshotRoot.Delete(recursive: true);
         }
-        catch (DirectoryNotFoundException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // The snapshot directory is private temporary state; a concurrent temp sweep is not an inspection failure.
+            // The snapshot directory is private temporary state. Failing to remove it must never replace a
+            // corruption or schema diagnostic that is already propagating out of the inspection.
         }
     }
 
