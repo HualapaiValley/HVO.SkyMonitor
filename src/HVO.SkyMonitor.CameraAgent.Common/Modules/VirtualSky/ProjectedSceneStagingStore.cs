@@ -221,8 +221,21 @@ internal sealed class ProjectedSceneStagingStore :
                 {
                     await stream.DisposeAsync().ConfigureAwait(false);
                 }
-                File.Move(temporary, path);
-                published = true;
+                try
+                {
+                    File.Move(temporary, path);
+                    published = true;
+                }
+                catch (IOException) when (File.Exists(path))
+                {
+                    var concurrentlyPublished = await ReadBoundedFileAsync(path, cancellationToken).ConfigureAwait(false)
+                        ?? throw new IOException("Projected-scene stage disappeared during conflict authentication.");
+                    if (!concurrentlyPublished.AsSpan().SequenceEqual(bytes))
+                    {
+                        throw new InvalidDataException(
+                            "Projected-scene stage conflicts with existing capture geometry.");
+                    }
+                }
                 RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
             }
             catch

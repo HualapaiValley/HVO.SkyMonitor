@@ -8,10 +8,10 @@ public sealed class ProjectedSceneImageTransformTests
 {
     private static readonly string[] ExpectedRotationIdentities =
     [
-        "B4A465EAA475BD4AAA01EEC4DDBB0E5E7D9DD7DFE397606F293011FE05B465D3",
-        "E8E92011EADA3C29277E10F34B0E5C7D1ED526FFC593DF16ACED63D05A66C39B",
-        "5FCDBAB95917BEBD3A3EC632C844F0EC96FD8B223C5A4D5E6C895A679E8C535A",
-        "1C4FBBC78DEF7D552D5908E27A57AE0072C00AC7D3C14EC2BDA183CAE0865145"
+        "D1735FC65641BCE5C9DC5086A6B148183EDFC68E78A3DD1766153C47304594AE",
+        "0D6547ECFD9EEEAB1F95E27ADF498D246F91D47A4375B727F3B67303E870DCAD",
+        "D775AFF1CE6CCCD50EC7EF52C16387F8D2431BD18FC105FBC9F9CB75A93BCAF9",
+        "F774703C5DEFD086883ACC87A9EAC7A07DC4B2A44A4E79C58168F98F2223C1B0"
     ];
     private static readonly int[] ExpectedPartIndices = [0, 1];
     [TestMethod]
@@ -165,6 +165,32 @@ public sealed class ProjectedSceneImageTransformTests
         Assert.AreEqual(0, scene.Segments[0].PartIndex);
         Assert.AreEqual(new PixelPoint(40, 10), scene.Segments[0].FromPixel);
         Assert.AreEqual(new PixelPoint(0, 10), scene.Segments[0].ToPixel);
+    }
+
+    [TestMethod]
+    public void ProjectedSceneCreate_CanonicalizesSubPrecisionGeneratedGeometry()
+    {
+        var firstSource = CreateGeometryScene(
+            new PixelPoint(30 + 1e-14, 35 - 1e-14),
+            new PixelPoint(10 + 1e-14, 20 - 1e-14),
+            new PixelPoint(90 - 1e-14, 80 + 1e-14));
+        var secondSource = CreateGeometryScene(
+            new PixelPoint(30 - 1e-14, 35 + 1e-14),
+            new PixelPoint(10 - 1e-14, 20 + 1e-14),
+            new PixelPoint(90 + 1e-14, 80 - 1e-14));
+        var transform = Transform(ProjectedSceneQuarterRotation.Degrees0, 40, 20);
+        var source = new ProjectedSceneSource(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            new string('A', 64));
+
+        var first = ProjectedSceneJson.Create(
+            ProjectedSceneKind.Predicted, firstSource, transform, source, "calibration-v1", "perspective-v1");
+        var second = ProjectedSceneJson.Create(
+            ProjectedSceneKind.Predicted, secondSource, transform, source, "calibration-v1", "perspective-v1");
+
+        Assert.AreEqual(first.SceneIdentitySha256, second.SceneIdentitySha256);
+        CollectionAssert.AreEqual(ProjectedSceneJson.Serialize(first), ProjectedSceneJson.Serialize(second));
     }
 
     private static ProjectedSceneImageTransformV1 Transform(

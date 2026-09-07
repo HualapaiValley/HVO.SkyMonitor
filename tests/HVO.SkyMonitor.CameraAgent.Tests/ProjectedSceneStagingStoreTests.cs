@@ -11,7 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed class ProjectedSceneStagingStoreTests
 {
     [TestMethod]
-    public async Task StageAsync_RestartPreservesExactGeometryAndIdentity()
+    public async Task StageAsync_RestartPreservesCanonicalGeometryAndIdentity()
     {
         var root = CreateRoot();
         try
@@ -20,21 +20,23 @@ public sealed class ProjectedSceneStagingStoreTests
             var sceneId = new string('A', 64);
             var stageKey = new string('1', 64);
             string identity;
+            PixelPoint stagedPixel;
             using (var first = CreateStore(root))
             {
                 await first.StageAsync(stageKey, sceneId, scene, CancellationToken.None).ConfigureAwait(false);
                 var staged = await first.ReadAsync(stageKey, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(staged);
                 identity = staged.StageIdentitySha256;
-                CollectionAssert.AreEqual(scene.Objects.Select(static item => item.Pixel).ToArray(),
-                    staged.Objects.Select(static item => item.Pixel).ToArray());
+                stagedPixel = staged.Objects[0].Pixel;
+                Assert.AreEqual(scene.Objects[0].Pixel.X, stagedPixel.X, 1e-12);
+                Assert.AreEqual(scene.Objects[0].Pixel.Y, stagedPixel.Y, 1e-12);
             }
 
             using var restarted = CreateStore(root);
             var recovered = await restarted.ReadAsync(stageKey, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(recovered);
             Assert.AreEqual(identity, recovered.StageIdentitySha256);
-            Assert.AreEqual(scene.Objects[0].Pixel, recovered.Objects[0].Pixel);
+            Assert.AreEqual(stagedPixel, recovered.Objects[0].Pixel);
         }
         finally
         {
@@ -544,11 +546,7 @@ public sealed class ProjectedSceneStagingStoreTests
     }
 
     private static string CreateRoot()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        return root;
-    }
+        => FileSystemTestPaths.CreatePhysicalTemporaryDirectory("skymonitor-tests");
 
     private static DateTimeOffset FixtureUtc { get; } = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
 }
