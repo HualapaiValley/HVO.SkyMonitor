@@ -186,7 +186,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
     public async Task DescriptorOnlyProjectedSceneExecutesThroughLocalRunner()
     {
         var root = CreateRoot();
-        var socketPath = Path.Combine(root, "runner.sock");
+        var socketPath = FileSystemTestPaths.CreateShortUnixSocketPath();
         try
         {
             using var staging = CreateStaging(root);
@@ -639,11 +639,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
 
     private static string CreateRoot()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        return root;
-    }
+        => FileSystemTestPaths.CreatePhysicalTemporaryDirectory("skymonitor-tests");
 
     private sealed class MetadataCatalog(IEnumerable<CelestialCatalogObject> objects) :
         ICelestialCatalog, ICelestialCatalogMetadataSource

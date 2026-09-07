@@ -101,7 +101,7 @@ public sealed class ProcessingGraphOperationsTests
     public async Task SameFrozenReplayMatchesInProcessAndLocalRunnerIdentityAndProvenance()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-equivalence-{Guid.NewGuid():N}");
-        var socketPath = Path.Combine(root, "runner.sock");
+        var socketPath = FileSystemTestPaths.CreateShortUnixSocketPath();
         const string authorizationKey = "local-replay-equivalence-key-0001";
         Directory.CreateDirectory(root);
         try
@@ -245,7 +245,7 @@ public sealed class ProcessingGraphOperationsTests
                 ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:ReplayMaximumAttempts"] = "1",
-                ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = Path.Combine(root, "missing-runner.sock"),
+                ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = FileSystemTestPaths.CreateShortUnixSocketPath(),
                 ["CameraAgent:ProcessingGraphs:LocalRunner:AuthorizationKey"] = "0123456789ABCDEF0123456789ABCDEF",
                 ["CameraAgent:ProcessingGraphs:LocalRunner:ConnectTimeoutSeconds"] = "1"
             });
@@ -319,7 +319,7 @@ public sealed class ProcessingGraphOperationsTests
     public async Task RunnerCrashAndHostRestartRecoverDurableFrozenReplayExactlyOnce()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-runner-recovery-{Guid.NewGuid():N}");
-        var socketPath = Path.Combine(root, "runner.sock");
+        var socketPath = FileSystemTestPaths.CreateShortUnixSocketPath();
         const string authorizationKey = "local-replay-recovery-key-000001";
         Directory.CreateDirectory(root);
         try
