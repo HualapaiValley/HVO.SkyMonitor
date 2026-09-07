@@ -82,12 +82,14 @@ acknowledgement may still be applied.
 
 ## Signed Image Release
 
-> `linux/arm64` installation is no longer refused (the `open(2)` flag defect,
-> [#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603), is fixed
-> and the advisory arm64 workflow runs this CLI's Unit suite natively), but no
-> arm64 installer campaign and no smoke of a published arm64 release image have
-> run yet; treat an arm64 installation as unqualified end to end until #598 and
-> #599 close.
+> `linux/arm64` installation is qualified natively: the `open(2)` flag defect
+> ([#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603)) is fixed,
+> the advisory arm64 workflow runs this CLI's Unit suite, and the complete signed
+> installer lifecycle has run on aarch64 under
+> [#651](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/651). The campaign
+> uses locally signed published-format candidates. An archive downloaded from an
+> actual production release remains untested because no production release exists;
+> preserve that publication/download caveat until the first release smoke.
 
 `--image-ref` and `--image-archive` name an image the operator has already
 established. `--image-manifest`, `--image-index`, and `--image-version` instead
@@ -831,7 +833,7 @@ HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1 \
 | `HVO_INSTALLER_SIGNED_CANDIDATE_REVISION` | Revision of the upgrade candidate, which also builds the campaign CLI. Default `HEAD`. The base must be a distinct ancestor of it, and both must own the release train |
 | `HVO_INSTALLER_SIGNED_ARM64_BUILDER` | `linux/arm64` builder for the release candidates. Falls back to `HVO_RELEASE_ARM64_BUILDER`, then to `hvo-edge-01-arm64` |
 | `HVO_INSTALLER_SIGNED_VERSION_A` / `_B` | Candidate versions. Default `0.0.0-598a` and `0.0.0-598b` |
-| `HVO_INSTALLER_SIGNED_WORKSPACE` | Durable directory for the signing key and the two candidates, created if absent and set to mode `0700`. Reused when it already holds them, including its signing key, so an iteration does not rebuild; leave it unset for citable evidence, which generates a fresh key and builds both candidates from scratch into a disposable directory |
+| `HVO_INSTALLER_SIGNED_WORKSPACE` | Durable owner-private directory for the signing key and two candidates, created if absent and set to mode `0700`. A retained exact-candidate workspace is cryptographically reverified and reused without recopying or rebuilding; leaving it unset creates a fresh disposable workspace |
 | `HVO_INSTALLER_SIGNED_EVIDENCE_ROOT` | Retained evidence directory. Default `TestResults/issue-598/<timestamp>` |
 
 The harness derives its native platform once from `uname -m`: `x86_64` selects
@@ -847,9 +849,10 @@ ancestor revisions that both own the release train, and two distinct versions â€
 is checked before any scenario runs, so a misconfigured invocation fails in
 seconds rather than after the rest of the campaign.
 
-The scenario requires a clean worktree, because it builds its candidates and its
-CLI from committed revisions. It builds two multi-architecture candidates and
-scans four archives: a complete run that also exercises
+The scenario requires a clean worktree because its candidates and CLI are bound
+to committed revisions. On first use it builds two multi-architecture candidates
+and scans four archives; later exact-candidate runs authenticate and reuse the
+retained packages. A complete first run that also exercises
 `HVO_INSTALLER_BASELINE_REVISION` took 35 minutes on an amd64 host with a native
 `linux/arm64` builder over the network, of which about 25 minutes were the two
 candidate builds. Hold the shared Docker window for the whole run. It never
@@ -887,16 +890,21 @@ HVO_INSTALLER_SIGNED_EVIDENCE_ROOT=<external-evidence-root> \
   ./scripts/test:deployment-installer
 ```
 
-The retained manifests are checked against those exact revisions and versions
-before reuse. A complete campaign retains 16 transition directories: `01`,
+Before reuse, the production verifier authenticates each retained signed manifest,
+every declared asset, and the independently signed checksum list, then binds the
+release and image revision, tree, version, and tag to the requested Git objects.
+The complete verification repeats after the lifecycle. A campaign retains 16
+transition directories: `01`,
 `02`, `03a` through `03e`, `04` through `07`, `08`, `09`, `09b`, `10`, and
 `11`. Every applicable `image-distribution.json` must name `linux/arm64`, the
 ARM64 archive and component inventory, and the expected immutable A/B identity.
 Retain `summary.txt`, the manifests, signed checksums, refusal artifacts,
 container evidence, host and Docker inventories, and before/after cleanup
-inventories. After mirroring the evidence, securely remove the copied ephemeral
-private-key workspace; retain only its public-key evidence. Never use a
-production CameraAgent host for this campaign.
+inventories. Keep the owner-private exact-candidate cache through review and any
+bounded rerun so the 1.3 GB package need not be recopied. After convergence,
+securely remove its private signing keys and temporary repository/bundle material;
+retain the immutable public candidates and public-key evidence for an exact-candidate
+reuse. Never use a production CameraAgent host for this campaign.
 
 ### First published ARM64 release smoke
 
