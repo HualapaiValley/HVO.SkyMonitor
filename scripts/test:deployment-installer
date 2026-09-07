@@ -6,6 +6,9 @@ if [[ -z "${HVO_PRODUCTION_CATALOG_BUNDLE:-}" || ! -d "$HVO_PRODUCTION_CATALOG_B
   exit 2
 fi
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/lib/deployment-installer-qualification.sh"
+
 normalize_image_architecture() {
   case "$1" in
     x86_64 | amd64) printf 'amd64\n' ;;
@@ -29,13 +32,31 @@ case "$host_image_architecture" in
   arm64) host_cli_runtime=linux-arm64 ;;
 esac
 
+hvo_installer_resolve_local_docker_endpoint
+docker_server_operating_system="$(docker info --format '{{.OSType}}')"
+docker_server_machine_architecture="$(docker info --format '{{.Architecture}}')"
+if ! docker_server_image_architecture="$(normalize_image_architecture "$docker_server_machine_architecture")"; then
+  printf 'Unsupported Docker server architecture: %s.\n' "$docker_server_machine_architecture" >&2
+  exit 2
+fi
+if [[ "$docker_server_operating_system" != linux ||
+      "$docker_server_image_architecture" != "$host_image_architecture" ]]; then
+  printf 'Installer qualification requires a native local Linux Docker daemon; host is %s/%s (%s), daemon is %s/%s (%s).\n' \
+    "$host_kernel_name" "$host_image_architecture" "$host_machine_architecture" "$docker_server_operating_system" \
+    "$docker_server_image_architecture" "$docker_server_machine_architecture" >&2
+  exit 2
+fi
+# shellcheck disable=SC2034 # Passed by name to ownership-aware cleanup helpers.
+declare -A installer_startup_image_ids=()
+hvo_installer_snapshot_image_ids installer_startup_image_ids
+
 root="$(mktemp -d "/tmp/hvo-i.XXXXXX")"
 publish_root="$root/publish"
 archive="$root/cameraagent.tar"
 baseline_revision="${HVO_INSTALLER_BASELINE_REVISION:-}"
 install_tag="hvo-skymonitor-cameraagent:installer-contract-$$"
 candidate_tag=""
-signed_loaded_images=()
+declare -A signed_loaded_images=()
 signed_source_worktrees=()
 port=55415
 instance_id="$(tr -d '\n' </proc/sys/kernel/random/uuid)"
@@ -49,7 +70,7 @@ cleanup() {
     docker rm --force "hvo-skymonitor-${signed_instance_id//-/}-replay" >/dev/null 2>&1 || true
     docker network rm "hvo-skymonitor-${signed_instance_id//-/}_default" >/dev/null 2>&1 || true
   fi
-  for signed_image in "${signed_loaded_images[@]}"; do
+  for signed_image in "${!signed_loaded_images[@]}"; do
     docker image rm --force "$signed_image" >/dev/null 2>&1 || true
   done
   for signed_worktree in "${signed_source_worktrees[@]}"; do
@@ -105,19 +126,6 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     printf 'The two signed candidates must publish distinct release versions.\n' >&2
     exit 2
   fi
-fi
-docker_server_operating_system="$(docker info --format '{{.OSType}}')"
-docker_server_machine_architecture="$(docker info --format '{{.Architecture}}')"
-if ! docker_server_image_architecture="$(normalize_image_architecture "$docker_server_machine_architecture")"; then
-  printf 'Unsupported Docker server architecture: %s.\n' "$docker_server_machine_architecture" >&2
-  exit 2
-fi
-if [[ "$docker_server_operating_system" != linux ||
-      "$docker_server_image_architecture" != "$host_image_architecture" ]]; then
-  printf 'Installer qualification requires a native local Linux Docker daemon; host is %s/%s (%s), daemon is %s/%s (%s).\n' \
-    "$host_kernel_name" "$host_image_architecture" "$host_machine_architecture" "$docker_server_operating_system" \
-    "$docker_server_image_architecture" "$docker_server_machine_architecture" >&2
-  exit 2
 fi
 if [[ -n "$baseline_revision" ]]; then
   if [[ -n "$(git status --porcelain)" ]]; then
@@ -586,6 +594,20 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
     sha256sum | cut -d ' ' -f 1)"
   test "$signed_untrusted_key_id" != "$signed_key_id"
 
+  dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
+    --configuration Release -warnaserror >/dev/null
+  signed_release_tool() {
+    dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
+      --no-build --configuration Release -- "$@"
+  }
+  verify_signed_candidate() {
+    local slot="$1" revision="$2" version="$3" tree
+    tree="$(git rev-parse --verify "$revision^{tree}")"
+    hvo_installer_verify_signed_candidate \
+      "$signed_workspace/release-$slot" "$revision" "$tree" "$version" "image-v$version" \
+      "$signed_workspace/signing.pub.pem"
+  }
+
   # `git worktree prune` deregisters every worktree whose directory is momentarily absent, including other agents'
   # checkouts of this repository, so the throwaway source worktrees are always removed through git itself.
   remove_signed_worktree() {
@@ -598,24 +620,19 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   # The release script loads the host archive for its smoke test and leaves the image behind, so each candidate's
   # identities are registered for cleanup as soon as its manifest exists rather than after both builds succeed.
   register_signed_images() {
-    local manifest="$1" identity
-    for identity in offlineArchiveImageId manifestDigest; do
-      signed_loaded_images+=("$(signed_platform_identity "$manifest" "$identity")")
-    done
+    local manifest="$1"
+    hvo_installer_register_owned_image_pair installer_startup_image_ids signed_loaded_images \
+      "$(signed_platform_identity "$manifest" offlineArchiveImageId)" \
+      "$(signed_platform_identity "$manifest" manifestDigest)"
   }
   build_signed_release() {
     local slot="$1" revision="$2" version="$3"
     local source_worktree="$signed_workspace/source-$slot"
     local manifest="$signed_workspace/release-$slot/image-manifest.json"
     if [[ -f "$manifest" ]]; then
-      # A reused workspace must hold the candidate that was asked for, otherwise a stale build from an earlier
-      # revision would only be caught later by a bare identity assertion after the CLI publish work.
-      if [[ "$(jq -er '.images[0].sourceRevision' "$manifest")" != "$revision" ||
-            "$(jq -er '.release.version' "$manifest")" != "$version" ]]; then
-        printf 'The retained %s candidate in %s does not match the requested revision %s and version %s; clear the workspace.\n' \
-          "$slot" "$signed_workspace" "$revision" "$version" >&2
-        exit 1
-      fi
+      # Reuse is allowed only after the same production verifier authenticates the signed manifest, every asset,
+      # the independently signed checksum list, and the requested Git identities.
+      verify_signed_candidate "$slot" "$revision" "$version"
       printf 'Reusing the retained %s release candidate in %s.\n' "$version" "$signed_workspace" >&2
       register_signed_images "$manifest"
       return 0
@@ -630,6 +647,7 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
       --output "$signed_workspace/release-$slot" \
       --arm64-builder "$signed_arm64_builder" \
       --sign-key "$signed_workspace/signing.pem"
+    verify_signed_candidate "$slot" "$revision" "$version"
     register_signed_images "$manifest"
     # The cleanup trap tolerates an already-removed worktree, so the entry is left in place rather than trimmed.
     remove_signed_worktree "$source_worktree"
@@ -709,12 +727,6 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test "$(jq -er --arg name "$signed_archive_a" '[.artifacts[] | select(.assetName == $name)] | length' \
     "$signed_manifest_mismatched")" = 1
 
-  dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
-    --configuration Release -warnaserror >/dev/null
-  signed_release_tool() {
-    dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
-      --no-build --configuration Release -- "$@"
-  }
   signed_release_tool sign-local \
     --manifest "$signed_manifest_contradicting" \
     --private-key "$signed_workspace/signing.pem" \
@@ -1407,6 +1419,8 @@ SIGNED_DOCKER_SHIM
     printf 'campaign CLI runtime: %s\n' "$host_cli_runtime"
     printf 'Docker server architecture: %s/%s (%s)\n' "$docker_server_operating_system" \
       "$docker_server_image_architecture" "$docker_server_machine_architecture"
+    printf 'Docker endpoint: %s (%s)\n' "$HVO_INSTALLER_DOCKER_ENDPOINT" \
+      "$HVO_INSTALLER_DOCKER_ENDPOINT_SOURCE"
     printf 'arm64 builder: %s\n' "$signed_arm64_builder"
   } >"$signed_evidence_root/summary.txt"
   cp "$signed_manifest_a" "$signed_evidence_root/image-manifest-a.json"
@@ -1425,11 +1439,10 @@ SIGNED_DOCKER_SHIM
     "$signed_evidence_root/refused-releases/release-b-image-manifest.json.sig"
   cp "$signed_workspace/signing.pub.pem" "$signed_evidence_root/refused-releases/campaign-trust-root.pem"
   cp "$signed_workspace/untrusted.pub.pem" "$signed_evidence_root/refused-releases/untrusted-key.pem"
-  # Each published candidate must still contain exactly the files its own SHA256SUMS describes: the refused
-  # releases were derived beside them, not inside them.
-  for signed_slot in a b; do
-    (cd "$signed_workspace/release-$signed_slot" && sha256sum --check --status SHA256SUMS)
-  done
+  # Re-authenticate the complete retained candidates after all destructive lifecycle and refusal probes. This
+  # catches any campaign-time mutation instead of trusting only the checksum text stored beside the assets.
+  verify_signed_candidate a "$signed_revision_a" "$signed_version_a"
+  verify_signed_candidate b "$signed_revision_b" "$signed_version_b"
 
   printf 'Signed CameraAgent image install, upgrade, rollback, refusal, and post-refusal uninstall contract passed for instance %s.\n' \
     "$signed_instance_id"

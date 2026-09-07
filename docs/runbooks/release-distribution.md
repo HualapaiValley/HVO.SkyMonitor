@@ -229,16 +229,20 @@ the CameraAgent runtime and the deployment CLI select `O_DIRECTORY` and
 values that x86-64 uses). The advisory native arm64 workflow
 (`.github/workflows/cameraagent-arm64.yml`) runs the CameraAgent, acceptance,
 catalog, and deployment CLI Unit suites on aarch64 and smoke-tests a natively
-built image there. No smoke of a *published* arm64 release image and no arm64
-installer campaign have run, so treat an arm64 installation as unqualified end
-to end. The signed-release installer campaign
+built image there. The signed-release installer campaign
 ([#598](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/598)) proves the
 signed lifecycle on `linux/amd64`: both architectures of both candidates are
 built, identity-derived, scanned, and signed, and the amd64 archive is the one that an
-installation consumes and runs. The arm64 archive of each candidate is published
-and verifiable but is never installed, so arm64 remains unqualified end to end.
-[#651](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/651) tracks
-qualifying it; until it closes, do not treat an arm64 installation as supported.
+installation consumes and runs. The native `linux/arm64` qualification under
+[#651](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/651) runs that same
+two-candidate signed install, upgrade, rollback, refusal, and uninstall campaign
+on aarch64. It verifies the complete published-format candidate packages before
+reuse and after the lifecycle, and proves that both native release archives run.
+This qualifies the arm64 runtime and installer path end to end. The campaign uses
+locally signed candidate packages because the production signing key is unavailable
+outside the release workflow; an arm64 archive downloaded from an actual production
+GitHub release has not yet been smoke-tested. Final release-readiness evidence must
+retain that publication/download caveat until the production release smoke closes it.
 
 A published image release must carry a vulnerability scan. The release tool
 refuses a candidate whose scan report does not name a supported scanner and scan

@@ -520,6 +520,7 @@ deployment_paths=(
   "scripts/test:deploy-environment"
   "scripts/test:deploy-environment-cli"
   "scripts/test:deployment-installer"
+  "scripts/test:deployment-installer-qualification"
   "scripts/test:deployment-logichost-outage-contract"
   "scripts/test:deployment-normal-flow-contract"
   "scripts/catalog:install"
@@ -565,6 +566,7 @@ verify_targeted_suites "scripts/deploy/common.sh" false true false
 verify_targeted_suites "scripts/deploy/product-layout.sh" false true false
 verify_targeted_suites "scripts/test:deploy-environment" false true false
 verify_targeted_suites "scripts/test:deployment-installer" false false true
+verify_targeted_suites "scripts/test:deployment-installer-qualification" false false true
 verify_targeted_suites "scripts/test:deployment-normal-flow-contract" false false false
 
 # The complete fallback matrix.
