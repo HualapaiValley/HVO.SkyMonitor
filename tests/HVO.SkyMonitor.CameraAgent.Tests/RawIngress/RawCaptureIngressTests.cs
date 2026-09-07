@@ -14,6 +14,7 @@ using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -2320,6 +2321,7 @@ public sealed class RawCaptureIngressTests
                     crash.Output,
                     $"Injected raw ingress process termination at {point}.",
                     point.ToString());
+                AssertFailFastMarker(root, point, crash.LauncherProcessId);
                 Assert.IsFalse(File.Exists(GetNotificationMarker(root)), point.ToString());
                 var temporaryFiles = Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).ToArray();
                 var publishedPayloads = Directory.EnumerateFiles(
@@ -2433,6 +2435,9 @@ public sealed class RawCaptureIngressTests
                     RawIngressFaultPoint.PayloadWritten,
                     TimeSpan.FromMilliseconds(250),
                     hang: true).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.IsFalse(
+                Directory.EnumerateFiles(root, $"{Path.GetFileName(GetFailFastMarker(root))}*").Any(),
+                "a hung crash child must publish no FailFast marker.");
         }
         finally
         {
@@ -2440,23 +2445,47 @@ public sealed class RawCaptureIngressTests
         }
     }
 
+    /// <summary>
+    /// Only the launcher sets this exact sentinel on the nested child's environment. The crash child arms
+    /// nothing without it, so a crash root or fault point inherited from the ambient environment can never
+    /// terminate or hang the test host that merely discovers <see cref="RawIngressCrashChild"/>.
+    /// </summary>
+    private const string CrashChildSentinelVariable = "HVO_RAW_INGRESS_CRASH_CHILD";
+    private const string CrashChildSentinelValue = "1";
+    private const string CrashRootVariable = "HVO_RAW_INGRESS_CRASH_ROOT";
+    private const string CrashPointVariable = "HVO_RAW_INGRESS_CRASH_POINT";
+    private const string CrashHangVariable = "HVO_RAW_INGRESS_CRASH_HANG";
+
     [TestMethod]
     public async Task RawIngressCrashChild()
     {
-        var root = Environment.GetEnvironmentVariable("HVO_RAW_INGRESS_CRASH_ROOT");
-        var pointValue = Environment.GetEnvironmentVariable("HVO_RAW_INGRESS_CRASH_POINT");
-        if (string.IsNullOrWhiteSpace(root) || !Enum.TryParse<RawIngressFaultPoint>(pointValue, out var point))
+        if (!string.Equals(
+                Environment.GetEnvironmentVariable(CrashChildSentinelVariable),
+                CrashChildSentinelValue,
+                StringComparison.Ordinal))
         {
             return;
         }
-        if (string.Equals(Environment.GetEnvironmentVariable("HVO_RAW_INGRESS_CRASH_HANG"), "true", StringComparison.Ordinal))
+
+        var root = Environment.GetEnvironmentVariable(CrashRootVariable);
+        var pointValue = Environment.GetEnvironmentVariable(CrashPointVariable);
+        Assert.IsFalse(
+            string.IsNullOrWhiteSpace(root),
+            $"{CrashChildSentinelVariable} is set but {CrashRootVariable} names no crash root.");
+        Assert.IsTrue(
+            Directory.Exists(root),
+            $"{CrashRootVariable} '{root}' does not exist.");
+        Assert.IsTrue(
+            Enum.TryParse<RawIngressFaultPoint>(pointValue, ignoreCase: false, out var point) && Enum.IsDefined(point),
+            $"{CrashPointVariable} '{pointValue}' is not a raw ingress fault point.");
+        if (string.Equals(Environment.GetEnvironmentVariable(CrashHangVariable), "true", StringComparison.Ordinal))
         {
             await Task.Delay(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
         }
         using var ingress = CreateIngress(
             root,
             new RawIngressState(TimeProvider.System),
-            new ProcessKillFaultInjector(point));
+            new ProcessKillFaultInjector(point, GetFailFastMarker(root)));
         var context = new CaptureHostContext(
             CreateConfiguration(),
             ingress,
@@ -3104,7 +3133,7 @@ public sealed class RawCaptureIngressTests
         return connection;
     }
 
-    private static async Task<(int ExitCode, string Output)> RunCrashChildAsync(
+    private static async Task<(int ExitCode, string Output, int LauncherProcessId)> RunCrashChildAsync(
         string root,
         RawIngressFaultPoint point,
         TimeSpan? timeoutAfter = null,
@@ -3121,9 +3150,16 @@ public sealed class RawCaptureIngressTests
         startInfo.ArgumentList.Add(typeof(RawCaptureIngressTests).Assembly.Location);
         startInfo.ArgumentList.Add("--filter");
         startInfo.ArgumentList.Add($"FullyQualifiedName={typeof(RawCaptureIngressTests).FullName}.{nameof(RawIngressCrashChild)}");
-        startInfo.Environment["HVO_RAW_INGRESS_CRASH_ROOT"] = root;
-        startInfo.Environment["HVO_RAW_INGRESS_CRASH_POINT"] = point.ToString();
-        startInfo.Environment["HVO_RAW_INGRESS_CRASH_HANG"] = hang ? "true" : "false";
+        // The child inherits this process's environment. Remove every crash variable it may have inherited,
+        // then set all of them explicitly for this child only; the process-global environment is never touched.
+        foreach (var variable in new[] { CrashChildSentinelVariable, CrashRootVariable, CrashPointVariable, CrashHangVariable })
+        {
+            startInfo.Environment.Remove(variable);
+        }
+        startInfo.Environment[CrashChildSentinelVariable] = CrashChildSentinelValue;
+        startInfo.Environment[CrashRootVariable] = root;
+        startInfo.Environment[CrashPointVariable] = point.ToString();
+        startInfo.Environment[CrashHangVariable] = hang ? "true" : "false";
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start raw ingress crash child.");
         var standardOutput = process.StandardOutput.ReadToEndAsync();
         var standardError = process.StandardError.ReadToEndAsync();
@@ -3144,7 +3180,7 @@ public sealed class RawCaptureIngressTests
         }
         return (process.ExitCode, string.Concat(
             await standardOutput.ConfigureAwait(false),
-            await standardError.ConfigureAwait(false)));
+            await standardError.ConfigureAwait(false)), process.Id);
     }
 
     private static (int TemporaryFiles, int PublishedPayloads, int PublishedSidecars, long JournalRows, RawIngressOutcome RecoveryOutcome)
@@ -3209,6 +3245,30 @@ public sealed class RawCaptureIngressTests
             entry["pixelFormat"] = pixelFormat;
         }
         return JsonSerializer.Serialize(entry, WebJson);
+    }
+
+    /// <summary>
+    /// Stable marker the crash child publishes immediately before <see cref="Environment.FailFast(string)"/>.
+    /// Its content is "&lt;pid&gt; &lt;fault point&gt;", so an unexpected test-host abort is attributable to an
+    /// injected termination instead of being indistinguishable from an ambient crash.
+    /// </summary>
+    private static string GetFailFastMarker(string root) => Path.Combine(root, "raw-ingress-failfast.marker");
+
+    private static void AssertFailFastMarker(string root, RawIngressFaultPoint point, int launcherProcessId)
+    {
+        var marker = GetFailFastMarker(root);
+        Assert.IsTrue(File.Exists(marker), $"{point}: the crash child published no FailFast marker.");
+        var tokens = File.ReadAllText(marker).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        Assert.HasCount(2, tokens, $"{point}: FailFast marker content was '{string.Join(' ', tokens)}'.");
+        Assert.IsTrue(
+            int.TryParse(tokens[0], NumberStyles.None, CultureInfo.InvariantCulture, out var childProcessId) && childProcessId > 0,
+            $"{point}: FailFast marker PID '{tokens[0]}' is not a process id.");
+        Assert.AreNotEqual(Environment.ProcessId, childProcessId, $"{point}: the FailFast marker names this process.");
+        Assert.AreNotEqual(launcherProcessId, childProcessId, $"{point}: the FailFast marker names the dotnet test launcher.");
+        Assert.AreEqual(point.ToString(), tokens[1], $"{point}: FailFast marker fault point.");
+        Assert.IsFalse(
+            Directory.EnumerateFiles(root, $"{Path.GetFileName(marker)}.*").Any(),
+            $"{point}: a FailFast staging marker was left behind.");
     }
 
     private static string GetNotificationMarker(string root)
@@ -3374,7 +3434,7 @@ public sealed class RawCaptureIngressTests
         }
     }
 
-    private sealed class ProcessKillFaultInjector(RawIngressFaultPoint target) : IRawIngressFaultInjector
+    private sealed class ProcessKillFaultInjector(RawIngressFaultPoint target, string markerPath) : IRawIngressFaultInjector
     {
         public bool IsEnabled(RawIngressFaultPoint point) => point == target;
 
@@ -3383,6 +3443,13 @@ public sealed class RawCaptureIngressTests
             if (point == target)
             {
                 var message = $"Injected raw ingress process termination at {point}.";
+                // Publish the attribution marker atomically before terminating: a PID-specific staging file is
+                // renamed to the stable marker, so the parent either sees the complete marker or none at all.
+                var stagingMarkerPath = $"{markerPath}.{Environment.ProcessId}.staging";
+                File.WriteAllText(
+                    stagingMarkerPath,
+                    $"{Environment.ProcessId.ToString(CultureInfo.InvariantCulture)} {point}");
+                File.Move(stagingMarkerPath, markerPath);
                 Console.Error.WriteLine(message);
                 Console.Error.Flush();
                 Environment.FailFast(message);
