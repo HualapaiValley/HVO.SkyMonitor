@@ -56,23 +56,26 @@ public sealed class SqliteCaptureProcessingStoreConcurrencyTests
                 store.Dispose();
             }
 
-            using var reopened = new SqliteCaptureProcessingStore(options);
-            foreach (var output in new[] { seeded, distinct })
+            using (var reopened = new SqliteCaptureProcessingStore(options))
             {
-                var node = await reopened.ReadNodeAsync(
-                    output.Capture.CaptureId, NodeId, CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNotNull(node, output.OutputIdentitySha256);
-                Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status, output.OutputIdentitySha256);
-                Assert.HasCount(1, node.Outputs, output.OutputIdentitySha256);
-                Assert.AreEqual(output.OutputIdentitySha256, node.Outputs[0].OutputIdentitySha256);
-                Assert.AreEqual(output.ArtifactId, node.Outputs[0].ArtifactId);
-                Assert.AreEqual(output.PayloadRelativePath, node.Outputs[0].PayloadRelativePath);
-                Assert.AreEqual(1, await CountOutputRowsAsync(root, output.OutputIdentitySha256).ConfigureAwait(false));
+                foreach (var output in new[] { seeded, distinct })
+                {
+                    var node = await reopened.ReadNodeAsync(
+                        output.Capture.CaptureId, NodeId, CancellationToken.None).ConfigureAwait(false);
+                    Assert.IsNotNull(node, output.OutputIdentitySha256);
+                    Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status, output.OutputIdentitySha256);
+                    Assert.HasCount(1, node.Outputs, output.OutputIdentitySha256);
+                    Assert.AreEqual(output.OutputIdentitySha256, node.Outputs[0].OutputIdentitySha256);
+                    Assert.AreEqual(output.ArtifactId, node.Outputs[0].ArtifactId);
+                    Assert.AreEqual(output.PayloadRelativePath, node.Outputs[0].PayloadRelativePath);
+                    Assert.AreEqual(1, await CountOutputRowsAsync(root, output.OutputIdentitySha256).ConfigureAwait(false));
+                }
+                Assert.AreEqual(2, await CountOutputRowsAsync(root, null).ConfigureAwait(false));
             }
-            Assert.AreEqual(2, await CountOutputRowsAsync(root, null).ConfigureAwait(false));
         }
         finally
         {
+            // Every store and connection is disposed above, so the root can be removed on every platform.
             Directory.Delete(root, recursive: true);
         }
     }
@@ -82,6 +85,19 @@ public sealed class SqliteCaptureProcessingStoreConcurrencyTests
     public async Task ConfirmGrant_WithProcessingWriteUnderLiveAvailabilityReader_AdmitsOnceWithoutTableLock()
     {
         var root = CreateRoot("hvo-processing-schedule-lock");
+        try
+        {
+            await ConfirmGrantUnderLiveReaderAsync(root).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Every store, coordinator, and connection is disposed inside the local function before this runs.
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task ConfirmGrantUnderLiveReaderAsync(string root)
+    {
         var timeProvider = new FixedTimeProvider(new DateTimeOffset(2025, 1, 13, 1, 0, 0, TimeSpan.Zero));
         var options = CreateOptions(root);
         var rawIngress = new JournalInitializer(root);
@@ -96,7 +112,6 @@ public sealed class SqliteCaptureProcessingStoreConcurrencyTests
         using var runtime = new CaptureScheduleRuntimeCoordinator(
             scheduleStore, admission, rawState, laneState, new EmptyPipelineFactory(), timeProvider);
         using var processingStore = new SqliteCaptureProcessingStore(options);
-        try
         {
             await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await runtime.InitializeAsync(CreateConfiguration(), CancellationToken.None).ConfigureAwait(false);
@@ -119,10 +134,6 @@ public sealed class SqliteCaptureProcessingStoreConcurrencyTests
                 stopwatch.Elapsed < TimeSpan.FromSeconds(BusyTimeoutSeconds),
                 $"processing write plus ConfirmGrantAsync took {stopwatch.Elapsed.TotalMilliseconds:F1} ms, which reaches the SQLite busy timeout");
             Assert.AreEqual(2, await CountOutputRowsAsync(root, null).ConfigureAwait(false));
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
         }
     }
 
