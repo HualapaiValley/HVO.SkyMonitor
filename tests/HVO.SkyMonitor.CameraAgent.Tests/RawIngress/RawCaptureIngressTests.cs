@@ -2436,6 +2436,7 @@ public sealed class RawCaptureIngressTests
                     TimeSpan.FromMilliseconds(250),
                     hang: true).ConfigureAwait(false)).ConfigureAwait(false);
             Assert.IsFalse(
+                Directory.Exists(root) &&
                 Directory.EnumerateFiles(root, $"{Path.GetFileName(GetFailFastMarker(root))}*").Any(),
                 "a hung crash child must publish no FailFast marker.");
         }
@@ -2469,12 +2470,10 @@ public sealed class RawCaptureIngressTests
 
         var root = Environment.GetEnvironmentVariable(CrashRootVariable);
         var pointValue = Environment.GetEnvironmentVariable(CrashPointVariable);
+        // The launcher's root is created lazily by the ingress itself, so only the variable is validated here.
         Assert.IsFalse(
             string.IsNullOrWhiteSpace(root),
             $"{CrashChildSentinelVariable} is set but {CrashRootVariable} names no crash root.");
-        Assert.IsTrue(
-            Directory.Exists(root),
-            $"{CrashRootVariable} '{root}' does not exist.");
         Assert.IsTrue(
             Enum.TryParse<RawIngressFaultPoint>(pointValue, ignoreCase: false, out var point) && Enum.IsDefined(point),
             $"{CrashPointVariable} '{pointValue}' is not a raw ingress fault point.");
@@ -3267,7 +3266,7 @@ public sealed class RawCaptureIngressTests
         Assert.AreNotEqual(launcherProcessId, childProcessId, $"{point}: the FailFast marker names the dotnet test launcher.");
         Assert.AreEqual(point.ToString(), tokens[1], $"{point}: FailFast marker fault point.");
         Assert.IsFalse(
-            Directory.EnumerateFiles(root, $"{Path.GetFileName(marker)}.*").Any(),
+            Directory.EnumerateFiles(root, "*.staging").Any(),
             $"{point}: a FailFast staging marker was left behind.");
     }
 
