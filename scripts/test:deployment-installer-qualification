@@ -109,8 +109,9 @@ cat >"$test_root/release/image-manifest.json" <<EOF
   "images": [{"sourceRevision":"$revision","sourceTree":"$tree"}]
 }
 EOF
+printf 'cameraagent archive\n' >"$test_root/release/cameraagent.tar"
+(cd "$test_root/release" && sha256sum cameraagent.tar >SHA256SUMS)
 touch "$test_root/release/image-manifest.json.sig" \
-  "$test_root/release/SHA256SUMS" \
   "$test_root/release/SHA256SUMS.sig" \
   "$test_root/signing.pub.pem"
 signed_release_tool() { printf '%s\n' "$*" >>"$test_root/release-tool.log"; }
@@ -119,6 +120,14 @@ hvo_installer_verify_signed_candidate \
 test "$(wc -l <"$test_root/release-tool.log")" = 2
 grep -Fq 'verify --manifest' "$test_root/release-tool.log"
 grep -Fq 'verify-signature --input' "$test_root/release-tool.log"
+
+printf 'tampered cameraagent archive\n' >"$test_root/release/cameraagent.tar"
+if hvo_installer_verify_signed_candidate \
+  "$test_root/release" "$revision" "$tree" "$version" "image-v$version" "$test_root/signing.pub.pem"; then
+  printf 'A candidate whose checksum list no longer matched its files was accepted.\n' >&2
+  exit 1
+fi
+printf 'cameraagent archive\n' >"$test_root/release/cameraagent.tar"
 
 jq '.release.sourceTree = "cccccccccccccccccccccccccccccccccccccccc"' \
   "$test_root/release/image-manifest.json" >"$test_root/tampered.json"

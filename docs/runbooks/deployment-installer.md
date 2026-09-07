@@ -901,10 +901,16 @@ ARM64 archive and component inventory, and the expected immutable A/B identity.
 Retain `summary.txt`, the manifests, signed checksums, refusal artifacts,
 container evidence, host and Docker inventories, and before/after cleanup
 inventories. Keep the owner-private exact-candidate cache through review and any
-bounded rerun so the 1.3 GB package need not be recopied. After convergence,
-securely remove its private signing keys and temporary repository/bundle material;
-retain the immutable public candidates and public-key evidence for an exact-candidate
-reuse. Never use a production CameraAgent host for this campaign.
+bounded rerun so the 1.3 GB package need not be recopied. For exact-candidate
+reuse, keep the ephemeral `signing.pem` at mode `600` in that owner-private
+workspace for as long as the cached candidates remain reusable; it is never a
+production key. To retire the private keys instead, securely delete them and
+delete the workspace's `release-*` directories (or the whole workspace) before
+the next campaign. A later run generates a new key and correctly refuses retained
+candidates signed by the retired key rather than rebuilding them. Immutable public
+candidates and public-key evidence may be retained separately as evidence, not as
+a reusable workspace after key retirement. Never use a production CameraAgent
+host for this campaign.
 
 ### First published ARM64 release smoke
 
