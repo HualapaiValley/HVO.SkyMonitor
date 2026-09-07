@@ -21,6 +21,14 @@ public sealed class OwnerRecoveryTransportTests
         UnixFileMode.OtherExecute;
     private const string CrashRootEnvironmentVariable = "HVO_OWNER_RECOVERY_CRASH_ROOT";
 
+    /// <summary>
+    /// Only <see cref="StartCrashChild"/> sets this exact sentinel on the nested child's environment. Without
+    /// it the crash child binds nothing, so an inherited crash root cannot make the discovering test host
+    /// bind a socket and wait forever.
+    /// </summary>
+    private const string CrashChildSentinelVariable = "HVO_OWNER_RECOVERY_CRASH_CHILD";
+    private const string CrashChildSentinelValue = "1";
+
     [TestMethod]
     public void OpenParent_OpensARealDirectoryAndRefusesASymlinkedOne()
     {
@@ -198,11 +206,19 @@ public sealed class OwnerRecoveryTransportTests
     [TestMethod]
     public async Task HardTerminationChildAsync()
     {
-        var root = Environment.GetEnvironmentVariable(CrashRootEnvironmentVariable);
-        if (string.IsNullOrWhiteSpace(root))
+        if (!string.Equals(
+                Environment.GetEnvironmentVariable(CrashChildSentinelVariable),
+                CrashChildSentinelValue,
+                StringComparison.Ordinal))
         {
             return;
         }
+
+        var root = Environment.GetEnvironmentVariable(CrashRootEnvironmentVariable);
+        Assert.IsFalse(
+            string.IsNullOrWhiteSpace(root),
+            $"{CrashChildSentinelVariable} is set but {CrashRootEnvironmentVariable} names no crash root.");
+        Assert.IsTrue(Directory.Exists(root), $"{CrashRootEnvironmentVariable} '{root}' does not exist.");
 
         using var socket = Bind(Path.Combine(root, OwnerRecoveryTransport.SocketFileName), TransientSocketMode);
         var markerPath = Path.Combine(root, "listening");
@@ -244,6 +260,10 @@ public sealed class OwnerRecoveryTransportTests
         startInfo.ArgumentList.Add("--filter");
         startInfo.ArgumentList.Add(
             $"FullyQualifiedName={typeof(OwnerRecoveryTransportTests).FullName}.{nameof(HardTerminationChildAsync)}");
+        // Strip anything inherited, then arm this child explicitly; the process-global environment is untouched.
+        startInfo.Environment.Remove(CrashChildSentinelVariable);
+        startInfo.Environment.Remove(CrashRootEnvironmentVariable);
+        startInfo.Environment[CrashChildSentinelVariable] = CrashChildSentinelValue;
         startInfo.Environment[CrashRootEnvironmentVariable] = root;
         return Process.Start(startInfo)
             ?? throw new InvalidOperationException("The owner recovery crash child could not be started.");
