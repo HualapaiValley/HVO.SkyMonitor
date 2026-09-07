@@ -21,7 +21,8 @@ internal sealed class SqliteRawCaptureJournal(
     CaptureDistributionOptions? distributionOptions = null,
     ICaptureLaneFaultInjector? laneFaultInjector = null,
     Func<DateTimeOffset>? utcNow = null,
-    TransientDetectionOptions? transientOptions = null)
+    TransientDetectionOptions? transientOptions = null,
+    Action? inspectionSourceOpenedSeam = null)
 {
     internal const int CurrentSchemaVersion = 12;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
@@ -90,6 +91,7 @@ internal sealed class SqliteRawCaptureJournal(
     private readonly ICaptureLaneFaultInjector _laneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();
     private readonly Func<DateTimeOffset> _utcNow = utcNow ?? SystemUtcNow;
     private readonly TransientDetectionOptions _transientOptions = transientOptions ?? new TransientDetectionOptions();
+    private readonly Action? _inspectionSourceOpenedSeam = inspectionSourceOpenedSeam;
 
     internal string DatabasePath => _databasePath;
 
@@ -1613,53 +1615,23 @@ internal sealed class SqliteRawCaptureJournal(
     private async Task<(long Version, long SchemaObjectCount)> InspectExistingDatabaseAsync(
         CancellationToken cancellationToken)
     {
-        EnsureDatabaseFilesArePhysical();
-        var recoveryFiles = new[]
-        {
-            string.Concat(_databasePath, "-wal"),
-            string.Concat(_databasePath, "-journal")
-        }.Where(File.Exists).ToArray();
-        var hasRecoveryState = recoveryFiles.Length > 0 ||
-            File.Exists(string.Concat(_databasePath, "-shm"));
-        DirectoryInfo? snapshotRoot = null;
-        try
-        {
-            var inspectionPath = _databasePath;
-            var immutable = !hasRecoveryState;
-            if (!immutable)
+        return await SqliteInspectionSnapshot.InspectAsync(
+            _databasePath,
+            _busyTimeoutSeconds,
+            "hvo-raw-ingress-inspection-",
+            EnsureDatabaseFilesArePhysical,
+            async (connection, token) =>
             {
-                snapshotRoot = Directory.CreateTempSubdirectory("hvo-raw-ingress-inspection-");
-                inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(_databasePath));
-                File.Copy(_databasePath, inspectionPath);
-                foreach (var recoveryFile in recoveryFiles)
-                {
-                    File.Copy(
-                        recoveryFile,
-                        string.Concat(inspectionPath, recoveryFile.AsSpan(_databasePath.Length)));
-                }
-            }
-            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-            {
-                DataSource = immutable
-                    ? string.Concat(new Uri(inspectionPath).AbsoluteUri, "?immutable=1")
-                    : inspectionPath,
-                Mode = immutable ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
-                Pooling = false,
-                DefaultTimeout = _busyTimeoutSeconds
-            }.ToString());
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            var version = await ExecuteScalarLongAsync(
-                connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
-            var schemaObjectCount = await ExecuteScalarLongAsync(
-                connection,
-                "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
-                cancellationToken).ConfigureAwait(false);
-            return (version, schemaObjectCount);
-        }
-        finally
-        {
-            snapshotRoot?.Delete(recursive: true);
-        }
+                var version = await ExecuteScalarLongAsync(
+                    connection, "PRAGMA user_version;", token).ConfigureAwait(false);
+                var schemaObjectCount = await ExecuteScalarLongAsync(
+                    connection,
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
+                    token).ConfigureAwait(false);
+                return (version, schemaObjectCount);
+            },
+            _inspectionSourceOpenedSeam,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task ConfigureConnectionAsync(

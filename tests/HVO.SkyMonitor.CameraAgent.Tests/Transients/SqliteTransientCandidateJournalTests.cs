@@ -1738,18 +1738,30 @@ public sealed class SqliteTransientCandidateJournalTests
     }
 
     private static Dictionary<string, byte[]> ReadDatabaseFiles(string databasePath)
-        => new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm", $"{databasePath}-journal" }
+        // -shm holds write-ahead log read marks rather than durable content, and a read-only inspection source may
+        // update them, so (as #558 established for the outbox) it is excluded from durable byte comparison.
+        => new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-journal" }
             .Where(File.Exists)
             .ToDictionary(static path => Path.GetFileName(path), File.ReadAllBytes, StringComparer.Ordinal);
 
     private static void AssertDatabaseFilesUnchanged(
-        IReadOnlyDictionary<string, byte[]> expected,
-        IReadOnlyDictionary<string, byte[]> actual)
+        Dictionary<string, byte[]> expected,
+        Dictionary<string, byte[]> actual)
     {
-        CollectionAssert.AreEquivalent(expected.Keys.ToArray(), actual.Keys.ToArray());
         foreach (var file in expected)
         {
+            Assert.IsTrue(actual.ContainsKey(file.Key), $"'{file.Key}' disappeared.");
             CollectionAssert.AreEqual(file.Value, actual[file.Key], file.Key);
+        }
+        foreach (var file in actual)
+        {
+            if (expected.ContainsKey(file.Key))
+            {
+                continue;
+            }
+            // A read-only inspection source re-creates the side files of a database whose header declares
+            // write-ahead logging. It never writes and never checkpoints on close, so any such file must be empty.
+            Assert.AreEqual(0, file.Value.Length, $"'{file.Key}' was created with content.");
         }
     }
 
