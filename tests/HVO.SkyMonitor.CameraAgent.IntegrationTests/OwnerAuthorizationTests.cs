@@ -73,7 +73,7 @@ public sealed class OwnerAuthorizationTests
                 new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.Forbidden, denied.StatusCode);
             Assert.AreEqual(OwnerBootstrapStates.PasswordChangeRequired,
-                denied.Headers.GetValues("X-HVO-Authorization-Reason").Single());
+                denied.Headers.GetValues(OwnerBootstrapGateMiddleware.AuthorizationReasonHeader).Single());
             using var deniedCurrent = await client.GetAsync(
                 new Uri("/api/v1/operations/gallery/current", UriKind.Relative)).ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.Forbidden, deniedCurrent.StatusCode);

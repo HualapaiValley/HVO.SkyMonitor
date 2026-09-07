@@ -36,7 +36,7 @@ public sealed class OwnerBootstrapGateMiddlewareTests
         Assert.IsFalse(nextCalled);
         Assert.AreEqual(StatusCodes.Status403Forbidden, context.Response.StatusCode);
         Assert.AreEqual(OwnerBootstrapStates.PasswordChangeRequired,
-            context.Response.Headers["X-HVO-Authorization-Reason"].ToString());
+            context.Response.Headers[OwnerBootstrapGateMiddleware.AuthorizationReasonHeader].ToString());
     }
 
     [TestMethod]

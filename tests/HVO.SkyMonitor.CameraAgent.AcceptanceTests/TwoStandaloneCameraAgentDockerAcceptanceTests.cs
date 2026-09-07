@@ -826,12 +826,12 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         var temporaryPassword = (await File.ReadAllTextAsync(agent.PasswordFile).ConfigureAwait(false)).Trim();
         using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
         login.EnsureSuccessStatusCode();
-        var html = await login.Content.ReadAsStringAsync().ConfigureAwait(false);
-        var token = Regex.Match(html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", RegexOptions.CultureInvariant);
-        Assert.IsTrue(token.Success);
+        var token = OwnerBootstrapSession.ExtractAntiforgeryToken(
+            await login.Content.ReadAsStringAsync().ConfigureAwait(false),
+            $"{agent.Name} owner login form");
         using var form = new FormUrlEncodedContent(new Dictionary<string, string>
         {
-            ["__RequestVerificationToken"] = WebUtility.HtmlDecode(token.Groups[1].Value),
+            ["__RequestVerificationToken"] = token,
             ["Input.Email"] = agent.OwnerEmail,
             ["Input.Password"] = temporaryPassword,
             ["Input.RememberMe"] = "false",

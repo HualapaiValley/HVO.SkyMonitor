@@ -10,6 +10,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -148,7 +149,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var containerEnvironment = await ReadContainerExecutionEnvironmentAsync(container).ConfigureAwait(false);
         var serviceImages = await ReadServiceImageProvenanceAsync(container).ConfigureAwait(false);
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
-        var ownerPassword = await CompleteOwnerBootstrapAsync(session, password).ConfigureAwait(false);
+        var ownerPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
+            session, password, "W6 standalone").ConfigureAwait(false);
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -535,7 +537,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var containerEnvironment = await ReadContainerExecutionEnvironmentAsync(container).ConfigureAwait(false);
         var serviceImages = await ReadServiceImageProvenanceAsync(container).ConfigureAwait(false);
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
-        var ownerPassword = await CompleteOwnerBootstrapAsync(session, password).ConfigureAwait(false);
+        var ownerPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
+            session, password, "Mono8 control").ConfigureAwait(false);
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         if (!File.Exists(playwright.Chromium.ExecutablePath))
         {
@@ -743,12 +746,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var client = new HttpClient(handler) { BaseAddress = baseUri, Timeout = TimeSpan.FromMinutes(3) };
         using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
         login.EnsureSuccessStatusCode();
-        var html = await login.Content.ReadAsStringAsync().ConfigureAwait(false);
-        var token = Regex.Match(html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", RegexOptions.CultureInvariant);
-        Assert.IsTrue(token.Success);
+        var token = OwnerBootstrapSession.ExtractAntiforgeryToken(
+            await login.Content.ReadAsStringAsync().ConfigureAwait(false),
+            "W6 owner login form");
         using var form = new FormUrlEncodedContent(new Dictionary<string, string>
         {
-            ["__RequestVerificationToken"] = WebUtility.HtmlDecode(token.Groups[1].Value),
+            ["__RequestVerificationToken"] = token,
             ["Input.Email"] = "standalone-owner@cameraagent.test",
             ["Input.Password"] = password,
             ["Input.RememberMe"] = "false",
@@ -768,29 +771,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         await page.WaitForURLAsync(
             url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase),
             new PageWaitForURLOptions { WaitUntil = WaitUntilState.Commit }).ConfigureAwait(false);
-    }
-
-    private static async Task<string> CompleteOwnerBootstrapAsync(HttpClient client, string temporaryPassword)
-    {
-        var replacementPassword = $"{temporaryPassword}Z9!";
-        using var page = await client.GetAsync(new Uri("/Account/ReplaceTemporaryPassword", UriKind.Relative)).ConfigureAwait(false);
-        page.EnsureSuccessStatusCode();
-        var html = await page.Content.ReadAsStringAsync().ConfigureAwait(false);
-        var token = Regex.Match(html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", RegexOptions.CultureInvariant);
-        Assert.IsTrue(token.Success);
-        using var form = new FormUrlEncodedContent(new Dictionary<string, string>
-        {
-            ["__RequestVerificationToken"] = WebUtility.HtmlDecode(token.Groups[1].Value),
-            ["Input.CurrentPassword"] = temporaryPassword,
-            ["Input.NewPassword"] = replacementPassword,
-            ["Input.ConfirmPassword"] = replacementPassword,
-            ["_handler"] = "replace-temporary-password"
-        });
-        using var response = await client.PostAsync(new Uri("/Account/ReplaceTemporaryPassword", UriKind.Relative), form)
-            .ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        Assert.AreEqual("/", response.RequestMessage?.RequestUri?.AbsolutePath);
-        return replacementPassword;
     }
 
     /// <summary>
@@ -2752,10 +2732,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
     {
         using var response = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
-        var html = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-        var token = Regex.Match(html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", RegexOptions.CultureInvariant);
-        Assert.IsTrue(token.Success);
-        return WebUtility.HtmlDecode(token.Groups[1].Value);
+        return OwnerBootstrapSession.ExtractAntiforgeryToken(
+            await response.Content.ReadAsStringAsync().ConfigureAwait(false),
+            "W6 capture-control login form");
     }
 
     private static async Task<ManifestObservation> WaitForManifestAsync(

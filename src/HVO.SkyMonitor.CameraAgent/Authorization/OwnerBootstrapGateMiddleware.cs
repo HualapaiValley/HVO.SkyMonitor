@@ -12,6 +12,7 @@ internal sealed class OwnerBootstrapGateMiddleware(
 {
     private static readonly EventId OwnerOperationDeniedEvent = new(4183, "OwnerOperationDeniedDuringBootstrap");
     internal const string DenialReason = OwnerBootstrapStates.PasswordChangeRequired;
+    internal const string AuthorizationReasonHeader = "X-HVO-Authorization-Reason";
     internal const string ReplacementPath = "/Account/ReplaceTemporaryPassword";
     internal const string StatusPath = "/api/internal/owner-bootstrap/status";
     internal const string VerificationPath = "/api/internal/owner-bootstrap/installation-verification";
@@ -58,7 +59,7 @@ internal sealed class OwnerBootstrapGateMiddleware(
                     DenialReason);
             }
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
-            context.Response.Headers["X-HVO-Authorization-Reason"] = DenialReason;
+            context.Response.Headers[AuthorizationReasonHeader] = DenialReason;
             await context.Response.WriteAsJsonAsync(new
             {
                 status = StatusCodes.Status403Forbidden,

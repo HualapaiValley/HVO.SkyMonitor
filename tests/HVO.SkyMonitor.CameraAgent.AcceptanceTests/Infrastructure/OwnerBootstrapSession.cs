@@ -18,14 +18,6 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 /// </summary>
 internal static class OwnerBootstrapSession
 {
-    /// <summary>
-    /// Mirrors the response header <see cref="OwnerBootstrapGateMiddleware"/> stamps on a refusal.
-    /// The middleware writes the name as a literal, so this is deliberately a local copy rather
-    /// than a shared constant; deduplicating it would put runtime authorization code into an
-    /// otherwise test-only change.
-    /// </summary>
-    internal const string AuthorizationReasonHeader = "X-HVO-Authorization-Reason";
-
     internal const string ReplacementPasswordSuffix = "Z9!";
     internal const string OperationsProbePath = "/api/v1/operations/gallery/?pageSize=1";
 
@@ -75,19 +67,14 @@ internal static class OwnerBootstrapSession
             new Uri(OwnerBootstrapGateMiddleware.ReplacementPath, UriKind.Relative)).ConfigureAwait(false))
         {
             page.EnsureSuccessStatusCode();
-            var html = await page.Content.ReadAsStringAsync().ConfigureAwait(false);
-            var token = Regex.Match(
-                html,
-                "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
-                RegexOptions.CultureInvariant);
-            Assert.IsTrue(
-                token.Success,
+            var token = ExtractAntiforgeryToken(
+                await page.Content.ReadAsStringAsync().ConfigureAwait(false),
                 string.Create(
                     CultureInfo.InvariantCulture,
-                    $"The {sessionName} temporary-password replacement form did not render an antiforgery token."));
+                    $"{sessionName} temporary-password replacement form"));
             using var form = new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["__RequestVerificationToken"] = WebUtility.HtmlDecode(token.Groups[1].Value),
+                ["__RequestVerificationToken"] = token,
                 ["Input.CurrentPassword"] = temporaryPassword,
                 ["Input.NewPassword"] = replacement,
                 ["Input.ConfirmPassword"] = replacement,
@@ -113,6 +100,29 @@ internal static class OwnerBootstrapSession
                 CultureInfo.InvariantCulture,
                 $"The {sessionName} owner did not reach the ready state after replacing its temporary password."));
         return replacement;
+    }
+
+    /// <summary>
+    /// Reads the antiforgery token an Identity page renders into its form. <paramref name="contextLabel"/>
+    /// is a short fixed caller-chosen label naming the form, so a page that renders no token reports which
+    /// one failed. Neither the page nor the token is ever reported: a re-rendered form echoes the posted
+    /// credentials back into its inputs, and an assertion message is written to the retained TRX that the
+    /// smokes then reject as a leaked secret.
+    /// </summary>
+    internal static string ExtractAntiforgeryToken(string html, string contextLabel)
+    {
+        ArgumentNullException.ThrowIfNull(html);
+
+        var match = Regex.Match(
+            html,
+            "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
+            RegexOptions.CultureInvariant);
+        Assert.IsTrue(
+            match.Success,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"The {contextLabel} did not render an antiforgery token."));
+        return WebUtility.HtmlDecode(match.Groups[1].Value);
     }
 
     internal static async Task<string> ReadBootstrapStateAsync(HttpClient client, string sessionName)
@@ -147,13 +157,14 @@ internal static class OwnerBootstrapSession
             return;
         }
 
-        var reason = response.Headers.TryGetValues(AuthorizationReasonHeader, out var values)
+        var reason = response.Headers.TryGetValues(
+            OwnerBootstrapGateMiddleware.AuthorizationReasonHeader, out var values)
             ? string.Join(",", values)
             : "<none>";
         var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
         Assert.Fail(string.Create(
             CultureInfo.InvariantCulture,
-            $"The {sessionName} owner session is not authorized for the operations API: GET {OperationsProbePath} returned {(int)response.StatusCode} with {AuthorizationReasonHeader}={reason} and body {Summarize(body)}"));
+            $"The {sessionName} owner session is not authorized for the operations API: GET {OperationsProbePath} returned {(int)response.StatusCode} with {OwnerBootstrapGateMiddleware.AuthorizationReasonHeader}={reason} and body {Summarize(body)}"));
     }
 
     private static string Summarize(string body)
