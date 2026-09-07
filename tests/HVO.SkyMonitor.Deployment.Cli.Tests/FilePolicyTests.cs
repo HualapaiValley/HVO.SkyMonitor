@@ -40,6 +40,7 @@ public sealed class FilePolicyTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void ValidateOwnerFile_RejectsGroupReadableCredential()
     {
         var path = Path.GetTempFileName();
@@ -56,6 +57,7 @@ public sealed class FilePolicyTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CredentialFile_ExistingGeneratedCredentialIsNotReplaced()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-{Guid.NewGuid():N}");
@@ -77,6 +79,7 @@ public sealed class FilePolicyTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CredentialFile_GeneratedCredentialOmitsByteOrderMark()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-{Guid.NewGuid():N}");
@@ -98,6 +101,7 @@ public sealed class FilePolicyTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void ProtectedFilesAndLocks_RejectLinks()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-{Guid.NewGuid():N}");

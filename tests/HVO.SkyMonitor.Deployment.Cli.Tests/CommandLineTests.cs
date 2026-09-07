@@ -48,6 +48,7 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Parse_ConfigAndArguments_ProduceEquivalentRequests()
     {
         var expected = CommandLine.Parse(ValidArguments);

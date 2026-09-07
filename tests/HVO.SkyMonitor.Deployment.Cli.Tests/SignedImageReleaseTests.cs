@@ -35,6 +35,7 @@ public sealed class SignedImageReleaseTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireImageAsync_SignedRelease_SelectsThisHostPlatformAndVerifiesItsArchive()
     {
         using var fixture = ImageDistributionFixture.Create();
@@ -58,6 +59,7 @@ public sealed class SignedImageReleaseTests
     /// the release. The evidence is a durable installation record, so the addition is versioned.
     /// </summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireImageAsync_ReleaseWithComponentInventories_RecordsThePlatformInventoryInTheEvidence()
     {
         using var fixture = ImageDistributionFixture.Create(withComponentInventories: true);
@@ -81,6 +83,7 @@ public sealed class SignedImageReleaseTests
 
     /// <summary>A version-1 image release publishes no inventory, and installing it must remain valid.</summary>
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireImageAsync_Version1ReleaseWithoutAnInventory_RecordsEvidenceWithoutOne()
     {
         using var fixture = ImageDistributionFixture.Create();
@@ -150,6 +153,7 @@ public sealed class SignedImageReleaseTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireImageAsync_ReleaseWithoutThisHostArchitecture_NamesWhatItPublishes()
     {
         using var fixture = ImageDistributionFixture.Create(
@@ -163,6 +167,7 @@ public sealed class SignedImageReleaseTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireImageAsync_ArchiveThatNoLongerMatchesItsSignedIdentity_IsRejected()
     {
         using var fixture = ImageDistributionFixture.Create();
@@ -177,6 +182,7 @@ public sealed class SignedImageReleaseTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireImageAsync_ValidReleaseFromAnotherTrain_IsRejectedAsTheWrongTrain()
     {
         using var fixture = ImageDistributionFixture.Create();
