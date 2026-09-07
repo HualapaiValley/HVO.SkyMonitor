@@ -220,6 +220,20 @@ verify_component_plan "src/HVO.SkyMonitor.Deployment.Contracts/Installation.cs" 
 verify_component_plan "tests/HVO.SkyMonitor.Deployment.Cli.Tests/InstallerTests.cs"    full true  false false false false false true
 verify_component_plan "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"         full true  false false false false false true
 
+verify_deployment_installer_path() {
+  local path="$1" deployment_base deployment_head
+  deployment_base="$(git -C "$work_root" rev-parse HEAD)"
+  commit_file "$path"
+  deployment_head="$(git -C "$work_root" rev-parse HEAD)"
+  expect_plan full true pull_request "$deployment_base" "$deployment_head"
+  expect_suites false false true pull_request "$deployment_base" "$deployment_head"
+}
+
+# Release-shell validation changes must select the tests that execute their gates even when no .NET path changes.
+verify_deployment_installer_path "scripts/release:cameraagent-image"
+verify_deployment_installer_path "scripts/lib/component-inventory.jq"
+verify_deployment_installer_path "scripts/lib/component-inventory-count.jq"
+
 # Deployment inputs that are not project directories keep their independent
 # deployment-contract selection and otherwise stay on the complete matrix,
 # because test code reads several of them from the repository root at run time.

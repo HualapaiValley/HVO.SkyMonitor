@@ -15,9 +15,10 @@
 
 def s: if type == "string" then . else "" end;
 def entries: if type == "array" then .[] else empty end;
-def image_claims: [ .packages[] | .annotations | entries | .comment | s
+def image_claims: [ .packages[] | .annotations | entries | select(type == "object") | .comment | s
                     | select(startswith("ImageID: ")) | ltrimstr("ImageID: ") ];
-def is_subject: ([ .annotations | entries | .comment | s | select(startswith("ImageID: ")) ] | length) > 0;
+def is_subject: ([ .annotations | entries | select(type == "object") | .comment | s
+                    | select(startswith("ImageID: ")) ] | length) > 0;
 def components: [ .packages[]
                   | select(is_subject | not)
                   | select(((.name | s) | gsub("^\\s+|\\s+$"; "")) != "")
