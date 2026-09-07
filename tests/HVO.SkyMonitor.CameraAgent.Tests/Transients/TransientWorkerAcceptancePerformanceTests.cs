@@ -128,7 +128,7 @@ public sealed class TransientWorkerAcceptancePerformanceTests
         Assert.IsTrue(signalEvidence.ActivityNames.Contains("transient.causal"));
         Assert.IsTrue(signalEvidence.ActivityNames.Contains("transient.centered"));
         Assert.IsTrue(signalEvidence.ActivityNames.Contains("transient.handoff"));
-        Assert.IsTrue(signalEvidence.LogEventIds.Contains(2200));
+        Assert.IsTrue(signalEvidence.LogEventIds.Contains(2250));
         AssertTelemetryIsBoundedAndPrivate(signalEvidence, source, positive);
         var endGit = ReadGitEvidence(repositoryRoot);
         var endSource = ReadSourceEvidence(repositoryRoot, endGit);
@@ -1301,7 +1301,7 @@ public sealed class TransientWorkerAcceptancePerformanceTests
             StringComparer.Ordinal);
         Assert.IsTrue(evidence.Logs.All(log => log.State.Keys.All(allowedLogKeys.Contains)));
         Assert.IsTrue(evidence.Logs.Any(static log =>
-            log.EventId == 2200 && log.Message.Contains("storage-unavailable", StringComparison.Ordinal)));
+            log.EventId == 2250 && log.Message.Contains("storage-unavailable", StringComparison.Ordinal)));
         var forbidden = positive.SelectMany(static item => item.Trials)
             .SelectMany(static trial => new[]
             {
@@ -1701,7 +1701,7 @@ public sealed class TransientWorkerAcceptancePerformanceTests
                 Exception? exception,
                 Func<TState, Exception?, string> formatter)
             {
-                if (eventId.Id is not (2200 or 2201))
+                if (eventId.Id is not (2250 or 2251))
                 {
                     return;
                 }

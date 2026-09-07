@@ -43,10 +43,10 @@ public sealed class ArtifactOutboxDrainService(
         LogLevel.Warning, new EventId(2084, nameof(LeaseRenewalFailed)),
         "Artifact outbox lease renewal failed");
     private static readonly Action<ILogger, int, Exception?> WorkClaimed = LoggerMessage.Define<int>(
-        LogLevel.Debug, new EventId(2076, nameof(WorkClaimed)),
+        LogLevel.Debug, new EventId(2091, nameof(WorkClaimed)),
         "Artifact outbox claimed durable work at attempt {Attempt}");
     private static readonly Action<ILogger, int, string, long, Exception?> RetryScheduled = LoggerMessage.Define<int, string, long>(
-        LogLevel.Warning, new EventId(2077, nameof(RetryScheduled)),
+        LogLevel.Warning, new EventId(2092, nameof(RetryScheduled)),
         "Artifact outbox scheduled retry attempt {Attempt} because {Reason} after {DelayMilliseconds} ms");
     private static readonly Action<ILogger, string, Exception?> WorkAcknowledged = LoggerMessage.Define<string>(
         LogLevel.Debug, new EventId(2078, nameof(WorkAcknowledged)),

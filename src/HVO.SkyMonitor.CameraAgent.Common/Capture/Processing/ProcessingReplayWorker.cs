@@ -21,15 +21,15 @@ internal sealed class ProcessingReplayWorker(
     private readonly string _ownerPrefix = $"replay-{Environment.ProcessId}-{Guid.NewGuid():N}";
     private static readonly Action<ILogger, Exception?> ClaimFailed = LoggerMessage.Define(
         LogLevel.Error,
-        new EventId(2180, "ProcessingReplayClaimFailed"),
+        new EventId(2260, "ProcessingReplayClaimFailed"),
         "Processing replay claim failed.");
     private static readonly Action<ILogger, Guid, Exception?> ExecutionFailed = LoggerMessage.Define<Guid>(
         LogLevel.Warning,
-        new EventId(2181, "ProcessingReplayExecutionFailed"),
+        new EventId(2261, "ProcessingReplayExecutionFailed"),
         "Processing replay execution {ExecutionId} failed.");
     private static readonly Action<ILogger, Guid, Exception?> LeaseLost = LoggerMessage.Define<Guid>(
         LogLevel.Warning,
-        new EventId(2182, "ProcessingReplayLeaseLost"),
+        new EventId(2262, "ProcessingReplayLeaseLost"),
         "Processing replay {ExecutionId} lost its lease.");
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)

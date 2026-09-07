@@ -431,7 +431,7 @@ require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMo
 require_required_check_row '\*\*Unit Tests\*\*' "${category_unit} Unit cases"
 require_required_check_row '\*\*Integration Tests\*\*' "${category_integration} Integration-category cases"
 require_source_reference "Current discovery is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, and \`Hardware=${category_hardware}\`." docs/runbooks/ci-pipeline.md
-require_source_reference 'six Unit-category boundary cases' docs/runbooks/ci-pipeline.md
+require_source_reference 'seven Unit-category boundary cases' docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md
 require_source_reference "report count other than the expected $coverage_report_count" docs/runbooks/ci-pipeline.md
 require_source_reference "each of the $coverage_report_count category/project slots" docs/runbooks/ci-pipeline.md

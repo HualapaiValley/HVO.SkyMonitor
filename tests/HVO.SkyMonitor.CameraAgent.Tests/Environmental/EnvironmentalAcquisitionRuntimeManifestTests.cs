@@ -48,7 +48,7 @@ public sealed class EnvironmentalAcquisitionRuntimeManifestTests
         Assert.AreEqual(EnvironmentalAcquisitionTelemetry.InstrumentationName, root.GetProperty("activitySource").GetString());
         var logs = root.GetProperty("logs").EnumerateArray().ToArray();
         CollectionAssert.AreEqual(
-            Enumerable.Range(2520, 10).ToArray(),
+            Enumerable.Range(2520, 10).Append(2552).ToArray(),
             logs.Select(log => log.GetProperty("eventId").GetInt32()).Order().ToArray());
         Assert.AreEqual(logs.Length, logs.Select(log => log.GetProperty("eventId").GetInt32()).Distinct().Count());
         Assert.IsTrue(logs.All(log => log.GetProperty("fields").GetArrayLength() > 0));

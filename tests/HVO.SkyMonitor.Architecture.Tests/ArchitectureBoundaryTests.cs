@@ -209,6 +209,388 @@ public sealed class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void CameraAgentLogEventIdsAreUniqueAcrossProductionSources()
+    {
+        var root = RepositoryGraph.FindRepositoryRoot();
+        var declarationPattern = new System.Text.RegularExpressions.Regex(
+            """\b(?:EventId\s*=\s*|new\s+EventId\s*\(\s*|LoggerMessage\s*\(\s*|EventId\b[^;=]*=\s*new\s*\(\s*)(?<id>\d+)""",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        const string syntaxWitness = """
+            [LoggerMessage(EventId = 9100, Level = LogLevel.Information)]
+            [LoggerMessage(
+                9101,
+                LogLevel.Warning)]
+            new EventId(
+                9102,
+                "explicit");
+            private static readonly EventId TargetTyped = new(
+                9103,
+                "target-typed");
+            // [LoggerMessage(9190, LogLevel.Error)]
+            const string FalseExplicit = "new EventId(9191, ignored)";
+            /* EventId FalseTargetTyped = new(9192, "ignored"); */
+            """;
+        CollectionAssert.AreEqual(
+            new[] { 9100, 9101, 9102, 9103 },
+            declarationPattern.Matches(MaskCSharpCommentsAndLiterals(syntaxWitness))
+                .Select(match => int.Parse(
+                    match.Groups["id"].Value,
+                    System.Globalization.CultureInfo.InvariantCulture))
+                .ToArray(),
+            "The source guard must cover every production EventId declaration form without reading comments or strings.");
+        const string interpolationWitness = """"
+            var regular = $"{Echo("new EventId(9193, ignored)")}";
+            var verbatim = $@"{Echo(@"[LoggerMessage(9194, ignored)]")}";
+            var raw = $"""{Echo("EventId Target = new(9195, ignored)")}""";
+            var doubleRaw = $$"""{{Echo("new EventId(9196, ignored)")}}""";
+            """";
+        Assert.AreEqual(
+            0,
+            declarationPattern.Count(MaskCSharpCommentsAndLiterals(interpolationWitness)),
+            "Nested literals inside interpolations must not be exposed as EventId declarations.");
+
+        var declarations = new List<(int Id, string Path, int Line)>();
+
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+                     .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"))
+                     .Order(StringComparer.Ordinal))
+        {
+            var source = MaskCSharpCommentsAndLiterals(File.ReadAllText(file));
+            foreach (System.Text.RegularExpressions.Match match in declarationPattern.Matches(source))
+            {
+                var line = 1;
+                for (var index = 0; index < match.Index; index++)
+                {
+                    if (source[index] == '\n')
+                    {
+                        line++;
+                    }
+                }
+
+                declarations.Add((
+                    int.Parse(match.Groups["id"].Value, System.Globalization.CultureInfo.InvariantCulture),
+                    Path.GetRelativePath(root, file),
+                    line));
+            }
+        }
+
+        var duplicates = declarations
+            .GroupBy(declaration => declaration.Id)
+            .Where(group => group.Count() > 1)
+            .Where(group => group.Any(declaration => declaration.Path.StartsWith(
+                Path.Combine("src", "HVO.SkyMonitor.CameraAgent"),
+                StringComparison.Ordinal)))
+            .OrderBy(group => group.Key)
+            .Select(group => $"EventId {group.Key}: {string.Join(", ", group.Select(declaration => $"{declaration.Path}:{declaration.Line}"))}")
+            .ToArray();
+
+        Assert.IsEmpty(
+            duplicates,
+            $"Every CameraAgent log event ID must be unique across src/:{Environment.NewLine}{string.Join(Environment.NewLine, duplicates)}");
+    }
+
+    private static string MaskCSharpCommentsAndLiterals(string source)
+    {
+        var masked = source.ToCharArray();
+
+        for (var index = 0; index < source.Length;)
+        {
+            if (source[index] == '/' && index + 1 < source.Length && source[index + 1] == '/')
+            {
+                var end = SkipLineComment(source, index);
+                MaskRange(masked, index, end);
+                index = end;
+                continue;
+            }
+
+            if (source[index] == '/' && index + 1 < source.Length && source[index + 1] == '*')
+            {
+                var end = SkipBlockComment(source, index);
+                MaskRange(masked, index, end);
+                index = end;
+                continue;
+            }
+
+            if (source[index] == '\'')
+            {
+                var end = SkipCharacterLiteral(source, index);
+                MaskRange(masked, index, end);
+                index = end;
+                continue;
+            }
+
+            if (TrySkipStringLiteral(source, index, out var stringEnd))
+            {
+                MaskRange(masked, index, stringEnd);
+                index = stringEnd;
+                continue;
+            }
+
+            index++;
+        }
+
+        return new string(masked);
+    }
+
+    private static bool TrySkipStringLiteral(string source, int start, out int end)
+    {
+        var quoteIndex = start;
+        var dollarCount = 0;
+        var verbatim = false;
+
+        if (source[start] == '@')
+        {
+            verbatim = true;
+            quoteIndex++;
+            if (quoteIndex < source.Length && source[quoteIndex] == '$')
+            {
+                dollarCount = 1;
+                quoteIndex++;
+            }
+        }
+        else if (source[start] == '$')
+        {
+            while (quoteIndex < source.Length && source[quoteIndex] == '$')
+            {
+                dollarCount++;
+                quoteIndex++;
+            }
+
+            if (quoteIndex < source.Length && source[quoteIndex] == '@')
+            {
+                verbatim = true;
+                quoteIndex++;
+            }
+        }
+
+        if (quoteIndex >= source.Length || source[quoteIndex] != '"')
+        {
+            end = start;
+            return false;
+        }
+
+        var quoteCount = CountRun(source, quoteIndex, '"');
+        if (quoteCount >= 3)
+        {
+            if (verbatim)
+            {
+                end = start;
+                return false;
+            }
+
+            end = SkipRawStringLiteral(source, quoteIndex, quoteCount, dollarCount);
+            return true;
+        }
+
+        if (dollarCount > 1)
+        {
+            end = start;
+            return false;
+        }
+
+        end = SkipQuotedStringLiteral(source, quoteIndex, dollarCount == 1, verbatim);
+        return true;
+    }
+
+    private static int SkipQuotedStringLiteral(string source, int quoteIndex, bool interpolated, bool verbatim)
+    {
+        var index = quoteIndex + 1;
+        while (index < source.Length)
+        {
+            if (!verbatim && source[index] == '\\')
+            {
+                index = Math.Min(source.Length, index + 2);
+                continue;
+            }
+
+            if (source[index] == '"')
+            {
+                if (verbatim && index + 1 < source.Length && source[index + 1] == '"')
+                {
+                    index += 2;
+                    continue;
+                }
+
+                return index + 1;
+            }
+
+            if (interpolated && source[index] == '{')
+            {
+                if (index + 1 < source.Length && source[index + 1] == '{')
+                {
+                    index += 2;
+                    continue;
+                }
+
+                index = SkipInterpolationExpression(source, index + 1, 1);
+                continue;
+            }
+
+            index++;
+        }
+
+        return source.Length;
+    }
+
+    private static int SkipRawStringLiteral(
+        string source,
+        int quoteIndex,
+        int quoteCount,
+        int dollarCount)
+    {
+        var index = quoteIndex + quoteCount;
+        while (index < source.Length)
+        {
+            if (source[index] == '"' && CountRun(source, index, '"') >= quoteCount)
+            {
+                return index + quoteCount;
+            }
+
+            if (dollarCount > 0 && source[index] == '{')
+            {
+                var braceCount = CountRun(source, index, '{');
+                if (braceCount >= dollarCount)
+                {
+                    index = SkipInterpolationExpression(source, index + dollarCount, dollarCount);
+                    continue;
+                }
+
+                index += braceCount;
+                continue;
+            }
+
+            index++;
+        }
+
+        return source.Length;
+    }
+
+    private static int SkipInterpolationExpression(string source, int start, int closingBraceCount)
+    {
+        var index = start;
+        var nestedBraces = 0;
+        while (index < source.Length)
+        {
+            if (source[index] == '/' && index + 1 < source.Length && source[index + 1] == '/')
+            {
+                index = SkipLineComment(source, index);
+                continue;
+            }
+
+            if (source[index] == '/' && index + 1 < source.Length && source[index + 1] == '*')
+            {
+                index = SkipBlockComment(source, index);
+                continue;
+            }
+
+            if (source[index] == '\'')
+            {
+                index = SkipCharacterLiteral(source, index);
+                continue;
+            }
+
+            if (TrySkipStringLiteral(source, index, out var stringEnd))
+            {
+                index = stringEnd;
+                continue;
+            }
+
+            if (source[index] == '{')
+            {
+                nestedBraces++;
+                index++;
+                continue;
+            }
+
+            if (source[index] != '}')
+            {
+                index++;
+                continue;
+            }
+
+            var braceRun = CountRun(source, index, '}');
+            while (nestedBraces > 0 && braceRun > 0)
+            {
+                nestedBraces--;
+                braceRun--;
+                index++;
+            }
+
+            if (nestedBraces == 0 && braceRun >= closingBraceCount)
+            {
+                return index + closingBraceCount;
+            }
+
+            index += braceRun;
+        }
+
+        return source.Length;
+    }
+
+    private static int SkipLineComment(string source, int start)
+    {
+        var index = start + 2;
+        while (index < source.Length && source[index] is not ('\r' or '\n'))
+        {
+            index++;
+        }
+
+        return index;
+    }
+
+    private static int SkipBlockComment(string source, int start)
+    {
+        var index = start + 2;
+        while (index + 1 < source.Length && (source[index] != '*' || source[index + 1] != '/'))
+        {
+            index++;
+        }
+
+        return Math.Min(source.Length, index + 2);
+    }
+
+    private static int SkipCharacterLiteral(string source, int start)
+    {
+        var index = start + 1;
+        while (index < source.Length)
+        {
+            if (source[index] == '\\')
+            {
+                index = Math.Min(source.Length, index + 2);
+            }
+            else if (source[index++] == '\'')
+            {
+                break;
+            }
+        }
+
+        return index;
+    }
+
+    private static int CountRun(string source, int start, char value)
+    {
+        var index = start;
+        while (index < source.Length && source[index] == value)
+        {
+            index++;
+        }
+
+        return index - start;
+    }
+
+    private static void MaskRange(char[] source, int start, int end)
+    {
+        for (var index = start; index < end; index++)
+        {
+            if (source[index] is not ('\r' or '\n'))
+            {
+                source[index] = ' ';
+            }
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void EveryForbiddenProductionPairIsRejectedByTheAllowlist()
     {
         foreach (var source in AllowedProductionReferences.Keys)

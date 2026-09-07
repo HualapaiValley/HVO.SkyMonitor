@@ -755,11 +755,11 @@ internal sealed class TransientWorkerService(
 
 internal static partial class TransientWorkerLog
 {
-    [LoggerMessage(EventId = 2200, Level = LogLevel.Information,
+    [LoggerMessage(EventId = 2250, Level = LogLevel.Information,
         Message = "Transient worker stage {Stage} completed with {Outcome}; reason {Reason}")]
     internal static partial void Outcome(ILogger logger, string stage, string outcome, string reason);
 
-    [LoggerMessage(EventId = 2201, Level = LogLevel.Error,
+    [LoggerMessage(EventId = 2251, Level = LogLevel.Error,
         Message = "Transient worker iteration failed with {FailureType}")]
     internal static partial void Failed(ILogger logger, string failureType, Exception exception);
 }

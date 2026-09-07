@@ -795,18 +795,18 @@ internal sealed class TransientCandidateDeliveryService(
 
 internal static partial class TransientCandidateDeliveryLog
 {
-    [LoggerMessage(2520, LogLevel.Debug, "Transient candidate delivery acknowledged with outcome {Outcome}")]
+    [LoggerMessage(2252, LogLevel.Debug, "Transient candidate delivery acknowledged with outcome {Outcome}")]
     internal static partial void Acknowledged(ILogger logger, string outcome);
 
-    [LoggerMessage(2521, LogLevel.Warning, "Transient candidate delivery retained evidence because {Reason}; retrying after {DelayMilliseconds} ms")]
+    [LoggerMessage(2253, LogLevel.Warning, "Transient candidate delivery retained evidence because {Reason}; retrying after {DelayMilliseconds} ms")]
     internal static partial void Retrying(ILogger logger, string reason, long delayMilliseconds);
 
-    [LoggerMessage(2522, LogLevel.Error, "Transient candidate delivery scan failed because {ExceptionType}")]
+    [LoggerMessage(2254, LogLevel.Error, "Transient candidate delivery scan failed because {ExceptionType}")]
     internal static partial void ScanFailed(ILogger logger, string exceptionType, Exception exception);
 
-    [LoggerMessage(2523, LogLevel.Error, "Transient candidate delivery quarantined retained evidence because {Reason}")]
+    [LoggerMessage(2255, LogLevel.Error, "Transient candidate delivery quarantined retained evidence because {Reason}")]
     internal static partial void Quarantined(ILogger logger, string reason);
 
-    [LoggerMessage(2524, LogLevel.Information, "Transient candidate delivery is waiting for central dependency {Reason}; checking again after {DelayMilliseconds} ms")]
+    [LoggerMessage(2256, LogLevel.Information, "Transient candidate delivery is waiting for central dependency {Reason}; checking again after {DelayMilliseconds} ms")]
     internal static partial void DependencyWaiting(ILogger logger, string reason, long delayMilliseconds);
 }

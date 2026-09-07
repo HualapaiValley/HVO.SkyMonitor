@@ -241,7 +241,7 @@ public sealed partial class LocalAutomationRunnerService(
             CultureInfo.InvariantCulture,
             $"{entry.Definition.DefinitionId}|{entry.RevisionSha256[..16]}|{discriminator}{occurrence}");
 
-    [LoggerMessage(7403, LogLevel.Information, "Local automation runs are disabled by configuration.")]
+    [LoggerMessage(7422, LogLevel.Information, "Local automation runs are disabled by configuration.")]
     private static partial void RunnerDisabled(ILogger logger);
 
     [LoggerMessage(7404, LogLevel.Warning, "The local automation sweep could not read durable state.")]
@@ -251,7 +251,7 @@ public sealed partial class LocalAutomationRunnerService(
         "The durable capture sequence is unavailable; capture-relative automations stay pending.")]
     private static partial void CaptureSequenceUnavailable(ILogger logger, Exception exception);
 
-    [LoggerMessage(7406, LogLevel.Warning, "Local automation {DefinitionId} failed to evaluate.")]
+    [LoggerMessage(7423, LogLevel.Warning, "Local automation {DefinitionId} failed to evaluate.")]
     private static partial void DefinitionFailed(ILogger logger, string definitionId, Exception exception);
 
     [LoggerMessage(7407, LogLevel.Information,
