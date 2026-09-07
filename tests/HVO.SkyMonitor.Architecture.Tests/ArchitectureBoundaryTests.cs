@@ -209,19 +209,43 @@ public sealed class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void ProductionLogEventIdsAreUnique()
+    public void CameraAgentLogEventIdsAreUniqueAcrossProductionSources()
     {
         var root = RepositoryGraph.FindRepositoryRoot();
         var declarationPattern = new System.Text.RegularExpressions.Regex(
-            """\b(?:EventId\s*=\s*|new\s+EventId\s*\(\s*)(?<id>\d+)""",
+            """\b(?:EventId\s*=\s*|new\s+EventId\s*\(\s*|LoggerMessage\s*\(\s*|EventId\b[^;=]*=\s*new\s*\(\s*)(?<id>\d+)""",
             System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        const string syntaxWitness = """
+            [LoggerMessage(EventId = 9100, Level = LogLevel.Information)]
+            [LoggerMessage(
+                9101,
+                LogLevel.Warning)]
+            new EventId(
+                9102,
+                "explicit");
+            private static readonly EventId TargetTyped = new(
+                9103,
+                "target-typed");
+            // [LoggerMessage(9190, LogLevel.Error)]
+            const string FalseExplicit = "new EventId(9191, ignored)";
+            /* EventId FalseTargetTyped = new(9192, "ignored"); */
+            """;
+        CollectionAssert.AreEqual(
+            new[] { 9100, 9101, 9102, 9103 },
+            declarationPattern.Matches(MaskCSharpCommentsAndLiterals(syntaxWitness))
+                .Select(match => int.Parse(
+                    match.Groups["id"].Value,
+                    System.Globalization.CultureInfo.InvariantCulture))
+                .ToArray(),
+            "The source guard must cover every production EventId declaration form without reading comments or strings.");
+
         var declarations = new List<(int Id, string Path, int Line)>();
 
         foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
                      .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"))
                      .Order(StringComparer.Ordinal))
         {
-            var source = File.ReadAllText(file);
+            var source = MaskCSharpCommentsAndLiterals(File.ReadAllText(file));
             foreach (System.Text.RegularExpressions.Match match in declarationPattern.Matches(source))
             {
                 var line = 1;
@@ -243,13 +267,138 @@ public sealed class ArchitectureBoundaryTests
         var duplicates = declarations
             .GroupBy(declaration => declaration.Id)
             .Where(group => group.Count() > 1)
+            .Where(group => group.Any(declaration => declaration.Path.StartsWith(
+                Path.Combine("src", "HVO.SkyMonitor.CameraAgent"),
+                StringComparison.Ordinal)))
             .OrderBy(group => group.Key)
             .Select(group => $"EventId {group.Key}: {string.Join(", ", group.Select(declaration => $"{declaration.Path}:{declaration.Line}"))}")
             .ToArray();
 
         Assert.IsEmpty(
             duplicates,
-            $"Production log event IDs must be unique across src/:{Environment.NewLine}{string.Join(Environment.NewLine, duplicates)}");
+            $"Every CameraAgent log event ID must be unique across src/:{Environment.NewLine}{string.Join(Environment.NewLine, duplicates)}");
+    }
+
+    private static string MaskCSharpCommentsAndLiterals(string source)
+    {
+        var masked = source.ToCharArray();
+
+        for (var index = 0; index < source.Length;)
+        {
+            var start = index;
+            if (source[index] == '/' && index + 1 < source.Length && source[index + 1] == '/')
+            {
+                index += 2;
+                while (index < source.Length && source[index] is not ('\r' or '\n'))
+                {
+                    index++;
+                }
+                MaskRange(masked, start, index);
+                continue;
+            }
+
+            if (source[index] == '/' && index + 1 < source.Length && source[index + 1] == '*')
+            {
+                index += 2;
+                while (index + 1 < source.Length && (source[index] != '*' || source[index + 1] != '/'))
+                {
+                    index++;
+                }
+                index = Math.Min(source.Length, index + 2);
+                MaskRange(masked, start, index);
+                continue;
+            }
+
+            if (source[index] == '\'')
+            {
+                index++;
+                while (index < source.Length)
+                {
+                    if (source[index] == '\\')
+                    {
+                        index = Math.Min(source.Length, index + 2);
+                    }
+                    else if (source[index++] == '\'')
+                    {
+                        break;
+                    }
+                }
+                MaskRange(masked, start, index);
+                continue;
+            }
+
+            if (source[index] != '"')
+            {
+                index++;
+                continue;
+            }
+
+            var delimiterLength = 1;
+            while (index + delimiterLength < source.Length && source[index + delimiterLength] == '"')
+            {
+                delimiterLength++;
+            }
+
+            if (delimiterLength >= 3)
+            {
+                index += delimiterLength;
+                while (index < source.Length)
+                {
+                    var closingLength = 0;
+                    while (index + closingLength < source.Length && source[index + closingLength] == '"')
+                    {
+                        closingLength++;
+                    }
+                    if (closingLength >= delimiterLength)
+                    {
+                        index += delimiterLength;
+                        break;
+                    }
+                    index += Math.Max(1, closingLength);
+                }
+                MaskRange(masked, start, index);
+                continue;
+            }
+
+            var verbatim = index > 0 && source[index - 1] == '@'
+                || index > 1 && source[index - 2] == '@' && source[index - 1] == '$';
+            index++;
+            while (index < source.Length)
+            {
+                if (!verbatim && source[index] == '\\')
+                {
+                    index = Math.Min(source.Length, index + 2);
+                }
+                else if (source[index] == '"')
+                {
+                    if (verbatim && index + 1 < source.Length && source[index + 1] == '"')
+                    {
+                        index += 2;
+                        continue;
+                    }
+                    index++;
+                    break;
+                }
+                else
+                {
+                    index++;
+                }
+            }
+            MaskRange(masked, start, index);
+        }
+
+        return new string(masked);
+    }
+
+    private static void MaskRange(char[] source, int start, int end)
+    {
+        for (var index = start; index < end; index++)
+        {
+            if (source[index] is not ('\r' or '\n'))
+            {
+                source[index] = ' ';
+            }
+        }
     }
 
     [TestMethod]

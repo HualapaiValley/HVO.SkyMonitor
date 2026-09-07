@@ -6,21 +6,21 @@
   "activitySource": "HVO.SkyMonitor.CameraAgent.Automation",
   "logs": [
     {
-      "eventId": 7401,
+      "eventId": 7420,
       "level": "Information",
       "fields": [
         "InterruptedRuns"
       ]
     },
     {
-      "eventId": 7402,
+      "eventId": 7421,
       "level": "Warning",
       "fields": [
         "Exception"
       ]
     },
     {
-      "eventId": 7403,
+      "eventId": 7422,
       "level": "Information",
       "fields": []
     },
@@ -39,7 +39,7 @@
       ]
     },
     {
-      "eventId": 7406,
+      "eventId": 7423,
       "level": "Warning",
       "fields": [
         "DefinitionId",

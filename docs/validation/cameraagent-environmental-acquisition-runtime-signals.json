@@ -14,7 +14,8 @@
     { "eventId": 2526, "level": "Error", "fields": ["Operation"] },
     { "eventId": 2527, "level": "Information", "fields": ["Operation"] },
     { "eventId": 2528, "level": "Information", "fields": ["RemovedCount", "RemovedBytes"] },
-    { "eventId": 2529, "level": "Information", "fields": ["Outcome", "Reason", "Replayed"] }
+    { "eventId": 2529, "level": "Information", "fields": ["Outcome", "Reason", "Replayed"] },
+    { "eventId": 2552, "level": "Error", "fields": ["Kind", "Trigger", "Outcome", "Reason"] }
   ],
   "metrics": [
     { "name": "skymonitor.environment.local.triggers", "unit": "{trigger}", "labels": { "trigger": ["Periodic", "BeforeCapture", "AfterCapture", "EveryNthCapture", "RegimeChange", "OnDemand"] } },
