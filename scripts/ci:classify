@@ -92,7 +92,7 @@ is_deployment_path() {
     .github/workflows/ci.yml | .github/workflows/release.yml | .dockerignore | .env.template | docker-compose.apps.yml | global.json)
       return 0
       ;;
-    scripts/ci:* | scripts/test:ci-classification)
+    scripts/ci:* | scripts/test:ci-classification | scripts/release:cameraagent-image | scripts/lib/*)
       return 0
       ;;
     scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-skymonitor.sh)
@@ -155,7 +155,7 @@ select_deployment_suites() {
       deployment_catalog="true"
       deployment_installer="true"
       ;;
-    scripts/install-hvo-skymonitor.sh | scripts/test:deployment-installer | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
+    scripts/install-hvo-skymonitor.sh | scripts/test:deployment-installer | scripts/release:cameraagent-image | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       deployment_installer="true"
       ;;
     .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)

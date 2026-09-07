@@ -1,11 +1,13 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.TestSupport;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
@@ -929,12 +931,26 @@ public sealed class RawCaptureIngressTests
             var mismatchedLines = new[]
             {
                 "{ malformed",
+                CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height,
+                    descriptor.Layout.PixelFormat.ToString(), timestampUtc: 1),
+                CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height,
+                    descriptor.Layout.PixelFormat.ToString(),
+                    width: descriptor.Layout.Width.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                CreateCompatibilityIndexLine(
+                    descriptor,
+                    descriptor.Layout.Height.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    descriptor.Layout.PixelFormat.ToString()),
                 CreateCompatibilityIndexLine(descriptor, 1.5, descriptor.Layout.PixelFormat.ToString()),
                 CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height + 1, descriptor.Layout.PixelFormat.ToString()),
                 CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height, null, includePixelFormat: false),
                 CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height, 1),
                 CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height, CameraPixelFormat.Mono16.ToString())
             };
+            foreach (var line in mismatchedLines.Skip(1))
+            {
+                using var document = JsonDocument.Parse(line);
+                Assert.IsFalse(RawIngressFileStore.MatchesIndexEntry(document.RootElement, descriptor));
+            }
             await File.WriteAllLinesAsync(indexPath, mismatchedLines).ConfigureAwait(false);
             var manifestJson = CaptureContractJson.Serialize(accepted.Manifest);
 
@@ -948,11 +964,24 @@ public sealed class RawCaptureIngressTests
             {
                 Assert.IsTrue(RawIngressFileStore.MatchesIndexEntry(document.RootElement, descriptor));
             }
+            Assert.AreEqual(1, repairedLines.Count(line =>
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(line);
+                    return RawIngressFileStore.MatchesIndexEntry(document.RootElement, descriptor);
+                }
+                catch (JsonException)
+                {
+                    return false;
+                }
+            }));
 
             await RawIngressFileStore.EnsureCompatibilityIndexAsync(
                 root, manifestJson, CancellationToken.None).ConfigureAwait(false);
 
-            Assert.HasCount(mismatchedLines.Length + 1,
+            CollectionAssert.AreEqual(
+                repairedLines,
                 await File.ReadAllLinesAsync(indexPath).ConfigureAwait(false));
         }
         finally
@@ -2455,6 +2484,197 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
+    public async Task AcceptAsync_CallerCancellationBeforeIdentityReservationDoesNotConsumeSequence()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var cancellation = new CancellationTokenSource();
+            using var ingress = CreateIngress(
+                root,
+                new RawIngressState(TimeProvider.System),
+                new CancellationOnlyFaultInjector(RawIngressFaultPoint.BeforeIdentityReservation, cancellation));
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => ingress.AcceptAsync(
+                CreateConfiguration(), CreateSubmission(Timestamp(13), [1, 2, 3, 4]), cancellation.Token).AsTask())
+                .ConfigureAwait(false);
+
+            Assert.IsTrue(cancellation.IsCancellationRequested);
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                Assert.AreEqual(0L, await ScalarLongAsync(
+                    connection, "SELECT COUNT(*) FROM raw_capture_assignments;").ConfigureAwait(false));
+                Assert.AreEqual(0L, await ScalarLongAsync(
+                    connection, "SELECT COUNT(*) FROM raw_capture_sequences;").ConfigureAwait(false));
+            }
+
+            var receipt = await ingress.AcceptAsync(
+                CreateConfiguration(), CreateSubmission(Timestamp(14), [5, 6, 7, 8]), CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            Assert.AreEqual(1L, receipt.Manifest.Descriptor.Capture.CaptureSequence);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    [DataRow((int)RawIngressFaultPoint.AfterIdentityReservation)]
+    [DataRow((int)RawIngressFaultPoint.ValidationCompleted)]
+    [DataRow((int)RawIngressFaultPoint.PayloadWritten)]
+    [DataRow((int)RawIngressFaultPoint.PayloadPublished)]
+    [DataRow((int)RawIngressFaultPoint.SidecarWritten)]
+    [DataRow((int)RawIngressFaultPoint.SidecarPublished)]
+    [DataRow((int)RawIngressFaultPoint.SidecarDirectorySynced)]
+    public async Task AcceptAsync_CallerCancellationAfterIdentityReservationCompletesAContiguousWindow(int pointValue)
+    {
+        var point = (RawIngressFaultPoint)pointValue;
+        var root = CreateRoot();
+        try
+        {
+            var configuration = CreateConfiguration();
+            var firstSubmission = CreateSubmission(Timestamp(13), [1, 2, 3, 4]);
+            RawCaptureReceipt first;
+            using (var cancellation = new CancellationTokenSource())
+            using (var ingress = CreateIngress(
+                       root,
+                       new RawIngressState(TimeProvider.System),
+                       new CancellationOnlyFaultInjector(point, cancellation)))
+            {
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                first = (await ingress.AcceptAsync(configuration, firstSubmission, cancellation.Token)
+                    .ConfigureAwait(false))!;
+                Assert.IsTrue(cancellation.IsCancellationRequested, point.ToString());
+                Assert.AreEqual(RawIngressOutcome.Committed, first.Outcome, point.ToString());
+                Assert.AreEqual(1L, first.Manifest.Descriptor.Capture.CaptureSequence, point.ToString());
+            }
+
+            using var restarted = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var retry = await restarted.AcceptAsync(configuration, firstSubmission, CancellationToken.None)
+                .ConfigureAwait(false);
+            var second = await restarted.AcceptAsync(
+                configuration, CreateSubmission(Timestamp(14), [5, 6, 7, 8]), CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(retry);
+            Assert.IsNotNull(second);
+            Assert.AreEqual(RawIngressOutcome.Existing, retry.Outcome, point.ToString());
+            Assert.AreEqual(first.Manifest.Descriptor.Capture.CaptureId, retry.Manifest.Descriptor.Capture.CaptureId, point.ToString());
+            Assert.AreEqual(1L, retry.Manifest.Descriptor.Capture.CaptureSequence, point.ToString());
+            Assert.AreEqual(2L, second.Manifest.Descriptor.Capture.CaptureSequence, point.ToString());
+
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            var window = await ProcessingRawWindowSelector.SelectAsync(
+                connection,
+                transaction: null,
+                second.Manifest.Descriptor,
+                new ProcessingGraphWindowRequirement(
+                    ProcessingGraphWindowKind.Trailing,
+                    MinimumInputCount: 2,
+                    MaximumInputCount: 2,
+                    RequiredPositions: [-1, 0],
+                    CompatibilityLabels: []),
+                maximumAllowedInputs: 2,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(2, window, point.ToString());
+            CollectionAssert.AreEqual(new[] { -1, 0 }, window.Select(static input => input.WindowPosition).ToArray(), point.ToString());
+            CollectionAssert.AreEqual(new long[] { 1, 2 }, window.Select(static input => input.Descriptor.Capture.CaptureSequence).ToArray(), point.ToString());
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcceptAsync_RepeatedCallerCancellationAfterReservationPreservesExactRestartedWindows()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var configuration = CreateConfiguration();
+            RawIngressFaultPoint[] points =
+            [
+                RawIngressFaultPoint.AfterIdentityReservation,
+                RawIngressFaultPoint.ValidationCompleted,
+                RawIngressFaultPoint.PayloadWritten,
+                RawIngressFaultPoint.PayloadPublished,
+                RawIngressFaultPoint.SidecarWritten,
+                RawIngressFaultPoint.SidecarPublished,
+                RawIngressFaultPoint.SidecarDirectorySynced
+            ];
+            var submissions = new List<CaptureLoopSubmission>();
+            var receipts = new List<RawCaptureReceipt>();
+            for (var index = 0; index < 21; index++)
+            {
+                var submission = CreateSubmission(
+                    Timestamp(12).AddMinutes(index),
+                    [(byte)index, (byte)(index + 1), (byte)(index + 2), (byte)(index + 3)]);
+                submissions.Add(submission);
+                using var cancellation = new CancellationTokenSource();
+                using var ingress = CreateIngress(
+                    root,
+                    new RawIngressState(TimeProvider.System),
+                    new CancellationOnlyFaultInjector(points[index % points.Length], cancellation));
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+                var receipt = await ingress.AcceptAsync(configuration, submission, cancellation.Token)
+                    .ConfigureAwait(false);
+
+                Assert.IsNotNull(receipt);
+                Assert.IsTrue(cancellation.IsCancellationRequested, $"iteration {index}");
+                Assert.AreEqual(RawIngressOutcome.Committed, receipt.Outcome, $"iteration {index}");
+                Assert.AreEqual(index + 1L, receipt.Manifest.Descriptor.Capture.CaptureSequence, $"iteration {index}");
+                receipts.Add(receipt);
+            }
+
+            using var restarted = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            for (var index = 0; index < submissions.Count; index++)
+            {
+                var retry = await restarted.AcceptAsync(configuration, submissions[index], CancellationToken.None)
+                    .ConfigureAwait(false);
+                Assert.IsNotNull(retry);
+                Assert.AreEqual(RawIngressOutcome.Existing, retry.Outcome, $"retry {index}");
+                Assert.AreEqual(receipts[index].Manifest.Descriptor.Capture.CaptureId, retry.Manifest.Descriptor.Capture.CaptureId, $"retry {index}");
+                Assert.AreEqual(receipts[index].Manifest.Descriptor.Artifact.ArtifactId, retry.Manifest.Descriptor.Artifact.ArtifactId, $"retry {index}");
+                Assert.AreEqual(index + 1L, retry.Manifest.Descriptor.Capture.CaptureSequence, $"retry {index}");
+            }
+
+            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(21L, await ScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM raw_captures WHERE state = 'committed';").ConfigureAwait(false));
+            Assert.AreEqual(21L, await ScalarLongAsync(
+                connection, "SELECT COUNT(DISTINCT capture_sequence) FROM raw_captures;").ConfigureAwait(false));
+            var window = await ProcessingRawWindowSelector.SelectAsync(
+                connection,
+                transaction: null,
+                receipts[^1].Manifest.Descriptor,
+                new ProcessingGraphWindowRequirement(
+                    ProcessingGraphWindowKind.Trailing,
+                    MinimumInputCount: 5,
+                    MaximumInputCount: 5,
+                    RequiredPositions: [-4, -3, -2, -1, 0],
+                    CompatibilityLabels: []),
+                maximumAllowedInputs: 5,
+                CancellationToken.None).ConfigureAwait(false);
+            CollectionAssert.AreEqual(
+                new[] { -4, -3, -2, -1, 0 },
+                window.Select(static input => input.WindowPosition).ToArray());
+            CollectionAssert.AreEqual(
+                new long[] { 17, 18, 19, 20, 21 },
+                window.Select(static input => input.Descriptor.Capture.CaptureSequence).ToArray());
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task AcceptAsync_CanceledByTheCallerAfterTheLifecycleGate_LogsInformationAndRecoversTheEvidenceAsync()
     {
         // Host shutdown while a capture is being accepted used to fall into the generic failure path: an Error log
@@ -2571,6 +2791,86 @@ public sealed class RawCaptureIngressTests
             // The one-shot fault has fired, so a later initialization with a live token completes normally.
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_ForcedWhilePayloadPublicationIsInFlight_WaitsAndPreservesExactEvidenceAsync()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var payload = new byte[] { 61, 62, 63, 64 };
+            var submission = CreateSubmission(Timestamp(16), payload);
+            var state = new RawIngressState(TimeProvider.System);
+            using var faultInjector = new PublicationReconciliationRaceFaultInjector();
+            using var ingress = CreateIngress(root, state, faultInjector);
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            faultInjector.Arm();
+
+            var accept = Task.Run(async () => await ingress.AcceptAsync(
+                CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false));
+            Assert.IsTrue(
+                faultInjector.PayloadPublished.Wait(TimeSpan.FromSeconds(5)),
+                "accept did not pause after publishing the payload");
+
+            ingress.InvalidateEvidence();
+            var contentionStarted = Stopwatch.GetTimestamp();
+            var initialization = Task.Run(async () =>
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false));
+            Assert.IsTrue(
+                faultInjector.InitializationLifecycleLockRequested.Wait(TimeSpan.FromSeconds(5)),
+                "forced initialization did not reach the raw-ingress lifecycle lock");
+            Assert.AreNotSame(
+                initialization,
+                await Task.WhenAny(initialization, Task.Delay(TimeSpan.FromMilliseconds(100))).ConfigureAwait(false),
+                "reconciliation completed while an accept still owned the raw-ingress lifecycle lock");
+
+            faultInjector.ReleasePublication();
+            var receipt = await accept.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await initialization.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var contentionElapsed = Stopwatch.GetElapsedTime(contentionStarted);
+
+            Assert.IsNotNull(receipt);
+            Assert.AreEqual(RawIngressOutcome.Committed, receipt.Outcome);
+            Assert.IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(100), contentionElapsed);
+            Assert.IsLessThan(TimeSpan.FromSeconds(5), contentionElapsed);
+            CollectionAssert.AreEqual(payload, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
+            Assert.AreEqual(
+                receipt.Manifest.Descriptor.Artifact.ChecksumSha256,
+                Convert.ToHexString(SHA256.HashData(payload)),
+                ignoreCase: true);
+            var sidecarPath = Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json");
+            var sidecar = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            Assert.AreEqual(receipt.CommittedManifestSha256, CaptureContractJson.ComputeManifestSha256(sidecar));
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+            Assert.AreEqual(0L, state.Snapshot.QuarantineCount);
+            Assert.IsEmpty(Directory.EnumerateFiles(Path.Combine(root, "quarantine"), "*", SearchOption.AllDirectories));
+            Assert.IsEmpty(Directory.EnumerateFiles(Path.Combine(root, "frames"), "*.tmp", SearchOption.AllDirectories));
+
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                Assert.AreEqual(1L, await ScalarLongAsync(
+                    connection,
+                    "SELECT COUNT(*) FROM raw_captures WHERE state = 'committed' AND capture_sequence = 1;").ConfigureAwait(false));
+                Assert.AreEqual(
+                    receipt.Manifest.Descriptor.Capture.CaptureId.ToString("N"),
+                    await ScalarStringAsync(connection, "SELECT capture_id FROM raw_captures;").ConfigureAwait(false));
+                Assert.AreEqual(
+                    receipt.Manifest.Descriptor.Artifact.ArtifactId.ToString("N"),
+                    await ScalarStringAsync(connection, "SELECT raw_artifact_id FROM raw_captures;").ConfigureAwait(false));
+            }
+
+            ingress.InvalidateEvidence();
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            CollectionAssert.AreEqual(payload, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
+            CollectionAssert.AreEqual(sidecar, await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false));
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+            Assert.AreEqual(0L, state.Snapshot.QuarantineCount);
         }
         finally
         {
@@ -2892,14 +3192,16 @@ public sealed class RawCaptureIngressTests
         ReconstructionDescriptor descriptor,
         object height,
         object? pixelFormat,
-        bool includePixelFormat = true)
+        bool includePixelFormat = true,
+        object? timestampUtc = null,
+        object? width = null)
     {
         var entry = new Dictionary<string, object?>
         {
             ["artifactId"] = descriptor.Artifact.ArtifactId,
             ["role"] = descriptor.Artifact.Role.ToString(),
-            ["timestampUtc"] = descriptor.Timing.ExposureStartedUtc,
-            ["width"] = descriptor.Layout.Width,
+            ["timestampUtc"] = timestampUtc ?? descriptor.Timing.ExposureStartedUtc,
+            ["width"] = width ?? descriptor.Layout.Width,
             ["height"] = height
         };
         if (includePixelFormat)
@@ -3005,6 +3307,70 @@ public sealed class RawCaptureIngressTests
                 tokenToCancel?.Cancel();
                 throw exceptionFactory?.Invoke() ?? new InjectedRawIngressFaultException();
             }
+        }
+    }
+
+    private sealed class CancellationOnlyFaultInjector(
+        RawIngressFaultPoint target,
+        CancellationTokenSource cancellation) : IRawIngressFaultInjector
+    {
+        private int _injected;
+
+        public void Inject(RawIngressFaultPoint point)
+        {
+            if (point == target && Interlocked.Exchange(ref _injected, 1) == 0)
+            {
+                cancellation.Cancel();
+            }
+        }
+    }
+
+    private sealed class PublicationReconciliationRaceFaultInjector : IRawIngressFaultInjector, IDisposable
+    {
+        private readonly ManualResetEventSlim _payloadPublished = new(false);
+        private readonly ManualResetEventSlim _initializationLifecycleLockRequested = new(false);
+        private readonly ManualResetEventSlim _continuePublication = new(false);
+        private int _armed;
+        private int _publicationBlocked;
+
+        internal ManualResetEventSlim PayloadPublished => _payloadPublished;
+
+        internal ManualResetEventSlim InitializationLifecycleLockRequested => _initializationLifecycleLockRequested;
+
+        internal void Arm() => Volatile.Write(ref _armed, 1);
+
+        internal void ReleasePublication() => _continuePublication.Set();
+
+        public bool IsEnabled(RawIngressFaultPoint point) => false;
+
+        public void Inject(RawIngressFaultPoint point)
+        {
+            if (Volatile.Read(ref _armed) == 0)
+            {
+                return;
+            }
+            if (point == RawIngressFaultPoint.PayloadDirectorySynced &&
+                Interlocked.Exchange(ref _publicationBlocked, 1) == 0)
+            {
+                _payloadPublished.Set();
+                if (!_continuePublication.Wait(TimeSpan.FromSeconds(10)))
+                {
+                    throw new TimeoutException("Timed out waiting to release the injected payload publication pause.");
+                }
+            }
+            else if (point == RawIngressFaultPoint.BeforeInitializationLifecycleLock &&
+                     Volatile.Read(ref _publicationBlocked) != 0)
+            {
+                _initializationLifecycleLockRequested.Set();
+            }
+        }
+
+        public void Dispose()
+        {
+            _continuePublication.Set();
+            _payloadPublished.Dispose();
+            _initializationLifecycleLockRequested.Dispose();
+            _continuePublication.Dispose();
         }
     }
 

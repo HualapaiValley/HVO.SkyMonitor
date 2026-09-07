@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  scripts/pr:dispatch-review --repo OWNER/REPO --pr N --request FILE \
+    --runner codex|claude --model MODEL --effort EFFORT --worktree DIR \
+    --log-file FILE --registry FILE --command FILE [--receipts FILE] \
+    --participant-id ID --resume-session SESSION_ID [--dry-run]
+
+The dispatcher validates enrollment and command targeting, posts the durable
+request, waits for its returned comment ID, resumes the exact enrolled CLI
+session, appends launch metadata, and remains alive until that reviewer exits so
+the invoking harness cannot reap a detached child. --dry-run posts and launches
+nothing. Live dispatches require `flock` and hold one host-local lock for the
+enrolled participant/session until the dispatcher records terminal state.
+EOF
+}
+
+fail() {
+    printf '%s\n' "$*" >&2
+    exit 1
+}
+
+repo=""
+pr=""
+request_file=""
+runner=""
+model=""
+effort=""
+review_worktree=""
+log_file=""
+registry=""
+command_file=""
+receipts_file=""
+participant_id=""
+resume_session=""
+dry_run=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo|--pr|--request|--runner|--model|--effort|--worktree|--log-file|--registry|--command|--receipts|--participant-id|--resume-session)
+            [[ -n "${2:-}" ]] || fail "Missing value for $1."
+            case "$1" in
+                --repo) repo="$2" ;;
+                --pr) pr="$2" ;;
+                --request) request_file="$2" ;;
+                --runner) runner="$2" ;;
+                --model) model="$2" ;;
+                --effort) effort="$2" ;;
+                --worktree) review_worktree="$2" ;;
+                --log-file) log_file="$2" ;;
+                --registry) registry="$2" ;;
+                --command) command_file="$2" ;;
+                --receipts) receipts_file="$2" ;;
+                --participant-id) participant_id="$2" ;;
+                --resume-session) resume_session="$2" ;;
+            esac
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *) fail "Unknown option: $1" ;;
+    esac
+done
+
+[[ "$repo" =~ ^[^/]+/[^/]+$ ]] || fail "--repo OWNER/REPO is required."
+[[ "$pr" =~ ^[1-9][0-9]*$ ]] || fail "--pr must be a positive number."
+[[ "$runner" =~ ^(codex|claude)$ ]] || fail "--runner must be codex or claude."
+[[ "$effort" =~ ^(medium|high|xhigh|max)$ ]] || fail "--effort is invalid for review."
+[[ -n "$model" ]] || fail "--model is required."
+[[ -f "$request_file" ]] || fail "--request file does not exist."
+[[ -d "$review_worktree" ]] || fail "--worktree directory does not exist."
+[[ -d "$(dirname "$log_file")" ]] || fail "Log directory does not exist."
+[[ -f "$registry" && -f "$command_file" ]] || fail "Registry and command files are required."
+[[ "$resume_session" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{7,159}$ ]] ||
+    fail "--resume-session must identify the previously joined CLI session."
+session_short="${participant_id##*:}"
+[[ "$resume_session" == "$session_short"* ]] ||
+    fail "Resume session does not match the participant session-short-id."
+
+guard_args=(authorize --registry "$registry" --command "$command_file" --participant "$participant_id")
+[[ -z "$receipts_file" ]] || guard_args+=(--receipts "$receipts_file")
+authorization="$("$(dirname "${BASH_SOURCE[0]}")/coordination:guard" "${guard_args[@]}")"
+if [[ "$authorization" == ALREADY_CONSUMED* ]]; then
+    printf '%s\n' "$authorization"
+    exit 0
+fi
+[[ "$authorization" == AUTHORIZED* ]] || fail "Coordination authorization failed."
+
+command_id="$(jq -er '.commandId' "$command_file")"
+grep -Fq "Dispatch command ID and target participant ID: $command_id / $participant_id" "$request_file" ||
+    fail "Request command/participant binding does not match authorization."
+grep -Fq "Requested model and reasoning effort: $model / $effort" "$request_file" ||
+    fail "Request model/effort does not match launcher configuration."
+
+request_body="$(<"$request_file")"
+ledger_body="$(printf '%s\n\nCommand: %s\nTarget participant: %s\n\n%s\n%s\n%s\n\n%s' \
+    '## Review request — generated dispatch' "$command_id" "$participant_id" \
+    '```text' "$request_body" '```' \
+    'The dispatcher must receive this comment ID before launching.')"
+
+case "$runner" in
+    codex)
+        output_file="${log_file%.*}.final.md"
+        launch=(codex exec resume --model "$model" -c "model_reasoning_effort=\"$effort\"" --json --output-last-message "$output_file" "$resume_session" -)
+        actual_provider="Codex/OpenAI"
+        ;;
+    claude)
+        launch=(claude --resume "$resume_session" --print --model "$model" --effort "$effort" --permission-mode plan --output-format stream-json)
+        actual_provider="Claude Code/Anthropic"
+        ;;
+esac
+
+print_launch() {
+    printf 'Launch command:'
+    printf ' %q' "${launch[@]}"
+    printf ' < %q > %q 2>&1 &\n' "$request_file" "$log_file"
+}
+
+if $dry_run; then
+    printf '%s\n' "$ledger_body"
+    print_launch
+    printf 'DRY-RUN: no comment posted and no reviewer launched.\n'
+    exit 0
+fi
+
+command -v "$runner" >/dev/null || fail "Reviewer CLI is not installed: $runner"
+runner_version="$($runner --version | head -n 1)"
+command -v flock >/dev/null || fail "flock is required for serialized review dispatch."
+
+# A participant identity binds one immutable session to one host. Serialize all
+# live dispatches for that participant on the host so two wrappers cannot both
+# observe an empty ledger and launch. The lock is held through terminal state;
+# after release, a retry re-reads the durable ledger before it can launch.
+lock_root="${HVO_REVIEW_DISPATCH_LOCK_DIR:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/hvo-review-dispatch-$UID}"
+old_umask="$(umask)"
+umask 077
+mkdir -p -- "$lock_root"
+umask "$old_umask"
+[[ -d "$lock_root" && ! -L "$lock_root" && -O "$lock_root" ]] ||
+    fail "Dispatch lock directory must be an owned, non-symlink directory: $lock_root"
+if command -v sha256sum >/dev/null; then
+    lock_key="$(printf '%s' "$participant_id" | sha256sum | awk '{print $1}')"
+else
+    lock_key="$(printf '%s' "$participant_id" | shasum -a 256 | awk '{print $1}')"
+fi
+lock_file="$lock_root/$lock_key.lock"
+exec {dispatch_lock_fd}> "$lock_file"
+if ! flock -n "$dispatch_lock_fd"; then
+    printf 'DISPATCH_BUSY %s %s; participant/session dispatcher already active on this host\n' \
+        "$command_id" "$participant_id" >&2
+    exit 1
+fi
+
+# The request is durable input. A separate pre-launch reservation prevents a
+# retry from starting a second reviewer if the process or a later ledger POST
+# fails after launch begins.
+comments_json="$(gh api --method GET --paginate "repos/$repo/issues/$pr/comments?per_page=100")"
+existing_request="$(jq -cs --arg command "$command_id" --arg participant "$participant_id" '
+    [ .[][]
+      | select((.body // "") | contains("## Review request — generated dispatch"))
+      | select((.body // "") | contains("Command: " + $command + "\n"))
+      | select((.body // "") | contains("Target participant: " + $participant + "\n"))
+    ] | last // empty
+' <<<"$comments_json")"
+existing_launch="$(jq -cs --arg command "$command_id" --arg participant "$participant_id" '
+    [ .[][]
+      | select((.body // "") | contains("## Review launch — STARTED"))
+      | select((.body // "") | contains("Command " + $command + " for participant " + $participant + " "))
+    ] | last // empty
+' <<<"$comments_json")"
+existing_reservation="$(jq -cs --arg command "$command_id" --arg participant "$participant_id" '
+    [ .[][]
+      | select((.body // "") | contains("## Review launch — STARTING (durable reservation)"))
+      | select((.body // "") | contains("Command " + $command + " for participant " + $participant + " "))
+    ] | last // empty
+' <<<"$comments_json")"
+
+if [[ -n "$existing_launch" ]]; then
+    printf 'ALREADY_CONSUMED %s %s launch-comment=%s\n' \
+        "$command_id" "$participant_id" "$(jq -er '.id' <<<"$existing_launch")"
+    exit 0
+fi
+if [[ -n "$existing_reservation" ]]; then
+    printf 'RECOVERY_REQUIRED %s %s reservation-comment=%s; no reviewer launched\n' \
+        "$command_id" "$participant_id" "$(jq -er '.id' <<<"$existing_reservation")" >&2
+    exit 1
+fi
+
+if [[ -n "$existing_request" ]]; then
+    [[ "$(jq -r '.body' <<<"$existing_request")" == "$ledger_body" ]] ||
+        fail "Existing request receipt does not match this command payload."
+    comment_id="$(jq -er '.id' <<<"$existing_request")"
+    comment_created="$(jq -er '.created_at' <<<"$existing_request")"
+    comment_url="$(jq -er '.html_url' <<<"$existing_request")"
+else
+    post_json="$(gh api --method POST "repos/$repo/issues/$pr/comments" -f body="$ledger_body")"
+    comment_id="$(jq -er '.id' <<<"$post_json")"
+    comment_created="$(jq -er '.created_at' <<<"$post_json")"
+    comment_url="$(jq -er '.html_url' <<<"$post_json")"
+fi
+
+reservation_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+reservation_body="$(printf '## Review launch — STARTING (durable reservation)\n\nCommand %s for participant %s reserves one launch at %s after request comment %s returned at %s. Session: %s. Route: %s %s. Configured provider/model/effort: %s / %s / %s. A retry that sees this reservation must not launch and must enter recovery.' "$command_id" "$participant_id" "$reservation_utc" "$comment_id" "$comment_created" "$session_short" "$runner" "$runner_version" "$actual_provider" "$model" "$effort")"
+reservation_json="$(gh api --method POST "repos/$repo/issues/$pr/comments" -f body="$reservation_body")"
+reservation_id="$(jq -er '.id' <<<"$reservation_json")"
+
+# Re-read the registry and current time after all request/reservation network
+# work. A replaced or expired lease aborts without starting the reviewer.
+prelaunch_authorization=""
+if ! prelaunch_authorization="$("$(dirname "${BASH_SOURCE[0]}")/coordination:guard" "${guard_args[@]}" 2>&1)" ||
+    [[ "$prelaunch_authorization" != AUTHORIZED* ]]; then
+    abort_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    abort_body="$(printf '## Review launch — ABORTED\n\nCommand %s for participant %s did not launch after reservation %s. Pre-launch authorization failed at %s: %s' "$command_id" "$participant_id" "$reservation_id" "$abort_utc" "$prelaunch_authorization")"
+    gh api --method POST "repos/$repo/issues/$pr/comments" -f body="$abort_body" >/dev/null || true
+    fail "Pre-launch coordination authorization failed; reviewer was not started."
+fi
+
+launch_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+launch_from="$PWD"
+cd "$review_worktree"
+nohup "${launch[@]}" < "$request_file" > "$log_file" 2>&1 &
+review_pid=$!
+cd "$launch_from"
+
+launch_body="$(printf '## Review launch — STARTED\n\nCommand %s for participant %s resumed the previously joined session %s after durable reservation %s and request comment %s. Launch UTC: %s. Route: %s %s. Actual configured provider/model/effort: %s / %s / %s. PID: %s. Log: %s. Request: %s' "$command_id" "$participant_id" "$session_short" "$reservation_id" "$comment_id" "$launch_utc" "$runner" "$runner_version" "$actual_provider" "$model" "$effort" "$review_pid" "$log_file" "$comment_url")"
+launch_json=""
+launch_post_error=""
+if ! launch_error_detail="$(gh api --method POST "repos/$repo/issues/$pr/comments" -f body="$launch_body" 2>&1)"; then
+    printf 'STARTED receipt POST failed: %s\n' "$launch_error_detail" >&2
+    launch_post_error="STARTED receipt POST failed; inspect dispatcher stderr"
+    launch_json=""
+else
+    launch_json="$launch_error_detail"
+fi
+
+if wait "$review_pid"; then
+    review_exit=0
+else
+    review_exit=$?
+fi
+review_completed_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+case "$runner" in
+    codex) result_file="$output_file" ;;
+    claude) result_file="$log_file" ;;
+esac
+if [[ "$review_exit" -eq 0 && -s "$result_file" && -n "$launch_json" ]]; then
+    process_conclusion="COMPLETED"
+else
+    process_conclusion="ERROR"
+fi
+completion_body="$(printf '## Review process — %s\n\nCommand %s for participant %s, reservation %s, exited at %s with code %s. STARTED receipt: %s. Result: %s. Log: %s. Launch-receipt error: %s. This process result is not a review verdict; the coordinator must inspect and post the reviewer report.' "$process_conclusion" "$command_id" "$participant_id" "$reservation_id" "$review_completed_utc" "$review_exit" "$(if [[ -n "$launch_json" ]]; then jq -r '.id' <<<"$launch_json"; else printf 'missing'; fi)" "$result_file" "$log_file" "${launch_post_error:-none}")"
+completion_json="$(gh api --method POST "repos/$repo/issues/$pr/comments" -f body="$completion_body")"
+
+jq -n \
+    --arg commandId "$command_id" \
+    --arg participantId "$participant_id" \
+    --arg requestCommentId "$comment_id" \
+    --arg requestCreatedAt "$comment_created" \
+    --arg reservationCommentId "$reservation_id" \
+    --arg launchCommentId "$(if [[ -n "$launch_json" ]]; then jq -r '.id' <<<"$launch_json"; fi)" \
+    --arg launchUtc "$launch_utc" \
+    --arg completionCommentId "$(jq -r '.id' <<<"$completion_json")" \
+    --arg completedUtc "$review_completed_utc" \
+    --arg conclusion "$process_conclusion" \
+    --arg exitCode "$review_exit" \
+    --arg resultFile "$result_file" \
+    --arg pid "$review_pid" \
+    '{commandId:$commandId,participantId:$participantId,requestCommentId:$requestCommentId,requestCreatedAt:$requestCreatedAt,reservationCommentId:$reservationCommentId,launchCommentId:$launchCommentId,launchUtc:$launchUtc,completionCommentId:$completionCommentId,completedUtc:$completedUtc,conclusion:$conclusion,exitCode:($exitCode|tonumber),resultFile:$resultFile,pid:($pid|tonumber)}'
+
+[[ "$process_conclusion" == COMPLETED ]] || fail "Reviewer process failed or produced no result."

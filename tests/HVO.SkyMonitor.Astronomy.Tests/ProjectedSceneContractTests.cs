@@ -31,7 +31,7 @@ public sealed class ProjectedSceneContractTests
         var parsed = ProjectedSceneJson.Parse(bytes);
 
         Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
-        Assert.AreEqual("D5B424FE0316830F2D8AFD15FBE167353FF10CD6956DE8EABCFF5735A09EC1DD", scene.SceneIdentitySha256);
+        Assert.AreEqual("8CA0DAD64766F9F009AD89A3C1834C3EE9E08A6297C7E8584441C08A29CCD1E2", scene.SceneIdentitySha256);
         Assert.AreEqual(scene.SceneIdentitySha256, parsed.Scene!.SceneIdentitySha256);
         Assert.AreEqual(ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge, scene.CoordinateConvention);
         StringAssert.Contains(ProjectedSceneImageTransformV1.OperationOrder, "crop-bin", StringComparison.Ordinal);
@@ -464,7 +464,7 @@ public sealed class ProjectedSceneContractTests
         var parsed = ProjectedSceneJson.Parse(bytes);
 
         Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
-        Assert.AreEqual("927D8ACC5279DEF422EECA3C2DDB034E18854D6E39DA8A938ACF71C82D671C57", scene.SceneIdentitySha256);
+        Assert.AreEqual("F511AAB2C08AF453B7F2344F5DB575F1A63C3867EA10DD3368B63AFC7C7EC089", scene.SceneIdentitySha256);
         CollectionAssert.AreEqual(
             Enumerable.Range(0, scene.Segments.Count).ToArray(),
             scene.Segments.Select(static segment => segment.PartIndex).ToArray());

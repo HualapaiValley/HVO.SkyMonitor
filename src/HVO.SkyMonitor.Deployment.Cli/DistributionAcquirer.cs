@@ -17,8 +17,8 @@ internal sealed class DistributionAcquirer : IDisposable
     private const int MaximumRedirects = 5;
     private const int MaximumAttempts = 3;
     private const long MaximumCacheBytes = 40L * 1024 * 1024 * 1024;
-    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan AssetAttemptTimeout = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DefaultAssetAttemptTimeout = TimeSpan.FromMinutes(30);
     private static readonly HashSet<string> CatalogFiles = new(StringComparer.Ordinal)
     {
         "manifest.json", "hyg_v42.sqlite", "LICENSE-HYG.md", "ATTRIBUTION-HYG.md"
@@ -28,18 +28,37 @@ internal sealed class DistributionAcquirer : IDisposable
     private readonly string cacheRoot;
     private readonly string stateRoot;
     private readonly DistributionTrustRoot trustRoot;
+    private readonly TimeSpan requestTimeout;
+    private readonly TimeSpan assetAttemptTimeout;
 
     public DistributionAcquirer(
         HttpMessageHandler? handler = null,
         string? cacheRoot = null,
         DistributionTrustRoot? trustRoot = null,
         string? stateRoot = null)
+        : this(handler, cacheRoot, trustRoot, stateRoot, DefaultRequestTimeout, DefaultAssetAttemptTimeout)
+    {
+    }
+
+    /// <summary>
+    /// Test seam: the attempt timeouts keep their production defaults through the public constructor; tests shorten
+    /// them so a stalled transfer can be proved without waiting for the real durations.
+    /// </summary>
+    internal DistributionAcquirer(
+        HttpMessageHandler? handler,
+        string? cacheRoot,
+        DistributionTrustRoot? trustRoot,
+        string? stateRoot,
+        TimeSpan requestTimeout,
+        TimeSpan assetAttemptTimeout)
     {
         client = CreateClient(handler);
         client.Timeout = Timeout.InfiniteTimeSpan;
         this.cacheRoot = cacheRoot ?? DefaultCacheRoot();
         this.stateRoot = stateRoot ?? (cacheRoot is null ? DefaultStateRoot() : Path.Combine(cacheRoot, "test-state"));
         this.trustRoot = trustRoot ?? DistributionTrustRoot.Production;
+        this.requestTimeout = requestTimeout;
+        this.assetAttemptTimeout = assetAttemptTimeout;
     }
 
     public async Task<AcquiredCatalog> AcquireAsync(InstallRequest request, CancellationToken cancellationToken)
@@ -85,7 +104,26 @@ internal sealed class DistributionAcquirer : IDisposable
     /// the installer asks Docker to load or start anything. Returns <c>null</c> when the operator supplied the image
     /// directly instead of naming a signed release.
     /// </summary>
-    public async Task<AcquiredImage?> AcquireImageAsync(InstallRequest request, CancellationToken cancellationToken)
+    public Task<AcquiredImage?> AcquireImageAsync(InstallRequest request, CancellationToken cancellationToken)
+        => AcquireImageAsync(request, HostImageArchitecture(), ThisHostAuthority, cancellationToken);
+
+    /// <summary>
+    /// Acquires the signed CameraAgent image release for the architecture of the Docker daemon an instance was
+    /// installed against, which is the architecture the candidate must carry, rather than the architecture of the
+    /// process running the CLI. A remote or cross-architecture daemon is therefore served the archive it can run,
+    /// and a release that does not publish that architecture is refused before anything is downloaded.
+    /// </summary>
+    public Task<AcquiredImage?> AcquireImageAsync(
+        InstallRequest request,
+        string daemonArchitecture,
+        CancellationToken cancellationToken)
+        => AcquireImageAsync(request, DaemonImageArchitecture(daemonArchitecture), RecordedDaemonAuthority, cancellationToken);
+
+    private async Task<AcquiredImage?> AcquireImageAsync(
+        InstallRequest request,
+        string targetArchitecture,
+        string selectingAuthority,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         var inputs = TrainInputs.ForImage(request);
@@ -98,7 +136,7 @@ internal sealed class DistributionAcquirer : IDisposable
         {
             var resolved = await ResolveVerifiedManifestAsync(
                 inputs, DistributionManifestKind.ImageRelease, readOnly: false, cancellationToken).ConfigureAwait(false);
-            var (image, platform) = SelectHostPlatform(resolved.Manifest);
+            var (image, platform) = SelectPlatform(resolved.Manifest, targetArchitecture, selectingAuthority);
             var artifact = resolved.Manifest.Artifacts.Single(value =>
                 value.Role == DistributionArtifactRole.ImageArchive && value.AssetName == platform.OfflineArchiveAsset);
             var assetSource = ResolveAssetSource(inputs, resolved.Source, artifact.AssetName, resolved.Reference is null);
@@ -130,7 +168,24 @@ internal sealed class DistributionAcquirer : IDisposable
     /// state is committed. The read-only <c>cameraagent preflight</c> uses this to name the release an upgrade
     /// would install without leaving anything behind. Returns <c>null</c> when no signed release was named.
     /// </summary>
-    public async Task<ResolvedImageRelease?> ResolveImageAsync(InstallRequest request, CancellationToken cancellationToken)
+    public Task<ResolvedImageRelease?> ResolveImageAsync(InstallRequest request, CancellationToken cancellationToken)
+        => ResolveImageAsync(request, HostImageArchitecture(), ThisHostAuthority, cancellationToken);
+
+    /// <summary>
+    /// Resolves the signed release for the architecture of the instance's recorded Docker daemon, so a read-only
+    /// preflight names exactly the platform an upgrade of that instance will acquire.
+    /// </summary>
+    public Task<ResolvedImageRelease?> ResolveImageAsync(
+        InstallRequest request,
+        string daemonArchitecture,
+        CancellationToken cancellationToken)
+        => ResolveImageAsync(request, DaemonImageArchitecture(daemonArchitecture), RecordedDaemonAuthority, cancellationToken);
+
+    private async Task<ResolvedImageRelease?> ResolveImageAsync(
+        InstallRequest request,
+        string targetArchitecture,
+        string selectingAuthority,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         var inputs = TrainInputs.ForImage(request);
@@ -143,7 +198,7 @@ internal sealed class DistributionAcquirer : IDisposable
         {
             var resolved = await ResolveVerifiedManifestAsync(
                 inputs, DistributionManifestKind.ImageRelease, readOnly: true, cancellationToken).ConfigureAwait(false);
-            var (image, platform) = SelectHostPlatform(resolved.Manifest);
+            var (image, platform) = SelectPlatform(resolved.Manifest, targetArchitecture, selectingAuthority);
             // An acquisition also requires the release to publish exactly one offline archive for the selected
             // platform. Proving it here costs no download and keeps a malformed release from resolving cleanly
             // and then failing partway through the upgrade it was resolved for.
@@ -165,23 +220,42 @@ internal sealed class DistributionAcquirer : IDisposable
         }
     }
 
+    private const string ThisHostAuthority = "this host's";
+    private const string RecordedDaemonAuthority = "the instance's recorded Docker daemon's";
+
     /// <summary>
-    /// Selects the published platform this host can execute. A release that does not publish this host's
-    /// architecture names what it does publish instead of failing generically.
+    /// Selects the published platform for the architecture that will execute the image: the CLI process for an
+    /// install, or the instance's recorded Docker daemon for an upgrade and its preflight. A release that does not
+    /// publish that architecture names what it does publish and which authority selected, instead of failing
+    /// generically or, worse, later at <c>docker image load</c> after the wrong archive was downloaded.
     /// </summary>
-    private static (DistributionImageIdentity Image, DistributionImagePlatform Platform) SelectHostPlatform(
-        DistributionReleaseManifest manifest)
+    private static (DistributionImageIdentity Image, DistributionImagePlatform Platform) SelectPlatform(
+        DistributionReleaseManifest manifest,
+        string architecture,
+        string selectingAuthority)
     {
         var image = manifest.Images[0];
-        var architecture = HostImageArchitecture();
         var platform = image.Platforms.SingleOrDefault(candidate =>
             candidate.OperatingSystem == "linux" && candidate.Architecture == architecture)
             ?? throw new InstallerException(
                 $"The signed CameraAgent image release {manifest.Release.Tag} publishes " +
                 $"{string.Join(", ", image.Platforms.Select(static value => $"{value.OperatingSystem}/{value.Architecture}"))} " +
-                $"and does not support this host's linux/{architecture} architecture.");
+                $"and does not support {selectingAuthority} linux/{architecture} architecture.");
         return (image, platform);
     }
+
+    /// <summary>
+    /// The image architecture an instance's recorded Docker daemon executes, named the way an OCI platform names
+    /// it. The installer records the daemon's architecture already normalized, but an edited or foreign manifest
+    /// is refused here rather than being matched against nothing.
+    /// </summary>
+    internal static string DaemonImageArchitecture(string daemonArchitecture) => daemonArchitecture switch
+    {
+        "amd64" or "x86_64" => "amd64",
+        "arm64" or "aarch64" => "arm64",
+        var other => throw new InstallerException(
+            $"CameraAgent images are published for linux/amd64 and linux/arm64; the instance's recorded Docker daemon reports '{other}'.")
+    };
 
     /// <summary>The image architecture this host can execute, named the way an OCI platform names it.</summary>
     internal static string HostImageArchitecture() => RuntimeInformation.OSArchitecture switch
@@ -553,17 +627,36 @@ internal sealed class DistributionAcquirer : IDisposable
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(RequestTimeout);
+                timeout.CancelAfter(requestTimeout);
                 using var transfer = await SendWithPolicyAsync(uri, null, timeout.Token).ConfigureAwait(false);
                 return await ReadBoundedAsync(transfer.Response, maximumBytes, timeout.Token).ConfigureAwait(false);
             }
-            catch (Exception exception) when (attempt < MaximumAttempts && !cancellationToken.IsCancellationRequested &&
-                                               exception is HttpRequestException or TaskCanceledException)
+            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Only the attempt timeout this method imposed can have fired: the caller's own token is unsignalled.
+                // A stalled mirror is a distribution failure, never an operator cancellation.
+                if (attempt >= MaximumAttempts)
+                {
+                    throw StalledTransfer("metadata", uri, requestTimeout, attempt, exception);
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException) when (attempt < MaximumAttempts && !cancellationToken.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
             }
         }
     }
+
+    /// <summary>
+    /// Names a transfer that stalled past the acquirer's own per-attempt timeout on every attempt. Raised as an
+    /// installer failure so the CLI reports the distribution source rather than exiting as if the operator had
+    /// cancelled; genuine caller cancellation never reaches this path.
+    /// </summary>
+    private static InstallerException StalledTransfer(string kind, Uri uri, TimeSpan attemptTimeout, int attempts, Exception cause)
+        => new(
+            $"The distribution {kind} download from '{uri.Host}' stalled past the {attemptTimeout.TotalSeconds:0}-second attempt timeout on each of {attempts} attempts; the source did not respond.",
+            cause);
 
     private async Task<Uri> DownloadAssetAsync(
         Uri source,
@@ -589,7 +682,7 @@ internal sealed class DistributionAcquirer : IDisposable
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(AssetAttemptTimeout);
+                timeout.CancelAfter(assetAttemptTimeout);
                 using var transfer = await SendWithPolicyAsync(source, existingLength == 0 ? null : existingLength, timeout.Token)
                     .ConfigureAwait(false);
                 var response = transfer.Response;
@@ -638,7 +731,17 @@ internal sealed class DistributionAcquirer : IDisposable
                 }
                 return transfer.ResolvedUri;
             }
-            catch (Exception exception) when (attempt < MaximumAttempts && exception is HttpRequestException or TaskCanceledException)
+            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Same discrimination as the metadata path: the caller's token is unsignalled, so the attempt timeout
+                // fired. Exhausted attempts surface as an attributed distribution failure, not as cancellation.
+                if (attempt >= MaximumAttempts)
+                {
+                    throw StalledTransfer("asset", source, assetAttemptTimeout, attempt, exception);
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException) when (attempt < MaximumAttempts)
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken).ConfigureAwait(false);
             }
@@ -667,7 +770,7 @@ internal sealed class DistributionAcquirer : IDisposable
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             }
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(RequestTimeout);
+            timeout.CancelAfter(requestTimeout);
             var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             if ((int)response.StatusCode is >= 300 and <= 399)
             {
@@ -1087,6 +1190,13 @@ internal sealed class AcquiredCatalog(
 /// correlate the running container with the release train, the signing key, the evidence assets, and the exact
 /// compatibility boundaries the release declared, without a source checkout or a network call.
 /// </summary>
+/// <summary>
+/// The release record retained beside an installed instance's deployment state. Schema version 1 named the
+/// file-level SBOM, provenance, and vulnerability-scan assets; version 2 adds the per-platform component inventory
+/// as an optional member. A version-1 document (no <c>componentInventoryAsset</c> member) still deserializes with a
+/// null inventory, so an existing installation stays valid; a release published before inventories existed writes a
+/// version-2 record with the member explicitly null.
+/// </summary>
 internal sealed record CameraAgentImageReleaseEvidence(
     int SchemaVersion,
     DistributionVerificationEvidence Distribution,
@@ -1103,6 +1213,7 @@ internal sealed record CameraAgentImageReleaseEvidence(
     string SbomAsset,
     string ProvenanceAsset,
     string VulnerabilityScanAsset,
+    string? ComponentInventoryAsset,
     DateTimeOffset RecordedUtc);
 
 /// <summary>
@@ -1141,6 +1252,9 @@ internal sealed record AcquiredImage(
         Image.SbomAsset,
         Image.ProvenanceAsset,
         Image.VulnerabilityScanAsset,
+        // The inventory published for exactly the platform that was installed, so CVE triage on the instance can
+        // name its own component list; a version-1 release publishes none and records none.
+        Platform.ComponentSbomAsset,
         DateTimeOffset.UtcNow);
 
     /// <summary>

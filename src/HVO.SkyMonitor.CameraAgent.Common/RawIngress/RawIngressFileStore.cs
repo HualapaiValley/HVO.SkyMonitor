@@ -232,11 +232,16 @@ internal sealed class RawIngressFileStore(
            role.ValueKind == JsonValueKind.String &&
            string.Equals(role.GetString(), descriptor.Artifact.Role.ToString(), StringComparison.Ordinal) &&
            element.TryGetProperty("timestampUtc", out var timestamp) &&
+           timestamp.ValueKind == JsonValueKind.String &&
            timestamp.TryGetDateTimeOffset(out var parsedTimestamp) &&
            parsedTimestamp == descriptor.Timing.ExposureStartedUtc &&
-           element.TryGetProperty("width", out var width) && width.TryGetInt32(out var parsedWidth) &&
+           element.TryGetProperty("width", out var width) &&
+           width.ValueKind == JsonValueKind.Number &&
+           width.TryGetInt32(out var parsedWidth) &&
            parsedWidth == descriptor.Layout.Width &&
-           element.TryGetProperty("height", out var height) && height.TryGetInt32(out var parsedHeight) &&
+           element.TryGetProperty("height", out var height) &&
+           height.ValueKind == JsonValueKind.Number &&
+           height.TryGetInt32(out var parsedHeight) &&
            parsedHeight == descriptor.Layout.Height &&
            element.TryGetProperty("pixelFormat", out var pixelFormat) &&
            pixelFormat.ValueKind == JsonValueKind.String &&

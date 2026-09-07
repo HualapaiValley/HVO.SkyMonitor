@@ -116,12 +116,18 @@ internal sealed class RawCaptureIngress :
             return;
         }
         await _initializeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        SemaphoreSlim? lifecycleGate = null;
+        var lifecycleAcquired = false;
         try
         {
             if (_initialized)
             {
                 return;
             }
+            _faultInjector.Inject(RawIngressFaultPoint.BeforeInitializationLifecycleLock);
+            lifecycleGate = RawIngressLifecycleLock.ForRoot(_options.RawIngressRoot);
+            await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            lifecycleAcquired = true;
             var wasUnhealthy = _state.Snapshot.Availability == RawIngressAvailability.Unhealthy;
             try
             {
@@ -229,6 +235,10 @@ internal sealed class RawCaptureIngress :
         }
         finally
         {
+            if (lifecycleAcquired)
+            {
+                lifecycleGate!.Release();
+            }
             _initializeGate.Release();
         }
     }
@@ -289,11 +299,18 @@ internal sealed class RawCaptureIngress :
                 EnsureCapacity(frame.PixelData.Length);
             }
             var payloadSha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span));
+            _faultInjector.Inject(RawIngressFaultPoint.BeforeIdentityReservation);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Sequence reservation is the point of no cancellation. From here forward the identity may become
+            // externally visible in an immutable sidecar, so publication and journal commit must converge rather
+            // than consume a sequence without a durable capture or risk reusing a visible identity.
             var identity = await _journal.ReserveIdentityAsync(
                 configuration.AgentId,
                 stableIds.CaptureId,
                 stableIds.ArtifactId,
-                cancellationToken).ConfigureAwait(false);
+                CancellationToken.None).ConfigureAwait(false);
+            _faultInjector.Inject(RawIngressFaultPoint.AfterIdentityReservation);
             var paths = _files.GetPaths(
                 RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, frame),
                 identity.ArtifactId);
@@ -305,7 +322,7 @@ internal sealed class RawCaptureIngress :
                     paths,
                     frame.PixelData,
                     identity,
-                    cancellationToken).ConfigureAwait(false);
+                    CancellationToken.None).ConfigureAwait(false);
                 var expectedDescriptor = RawCaptureDescriptorFactory.Create(
                     configuration,
                     submission,
@@ -375,7 +392,7 @@ internal sealed class RawCaptureIngress :
                 _faultInjector.Inject(RawIngressFaultPoint.ValidationCompleted);
                 using (var payloadActivity = RawIngressTelemetry.ActivitySource.StartActivity("payload.publish"))
                 {
-                    await _files.PublishPayloadAsync(paths, frame.PixelData, cancellationToken).ConfigureAwait(false);
+                    await _files.PublishPayloadAsync(paths, frame.PixelData, CancellationToken.None).ConfigureAwait(false);
                     payloadPublished = true;
                     payloadActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 }
@@ -398,7 +415,7 @@ internal sealed class RawCaptureIngress :
                 manifestJson = CaptureContractJson.Serialize(manifest);
                 using (var sidecarActivity = RawIngressTelemetry.ActivitySource.StartActivity("sidecar.publish"))
                 {
-                    await _files.PublishSidecarAsync(paths, manifestJson, cancellationToken).ConfigureAwait(false);
+                    await _files.PublishSidecarAsync(paths, manifestJson, CancellationToken.None).ConfigureAwait(false);
                     sidecarActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 }
             }
@@ -731,6 +748,23 @@ internal sealed class RawCaptureIngress :
         return await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    internal async ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsUnderLifecycleLockAsync(
+        string storageRoot,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
+        if (!PathsEqual(storageRoot, _options.RawIngressRoot))
+        {
+            return Array.Empty<RawIngressRetentionHold>();
+        }
+        if (!Volatile.Read(ref _journalValidated))
+        {
+            throw new InvalidOperationException(
+                "Raw ingress must be initialized before retention reads are made under the lifecycle lock.");
+        }
+        return await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public void InvalidateEvidence()
     {
         SetAvailabilityPreservingTotals(RawIngressAvailability.Unhealthy, "committed-evidence-unavailable");
@@ -998,6 +1032,10 @@ internal sealed class RawCaptureIngress :
                     _logger.CaptureLanePressureChanged(current.Availability.ToString(), current.Reason);
                 }
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {

@@ -11,8 +11,8 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 3288 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
-| **Integration Tests** | 656 Integration-category cases across SQLite, filesystem, SQL Server, Redis, S3-compatible object storage, Mailpit, forwarded-header, host integration, and the seven repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
+| **Unit Tests** | 3339 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
+| **Integration Tests** | 666 Integration-category cases across SQLite, filesystem, SQL Server, Redis, S3-compatible object storage, Mailpit, forwarded-header, host integration, and the seven repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
 | **Architecture & Publish** | Both category selections of the architecture project: the six Unit-category boundary cases, including the host `Dockerfile` and fault-matrix discovery contracts, and the seven Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
@@ -115,7 +115,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3288`, `Integration=656`, `Manual=102`, `Soak=1`, `External=0`, and `Hardware=1`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3339`, `Integration=666`, `Manual=102`, `Soak=1`, `External=0`, and `Hardware=1`.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project matrix in `scripts/test-categories/Program.cs` and fails when this runbook disagrees with it, while the Build check's category audit proves that matrix matches actual discovery. Update the matrix and this runbook in the same change.
 
@@ -326,7 +326,8 @@ selected by `deployment_catalog`, `deployment_shards`, or
 closed deployment path map is:
 
 - `.github/workflows/ci.yml`, `.dockerignore`, `.env.template`, `docker-compose.apps.yml`, and `global.json`
-- `scripts/ci:classify`, `scripts/ci:require`, and `scripts/test:ci-classification`
+- `scripts/ci:classify`, `scripts/ci:require`, `scripts/test:ci-classification`,
+  `scripts/release:cameraagent-image`, and `scripts/lib/**`
 - `scripts/deploy:environment` and `scripts/deploy/**`
 - `scripts/test:deploy-environment`, `scripts/test:deploy-environment-cli`, `scripts/test:deployment-installer`, `scripts/test:deployment-logichost-outage-contract`, and `scripts/test:deployment-normal-flow-contract`
 - `scripts/catalog:*`, `scripts/catalog/**`, and `scripts/infra:operation-lock`
@@ -493,7 +494,7 @@ including reduced. The table records only what varies.
 | LogicHost seam (controllers, services, data, infrastructure) | no | logichost, combined | no |
 | `tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/**` | no | logichost, combined | no |
 | Combined fixture or combined suite | no | cameraagent, logichost, combined | no |
-| `src/HVO.SkyMonitor.Deployment.*`, the release tool, or their tests | no | delivery | yes |
+| `src/HVO.SkyMonitor.Deployment.*`, the release tool, its release-validation shell/JQ helpers, or their tests | no for project paths; yes for repository-root scripts | delivery for project paths; complete for repository-root scripts | yes — release validation selects the installer suite |
 | `deploy/**`, `scripts/deploy*`, `scripts/catalog*`, or the other non-project deployment inputs | yes | every lane claimed by the complete matrix | yes |
 | `THIRD-PARTY-NOTICES.md` or a `docs/validation/*.json` a project copies | yes | every lane claimed by the complete matrix | no |
 | `docs/catalog/hyg-v42-attribution.md` or `hyg-v42-license.md` | no | delivery | no |

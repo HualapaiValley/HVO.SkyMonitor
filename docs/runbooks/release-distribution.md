@@ -236,9 +236,9 @@ to end. The signed-release installer campaign
 signed lifecycle on `linux/amd64`: both architectures of both candidates are
 built, identity-derived, scanned, and signed, and the amd64 archive is the one that an
 installation consumes and runs. The arm64 archive of each candidate is published
-and verifiable but is never installed, so arm64 remains unqualified end to end
-and no open issue currently tracks qualifying it; open one before treating an
-arm64 installation as supported.
+and verifiable but is never installed, so arm64 remains unqualified end to end.
+[#651](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/651) tracks
+qualifying it; until it closes, do not treat an arm64 installation as supported.
 
 A published image release must carry a vulnerability scan. The release tool
 refuses a candidate whose scan report does not name a supported scanner and scan
@@ -267,8 +267,11 @@ signed only by the production key through the workflow below.
 campaign builds two candidates from two committed revisions, signs both with one
 ephemeral key, and publishes a campaign-only deployment CLI, built from the same
 committed revision, whose embedded trust root is that ephemeral public key. It
-then installs from the first candidate, upgrades to the second, rolls back, and
-refuses five releases it must not accept: one signed by a key the trust root does
+then installs from the first candidate, forces candidate verification to fail
+after the second candidate is running, proves the lifecycle automatically
+restores the first image, Compose model, capture, and byte-identical retained
+release record, resumes the same upgrade to the second candidate, rolls back,
+and refuses five releases it must not accept: one signed by a key the trust root does
 not hold, one declaring a key identity it does not carry, one carrying the
 trusted key's real signature over a different release, one naming an archive that
 is not the one it signed, and one whose signed compatibility record contradicts
@@ -276,11 +279,17 @@ the image labels. It asserts the retained
 `image-distribution.json` after each transition. Nothing else about verification
 is changed, and the substitution is proved to redirect trust rather than remove
 it: the unmodified product CLI must refuse the same release, and the campaign CLI
-must refuse the same release re-signed by a second key.
+must refuse four derived releases — the same release re-signed by a second key,
+a manifest declaring a key identity the trust root does not carry, the trusted
+key's real signature over a different release, and a release naming an archive
+it did not sign.
 
-The ephemeral key therefore establishes the lifecycle, verification, and
-compatibility-agreement behaviour of the signed image train against real
-containers. It establishes nothing about the production key itself — that the
+The ephemeral key therefore establishes the lifecycle, verification,
+post-mutation automatic-restore, and compatibility-agreement behaviour of the
+signed image train against real containers. The post-mutation fault is injected
+only into one campaign-local Docker inspection response after a healthy candidate
+is running; production code, release bytes, and every recovery response remain
+unchanged. It establishes nothing about the production key itself — that the
 committed public key matches the Key Vault private key, that the workflow
 identity can sign with it, that a Key Vault signature verifies against the
 committed trust root, or that custody and rotation behave as described above.
@@ -394,14 +403,13 @@ digest, not a replacement.
 ### What the installed instance records
 
 An installation's retained release evidence (`image-distribution.json`) names the
-file-level SBOM, the provenance, and the vulnerability scan, but not the
-per-platform component inventory. Component-level triage therefore starts from
-the signed release assets rather than from the instance's own evidence file.
-Extending that record is a change to durable installation state and to the
-installer's acquisition path, which
-[#597](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/597) excluded; it is
-tracked by
-[#645](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/645).
+file-level SBOM, the provenance, the vulnerability scan, and the per-platform
+component inventory published for the installed architecture
+(`componentInventoryAsset`), so component-level triage can start from the
+instance's own evidence file and read the inventory the release signed for that
+platform. A release published before inventories existed records no inventory,
+and a version-1 evidence record written by an earlier installer has no such
+member; both remain valid.
 
 Without `--push` there is no registry, so the signed multi-architecture digest is
 a canonical index computed from the two platform manifests. It is a stable

@@ -70,6 +70,16 @@ must not redefine its policy inconsistently.
 - Use the active initiative's owning roadmap epic for coordination, claims, and
   handoffs. Epic #89 and the `Virtual-First Platform Completion` milestone retain
   the completed virtual-first delivery history.
+- Identify every coordination participant as
+  `<harness>:<provider>:<host>:<session-short-id>`; provider-only names such as
+  `Claude` are display labels, not identities. Do not include credentials or a
+  complete bearer/session token in the ID. A new session remains
+  `UNREGISTERED/WAIT` until it sends `JOIN REQUEST`, the coordinator returns a
+  participant-bound `JOIN ACK`, and it returns `JOINED ACK`. Loading this file
+  is not enrollment, and an unrelated operator-assigned repository task does
+  not join or mutate the roadmap epic unless explicitly enrolled. Follow the
+  registry, lease, and targeted-command mechanics in section 4 of
+  `docs/planning/agent-execution.md`.
 - Before implementing a roadmap issue, follow `docs/planning/agent-execution.md` and the relevant section of `docs/planning/agent-prompts.md`.
 - Before opening, reviewing, updating, finalizing, or merging any PR, read and
   follow `.agents/skills/pr-lifecycle/SKILL.md`. This instruction is mandatory
@@ -93,7 +103,10 @@ must not redefine its policy inconsistently.
   `docs/planning/agent-execution.md`.
 - Every PR uses a draft-first convergence cycle. Protected CI must not run until
   review has converged and the target branch has been finally synchronized and
-  integration-reviewed. Use a coordinator-launched local review agent, or an
+  integration-reviewed when synchronization changes the target base. A freshly
+  fetched target SHA already covered by the converged review needs a recorded
+  unchanged-base proof, not a redundant base-sync review. Use a
+  coordinator-launched local review agent, or an
   equivalent execution route that can bind the requested immutable range and
   record its actual provider, model, and reasoning effort, for convergence
   evidence. Provider-side PR bots may supplement this with a current-head audit
@@ -110,10 +123,16 @@ must not redefine its policy inconsistently.
   Allow at most three correction rereviews per PR before moving remaining
   non-blocking findings to one linked follow-up issue. Security, data-loss,
   acceptance, failing-CI, and material-correctness defects always block.
+- Tier A/B PRs receive one initial exact-range review plus only finding-driven
+  correction rereviews. Use `standard` by default and promote Tier B to `deep`
+  for concurrency, durability, security, CI-control, or cross-boundary risk.
+  Tier C/M review depth is unchanged. Generate and dispatch review requests with
+  the repository scripts named by the PR lifecycle skill.
 - Only one PR may hold the repository-wide finalization lock. Acquire it before
-  the final target-branch merge and hold it through base-sync review, protected
-  CI, and merge. If the target branch advances, return the PR to draft, release
-  the lock, synchronize and review again, then run CI on the new reviewed head.
+  final target synchronization and hold it through any required base-sync
+  review, protected CI, and merge. If the target branch advances, return the PR
+  to draft, release the lock, synchronize and review again, then run CI on the
+  new reviewed head.
 - Opening a PR assigns its implementing agent ownership of the complete lifecycle:
   request review, actively monitor review and checks, disposition findings, drive
   corrections and bounded rereviews, mark the converged head ready, monitor final
@@ -133,50 +152,28 @@ must not redefine its policy inconsistently.
 
 ### Progress Reporting
 
-Progress reporting is mandatory while delegated agents, review acquisition,
-long gates, or CI runs are active. Use the current harness's scheduled task,
-background loop, transcript tail, session status, or equivalent capability
-rather than depending on a vendor-specific agent feature.
+Progress reporting is mandatory while delegated work, review acquisition, long
+gates, or CI is active. Section 4 of `docs/planning/agent-execution.md` is the
+single canonical source for the complete monitor, heartbeat, ledger, and
+cross-provider channel procedure. These independently loaded invariants remain:
 
-- The coordinator owns operator-visible reporting and arms exactly one
-  persistent status monitor on a five-minute cadence. A delegated observer or
-  background loop may collect state, but responsibility for delivering every
-  update to the main conversation cannot be delegated. If the observer cannot
-  inspect all active work or reach the main conversation, the coordinator polls
-  directly. Start the monitor whenever delegated work, review acquisition, a
-  long gate, or CI becomes active; restart it whenever the active agent or PR
-  set changes; stop it when nothing remains active.
-- On every wake, record for each issue or PR the implementing agent's last
-  activity timestamp and current step, the PR head SHA, draft state, merge
-  state, the first line and timestamp of the latest ledger comment, and the
-  state of any shared lock such as the Docker or finalization window. While
-  review is pending, include the provider, requested range, request age,
-  acknowledgement deadline, start state, fallback state, and correction-rereview
-  count. Use the best available harness signal for the current step (for example,
-  the transcript's latest tool description). Attach a one-line CI result watcher
-  to each PR that emits only when CI reaches success, failure, or cancellation.
-- Relay a short note to the main conversation on every wake, even when no state
-  changed. Include the literal status `still running, no change` when applicable.
-  Convert every reported time to MST (fixed UTC-7 with no daylight-saving
-  adjustment) and label it `MST`.
-- Relay each delegated agent's `STARTED`, milestone, blocker, and completion
-  message immediately in addition to the five-minute heartbeat. Harness UI
-  activity and issue or PR comments alone do not satisfy this user-visible
-  requirement.
-- For every item, state what just finished, what is running now, the next step,
-  and any blocker. When an agent reports a milestone, read the report and relay
-  its substance, such as the root cause, accepted findings, or gate result,
-  rather than only its label.
-- If an implementing agent goes more than thirty minutes without an issue or
-  ledger comment, instruct it to post one before continuing and mention that
-  intervention in the coordinator's next note.
-- Every delegated agent sends the coordinator a `STARTED` message before
-  substantive work, then milestone, blocker, at-least-thirty-minute, and
-  completion messages. Each message includes the task, current step, next step,
-  blocker, and, for reviews, the exact range plus actual provider, model, and
-  effort. Every delegated agent also posts these milestones on the owning issue
-  or PR ledger; when its harness cannot write there, the coordinator posts a
-  clearly attributed proxy entry. Use the issue until a draft PR exists, then
-  the PR review ledger. All repository comments use UTC. Long gates and reviews
-  get an interim note rather than silence. These messages supplement, but never
-  replace, the final completion report or a resumable blocked handoff.
+- The coordinator arms exactly one five-minute monitor whose cadence actively
+  wakes or messages it, proves that path with an immediate baseline after every
+  start/restart, and polls directly after a signaling gap. Buffered output is
+  not a working monitor, and delivery to the main conversation cannot be
+  delegated.
+- Cross-provider fallback uses two participant-leased mutable epic slots,
+  compact sequenced/acknowledged state, append-only durable decisions, and
+  metadata/cursor reads instead of epic rescans. Keep `C1.1` until the execution
+  protocol's identity, CAS, and explicit `C1.2` cutover conditions are met.
+- On every wake, inspect each active issue/PR, current review and CI state, and
+  shared locks. Attach terminal-only CI watchers; do not repeatedly run or
+  report unchanged expensive work.
+- Relay every wake to the operator in fixed MST (UTC-7), including the literal
+  `still running, no change` when applicable, plus every `STARTED`, milestone,
+  blocker, and completion immediately. Each item retains finished/current/next/
+  blocker; repository comments alone are not operator-visible reporting.
+- Enrolled agents echo participant and command IDs in their reports and write
+  milestones in UTC to the issue or PR ledger at least every thirty minutes.
+  Long gates and reviews get an interim note, and a blocked agent still leaves
+  the resumable handoff.

@@ -10,7 +10,11 @@ public static class DeploymentSchemaVersions
     public const int LifecycleOperation = 1;
     public const int StatePreflightReport = 1;
     public const int StateResetEvidence = 1;
-    public const int ImageReleaseEvidence = 1;
+    /// <summary>
+    /// Version 1 recorded the SBOM, provenance, and vulnerability-scan asset names; version 2 (issue #645) adds the
+    /// optional per-platform component-inventory asset. Version-1 documents remain readable.
+    /// </summary>
+    public const int ImageReleaseEvidence = 2;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<DeploymentComponent>))]

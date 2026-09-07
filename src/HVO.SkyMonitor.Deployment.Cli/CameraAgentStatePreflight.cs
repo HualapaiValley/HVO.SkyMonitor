@@ -42,6 +42,40 @@ internal sealed record CameraAgentStatePreflightReport(
     DateTimeOffset EvaluatedUtc);
 
 /// <summary>
+/// The contract identities every canonical CameraAgent image declares and an upgrade requires the candidate to
+/// match. Shared by the upgrade's contract-identity gate and the signed-release preflight so the two cannot drift.
+/// </summary>
+internal static class CameraAgentImageContract
+{
+    public const string Component = "CameraAgent";
+    public const string CatalogContract = "hyg-v42-production-p3-s2";
+    public const string ReplayRunnerContract = "local-replay-runner-v1";
+}
+
+/// <summary>
+/// The contract identities a candidate declares, taken from a signed release's image identity and compatibility
+/// record. These are the values the upgrade's contract-identity gate compares against the instance, so a
+/// read-only preflight can reach that gate's verdict without loading the image. The loaded image's label
+/// agreement with the signed record remains an upgrade-time check.
+/// </summary>
+internal sealed record CameraAgentContractIdentity(
+    string? Component,
+    string? ConfigurationContract,
+    string? CatalogContract,
+    string? ReplayRunnerContract)
+{
+    public static CameraAgentContractIdentity From(DistributionImageIdentity image)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        return new(
+            image.Component,
+            image.Compatibility.ConfigurationContract,
+            image.Compatibility.CatalogContract,
+            image.Compatibility.ReplayRunnerContract);
+    }
+}
+
+/// <summary>
 /// The persisted-state boundaries a candidate CameraAgent image declares through its OCI labels.
 /// A boundary the image does not declare cannot be checked and is reported rather than assumed compatible.
 /// </summary>
@@ -99,12 +133,23 @@ internal static class CameraAgentStatePreflight
         uint uid,
         uint gid,
         ContractReplayProfile replayProfile,
-        CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent)
+        CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent,
+        CameraAgentContractIdentity? candidateContracts = null,
+        string? instanceConfigurationContract = null,
+        string? installedImageId = null,
+        string? signedOfflineArchiveImageId = null,
+        string? signedPlatformManifestDigest = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(requirements);
         var findings = new List<CameraAgentStatePreflightFinding>();
         EvaluateStateContract(findings, requirements, installedStateContract, contractPolicy);
+        if (candidateContracts is not null)
+        {
+            EvaluateContractIdentity(findings, candidateContracts, instanceConfigurationContract, replayProfile);
+        }
+        EvaluateCandidateImageIdentity(
+            findings, installedImageId, signedOfflineArchiveImageId, signedPlatformManifestDigest);
         EvaluateCatalog(findings, paths, requirements);
         EvaluateIdentityLineage(findings, paths, requirements);
         EvaluateRawIngressSchema(findings, paths, requirements);
@@ -123,6 +168,29 @@ internal static class CameraAgentStatePreflight
             compatible,
             findings,
             DateTimeOffset.UtcNow);
+    }
+
+    private static void EvaluateCandidateImageIdentity(
+        List<CameraAgentStatePreflightFinding> findings,
+        string? installedImageId,
+        string? signedOfflineArchiveImageId,
+        string? signedPlatformManifestDigest)
+    {
+        if (string.IsNullOrWhiteSpace(installedImageId) ||
+            (!string.Equals(installedImageId, signedOfflineArchiveImageId, StringComparison.Ordinal) &&
+             !string.Equals(installedImageId, signedPlatformManifestDigest, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        findings.Add(new CameraAgentStatePreflightFinding(
+            "candidate-image-already-active",
+            "image-identity",
+            Blocking: false,
+            "instance-manifest.image.imageId",
+            installedImageId,
+            "a signed candidate identity different from the installed image",
+            "Choose another signed release, or take no upgrade action because this image is already active."));
     }
 
     /// <summary>
@@ -268,6 +336,52 @@ internal static class CameraAgentStatePreflight
                 CameraAgentStateContract.Describe(installedStateContract),
                 CameraAgentStateContract.Current,
                 "The installed image declares an unrecognized state contract; complete an explicit state-disposition procedure."));
+        }
+    }
+
+    /// <summary>
+    /// The upgrade's contract-identity gate, evaluated from the signed declaration: the candidate's component,
+    /// configuration, catalog, and (for a LocalRunner instance) replay-runner contract identities must match this
+    /// instance, or the upgrade refuses the image after acquiring it. Each mismatch is its own blocking finding so
+    /// the operator learns every disagreement at once. Architecture is not compared here because the release's
+    /// platform is selected for the instance's recorded daemon architecture before this evaluation runs.
+    /// </summary>
+    private static void EvaluateContractIdentity(
+        List<CameraAgentStatePreflightFinding> findings,
+        CameraAgentContractIdentity candidate,
+        string? instanceConfigurationContract,
+        ContractReplayProfile replayProfile)
+    {
+        const string boundary = "contract-identity";
+        const string remediation =
+            "Select a CameraAgent release built for this instance's contracts; the upgrade refuses a candidate whose declared contract identities differ from the instance.";
+        if (!string.Equals(candidate.Component, CameraAgentImageContract.Component, StringComparison.Ordinal))
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "contract-component", boundary, Blocking: true, "io.hvo.skymonitor.component",
+                candidate.Component ?? "none", CameraAgentImageContract.Component, remediation));
+        }
+        if (!string.Equals(candidate.ConfigurationContract, instanceConfigurationContract, StringComparison.Ordinal))
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "contract-configuration", boundary, Blocking: true, "io.hvo.skymonitor.configuration-contract",
+                candidate.ConfigurationContract ?? "none", instanceConfigurationContract ?? "unspecified", remediation));
+        }
+        if (!string.Equals(candidate.CatalogContract, CameraAgentImageContract.CatalogContract, StringComparison.Ordinal))
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "contract-catalog", boundary, Blocking: true, "io.hvo.skymonitor.catalog-contract",
+                candidate.CatalogContract ?? "none", CameraAgentImageContract.CatalogContract, remediation));
+        }
+        // An in-process instance never dispatches to the local replay runner, so it imposes no requirement here;
+        // a LocalRunner instance requires the runner contract exactly as the upgrade does.
+        if (replayProfile == ContractReplayProfile.LocalRunner &&
+            !string.Equals(candidate.ReplayRunnerContract, CameraAgentImageContract.ReplayRunnerContract, StringComparison.Ordinal))
+        {
+            findings.Add(new CameraAgentStatePreflightFinding(
+                "contract-replay-runner", boundary, Blocking: true, "io.hvo.skymonitor.replay-runner-contract",
+                candidate.ReplayRunnerContract ?? "none", CameraAgentImageContract.ReplayRunnerContract,
+                "This instance runs the local replay runner, so its candidate must declare the runner contract; select a release that publishes it."));
         }
     }
 
@@ -737,6 +851,9 @@ internal static class CameraAgentStatePreflightManager
         var requirements = CameraAgentStateRequirements.From(manifest.Image);
         var candidateImageId = manifest.Image.ImageId;
         string? candidateRelease = null;
+        CameraAgentContractIdentity? candidateContracts = null;
+        string? signedOfflineArchiveImageId = null;
+        string? signedPlatformManifestDigest = null;
         // Evaluating the installed image reports the instance as it stands; naming a candidate evaluates the
         // in-place upgrade, which additionally requires the current durable state contract.
         var policy = CameraAgentStateContractPolicy.AllowLegacy;
@@ -744,19 +861,24 @@ internal static class CameraAgentStatePreflightManager
         {
             policy = CameraAgentStateContractPolicy.RequireCurrent;
             using var acquirer = (distributionFactory ?? CreateDistributionAcquirer)();
-            var release = await acquirer.ResolveImageAsync(request.ImageSelection(), cancellationToken)
+            var release = await acquirer.ResolveImageAsync(
+                                  request.ImageSelection(), manifest.DockerDaemon.Architecture, cancellationToken)
                               .ConfigureAwait(false)
                           ?? throw new InstallerException(
                               "The signed CameraAgent image release did not resolve a candidate image.");
-            // The release is verified and its platform selected exactly as an upgrade does, but the offline
+            // The release is verified and its platform selected exactly as an upgrade does, for the instance's
+            // recorded Docker daemon architecture rather than this process's, but the offline
             // archive is deliberately not acquired and Docker is never contacted: the signed compatibility record
             // is the candidate declaration, and an upgrade refuses any image that contradicts it. That keeps the
-            // command read-only and lets an operator evaluate a release the host has not received yet. It reports
-            // the persisted-state boundaries only: the upgrade additionally requires the loaded image's labels to
-            // agree with this record and its contract identities to match the instance, so a clean report here is
-            // not a promise the upgrade proceeds.
+            // command read-only and lets an operator evaluate a release the host has not received yet. The signed
+            // declaration also carries the contract identities the upgrade's contract-identity gate compares, so
+            // that gate is reached here too; only the loaded image's label agreement with this record remains an
+            // upgrade-time check, so a clean report here is still not a promise the upgrade proceeds.
             requirements = CameraAgentStateRequirements.From(release.Image.Compatibility);
-            candidateImageId = release.Platform.OfflineArchiveImageId ?? release.Platform.ManifestDigest;
+            candidateContracts = CameraAgentContractIdentity.From(release.Image);
+            signedOfflineArchiveImageId = release.Platform.OfflineArchiveImageId;
+            signedPlatformManifestDigest = release.Platform.ManifestDigest;
+            candidateImageId = signedOfflineArchiveImageId ?? signedPlatformManifestDigest;
             candidateRelease = release.Release.Tag;
         }
         else if (request.ImageReference is { Length: > 0 } reference)
@@ -789,7 +911,12 @@ internal static class CameraAgentStatePreflightManager
             manifest.RuntimeUid,
             manifest.RuntimeGid,
             manifest.ReplayProfile,
-            policy);
+            policy,
+            candidateContracts,
+            manifest.ComponentSchemaVersion,
+            manifest.Image.ImageId,
+            signedOfflineArchiveImageId,
+            signedPlatformManifestDigest);
     }
 
     private static DistributionAcquirer CreateDistributionAcquirer() => new();

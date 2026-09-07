@@ -170,9 +170,11 @@ bundle. The native job then:
    them with an invalid Docker endpoint and the production catalog bundle
    exported, so the CLI's installer-flow cases gate rather than skip;
 3. publishes `linux-arm64`, inspects AArch64 ELF identities, rejects test
-   assemblies, writes a sorted SHA-256 manifest, and starts and gracefully
-   stops the published agent, failing the run if it logs any `ERR` or `FTL`
-   line or an unhandled exception;
+   assemblies, writes a sorted SHA-256 manifest, waits for the production-level
+   module-readiness signal, and then immediately stops the published agent
+   gracefully. This phase proves published-executable startup and clean shutdown
+   only; it does not prove a durable capture. Its complete startup and shutdown
+   log must contain zero `ERR` or `FTL` lines and no unhandled exception;
 4. installs and integrity-checks the canonical SQLite catalog;
 5. resolves and retains immutable base-image digests, builds the production
    CameraAgent image natively, verifies Linux/ARM64, source revision, and
@@ -185,6 +187,11 @@ bundle. The native job then:
    and owned-resource cleanup, and fails the run if the container logged any
    `ERR` or `FTL` line or an unhandled exception; and
 8. uploads sanitized evidence for 30 days even when the native job fails.
+
+The publish-process smoke in step 3 intentionally does not wait for
+`RawIngressCommitted` (event ID `2042`), which is a Debug-level signal. The
+container smoke in step 6 owns the durable-capture assertion and the artifact
+checks that follow it.
 
 Trigger a trusted default-branch run manually with:
 

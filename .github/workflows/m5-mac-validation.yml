@@ -1,0 +1,123 @@
+name: M5 Mac Validation
+
+on:
+  repository_dispatch:
+    types: [m5-mac-validation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m5-mac-validation
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  validate:
+    name: Apple ARM64 Validation
+    runs-on: [self-hosted, macOS, ARM64, m5-mac]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Verify Apple ARM64 toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(dotnet --version)" = "$(jq -r '.sdk.version' global.json)"
+          sw_vers
+          xcodebuild -version
+          swift --version
+          dotnet --version
+
+      - name: Restore dependencies
+        run: dotnet restore HVO.SkyMonitor.v9.slnx
+
+      - name: Build with warnings as errors
+        run: dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror
+
+      - name: Run host-neutral unit suites
+        run: |
+          results_root="$RUNNER_TEMP/hvo-m5-validation-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$results_root"
+          mkdir -m 700 "$results_root"
+          export DOCKER_HOST="unix://$results_root/hvo-no-docker.sock"
+          export TMPDIR="$results_root/tmp"
+          mkdir -m 700 "$TMPDIR"
+
+          projects=(
+            "agent-core|63|63|0|tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj"
+            "cameraagent-acceptance|2|2|0|tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
+            "fleet-contracts|7|7|0|tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj"
+            "catalog-sqlite|81|80|1|tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"
+            "cameraagent-logichost|4|4|0|tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"
+            "astronomy|170|170|0|tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj"
+            "cameraagent|1834|1785|49|tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+            "imaging|188|188|0|tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"
+            "test-support|7|7|0|tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj"
+            "deployment-distribution|82|82|0|tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj"
+            "processing|198|198|0|tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
+            "processing-runner|25|25|0|tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj"
+            "common|23|23|0|tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj"
+            "architecture|6|6|0|tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"
+          )
+
+          aggregate_total=0
+          aggregate_executed=0
+          aggregate_skipped=0
+          for entry in "${projects[@]}"; do
+            IFS='|' read -r name expected_total expected_executed expected_skipped project <<< "$entry"
+            project_results="$results_root/$name"
+            mkdir -m 700 "$project_results"
+            dotnet test "$project" \
+              --no-build \
+              --configuration Release \
+              --filter "TestCategory=Unit" \
+              --results-directory "$project_results" \
+              --logger "trx;LogFileName=$name.trx"
+
+            trx="$project_results/$name.trx"
+            test -f "$trx"
+            outcome="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/@outcome)' "$trx")"
+            total="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@total)' "$trx")"
+            executed="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@executed)' "$trx")"
+            skipped=$((total - executed))
+            failed="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@failed)' "$trx")"
+            error="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@error)' "$trx")"
+            timeout="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@timeout)' "$trx")"
+            aborted="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@aborted)' "$trx")"
+
+            test "$outcome" = Completed
+            test "$total" -eq "$expected_total"
+            test "$executed" -eq "$expected_executed"
+            test "$skipped" -eq "$expected_skipped"
+            test "$total" -gt 0
+            test "$executed" -gt 0
+            test "$failed" -eq 0
+            test "$error" -eq 0
+            test "$timeout" -eq 0
+            test "$aborted" -eq 0
+
+            aggregate_total=$((aggregate_total + total))
+            aggregate_executed=$((aggregate_executed + executed))
+            aggregate_skipped=$((aggregate_skipped + skipped))
+            printf '%s: discovered=%s executed=%s skipped=%s\n' "$name" "$total" "$executed" "$skipped"
+          done
+
+          test "$aggregate_total" -eq 2690
+          test "$aggregate_executed" -eq 2640
+          test "$aggregate_skipped" -eq 50
+          printf 'aggregate: discovered=%s executed=%s skipped=%s\n' \
+            "$aggregate_total" "$aggregate_executed" "$aggregate_skipped"

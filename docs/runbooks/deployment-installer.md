@@ -141,9 +141,13 @@ The selected release is retained beside the other deployment evidence:
 It records the release train, tag, version, manifest checksum, signing key,
 asset name and checksum, resolved source URI, verification result, the platform
 and immutable image ID that were installed, the source revision and tree, the
-SBOM, provenance, and vulnerability-scan asset names, and the exact compatibility
-boundaries the release declared. An operator can correlate a running container
-with its release without network access.
+SBOM, provenance, and vulnerability-scan asset names, the per-platform component
+inventory asset published for the installed architecture (absent for a release
+published before inventories existed), and the exact compatibility boundaries
+the release declared. An operator can correlate a running container with its
+release, and name the component inventory to triage against, without network
+access. The record is schema version 2; a version-1 record written by an earlier
+installer has no inventory member and remains valid.
 
 The record follows the image the instance actually runs. It is written only once
 the image has been prepared and accepted, a refused install or upgrade leaves
@@ -153,7 +157,11 @@ published without a registry push that value is a computed index digest and is
 not resolvable with `docker pull`.
 
 An upgrade accepts the same options and writes the same evidence before the
-operation begins:
+operation begins. It selects the platform from the architecture recorded for
+the instance's Docker daemon at installation, not from the machine running the
+CLI, so a remote or cross-architecture daemon is served the archive it can run;
+a release that does not publish that architecture is refused, naming what it
+publishes, before anything is downloaded:
 
 ```bash
 hvo-skymonitor cameraagent upgrade \
@@ -188,47 +196,69 @@ every transition the retained release record has to follow:
 | Install from the superseded release | `cameraagent install --image-manifest <a>` | present, naming that release and the running image |
 | Refused by the production trust root | the unmodified CLI, same upgrade | unchanged |
 | Preflight the candidate release | `cameraagent preflight --image-manifest <b>` | unchanged; nothing is acquired or started |
-| Upgrade to the candidate release | `cameraagent upgrade --image-manifest <b>` | present, naming the new release and the new image |
+| Candidate verification fails after mutation | `cameraagent upgrade --image-manifest <b>` through the campaign-only verifier fault | byte-identical; still names the restored superseded release and image |
+| Resume the same upgrade to the candidate release | `cameraagent upgrade --image-manifest <b> --resume` | present, naming the new release and the new image |
+| Upgrade to an operator-supplied image no signed release named | `cameraagent upgrade --image-ref <a-image>` | withdrawn (absent) |
+| Upgrade back to the candidate release | `cameraagent upgrade --image-manifest <b>` | present again, naming the candidate release and image |
 | Refused: signed by a key the trust root does not hold | `cameraagent upgrade --image-manifest <untrusted>` | unchanged; still names the running release |
 | Refused: declares a key identity the trust root does not carry | `cameraagent upgrade --image-manifest <declared-key>` | unchanged |
 | Refused: the trusted key's signature over a different release | `cameraagent upgrade --image-manifest <forged>` | unchanged |
 | Refused: names an archive that is not the one it signed | `cameraagent upgrade --image-manifest <mismatched>` | unchanged |
 | Rollback to the retained previous image | `cameraagent rollback` | absent |
 | Refused: release contradicts the image labels | `cameraagent upgrade --image-manifest <contradicting>` | still absent |
+| Refused: resuming the refused upgrade | `cameraagent upgrade --image-manifest <contradicting> --resume` | still absent; the journal is byte-identical |
 | State-compatibility preflight on what the sequence left behind | `cameraagent preflight` | still absent |
+| Uninstall without `--resume` after the refusal | `cameraagent uninstall` | still absent; the container is gone |
 
-Each refusal targets its own gate. The five acquisition-stage refusals share the
-acquirer's single diagnostic, because the CLI deliberately does not surface the
-inner verification cause; what separates them is that each derived release varies
-exactly one trust or integrity condition against a release the instance has
-already accepted, and that each is required to leave every durable deployment
-record — the release record, the instance manifest, the installation result and
-state, the retained preflight report, and the lifecycle journal — byte-identical.
-Only the label-agreement refusal has a diagnostic of its own, and the campaign
-asserts it. Every transition reads the running image back through `status`, whose
-`status` outcome (rather than `drifted`) means the container really carries the
-recorded image. Every step retains the release record, the
-instance manifest, the installation result, the lifecycle journal, a state
-inventory with modes, deployment checksums, the container log, the container's
-real image and health, and the exact CLI reports the assertions read, under
-`TestResults/issue-598/<run>/`.
+Each refusal targets its own gate. The production-trust-root refusal and the
+four derived-release refusals share the acquirer's single diagnostic, because
+the CLI deliberately does not surface the inner verification cause; what
+separates the derived releases is that each varies exactly one trust or
+integrity condition against a release the instance has already accepted, and
+that each is required to leave every durable deployment record — the release
+record, the instance manifest, the installation result and state, the retained
+preflight report, the staged image archive, and the lifecycle journal —
+byte-identical. Only the label-agreement refusal has a diagnostic of its own,
+and it is the only refusal that runs after the lifecycle journal has been
+opened. The campaign asserts that the journal records it as a terminal
+refusal: `status` is `Failed`, `failureCode` is `lifecycle-refused`, the
+`failureMessage` carries the gate's diagnostic, and `mutationStarted` is
+`false`. That record blocks nothing: resuming the refused command is refused
+because no incomplete operation exists, and the closing uninstall runs without
+`--resume` (the `LifecycleContractTests` prove the same for a rollback and a
+different upgrade). Every transition reads the running image back through
+`status`, whose `status` outcome (rather than `drifted`) means the container
+really carries the recorded image. Every step retains, under
+`TestResults/issue-598/<run>/`, the release record when it exists and an
+explicit `image-distribution.absent` marker when it does not, the instance
+manifest, the installation result and state, the retained preflight report, the
+lifecycle journal and its candidate diagnostics once a lifecycle operation has
+created them, a state inventory with modes, deployment and Compose checksums
+(the staged image archive appears there by SHA-256 rather than as a copied
+file), the container log, the container's real image and health, and the exact
+CLI reports the assertions read.
 
-Every refusal in the scenario happens before the upgrade mutates anything. A
-signed upgrade that fails *after* mutation begins and is restored by the
-lifecycle's own exact-rollback path is not exercised here; that path is shared
-with the operator-supplied image the campaign already covers, and
-[#641](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/641) tracks proving
-it for a signed release.
+Every trust or integrity refusal in the scenario happens before the upgrade
+mutates anything. The separate post-mutation failure runs only after the signed
+candidate has passed acquisition, image-label agreement, state compatibility,
+capture drain, Compose stop, backup, Compose-up, application health, and installation-identity
+verification. A campaign-local Docker shim then records the real healthy,
+unprivileged candidate inspection and reports an impossible privileged runtime
+to the candidate-container verifier exactly once. The existing lifecycle catch
+restores the prior image, byte-identical Compose files, manifest, and result,
+resumes capture, and leaves `image-distribution.json` present and byte-identical
+naming that restored signed release. Every recovery command uses unmodified
+Docker results, and neither production code nor either signed candidate is
+changed to create the fault.
 
 The campaign proves that the retained record follows the image the instance runs
-across every transition above, but that guarantee has two known exceptions it
-does not cover, tracked by
-[#642](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/642): a signed
-upgrade whose final resume is lost and is then completed with `--resume` returns
-`completed` without writing the record, and an `--image-ref` upgrade of an
-instance installed from a signed release keeps the superseded record. Until
-those close, treat a record that survived either of those paths as unverified
-rather than authoritative.
+across every transition above. The record is settled as soon as an upgrade or
+rollback commit is durable and again on `--resume`, so a signed upgrade whose
+final resume acknowledgement is lost still records its release when completed
+with `--resume` (proved by `LifecycleContractTests`, because the campaign cannot
+lose a real acknowledgement on demand), and an `--image-ref` upgrade of an
+instance installed from a signed release withdraws the superseded record
+(transition `03d` above, against a real container).
 
 The refusals bracket the trust decision from several sides. The release
 contradicting the image labels is genuinely signed and is refused by the
@@ -237,8 +267,11 @@ refused during acquisition:
 
 - a manifest signed by a key the trust root does not hold, and release B's
   manifest presented with the trusted key's real signature over release A. Both
-  fail signature verification, from two directions: a signature the trusted key
-  cannot verify at all, and a signature it verifies but not over these bytes.
+  fail signature verification: a signature the trusted key cannot verify at all,
+  and a signature it verifies but not over these bytes. The forged case is the
+  one that isolates signature verification, because nothing else can refuse it.
+  The untrusted case also declares the untrusted key's identity, so it would
+  still be refused by the declared-key comparison if verification were removed.
 - a manifest declaring a key identity the trust root does not carry, signed by
   the key it does. `VerifyManifest` verifies the signature before comparing
   `signing.keyId`, so this is the only way to reach that comparison — the release
@@ -248,8 +281,11 @@ refused during acquisition:
   length and checksum: the only case that fails on the acquired bytes rather than
   on the metadata.
 
-None of the five writes, rewrites, or resurrects the retained release record, and
-each is required to leave every durable deployment record byte-identical.
+None of the four derived releases or the label-agreement refusal writes,
+rewrites, or resurrects the retained release record. The four derived releases
+must leave every durable deployment record and the lifecycle journal
+byte-identical; the label-agreement refusal legitimately journals its refused
+operation as terminal and must leave every other durable record byte-identical.
 
 Each refused release is a manifest and signature in its own directory that names
 the real published archives through `--asset-base-url`, so nothing copies or
@@ -294,8 +330,10 @@ pass none of them.
 What the campaign establishes: the whole signed image lifecycle — manifest and
 signature verification, asset length and checksum verification, platform
 selection, the agreement between the signed compatibility record and the labels
-the image actually carries, and the retained release record across install,
-upgrade, rollback, and refusal — against real multi-architecture release
+the image actually carries, automatic exact restore after a post-mutation
+candidate-verification failure, the terminal journal a pre-mutation refusal
+leaves behind, and the retained release record across install, upgrade,
+rollback, refusal, and the closing uninstall — against real multi-architecture release
 candidates, a real Docker daemon, and a real running CameraAgent.
 
 The manifest's declared-key-identity comparison is included: reaching it needs a
@@ -559,8 +597,9 @@ declaration and requires the current contract, matching an in-place upgrade. `--
 host already holds and is read from the local Docker image store. `--image-manifest`, `--image-index`, and
 `--image-version` instead name a signed image release from the train above and are resolved exactly as an
 upgrade resolves one: the same signature and index verification, the same rollback protection, the same
-offline-archive identification, and the same platform selection, which follows the host operating system's
-architecture. `--asset-base-url`, `--channel`, and `--no-download` apply to them as they do to an
+offline-archive identification, and the same platform selection, which follows the architecture recorded for the
+instance's Docker daemon rather than the machine running the CLI, so the report describes exactly the platform the
+upgrade acquires. `--asset-base-url`, `--channel`, and `--no-download` apply to them as they do to an
 upgrade and are rejected without `--image-manifest` or `--image-index`. A local-media manifest is read from disk
 whether or not `--no-download` is given, so the flag matters only for an `https://` manifest or index. A signed release and `--image-ref` are mutually
 exclusive here for the same reason install and upgrade refuse the combination.
@@ -577,14 +616,25 @@ a copy can tear and report a busy instance as unreadable. Unlike install and upg
 report names the resolved release tag beside the immutable image ID it selected; install and upgrade record the
 same tag in the report they retain, which is the only release evidence a refused operation leaves behind.
 
-**A compatible signed-release preflight is not a promise that the upgrade will proceed.** It compares persisted
-state against the boundaries the release *declares*. Further gates run only during the upgrade itself: the
-labels the loaded image actually carries are compared against the signed record; the candidate's component,
-configuration, catalog, and replay-runner contract identities and its architecture are required to match this
-instance; a candidate identical to the image already running is refused outright; and a candidate declaring a
-state migration still requires `--migration-backward-compatible`. A release that declares a different
-configuration or catalog contract, or that the instance already runs, therefore preflights clean and is still
-refused at upgrade time.
+A signed-release preflight also evaluates the upgrade's contract-identity gate from the signed declaration,
+because every value that gate compares is in the release manifest and the instance manifest. The candidate's
+component, configuration contract, and catalog contract must match this instance, and a LocalRunner instance
+additionally requires the release to declare the local replay-runner contract; an in-process instance imposes no
+runner requirement. Each mismatch is a blocking finding under the `contract-identity` boundary with its own code
+(`contract-component`, `contract-configuration`, `contract-catalog`, `contract-replay-runner`), naming the
+declared and required identities. The release's platform is selected for the instance's recorded daemon
+architecture before this evaluation, so an architecture mismatch is reported as a resolution error rather than a
+finding. A release built for another configuration or catalog contract, or one omitting the runner contract a
+LocalRunner instance needs, therefore no longer preflights clean only to be refused after acquisition.
+
+**A compatible signed-release preflight is still not a promise that the upgrade will proceed.** It compares
+persisted state and the declared contract identities against this instance. Gates that need the image itself run
+only during the upgrade: the labels the loaded image actually carries are compared against the signed record, and
+a candidate declaring a state migration still requires `--migration-backward-compatible`. When either signed
+identity for the selected platform (`offlineArchiveImageId` or `manifestDigest`) equals the installed
+`manifest.image.imageId`, preflight remains compatible but includes the non-blocking
+`candidate-image-already-active` advisory. The advisory tells the operator that no upgrade action is needed; an
+attempted upgrade to that same image is still refused outright.
 
 Rollback state is retained per operating-system user
 (`$XDG_STATE_HOME/hvo/skymonitor/distribution`, else `~/.local/state/...`), so run the preflight as the same
@@ -594,7 +644,8 @@ The command exits `0` when compatible and `1` with error code `state-incompatibl
 names its boundary code, path, observed
 value, expected value, and remediation. The checked boundaries are the selected catalog manifest version and
 catalog identity, the Identity migration lineage recorded in `__EFMigrationsHistory`, the raw-ingress
-`PRAGMA user_version`, and the ownership and mode of every writable Compose bind source.
+`PRAGMA user_version`, the ownership and mode of every writable Compose bind source, and, for a signed release,
+the contract identities described above.
 
 An in-place upgrade requires a candidate that declares `cameraagent-state-v2`. Installing an image, and
 rolling back to one, are not state migrations and therefore also accept the superseded declaration. Any
@@ -690,6 +741,20 @@ Compose, image, and identity records before capture resumes. Noncurrent manifest
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
 
+Capture-admission initialization is a CameraAgent startup responsibility that
+runs after configuration initialization and before the processing and capture
+workers; it does not depend on the camera capture worker reaching its loop. The
+lifecycle client treats uninitialized `Initializing` or `Unavailable` snapshots
+as transient startup observations. An authenticated pause or resume request made
+before that initialization completes returns `503 Service Unavailable` with a
+one-second `Retry-After` header and does not try to initialize capture admission
+on the request thread. The installer retries that response, `408`, `429`, and
+non-`500` 5xx responses with one idempotent command ID inside the existing drain
+deadline, honoring `Retry-After` when present. A `500` or a non-transient status
+remains terminal. Once capture admission is initialized, a
+`Running` or terminal `Unavailable` snapshot fails a drain confirmation after
+the first state read instead of consuming the full drain deadline.
+
 Uninstall removes only the selected Compose runtime and preserves config,
 secrets, state, evidence, rollback identities, and shared catalogs. Purge is a
 separate operation and requires `--confirm-instance-id <same-uuid>` after
@@ -756,7 +821,7 @@ HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1 \
 
 | Variable | Meaning |
 | --- | --- |
-| `HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN` | `1` runs the signed install/upgrade/rollback/refusal scenario |
+| `HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN` | `1` runs the signed install/upgrade/post-mutation automatic-restore/rollback/refusal scenario |
 | `HVO_INSTALLER_SIGNED_BASE_REVISION` | Revision of the superseded release. Default `HEAD~1` |
 | `HVO_INSTALLER_SIGNED_CANDIDATE_REVISION` | Revision of the upgrade candidate, which also builds the campaign CLI. Default `HEAD`. The base must be a distinct ancestor of it, and both must own the release train |
 | `HVO_INSTALLER_SIGNED_ARM64_BUILDER` | `linux/arm64` builder for the release candidates. Falls back to `HVO_RELEASE_ARM64_BUILDER`, then to `hvo-edge-01-arm64` |

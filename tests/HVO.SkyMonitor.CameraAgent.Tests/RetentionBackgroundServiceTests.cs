@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -173,6 +174,191 @@ public sealed class RetentionBackgroundServiceTests
         }
         finally
         {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_AfterRawIngressInvalidation_InitializesBeforeTakingLifecycleLockAsync()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var ingressOptions = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressReserveBytes = 0,
+                RawIngressSqliteBusyTimeoutSeconds = 1
+            });
+            var ingressState = new RawIngressState(TimeProvider.System);
+            using var ingressTelemetry = new RawIngressTelemetry(ingressState);
+            using var ingress = new RawCaptureIngress(
+                ingressOptions,
+                new FixedCapacityProvider(50),
+                ingressState,
+                TimeProvider.System,
+                ingressTelemetry,
+                NullLogger<RawCaptureIngress>.Instance,
+                new NullRawIngressFaultInjector());
+            var exposureStartedUtc = new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            var payload = new byte[] { 41, 42, 43, 44 };
+            var captureConfiguration = new CameraModuleConfig(
+                new ObservatoryLocation(35, -113, 500, "UTC"),
+                new CameraModuleDescriptor("Test"),
+                new CameraRigConfig(
+                    new SensorProfile("test-sensor", 2, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+                    new OpticsProfile("EquidistantFisheye", 0, 180, 0),
+                    new RigOrientation(90, 0, 0),
+                    new PipelineExposureProfile(
+                        TimeSpan.FromSeconds(1),
+                        TimeSpan.FromSeconds(1),
+                        TimeSpan.FromSeconds(1),
+                        1,
+                        1)),
+                CapturePipelineConfig.Empty,
+                AgentId: "retention-lock-test");
+            var frame = new CameraFrame(
+                exposureStartedUtc,
+                2,
+                2,
+                CameraPixelFormat.Mono8,
+                payload,
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, double.NaN, "Test"),
+                2);
+            var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
+            var submission = new CaptureLoopSubmission(
+                new CaptureRequest(exposureStartedUtc, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint),
+                new CaptureResult(frame, setpoint, TimeSpan.Zero, CaptureMode.Still, false),
+                exposureStartedUtc,
+                TimeSpan.FromSeconds(1),
+                TimeSpan.Zero);
+            var receipt = await ingress.AcceptAsync(
+                captureConfiguration, submission, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            var sidecarPath = Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json");
+            ingress.InvalidateEvidence();
+
+            var service = new RetentionBackgroundService(
+                new StubConfigurationAccessor(),
+                ingressOptions,
+                new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
+                new SqliteArtifactOutbox(),
+                new FixedCapacityProvider(50),
+                new StoragePressureState(),
+                NullLogger<RetentionBackgroundService>.Instance,
+                ingress);
+
+            await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            CollectionAssert.AreEqual(payload, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
+            Assert.IsTrue(File.Exists(sidecarPath));
+            Assert.AreEqual(RawIngressAvailability.Accepting, ingressState.Snapshot.Availability);
+            Assert.AreEqual(0L, ingressState.Snapshot.QuarantineCount);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_ProductionCompositeAfterConcurrentInvalidation_DoesNotDeadlockAsync()
+    {
+        var root = CreateRoot();
+        Task initialization = Task.CompletedTask;
+        using var cancellation = new CancellationTokenSource();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressReserveBytes = 0,
+                RawIngressSqliteBusyTimeoutSeconds = 1
+            });
+            var ingressState = new RawIngressState(TimeProvider.System);
+            using var ingressTelemetry = new RawIngressTelemetry(ingressState);
+            using var faultInjector = new InitializationLifecycleRequestFaultInjector();
+            using var ingress = new RawCaptureIngress(
+                options,
+                new FixedCapacityProvider(50),
+                ingressState,
+                TimeProvider.System,
+                ingressTelemetry,
+                NullLogger<RawCaptureIngress>.Instance,
+                faultInjector);
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+            using var processingStore = new SqliteCaptureProcessingStore(options);
+            using var processingTelemetry = new CaptureProcessingTelemetry();
+            using var frameStorage = new FileSystemFrameStorageService(
+                NullLogger<FileSystemFrameStorageService>.Instance);
+            var persistence = new CaptureProcessingPersistence(
+                options,
+                processingStore,
+                frameStorage,
+                processingTelemetry,
+                NullLogger<CaptureProcessingPersistence>.Instance);
+            var clearReferences = new CameraAgentClearReferenceLoader(options);
+            using var calibrationLibrary = new SqliteCalibrationLibraryStore(
+                ingress, options, TimeProvider.System);
+            var processingHolds = new CompositeProcessingRetentionHolds(
+                persistence, clearReferences, calibrationLibrary);
+            using var capacity = new RetentionLifecycleContentionCapacityProvider();
+            var service = new RetentionBackgroundService(
+                new StubConfigurationAccessor(),
+                options,
+                new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
+                new SqliteArtifactOutbox(),
+                capacity,
+                new StoragePressureState(),
+                NullLogger<RetentionBackgroundService>.Instance,
+                ingress,
+                processingHolds);
+
+            var retention = Task.Run(async () => await service.ApplyRetentionAsync(
+                CreateConfig(root), cancellation.Token).ConfigureAwait(false));
+            try
+            {
+                Assert.IsTrue(
+                    capacity.Entered.Wait(TimeSpan.FromSeconds(5)),
+                    "retention did not pause while owning the lifecycle locks");
+                ingress.InvalidateEvidence();
+                faultInjector.Arm();
+                initialization = Task.Run(async () =>
+                    await ingress.InitializeAsync(cancellation.Token).ConfigureAwait(false));
+                Assert.IsTrue(
+                    faultInjector.InitializationLifecycleLockRequested.Wait(TimeSpan.FromSeconds(5)),
+                    "concurrent initialization did not request the owned raw-ingress lifecycle lock");
+
+                capacity.Release();
+                await retention.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await initialization.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                Assert.AreEqual(RawIngressAvailability.Accepting, ingressState.Snapshot.Availability);
+                Assert.AreEqual(0L, ingressState.Snapshot.QuarantineCount);
+                var lifecycleGate = RawIngressLifecycleLock.ForRoot(root);
+                Assert.IsTrue(
+                    await lifecycleGate.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false),
+                    "retention did not release the raw-ingress lifecycle lock");
+                lifecycleGate.Release();
+            }
+            finally
+            {
+                capacity.Release();
+                await cancellation.CancelAsync().ConfigureAwait(false);
+                try
+                {
+                    await Task.WhenAll(retention, initialization).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is OperationCanceledException or TimeoutException)
+                {
+                }
+            }
+        }
+        finally
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
             DeleteRoot(root);
         }
     }
@@ -888,6 +1074,57 @@ public sealed class RetentionBackgroundServiceTests
     private sealed class DelegateCapacityProvider(Func<string, StorageCapacity> getCapacity) : IStorageCapacityProvider
     {
         public StorageCapacity GetCapacity(string storageRoot) => getCapacity(Path.GetFullPath(storageRoot));
+    }
+
+    private sealed class RetentionLifecycleContentionCapacityProvider : IStorageCapacityProvider, IDisposable
+    {
+        private readonly ManualResetEventSlim _entered = new(false);
+        private readonly ManualResetEventSlim _continue = new(false);
+
+        internal ManualResetEventSlim Entered => _entered;
+
+        internal void Release() => _continue.Set();
+
+        public StorageCapacity GetCapacity(string storageRoot)
+        {
+            _entered.Set();
+            if (!_continue.Wait(TimeSpan.FromSeconds(10)))
+            {
+                throw new TimeoutException("Timed out waiting to release the retention capacity probe.");
+            }
+            return new StorageCapacity(1000, 500);
+        }
+
+        public void Dispose()
+        {
+            _continue.Set();
+            _entered.Dispose();
+            _continue.Dispose();
+        }
+    }
+
+    private sealed class InitializationLifecycleRequestFaultInjector : IRawIngressFaultInjector, IDisposable
+    {
+        private readonly ManualResetEventSlim _initializationLifecycleLockRequested = new(false);
+        private int _armed;
+
+        internal ManualResetEventSlim InitializationLifecycleLockRequested =>
+            _initializationLifecycleLockRequested;
+
+        internal void Arm() => Volatile.Write(ref _armed, 1);
+
+        public bool IsEnabled(RawIngressFaultPoint point) => false;
+
+        public void Inject(RawIngressFaultPoint point)
+        {
+            if (Volatile.Read(ref _armed) != 0 &&
+                point == RawIngressFaultPoint.BeforeInitializationLifecycleLock)
+            {
+                _initializationLifecycleLockRequested.Set();
+            }
+        }
+
+        public void Dispose() => _initializationLifecycleLockRequested.Dispose();
     }
 
     private sealed class FixedRawIngressHolds(IReadOnlyList<RawIngressRetentionHold> holds) : IRawIngressRetentionHolds

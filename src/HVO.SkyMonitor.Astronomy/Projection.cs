@@ -399,9 +399,12 @@ internal sealed class PerspectiveProjector : IImageProjector
             return null;
         }
 
-        var pixel = new PixelPoint(
-            _context.PrincipalPointX + _context.FocalLengthXPixels * camera.East / camera.Up,
-            _context.PrincipalPointY - _context.FocalLengthYPixels * camera.North / camera.Up);
+        var planarLength = Math.Sqrt(camera.East * camera.East + camera.North * camera.North);
+        var pixel = planarLength <= 1e-15
+            ? new PixelPoint(_context.PrincipalPointX, _context.PrincipalPointY)
+            : new PixelPoint(
+                _context.PrincipalPointX + _context.FocalLengthXPixels * camera.East / camera.Up,
+                _context.PrincipalPointY - _context.FocalLengthYPixels * camera.North / camera.Up);
         return !_context.EnforceSensorBounds ||
             pixel.X >= 0 && pixel.X < _context.WidthPixels && pixel.Y >= 0 && pixel.Y < _context.HeightPixels
             ? pixel

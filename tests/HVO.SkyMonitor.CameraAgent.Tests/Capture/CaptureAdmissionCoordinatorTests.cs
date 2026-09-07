@@ -19,6 +19,37 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 public sealed class CaptureAdmissionCoordinatorTests
 {
     [TestMethod]
+    public async Task StartupInitializerInitializesAdmissionWithoutCaptureWorkerAsync()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var telemetry = new CaptureControlTelemetry();
+            using var coordinator = new CaptureAdmissionCoordinator(
+                new InitializingIngress(root),
+                Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = root,
+                    RawIngressSqliteBusyTimeoutSeconds = 1
+                }),
+                TimeProvider.System,
+                telemetry);
+            var initializer = new CaptureAdmissionInitializationService(coordinator);
+
+            Assert.IsFalse(coordinator.Snapshot.IsInitialized);
+
+            await initializer.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(coordinator.Snapshot.IsInitialized);
+            Assert.AreEqual(CaptureAdmissionState.Running, coordinator.Snapshot.State);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task ProvisioningGatePausesOnlyFreshStateDurablyAsync()
     {
         var root = CreateRoot();

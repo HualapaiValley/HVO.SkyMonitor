@@ -741,7 +741,8 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
             throw new InvalidOperationException("Another replay runner is already listening on the configured Unix socket.");
         }
         catch (SocketException exception) when (exception.SocketErrorCode is
-            SocketError.ConnectionRefused or SocketError.AddressNotAvailable or SocketError.NotConnected)
+            SocketError.ConnectionRefused or SocketError.AddressNotAvailable or SocketError.NotConnected or
+            SocketError.NotSocket)
         {
             File.Delete(path);
         }

@@ -33,8 +33,14 @@ internal sealed class CameraAgentLifecycleManager
         {
             return await ListAsync(request.ProductRoot, cancellationToken).ConfigureAwait(false);
         }
+        var instanceId = request.InstanceId!.Value;
+        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
         // A signed image upgrade resolves and verifies its release before the instance is touched, so an unsupported
         // architecture, a missing platform, or a tampered archive fails while the running instance is untouched.
+        // The platform is selected for the architecture of the Docker daemon the instance was installed against,
+        // which the manifest records and which the candidate is later required to match, not for the architecture
+        // of the process running this CLI: a remote or cross-architecture daemon is served the archive it can run,
+        // and a release that does not publish that architecture is refused before anything is downloaded.
         using var imageAcquirer = request.Operation == LifecycleOperationKind.Upgrade &&
                                   (request.ImageManifest is not null || request.ImageIndex is not null)
             ? distributionFactory()
@@ -42,7 +48,9 @@ internal sealed class CameraAgentLifecycleManager
         AcquiredImage? signedImage = null;
         if (imageAcquirer is not null)
         {
-            signedImage = await imageAcquirer.AcquireImageAsync(ImageSelectionRequest(request), cancellationToken)
+            var daemonArchitecture = (await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false))
+                .DockerDaemon.Architecture;
+            signedImage = await imageAcquirer.AcquireImageAsync(ImageSelectionRequest(request), daemonArchitecture, cancellationToken)
                 .ConfigureAwait(false)
                 ?? throw new InstallerException("The signed CameraAgent image release did not resolve a candidate image.");
             request = request with
@@ -52,8 +60,6 @@ internal sealed class CameraAgentLifecycleManager
                 ImageArchiveSha256 = signedImage.ArchiveSha256
             };
         }
-        var instanceId = request.InstanceId!.Value;
-        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
         if (request.Operation is not null && uid == 0)
             throw new InstallerException("Run lifecycle operations as the Docker-capable runtime user, not as root.");
         if (request.Operation == LifecycleOperationKind.Purge && !Directory.Exists(paths.InstanceRoot))
@@ -188,6 +194,46 @@ internal sealed class CameraAgentLifecycleManager
         if (rollback && manifest.PreviousImage is null) throw new InstallerException("No previous image is retained for rollback.");
         var operation = await BeginAsync(request, paths, rollback ? LifecycleOperationKind.Rollback : LifecycleOperationKind.Upgrade,
             manifest, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await ChangeImageAsync(
+                    request, paths, manifest, installationResult, compose, docker, processRunner, lifecycleClientFactory,
+                    uid, gid, ownerClientFactory, lifecycleControlToken, verificationToken, signedImage, rollback, operation,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!request.DryRun && exception is not OperationCanceledException)
+        {
+            // Every gate between the journal entry above and the mutation record (release label agreement, the
+            // already-active and contract checks, the state preflight, the owner-state read, Compose staging) runs
+            // before the instance is touched. A refusal there is settled as terminal so the journal never reports a
+            // running operation that never started, which would otherwise block rollback, uninstall, and any other
+            // upgrade behind a --resume the same gate would refuse again. A cancellation is not a refusal: its
+            // unmutated journal stays resumable and, like any unmutated record, never blocks another operation.
+            await SettleRefusedOperationAsync(paths, operation, exception).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async Task<LifecycleResult> ChangeImageAsync(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        InstallationResult installationResult,
+        ComposeFiles compose,
+        DockerClient docker,
+        IProcessRunner processRunner,
+        Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
+        uint uid,
+        uint gid,
+        Func<Uri, IOwnerBootstrapClient>? ownerClientFactory,
+        string lifecycleControlToken,
+        string verificationToken,
+        AcquiredImage? signedImage,
+        bool rollback,
+        LifecycleOperationState operation,
+        CancellationToken cancellationToken)
+    {
         var owner = ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url);
         if (!operation.MutationStarted)
         {
@@ -227,6 +273,10 @@ internal sealed class CameraAgentLifecycleManager
                     operation with { ExpectedOwnerBootstrapState = verifiedOwnerState },
                     cancellationToken).ConfigureAwait(false);
             }
+            // The commit is durable, so the retained release record is settled again here: a run that lost its final
+            // resume acknowledgement, or failed between the commit and the record write, must not leave the record
+            // naming a release the instance no longer runs.
+            await SettleReleaseRecordAsync(paths, signedImage, cancellationToken).ConfigureAwait(false);
             var committedLifecycle = CreateLifecycleClient(installationResult.Url, lifecycleClientFactory);
             await committedLifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
@@ -555,17 +605,11 @@ internal sealed class CameraAgentLifecycleManager
                 cancellationToken).ConfigureAwait(false);
             operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Committed }, cancellationToken)
                 .ConfigureAwait(false);
+            // The retained release record follows the image the instance actually runs. It is settled as soon as the
+            // commit is durable and before the final resume, so a lost resume acknowledgement cannot separate the
+            // two; the committed-resume branch above settles it again on --resume.
+            await SettleReleaseRecordAsync(paths, signedImage, cancellationToken).ConfigureAwait(false);
             await candidateLifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
-            // The retained release record follows the image the instance actually runs: an upgrade from a signed
-            // release records it, and a rollback withdraws whatever the superseded upgrade recorded.
-            if (signedImage is not null)
-            {
-                await signedImage.WriteEvidenceAsync(paths, cancellationToken).ConfigureAwait(false);
-            }
-            else if (rollback)
-            {
-                AcquiredImage.RemoveEvidence(paths);
-            }
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
             return Result(operation.Kind, "completed", operation.OperationId, paths, committed, manifest.DockerDaemon, true, true);
         }
@@ -916,6 +960,23 @@ internal sealed class CameraAgentLifecycleManager
         return verifiedOwnerState;
     }
 
+    /// <summary>
+    /// Makes the retained release record follow the image the instance now runs. A signed release writes its record;
+    /// any other image the instance was moved to, whether a rollback target or an operator-supplied reference,
+    /// withdraws the record because no signed release named the image now running. The step is idempotent and runs
+    /// both when a commit first becomes durable and on the committed-resume branch, so an interruption between the
+    /// commit and the record is repaired by <c>--resume</c> instead of leaving evidence that contradicts the container.
+    /// </summary>
+    private static Task SettleReleaseRecordAsync(InstallationPaths paths, AcquiredImage? signedImage, CancellationToken cancellationToken)
+    {
+        if (signedImage is not null)
+        {
+            return signedImage.WriteEvidenceAsync(paths, cancellationToken);
+        }
+        AcquiredImage.RemoveEvidence(paths);
+        return Task.CompletedTask;
+    }
+
     private static DistributionAcquirer CreateDistributionAcquirer() => new();
 
     /// <summary>
@@ -958,6 +1019,12 @@ internal sealed class CameraAgentLifecycleManager
             NoDownload = noDownload
         };
 
+    /// <summary>
+    /// The failure code of a lifecycle operation refused before it mutated anything. Such a record is terminal: it
+    /// never blocks a later operation and cannot be resumed, because there is nothing to recover.
+    /// </summary>
+    internal const string RefusedFailureCode = "lifecycle-refused";
+
     internal static async Task<LifecycleOperationState> BeginAsync(
         LifecycleRequest request,
         InstallationPaths paths,
@@ -983,7 +1050,14 @@ internal sealed class CameraAgentLifecycleManager
         }
         var existing = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
         var hash = request.ComputeRequestSha256();
-        if (existing is { Status: not InstallationStatus.Completed })
+        // A refused operation is terminal: it mutated nothing, so it neither blocks a new operation nor offers
+        // anything to resume. Any other incomplete record whose mutation flag is clear is unmutated by construction
+        // (the flag is recorded before the first mutation and cleared only after a completed restore), including a
+        // pre-mutation refusal journalled by an earlier release or an interrupted, cancelled, or crashed
+        // preparation: a fresh operation of any kind may supersede it, while --resume of the matching request still
+        // continues it. Only an operation that started mutating demands --resume.
+        if (existing is { Status: not InstallationStatus.Completed } && !IsRefused(existing) &&
+            (existing.MutationStarted || request.Resume))
         {
             if (!request.Resume) throw new InstallerException("An incomplete lifecycle operation exists; rerun the same command with --resume.");
             if (existing.Kind != kind || existing.InstanceId != manifest.InstanceId || existing.RequestSha256 != hash)
@@ -1042,6 +1116,44 @@ internal sealed class CameraAgentLifecycleManager
             FailureMessage = Redaction.SafeDiagnostic(exception.Message)
         }, cancellationToken).ConfigureAwait(false);
 
+    internal static bool IsRefused(LifecycleOperationState state)
+        => state is { Status: InstallationStatus.Failed, FailureCode: RefusedFailureCode, MutationStarted: false };
+
+    /// <summary>
+    /// Records an operation that failed before its mutation record as refused. Both the operation as
+    /// <see cref="BeginAsync"/> returned it and the retained journal must be unmutated: a resumed operation that had
+    /// mutated, was restored, and then failed again keeps its recovery journal, because the journal's current flag
+    /// is not a history of mutation. The retained journal decides the rest: only the same operation, still running,
+    /// is settled, so an already-failed one is left alone. Settlement is best-effort: its own failure leaves the
+    /// journal as it was and never replaces the refusal the caller is about to rethrow.
+    /// </summary>
+    internal static async Task SettleRefusedOperationAsync(
+        InstallationPaths paths,
+        LifecycleOperationState begun,
+        Exception exception)
+    {
+        if (begun.MutationStarted) return;
+        try
+        {
+            var retained = await ReadOperationAsync(paths.LifecycleStatePath, CancellationToken.None).ConfigureAwait(false);
+            if (retained is null || retained.OperationId != begun.OperationId || retained.MutationStarted ||
+                retained.Status != InstallationStatus.Running)
+            {
+                return;
+            }
+            await RecordAsync(paths, retained with
+            {
+                Status = InstallationStatus.Failed,
+                FailureCode = RefusedFailureCode,
+                FailureMessage = Redaction.SafeDiagnostic(exception.Message)
+            }, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception settlement) when (settlement is not OutOfMemoryException)
+        {
+            // The unmutated journal stays as it was; the original refusal remains the diagnostic the operator sees.
+        }
+    }
+
     internal static async Task<LifecycleOperationState> RecordAsync(
         InstallationPaths paths,
         LifecycleOperationState state,
@@ -1083,7 +1195,8 @@ internal sealed class CameraAgentLifecycleManager
             value.Phase == LifecycleOperationPhase.Planned ||
             value.Status == InstallationStatus.Completed && value.Phase != LifecycleOperationPhase.Completed ||
             value.Phase == LifecycleOperationPhase.Completed && value.Status != InstallationStatus.Completed ||
-            value.Status == InstallationStatus.Completed && value.MutationStarted)
+            value.Status == InstallationStatus.Completed && value.MutationStarted ||
+            value.FailureCode == RefusedFailureCode && (value.Status != InstallationStatus.Failed || value.MutationStarted))
         {
             throw new InstallerException("The retained lifecycle operation is invalid or unsupported.");
         }
@@ -1485,9 +1598,9 @@ internal sealed class CameraAgentLifecycleManager
            IsSha256(image.ImageId["sha256:".Length..]) && image.Architecture is "amd64" or "arm64" &&
            image.Architecture == daemonArchitecture &&
            (image.ArchiveSha256 is null || IsSha256(image.ArchiveSha256)) &&
-           image.Component == "CameraAgent" && image.ConfigurationContract == configurationContract &&
-            image.CatalogContract == "hyg-v42-production-p3-s2" && IsSourceRevision(image.SourceRevision) &&
-            (!requireReplayRunner || image.ReplayRunnerContract == "local-replay-runner-v1") &&
+           image.Component == CameraAgentImageContract.Component && image.ConfigurationContract == configurationContract &&
+            image.CatalogContract == CameraAgentImageContract.CatalogContract && IsSourceRevision(image.SourceRevision) &&
+            (!requireReplayRunner || image.ReplayRunnerContract == CameraAgentImageContract.ReplayRunnerContract) &&
            (image.Distribution is null || IsValidDistribution(image.Distribution) &&
             image.Distribution.ManifestKind == DistributionManifestKind.InstallerRelease.ToString() &&
             image.Distribution.ReleaseTrain == "installer" &&
