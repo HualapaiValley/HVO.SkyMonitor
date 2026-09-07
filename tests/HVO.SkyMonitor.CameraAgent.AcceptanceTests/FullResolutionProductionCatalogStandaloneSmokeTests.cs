@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Runtime;
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -72,6 +74,8 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
 
         var process = Process.GetCurrentProcess();
         var started = Stopwatch.StartNew();
+        var hostLoadAtStart = ReadHostLoadAverage();
+        var gcPauseAtStart = GC.GetTotalPauseDuration();
         var processIoBefore = ReadProcessIo();
         var cpuBefore = process.TotalProcessorTime;
         var allocationsBefore = GC.GetTotalAllocatedBytes(precise: true);
@@ -98,7 +102,16 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
                 observation.Capture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw).ArtifactId))
             .OrderBy(static manifest => manifest.Descriptor.Capture.CaptureSequence)
             .ToArray();
-        var cadence = AssertCadence(rawManifests);
+        var cadence = MeasureCadence(rawManifests);
+        // The diagnostic is written before the budget is asserted so a contended trial still
+        // leaves the per-capture intervals, the host load, and the GC pauses behind it.
+        var cadenceDiagnostic = CreateCadenceDiagnostic(cadence, hostLoadAtStart, gcPauseAtStart);
+        var cadenceDiagnosticPath = Path.Combine(resultDirectory, "issue-171-cadence-diagnostic.json");
+        await File.WriteAllTextAsync(
+            cadenceDiagnosticPath,
+            JsonSerializer.Serialize(cadenceDiagnostic, EvidenceJson)).ConfigureAwait(false);
+        TestContext.AddResultFile(cadenceDiagnosticPath);
+        AssertCadenceBudget(cadence, cadenceDiagnostic);
         var evidenceManifest = rawManifests[^1];
         AssertProductionCaptureProvenance(evidenceManifest, snapshot);
         AssertArtifactContracts(fixture.Root, evidenceCapture, manifests);
@@ -298,6 +311,10 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
                 configuration = "Release",
                 processorCount = Environment.ProcessorCount,
                 processorModel = ReadProcessorModel(),
+                hostLoadAverageAtStart = hostLoadAtStart,
+                hostLoadAverageAtEnd = ReadHostLoadAverage(),
+                serverGarbageCollector = GCSettings.IsServerGC,
+                garbageCollectorLatencyMode = GCSettings.LatencyMode.ToString(),
                 totalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
                 serverGarbageCollection = System.Runtime.GCSettings.IsServerGC,
                 storageType = Environment.GetEnvironmentVariable("HVO_ISSUE_171_STORAGE_TYPE") ?? "unrecorded",
@@ -404,6 +421,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
                 requestedStartIntervalMilliseconds = cadence.RequestedStartIntervalMilliseconds,
                 monotonicStartJitterMilliseconds = cadence.MonotonicStartJitterMilliseconds,
                 captureStartReasons = cadence.StartReasons,
+                cadenceDiagnostic,
                 completionLatencyMilliseconds = completionLatencies,
                 peakRawCaptureBacklog = sampler.PeakRawCaptureBacklog,
                 peakLaneBacklog = sampler.PeakLaneBacklog,
@@ -431,7 +449,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
                 equivalentBaseline = "N/A: the canonical reduced sample uses a fixture-oriented physical response, 25-second cadence, no synthetic-reference correction, and central/archive steps; scaling it would not measure the same path",
                 nearestComparators = "canonical reduced standalone acceptance plus W1/W2 recipe and representative local-graph gates",
                 arrivalBudgetSeconds = 5,
-                sustainedArrivalBudget = captureStartIntervals.All(static interval => interval is >= 4900 and <= 5500),
+                sustainedArrivalBudget = cadenceDiagnostic.ContendedCaptureIndexes.Count == 0,
                 regressionDisposition = "absolute candidate baseline; compare future runs against this five-trial record"
             },
             centralTrafficAttempts = fixture.OutboundAttempts.Count
@@ -492,13 +510,24 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         Assert.IsFalse(config.Pipeline.Steps.Any(static step => step.Type.Contains("Upload", StringComparison.Ordinal)));
     }
 
-    private static CadenceEvidence AssertCadence(ArtifactManifestV2[] rawManifests)
+    /// <summary>
+    /// The arrival contract this smoke proves: under <see cref="CaptureCadenceMode.MinimumStartInterval"/>
+    /// every module start follows the previous one by the configured five seconds plus at most this
+    /// allowance for the runner's post-deadline work (schedule confirmation, admission, timer wake-up).
+    /// It is a cadence guarantee, so it is measured as wall-clock arrival on a quiescent host rather than
+    /// as the module's own render time; the runner script enforces the host precondition.
+    /// </summary>
+    private static readonly TimeSpan MinimumStartInterval = TimeSpan.FromSeconds(4.9);
+    private static readonly TimeSpan ArrivalBudgetUpperBound = TimeSpan.FromSeconds(5.5);
+
+    private static CadenceEvidence MeasureCadence(ArtifactManifestV2[] rawManifests)
     {
         Assert.IsGreaterThanOrEqualTo(3, rawManifests.Length);
         var actualIntervals = new List<double>(rawManifests.Length - 1);
         var requestedIntervals = new List<double>(rawManifests.Length - 1);
         var jitters = new List<double>(rawManifests.Length);
         var reasons = new List<string>(rawManifests.Length);
+        var sequences = new List<long>(rawManifests.Length);
         for (var index = 0; index < rawManifests.Length; index++)
         {
             var descriptor = rawManifests[index].Descriptor;
@@ -508,6 +537,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
             Assert.AreEqual(CaptureCadenceMode.MinimumStartInterval, cycle.CadenceMode);
             jitters.Add(cycle.MonotonicStartJitter.TotalMilliseconds);
             reasons.Add(cycle.StartReason.ToString());
+            sequences.Add(descriptor.Capture.CaptureSequence);
             if (index == 0)
             {
                 Assert.AreEqual(CaptureStartReason.Initial, cycle.StartReason);
@@ -522,14 +552,80 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
                 rawManifests[index - 1].Descriptor.CycleEvidence!.ModuleCallStartedUtc;
             Assert.AreEqual(interval.TotalMilliseconds, observedUtcInterval.TotalMilliseconds, 10d,
                 "Persisted monotonic and UTC module-start intervals diverged.");
-            Assert.IsGreaterThanOrEqualTo(TimeSpan.FromSeconds(4.9), interval);
-            Assert.IsLessThanOrEqualTo(TimeSpan.FromSeconds(5.5), interval,
-                "The full-resolution graph did not sustain the five-second arrival budget.");
             actualIntervals.Add(interval.TotalMilliseconds);
             requestedIntervals.Add((descriptor.Timing.RequestedStartUtc -
                 rawManifests[index - 1].Descriptor.Timing.RequestedStartUtc).TotalMilliseconds);
         }
-        return new CadenceEvidence(actualIntervals, requestedIntervals, jitters, reasons);
+        return new CadenceEvidence(actualIntervals, requestedIntervals, jitters, reasons, sequences);
+    }
+
+    private static CadenceDiagnostic CreateCadenceDiagnostic(
+        CadenceEvidence cadence,
+        HostLoadAverage hostLoadAtStart,
+        TimeSpan gcPauseAtStart)
+    {
+        var captures = new List<CadenceCaptureDiagnostic>(cadence.ActualStartIntervalMilliseconds.Count);
+        for (var index = 1; index < cadence.StartReasons.Count; index++)
+        {
+            var interval = TimeSpan.FromMilliseconds(cadence.ActualStartIntervalMilliseconds[index - 1]);
+            captures.Add(new CadenceCaptureDiagnostic(
+                index,
+                cadence.CaptureSequences[index],
+                cadence.ActualStartIntervalMilliseconds[index - 1],
+                cadence.MonotonicStartJitterMilliseconds[index],
+                cadence.StartReasons[index],
+                interval >= MinimumStartInterval && interval <= ArrivalBudgetUpperBound));
+        }
+        var contended = captures.Where(static capture => !capture.WithinBudget).ToArray();
+        return new CadenceDiagnostic(
+            MinimumStartInterval.TotalMilliseconds,
+            ArrivalBudgetUpperBound.TotalMilliseconds,
+            captures,
+            contended.Select(static capture => capture.Index).ToArray(),
+            hostLoadAtStart,
+            ReadHostLoadAverage(),
+            (GC.GetTotalPauseDuration() - gcPauseAtStart).TotalMilliseconds,
+            GCSettings.IsServerGC,
+            GCSettings.LatencyMode.ToString(),
+            Environment.ProcessorCount);
+    }
+
+    /// <summary>
+    /// Fails once with every contended interval named, so an operator can tell a host-load stall
+    /// (high load average, long GC pauses, <c>DeadlineReached</c> with jitter) from a runtime regression.
+    /// </summary>
+    private static void AssertCadenceBudget(CadenceEvidence cadence, CadenceDiagnostic diagnostic)
+    {
+        if (diagnostic.ContendedCaptureIndexes.Count == 0)
+        {
+            return;
+        }
+        var details = string.Join(
+            "; ",
+            diagnostic.Captures
+                .Where(static capture => !capture.WithinBudget)
+                .Select(static capture => string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"capture {capture.Index} (sequence {capture.CaptureSequence}) started {capture.StartIntervalMilliseconds:0} ms after the previous one, jitter {capture.MonotonicStartJitterMilliseconds:0} ms, reason {capture.StartReason}")));
+        Assert.Fail(string.Create(
+            CultureInfo.InvariantCulture,
+            $"The full-resolution graph did not sustain the five-second arrival budget ({diagnostic.MinimumStartIntervalMilliseconds:0}-{diagnostic.ArrivalBudgetUpperBoundMilliseconds:0} ms between module starts) on {diagnostic.ContendedCaptureIndexes.Count} of {cadence.ActualStartIntervalMilliseconds.Count} intervals: {details}. Host 1-minute load average was {diagnostic.HostLoadAverageAtStart.OneMinute:0.00} at start and {diagnostic.HostLoadAverageAtEnd.OneMinute:0.00} at the end of the measured captures on {diagnostic.ProcessorCount} processors; GC pauses during the trial totalled {diagnostic.GarbageCollectorPauseMilliseconds:0} ms (server GC {diagnostic.ServerGarbageCollector}, latency mode {diagnostic.GarbageCollectorLatencyMode}). A load average above half the processor count is host contention, not a cadence regression: rerun on a quiescent host (see scripts/test:cameraagent-standalone-production-smoke)."));
+    }
+
+    private static HostLoadAverage ReadHostLoadAverage()
+    {
+        if (OperatingSystem.IsLinux() && File.Exists("/proc/loadavg"))
+        {
+            var fields = File.ReadAllText("/proc/loadavg").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (fields.Length >= 3 &&
+                double.TryParse(fields[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var one) &&
+                double.TryParse(fields[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var five) &&
+                double.TryParse(fields[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var fifteen))
+            {
+                return new HostLoadAverage(one, five, fifteen);
+            }
+        }
+        return new HostLoadAverage(double.NaN, double.NaN, double.NaN);
     }
 
     private static void AssertProductionCaptureProvenance(
@@ -1186,7 +1282,30 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         IReadOnlyList<double> ActualStartIntervalMilliseconds,
         IReadOnlyList<double> RequestedStartIntervalMilliseconds,
         IReadOnlyList<double> MonotonicStartJitterMilliseconds,
-        IReadOnlyList<string> StartReasons);
+        IReadOnlyList<string> StartReasons,
+        IReadOnlyList<long> CaptureSequences);
+
+    private sealed record HostLoadAverage(double OneMinute, double FiveMinutes, double FifteenMinutes);
+
+    private sealed record CadenceCaptureDiagnostic(
+        int Index,
+        long CaptureSequence,
+        double StartIntervalMilliseconds,
+        double MonotonicStartJitterMilliseconds,
+        string StartReason,
+        bool WithinBudget);
+
+    private sealed record CadenceDiagnostic(
+        double MinimumStartIntervalMilliseconds,
+        double ArrivalBudgetUpperBoundMilliseconds,
+        IReadOnlyList<CadenceCaptureDiagnostic> Captures,
+        IReadOnlyList<int> ContendedCaptureIndexes,
+        HostLoadAverage HostLoadAverageAtStart,
+        HostLoadAverage HostLoadAverageAtEnd,
+        double GarbageCollectorPauseMilliseconds,
+        bool ServerGarbageCollector,
+        string GarbageCollectorLatencyMode,
+        int ProcessorCount);
 
     private sealed record ProcessIoSnapshot(
         long CharactersRead,

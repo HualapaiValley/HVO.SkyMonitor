@@ -19,9 +19,51 @@ if [[ ! -d "$HVO_CATALOG_PERF_ROOT" ]]; then
     printf 'Production catalog installation root does not exist: %s\n' "$HVO_CATALOG_PERF_ROOT" >&2
     exit 2
 fi
-for command in date dotnet git jq sha256sum stat; do
+for command in date dotnet git jq nproc sha256sum stat; do
     command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
 done
+
+# The five-second arrival budget is a cadence contract measured as wall-clock module-start
+# intervals, so it is only meaningful on a quiescent host: on a shared build host the
+# runner's post-deadline work (schedule confirmation, admission, timer wake-up) competes with
+# other processes and the budget trips without any runtime change. Each trial therefore
+# requires the one-minute load average to be at or below HVO_SMOKE_MAX_LOAD1 (default half
+# the processor count), optionally waiting up to HVO_SMOKE_QUIESCENCE_WAIT_SECONDS for the
+# host to settle. The trial itself records the load averages it observed in its evidence.
+SMOKE_PROCESSOR_COUNT="$(nproc)"
+readonly SMOKE_PROCESSOR_COUNT
+SMOKE_MAX_LOAD1="${HVO_SMOKE_MAX_LOAD1:-$(awk -v processors="$SMOKE_PROCESSOR_COUNT" 'BEGIN { printf "%.2f", processors / 2 }')}"
+readonly SMOKE_MAX_LOAD1
+readonly SMOKE_QUIESCENCE_WAIT_SECONDS="${HVO_SMOKE_QUIESCENCE_WAIT_SECONDS:-0}"
+if ! [[ "$SMOKE_MAX_LOAD1" =~ ^[0-9]+([.][0-9]+)?$ && "$SMOKE_QUIESCENCE_WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
+    printf 'HVO_SMOKE_MAX_LOAD1 must be a non-negative decimal and HVO_SMOKE_QUIESCENCE_WAIT_SECONDS a non-negative integer.\n' >&2
+    exit 2
+fi
+read_load1() {
+    local load1
+    read -r load1 _ < /proc/loadavg
+    printf '%s' "$load1"
+}
+require_quiescent_host() {
+    local trial="$1" waited=0 load1
+    load1="$(read_load1)"
+    while awk -v current="$load1" -v limit="$SMOKE_MAX_LOAD1" 'BEGIN { exit !(current > limit) }'; do
+        if (( waited >= SMOKE_QUIESCENCE_WAIT_SECONDS )); then
+            printf 'Trial %s refused: host is not quiescent (1-minute load average %s exceeds %s on %s processors after waiting %ss). The arrival budget is a cadence contract, not a load test; rerun when the host is idle or raise HVO_SMOKE_QUIESCENCE_WAIT_SECONDS.\n' \
+                "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$waited" >&2
+            exit 3
+        fi
+        sleep 10
+        waited=$((waited + 10))
+        load1="$(read_load1)"
+    done
+    printf 'Trial %s: host 1-minute load average %s (limit %s on %s processors)\n' \
+        "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" >&2
+}
+if [[ "${HVO_SMOKE_QUIESCENCE_CHECK_ONLY:-0}" == 1 ]]; then
+    require_quiescent_host precheck
+    exit 0
+fi
 
 rm -rf -- "$RESULTS"
 mkdir -p "$RESULTS"
@@ -44,6 +86,7 @@ expected_jpeg_sha256=""
 for trial in 1 2 3 4 5; do
     export HVO_ISSUE_171_TRIAL="trial-$trial"
     export HVO_ISSUE_171_EVIDENCE_ROOT="$RESULTS/$HVO_ISSUE_171_TRIAL/evidence"
+    require_quiescent_host "$HVO_ISSUE_171_TRIAL"
     started_epoch="$(date +%s)"
     dotnet test "$PROJECT" \
         --no-build \
@@ -99,6 +142,10 @@ jq -s \
       workflowThroughputCapturesPerSecond: (map(.performance.workflowThroughputCapturesPerSecond) | stats),
       sustainedCadenceCapturesPerSecond: (map(.performance.sustainedCadenceCapturesPerSecond) | stats),
       maximumStartIntervalMilliseconds: (map(.performance.captureStartIntervalMilliseconds | max) | stats),
+      maximumMonotonicStartJitterMilliseconds: (map(.performance.monotonicStartJitterMilliseconds | max) | stats),
+      hostLoadAverageOneMinuteAtStart: (map(.environment.hostLoadAverageAtStart.oneMinute) | stats),
+      contendedCaptureIndexes: (map(.performance.cadenceDiagnostic.contendedCaptureIndexes) | add),
+      garbageCollectorPauseMilliseconds: (map(.performance.cadenceDiagnostic.garbageCollectorPauseMilliseconds) | stats),
       maximumCompletionLatencyMilliseconds: (map(.performance.completionLatencyMilliseconds | max) | stats),
       maximumLaneBacklogCount: (map(.performance.peakLaneBacklog) | max),
       maximumLaneBacklogBytes: (map(.performance.peakLaneBacklogBytes) | max),

@@ -165,6 +165,25 @@ HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
   ./scripts/test:cameraagent-standalone-production-smoke
 ```
 
+The five-second arrival budget (each module start 4.9-5.5 s after the previous
+one under the minimum-start-interval cadence) is a cadence contract measured as
+wall-clock module-start intervals, so it is only meaningful on a quiescent host.
+The runner's post-deadline work (schedule confirmation, admission, timer wake-up)
+competes with every other process on a shared build host, and one contended
+interval fails the trial without any runtime change. Before each trial the
+runner therefore reads the one-minute load average and refuses to start (exit
+`3`, naming the load) when it exceeds `HVO_SMOKE_MAX_LOAD1`, which defaults to
+half the processor count; set `HVO_SMOKE_QUIESCENCE_WAIT_SECONDS` to let it
+poll every ten seconds for the host to settle first, and set
+`HVO_SMOKE_QUIESCENCE_CHECK_ONLY=1` to run only that check. A trial that still
+trips the budget fails once with every contended interval named (capture index
+and sequence, observed interval, monotonic start jitter, start reason) together
+with the host load at the start and end of the measured captures and the GC pause
+total, and it writes `issue-171-cadence-diagnostic.json` beside the other
+evidence before asserting. Read that file to separate host contention (high load
+average, `DeadlineReached` with jitter, long GC pauses) from a runtime regression;
+the budget itself is not relaxed for busy hosts.
+
 The gate fails closed on package kind, version, manifest/schema/preprocessing
 versions, database SHA-256/length, and 119,625-row identity. It retains a
 sanitized full-frame annotated JPEG and JSON manifest for each of five
