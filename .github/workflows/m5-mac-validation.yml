@@ -58,24 +58,27 @@ jobs:
           mkdir -m 700 "$TMPDIR"
 
           projects=(
-            "agent-core|63|63|tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj"
-            "cameraagent-acceptance|2|2|tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
-            "fleet-contracts|7|7|tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj"
-            "catalog-sqlite|81|80|tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"
-            "cameraagent-logichost|4|4|tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"
-            "imaging|188|188|tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"
-            "test-support|7|7|tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj"
-            "deployment-distribution|82|82|tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj"
-            "processing|198|198|tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
-            "processing-runner|25|25|tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj"
-            "common|23|23|tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj"
-            "architecture|6|6|tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"
+            "agent-core|63|63|0|tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj"
+            "cameraagent-acceptance|2|2|0|tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
+            "fleet-contracts|7|7|0|tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj"
+            "catalog-sqlite|81|80|1|tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"
+            "cameraagent-logichost|4|4|0|tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"
+            "astronomy|170|170|0|tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj"
+            "cameraagent|1834|1785|49|tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+            "imaging|188|188|0|tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"
+            "test-support|7|7|0|tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj"
+            "deployment-distribution|82|82|0|tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj"
+            "processing|198|198|0|tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
+            "processing-runner|25|25|0|tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj"
+            "common|23|23|0|tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj"
+            "architecture|6|6|0|tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"
           )
 
           aggregate_total=0
           aggregate_executed=0
+          aggregate_skipped=0
           for entry in "${projects[@]}"; do
-            IFS='|' read -r name expected_total expected_executed project <<< "$entry"
+            IFS='|' read -r name expected_total expected_executed expected_skipped project <<< "$entry"
             project_results="$results_root/$name"
             mkdir -m 700 "$project_results"
             dotnet test "$project" \
@@ -90,6 +93,7 @@ jobs:
             outcome="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/@outcome)' "$trx")"
             total="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@total)' "$trx")"
             executed="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@executed)' "$trx")"
+            skipped=$((total - executed))
             failed="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@failed)' "$trx")"
             error="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@error)' "$trx")"
             timeout="$(xmllint --nonet --xpath 'string(/*[local-name()="TestRun"]/*[local-name()="ResultSummary"]/*[local-name()="Counters"]/@timeout)' "$trx")"
@@ -98,6 +102,7 @@ jobs:
             test "$outcome" = Completed
             test "$total" -eq "$expected_total"
             test "$executed" -eq "$expected_executed"
+            test "$skipped" -eq "$expected_skipped"
             test "$total" -gt 0
             test "$executed" -gt 0
             test "$failed" -eq 0
@@ -107,9 +112,12 @@ jobs:
 
             aggregate_total=$((aggregate_total + total))
             aggregate_executed=$((aggregate_executed + executed))
-            printf '%s: discovered=%s executed=%s\n' "$name" "$total" "$executed"
+            aggregate_skipped=$((aggregate_skipped + skipped))
+            printf '%s: discovered=%s executed=%s skipped=%s\n' "$name" "$total" "$executed" "$skipped"
           done
 
-          test "$aggregate_total" -eq 686
-          test "$aggregate_executed" -eq 685
-          printf 'aggregate: discovered=%s executed=%s\n' "$aggregate_total" "$aggregate_executed"
+          test "$aggregate_total" -eq 2690
+          test "$aggregate_executed" -eq 2640
+          test "$aggregate_skipped" -eq 50
+          printf 'aggregate: discovered=%s executed=%s skipped=%s\n' \
+            "$aggregate_total" "$aggregate_executed" "$aggregate_skipped"

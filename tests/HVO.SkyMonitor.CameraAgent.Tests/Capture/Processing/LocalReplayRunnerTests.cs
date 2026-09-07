@@ -1216,9 +1216,7 @@ public sealed class LocalReplayRunnerTests
             new(Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
     }
 
-    private static string CreateSocketPath() => Path.Combine(
-        Path.GetTempPath(),
-        $"hvo-replay-{Guid.NewGuid():N}.sock");
+    private static string CreateSocketPath() => FileSystemTestPaths.CreateShortUnixSocketPath();
 
     private static async Task WaitForSocketAsync(string socketPath)
     {

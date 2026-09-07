@@ -409,11 +409,7 @@ public sealed class CaptureHostContextTests
     }
 
     private static string CreateRoot()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        return root;
-    }
+        => FileSystemTestPaths.CreatePhysicalTemporaryDirectory("skymonitor-tests");
 
     private static void AssertOptionalStagingFailure(
         CapturingIngress ingress,

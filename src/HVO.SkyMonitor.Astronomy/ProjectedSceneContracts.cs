@@ -142,6 +142,7 @@ public static class ProjectedSceneJson
 {
     private const double DirectionTolerance = 1e-9;
     private const double PixelTolerance = 1e-8;
+    private const int GeneratedGeometryDecimalPlaces = 12;
     /// <summary>Maximum accepted width or height for a projected scene.</summary>
     public const int MaximumDimensionPixels = 65_536;
     /// <summary>Maximum checked scene pixel area, independent of payload byte size.</summary>
@@ -236,9 +237,10 @@ public static class ProjectedSceneJson
                 computation.ConstellationTopology.PreprocessingVersion),
             computation.EphemerisModelVersion,
             source with { ArtifactIdentitySha256 = NormalizeSha256(source.ArtifactIdentitySha256) },
-            Freeze(geometry.Objects.OrderBy(static item => item.Magnitude)
+            Freeze(geometry.Objects.Select(NormalizeGeneratedGeometry).OrderBy(static item => item.Magnitude)
                 .ThenBy(static item => item.Id, StringComparer.Ordinal)),
-            Freeze(geometry.Segments.OrderBy(static item => item.ConstellationId, StringComparer.Ordinal)
+            Freeze(geometry.Segments.Select(NormalizeGeneratedGeometry)
+                .OrderBy(static item => item.ConstellationId, StringComparer.Ordinal)
                 .ThenBy(static item => item.FromObjectId, StringComparer.Ordinal)
                 .ThenBy(static item => item.ToObjectId, StringComparer.Ordinal)
                 .ThenBy(static item => item.PartIndex)));
@@ -631,6 +633,48 @@ public static class ProjectedSceneJson
         if (value is null || value.Length != 64 || value.Any(static character => !Uri.IsHexDigit(character)))
             throw new ArgumentException("A SHA-256 value is required.", nameof(value));
         return value.ToUpperInvariant();
+    }
+
+    private static ProjectedCelestialObject NormalizeGeneratedGeometry(ProjectedCelestialObject value) => value with
+    {
+        J2000Equatorial = Normalize(value.J2000Equatorial),
+        EquatorialOfDate = Normalize(value.EquatorialOfDate),
+        GeometricHorizontal = Normalize(value.GeometricHorizontal),
+        ApparentHorizontal = Normalize(value.ApparentHorizontal),
+        CameraDirection = Normalize(value.CameraDirection),
+        Pixel = Normalize(value.Pixel),
+        Magnitude = Normalize(value.Magnitude),
+        ColorIndex = value.ColorIndex is { } colorIndex ? Normalize(colorIndex) : null
+    };
+
+    private static ProjectedConstellationSegment NormalizeGeneratedGeometry(ProjectedConstellationSegment value) =>
+        value with { FromPixel = Normalize(value.FromPixel), ToPixel = Normalize(value.ToPixel) };
+
+    private static EquatorialPoint Normalize(EquatorialPoint value) => new(
+        NormalizePeriodic(value.RightAscensionHours, 24), Normalize(value.DeclinationDegrees));
+
+    private static AltAzPoint Normalize(AltAzPoint value) => new(
+        Normalize(value.AltitudeDegrees), NormalizePeriodic(value.AzimuthDegrees, 360));
+
+    private static EnuVector Normalize(EnuVector value) => new(
+        Normalize(value.East), Normalize(value.North), Normalize(value.Up));
+
+    private static PixelPoint Normalize(PixelPoint value) => new(Normalize(value.X), Normalize(value.Y));
+
+    private static double Normalize(double value)
+    {
+        var rounded = Math.Round(value, GeneratedGeometryDecimalPlaces, MidpointRounding.ToEven);
+        return rounded == 0 ? 0 : rounded;
+    }
+
+    private static double NormalizePeriodic(double value, double period)
+    {
+        if (value < 0 || value >= period)
+        {
+            return value;
+        }
+        var rounded = Normalize(value);
+        return rounded >= period ? 0 : rounded;
     }
 
     private static ProjectedSceneV1 Freeze(ProjectedSceneV1 scene) => scene with

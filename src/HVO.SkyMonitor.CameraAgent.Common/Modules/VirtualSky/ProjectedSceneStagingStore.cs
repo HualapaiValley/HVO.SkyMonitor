@@ -103,11 +103,20 @@ internal sealed class ProjectedSceneStagingStore :
     private readonly string _cursorPath;
     private readonly ProjectedSceneStagingOptions _options;
     private readonly ProjectedSceneStageLifecycleCoordinator _lifecycle;
+    private readonly Func<CancellationToken, ValueTask>? _beforeNonLinuxPublish;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public ProjectedSceneStagingStore(
         IOptions<CameraAgentHostOptions> options,
         ProjectedSceneStageLifecycleCoordinator? lifecycle = null)
+        : this(options, lifecycle, beforeNonLinuxPublish: null)
+    {
+    }
+
+    internal ProjectedSceneStagingStore(
+        IOptions<CameraAgentHostOptions> options,
+        ProjectedSceneStageLifecycleCoordinator? lifecycle,
+        Func<CancellationToken, ValueTask>? beforeNonLinuxPublish)
     {
         ArgumentNullException.ThrowIfNull(options);
         _durableRoot = Path.GetFullPath(options.Value.RawIngressRoot);
@@ -115,6 +124,7 @@ internal sealed class ProjectedSceneStagingStore :
         _cursorPath = Path.Combine(_durableRoot, "journal", "projected-scene-stage.cursor");
         _options = options.Value.ProjectedSceneStaging;
         _lifecycle = lifecycle ?? new ProjectedSceneStageLifecycleCoordinator();
+        _beforeNonLinuxPublish = beforeNonLinuxPublish;
     }
 
     public async ValueTask StageAsync(
@@ -221,8 +231,26 @@ internal sealed class ProjectedSceneStagingStore :
                 {
                     await stream.DisposeAsync().ConfigureAwait(false);
                 }
-                File.Move(temporary, path);
-                published = true;
+                if (_beforeNonLinuxPublish is not null)
+                {
+                    await _beforeNonLinuxPublish(cancellationToken).ConfigureAwait(false);
+                }
+                try
+                {
+                    File.Move(temporary, path);
+                    published = true;
+                }
+                catch (IOException) when (File.Exists(path))
+                {
+                    var concurrentlyPublished = await ReadBoundedFileAsync(path, cancellationToken).ConfigureAwait(false)
+                        ?? throw new IOException("Projected-scene stage disappeared during conflict authentication.");
+                    if (!concurrentlyPublished.AsSpan().SequenceEqual(bytes))
+                    {
+                        throw new InvalidDataException(
+                            "Projected-scene stage conflicts with existing capture geometry.");
+                    }
+                    File.Delete(temporary);
+                }
                 RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
             }
             catch

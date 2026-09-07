@@ -340,13 +340,37 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(rawManifest.Descriptor),
             scene.Source.ArtifactIdentitySha256, ignoreCase: true);
         CollectionAssert.AreEqual(
-            provenance.Objects!.Select(static item => (item.Id, item.DisplayName, item.PixelX, item.PixelY, item.Magnitude)).ToArray(),
-            scene.Objects.Select(static item => (item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray());
+            provenance.Objects!.Select(static item => (
+                item.Id,
+                item.DisplayName,
+                PixelX: CanonicalizeGeneratedGeometry(item.PixelX),
+                PixelY: CanonicalizeGeneratedGeometry(item.PixelY),
+                Magnitude: CanonicalizeGeneratedGeometry(item.Magnitude))).ToArray(),
+            scene.Objects.Select(static item => (
+                item.Id,
+                item.DisplayName,
+                PixelX: item.Pixel.X,
+                PixelY: item.Pixel.Y,
+                item.Magnitude)).ToArray());
         CollectionAssert.AreEqual(
-            provenance.Segments!.Select(static item => (item.ConstellationId, item.FromObjectId, item.ToObjectId,
-                item.FromPixelX, item.FromPixelY, item.ToPixelX, item.ToPixelY, item.PartIndex)).ToArray(),
-            scene.Segments.Select(static item => (item.ConstellationId, item.FromObjectId, item.ToObjectId,
-                item.FromPixel.X, item.FromPixel.Y, item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray());
+            provenance.Segments!.Select(static item => (
+                item.ConstellationId,
+                item.FromObjectId,
+                item.ToObjectId,
+                FromPixelX: CanonicalizeGeneratedGeometry(item.FromPixelX),
+                FromPixelY: CanonicalizeGeneratedGeometry(item.FromPixelY),
+                ToPixelX: CanonicalizeGeneratedGeometry(item.ToPixelX),
+                ToPixelY: CanonicalizeGeneratedGeometry(item.ToPixelY),
+                item.PartIndex)).ToArray(),
+            scene.Segments.Select(static item => (
+                item.ConstellationId,
+                item.FromObjectId,
+                item.ToObjectId,
+                FromPixelX: item.FromPixel.X,
+                FromPixelY: item.FromPixel.Y,
+                ToPixelX: item.ToPixel.X,
+                ToPixelY: item.ToPixel.Y,
+                item.PartIndex)).ToArray());
         Assert.IsGreaterThan(0, fixture.ProjectedSceneMemoryCacheCount);
 
         var coordinator = fixture.Services.GetRequiredService<CaptureAdmissionCoordinator>();
@@ -885,6 +909,12 @@ public sealed class StandaloneCameraAgentAcceptanceTests
             fixture.OutboundAttempts,
             string.Join(Environment.NewLine, fixture.OutboundAttempts.Select(static attempt =>
                 $"{attempt.AttemptedUtc:O} {attempt.Method} {attempt.RequestUri}")));
+    }
+
+    private static double CanonicalizeGeneratedGeometry(double value)
+    {
+        var rounded = Math.Round(value, 12, MidpointRounding.ToEven);
+        return rounded == 0 ? 0 : rounded;
     }
 
     private static async Task WaitForConditionAsync(

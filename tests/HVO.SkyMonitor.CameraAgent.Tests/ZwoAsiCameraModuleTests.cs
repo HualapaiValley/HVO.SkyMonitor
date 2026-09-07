@@ -197,6 +197,7 @@ public sealed class ZwoAsiCameraModuleTests
     [DataRow("missing")]
     [DataRow("ambiguous")]
     [DataRow("model")]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task StableSelectionRejectsMissingAmbiguousAndModelMismatch(string scenario)
     {
@@ -226,6 +227,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task ModelComparisonRemovesOnlyExactNativeZwoPrefix()
     {
@@ -254,6 +256,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task SelectionSkipsUnrelatedAndUnsafeInventoryEntries()
     {
@@ -279,6 +282,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task SelectedCameraCloseFailureIsReportedAsGenericNotConnected()
     {
@@ -294,6 +298,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task SelectedCameraThatBecomesInaccessibleIsReportedGenerically()
     {
@@ -310,6 +315,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task RuntimeSecretsResolveOnlyDuringInitializeAndLoadFailuresAreSanitized()
     {
@@ -339,6 +345,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task InitializeOpensConfiguresAndReadsBackInOrder()
     {
@@ -354,6 +361,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task Asi178InitializationOpensConfiguresAndReadsBackInOrder()
     {
@@ -370,6 +378,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task CapturePreservesExactFullFrameBytesLayoutMetadataAndTiming()
     {
@@ -406,6 +415,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task Asi178CapturePreservesExactFullFrameBytesLayoutAndMetadata()
     {
@@ -451,6 +461,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task CancellationStopsExposureAndReturnsNoFrame()
     {
@@ -469,6 +480,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task CancellationObservedImmediatelyBeforeSynchronousReadStopsWithoutReading()
     {
@@ -490,6 +502,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task PollFailureStopsExposureAndPreservesPrimaryException()
     {
@@ -506,6 +519,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task StopFailureInvalidatesSessionPreservesPrimaryAndAllowsReinitialize()
     {
@@ -538,6 +552,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task MonotonicDeadlineStopsTimedOutExposure()
     {
@@ -556,6 +571,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task DisposalCancelsExposureAndPropagatesFinalCloseFailureAfterCleanup()
     {
@@ -581,6 +597,7 @@ public sealed class ZwoAsiCameraModuleTests
     [TestMethod]
     [DataRow("exposure")]
     [DataRow("read")]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task ExposureFailureAndReadErrorReturnNoFrame(string failure)
     {
@@ -604,6 +621,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task ReinitializeAndRepeatedDisposeCleanEachNativeInstanceExactlyOnce()
     {
@@ -626,6 +644,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task SetpointsRejectSdkClampingAndUseReadbackValues()
     {
@@ -646,6 +665,7 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task Asi178UsesDiscoveredExposureAndGainControlRanges()
     {
@@ -701,6 +721,7 @@ public sealed class ZwoAsiCameraModuleTests
     [DataRow("nightDefaultGain")]
     [DataRow("twilightDefaultExposure")]
     [DataRow("twilightDefaultGain")]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task InitializationRejectsConfiguredSetpointsOutsideDiscoveredControls(string field)
     {
@@ -770,7 +791,7 @@ public sealed class ZwoAsiCameraModuleTests
     [DataRow("mono")]
     [DataRow("dimensions")]
     [DataRow("format")]
-    [DataRow("asi120")]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task CameraProfileMismatchesAreRejected(string mismatch)
     {
@@ -781,35 +802,73 @@ public sealed class ZwoAsiCameraModuleTests
             "mono" => camera with { Info = camera.Info with { IsColorCamera = false } },
             "dimensions" => camera with { Info = camera.Info with { MaximumWidth = 1280, MaximumHeight = 960 } },
             "format" => camera with { Info = camera.Info with { SupportedImageTypes = [AsiImageType.Raw8] } },
-            "asi120" => Camera(7, "ZWO ASI120MM Mini", PrivateSerial, color: false) with
-            {
-                Info = camera.Info with
-                {
-                    Model = "ZWO ASI120MM Mini",
-                    MaximumWidth = 1280,
-                    MaximumHeight = 960,
-                    IsColorCamera = false,
-                    SupportedBins = [1, 2],
-                    SupportedImageTypes = [AsiImageType.Raw8, AsiImageType.Raw16]
-                }
-            },
             _ => camera
         };
         await using var module = Module(native);
-        var config = mismatch == "asi120"
-            ? CreateConfig(OptionsJson(expectedModel: "ASI120MM Mini"))
-            : CreateConfig();
 
-        if (mismatch is "format" or "asi120")
+        if (mismatch == "format")
         {
             await Assert.ThrowsExactlyAsync<NotSupportedException>(
-                () => module.InitializeAsync(config, CancellationToken.None));
+                () => module.InitializeAsync(CreateConfig(), CancellationToken.None));
         }
         else
         {
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-                () => module.InitializeAsync(config, CancellationToken.None));
+                () => module.InitializeAsync(CreateConfig(), CancellationToken.None));
         }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task UnsupportedCameraProfileIsRejectedBeforeRuntimeAccess()
+    {
+        var factoryCalls = 0;
+        var resolverCalls = 0;
+        await using var module = new ZwoAsiCameraModule(
+            TimeProvider.System,
+            _ =>
+            {
+                factoryCalls++;
+                return new FakeAsiNativeApi();
+            },
+            _ =>
+            {
+                resolverCalls++;
+                return null;
+            });
+
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() => module.InitializeAsync(
+            CreateConfig(OptionsJson(expectedModel: "ASI120MM Mini")), CancellationToken.None));
+
+        Assert.AreEqual(0, factoryCalls);
+        Assert.AreEqual(0, resolverCalls);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.OSX)]
+    [TestCategory("Unit")]
+    public async Task InitializeOnMacOsRejectsBeforeRuntimeAccess()
+    {
+        var factoryCalls = 0;
+        var resolverCalls = 0;
+        await using var module = new ZwoAsiCameraModule(
+            TimeProvider.System,
+            _ =>
+            {
+                factoryCalls++;
+                return new FakeAsiNativeApi();
+            },
+            _ =>
+            {
+                resolverCalls++;
+                return null;
+            });
+
+        await Assert.ThrowsExactlyAsync<PlatformNotSupportedException>(
+            () => module.InitializeAsync(CreateConfig(), CancellationToken.None));
+
+        Assert.AreEqual(0, factoryCalls);
+        Assert.AreEqual(0, resolverCalls);
     }
 
     [TestMethod]
