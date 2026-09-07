@@ -32,12 +32,16 @@ The runner produces five fresh, approximately one-minute trials under
 `TestResults/issue-171/production-smoke`. Each trial first requires a quiescent host (one-minute
 load average at or below `HVO_SMOKE_MAX_LOAD1`, default half the processor count; see the
 smoke-test runbook), because the arrival budget is a cadence contract rather than a load test.
+Evidence is staged and published only after every gate passes, so a refused or failed run leaves
+the previously published evidence intact.
 The review inputs are:
 
 - `five-trial-summary.json`
 - `trial-*/evidence/issue-171-standalone-smoke.json`
 - `trial-*/evidence/issue-171-cadence-diagnostic.json` (per-capture intervals, jitter, start
-  reasons, host load, and GC pauses; written before the arrival budget is asserted)
+  reasons, within-budget flags, structural violations, host load or `null` when unavailable,
+  and GC pauses; written before any cadence invariant or the arrival budget is asserted)
+- `quiescence-log.tsv` (per-trial admission: observed load, limit, processors, wait)
 - `trial-*/evidence/issue-171-full-resolution-annotated.jpg`
 - `reference-calibration-W1/processing-performance-W1-reference-calibration.json`
 - `reference-calibration-W2/processing-performance-W2-reference-calibration.json`

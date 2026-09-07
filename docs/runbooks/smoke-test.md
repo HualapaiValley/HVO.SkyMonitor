@@ -169,20 +169,34 @@ The five-second arrival budget (each module start 4.9-5.5 s after the previous
 one under the minimum-start-interval cadence) is a cadence contract measured as
 wall-clock module-start intervals, so it is only meaningful on a quiescent host.
 The runner's post-deadline work (schedule confirmation, admission, timer wake-up)
-competes with every other process on a shared build host, and one contended
-interval fails the trial without any runtime change. Before each trial the
-runner therefore reads the one-minute load average and refuses to start (exit
-`3`, naming the load) when it exceeds `HVO_SMOKE_MAX_LOAD1`, which defaults to
-half the processor count; set `HVO_SMOKE_QUIESCENCE_WAIT_SECONDS` to let it
-poll every ten seconds for the host to settle first, and set
-`HVO_SMOKE_QUIESCENCE_CHECK_ONLY=1` to run only that check. A trial that still
-trips the budget fails once with every contended interval named (capture index
-and sequence, observed interval, monotonic start jitter, start reason) together
-with the host load at the start and end of the measured captures and the GC pause
-total, and it writes `issue-171-cadence-diagnostic.json` beside the other
-evidence before asserting. Read that file to separate host contention (high load
-average, `DeadlineReached` with jitter, long GC pauses) from a runtime regression;
-the budget itself is not relaxed for busy hosts.
+competes with every other process on a shared build host, and a single
+out-of-budget interval fails the trial. Before each trial the runner therefore
+reads the one-minute load average and refuses to start (exit `3`, naming the
+load, the limit, and the wait) when it exceeds `HVO_SMOKE_MAX_LOAD1`, which
+defaults to half the processor count. `HVO_SMOKE_QUIESCENCE_WAIT_SECONDS` is a
+true elapsed upper bound: the runner polls at most every ten seconds until the
+deadline and then refuses. `HVO_SMOKE_QUIESCENCE_CHECK_ONLY=1` runs only that
+check. The check fails closed: `awk` and `sleep` are required commands, an
+unreadable or non-numeric `/proc/loadavg` refuses, and any comparator error
+refuses. Evidence is produced in a staging directory beside
+`TestResults/issue-171/production-smoke` (the build runs before the first
+quiescence check, so build load never counts against a trial) and is published
+in place of the previous run only after every gate passes, so a refusal or a
+failed trial never destroys previously published evidence; the staged directory
+is left behind for inspection. Each trial's admission is recorded in
+`quiescence-log.tsv`.
+
+A trial observes the persisted cadence without asserting, writes
+`issue-171-cadence-diagnostic.json` beside the other evidence (per-capture
+index and sequence, observed interval, monotonic start jitter, start reason,
+within-budget flag; structural violations; host load at the start and end of the
+measured captures, or `null` with `available: false` when the host does not
+expose it; GC pause total and mode), and only then asserts the structural
+invariants and the budget. A trip fails once naming every out-of-budget interval.
+The load average, GC pauses, and start reasons in that message are triage
+signals, not proof of cause: corroborate with the diagnostic and a quiet-host
+rerun before classifying a failure as host interference or as a runtime
+regression. The budget itself is not relaxed for busy hosts.
 
 The gate fails closed on package kind, version, manifest/schema/preprocessing
 versions, database SHA-256/length, and 119,625-row identity. It retains a

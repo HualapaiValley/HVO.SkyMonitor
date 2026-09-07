@@ -9,7 +9,7 @@ readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly PROCESSING_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
 readonly CAMERA_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
-readonly RESULTS="$REPO_ROOT/TestResults/issue-171/production-smoke"
+readonly PUBLISHED_RESULTS="$REPO_ROOT/TestResults/issue-171/production-smoke"
 
 if [[ $# -ne 0 || -z "${HVO_CATALOG_PERF_ROOT:-}" ]]; then
     printf 'Usage: HVO_CATALOG_PERF_ROOT=INSTALLED_PRODUCTION_CATALOG_ROOT %s\n' "${0##*/}" >&2
@@ -19,7 +19,7 @@ if [[ ! -d "$HVO_CATALOG_PERF_ROOT" ]]; then
     printf 'Production catalog installation root does not exist: %s\n' "$HVO_CATALOG_PERF_ROOT" >&2
     exit 2
 fi
-for command in date dotnet git jq nproc sha256sum stat; do
+for command in awk date dotnet git jq nproc sha256sum sleep stat; do
     command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
 done
 
@@ -41,32 +41,65 @@ if ! [[ "$SMOKE_MAX_LOAD1" =~ ^[0-9]+([.][0-9]+)?$ && "$SMOKE_QUIESCENCE_WAIT_SE
 fi
 read_load1() {
     local load1
-    read -r load1 _ < /proc/loadavg
+    read -r load1 _ < /proc/loadavg || return 1
+    [[ "$load1" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
     printf '%s' "$load1"
 }
+# Prints "over" or "under"; any other outcome (unreadable or non-numeric load, awk failure) is a refusal, never an admission.
+load_verdict() {
+    local load1="$1"
+    awk -v current="$load1" -v limit="$SMOKE_MAX_LOAD1" 'BEGIN { if (current + 0 > limit + 0) print "over"; else print "under" }' 2>/dev/null
+}
 require_quiescent_host() {
-    local trial="$1" waited=0 load1
-    load1="$(read_load1)"
-    while awk -v current="$load1" -v limit="$SMOKE_MAX_LOAD1" 'BEGIN { exit !(current > limit) }'; do
-        if (( waited >= SMOKE_QUIESCENCE_WAIT_SECONDS )); then
-            printf 'Trial %s refused: host is not quiescent (1-minute load average %s exceeds %s on %s processors after waiting %ss). The arrival budget is a cadence contract, not a load test; rerun when the host is idle or raise HVO_SMOKE_QUIESCENCE_WAIT_SECONDS.\n' \
-                "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$waited" >&2
+    local trial="$1" load1 verdict started_epoch deadline_epoch now_epoch waited=0 remaining
+    started_epoch="$(date +%s)"
+    deadline_epoch=$((started_epoch + SMOKE_QUIESCENCE_WAIT_SECONDS))
+    while :; do
+        if ! load1="$(read_load1)"; then
+            printf 'Trial %s refused: unable to read a numeric 1-minute load average from /proc/loadavg; the quiescence precondition fails closed.\n' "$trial" >&2
             exit 3
         fi
-        sleep 10
-        waited=$((waited + 10))
-        load1="$(read_load1)"
+        verdict="$(load_verdict "$load1")"
+        case "$verdict" in
+            under) break ;;
+            over) ;;
+            *)
+                printf 'Trial %s refused: could not evaluate load average %s against limit %s; the quiescence precondition fails closed.\n' \
+                    "$trial" "$load1" "$SMOKE_MAX_LOAD1" >&2
+                exit 3
+                ;;
+        esac
+        now_epoch="$(date +%s)"
+        waited=$((now_epoch - started_epoch))
+        remaining=$((deadline_epoch - now_epoch))
+        if (( remaining <= 0 )); then
+            (( waited > SMOKE_QUIESCENCE_WAIT_SECONDS )) && waited=$SMOKE_QUIESCENCE_WAIT_SECONDS
+            printf 'Trial %s refused: host is not quiescent (1-minute load average %s exceeds %s on %s processors after waiting %ss of the %ss window). The arrival budget is a cadence contract, not a load test; rerun when the host is quiet, raise HVO_SMOKE_QUIESCENCE_WAIT_SECONDS, or set HVO_SMOKE_MAX_LOAD1 deliberately.\n' \
+                "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$waited" "$SMOKE_QUIESCENCE_WAIT_SECONDS" >&2
+            exit 3
+        fi
+        sleep "$(( remaining < 10 ? remaining : 10 ))"
     done
-    printf 'Trial %s: host 1-minute load average %s (limit %s on %s processors)\n' \
-        "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" >&2
+    waited=$(( $(date +%s) - started_epoch ))
+    printf 'Trial %s admitted: host 1-minute load average %s (limit %s on %s processors, waited %ss of the %ss window)\n' \
+        "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$waited" "$SMOKE_QUIESCENCE_WAIT_SECONDS" >&2
+    if [[ -n "${QUIESCENCE_LOG:-}" ]]; then
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$waited" >> "$QUIESCENCE_LOG"
+    fi
 }
 if [[ "${HVO_SMOKE_QUIESCENCE_CHECK_ONLY:-0}" == 1 ]]; then
     require_quiescent_host precheck
     exit 0
 fi
 
-rm -rf -- "$RESULTS"
+# Evidence is produced in a fresh staging directory and published to RESULTS only after every
+# gate passes, so a refusal or a failed trial never destroys the previously published run.
+RESULTS="$PUBLISHED_RESULTS.staging-$(date -u '+%Y%m%dT%H%M%SZ')-$$"
+readonly RESULTS
 mkdir -p "$RESULTS"
+readonly QUIESCENCE_LOG="$RESULTS/quiescence-log.tsv"
+printf 'observedUtc\ttrial\tloadAverageOneMinute\tlimit\tprocessors\twaitedSeconds\n' > "$QUIESCENCE_LOG"
+printf 'Staging evidence in %s; it is published to %s only after every gate passes.\n' "$RESULTS" "$PUBLISHED_RESULTS" >&2
 export HVO_ISSUE_171_FIXED_UTC="$(date -u '+%Y-%m-%dT%H:%M:00Z')"
 export HVO_ISSUE_171_REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 export HVO_ISSUE_171_BRANCH="$(git -C "$REPO_ROOT" branch --show-current)"
@@ -143,8 +176,9 @@ jq -s \
       sustainedCadenceCapturesPerSecond: (map(.performance.sustainedCadenceCapturesPerSecond) | stats),
       maximumStartIntervalMilliseconds: (map(.performance.captureStartIntervalMilliseconds | max) | stats),
       maximumMonotonicStartJitterMilliseconds: (map(.performance.monotonicStartJitterMilliseconds | max) | stats),
-      hostLoadAverageOneMinuteAtStart: (map(.environment.hostLoadAverageAtStart.oneMinute) | stats),
-      contendedCaptureIndexes: (map(.performance.cadenceDiagnostic.contendedCaptureIndexes) | add),
+      hostLoadAverageOneMinuteAtStart: (map(.environment.hostLoadAverageAtStart.oneMinute) | if all(. != null) then stats else { unavailableTrials: (map(select(. == null)) | length) } end),
+      outOfBudgetCaptureIndexes: (map(.performance.cadenceDiagnostic.outOfBudgetCaptureIndexes) | add),
+      structuralViolations: (map(.performance.cadenceDiagnostic.structuralViolations) | add),
       garbageCollectorPauseMilliseconds: (map(.performance.cadenceDiagnostic.garbageCollectorPauseMilliseconds) | stats),
       maximumCompletionLatencyMilliseconds: (map(.performance.completionLatencyMilliseconds | max) | stats),
       maximumLaneBacklogCount: (map(.performance.peakLaneBacklog) | max),
@@ -192,3 +226,15 @@ for evidence in local-processing-performance.json fault-recovery.json runtime-si
         exit 1
     fi
 done
+
+# Every gate passed: publish the staged run atomically in place of the previous one.
+previous_results=""
+if [[ -e "$PUBLISHED_RESULTS" ]]; then
+    previous_results="$PUBLISHED_RESULTS.previous-$$"
+    mv -T -- "$PUBLISHED_RESULTS" "$previous_results"
+fi
+mv -T -- "$RESULTS" "$PUBLISHED_RESULTS"
+if [[ -n "$previous_results" ]]; then
+    rm -rf -- "$previous_results"
+fi
+printf 'Published five-trial evidence to %s\n' "$PUBLISHED_RESULTS" >&2
