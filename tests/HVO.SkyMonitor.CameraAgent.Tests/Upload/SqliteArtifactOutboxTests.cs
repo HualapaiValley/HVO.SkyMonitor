@@ -544,7 +544,7 @@ public sealed class SqliteArtifactOutboxTests
         using var root = new TemporaryRoot();
         await SeedUnsupportedDatabaseAsync(root.Path, state).ConfigureAwait(false);
         var beforeDatabase = await SnapshotUnsupportedDatabaseAsync(root.Path).ConfigureAwait(false);
-        var before = SnapshotOutboxFiles(root.Path);
+        var before = SnapshotDurableOutboxState(root.Path);
 
         using var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
         Exception? failure = null;
@@ -558,7 +558,7 @@ public sealed class SqliteArtifactOutboxTests
         }
 
         Assert.IsNotNull(failure);
-        CollectionAssert.AreEqual(before, SnapshotOutboxFiles(root.Path));
+        AssertDurableOutboxStateUnchanged(before, SnapshotDurableOutboxState(root.Path));
         CollectionAssert.AreEqual(
             beforeDatabase,
             await SnapshotUnsupportedDatabaseAsync(root.Path).ConfigureAwait(false));
@@ -620,13 +620,13 @@ public sealed class SqliteArtifactOutboxTests
             Assert.AreEqual(1, await corrupt.ExecuteNonQueryAsync().ConfigureAwait(false));
         }
         var beforeDatabase = await SnapshotCurrentDatabaseAsync(root.Path).ConfigureAwait(false);
-        var before = SnapshotOutboxFiles(root.Path);
+        var before = SnapshotDurableOutboxState(root.Path);
 
         using var restarted = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
             await restarted.InitializeAsync(root.Path, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(before, SnapshotOutboxFiles(root.Path));
+        AssertDurableOutboxStateUnchanged(before, SnapshotDurableOutboxState(root.Path));
         CollectionAssert.AreEqual(beforeDatabase, await SnapshotCurrentDatabaseAsync(root.Path).ConfigureAwait(false));
         Assert.IsTrue(beforeDatabase.Any(value => value.Contains("frames/different.bin", StringComparison.Ordinal)));
     }
@@ -824,13 +824,13 @@ public sealed class SqliteArtifactOutboxTests
     private static async Task AssertAcknowledgementInitializationFailsWithoutMutationAsync(string root)
     {
         var beforeDatabase = await SnapshotAcknowledgedDatabaseAsync(root).ConfigureAwait(false);
-        var beforeFiles = SnapshotOutboxFiles(root);
+        var beforeState = SnapshotDurableOutboxState(root);
 
         using var restarted = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
             await restarted.InitializeAsync(root, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(beforeFiles, SnapshotOutboxFiles(root));
+        AssertDurableOutboxStateUnchanged(beforeState, SnapshotDurableOutboxState(root));
         CollectionAssert.AreEqual(beforeDatabase, await SnapshotAcknowledgedDatabaseAsync(root).ConfigureAwait(false));
     }
 
@@ -898,8 +898,10 @@ public sealed class SqliteArtifactOutboxTests
         File.WriteAllBytes(path, Payload);
     }
 
+    // Test-owned writers disable pooling so that they close (checkpointing and removing the WAL files) when
+    // disposed, instead of at whatever later moment the connection pool reclaims them.
     private static SqliteConnection OpenDatabase(string root)
-        => new($"Data Source={Path.Combine(root, "outbox", "artifact-outbox.db")};Mode=ReadWrite");
+        => new($"Data Source={Path.Combine(root, "outbox", "artifact-outbox.db")};Mode=ReadWrite;Pooling=false");
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
         Justification = "The command is assembled exclusively from fixed test fixture SQL selected by a DataRow value.")]
@@ -907,7 +909,8 @@ public sealed class SqliteArtifactOutboxTests
     {
         var outboxDirectory = Path.Combine(root, "outbox");
         Directory.CreateDirectory(outboxDirectory);
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(outboxDirectory, "artifact-outbox.db")}");
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(outboxDirectory, "artifact-outbox.db")};Pooling=false");
         await connection.OpenAsync().ConfigureAwait(false);
         using var command = connection.CreateCommand();
         var schema = state == "version-zero"
@@ -927,12 +930,36 @@ public sealed class SqliteArtifactOutboxTests
         await command.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
-    private static string[] SnapshotOutboxFiles(string root)
-        => Directory.EnumerateFiles(Path.Combine(root, "outbox"))
+    /// <summary>A WAL file that holds only its 32-byte header carries no committed frames.</summary>
+    private const int WalHeaderLength = 32;
+
+    /// <summary>
+    /// Snapshots only the durable outbox state. SQLite rewrites the <c>-shm</c> WAL index on read-only opens and
+    /// creates, empties, or deletes the <c>-wal</c> file as connections open and the last writer closes, so hashing
+    /// those transient files ties the comparison to connection lifetimes instead of content. Every durable file is
+    /// hashed, the WAL is recorded only as absent, empty, or carrying committed frames, and <c>-shm</c> is ignored.
+    /// </summary>
+    private static string[] SnapshotDurableOutboxState(string root)
+    {
+        var outboxDirectory = Path.Combine(root, "outbox");
+        var walPath = Path.Combine(outboxDirectory, "artifact-outbox.db-wal");
+        var walState = !File.Exists(walPath)
+            ? "absent"
+            : new FileInfo(walPath).Length <= WalHeaderLength ? "empty" : "frames";
+        return Directory.EnumerateFiles(outboxDirectory)
+            .Where(path => !path.EndsWith("-shm", StringComparison.Ordinal) && !path.EndsWith("-wal", StringComparison.Ordinal))
             .Order(StringComparer.Ordinal)
             .Select(path => string.Concat(
                 Path.GetFileName(path), ":", Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))))
+            .Append($"artifact-outbox.db-wal:{walState}")
             .ToArray();
+    }
+
+    private static void AssertDurableOutboxStateUnchanged(string[] before, string[] after)
+        => CollectionAssert.AreEqual(
+            before,
+            after,
+            $"Durable outbox state changed. Before: [{string.Join(", ", before)}] After: [{string.Join(", ", after)}]");
 
     private static async Task<string[]> SnapshotUnsupportedDatabaseAsync(string root)
     {
