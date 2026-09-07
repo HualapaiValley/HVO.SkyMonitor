@@ -128,53 +128,62 @@ require_required_check_row() {
             failed = 1
             exit 1
         }
-        /^## Required Checks[[:space:]]*$/ {
-            headings++
-            in_section = 1
-            next
-        }
-        /^## / { in_section = 0 }
-        {
-            if (!in_section) {
-                next
-            }
-            # A fenced code block is not part of the active table.
-            if ($0 ~ /^[[:space:]]*(```|~~~)/) {
-                in_fence = !in_fence
-                next
-            }
-            if (in_fence) {
-                next
-            }
-            line = $0
+        # Remove HTML comments from a line, carrying comment state across lines,
+        # so neither a heading nor a row inside a comment is ever visible.
+        function strip_html_comments(line,    open_at, close_at, rest) {
             while (1) {
                 if (in_comment) {
                     close_at = index(line, "-->")
                     if (close_at == 0) {
-                        line = ""
-                        break
+                        return ""
                     }
                     line = substr(line, close_at + 3)
                     in_comment = 0
                 }
                 open_at = index(line, "<!--")
                 if (open_at == 0) {
-                    break
+                    return line
                 }
                 rest = substr(line, open_at + 4)
                 close_at = index(rest, "-->")
                 if (close_at == 0) {
-                    line = substr(line, 1, open_at - 1)
                     in_comment = 1
-                    break
+                    return substr(line, 1, open_at - 1)
                 }
                 line = substr(line, 1, open_at - 1) substr(rest, close_at + 3)
             }
-            print line
+        }
+        {
+            line = strip_html_comments($0)
+            # A fenced code block is not part of any active table or heading.
+            if (line ~ /^[[:space:]]*(```|~~~)/) {
+                in_fence = !in_fence
+                next
+            }
+            if (in_fence) {
+                next
+            }
+            if (line ~ /^## Required Checks[[:space:]]*$/) {
+                headings++
+                in_section = 1
+                next
+            }
+            if (line ~ /^## /) {
+                in_section = 0
+            }
+            if (in_section) {
+                print line
+            }
         }
         END {
             if (failed) {
                 exit 1
+            }
+            if (in_comment) {
+                fail("unterminated HTML comment in docs/runbooks/ci-pipeline.md")
+            }
+            if (in_fence) {
+                fail("unterminated fenced code block in docs/runbooks/ci-pipeline.md")
             }
             if (headings != 1) {
                 fail("expected exactly one \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md, found " headings + 0)
@@ -220,30 +229,35 @@ if ! category_totals="$(awk '
         failed = 1
         exit 1
     }
-    function strip_comments(line,    open_at, close_at, rest) {
+    function strip_comments(line,    kept, open_at, line_at, close_at, rest) {
+        kept = ""
         while (1) {
             if (in_block_comment) {
                 close_at = index(line, "*/")
                 if (close_at == 0) {
-                    return ""
+                    return kept
                 }
                 line = substr(line, close_at + 2)
                 in_block_comment = 0
             }
+            # Lexically, whichever comment opener comes first owns the rest.
             open_at = index(line, "/*")
-            if (open_at == 0) {
-                break
+            line_at = index(line, "//")
+            if (line_at > 0 && (open_at == 0 || line_at < open_at)) {
+                return kept substr(line, 1, line_at - 1)
             }
+            if (open_at == 0) {
+                return kept line
+            }
+            kept = kept substr(line, 1, open_at - 1)
             rest = substr(line, open_at + 2)
             close_at = index(rest, "*/")
             if (close_at == 0) {
                 in_block_comment = 1
-                return substr(line, 1, open_at - 1)
+                return kept
             }
-            line = substr(line, 1, open_at - 1) substr(rest, close_at + 2)
+            line = substr(rest, close_at + 2)
         }
-        sub(/\/\/.*$/, "", line)
-        return line
     }
     function process_entry(entry,    pairs, pair, parts, position, seen) {
         gsub(/[[:space:]]+/, "", entry)
