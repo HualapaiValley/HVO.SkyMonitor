@@ -71,7 +71,8 @@ jobs:
             "processing|198|198|0|tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
             "processing-runner|25|25|0|tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj"
             "common|23|23|0|tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj"
-            "architecture|6|6|0|tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"
+            "architecture|7|7|0|tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"
+            "deployment-cli|237|103|134|tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj"
           )
 
           aggregate_total=0
@@ -116,8 +117,8 @@ jobs:
             printf '%s: discovered=%s executed=%s skipped=%s\n' "$name" "$total" "$executed" "$skipped"
           done
 
-          test "$aggregate_total" -eq 2690
-          test "$aggregate_executed" -eq 2640
-          test "$aggregate_skipped" -eq 50
+          test "$aggregate_total" -eq 2928
+          test "$aggregate_executed" -eq 2744
+          test "$aggregate_skipped" -eq 184
           printf 'aggregate: discovered=%s executed=%s skipped=%s\n' \
             "$aggregate_total" "$aggregate_executed" "$aggregate_skipped"
