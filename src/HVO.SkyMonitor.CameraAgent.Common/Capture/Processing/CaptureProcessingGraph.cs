@@ -43,6 +43,22 @@ internal interface IMultiOutputCaptureProcessingGraphStep
     IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs { get; }
 }
 
+/// <summary>
+/// Marks a step whose replay execution consumes a durable output that submission pinned as an auxiliary input
+/// (for example the committed projected-scene product), attached at the worker boundary before the step runs.
+/// </summary>
+internal interface IFrozenAuxiliaryInputCaptureProcessingStep : ICaptureProcessingStep;
+
+/// <summary>Why a pinned auxiliary input could not be restored for a replay attempt.</summary>
+internal enum FrozenAuxiliaryInputFailure
+{
+    /// <summary>The pinned payload or sidecar is no longer retained.</summary>
+    Missing,
+
+    /// <summary>The retained bytes no longer match their durable manifest, checksum, or schema.</summary>
+    Altered
+}
+
 internal interface IWindowCaptureProcessingGraphStep
 {
     int MaximumInputCount { get; }

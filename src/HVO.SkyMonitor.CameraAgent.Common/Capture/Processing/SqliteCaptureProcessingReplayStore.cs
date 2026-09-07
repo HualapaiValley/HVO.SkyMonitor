@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
@@ -299,11 +300,17 @@ internal sealed partial class SqliteCaptureProcessingStore
                         await input.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                     }
                 }
-                else if (preparedInputs.OutputInputsByNode.TryGetValue(node.NodeId, out var frozenOutputs))
+                if (preparedInputs.OutputInputsByNode.TryGetValue(node.NodeId, out var frozenOutputs))
                 {
+                    // A node that also froze raw inputs records its pinned outputs after them, so the durable input
+                    // evidence keeps stable, distinct ordinals across both input classes.
+                    var ordinalOffset = preparedInputs.AuxiliaryOutputNodes.Contains(node.NodeId) &&
+                        preparedInputs.RawInputsByNode.TryGetValue(node.NodeId, out var precedingRawInputs)
+                            ? precedingRawInputs.Count
+                            : 0;
                     await InsertFrozenOutputPinsAsync(
-                        connection, transaction, executionId, node.NodeId, frozenOutputs, cancellationToken)
-                        .ConfigureAwait(false);
+                        connection, transaction, executionId, node.NodeId, frozenOutputs, cancellationToken,
+                        ordinalOffset: ordinalOffset).ConfigureAwait(false);
                 }
             }
             foreach (var frozen in preparedInputs.PinnedRawInputs)
@@ -404,6 +411,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             [primaryInput.RawCaptureRowId] = primaryInput
         };
         var frozenOutputBytes = new Dictionary<string, long>(StringComparer.Ordinal);
+        var auxiliaryOutputNodes = new HashSet<string>(StringComparer.Ordinal);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 #pragma warning disable CA1849
         using var transaction = connection.BeginTransaction(deferred: true);
@@ -443,6 +451,23 @@ internal sealed partial class SqliteCaptureProcessingStore
                     cancellationToken).ConfigureAwait(false);
                 outputInputsByNode[node.NodeId] = frozenOutputs;
             }
+            if (IsProjectedSceneNode(revision.Pipeline, node.NodeId))
+            {
+                // Live processing deletes the transient projected-scene stage after its durable commit, so replay
+                // freezes the committed typed product itself as the node's auxiliary source (#718). It is pinned in
+                // the same transaction as the raw inputs and shares their retention and release lifecycle.
+                outputInputsByNode[node.NodeId] =
+                [
+                    await ResolveCommittedProjectedSceneAsync(
+                        connection,
+                        transaction,
+                        source.RawCapture.Manifest.Descriptor.Capture.CaptureId,
+                        source.RawCapture.Manifest.Descriptor.Artifact.ArtifactId,
+                        node.NodeId,
+                        cancellationToken).ConfigureAwait(false)
+                ];
+                auxiliaryOutputNodes.Add(node.NodeId);
+            }
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         foreach (var frozenInput in pinnedRawInputs.Values)
@@ -455,7 +480,70 @@ internal sealed partial class SqliteCaptureProcessingStore
                 throw new FileNotFoundException("A frozen derived replay input is no longer retained.", payloadPath);
             frozenOutputBytes[frozenOutput.OutputIdentitySha256] = new FileInfo(payloadPath).Length;
         }
-        return new(rawInputsByNode, outputInputsByNode, pinnedRawInputs.Values.ToArray(), frozenOutputBytes);
+        return new(rawInputsByNode, outputInputsByNode, pinnedRawInputs.Values.ToArray(), frozenOutputBytes, auxiliaryOutputNodes);
+    }
+
+    /// <summary>The registered stable step type alias of the projected-scene step.</summary>
+    private const string ProjectedSceneStepAlias = "ProjectedScene";
+
+    /// <summary>
+    /// Identifies a revision node as the projected-scene step the way the pipeline factory does: the step type is
+    /// the registered alias (or, for legacy V1 pipelines, the implementation type name), and the node id is the
+    /// trimmed configured id or, when none is configured, the registration alias.
+    /// </summary>
+    private static bool IsProjectedSceneNode(CapturePipelineConfig pipeline, string nodeId)
+        => pipeline.Steps.Any(step =>
+            step.Enabled is not false &&
+            (string.Equals(step.Type, ProjectedSceneStepAlias, StringComparison.OrdinalIgnoreCase) ||
+             pipeline.SchemaVersion == CapturePipelineSchemaVersions.LegacyV1 &&
+             step.Type.Contains("ProjectedSceneCaptureProcessingStep", StringComparison.Ordinal)) &&
+            string.Equals(
+                string.IsNullOrWhiteSpace(step.Id) ? ProjectedSceneStepAlias : step.Id.Trim(),
+                nodeId,
+                StringComparison.Ordinal));
+
+    /// <summary>
+    /// Resolves the exactly-one committed, available typed projected-scene product that live processing produced
+    /// for the requested capture from the requested raw artifact. No candidate or more than one candidate rejects
+    /// the submission; the caller pins the result before any work becomes claimable.
+    /// </summary>
+    private static async ValueTask<ProcessingFrozenOutputInput> ResolveCommittedProjectedSceneAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid captureId,
+        Guid rawArtifactId,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT output.output_identity_sha256, output.payload_relative_path
+            FROM processing_outputs output
+            JOIN processing_output_sources source ON source.output_identity_sha256 = output.output_identity_sha256
+            WHERE output.capture_id = $capture AND output.node_id = $node AND output.role = 'Metadata'
+              AND output.product_schema_version = $schema AND output.availability_state = 'Available'
+              AND source.source_artifact_id = $raw
+            ORDER BY output.output_identity_sha256;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$node", nodeId);
+        command.Parameters.AddWithValue("$schema", ProjectedSceneV1.CurrentSchemaVersion);
+        command.Parameters.AddWithValue("$raw", rawArtifactId.ToString("N"));
+        var candidates = new List<ProcessingFrozenOutputInput>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            candidates.Add(new ProcessingFrozenOutputInput(reader.GetString(0), 0, reader.GetString(1)));
+        }
+        return candidates.Count switch
+        {
+            1 => candidates[0],
+            0 => throw new ProcessingReplaySourceException(
+                $"Replay of node '{nodeId}' requires the committed projected-scene product of the requested capture, and none is retained."),
+            _ => throw new ProcessingReplaySourceException(
+                $"Replay of node '{nodeId}' found {candidates.Count} retained projected-scene products for the requested capture; the source is ambiguous.")
+        };
     }
 
     private async ValueTask InsertFrozenOutputPinsAsync(
@@ -465,7 +553,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         string nodeId,
         IReadOnlyList<ProcessingFrozenOutputInput> inputs,
         CancellationToken cancellationToken,
-        bool validateRetainedFiles = true)
+        bool validateRetainedFiles = true,
+        int ordinalOffset = 0)
     {
         for (var ordinal = 0; ordinal < inputs.Count; ordinal++)
         {
@@ -487,7 +576,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 """;
             command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
             command.Parameters.AddWithValue("$node", nodeId);
-            command.Parameters.AddWithValue("$ordinal", ordinal);
+            command.Parameters.AddWithValue("$ordinal", ordinalOffset + ordinal);
             command.Parameters.AddWithValue("$position", inputs[ordinal].WindowPosition);
             command.Parameters.AddWithValue("$output", inputs[ordinal].OutputIdentitySha256);
             if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
@@ -553,7 +642,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         IReadOnlyDictionary<string, IReadOnlyList<ProcessingFrozenRawInput>> RawInputsByNode,
         IReadOnlyDictionary<string, IReadOnlyList<ProcessingFrozenOutputInput>> OutputInputsByNode,
         IReadOnlyList<ProcessingFrozenRawInput> PinnedRawInputs,
-        IReadOnlyDictionary<string, long> FrozenOutputBytes);
+        IReadOnlyDictionary<string, long> FrozenOutputBytes,
+        IReadOnlySet<string> AuxiliaryOutputNodes);
 
     private static ProcessingFrozenRawInput CreatePrimaryInput(ProcessingReplaySource source)
         => new(

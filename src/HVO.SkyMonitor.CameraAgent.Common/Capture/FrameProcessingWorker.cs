@@ -296,6 +296,26 @@ internal sealed class FrameProcessingWorker
                         await persistence.BeginExecutionNodeAttemptAsync(
                             item.Execution, node, persistedAttempt, startedUtc, cancellationToken).ConfigureAwait(false);
                     }
+                    if (persistence is not null &&
+                        item.Execution is { ExecutionClass: ProcessingGraphExecutionClass.Replay } replayExecution &&
+                        node.Step is IFrozenAuxiliaryInputCaptureProcessingStep)
+                    {
+                        // Replay consumes the auxiliary output that submission pinned for this node. A pinned input
+                        // that is no longer retained or no longer matches its durable evidence is reported to the
+                        // step as a terminal condition; replay never falls back to transient or current state.
+                        try
+                        {
+                            context.SetFrozenAuxiliaryInputs(await persistence.ReadFrozenExecutionInputsAsync(
+                                replayExecution.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false));
+                        }
+                        catch (Exception caught) when (caught is IOException or InvalidDataException)
+                        {
+                            context.SetFrozenAuxiliaryInputFailure(
+                                caught is FileNotFoundException or DirectoryNotFoundException
+                                    ? FrozenAuxiliaryInputFailure.Missing
+                                    : FrozenAuxiliaryInputFailure.Altered);
+                        }
+                    }
                     if (persistence is not null && node.Step is IWindowCaptureProcessingGraphStep window &&
                         node.Dependencies.Count > 0 && graph.Nodes.FirstOrDefault(candidate =>
                             string.Equals(candidate.Id, node.Dependencies[0], StringComparison.OrdinalIgnoreCase)) is { OutputRole: { } sourceRole })
