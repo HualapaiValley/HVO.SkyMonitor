@@ -29,10 +29,22 @@ HVO_CATALOG_PERF_ROOT=/var/lib/hvo/data/catalog \
 ```
 
 The runner produces five fresh, approximately one-minute trials under
-`TestResults/issue-171/production-smoke`. The review inputs are:
+`TestResults/issue-171/production-smoke`. Each trial first requires a quiescent host (one-minute
+load average at or below `HVO_SMOKE_MAX_LOAD1`, default half the processor count; see the
+smoke-test runbook), because the arrival budget is a cadence contract rather than a load test.
+The initial load observation may admit immediately; every observation after a wait must complete
+at or before the inclusive monotonic deadline, including one that first falls below the limit.
+Evidence is staged and published only after every gate passes. A probed Linux atomic directory
+exchange keeps the prior canonical path intact through a publication failure or interruption, so
+a refused or failed run cannot create a canonical-path gap.
+The review inputs are:
 
 - `five-trial-summary.json`
 - `trial-*/evidence/issue-171-standalone-smoke.json`
+- `trial-*/evidence/issue-171-cadence-diagnostic.json` (per-capture intervals, jitter, start
+  reasons, within-budget flags, structural violations, host load or `null` when unavailable,
+  and GC pauses; written before any cadence invariant or the arrival budget is asserted)
+- `quiescence-log.tsv` (per-trial admission: observed load, limit, processors, wait)
 - `trial-*/evidence/issue-171-full-resolution-annotated.jpg`
 - `reference-calibration-W1/processing-performance-W1-reference-calibration.json`
 - `reference-calibration-W2/processing-performance-W2-reference-calibration.json`

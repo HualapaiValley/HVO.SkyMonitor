@@ -165,6 +165,46 @@ HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
   ./scripts/test:cameraagent-standalone-production-smoke
 ```
 
+The five-second arrival budget (each module start 4.9-5.5 s after the previous
+one under the minimum-start-interval cadence) is a cadence contract measured as
+wall-clock module-start intervals, so it is only meaningful on a quiescent host.
+The runner's post-deadline work (schedule confirmation, admission, timer wake-up)
+competes with every other process on a shared build host, and a single
+out-of-budget interval fails the trial. Before each trial the runner therefore
+reads the one-minute load average and refuses to start (exit `3`, naming the
+load, the limit, and the wait) when it exceeds `HVO_SMOKE_MAX_LOAD1`, which
+defaults to half the processor count. `HVO_SMOKE_QUIESCENCE_WAIT_SECONDS` is a
+true monotonic elapsed upper bound. The initial immediate observation may admit;
+after any sleep, the load comparison and final monotonic observation must finish
+at or before the inclusive deadline or the runner refuses, even when that late
+observation is below the limit. The runner polls at most every ten seconds.
+`HVO_SMOKE_QUIESCENCE_CHECK_ONLY=1` runs only that check. The check fails closed:
+`awk` and `sleep` are required commands, an unreadable or non-numeric
+`/proc/loadavg` or `/proc/uptime` refuses, and any comparator or clock-arithmetic
+error refuses. Evidence is produced in a staging directory beside
+`TestResults/issue-171/production-smoke` (the build runs before the first
+quiescence check, so build load never counts against a trial) and is published
+in place of the previous run only after every gate passes. On Linux, a probed
+`renameat2` operation installs the first result without replacement or atomically
+exchanges a staged result with the prior directory. The canonical path therefore
+always names the old or new complete tree if publication fails or the runner is
+interrupted; an exchanged old tree is cleaned up only after the new name is
+directory-synced. A refused or failed run leaves its staged directory for
+inspection. Each trial's admission and monotonic elapsed time are recorded in
+`quiescence-log.tsv`.
+
+A trial observes the persisted cadence without asserting, writes
+`issue-171-cadence-diagnostic.json` beside the other evidence (per-capture
+index and sequence, observed interval, monotonic start jitter, start reason,
+within-budget flag; structural violations; host load at the start and end of the
+measured captures, or `null` with `available: false` when the host does not
+expose it; GC pause total and mode), and only then asserts the structural
+invariants and the budget. A trip fails once naming every out-of-budget interval.
+The load average, GC pauses, and start reasons in that message are triage
+signals, not proof of cause: corroborate with the diagnostic and a quiet-host
+rerun before classifying a failure as host interference or as a runtime
+regression. The budget itself is not relaxed for busy hosts.
+
 The gate fails closed on package kind, version, manifest/schema/preprocessing
 versions, database SHA-256/length, and 119,625-row identity. It retains a
 sanitized full-frame annotated JPEG and JSON manifest for each of five
