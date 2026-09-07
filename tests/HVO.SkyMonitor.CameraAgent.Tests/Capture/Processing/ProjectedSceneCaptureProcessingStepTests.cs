@@ -248,11 +248,16 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 hostOptions,
                 client);
             fixture.Context.BeginNode("projected-scene", [], ["$raw"]);
-            var step = CreateStep(staging, adapter: adapter);
+            // Replay consumes the pinned committed product; the still-present stage must not be consulted (#718).
+            fixture.Context.SetFrozenAuxiliaryInputs([CreateFrozenSceneArtifact(fixture.Descriptor, scene).Artifact]);
+            var reader = new CountingStagingReader(staging);
+            var step = CreateStep(staging, adapter: adapter, stagingReader: reader);
 
             await step.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
 
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, fixture.Context.ProcessingOutcomes.Single().Status);
+            Assert.AreEqual(0, reader.ReadCount);
+            Assert.IsNotNull(await staging.ReadAsync(stageKey, CancellationToken.None).ConfigureAwait(false));
             await stopping.CancelAsync().ConfigureAwait(false);
             await serverTask.ConfigureAwait(false);
         }
@@ -537,14 +542,142 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         }
     }
 
+    [TestMethod]
+    public async Task ReplayConsumesFrozenProjectedSceneWithoutReadingStaging()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var reader = new CountingStagingReader(staging);
+            var fixture = CreateContext(root, CreateStageProvenance(new string('5', 64), new string('E', 64)), CreateReplayExecution());
+            var frozen = CreateFrozenSceneArtifact(fixture.Descriptor, await CreateSceneAsync().ConfigureAwait(false));
+            fixture.Context.BeginNode("projected-scene", [], ["$raw"]);
+            fixture.Context.SetFrozenAuxiliaryInputs([frozen.Artifact]);
+            var step = CreateStep(staging, stagingReader: reader);
+
+            await step.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+
+            var outcome = fixture.Context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+            Assert.AreEqual(0, reader.ReadCount, "replay must never consult the transient stage");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayWithoutUsableFrozenProjectedSceneFailsTerminallyWithoutReadingStaging()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var reader = new CountingStagingReader(staging);
+            var stageKey = new string('6', 64);
+            var sceneId = new string('F', 64);
+            // Even a live-looking stage is ignored on replay.
+            await staging.StageAsync(stageKey, sceneId, await CreateSceneAsync().ConfigureAwait(false), CancellationToken.None).ConfigureAwait(false);
+            var step = CreateStep(staging, stagingReader: reader);
+
+            var none = CreateContext(root, CreateStageProvenance(stageKey, sceneId), CreateReplayExecution());
+            none.Context.BeginNode("projected-scene", [], ["$raw"]);
+            await step.ProcessAsync(none.Context, CancellationToken.None).ConfigureAwait(false);
+            var missing = none.Context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, missing.Status);
+            Assert.AreEqual(ProcessingReasonCodes.MissingProjectedScene, missing.ReasonCode);
+
+            var altered = CreateContext(root, CreateStageProvenance(stageKey, sceneId), CreateReplayExecution());
+            altered.Context.BeginNode("projected-scene", [], ["$raw"]);
+            altered.Context.SetFrozenAuxiliaryInputFailure(FrozenAuxiliaryInputFailure.Altered);
+            await step.ProcessAsync(altered.Context, CancellationToken.None).ConfigureAwait(false);
+            var invalid = altered.Context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, invalid.Status);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, invalid.ReasonCode);
+
+            var foreign = CreateContext(root, CreateStageProvenance(stageKey, sceneId), CreateReplayExecution());
+            var otherDescriptor = foreign.Descriptor with
+            {
+                Capture = foreign.Descriptor.Capture with { CaptureId = Guid.NewGuid() }
+            };
+            foreign.Context.BeginNode("projected-scene", [], ["$raw"]);
+            foreign.Context.SetFrozenAuxiliaryInputs(
+                [CreateFrozenSceneArtifact(otherDescriptor, await CreateSceneAsync().ConfigureAwait(false)).Artifact]);
+            await step.ProcessAsync(foreign.Context, CancellationToken.None).ConfigureAwait(false);
+            var mismatch = foreign.Context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, mismatch.Status);
+            Assert.AreEqual(ProcessingReasonCodes.ProjectedSceneSourceMismatch, mismatch.ReasonCode);
+
+            Assert.AreEqual(0, reader.ReadCount, "replay must never consult the transient stage");
+            Assert.IsNotNull(await staging.ReadAsync(stageKey, CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static ProcessingExecutionContext CreateReplayExecution() => new(
+        Guid.NewGuid(),
+        ProcessingGraphExecutionClass.Replay,
+        "basic@1",
+        new string('B', 64),
+        false,
+        1,
+        "projected-scene-lease",
+        "test-owner",
+        DateTimeOffset.UtcNow.AddMinutes(5),
+        1);
+
+    private static SceneProvenance CreateStageProvenance(string stageKey, string sceneId) => new(
+        sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
+        "projection-v1", "astronomy-v1", "sensor-v1",
+        ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
+        ProjectedSceneStageKey: stageKey);
+
+    private static (ProcessingArtifact Artifact, ProjectedSceneV1 Scene) CreateFrozenSceneArtifact(
+        ReconstructionDescriptor descriptor, VisibleScene visible)
+    {
+        var source = new ProjectedSceneSource(
+            descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor));
+        var scene = ProjectedSceneJson.Create(
+            ProjectedSceneKind.VirtualRenderAuthoritative, visible, ProjectedSceneImageTransformV1.Identity(2, 2), source,
+            "projection-v1", "projection-v1");
+        var payload = ProjectedSceneJson.Serialize(scene);
+        var artifact = new ProcessingArtifact(
+            Guid.NewGuid(), FrameArtifactRole.Metadata, "projected-scene-v1", new string('c', 64),
+            StructuredProcessingProductContracts.ProjectedSceneMediaType, null, payload, DateTimeOffset.UnixEpoch,
+            TimeSpan.Zero, CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor))
+        {
+            ProductKind = ProcessingProductKind.Metadata,
+            SchemaVersion = ProjectedSceneV1.CurrentSchemaVersion,
+            ContentIdentitySha256 = scene.SceneIdentitySha256
+        };
+        return (artifact, scene);
+    }
+
+    private sealed class CountingStagingReader(IProjectedSceneStagingReader inner) : IProjectedSceneStagingReader
+    {
+        public int ReadCount { get; private set; }
+
+        public ValueTask<StagedProjectedSceneDocument?> ReadAsync(string stageKey, CancellationToken cancellationToken)
+        {
+            ReadCount++;
+            return inner.ReadAsync(stageKey, cancellationToken);
+        }
+    }
+
     private static ProjectedSceneCaptureProcessingStep CreateStep(
         ProjectedSceneStagingStore staging,
         IProjectedSceneStagingStore? stagingStore = null,
-        CameraAgentRecipeExecutionAdapter? adapter = null)
+        CameraAgentRecipeExecutionAdapter? adapter = null,
+        IProjectedSceneStagingReader? stagingReader = null)
     {
         return new ProjectedSceneCaptureProcessingStep(
             new CaptureProcessingStepMetadata("projected-scene", "ProjectedScene", 0),
-            new ProjectedSceneCaptureProcessingStepOptions(), stagingStore ?? staging, staging,
+            new ProjectedSceneCaptureProcessingStepOptions(), stagingStore ?? staging, stagingReader ?? staging,
             adapter ?? new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()));
     }
 

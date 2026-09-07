@@ -24,6 +24,8 @@ public sealed class CaptureProcessingContext
     private IReadOnlyList<string> _currentDependencies = [];
     private IReadOnlyList<string> _currentDeclaredDependencies = [];
     private IReadOnlyList<ProcessingArtifact> _historicalInputs = [];
+    private IReadOnlyList<ProcessingArtifact> _frozenAuxiliaryInputs = [];
+    private FrozenAuxiliaryInputFailure? _frozenAuxiliaryInputFailure;
     private readonly List<DurableProcessingNodeInput> _currentInputs = [];
     private readonly Func<CancellationToken, ValueTask<CaptureResult>>? _rawFrameLoader;
     private bool _rawFrameLoaded;
@@ -193,6 +195,8 @@ public sealed class CaptureProcessingContext
         _currentDependencies = dependencies;
         _currentDeclaredDependencies = declaredDependencies ?? dependencies;
         _currentInputs.Clear();
+        _frozenAuxiliaryInputs = [];
+        _frozenAuxiliaryInputFailure = null;
     }
 
     internal IReadOnlyList<FrameArtifact> GetDependencyArtifacts()
@@ -242,6 +246,24 @@ public sealed class CaptureProcessingContext
 
     internal void SetHistoricalInputs(IReadOnlyList<ProcessingArtifact> historicalInputs)
         => _historicalInputs = historicalInputs;
+
+    internal bool IsReplayExecution => ProcessingExecution?.ExecutionClass == ProcessingGraphExecutionClass.Replay;
+
+    internal void SetFrozenAuxiliaryInputs(IReadOnlyList<ProcessingArtifact> inputs)
+    {
+        _frozenAuxiliaryInputs = inputs;
+        _frozenAuxiliaryInputFailure = null;
+    }
+
+    internal void SetFrozenAuxiliaryInputFailure(FrozenAuxiliaryInputFailure failure)
+    {
+        _frozenAuxiliaryInputs = [];
+        _frozenAuxiliaryInputFailure = failure;
+    }
+
+    internal IReadOnlyList<ProcessingArtifact> GetFrozenAuxiliaryInputs() => _frozenAuxiliaryInputs;
+
+    internal FrozenAuxiliaryInputFailure? FrozenAuxiliaryInputFailure => _frozenAuxiliaryInputFailure;
 
     internal IReadOnlyList<ProcessingArtifact> GetHistoricalInputs() => _historicalInputs;
 
@@ -465,6 +487,15 @@ internal sealed class CaptureDescriptorProcessingContext(CaptureProcessingContex
     public string? CommittedManifestSha256 => context.RawCapture?.CommittedManifestSha256;
 
     public SceneProvenance? SceneProvenance => context.RawCapture?.Manifest.Scene;
+
+    /// <summary>Gets whether the current node runs inside an archived replay execution.</summary>
+    public bool IsReplayExecution => context.IsReplayExecution;
+
+    /// <summary>Gets the durable outputs that replay submission pinned as this node's auxiliary inputs.</summary>
+    public IReadOnlyList<ProcessingArtifact> FrozenAuxiliaryInputs => context.GetFrozenAuxiliaryInputs();
+
+    /// <summary>Gets why the pinned auxiliary inputs could not be restored, when they could not.</summary>
+    internal FrozenAuxiliaryInputFailure? FrozenAuxiliaryInputFailure => context.FrozenAuxiliaryInputFailure;
 
     public void RecordCanonicalInput(string name, string schemaVersion, string identitySha256)
         => context.RecordCanonicalInput(name, schemaVersion, identitySha256);

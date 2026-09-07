@@ -314,6 +314,28 @@ public sealed class ProcessingGraphStoreConflictException : InvalidOperationExce
     }
 }
 
+/// <summary>
+/// Raised when a replay submission cannot freeze a required auxiliary source, such as the committed projected-scene
+/// product of the requested capture, because it is missing, unavailable, or ambiguous. The submission is rejected
+/// before any execution row, work item, or pin is written.
+/// </summary>
+public sealed class ProcessingReplaySourceException : InvalidOperationException
+{
+    public ProcessingReplaySourceException()
+    {
+    }
+
+    public ProcessingReplaySourceException(string message)
+        : base(message)
+    {
+    }
+
+    public ProcessingReplaySourceException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
 public sealed class ProcessingReplayCapacityException : InvalidOperationException
 {
     public ProcessingReplayCapacityException()

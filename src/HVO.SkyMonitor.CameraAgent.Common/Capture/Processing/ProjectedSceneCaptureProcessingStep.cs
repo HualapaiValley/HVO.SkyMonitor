@@ -14,9 +14,11 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     IProjectedSceneStagingReader stagingReader,
     CameraAgentRecipeExecutionAdapter adapter)
     : ConfigurableCaptureProcessingStep<ProjectedSceneCaptureProcessingStepOptions>(metadata, options),
-       IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit
+       IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
+       IFrozenAuxiliaryInputCaptureProcessingStep
 {
     private const string StageInputName = "virtual-render-scene";
+    private const string FrozenInputName = "frozen-projected-scene";
 
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.ProjectedScene;
@@ -44,12 +46,26 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, descriptorSha256);
         ProjectedSceneV1? scene;
         var provenance = context.SceneProvenance;
-        if (provenance is
+        if (context.IsReplayExecution)
+        {
+            // Archived replay never consults, recreates, or recomputes the transient stage: it consumes the committed
+            // projected-scene product that submission pinned, or fails closed without dispatching the recipe.
+            if (TryReadFrozenScene(context, source, out scene, out var failureReason))
             {
-                ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                ProjectedSceneStageKey: { Length: 64 } stageKey,
-                SceneId: { Length: 64 } sceneId
-            })
+                context.RecordCanonicalInput(FrozenInputName, ProjectedSceneV1.CurrentSchemaVersion, scene.SceneIdentitySha256);
+            }
+            else
+            {
+                context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(failureReason));
+                return;
+            }
+        }
+        else if (provenance is
+        {
+            ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
+            ProjectedSceneStageKey: { Length: 64 } stageKey,
+            SceneId: { Length: 64 } sceneId
+        })
         {
             var staged = await stagingReader.ReadAsync(stageKey, cancellationToken).ConfigureAwait(false);
             if (staged is null)
@@ -106,6 +122,58 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             ProcessingInputSelector.Raw(descriptor.Artifact.Variant), [raw], Options.OutputVariant,
             AuxiliaryInputs: [auxiliary], InputArtifactId: raw.ArtifactId), cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
+    }
+
+    private static bool TryReadFrozenScene(
+        CaptureDescriptorProcessingContext context,
+        ProjectedSceneSource source,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ProjectedSceneV1? scene,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? failureReason)
+    {
+        scene = null;
+        failureReason = null;
+        if (context.FrozenAuxiliaryInputFailure is { } failure)
+        {
+            failureReason = failure == FrozenAuxiliaryInputFailure.Missing
+                ? ProcessingReasonCodes.MissingProjectedScene
+                : ProcessingReasonCodes.InvalidProjectedScene;
+            return false;
+        }
+        var candidates = context.FrozenAuxiliaryInputs.Where(static input =>
+            input.Role == FrameArtifactRole.Metadata &&
+            input.ProductKind == ProcessingProductKind.Metadata &&
+            string.Equals(input.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal) &&
+            string.Equals(input.MediaType, StructuredProcessingProductContracts.ProjectedSceneMediaType, StringComparison.Ordinal)).ToArray();
+        if (candidates.Length == 0)
+        {
+            failureReason = ProcessingReasonCodes.MissingProjectedScene;
+            return false;
+        }
+        if (candidates.Length > 1)
+        {
+            failureReason = ProcessingReasonCodes.InvalidProjectedScene;
+            return false;
+        }
+        var frozen = candidates[0];
+        var parsed = ProjectedSceneJson.Parse(frozen.Payload);
+        if (!parsed.IsValid || parsed.Scene is not { } candidate)
+        {
+            failureReason = ProcessingReasonCodes.InvalidProjectedScene;
+            return false;
+        }
+        if (candidate.Source != source)
+        {
+            failureReason = ProcessingReasonCodes.ProjectedSceneSourceMismatch;
+            return false;
+        }
+        if (frozen.ContentIdentitySha256 is { } contentIdentity &&
+            !string.Equals(contentIdentity, candidate.SceneIdentitySha256, StringComparison.Ordinal))
+        {
+            failureReason = ProcessingReasonCodes.InvalidProjectedScene;
+            return false;
+        }
+        scene = candidate;
+        return true;
     }
 
     public async ValueTask OnCommittedAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken)

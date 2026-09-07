@@ -15,7 +15,10 @@ using Microsoft.Extensions.Options;
 using System.Text.Json;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Replay;
+using System.Security.Cryptography;
 using System.Text;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -2452,6 +2455,567 @@ public sealed class ProcessingGraphOperationsTests
         {
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayFreezesCommittedProjectedSceneAfterStageCleanupAndRestart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var configuration = CreateProjectedSceneConfiguration();
+            var stageKey = new string('7', 64);
+            var sceneId = new string('D', 64);
+            Guid captureId;
+            Guid artifactId;
+            string revisionId;
+            string liveOutputIdentity;
+            string livePayloadSha256;
+            using (var provider = CreateProvider(root))
+            {
+                var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
+                    .ConfigureAwait(false);
+                await provider.GetRequiredService<IProjectedSceneStagingStore>().StageAsync(
+                    stageKey, sceneId, await CreateProjectedSceneAsync().ConfigureAwait(false), CancellationToken.None)
+                    .ConfigureAwait(false);
+                var receipt = await ingress.AcceptAsync(
+                    configuration,
+                    WithSceneProvenance(CreateSubmission(0, CameraPixelFormat.Mono16), sceneId, stageKey),
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(receipt);
+                await CompleteLiveAsync(provider, configuration).ConfigureAwait(false);
+                captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
+                artifactId = receipt.Manifest.Descriptor.Artifact.ArtifactId;
+                revisionId = registry.ActiveRevisionId;
+                Assert.IsNull(
+                    await provider.GetRequiredService<IProjectedSceneStagingReader>()
+                        .ReadAsync(stageKey, CancellationToken.None).ConfigureAwait(false),
+                    "the transient projected-scene stage must be deleted after the live commit");
+                var liveOutputs = ReadProjectedSceneOutputs(root, captureId);
+                Assert.HasCount(1, liveOutputs, "the live commit must retain exactly one projected-scene product");
+                liveOutputIdentity = liveOutputs[0].OutputIdentity;
+                livePayloadSha256 = Sha256OfFile(Path.Combine(root, liveOutputs[0].PayloadRelativePath));
+            }
+
+            using (var provider = CreateProvider(root))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None)
+                    .ConfigureAwait(false);
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var submitted = await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(captureId, revisionId, artifactId, Reason: "projected-scene freeze"),
+                    "projected-scene-replay",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false);
+                var executionId = submitted.Execution.ExecutionId;
+                var pins = ReadOutputPins(root, executionId, "projected-scene");
+                Assert.HasCount(1, pins, "replay submission must pin the committed projected-scene product");
+                Assert.AreEqual((1, 0, liveOutputIdentity), pins[0]);
+
+                var detail = await RunReplayToCompletionAsync(provider, executionId).ConfigureAwait(false);
+                var node = detail.Nodes.Single(static candidate => candidate.NodeId == "projected-scene");
+                CollectionAssert.AreEqual(
+                    ProjectedSceneReplayInputEvidence,
+                    node.Inputs.Select(static input => $"{input.Ordinal}|{input.WindowPosition}|{input.Kind}").ToArray());
+                Assert.AreEqual(
+                    liveOutputIdentity,
+                    node.Inputs.Single(static input => input.Kind == ProcessingGraphExecutionInputKind.ProcessingOutput)
+                        .OutputIdentitySha256);
+                Assert.AreEqual(liveOutputIdentity, node.Outputs.Single().OutputIdentitySha256);
+                var replayOutputs = ReadProjectedSceneOutputs(root, captureId);
+                Assert.HasCount(1, replayOutputs);
+                Assert.AreEqual(livePayloadSha256, Sha256OfFile(Path.Combine(root, replayOutputs[0].PayloadRelativePath)));
+                Assert.IsEmpty(ReadOutputPins(root, executionId, "projected-scene"), "pins are released once the replay completes");
+                Assert.IsNull(
+                    await provider.GetRequiredService<IProjectedSceneStagingReader>()
+                        .ReadAsync(stageKey, CancellationToken.None).ConfigureAwait(false),
+                    "replay must never recreate the transient stage");
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayRejectsSubmissionWithoutCommittedProjectedSceneAndWritesNothing()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-none-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var configuration = CreateProjectedSceneConfiguration();
+            using var provider = CreateProvider(root);
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+            var stageKey = new string('8', 64);
+            await provider.GetRequiredService<IProjectedSceneStagingStore>().StageAsync(
+                stageKey, new string('E', 64), await CreateProjectedSceneAsync().ConfigureAwait(false), CancellationToken.None)
+                .ConfigureAwait(false);
+            // Accepted but never processed live: no committed projected-scene product exists for the capture.
+            var receipt = await ingress.AcceptAsync(
+                configuration,
+                WithSceneProvenance(CreateSubmission(0, CameraPixelFormat.Mono16), new string('E', 64), stageKey),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+
+            var exception = await Assert.ThrowsExactlyAsync<ProcessingReplaySourceException>(async () =>
+                await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(
+                        receipt.Manifest.Descriptor.Capture.CaptureId,
+                        registry.ActiveRevisionId,
+                        receipt.Manifest.Descriptor.Artifact.ArtifactId),
+                    "projected-scene-none",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            StringAssert.Contains(exception.Message, "none is retained", StringComparison.Ordinal);
+            // Acceptance created the capture's live execution; the rejected replay wrote nothing.
+            Assert.AreEqual(0L, CountRows(root, "replay_executions"));
+            Assert.AreEqual(0L, CountRows(root, "processing_replay_work"));
+            Assert.AreEqual(0L, CountRows(root, "processing_execution_output_input_pins"));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayRejectsAmbiguousProjectedSceneProductsAndWritesNothing()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-ambiguous-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var live = await CompleteProjectedSceneLiveAsync(root, new string('9', 64), new string('F', 64)).ConfigureAwait(false);
+            DuplicateProjectedSceneOutput(root, live.OutputIdentity);
+            using var provider = CreateProvider(root);
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+
+            var exception = await Assert.ThrowsExactlyAsync<ProcessingReplaySourceException>(async () =>
+                await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-ambiguous",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            StringAssert.Contains(exception.Message, "ambiguous", StringComparison.Ordinal);
+            Assert.AreEqual(0L, CountRows(root, "replay_executions"));
+            Assert.AreEqual(0L, CountRows(root, "processing_replay_work"));
+            Assert.AreEqual(0L, CountRows(root, "processing_execution_output_input_pins"));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("missing", "processing.missing-projected-scene")]
+    [DataRow("tampered", "processing.invalid-projected-scene")]
+    [DataRow("sidecar-missing", "processing.missing-projected-scene")]
+    [DataRow("sidecar-tampered", "processing.invalid-projected-scene")]
+    public async Task ReplayFailsClosedWhenPinnedProjectedSceneBytesAreMissingOrAltered(string fault, string expectedReason)
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-{fault}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var stageKey = new string('a', 64);
+            var sceneId = new string('1', 64);
+            var live = await CompleteProjectedSceneLiveAsync(root, stageKey, sceneId).ConfigureAwait(false);
+            using var provider = CreateProvider(root);
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var submitted = await operations.SubmitReplayAsync(
+                new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                $"projected-scene-{fault}",
+                "owner-test",
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(1, ReadOutputPins(root, submitted.Execution.ExecutionId, "projected-scene"));
+            // A recreated transient stage must never be consulted by replay, even when the pinned bytes are unusable.
+            await provider.GetRequiredService<IProjectedSceneStagingStore>().StageAsync(
+                stageKey, sceneId, await CreateProjectedSceneAsync().ConfigureAwait(false), CancellationToken.None)
+                .ConfigureAwait(false);
+            var payloadPath = Path.Combine(root, live.PayloadRelativePath);
+            var sidecarPath = Path.Combine(root, live.SidecarRelativePath);
+            switch (fault)
+            {
+                case "missing":
+                    File.Delete(payloadPath);
+                    break;
+                case "tampered":
+                    await File.WriteAllBytesAsync(payloadPath, Encoding.UTF8.GetBytes("{\"tampered\":true}")).ConfigureAwait(false);
+                    break;
+                case "sidecar-missing":
+                    File.Delete(sidecarPath);
+                    break;
+                default:
+                    await File.WriteAllBytesAsync(sidecarPath, Encoding.UTF8.GetBytes("{\"tampered\":true}")).ConfigureAwait(false);
+                    break;
+            }
+
+            var detail = await RunReplayToCompletionAsync(provider, submitted.Execution.ExecutionId).ConfigureAwait(false);
+
+            Assert.AreEqual(ProcessingGraphExecutionStatus.Failed, detail.Execution.Status);
+            var node = detail.Nodes.Single(static candidate => candidate.NodeId == "projected-scene");
+            Assert.AreEqual("TerminalFailure", node.Status);
+            Assert.AreEqual(expectedReason, node.Reason);
+            Assert.AreEqual(1, node.AttemptCount, "a terminal projected-scene failure must not be retried");
+            Assert.IsEmpty(node.Outputs, "no recipe output may be produced or published from an unusable pinned source");
+            Assert.IsEmpty(ReadOutputPins(root, submitted.Execution.ExecutionId, "projected-scene"), "pins are released on terminal failure");
+            Assert.IsNotNull(
+                await provider.GetRequiredService<IProjectedSceneStagingReader>().ReadAsync(stageKey, CancellationToken.None).ConfigureAwait(false),
+                "replay must not delete or consume the recreated stage");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayRetainsProjectedScenePinAcrossRestartAndIdempotentResubmission()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-retain-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var live = await CompleteProjectedSceneLiveAsync(root, new string('b', 64), new string('2', 64)).ConfigureAwait(false);
+            Guid executionId;
+            using (var provider = CreateProvider(root))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                var submitted = await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().SubmitReplayAsync(
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-retain",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false);
+                executionId = submitted.Execution.ExecutionId;
+                Assert.HasCount(1, ReadOutputPins(root, executionId, "projected-scene"));
+                // Capacity accounting includes both frozen classes: the raw payload and the pinned scene payload.
+                var scenePayloadBytes = new FileInfo(Path.Combine(root, live.PayloadRelativePath)).Length;
+                var operational = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
+                    .ReadOperationalStateAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(8L + scenePayloadBytes, operational.ReplayPendingBytes, "pending bytes must count the raw payload and the pinned projected-scene payload");
+            }
+
+            // Host restart while the execution is still pending: the pin and its retained product survive.
+            Assert.HasCount(1, ReadOutputPins(root, executionId, "projected-scene"));
+            Assert.HasCount(1, ReadProjectedSceneOutputs(root, live.CaptureId));
+            using (var provider = CreateProvider(root))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var resubmitted = await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-retain",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(executionId, resubmitted.Execution.ExecutionId, "the same idempotency key returns the same execution");
+                Assert.HasCount(1, ReadOutputPins(root, executionId, "projected-scene"), "resubmission never duplicates a pin");
+                Assert.AreEqual(1L, CountRows(root, "processing_execution_output_input_pins"));
+
+                var detail = await RunReplayToCompletionAsync(provider, executionId).ConfigureAwait(false);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, detail.Execution.Status);
+                Assert.AreEqual(live.OutputIdentity, detail.Nodes.Single().Outputs.Single().OutputIdentitySha256);
+                Assert.IsEmpty(ReadOutputPins(root, executionId, "projected-scene"));
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayConsumesFrozenProjectedSceneIdenticallyUnderInProcessAndLocalRunner()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-runner-{Guid.NewGuid():N}");
+        var socketPath = FileSystemTestPaths.CreateShortUnixSocketPath();
+        const string authorizationKey = "projected-scene-replay-key-00001";
+        Directory.CreateDirectory(root);
+        try
+        {
+            var live = await CompleteProjectedSceneLiveAsync(root, new string('c', 64), new string('3', 64)).ConfigureAwait(false);
+            ProcessingGraphExecutionDetail inProcess;
+            using (var provider = CreateProvider(root, new Dictionary<string, string?>
+            {
+                ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1"
+            }))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                inProcess = await ExecuteReplayAsync(
+                    provider,
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-in-process").ConfigureAwait(false);
+            }
+
+            var runnerOptions = new LocalReplayRunnerOptions
+            {
+                SocketPath = socketPath,
+                PreSharedAuthKey = Encoding.UTF8.GetBytes(authorizationKey),
+                HeartbeatInterval = TimeSpan.FromMilliseconds(100),
+                HeartbeatTimeout = TimeSpan.FromSeconds(2),
+                ConnectTimeout = TimeSpan.FromSeconds(2)
+            };
+            using var runnerStopping = new CancellationTokenSource();
+            var runner = new LocalReplayRunnerServer(runnerOptions);
+            await using var runnerLifetime = runner.ConfigureAwait(false);
+            Task? runnerTask = null;
+
+            ProcessingGraphExecutionDetail external;
+            using (var provider = CreateProvider(root, new Dictionary<string, string?>
+            {
+                ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner",
+                ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
+                ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = socketPath,
+                ["CameraAgent:ProcessingGraphs:LocalRunner:AuthorizationKey"] = authorizationKey,
+                ["CameraAgent:ProcessingGraphs:LocalRunner:HeartbeatIntervalSeconds"] = "1",
+                ["CameraAgent:ProcessingGraphs:LocalRunner:HeartbeatTimeoutSeconds"] = "2"
+            }))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                // Submit while no runner is attached: both pins are already durable at ordinals 0 and 1.
+                var submitted = await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().SubmitReplayAsync(
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-local-runner",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(Path.Exists(socketPath), "the runner must not be attached yet");
+                Assert.AreEqual((1, 0, live.OutputIdentity), ReadOutputPins(root, submitted.Execution.ExecutionId, "projected-scene").Single());
+                var pending = await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
+                    .ReadExecutionDetailAsync(submitted.Execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(pending);
+                CollectionAssert.AreEqual(
+                    ProjectedSceneReplayInputEvidence,
+                    pending.Nodes.Single().Inputs.Select(static input => $"{input.Ordinal}|{input.WindowPosition}|{input.Kind}").ToArray());
+
+                runnerTask = runner.RunAsync(runnerStopping.Token);
+                await WaitForPathAsync(socketPath).ConfigureAwait(false);
+                external = await RunReplayToCompletionAsync(provider, submitted.Execution.ExecutionId).ConfigureAwait(false);
+            }
+
+            foreach (var detail in new[] { inProcess, external })
+            {
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, detail.Execution.Status);
+                var node = detail.Nodes.Single(static candidate => candidate.NodeId == "projected-scene");
+                CollectionAssert.AreEqual(
+                    ProjectedSceneReplayInputEvidence,
+                    node.Inputs.Select(static input => $"{input.Ordinal}|{input.WindowPosition}|{input.Kind}").ToArray());
+                Assert.AreEqual(live.OutputIdentity, node.Outputs.Single().OutputIdentitySha256);
+            }
+            Assert.AreEqual(inProcess.Execution.LocalPlanIdentitySha256, external.Execution.LocalPlanIdentitySha256);
+            CollectionAssert.AreEqual(
+                inProcess.Nodes.Single().Inputs.Select(static input => input.OutputIdentitySha256).ToArray(),
+                external.Nodes.Single().Inputs.Select(static input => input.OutputIdentitySha256).ToArray());
+            Assert.HasCount(1, ReadProjectedSceneOutputs(root, live.CaptureId), "both profiles reproduce the single immutable product");
+
+            await runnerStopping.CancelAsync().ConfigureAwait(false);
+            if (runnerTask is not null) await runnerTask.ConfigureAwait(false);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed record ProjectedSceneLiveCapture(
+        Guid CaptureId, Guid ArtifactId, string RevisionId, string OutputIdentity, string PayloadRelativePath, string SidecarRelativePath);
+
+    private static async Task<ProjectedSceneLiveCapture> CompleteProjectedSceneLiveAsync(string root, string stageKey, string sceneId)
+    {
+        var configuration = CreateProjectedSceneConfiguration();
+        using var provider = CreateProvider(root);
+        var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+        var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+        await provider.GetRequiredService<IProjectedSceneStagingStore>().StageAsync(
+            stageKey, sceneId, await CreateProjectedSceneAsync().ConfigureAwait(false), CancellationToken.None).ConfigureAwait(false);
+        var receipt = await ingress.AcceptAsync(
+            configuration,
+            WithSceneProvenance(CreateSubmission(0, CameraPixelFormat.Mono16), sceneId, stageKey),
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(receipt);
+        await CompleteLiveAsync(provider, configuration).ConfigureAwait(false);
+        Assert.IsNull(await provider.GetRequiredService<IProjectedSceneStagingReader>()
+            .ReadAsync(stageKey, CancellationToken.None).ConfigureAwait(false));
+        var outputs = ReadProjectedSceneOutputs(root, receipt.Manifest.Descriptor.Capture.CaptureId);
+        Assert.HasCount(1, outputs);
+        return new(
+            receipt.Manifest.Descriptor.Capture.CaptureId,
+            receipt.Manifest.Descriptor.Artifact.ArtifactId,
+            registry.ActiveRevisionId,
+            outputs[0].OutputIdentity,
+            outputs[0].PayloadRelativePath,
+            outputs[0].SidecarRelativePath);
+    }
+
+    private static void DuplicateProjectedSceneOutput(string root, string outputIdentity)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TEMP TABLE duplicate AS SELECT * FROM processing_outputs WHERE output_identity_sha256 = $identity;
+            UPDATE duplicate SET output_identity_sha256 = $duplicate, artifact_id = $artifact,
+                content_identity_sha256 = $content,
+                payload_relative_path = payload_relative_path || '.duplicate',
+                sidecar_relative_path = sidecar_relative_path || '.duplicate';
+            INSERT INTO processing_outputs SELECT * FROM duplicate;
+            INSERT INTO processing_output_sources(output_identity_sha256, source_ordinal, source_artifact_id)
+            SELECT $duplicate, source_ordinal, source_artifact_id FROM processing_output_sources
+            WHERE output_identity_sha256 = $identity;
+            DROP TABLE duplicate;
+            """;
+        command.Parameters.AddWithValue("$identity", outputIdentity);
+        command.Parameters.AddWithValue("$duplicate", new string('d', 64));
+        command.Parameters.AddWithValue("$artifact", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("$content", new string('e', 64));
+        command.ExecuteNonQuery();
+    }
+
+    private static long CountRows(string root, string table)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        switch (table)
+        {
+            case "replay_executions":
+                command.CommandText = "SELECT COUNT(*) FROM processing_executions WHERE execution_class = 'Replay';";
+                break;
+            case "processing_replay_work":
+                command.CommandText = "SELECT COUNT(*) FROM processing_replay_work;";
+                break;
+            case "processing_execution_output_input_pins":
+                command.CommandText = "SELECT COUNT(*) FROM processing_execution_output_input_pins;";
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(table));
+        }
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    private static readonly string[] ProjectedSceneReplayInputEvidence = ["0|0|RawCapture", "1|0|ProcessingOutput"];
+
+    private static CameraModuleConfig CreateProjectedSceneConfiguration()
+        => new(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor("VirtualSky"),
+            new CameraRigConfig(
+                new SensorProfile("test", 2, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono16),
+                new OpticsProfile(
+                    "EquidistantFisheye", 0, 180, 0, LensKind.Fisheye,
+                    PrincipalPointX: 1, PrincipalPointY: 1, ImageCircleRadiusPixels: 1,
+                    CalibrationVersion: "projection-v1"),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            new CapturePipelineConfig(
+                [new CaptureProcessingStepConfig("ProjectedScene", "projected-scene", DependsOn: ["$raw"])],
+                CapturePipelineSchemaVersions.ExplicitV2,
+                CapturePipelineDependencyPolicy.RejectEnabledDependent),
+            "agent-test");
+
+    private static ValueTask<VisibleScene> CreateProjectedSceneAsync() =>
+        new VisibleSceneBuilder(new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("star", "Star", 0, 0, 1)
+        ])).BuildAsync(new VisibleSceneRequest(
+            DateTimeOffset.UnixEpoch, new ObserverLocation(0, 0, 0),
+            new EquidistantProjectionContext(1, 1, 1, 1, WidthPixels: 2, HeightPixels: 2),
+            new CatalogQuery(6.5, 10),
+            new CatalogMetadata("test", "1", new Uri("https://example.invalid"), new string('0', 64), "test", "1"),
+            projectionVersion: "projection-v1", algorithmVersion: "astronomy-v1"));
+
+    private static CaptureLoopSubmission WithSceneProvenance(CaptureLoopSubmission submission, string sceneId, string stageKey)
+    {
+        var frame = submission.Result.Frame!;
+        var provenance = new SceneProvenance(
+            sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
+            "projection-v1", "astronomy-v1", "sensor-v1",
+            ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
+            ProjectedSceneStageKey: stageKey);
+        return submission with
+        {
+            Result = submission.Result with
+            {
+                Frame = frame with { Metadata = frame.Metadata with { Scene = provenance } }
+            }
+        };
+    }
+
+    private static List<(string OutputIdentity, string PayloadRelativePath, string SidecarRelativePath)> ReadProjectedSceneOutputs(string root, Guid captureId)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output_identity_sha256, payload_relative_path, sidecar_relative_path FROM processing_outputs
+            WHERE capture_id = $capture AND node_id = 'projected-scene' AND availability_state = 'Available'
+            ORDER BY output_identity_sha256;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        using var reader = command.ExecuteReader();
+        var outputs = new List<(string OutputIdentity, string PayloadRelativePath, string SidecarRelativePath)>();
+        while (reader.Read()) outputs.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+        return outputs;
+    }
+
+    private static List<(int Ordinal, int WindowPosition, string OutputIdentity)> ReadOutputPins(
+        string root, Guid executionId, string nodeId)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT input_ordinal, window_position, output_identity_sha256 FROM processing_execution_output_input_pins
+            WHERE execution_id = $execution AND node_id = $node AND released_flag = 0
+            ORDER BY input_ordinal;
+            """;
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$node", nodeId);
+        using var reader = command.ExecuteReader();
+        var pins = new List<(int Ordinal, int WindowPosition, string OutputIdentity)>();
+        while (reader.Read()) pins.Add((reader.GetInt32(0), reader.GetInt32(1), reader.GetString(2)));
+        return pins;
+    }
+
+    private static string Sha256OfFile(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+
+    private static async Task<ProcessingGraphExecutionDetail> RunReplayToCompletionAsync(ServiceProvider provider, Guid executionId)
+    {
+        var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+        var worker = provider.GetRequiredService<ProcessingReplayWorker>();
+        await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            return await WaitForExecutionAsync(
+                operations,
+                executionId,
+                static detail => detail.Execution.Status is ProcessingGraphExecutionStatus.Completed
+                    or ProcessingGraphExecutionStatus.Failed or ProcessingGraphExecutionStatus.Cancelled
+                    or ProcessingGraphExecutionStatus.Expired,
+                TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
         }
     }
 
