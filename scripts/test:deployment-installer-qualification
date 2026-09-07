@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/lib/deployment-installer-qualification.sh"
+
+test_root="$(mktemp -d)"
+trap 'rm -rf "$test_root"' EXIT
+fake_bin="$test_root/bin"
+mkdir "$fake_bin" "$test_root/catalog" "$test_root/release"
+
+cat >"$fake_bin/docker" <<'FAKE_DOCKER'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
+if [[ "$1 $2" == "context show" ]]; then
+  printf '%s\n' "${FAKE_DOCKER_CONTEXT_NAME:-default}"
+elif [[ "$1 $2" == "context inspect" ]]; then
+  printf '%s\n' "${FAKE_DOCKER_CONTEXT_ENDPOINT:-unix:///var/run/docker.sock}"
+elif [[ "$1 $2 $3 $4 $5" == "image ls --all --no-trunc --quiet" ]]; then
+  if [[ -n "${FAKE_DOCKER_IMAGE_LS-sha256:preexisting}" ]]; then
+    printf '%s\n' "${FAKE_DOCKER_IMAGE_LS-sha256:preexisting}"
+  fi
+elif [[ "$1 $2" == "image inspect" ]]; then
+  case "${*: -1}" in
+    preexisting | sha256:preexisting) printf '%s\n' 'sha256:preexisting' ;;
+    introduced | sha256:introduced) printf '%s\n' 'sha256:introduced' ;;
+    delayed-a | delayed-b)
+      [[ "${FAKE_DOCKER_DELAYED_LOADED:-0}" == 1 ]] || exit 1
+      printf '%s\n' 'sha256:delayed'
+      ;;
+    *) exit 1 ;;
+  esac
+else
+  printf 'Unexpected fake Docker invocation: %s\n' "$*" >&2
+  exit 90
+fi
+FAKE_DOCKER
+chmod +x "$fake_bin/docker"
+export FAKE_DOCKER_LOG="$test_root/docker.log"
+export PATH="$fake_bin:$PATH"
+
+export DOCKER_CONTEXT=remote
+export DOCKER_HOST=unix:///var/run/docker.sock
+export FAKE_DOCKER_CONTEXT_ENDPOINT=tcp://127.0.0.1:2375
+set +e
+HVO_PRODUCTION_CATALOG_BUNDLE="$test_root/catalog" \
+  "$repo_root/scripts/test:deployment-installer" >"$test_root/remote.out" 2>"$test_root/remote.err"
+remote_status=$?
+set -e
+test "$remote_status" = 2
+grep -Fq 'refuses the non-local Docker transport tcp selected by Docker context remote' "$test_root/remote.err"
+test "$(wc -l <"$FAKE_DOCKER_LOG")" = 1
+grep -Fxq "context inspect remote --format {{.Endpoints.docker.Host}}" "$FAKE_DOCKER_LOG"
+
+: >"$FAKE_DOCKER_LOG"
+unset DOCKER_CONTEXT
+export DOCKER_HOST=unix:///var/run/docker.sock
+hvo_installer_resolve_local_docker_endpoint
+test "$HVO_INSTALLER_DOCKER_ENDPOINT" = unix:///var/run/docker.sock
+test "$DOCKER_HOST" = "$HVO_INSTALLER_DOCKER_ENDPOINT"
+test -z "${DOCKER_CONTEXT:-}"
+test ! -s "$FAKE_DOCKER_LOG"
+
+: >"$FAKE_DOCKER_LOG"
+export DOCKER_CONTEXT=local-socket
+export FAKE_DOCKER_CONTEXT_ENDPOINT=unix:///run/user/1000/docker.sock
+hvo_installer_resolve_local_docker_endpoint
+test "$HVO_INSTALLER_DOCKER_ENDPOINT" = unix:///run/user/1000/docker.sock
+test "$DOCKER_HOST" = "$HVO_INSTALLER_DOCKER_ENDPOINT"
+test -z "${DOCKER_CONTEXT:-}"
+grep -Fxq "context inspect local-socket --format {{.Endpoints.docker.Host}}" "$FAKE_DOCKER_LOG"
+
+# shellcheck disable=SC2034 # Passed by name to ownership-aware cleanup helpers.
+declare -A startup_images=()
+declare -A cleanup_images=()
+hvo_installer_snapshot_image_ids startup_images
+hvo_installer_register_owned_image_pair startup_images cleanup_images preexisting absent-pair
+test "${#cleanup_images[@]}" = 0
+hvo_installer_register_owned_image_pair startup_images cleanup_images introduced introduced-alias
+test "${#cleanup_images[@]}" = 2
+test -n "${cleanup_images[sha256:introduced]:-}"
+test -n "${cleanup_images[introduced-alias]:-}"
+test -z "${cleanup_images[sha256:preexisting]:-}"
+
+startup_images=()
+cleanup_images=()
+export FAKE_DOCKER_IMAGE_LS=
+hvo_installer_snapshot_image_ids startup_images
+test "${#startup_images[@]}" = 0
+hvo_installer_register_owned_image_pair startup_images cleanup_images delayed-a delayed-b
+test "${#cleanup_images[@]}" = 2
+test -n "${cleanup_images[delayed-a]:-}"
+test -n "${cleanup_images[delayed-b]:-}"
+export FAKE_DOCKER_DELAYED_LOADED=1
+test "$(docker image inspect --format '{{.Id}}' delayed-a)" = sha256:delayed
+
+revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+version=1.2.3
+cat >"$test_root/release/image-manifest.json" <<EOF
+{
+  "release": {
+    "version": "$version",
+    "tag": "image-v$version",
+    "sourceRevision": "$revision",
+    "sourceTree": "$tree"
+  },
+  "images": [{"sourceRevision":"$revision","sourceTree":"$tree"}]
+}
+EOF
+touch "$test_root/release/image-manifest.json.sig" \
+  "$test_root/release/SHA256SUMS" \
+  "$test_root/release/SHA256SUMS.sig" \
+  "$test_root/signing.pub.pem"
+signed_release_tool() { printf '%s\n' "$*" >>"$test_root/release-tool.log"; }
+hvo_installer_verify_signed_candidate \
+  "$test_root/release" "$revision" "$tree" "$version" "image-v$version" "$test_root/signing.pub.pem"
+test "$(wc -l <"$test_root/release-tool.log")" = 2
+grep -Fq 'verify --manifest' "$test_root/release-tool.log"
+grep -Fq 'verify-signature --input' "$test_root/release-tool.log"
+
+jq '.release.sourceTree = "cccccccccccccccccccccccccccccccccccccccc"' \
+  "$test_root/release/image-manifest.json" >"$test_root/tampered.json"
+mv "$test_root/tampered.json" "$test_root/release/image-manifest.json"
+if hvo_installer_verify_signed_candidate \
+  "$test_root/release" "$revision" "$tree" "$version" "image-v$version" "$test_root/signing.pub.pem"; then
+  printf 'A candidate whose signed source tree drifted was accepted.\n' >&2
+  exit 1
+fi
+
+printf 'Deployment installer qualification guards passed.\n'

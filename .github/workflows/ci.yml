@@ -170,7 +170,9 @@ jobs:
             exit 1
           fi
           ./scripts/test:deploy-environment --list-shards
-          bash -n scripts/test:deployment-installer
+          bash -n scripts/test:deployment-installer scripts/test:deployment-installer-qualification \
+            scripts/lib/deployment-installer-qualification.sh
+          ./scripts/test:deployment-installer-qualification
       - name: Run exhaustive production catalog lifecycle
         if: needs.changes.outputs.deployment_catalog == 'true'
         run: |
