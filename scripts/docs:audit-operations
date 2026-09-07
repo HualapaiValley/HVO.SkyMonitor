@@ -117,11 +117,11 @@ require_required_check_row() {
     local check="$1"
     local value="$2"
     local section
-    # The section is the text under exactly one "## Required Checks" heading (a
-    # longer heading such as "## Required Checks Historical" is a different
-    # section, and a duplicate heading is an error), with HTML comments removed
-    # and fenced code blocks skipped, so a commented-out or quoted copy of an old
-    # row cannot satisfy the pin.
+    # The pins are matched only inside the contiguous table under exactly one
+    # "## Required Checks" heading (a longer heading is a different section and a
+    # duplicate heading is an error), with HTML comments removed and fenced code
+    # blocks skipped, so a commented-out, quoted, or stray copy of an old row
+    # cannot satisfy them.
     if ! section="$(awk '
         function fail(message) {
             print message > "/dev/stderr"
@@ -153,26 +153,46 @@ require_required_check_row() {
                 line = substr(line, 1, open_at - 1) substr(rest, close_at + 3)
             }
         }
+        # A fenced code block opens with three or more backticks or tildes (mawk
+        # cannot compile an interval before a group, so any indentation is accepted) and
+        # closes only with the same character, at least as many of them, and
+        # nothing else on the line; any other fence-looking line is content.
+        function fence_marker(line,    marker) {
+            if (line !~ /^ *(```+|~~~+)/) {
+                return ""
+            }
+            marker = line
+            sub(/^ */, "", marker)
+            sub(/[^`~].*$/, "", marker)
+            return marker
+        }
         {
             line = strip_html_comments($0)
-            # A fenced code block is not part of any active table or heading.
-            if (line ~ /^[[:space:]]*(```|~~~)/) {
-                in_fence = !in_fence
-                next
-            }
+            marker = fence_marker(line)
             if (in_fence) {
+                if (marker != "" && substr(marker, 1, 1) == fence_char && length(marker) >= fence_length &&
+                    line ~ /^ *[`~]+[[:space:]]*$/) {
+                    in_fence = 0
+                }
                 next
             }
-            if (line ~ /^## Required Checks[[:space:]]*$/) {
+            if (marker != "") {
+                in_fence = 1
+                fence_char = substr(marker, 1, 1)
+                fence_length = length(marker)
+                next
+            }
+            if (line ~ /^##[[:space:]]+Required Checks[[:space:]]*$/) {
                 headings++
                 in_section = 1
+                count = 0
                 next
             }
-            if (line ~ /^## /) {
+            if (line ~ /^##([[:space:]]|$)/) {
                 in_section = 0
             }
             if (in_section) {
-                print line
+                section[++count] = line
             }
         }
         END {
@@ -188,6 +208,18 @@ require_required_check_row() {
             if (headings != 1) {
                 fail("expected exactly one \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md, found " headings + 0)
             }
+            # The pins apply only to the contiguous table that starts at the first
+            # header row followed by a delimiter row; a row-shaped line elsewhere in
+            # the section is prose, not a check.
+            for (i = 1; i < count; i++) {
+                if (section[i] ~ /^\|/ && section[i + 1] ~ /^\|[[:space:]|:-]*-[[:space:]|:-]*$/) {
+                    for (j = i; j <= count && section[j] ~ /^\|/; j++) {
+                        print section[j]
+                    }
+                    exit 0
+                }
+            }
+            fail("no table was found under the \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md")
         }' docs/runbooks/ci-pipeline.md)"; then
         printf 'Could not isolate the Required Checks section of docs/runbooks/ci-pipeline.md.\n' >&2
         exit 1
@@ -221,7 +253,7 @@ fi
 # collected from its ["tests/….csproj"] key to its closing parenthesis, all
 # whitespace is dropped, and the entry must then be exactly
 # ["tests/….csproj"]=Counts(name:N,…), with recognized, non-repeating category
-# names and a comma separating it from the next entry.
+# names and the comma separator after every entry, the final one included.
 category_matrix=scripts/test-categories/Program.cs
 if ! category_totals="$(awk '
     function fail(message) {
@@ -237,19 +269,20 @@ if ! category_totals="$(awk '
                 if (close_at == 0) {
                     return kept
                 }
-                line = substr(line, close_at + 2)
+                # A comment is a token boundary, so it becomes a space, never nothing.
+                line = " " substr(line, close_at + 2)
                 in_block_comment = 0
             }
             # Lexically, whichever comment opener comes first owns the rest.
             open_at = index(line, "/*")
             line_at = index(line, "//")
             if (line_at > 0 && (open_at == 0 || line_at < open_at)) {
-                return kept substr(line, 1, line_at - 1)
+                return kept substr(line, 1, line_at - 1) " "
             }
             if (open_at == 0) {
                 return kept line
             }
-            kept = kept substr(line, 1, open_at - 1)
+            kept = kept substr(line, 1, open_at - 1) " "
             rest = substr(line, open_at + 2)
             close_at = index(rest, "*/")
             if (close_at == 0) {
@@ -260,14 +293,19 @@ if ! category_totals="$(awk '
         }
     }
     function process_entry(entry,    pairs, pair, parts, position, seen) {
-        gsub(/[[:space:]]+/, "", entry)
-        if (entry !~ /^\["tests\/[^"]+\.csproj"\]=Counts\([a-z]+:[0-9]+(,[a-z]+:[0-9]+)*\),?$/) {
+        # Whitespace runs collapse to one space between tokens; a token itself may
+        # not contain whitespace, so "1 70" or "1/*x*/70" is never read as 170.
+        gsub(/[[:space:]]+/, " ", entry)
+        sub(/^ /, "", entry)
+        sub(/ $/, "", entry)
+        if (entry !~ /^\[ ?"tests\/[^"]+\.csproj" ?\] ?= ?Counts ?\( ?[a-z]+ ?: ?[0-9]+( ?, ?[a-z]+ ?: ?[0-9]+)* ?\) ?,?$/) {
             fail("unrecognized category matrix row: " entry)
         }
+        gsub(/ /, "", entry)
         rows++
-        # Entries are separated by a comma after the closing parenthesis; only
-        # the final entry may omit it. The separator may also stand alone on the
-        # next line, which the main loop accepts before another entry begins.
+        # Every entry, including the final one, ends with the comma separator this
+        # matrix uses. The comma may also stand alone on the next line, which the
+        # main loop accepts before anything else follows.
         separator_pending = (entry !~ /,$/)
         sub(/^.*Counts\(/, "", entry)
         sub(/\).*$/, "", entry)
@@ -294,15 +332,17 @@ if ! category_totals="$(awk '
                 separator_pending = 0
                 next
             }
-            if (line !~ /\["tests\//) {
+            if (separator_pending) {
+                fail("missing entry separator after a matrix row, before: " line)
+            }
+            # An entry starts at its dictionary key; whitespace after [ is legal,
+            # and the key may follow [ on the next line.
+            if (line !~ /\[[[:space:]]*"tests\// && line !~ /\[[[:space:]]*$/) {
                 # Only the Counts(...) factory declaration may invoke Counts outside an entry.
                 if (line ~ /(^|[^A-Za-z0-9_])Counts[[:space:]]*(\(|$)/ && line !~ /^[[:space:]]*static .*Counts[[:space:]]*\(?[[:space:]]*$/) {
                     fail("unrecognized category matrix row: " line)
                 }
                 next
-            }
-            if (separator_pending) {
-                fail("missing entry separator before matrix row: " line)
             }
             collecting = 1
             entry = ""
@@ -322,6 +362,9 @@ if ! category_totals="$(awk '
         }
         if (collecting) {
             fail("unterminated category matrix row: " entry)
+        }
+        if (separator_pending) {
+            fail("the final category matrix row is missing its entry separator")
         }
         if (rows == 0) {
             fail("no category matrix rows were found")
