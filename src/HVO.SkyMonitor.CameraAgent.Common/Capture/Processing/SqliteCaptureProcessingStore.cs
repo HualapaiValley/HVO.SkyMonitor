@@ -3222,11 +3222,14 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(CancellationToken cancellationToken)
     {
         EnsureDatabaseFilesArePhysical();
+        // Every processing connection uses its own page cache. With a shared cache the availability reader's
+        // table-level read lock on processing_outputs makes the node writer fail immediately with SQLite error 6
+        // ("database table is locked") instead of coexisting with it under WAL, which stalled capture admission (#698).
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = _databasePath,
             Mode = SqliteOpenMode.ReadWrite,
-            Cache = SqliteCacheMode.Shared,
+            Cache = SqliteCacheMode.Private,
             Pooling = false,
             DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
