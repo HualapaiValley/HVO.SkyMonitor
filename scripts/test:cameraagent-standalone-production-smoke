@@ -10,6 +10,7 @@ readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HV
 readonly PROCESSING_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
 readonly CAMERA_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
 readonly PUBLISHED_RESULTS="$REPO_ROOT/TestResults/issue-171/production-smoke"
+readonly ATOMIC_DIRECTORY_PUBLISH="$REPO_ROOT/scripts/lib/atomic-directory-publish.py"
 
 if [[ $# -ne 0 || -z "${HVO_CATALOG_PERF_ROOT:-}" ]]; then
     printf 'Usage: HVO_CATALOG_PERF_ROOT=INSTALLED_PRODUCTION_CATALOG_ROOT %s\n' "${0##*/}" >&2
@@ -19,9 +20,10 @@ if [[ ! -d "$HVO_CATALOG_PERF_ROOT" ]]; then
     printf 'Production catalog installation root does not exist: %s\n' "$HVO_CATALOG_PERF_ROOT" >&2
     exit 2
 fi
-for command in awk date dotnet git jq nproc sha256sum sleep stat; do
+for command in awk date dotnet git jq nproc python3 sha256sum sleep stat; do
     command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
 done
+[[ -f "$ATOMIC_DIRECTORY_PUBLISH" ]] || { printf 'Atomic directory publication helper is unavailable: %s\n' "$ATOMIC_DIRECTORY_PUBLISH" >&2; exit 2; }
 
 # The five-second arrival budget is a cadence contract measured as wall-clock module-start
 # intervals, so it is only meaningful on a quiescent host: on a shared build host the
@@ -45,23 +47,72 @@ read_load1() {
     [[ "$load1" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
     printf '%s' "$load1"
 }
+read_monotonic_seconds() {
+    local seconds
+    read -r seconds _ < /proc/uptime || return 1
+    [[ "$seconds" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+    printf '%s' "$seconds"
+}
 # Prints "over" or "under"; any other outcome (unreadable or non-numeric load, awk failure) is a refusal, never an admission.
 load_verdict() {
     local load1="$1"
     awk -v current="$load1" -v limit="$SMOKE_MAX_LOAD1" 'BEGIN { if (current + 0 > limit + 0) print "over"; else print "under" }' 2>/dev/null
 }
 require_quiescent_host() {
-    local trial="$1" load1 verdict started_epoch deadline_epoch now_epoch waited=0 remaining
-    started_epoch="$(date +%s)"
-    deadline_epoch=$((started_epoch + SMOKE_QUIESCENCE_WAIT_SECONDS))
+    local trial="$1" load1 verdict started_monotonic deadline_monotonic now_monotonic
+    local timing elapsed remaining boundary wait_state sleep_seconds initial_observation=true
+    if ! started_monotonic="$(read_monotonic_seconds)"; then
+        printf 'Trial %s refused: unable to read the monotonic clock from /proc/uptime; the quiescence precondition fails closed.\n' "$trial" >&2
+        exit 3
+    fi
+    if ! deadline_monotonic="$(awk -v started="$started_monotonic" -v window="$SMOKE_QUIESCENCE_WAIT_SECONDS" \
+        'BEGIN { printf "%.9f", started + window }')" ||
+       ! [[ "$deadline_monotonic" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        printf 'Trial %s refused: could not calculate the monotonic quiescence deadline; the precondition fails closed.\n' "$trial" >&2
+        exit 3
+    fi
     while :; do
         if ! load1="$(read_load1)"; then
             printf 'Trial %s refused: unable to read a numeric 1-minute load average from /proc/loadavg; the quiescence precondition fails closed.\n' "$trial" >&2
             exit 3
         fi
-        verdict="$(load_verdict "$load1")"
+        if ! verdict="$(load_verdict "$load1")"; then
+            printf 'Trial %s refused: could not evaluate load average %s against limit %s; the quiescence precondition fails closed.\n' \
+                "$trial" "$load1" "$SMOKE_MAX_LOAD1" >&2
+            exit 3
+        fi
+        if ! now_monotonic="$(read_monotonic_seconds)"; then
+            printf 'Trial %s refused: unable to read the monotonic clock from /proc/uptime; the quiescence precondition fails closed.\n' "$trial" >&2
+            exit 3
+        fi
+        if ! timing="$(awk -v started="$started_monotonic" -v deadline="$deadline_monotonic" -v now="$now_monotonic" '
+            BEGIN {
+                elapsed = now - started
+                remaining = deadline - now
+                printf "%.3f %.6f %s %s %.6f", elapsed, remaining,
+                    (now <= deadline ? "within" : "late"),
+                    (remaining > 0 ? "wait" : "expired"),
+                    (remaining < 10 ? remaining : 10)
+            }')" ||
+           ! read -r elapsed remaining boundary wait_state sleep_seconds <<< "$timing" ||
+           ! [[ "$elapsed" =~ ^[0-9]+([.][0-9]+)?$ &&
+                "$remaining" =~ ^-?[0-9]+([.][0-9]+)?$ &&
+                "$sleep_seconds" =~ ^-?[0-9]+([.][0-9]+)?$ &&
+                "$boundary" =~ ^(within|late)$ && "$wait_state" =~ ^(wait|expired)$ ]]; then
+            printf 'Trial %s refused: could not evaluate the monotonic quiescence deadline; the precondition fails closed.\n' "$trial" >&2
+            exit 3
+        fi
         case "$verdict" in
-            under) break ;;
+            under)
+                # The initial observation is always eligible. After any wait, the load comparison and
+                # final monotonic observation must complete at or before the inclusive deadline.
+                if [[ "$initial_observation" == false && "$boundary" != within ]]; then
+                    printf 'Trial %s refused: the host became quiescent only after the inclusive %ss wait deadline (elapsed %ss); the precondition fails closed.\n' \
+                        "$trial" "$SMOKE_QUIESCENCE_WAIT_SECONDS" "$elapsed" >&2
+                    exit 3
+                fi
+                break
+                ;;
             over) ;;
             *)
                 printf 'Trial %s refused: could not evaluate load average %s against limit %s; the quiescence precondition fails closed.\n' \
@@ -69,22 +120,18 @@ require_quiescent_host() {
                 exit 3
                 ;;
         esac
-        now_epoch="$(date +%s)"
-        waited=$((now_epoch - started_epoch))
-        remaining=$((deadline_epoch - now_epoch))
-        if (( remaining <= 0 )); then
-            (( waited > SMOKE_QUIESCENCE_WAIT_SECONDS )) && waited=$SMOKE_QUIESCENCE_WAIT_SECONDS
-            printf 'Trial %s refused: host is not quiescent (1-minute load average %s exceeds %s on %s processors after waiting %ss of the %ss window). The arrival budget is a cadence contract, not a load test; rerun when the host is quiet, raise HVO_SMOKE_QUIESCENCE_WAIT_SECONDS, or set HVO_SMOKE_MAX_LOAD1 deliberately.\n' \
-                "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$waited" "$SMOKE_QUIESCENCE_WAIT_SECONDS" >&2
+        if [[ "$wait_state" == expired ]]; then
+            printf 'Trial %s refused: host is not quiescent (1-minute load average %s exceeds %s on %s processors after %ss elapsed against the inclusive %ss wait deadline). The arrival budget is a cadence contract, not a load test; rerun when the host is quiet, raise HVO_SMOKE_QUIESCENCE_WAIT_SECONDS, or set HVO_SMOKE_MAX_LOAD1 deliberately.\n' \
+                "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$elapsed" "$SMOKE_QUIESCENCE_WAIT_SECONDS" >&2
             exit 3
         fi
-        sleep "$(( remaining < 10 ? remaining : 10 ))"
+        sleep "$sleep_seconds"
+        initial_observation=false
     done
-    waited=$(( $(date +%s) - started_epoch ))
-    printf 'Trial %s admitted: host 1-minute load average %s (limit %s on %s processors, waited %ss of the %ss window)\n' \
-        "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$waited" "$SMOKE_QUIESCENCE_WAIT_SECONDS" >&2
+    printf 'Trial %s admitted: host 1-minute load average %s (limit %s on %s processors, elapsed %ss against the inclusive %ss wait deadline)\n' \
+        "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$elapsed" "$SMOKE_QUIESCENCE_WAIT_SECONDS" >&2
     if [[ -n "${QUIESCENCE_LOG:-}" ]]; then
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$waited" >> "$QUIESCENCE_LOG"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$trial" "$load1" "$SMOKE_MAX_LOAD1" "$SMOKE_PROCESSOR_COUNT" "$elapsed" >> "$QUIESCENCE_LOG"
     fi
 }
 if [[ "${HVO_SMOKE_QUIESCENCE_CHECK_ONLY:-0}" == 1 ]]; then
@@ -92,13 +139,18 @@ if [[ "${HVO_SMOKE_QUIESCENCE_CHECK_ONLY:-0}" == 1 ]]; then
     exit 0
 fi
 
+PUBLISHED_RESULTS_PARENT="$(dirname "$PUBLISHED_RESULTS")"
+readonly PUBLISHED_RESULTS_PARENT
+mkdir -p "$PUBLISHED_RESULTS_PARENT"
+python3 "$ATOMIC_DIRECTORY_PUBLISH" probe "$PUBLISHED_RESULTS_PARENT"
+
 # Evidence is produced in a fresh staging directory and published to RESULTS only after every
 # gate passes, so a refusal or a failed trial never destroys the previously published run.
 RESULTS="$PUBLISHED_RESULTS.staging-$(date -u '+%Y%m%dT%H%M%SZ')-$$"
 readonly RESULTS
 mkdir -p "$RESULTS"
 readonly QUIESCENCE_LOG="$RESULTS/quiescence-log.tsv"
-printf 'observedUtc\ttrial\tloadAverageOneMinute\tlimit\tprocessors\twaitedSeconds\n' > "$QUIESCENCE_LOG"
+printf 'observedUtc\ttrial\tloadAverageOneMinute\tlimit\tprocessors\telapsedSeconds\n' > "$QUIESCENCE_LOG"
 printf 'Staging evidence in %s; it is published to %s only after every gate passes.\n' "$RESULTS" "$PUBLISHED_RESULTS" >&2
 export HVO_ISSUE_171_FIXED_UTC="$(date -u '+%Y-%m-%dT%H:%M:00Z')"
 export HVO_ISSUE_171_REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
@@ -227,14 +279,14 @@ for evidence in local-processing-performance.json fault-recovery.json runtime-si
     fi
 done
 
-# Every gate passed: publish the staged run atomically in place of the previous one.
-previous_results=""
-if [[ -e "$PUBLISHED_RESULTS" ]]; then
-    previous_results="$PUBLISHED_RESULTS.previous-$$"
-    mv -T -- "$PUBLISHED_RESULTS" "$previous_results"
-fi
-mv -T -- "$RESULTS" "$PUBLISHED_RESULTS"
-if [[ -n "$previous_results" ]]; then
-    rm -rf -- "$previous_results"
-fi
+# Every gate passed: one Linux renameat2 operation either installs the first run without
+# replacement or exchanges the staged and published directories. The canonical path therefore
+# always names the old or new complete tree, including if the runner is interrupted. After an
+# exchange RESULTS names the previous tree and is removed only after the new name is durable.
+publication_mode="$(python3 "$ATOMIC_DIRECTORY_PUBLISH" publish "$RESULTS" "$PUBLISHED_RESULTS")"
+case "$publication_mode" in
+    installed) ;;
+    exchanged) rm -rf -- "$RESULTS" ;;
+    *) printf 'Atomic directory publication returned an invalid mode: %s\n' "$publication_mode" >&2; exit 1 ;;
+esac
 printf 'Published five-trial evidence to %s\n' "$PUBLISHED_RESULTS" >&2
