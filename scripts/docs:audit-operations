@@ -163,19 +163,28 @@ require_required_check_row() {
             }
             marker = line
             sub(/^ */, "", marker)
-            sub(/[^`~].*$/, "", marker)
+            # The delimiter is the initial run of the opener character only; an
+            # info string may begin with the other marker.
+            if (substr(marker, 1, 1) == "`") {
+                sub(/[^`].*$/, "", marker)
+            } else {
+                sub(/[^~].*$/, "", marker)
+            }
             return marker
         }
         {
-            line = strip_html_comments($0)
-            marker = fence_marker(line)
+            # Fenced content is inert: while fenced, the raw line is inspected only
+            # for a matching closing delimiter and never for HTML comments.
             if (in_fence) {
+                marker = fence_marker($0)
                 if (marker != "" && substr(marker, 1, 1) == fence_char && length(marker) >= fence_length &&
-                    line ~ /^ *[`~]+[[:space:]]*$/) {
+                    $0 ~ /^ *[`~]+[[:space:]]*$/) {
                     in_fence = 0
                 }
                 next
             }
+            line = strip_html_comments($0)
+            marker = fence_marker(line)
             if (marker != "") {
                 in_fence = 1
                 fence_char = substr(marker, 1, 1)
@@ -208,18 +217,27 @@ require_required_check_row() {
             if (headings != 1) {
                 fail("expected exactly one \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md, found " headings + 0)
             }
-            # The pins apply only to the contiguous table that starts at the first
-            # header row followed by a delimiter row; a row-shaped line elsewhere in
-            # the section is prose, not a check.
+            # The pins apply only to the canonical Required Checks table: the
+            # contiguous table whose header row normalizes to "| Check | Enforced
+            # behavior |" and whose delimiter row has one dashed cell per column.
+            # Any other table or row-shaped line in the section is prose.
             for (i = 1; i < count; i++) {
-                if (section[i] ~ /^\|/ && section[i + 1] ~ /^\|[[:space:]|:-]*-[[:space:]|:-]*$/) {
-                    for (j = i; j <= count && section[j] ~ /^\|/; j++) {
-                        print section[j]
-                    }
-                    exit 0
+                header = section[i]
+                gsub(/[[:space:]]+/, " ", header)
+                sub(/^ /, "", header)
+                sub(/ $/, "", header)
+                if (header != "| Check | Enforced behavior |") {
+                    continue
                 }
+                if (section[i + 1] !~ /^\|[[:space:]]*:?-+:?[[:space:]]*\|[[:space:]]*:?-+:?[[:space:]]*\|[[:space:]]*$/) {
+                    fail("the Required Checks table header is not followed by a two-column delimiter row")
+                }
+                for (j = i; j <= count && section[j] ~ /^\|/; j++) {
+                    print section[j]
+                }
+                exit 0
             }
-            fail("no table was found under the \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md")
+            fail("the canonical \"| Check | Enforced behavior |\" table was not found under the \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md")
         }' docs/runbooks/ci-pipeline.md)"; then
         printf 'Could not isolate the Required Checks section of docs/runbooks/ci-pipeline.md.\n' >&2
         exit 1
