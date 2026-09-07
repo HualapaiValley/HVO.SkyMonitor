@@ -86,11 +86,15 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
 
         using var hualapaiSession = await LoginAsync(hualapai).ConfigureAwait(false);
         using var sidingSession = await LoginAsync(siding).ConfigureAwait(false);
-        await AssertForeignCookieRejectedAsync(hualapaiSession, siding).ConfigureAwait(false);
-        await AssertForeignCookieRejectedAsync(sidingSession, hualapai).ConfigureAwait(false);
         var hualapaiOwnerId = ReadOwnerId(hualapai);
         var sidingOwnerId = ReadOwnerId(siding);
         Assert.AreNotEqual(hualapaiOwnerId, sidingOwnerId);
+        await AssertOwnSessionTicketAcceptedAsync(hualapaiSession, hualapai).ConfigureAwait(false);
+        await AssertOwnSessionTicketAcceptedAsync(sidingSession, siding).ConfigureAwait(false);
+        await AssertForeignSessionTicketNotUnprotectableAsync(hualapaiSession, siding).ConfigureAwait(false);
+        await AssertForeignSessionTicketNotUnprotectableAsync(sidingSession, hualapai).ConfigureAwait(false);
+        await AssertForeignCookieNameIgnoredAsync(hualapaiSession, siding).ConfigureAwait(false);
+        await AssertForeignCookieNameIgnoredAsync(sidingSession, hualapai).ConfigureAwait(false);
 
         var warmups = await Task.WhenAll(
             WaitForCompleteCapturesAsync(hualapai, hualapaiSession.Client, WarmupCaptureCount, 0, sampler),
@@ -843,7 +847,15 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         return new AgentSession(client, cookie.Name, cookie.Value);
     }
 
-    private static async Task AssertForeignCookieRejectedAsync(AgentSession foreign, AgentContext target)
+    // Replays one session ticket against an agent's authorization-only operations endpoint through a raw
+    // Cookie header, so the caller chooses the cookie name independently of the ticket that carries it.
+    // Redirects are never followed, otherwise a login or access-denied redirect would mask the real status.
+    // The cookie name and the ticket itself are never written to an assertion message, the console, TRX, or
+    // any retained evidence.
+    private static async Task<HttpStatusCode> SendOperationsRequestWithRawCookieAsync(
+        AgentContext target,
+        string cookieName,
+        string cookieValue)
     {
         using var handler = new HttpClientHandler
         {
@@ -852,9 +864,56 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         };
         using var client = new HttpClient(handler) { BaseAddress = target.BaseUri };
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/operations/summary");
-        request.Headers.TryAddWithoutValidation("Cookie", $"{foreign.CookieName}={foreign.CookieValue}");
+        Assert.IsTrue(
+            request.Headers.TryAddWithoutValidation("Cookie", $"{cookieName}={cookieValue}"),
+            $"{target.Name} request did not accept the raw session cookie header.");
         using var response = await client.SendAsync(request).ConfigureAwait(false);
-        Assert.AreEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+        return response.StatusCode;
+    }
+
+    // Positive control. Without it every rejection below would also be produced by a malformed header, an
+    // unusable ticket, or an owner that never completed its first-login password replacement.
+    private static async Task AssertOwnSessionTicketAcceptedAsync(AgentSession session, AgentContext owner)
+    {
+        var status = await SendOperationsRequestWithRawCookieAsync(owner, session.CookieName, session.CookieValue)
+            .ConfigureAwait(false);
+        Assert.AreEqual(
+            HttpStatusCode.OK,
+            status,
+            $"{owner.Name} rejected its own live session ticket sent through the raw cookie header.");
+    }
+
+    // Data Protection key isolation. The foreign ticket arrives under the target's own cookie name, so the
+    // target's cookie handler does attempt to unprotect it. Both agents run the same image, content root, and
+    // Identity.Application scheme, so the ticket purposes match and only the key ring differs. Unprotect
+    // therefore fails, the request stays anonymous, and the API login redirect answers 401. A shared usable
+    // ring would instead authenticate a principal that the target's Identity store does not contain, which
+    // the site-owner policy answers with 403, so exactly 401 is asserted rather than "not successful".
+    private static async Task AssertForeignSessionTicketNotUnprotectableAsync(AgentSession foreign, AgentContext target)
+    {
+        var status = await SendOperationsRequestWithRawCookieAsync(target, target.CookieName, foreign.CookieValue)
+            .ConfigureAwait(false);
+        Assert.AreEqual(
+            HttpStatusCode.Unauthorized,
+            status,
+            $"{target.Name} did not reject a foreign session ticket presented under its own cookie name.");
+    }
+
+    // Cookie namespace separation. This is a real but weaker property: the target never reads a cookie it does
+    // not recognize, so it answers 401 without attempting to unprotect anything. It cannot detect a shared key
+    // ring, which is why the check above exists separately.
+    private static async Task AssertForeignCookieNameIgnoredAsync(AgentSession foreign, AgentContext target)
+    {
+        Assert.AreNotEqual(
+            foreign.CookieName,
+            target.CookieName,
+            $"{target.Name} and the foreign agent must not share a session cookie name.");
+        var status = await SendOperationsRequestWithRawCookieAsync(target, foreign.CookieName, foreign.CookieValue)
+            .ConfigureAwait(false);
+        Assert.AreEqual(
+            HttpStatusCode.Unauthorized,
+            status,
+            $"{target.Name} did not ignore a session cookie sent under the foreign agent's cookie name.");
     }
 
     private static async Task<TopologyEvidence> AssertTopologyAsync(
