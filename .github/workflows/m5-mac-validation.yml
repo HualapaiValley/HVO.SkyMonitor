@@ -3,6 +3,13 @@ name: M5 Mac Validation
 on:
   repository_dispatch:
     types: [m5-mac-validation]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref or commit SHA to validate (defaults to the workflow commit)
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -25,7 +32,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
       - name: Setup .NET from global.json
