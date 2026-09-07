@@ -931,12 +931,26 @@ public sealed class RawCaptureIngressTests
             var mismatchedLines = new[]
             {
                 "{ malformed",
+                CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height,
+                    descriptor.Layout.PixelFormat.ToString(), timestampUtc: 1),
+                CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height,
+                    descriptor.Layout.PixelFormat.ToString(),
+                    width: descriptor.Layout.Width.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                CreateCompatibilityIndexLine(
+                    descriptor,
+                    descriptor.Layout.Height.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    descriptor.Layout.PixelFormat.ToString()),
                 CreateCompatibilityIndexLine(descriptor, 1.5, descriptor.Layout.PixelFormat.ToString()),
                 CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height + 1, descriptor.Layout.PixelFormat.ToString()),
                 CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height, null, includePixelFormat: false),
                 CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height, 1),
                 CreateCompatibilityIndexLine(descriptor, descriptor.Layout.Height, CameraPixelFormat.Mono16.ToString())
             };
+            foreach (var line in mismatchedLines.Skip(1))
+            {
+                using var document = JsonDocument.Parse(line);
+                Assert.IsFalse(RawIngressFileStore.MatchesIndexEntry(document.RootElement, descriptor));
+            }
             await File.WriteAllLinesAsync(indexPath, mismatchedLines).ConfigureAwait(false);
             var manifestJson = CaptureContractJson.Serialize(accepted.Manifest);
 
@@ -950,11 +964,24 @@ public sealed class RawCaptureIngressTests
             {
                 Assert.IsTrue(RawIngressFileStore.MatchesIndexEntry(document.RootElement, descriptor));
             }
+            Assert.AreEqual(1, repairedLines.Count(line =>
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(line);
+                    return RawIngressFileStore.MatchesIndexEntry(document.RootElement, descriptor);
+                }
+                catch (JsonException)
+                {
+                    return false;
+                }
+            }));
 
             await RawIngressFileStore.EnsureCompatibilityIndexAsync(
                 root, manifestJson, CancellationToken.None).ConfigureAwait(false);
 
-            Assert.HasCount(mismatchedLines.Length + 1,
+            CollectionAssert.AreEqual(
+                repairedLines,
                 await File.ReadAllLinesAsync(indexPath).ConfigureAwait(false));
         }
         finally
@@ -3165,14 +3192,16 @@ public sealed class RawCaptureIngressTests
         ReconstructionDescriptor descriptor,
         object height,
         object? pixelFormat,
-        bool includePixelFormat = true)
+        bool includePixelFormat = true,
+        object? timestampUtc = null,
+        object? width = null)
     {
         var entry = new Dictionary<string, object?>
         {
             ["artifactId"] = descriptor.Artifact.ArtifactId,
             ["role"] = descriptor.Artifact.Role.ToString(),
-            ["timestampUtc"] = descriptor.Timing.ExposureStartedUtc,
-            ["width"] = descriptor.Layout.Width,
+            ["timestampUtc"] = timestampUtc ?? descriptor.Timing.ExposureStartedUtc,
+            ["width"] = width ?? descriptor.Layout.Width,
             ["height"] = height
         };
         if (includePixelFormat)
