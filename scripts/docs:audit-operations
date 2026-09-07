@@ -120,7 +120,8 @@ require_required_check_row() {
     # The section is the text under exactly one "## Required Checks" heading (a
     # longer heading such as "## Required Checks Historical" is a different
     # section, and a duplicate heading is an error), with HTML comments removed
-    # so a commented-out copy of an old row cannot satisfy the pin.
+    # and fenced code blocks skipped, so a commented-out or quoted copy of an old
+    # row cannot satisfy the pin.
     if ! section="$(awk '
         function fail(message) {
             print message > "/dev/stderr"
@@ -135,6 +136,14 @@ require_required_check_row() {
         /^## / { in_section = 0 }
         {
             if (!in_section) {
+                next
+            }
+            # A fenced code block is not part of the active table.
+            if ($0 ~ /^[[:space:]]*(```|~~~)/) {
+                in_fence = !in_fence
+                next
+            }
+            if (in_fence) {
                 next
             }
             line = $0
@@ -174,8 +183,10 @@ require_required_check_row() {
         printf 'Could not isolate the Required Checks section of docs/runbooks/ci-pipeline.md.\n' >&2
         exit 1
     fi
-    if ! grep -Eq -- "^\\| ${check} \\| ${value}" <<< "$section"; then
-        printf 'Required Checks row %s in docs/runbooks/ci-pipeline.md does not begin with %s.\n' "$check" "$value" >&2
+    # The pin must be a complete active table row: the check cell, the value cell
+    # beginning with the expected text, and the row's closing pipe.
+    if ! grep -Eq -- "^\\| ${check} \\| ${value}[^|]*\\|[[:space:]]*$" <<< "$section"; then
+        printf 'Required Checks row %s in docs/runbooks/ci-pipeline.md is not a complete table row beginning with %s.\n' "$check" "$value" >&2
         exit 1
     fi
 }
@@ -200,7 +211,8 @@ fi
 # Block and line comments are removed first, then each dictionary entry is
 # collected from its ["tests/….csproj"] key to its closing parenthesis, all
 # whitespace is dropped, and the entry must then be exactly
-# ["tests/….csproj"]=Counts(name:N,…), with recognized category names.
+# ["tests/….csproj"]=Counts(name:N,…), with recognized, non-repeating category
+# names and a comma separating it from the next entry.
 category_matrix=scripts/test-categories/Program.cs
 if ! category_totals="$(awk '
     function fail(message) {
@@ -233,12 +245,16 @@ if ! category_totals="$(awk '
         sub(/\/\/.*$/, "", line)
         return line
     }
-    function process_entry(entry,    pairs, pair, parts, position) {
+    function process_entry(entry,    pairs, pair, parts, position, seen) {
         gsub(/[[:space:]]+/, "", entry)
         if (entry !~ /^\["tests\/[^"]+\.csproj"\]=Counts\([a-z]+:[0-9]+(,[a-z]+:[0-9]+)*\),?$/) {
             fail("unrecognized category matrix row: " entry)
         }
         rows++
+        # Entries are separated by a comma after the closing parenthesis; only
+        # the final entry may omit it. The separator may also stand alone on the
+        # next line, which the main loop accepts before another entry begins.
+        separator_pending = (entry !~ /,$/)
         sub(/^.*Counts\(/, "", entry)
         sub(/\).*$/, "", entry)
         pairs = split(entry, pair, ",")
@@ -247,6 +263,10 @@ if ! category_totals="$(awk '
             if (parts[1] !~ /^(unit|integration|manual|soak|external|hardware)$/) {
                 fail("unrecognized category in matrix row " rows ": " pair[position])
             }
+            if (parts[1] in seen) {
+                fail("duplicate category in matrix row " rows ": " parts[1])
+            }
+            seen[parts[1]] = 1
             totals[parts[1]] += parts[2]
         }
     }
@@ -256,12 +276,19 @@ if ! category_totals="$(awk '
             next
         }
         if (!collecting) {
+            if (separator_pending && line ~ /^[[:space:]]*,[[:space:]]*$/) {
+                separator_pending = 0
+                next
+            }
             if (line !~ /\["tests\//) {
                 # Only the Counts(...) factory declaration may invoke Counts outside an entry.
                 if (line ~ /(^|[^A-Za-z0-9_])Counts[[:space:]]*(\(|$)/ && line !~ /^[[:space:]]*static .*Counts[[:space:]]*\(?[[:space:]]*$/) {
                     fail("unrecognized category matrix row: " line)
                 }
                 next
+            }
+            if (separator_pending) {
+                fail("missing entry separator before matrix row: " line)
             }
             collecting = 1
             entry = ""
