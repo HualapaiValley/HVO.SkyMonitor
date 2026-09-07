@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class ReplayRunnerComposeTests
 {
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Write_InProcessProfile_OmitsRunnerAndAuthenticationKey()
     {
         var root = CreateRoot();
@@ -32,6 +33,7 @@ public sealed class ReplayRunnerComposeTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Write_LocalRunnerProfile_UsesSameImageWithLeastPrivilegeLocalBoundary()
     {
         var root = CreateRoot();

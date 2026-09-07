@@ -31,6 +31,7 @@ public sealed class InstallerFlowTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity()
     {
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
@@ -194,6 +195,7 @@ public sealed class InstallerFlowTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task InstallAsync_OwnerAuthenticationFailureThenResume_PreservesPasswordAuthorityUntilSeeded()
     {
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
@@ -264,6 +266,7 @@ public sealed class InstallerFlowTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task InstallAsync_AirGappedSignedImageRelease_InstallsTheSignedImageAndRetainsItsReleaseEvidence()
     {
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
@@ -329,6 +332,7 @@ public sealed class InstallerFlowTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task InstallAsync_SignedReleaseThatContradictsTheImageLabels_FailsBeforeComposeStarts()
     {
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");

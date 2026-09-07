@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class LifecycleContractTests
 {
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task StatusAsync_ReportsRetainedIdentityWithoutMutation()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -26,6 +27,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_SignedReleaseWithoutThisHostArchitecture_FailsBeforeAnyMutation()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -57,6 +59,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_SignedReleaseSelectsTheRecordedDaemonArchitectureNotTheProcess()
     {
         // The instance was installed against a daemon whose architecture differs from the CLI process (a remote or
@@ -88,6 +91,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_SignedReleaseWithoutTheRecordedDaemonArchitecture_FailsBeforeAnyDownload()
     {
         // The release publishes only the CLI process's architecture, which the recorded daemon cannot run: the
@@ -120,6 +124,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UninstallAsync_AlreadyUninstalled_IsIdempotentAndPreservesState()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
@@ -138,6 +143,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UninstallAsync_InstalledInstanceDrainsAndPreservesState()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -165,6 +171,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UninstallAsync_OwnershipDriftIsRejectedBeforeComposeDown()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -185,6 +192,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UninstallAsync_OwnedOrphanIsRejectedBeforeManifestCommit()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -203,6 +211,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task PurgeAsync_InstalledInstance_IsRejectedBeforeDeletion()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -218,6 +227,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task PurgeAsync_UninstalledInstanceDeletesOnlySelectedSibling()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
@@ -236,6 +246,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task PurgeAsync_InterruptedTombstoneResumesDeletionWithoutRepublishing()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
@@ -270,6 +281,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void OperationLock_AcquisitionHonorsCancellation()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-lifecycle-lock-{Guid.NewGuid():N}");
@@ -290,6 +302,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task SafeTreeDeletion_RemovesOnlyAuthenticatedChild()
     {
         var parent = Path.Combine(Path.GetTempPath(), $"hvo-safe-delete-{Guid.NewGuid():N}");
@@ -312,6 +325,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void SafeTreeDeletion_RejectsSymbolicLinkEntry()
     {
         var parent = Path.Combine(Path.GetTempPath(), $"hvo-safe-delete-{Guid.NewGuid():N}");
@@ -331,6 +345,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void SafeTreeDeletion_RenameAndDeleteRemainBoundToValidatedIdentity()
     {
         var parent = Path.Combine(Path.GetTempPath(), $"hvo-safe-rename-{Guid.NewGuid():N}");
@@ -352,6 +367,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void SafeTreeDeletion_RejectsGroupWritableDirectory()
     {
         var parent = Path.Combine(Path.GetTempPath(), $"hvo-safe-mode-{Guid.NewGuid():N}");
@@ -371,6 +387,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task LifecycleControlToken_MissingOrMismatchedMirrorIsRejectedWithoutMutation()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-lifecycle-token-{Guid.NewGuid():N}");
@@ -404,6 +421,7 @@ public sealed class LifecycleContractTests
     [DataRow("lifecycle-mirror")]
     [DataRow("catalog-selection")]
     [DataRow("installation-verification")]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task LifecycleOperation_IncompleteCanonicalSecretsFailBeforeDockerOrJournalMutation(string missingSecret)
     {
         using var fixture = await LifecycleFixture.CreateAsync(
@@ -432,6 +450,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ReadOperationAsync_InvalidJournalIsRejected()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-invalid-operation-{Guid.NewGuid():N}");
@@ -478,6 +497,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogGarbageCollect_InterruptedDeletionRequiresExactResumeRequest()
     {
         var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
@@ -569,6 +589,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogInstall_ResumeWithoutRetainedOperationIsRejectedBeforeAcquisition()
     {
         var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
@@ -625,6 +646,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogSelectAndRollback_CurrentContractsConverge()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
@@ -680,6 +702,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task RecoverySnapshot_ForeignCandidateIsRejectedWithoutCanonicalOverwrite()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -715,6 +738,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_ResumeAfterCommitCompletesWithoutRollingBackCandidate()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -755,6 +779,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_SignedReleaseResumeAfterLostAcknowledgementRetainsReleaseRecord()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
@@ -797,6 +822,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_ImageReferenceUpgradeOfSignedInstanceWithdrawsReleaseRecord()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
@@ -842,6 +868,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_SignedReleaseRefusedBeforeMutationLeavesInstanceOperableWithoutResume()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
@@ -920,6 +947,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task RollbackAsync_ProceedsWithoutResumeAfterRefusedUpgrade()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -968,6 +996,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UninstallAsync_ProceedsWithoutResumeAfterRefusedUpgrade()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -999,6 +1028,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task SettleRefusedOperation_ResumedMutatedOperationRestoredBeforeFailureIsNotRefused()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1043,6 +1073,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task RollbackAsync_ProceedsWithoutResumeAfterLegacyPreMutationRefusalJournal()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1098,6 +1129,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_SettlementFailureNeverReplacesTheRefusal()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
@@ -1131,6 +1163,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_CancellationBeforeMutationIsNotRefusedAndDoesNotBlock()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1165,6 +1198,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogGarbageCollection_RefusedSelectionHoldsNoReference()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1188,6 +1222,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ReadOperationAsync_RefusedRecordThatClaimsMutationIsRejected()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1230,6 +1265,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ReinstallAsync_PreservedInstanceVerifiesOwnerBeforeCommit()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
@@ -1250,6 +1286,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ReinstallAsync_DaemonReplacementIsRejectedBeforeComposeUp()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
@@ -1268,6 +1305,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_DaemonReplacementIsRejectedBeforeRestart()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1290,6 +1328,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_FailedCandidateRestoresExactOriginalRuntime()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1318,6 +1357,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_OwnerStateRegressionRestoresExactOriginalRuntime()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1348,6 +1388,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_OwnerCompletesPasswordReplacementDuringMutation_Converges()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1377,6 +1418,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_OwnerStateRegressesAfterCandidateRestart_RestoresOriginalRuntime()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1407,6 +1449,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_InterruptedMutationPersistsRestoredOwnerProgressionBeforeRetry()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1456,6 +1499,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_PreparedOwnerStateChangeIsRejectedWithoutOverwritingSnapshot()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1488,6 +1532,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_FailedLocalRunnerCandidateCapturesBothContainerLogsBeforeRollback()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
@@ -1547,6 +1592,7 @@ public sealed class LifecycleContractTests
     [TestMethod]
     [DataRow("stop")]
     [DataRow("backup")]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_InterruptedPreRecreateBoundaryRestoresOriginalRuntime(string failurePoint)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1578,6 +1624,7 @@ public sealed class LifecycleContractTests
     [TestMethod]
     [DataRow("cameraagent-compose-v1")]
     [DataRow("cameraagent-compose-v3")]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_NonCanonicalComposeIsRejectedBeforeDockerOrJournalMutation(string composeVersion)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1603,6 +1650,7 @@ public sealed class LifecycleContractTests
     [TestMethod]
     [DataRow("cameraagent-compose-v1")]
     [DataRow("cameraagent-compose-v4")]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ExecuteAsync_UnsupportedPreviousComposePropertyIsRejectedBeforeDockerOrJournalMutation(
         string previousComposeVersion)
     {
@@ -1620,6 +1668,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task StatusAsync_CurrentPreviousComposePropertyIsAcceptedWithoutCompatibilityBranch()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1636,6 +1685,7 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task RollbackAsync_CurrentComposeRestoresPreviousImageAndExactCompose()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);

@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class DistributionAcquirerTests
 {
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireAsync_SignedOfflineBundle_VerifiesAndExtractsExactFiles()
     {
         using var fixture = CatalogDistributionFixture.Create();
@@ -28,6 +29,7 @@ public sealed class DistributionAcquirerTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireAsync_VerifiedNetworkCache_SupportsNoDownloadReuse()
     {
         using var fixture = CatalogDistributionFixture.Create();
@@ -47,6 +49,7 @@ public sealed class DistributionAcquirerTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireAsync_CorruptMirroredAsset_IsRejectedAndNotPublishedToCache()
     {
         using var fixture = CatalogDistributionFixture.Create();
@@ -62,6 +65,7 @@ public sealed class DistributionAcquirerTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireAsync_SignedIndexDefault_ResolvesImmutableReleaseAssets()
     {
         using var fixture = CatalogDistributionFixture.Create();
@@ -75,6 +79,7 @@ public sealed class DistributionAcquirerTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireAsync_ApprovedGitHubCdnRedirect_RecordsTerminalUri()
     {
         using var fixture = CatalogDistributionFixture.Create();
@@ -161,6 +166,7 @@ public sealed class DistributionAcquirerTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireAsync_StalledAssetDownload_IsReportedAsDistributionFailureNotCancellation()
     {
         using var fixture = CatalogDistributionFixture.Create();

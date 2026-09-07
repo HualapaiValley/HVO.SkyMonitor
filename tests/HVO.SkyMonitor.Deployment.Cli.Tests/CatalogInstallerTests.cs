@@ -4,6 +4,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
 public sealed class CatalogInstallerTests
 {
     [TestMethod]

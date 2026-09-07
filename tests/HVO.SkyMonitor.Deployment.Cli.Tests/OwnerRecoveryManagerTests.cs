@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
+[OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
 public sealed class OwnerRecoveryManagerTests
 {
     [TestMethod]
