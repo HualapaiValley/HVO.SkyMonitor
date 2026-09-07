@@ -3,18 +3,29 @@
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-readonly TEMP_DIR="$(mktemp -d -t hvo-smoke-env-test.XXXXXX)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+# The discovered checkout is read-only source for this test. Agent worktrees are often group-writable
+# (0775) and callers may run under umask 002, both of which the production script must keep rejecting,
+# so the subject is exercised inside a disposable synthetic repository staged below an owner-only temp
+# root instead. The real checkout is never chmod-ed or written to.
+SOURCE_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly SOURCE_REPO_ROOT
+TEMP_DIR="$(mktemp -d -t hvo-smoke-env-test.XXXXXX)"
+readonly TEMP_DIR
+readonly REPO_ROOT="$TEMP_DIR/repository"
 readonly BASE_ENV="$TEMP_DIR/base.env"
 readonly SMOKE_ENV="$TEMP_DIR/.env.smoketest"
 readonly PRISTINE_ENV="$TEMP_DIR/pristine.env"
 readonly TOOL_LOG="$TEMP_DIR/tools.log"
 readonly EARLY_BIN="$TEMP_DIR/early-bin"
-readonly TEST_DAEMON_NAME="$(hostname)"
+TEST_DAEMON_NAME="$(hostname)"
+readonly TEST_DAEMON_NAME
 readonly ROUNDTRIP_SECRET='literal-"quote"-$()-`tick`-#-backslash\\'
-readonly REAL_JQ="$(command -v jq)"
-readonly REAL_DIRNAME="$(command -v dirname)"
+REAL_JQ="$(command -v jq)"
+readonly REAL_JQ
+REAL_DIRNAME="$(command -v dirname)"
+readonly REAL_DIRNAME
 repo_test_run_link=""
 repo_test_target=""
 repo_test_config_link=""
@@ -68,7 +79,20 @@ expect_invalid() {
     ! grep -Fq 'Camera-Agent-A1-secret' "$TEMP_DIR/invalid.out" || fail "Validation failure printed a secret."
 }
 
-bash -n "$REPO_ROOT/scripts/smoke:env" "$REPO_ROOT/scripts/test:smoke-env"
+bash -n "$SOURCE_REPO_ROOT/scripts/smoke:env" "$SOURCE_REPO_ROOT/scripts/test:smoke-env"
+
+# Fixture construction is deterministic regardless of the caller's umask; the staged repository root
+# is the only path whose mode this test changes, and only between the explicit 0755/0775 assertions.
+umask 022
+mkdir -m 755 "$REPO_ROOT"
+mkdir -p "$REPO_ROOT/scripts" "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent"
+cp -p "$SOURCE_REPO_ROOT/scripts/smoke:env" "$REPO_ROOT/scripts/smoke:env"
+cp -p "$SOURCE_REPO_ROOT/.env.smoketest.template" "$REPO_ROOT/.env.smoketest.template"
+cp -p "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json" \
+    "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json"
+cmp -s "$SOURCE_REPO_ROOT/scripts/smoke:env" "$REPO_ROOT/scripts/smoke:env" || fail "Staged smoke:env is not the exact source script."
+test -x "$REPO_ROOT/scripts/smoke:env" || fail "Staged smoke:env is not executable."
+test "$(stat -c '%a' "$REPO_ROOT")" = 755 || fail "Staged repository root is not mode 755."
 
 cp "$REPO_ROOT/.env.smoketest.template" "$BASE_ENV"
 cat >> "$BASE_ENV" <<EOF
@@ -296,6 +320,16 @@ cat > "$TEMP_DIR/catalog/current/manifest.json" <<EOF
 EOF
 cp "$PRISTINE_ENV" "$SMOKE_ENV"
 printf '\nSMOKETEST_CATALOG_DATABASE_SHA256=%s\n' "$catalog_sha" >> "$SMOKE_ENV"
+# A group-writable control repository must be refused by the production preflight even when every other
+# input is valid; only the disposable staged root is re-moded, never the source checkout.
+chmod 775 "$REPO_ROOT"
+if PATH="$TEMP_DIR/bin:$PATH" run_smoke_env preflight > "$TEMP_DIR/invalid.out" 2>&1; then
+    fail "Group-writable control repository unexpectedly passed preflight."
+fi
+grep -Fq 'control repository must not be group/world writable' "$TEMP_DIR/invalid.out" ||
+    fail "Preflight did not report the group-writable control repository."
+! grep -Fq 'sql-secret-value' "$TEMP_DIR/invalid.out" || fail "Control repository failure printed a secret."
+chmod 755 "$REPO_ROOT"
 output="$(PATH="$TEMP_DIR/bin:$PATH" run_smoke_env preflight)"
 [[ "$output" == *"preflight passed"* ]] || fail "Valid preflight did not pass."
 [[ "$output" != *sql-secret-value* && "$output" != *Camera-Agent-A1-secret* ]] || fail "Preflight printed a secret."
