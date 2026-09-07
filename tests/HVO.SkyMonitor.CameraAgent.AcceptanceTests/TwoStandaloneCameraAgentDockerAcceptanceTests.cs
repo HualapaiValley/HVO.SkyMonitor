@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -855,7 +856,8 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
     private static async Task<HttpStatusCode> SendOperationsRequestWithRawCookieAsync(
         AgentContext target,
         string cookieName,
-        string cookieValue)
+        string cookieValue,
+        [CallerMemberName] string caller = "")
     {
         using var handler = new HttpClientHandler
         {
@@ -866,7 +868,7 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/operations/summary");
         Assert.IsTrue(
             request.Headers.TryAddWithoutValidation("Cookie", $"{cookieName}={cookieValue}"),
-            $"{target.Name} request did not accept the raw session cookie header.");
+            $"{target.Name} request did not accept the raw session cookie header in {caller}.");
         using var response = await client.SendAsync(request).ConfigureAwait(false);
         return response.StatusCode;
     }
@@ -889,6 +891,10 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
     // therefore fails, the request stays anonymous, and the API login redirect answers 401. A shared usable
     // ring would instead authenticate a principal that the target's Identity store does not contain, which
     // the site-owner policy answers with 403, so exactly 401 is asserted rather than "not successful".
+    // This discriminator only holds while the replayed ticket is younger than the security-stamp validation
+    // interval, so these checks must run immediately after login. Moving them after a capture workload, or
+    // shortening SecurityStampValidatorOptions.ValidationInterval, would let a shared ring answer 401 too and
+    // would silently make this assertion insensitive again.
     private static async Task AssertForeignSessionTicketNotUnprotectableAsync(AgentSession foreign, AgentContext target)
     {
         var status = await SendOperationsRequestWithRawCookieAsync(target, target.CookieName, foreign.CookieValue)
@@ -904,9 +910,8 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
     // ring, which is why the check above exists separately.
     private static async Task AssertForeignCookieNameIgnoredAsync(AgentSession foreign, AgentContext target)
     {
-        Assert.AreNotEqual(
-            foreign.CookieName,
-            target.CookieName,
+        Assert.IsFalse(
+            string.Equals(foreign.CookieName, target.CookieName, StringComparison.Ordinal),
             $"{target.Name} and the foreign agent must not share a session cookie name.");
         var status = await SendOperationsRequestWithRawCookieAsync(target, foreign.CookieName, foreign.CookieValue)
             .ConfigureAwait(false);
