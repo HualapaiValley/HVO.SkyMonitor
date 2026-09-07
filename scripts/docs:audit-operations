@@ -117,7 +117,63 @@ require_required_check_row() {
     local check="$1"
     local value="$2"
     local section
-    section="$(awk '/^## Required Checks/ { in_section = 1; next } /^## / { in_section = 0 } in_section' docs/runbooks/ci-pipeline.md)"
+    # The section is the text under exactly one "## Required Checks" heading (a
+    # longer heading such as "## Required Checks Historical" is a different
+    # section, and a duplicate heading is an error), with HTML comments removed
+    # so a commented-out copy of an old row cannot satisfy the pin.
+    if ! section="$(awk '
+        function fail(message) {
+            print message > "/dev/stderr"
+            failed = 1
+            exit 1
+        }
+        /^## Required Checks[[:space:]]*$/ {
+            headings++
+            in_section = 1
+            next
+        }
+        /^## / { in_section = 0 }
+        {
+            if (!in_section) {
+                next
+            }
+            line = $0
+            while (1) {
+                if (in_comment) {
+                    close_at = index(line, "-->")
+                    if (close_at == 0) {
+                        line = ""
+                        break
+                    }
+                    line = substr(line, close_at + 3)
+                    in_comment = 0
+                }
+                open_at = index(line, "<!--")
+                if (open_at == 0) {
+                    break
+                }
+                rest = substr(line, open_at + 4)
+                close_at = index(rest, "-->")
+                if (close_at == 0) {
+                    line = substr(line, 1, open_at - 1)
+                    in_comment = 1
+                    break
+                }
+                line = substr(line, 1, open_at - 1) substr(rest, close_at + 3)
+            }
+            print line
+        }
+        END {
+            if (failed) {
+                exit 1
+            }
+            if (headings != 1) {
+                fail("expected exactly one \"## Required Checks\" heading in docs/runbooks/ci-pipeline.md, found " headings + 0)
+            }
+        }' docs/runbooks/ci-pipeline.md)"; then
+        printf 'Could not isolate the Required Checks section of docs/runbooks/ci-pipeline.md.\n' >&2
+        exit 1
+    fi
     if ! grep -Eq -- "^\\| ${check} \\| ${value}" <<< "$section"; then
         printf 'Required Checks row %s in docs/runbooks/ci-pipeline.md does not begin with %s.\n' "$check" "$value" >&2
         exit 1
@@ -140,9 +196,11 @@ if [[ ! "$coverage_report_count" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # The runbook's category totals are derived from the category matrix rather than
-# pinned as literals, so editing the matrix without the runbook fails here. Rows
-# may span lines and carry comments; each logical entry must still be exactly
-# ["tests/….csproj"] = Counts(name: N, …), with recognized category names.
+# pinned as literals, so editing the matrix without the runbook fails here.
+# Block and line comments are removed first, then each dictionary entry is
+# collected from its ["tests/….csproj"] key to its closing parenthesis, all
+# whitespace is dropped, and the entry must then be exactly
+# ["tests/….csproj"]=Counts(name:N,…), with recognized category names.
 category_matrix=scripts/test-categories/Program.cs
 if ! category_totals="$(awk '
     function fail(message) {
@@ -150,63 +208,79 @@ if ! category_totals="$(awk '
         failed = 1
         exit 1
     }
-    function process_row(row,    pairs, pair, parts, position) {
-        gsub(/[[:space:]]+/, " ", row)
-        sub(/^ /, "", row)
-        sub(/ $/, "", row)
-        if (row !~ /^\["tests\/[^"]+\.csproj"\] = Counts\( ?[a-z]+ ?: ?[0-9]+( ?, ?[a-z]+ ?: ?[0-9]+)* ?\) ?,?$/) {
-            fail("unrecognized category matrix row: " row)
+    function strip_comments(line,    open_at, close_at, rest) {
+        while (1) {
+            if (in_block_comment) {
+                close_at = index(line, "*/")
+                if (close_at == 0) {
+                    return ""
+                }
+                line = substr(line, close_at + 2)
+                in_block_comment = 0
+            }
+            open_at = index(line, "/*")
+            if (open_at == 0) {
+                break
+            }
+            rest = substr(line, open_at + 2)
+            close_at = index(rest, "*/")
+            if (close_at == 0) {
+                in_block_comment = 1
+                return substr(line, 1, open_at - 1)
+            }
+            line = substr(line, 1, open_at - 1) substr(rest, close_at + 2)
+        }
+        sub(/\/\/.*$/, "", line)
+        return line
+    }
+    function process_entry(entry,    pairs, pair, parts, position) {
+        gsub(/[[:space:]]+/, "", entry)
+        if (entry !~ /^\["tests\/[^"]+\.csproj"\]=Counts\([a-z]+:[0-9]+(,[a-z]+:[0-9]+)*\),?$/) {
+            fail("unrecognized category matrix row: " entry)
         }
         rows++
-        sub(/^.*Counts\(/, "", row)
-        sub(/\).*$/, "", row)
-        pairs = split(row, pair, ",")
+        sub(/^.*Counts\(/, "", entry)
+        sub(/\).*$/, "", entry)
+        pairs = split(entry, pair, ",")
         for (position = 1; position <= pairs; position++) {
             split(pair[position], parts, ":")
-            gsub(/ /, "", parts[1])
-            gsub(/ /, "", parts[2])
             if (parts[1] !~ /^(unit|integration|manual|soak|external|hardware)$/) {
                 fail("unrecognized category in matrix row " rows ": " pair[position])
             }
             totals[parts[1]] += parts[2]
         }
     }
-    in_block_comment {
-        if ($0 ~ /\*\//) {
-            in_block_comment = 0
+    {
+        line = strip_comments($0)
+        if (line ~ /^[[:space:]]*$/) {
+            next
         }
-        next
-    }
-    /^[[:space:]]*\/\*/ {
-        if ($0 !~ /\*\//) {
-            in_block_comment = 1
+        if (!collecting) {
+            if (line !~ /\["tests\//) {
+                # Only the Counts(...) factory declaration may invoke Counts outside an entry.
+                if (line ~ /(^|[^A-Za-z0-9_])Counts[[:space:]]*(\(|$)/ && line !~ /^[[:space:]]*static .*Counts[[:space:]]*\(?[[:space:]]*$/) {
+                    fail("unrecognized category matrix row: " line)
+                }
+                next
+            }
+            collecting = 1
+            entry = ""
         }
-        next
-    }
-    /^[[:space:]]*\/\// {
-        next
-    }
-    /^[[:space:]]*static .*Counts\($/ {
-        next
-    }
-    collecting || /Counts\(/ {
-        line = $0
-        sub(/\/\/.*$/, "", line)
-        row = collecting ? row " " line : line
-        collecting = 1
-        if (row ~ /\)/) {
+        entry = entry " " line
+        if (entry ~ /\)/) {
             collecting = 0
-            process_row(row)
-            row = ""
+            process_entry(entry)
         }
-        next
     }
     END {
         if (failed) {
             exit 1
         }
+        if (in_block_comment) {
+            fail("unterminated block comment in the category matrix")
+        }
         if (collecting) {
-            fail("unterminated category matrix row: " row)
+            fail("unterminated category matrix row: " entry)
         }
         if (rows == 0) {
             fail("no category matrix rows were found")
