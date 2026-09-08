@@ -227,6 +227,17 @@ public sealed class ConnectionPoolClearContractTests
             $"MSBuild could not evaluate {LinkageHostProject}, so whether it still compiles the linkage check "
                 + "is unknown rather than confirmed, and an unknown here covers a removed check.");
 
+        // Membership is asserted separately from compilation. Deleting the host's single Project entry from
+        // the solution leaves the file on disk and still compiling the guard, so File.Exists and the
+        // evaluation both succeed while the guard never runs, because the solution is what CI tests. That
+        // was one line of deletion and it disabled this half entirely.
+        var solution = File.ReadAllText(Path.Combine(RepositoryRoot(), "HVO.SkyMonitor.v9.slnx"));
+        Assert.IsTrue(
+            solution.Contains(LinkageHostProject.Replace('/', '\\'), StringComparison.Ordinal) ||
+                solution.Contains(LinkageHostProject, StringComparison.Ordinal),
+            $"{LinkageHostProject} is not listed in the solution, so the repository-wide linkage check never "
+                + "runs even though its file is present and still compiles. CI tests the solution.");
+
         Assert.IsTrue(
             items.Compiles.Any(static compile => compile.EndsWith(LinkageFileName, StringComparison.Ordinal)),
             $"{LinkageHostProject} no longer compiles {LinkageFileName}, so nothing checks whether every test "
