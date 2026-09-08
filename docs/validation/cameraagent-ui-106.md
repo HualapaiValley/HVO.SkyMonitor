@@ -24,8 +24,13 @@ The install option downloads the Chromium revision pinned by
 runner performs a warning-as-error Release build and then runs the CameraAgent
 browser and gallery-performance acceptance classes. Other manual hardware,
 standalone, and evidence harnesses in the assembly have separate entry points.
-The browser test becomes inconclusive with an explicit install command when the
-pinned executable is absent.
+The browser tests become inconclusive with an explicit install command when the
+pinned executable is absent, and the runner refuses that outcome: it writes a
+TRX, requires the selection to have recorded results, requires every recorded
+result to be `Passed`, and otherwise exits non-zero naming each non-passing test
+and the reason it recorded. Omitting `--install-browser` on a host without the
+pinned revision is therefore a hard failure rather than a run that reports
+success having executed almost nothing.
 The development container installs that pinned revision during post-create and
 retains it in the `hvo-skymonitor-playwright` volume across rebuilds.
 

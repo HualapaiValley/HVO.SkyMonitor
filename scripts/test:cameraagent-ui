@@ -61,9 +61,20 @@ if grep '<UnitTestResult ' "$TRX" | grep -vq 'outcome="Passed"'; then
     printf 'The UI evidence contains a result that is not Passed, so this run proved nothing.\n' >&2
     grep -o '<UnitTestResult [^>]*' "$TRX" | grep -v 'outcome="Passed"' \
         | sed -E 's/.*testName="([^"]*)".*outcome="([^"]*)".*/  \1: \2/' >&2
-    printf 'Reasons recorded by the tests themselves:\n' >&2
-    grep -o '<Message>[^<]*</Message>' "$TRX" \
-        | sed -E 's#<Message>(.*)</Message>#  \1#' | sort -u >&2
+    # An Assert.Inconclusive message is one line but a failing assertion wraps across lines, so
+    # close the element explicitly instead of matching a line or a sed range. A sed range is wrong
+    # here: when the open and close tags share a line the end address is only sought on later
+    # lines, so each range would run to the next message and swallow the captured output between.
+    reasons="$(awk '
+        /<Message>/ { sub(/.*<Message>/, ""); open = 1 }
+        open {
+            if (/<\/Message>/) { sub(/<\/Message>.*/, ""); open = 0 }
+            print "  " $0
+        }' "$TRX" | sort -u)" || reasons=''
+    if [[ -n "${reasons//[[:space:]]/}" ]]; then
+        printf 'Reasons recorded by the tests themselves:\n' >&2
+        printf '%s\n' "$reasons" >&2
+    fi
     exit 1
 fi
 printf '%s: %s results, every one Passed.\n' "${0##*/}" "$recorded"
