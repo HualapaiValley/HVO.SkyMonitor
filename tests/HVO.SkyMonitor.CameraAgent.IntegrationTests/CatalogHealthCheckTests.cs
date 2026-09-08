@@ -4,6 +4,7 @@ using System.Text.Json;
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 
 [TestClass]
+[TestCategory("Integration")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class CatalogHealthCheckTests
 {

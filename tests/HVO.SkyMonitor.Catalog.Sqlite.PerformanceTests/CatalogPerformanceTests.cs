@@ -11,6 +11,7 @@ using HVO.SkyMonitor.Catalog.Sqlite;
 namespace HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests;
 
 [TestClass]
+[TestCategory("Manual")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class CatalogPerformanceTests

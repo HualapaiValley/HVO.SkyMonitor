@@ -787,7 +787,6 @@ public sealed class RollingCombinationWindowLineageTests
 
     private static void Cleanup(string root)
     {
-        SqliteConnection.ClearAllPools();
         if (Directory.Exists(root))
         {
             Directory.Delete(root, recursive: true);

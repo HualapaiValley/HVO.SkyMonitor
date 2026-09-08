@@ -4,7 +4,6 @@ using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 [assembly: DoNotParallelize]
-[assembly: TestCategory("Integration")]
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 
