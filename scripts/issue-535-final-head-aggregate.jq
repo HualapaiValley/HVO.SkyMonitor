@@ -86,9 +86,11 @@ def heads_problems:
         ([$h | to_entries[] | .value] | unique) as $distinct
         | if ($distinct | length) <= 1 then []
           else
-            [ $h | to_entries[]
-              | problem("heads-not-aligned";
-                  "heads.\(.key) is \(.value); every head in this section must be the same commit") ]
+            # One condition, one problem. Emitting a problem per head reports the
+            # same misalignment five times and makes a count of problems useless.
+            [ problem("heads-not-aligned";
+                "heads name \($distinct | length) different commits, and must name one: "
+                + ([$h | to_entries[] | "\(.key)=\(.value)"] | join(", "))) ]
           end
       end;
 
