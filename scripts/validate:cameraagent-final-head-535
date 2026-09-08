@@ -16,7 +16,6 @@ export LC_ALL=C
 # Exit status is the contract: 0 only when the requested mode's readiness holds.
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly AGGREGATE="$SCRIPT_DIR/issue-535-final-head-aggregate.jq"
 
 usage() {
