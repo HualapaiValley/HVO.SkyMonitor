@@ -66,6 +66,12 @@ Generated\ Files/
 [Bb]uild[Ll]og.*
 *.trx
 
+# Deterministic TRX fixtures for scripts/test:trx-evidence-contract are inputs, not evidence.
+# The rule above exists to keep produced run output out of the repository; these files are
+# authored, tiny and required for the gate to run on a fresh clone, so they are exempted
+# narrowly rather than by relaxing the rule.
+!tests/fixtures/trx-evidence/*.trx
+
 # NUnit
 *.VisualState.xml
 TestResult.xml

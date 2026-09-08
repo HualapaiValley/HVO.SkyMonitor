@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<t:TestRun xmlns:t="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <t:Results><t:UnitTestResult testName="A" outcome="Passed" /></t:Results>
+</t:TestRun>

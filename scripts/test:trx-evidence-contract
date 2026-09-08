@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+# Deterministic gate for scripts/lib/trx-evidence.sh.
+#
+# Every case states the fixture, the expected exit status and a substring the output must
+# contain. The substring matters as much as the status: a check that refuses for the wrong
+# reason is a check that will accept for the wrong reason later, and an exit code alone cannot
+# tell those apart.
+#
+# The fixture set varies the SERIALISATION as deliberately as the content. The defect this
+# gate exists to prevent (#769) was not a wrong predicate — the predicate was right about
+# every outcome value it was ever shown. It was a right predicate applied to one assumed
+# layout, and a fixture set that varies only content proves the predicate and nothing about
+# the parse.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+readonly FIXTURES="$REPO_ROOT/tests/fixtures/trx-evidence"
+
+# shellcheck source=lib/trx-evidence.sh
+source "$SCRIPT_DIR/lib/trx-evidence.sh"
+
+failures=0
+cases=0
+
+expect() {
+    local fixture="$1" want_exit="$2" want_text="$3"
+    cases=$((cases + 1))
+    local out status
+    set +e
+    out="$(trx_assert_executed_and_passed "$FIXTURES/$fixture" 'gate' 2>&1)"
+    status=$?
+    set -e
+    if [[ "$status" != "$want_exit" ]] || [[ "$out" != *"$want_text"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL %s\n  expected exit=%s containing: %s\n  actual   exit=%s output:\n%s\n' \
+            "$fixture" "$want_exit" "$want_text" "$status" "$out" >&2
+    fi
+}
+
+# The same two passing results in three serialisations. All three must be accepted AND must
+# report two results: a line-based count reports one for the collapsed forms.
+expect expanded-all-passed.trx    0 '2 results, every one Passed'
+expect collapsed-all-passed.trx   0 '2 results, every one Passed'
+expect single-line-document.trx   0 '2 results, every one Passed'
+expect crlf-all-passed.trx        0 '2 results, every one Passed'
+
+# The same mixed pair in both serialisations. The collapsed one is the fail-open this fixes:
+# its line contains outcome="Passed", so a line-level invert reported that everything passed.
+expect expanded-mixed.trx         1 'B: NotExecuted'
+expect collapsed-mixed.trx        1 'B: NotExecuted'
+
+# Console output that merely looks like markup is not markup: "<" is escaped as "&lt;" in XML
+# character data, so an escaped element start-tag cannot match.
+expect stdout-quotes-markup.trx   0 '2 results, every one Passed'
+
+# CDATA is the exception to that rule — a raw "<" is legal inside it — so a CDATA-wrapped
+# start-tag does match. The consequence is fail-closed, and this fixture pins that direction:
+# a phantom non-Passed element refuses the run rather than admitting it.
+expect cdata-phantom-result.trx   1 'ghost: NotExecuted'
+
+# XML permits an unescaped ">" inside an attribute value, which truncates the match before
+# outcome=. The truncated element is refused for being unreadable rather than skipped.
+expect gt-in-attribute.trx        1 'unparseable result'
+
+# A start-tag whose attributes wrap across lines is legal XML and is not supported: grep is
+# line-oriented and the element name is not followed by a space on its own line, so the tag
+# matches nothing at all. That reads as an empty selection, which refuses — the fixture pins
+# the direction rather than the wording, because unsupported must never mean accepted.
+expect wrapped-start-tag.trx      1 'recorded no results'
+
+# A prefixed namespace is not what MSTest writes. Recorded as a limit rather than as support:
+# it reads as an empty selection, which refuses.
+expect prefixed-namespace.trx     1 'recorded no results'
+
+# An element with no outcome attribute is refused. An element this cannot parse is not
+# evidence that it passed.
+expect no-outcome-attribute.trx   1 'unparseable result'
+
+# Nothing selected, an empty file, and a file that is not there.
+expect zero-results.trx           1 'recorded no results'
+expect empty.trx                  1 'no results file was written'
+expect does-not-exist.trx         1 'no results file was written'
+
+# The case the whole family exists for: a skipped run reports ResultSummary outcome
+# "Completed" and exits zero, and every counter a validator would naturally check is zero.
+# Only the per-result outcome distinguishes it.
+expect skipped-run.trx            1 'A: NotExecuted'
+expect skipped-run.trx            1 'Reasons recorded by the tests themselves'
+
+if ((failures > 0)); then
+    printf '%s of %s TRX evidence contract cases failed.\n' "$failures" "$cases" >&2
+    exit 1
+fi
+printf 'All %s TRX evidence contract cases passed.\n' "$cases"
