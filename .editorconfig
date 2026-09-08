@@ -176,3 +176,17 @@ dotnet_diagnostic.CA2007.severity = none
 
 [tools/HVO.SkyMonitor.Deployment.ReleaseTool/**.cs]
 dotnet_diagnostic.CA2007.severity = none
+
+# Shared test sources compile-linked into every test project by tests/Directory.Build.props.
+#
+# Do not "fix" CA1515 here by making the type internal, however plainly the analyser asks for it. MSTest
+# discovers only public test classes unless the assembly declares [assembly: DiscoverInternals], and
+# exactly one project in this repository does. An internal test class therefore compiles everywhere and
+# runs nowhere, reporting success forever because it reports nothing at all. The type this rule points at
+# is the issue #754 connection-pool contract, whose entire job is to fail when something is wrong, so
+# complying with the analyser would disable the check while leaving every build green.
+#
+# A tool telling you to break the thing it is checking is more dangerous than a subtle bug, because the
+# instruction arrives with authority and a green build behind it.
+[tests/TestSettings/**.cs]
+dotnet_diagnostic.CA1515.severity = none
