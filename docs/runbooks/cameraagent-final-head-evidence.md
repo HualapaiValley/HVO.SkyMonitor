@@ -63,6 +63,25 @@ regardless of how favourable its timestamps look. Do not add a predicate that
 accepts the mtime relation as sufficient, and do not read a passing freshness check
 as meaning the artifact matches its source.
 
+### Fingerprint equality is not cleanliness
+
+The source section carries a start and an end fingerprint, and they must match: a
+tree that changed during a run invalidates everything produced across the change,
+because the recorded revision describes one tree while the run spanned two.
+
+**Equality does not imply the tree was clean.** A tree that was dirty from the
+beginning has an unchanged fingerprint, so a stability check alone is satisfied
+while the run executed modified code and stamped every artefact with the committed
+revision. This is not hypothetical: a campaign was nearly run that way, and the
+existing worktree guard would not have caught it, because it fingerprints at start
+and compares later.
+
+Cleanliness is therefore asserted separately, and the fixture
+`source-dirty-but-consistent` exists to keep it that way — matching fingerprints,
+dirty tree, refused as final evidence. Do not collapse the two checks on the
+reasoning that equal fingerprints prove a stable tree. They do. Stability is not
+the property in question.
+
 ### A revision must be the bound head, and `working-tree` is rejected by name
 
 An artifact's revision must equal the bound head exactly. The literal string

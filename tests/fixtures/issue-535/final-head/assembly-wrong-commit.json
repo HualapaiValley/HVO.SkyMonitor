@@ -28,14 +28,16 @@
     "reviewed": "428e346ef16c00f6a3257315c95384092b1b3290"
   },
   "source": {
-    "clean": true
+    "clean": true,
+    "endFingerprint": "F0",
+    "startFingerprint": "F0"
   },
   "testAssemblies": [
     {
       "configuration": "Release",
       "informationalVersion": "1.0.0+0000000000000000000000000000000000000000",
-      "mvid": "11111111-1111-1111-1111-111111111111",
-      "path": "tests/X/bin/Release/net10.0/X.dll",
+      "mvid": "m",
+      "path": "p",
       "sha256": "cc"
     }
   ]

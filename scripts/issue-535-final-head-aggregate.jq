@@ -96,6 +96,22 @@ def heads_problems:
 
 # Final evidence must be produced from a clean tree. A dirty tree means the source
 # fingerprint describes something no commit contains.
+# A tree that changed during the run invalidates every artefact produced across the
+# change, because the recorded revision describes one tree and the run spanned two.
+def source_stability_problems:
+    if (.source.startFingerprint // null) == null or (.source.endFingerprint // null) == null then
+        [ problem("source-fingerprint-absent";
+            "source has no start or end fingerprint, so nothing shows the tree held still") ]
+    elif .source.startFingerprint != .source.endFingerprint then
+        [ problem("source-fingerprint-changed";
+            "source fingerprint moved from \(.source.startFingerprint) to \(.source.endFingerprint) during the run") ]
+    else [] end;
+
+# Cleanliness is asserted separately from stability, and that separation is the
+# point rather than an accident. A consistently dirty tree has an unchanged
+# fingerprint, so equality is satisfied while the run executed modified code and
+# stamped every artefact with the committed revision. Equality proves the tree held
+# still; it never proves the tree matched the commit. Do not collapse these two.
 def source_clean_problems:
     if (.source.clean // null) == true then []
     else [ problem("source-not-clean";
@@ -136,7 +152,7 @@ def assembly_problems($bound):
 def all_problems($bound):
     revision_problems($bound) + claimability_problems + freshness_problems
     + admissibility_problems + heads_problems + command_problems
-    + assembly_problems($bound);
+    + assembly_problems($bound) + source_stability_problems;
 
 def evaluate($bound; $mode):
     (all_problems($bound)

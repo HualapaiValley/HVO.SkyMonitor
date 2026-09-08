@@ -12,11 +12,12 @@
   "commands": [
     {
       "argv": [
-        "x"
+        "dotnet",
+        "test"
       ],
       "commandId": "cmd-1",
       "exitCode": 0,
-      "receiptSha256": ""
+      "receiptSha256": "bb"
     }
   ],
   "heads": {
@@ -28,7 +29,7 @@
   },
   "source": {
     "clean": true,
-    "endFingerprint": "F0",
+    "endFingerprint": "F9",
     "startFingerprint": "F0"
   },
   "testAssemblies": [

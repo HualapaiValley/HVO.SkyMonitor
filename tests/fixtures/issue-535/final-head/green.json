@@ -28,7 +28,9 @@
     "reviewed": "428e346ef16c00f6a3257315c95384092b1b3290"
   },
   "source": {
-    "clean": true
+    "clean": true,
+    "endFingerprint": "F0",
+    "startFingerprint": "F0"
   },
   "testAssemblies": [
     {

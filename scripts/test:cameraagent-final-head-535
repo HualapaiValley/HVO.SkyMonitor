@@ -66,8 +66,15 @@ expect final local-but-not-final.json    1 "claimability-not-final"
 expect local heads-mixed.json            1 "heads-not-aligned"
 expect final heads-mixed.json            1 "heads-not-aligned"
 # A dirty tree is ordinary during development and inadmissible as final evidence.
-expect local source-dirty.json           0 ""
-expect final source-dirty.json           1 "source-not-clean"
+# A tree that moved during the run invalidates everything produced across the change.
+expect local source-fingerprint-moved.json    1 "source-fingerprint-changed"
+expect final source-fingerprint-moved.json    1 "source-fingerprint-changed"
+# The trap worth a fixture of its own: a consistently dirty tree has an unchanged
+# fingerprint, so a stability check alone is satisfied while the run executed
+# modified code under the committed revision. Cleanliness must be asserted
+# separately, and this case is what stops the two being collapsed later.
+expect local source-dirty-but-consistent.json 0 ""
+expect final source-dirty-but-consistent.json 1 "source-not-clean"
 
 # A failed run is retained as evidence of the failure and cannot support a final
 # claim. That is the third place local and final genuinely diverge.
