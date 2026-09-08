@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
@@ -376,19 +375,13 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         {
             using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
             login.EnsureSuccessStatusCode();
-            var html = await login.Content.ReadAsStringAsync().ConfigureAwait(false);
-            var match = Regex.Match(
-                html,
-                "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
-                RegexOptions.CultureInvariant);
-            if (!match.Success)
-            {
-                throw new InvalidOperationException("The local login antiforgery token was not rendered.");
-            }
+            var token = OwnerBootstrapSession.ExtractAntiforgeryToken(
+                await login.Content.ReadAsStringAsync().ConfigureAwait(false),
+                "standalone fixture owner login form");
 
             using var form = new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["__RequestVerificationToken"] = WebUtility.HtmlDecode(match.Groups[1].Value),
+                ["__RequestVerificationToken"] = token,
                 ["Input.Email"] = OwnerEmail,
                 ["Input.Password"] = OwnerPassword,
                 ["Input.RememberMe"] = "false",

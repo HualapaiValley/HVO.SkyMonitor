@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
-using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Data;
@@ -138,7 +137,9 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
         using var page = await client.GetAsync(
             new Uri("/Account/ReplaceTemporaryPassword", UriKind.Relative)).ConfigureAwait(false);
         page.EnsureSuccessStatusCode();
-        var token = ExtractAntiforgeryToken(await page.Content.ReadAsStringAsync().ConfigureAwait(false));
+        var token = OwnerBootstrapSession.ExtractAntiforgeryToken(
+            await page.Content.ReadAsStringAsync().ConfigureAwait(false),
+            $"{SessionName} temporary-password replacement form");
         using var form = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["__RequestVerificationToken"] = token,
@@ -170,7 +171,9 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
         {
             using var page = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
             page.EnsureSuccessStatusCode();
-            var token = ExtractAntiforgeryToken(await page.Content.ReadAsStringAsync().ConfigureAwait(false));
+            var token = OwnerBootstrapSession.ExtractAntiforgeryToken(
+                await page.Content.ReadAsStringAsync().ConfigureAwait(false),
+                $"{SessionName} login form");
             using var form = new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["__RequestVerificationToken"] = token,
@@ -192,16 +195,5 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
                 client.Dispose();
             }
         }
-    }
-
-    private static string ExtractAntiforgeryToken(string html)
-    {
-        var match = Regex.Match(
-            html,
-            "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
-            RegexOptions.CultureInvariant);
-        return match.Success
-            ? WebUtility.HtmlDecode(match.Groups[1].Value)
-            : throw new InvalidDataException("The antiforgery token was not rendered.");
     }
 }
