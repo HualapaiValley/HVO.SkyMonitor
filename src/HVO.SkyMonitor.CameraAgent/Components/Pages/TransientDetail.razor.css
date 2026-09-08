@@ -16,6 +16,12 @@ dl { display: grid; gap: .48rem; margin: .85rem 0 0; }
 dl div { display: flex; justify-content: space-between; gap: 1rem; }
 dt, .stage-absence { color: rgba(236,245,247,.67); }
 dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+/* The dd above asks for anywhere, but the inline code does not inherit it: vendored Bootstrap declares
+   code { word-wrap: break-word }, and word-wrap is an alias of overflow-wrap. break-word permits an
+   emergency break yet leaves min-content at the full unbroken run, so a 64-character identity keeps its
+   row, its grid track and the page wider than a narrow viewport. anywhere also reduces min-content,
+   which is what actually lets the row fit. */
+dd code { overflow-wrap: anywhere; }
 .wide { flex-direction: column; }.wide dd { text-align: left; }
 .stage-absence { margin-top: .85rem; }
 @media (max-width: 760px) { .detail-heading, .detail-state { align-items: flex-start; flex-direction: column; }.stage-grid { grid-template-columns: 1fr; }dl div { align-items: flex-start; flex-direction: column; gap: .15rem; }dd { text-align: left; } }
