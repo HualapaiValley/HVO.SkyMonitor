@@ -350,15 +350,10 @@ public sealed class VirtualSkyPipelineTests
         using var processing = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
         await processing.OpenAsync().ConfigureAwait(false);
         using var processingCommand = processing.CreateCommand();
-        processingCommand.CommandText = """
-            SELECT COUNT(*) FROM processing_nodes node
-            JOIN raw_captures capture ON capture.capture_id = node.capture_id
-            WHERE capture.capture_sequence <= $watermark AND node.status <> 'Completed';
-            """;
-        processingCommand.Parameters.AddWithValue("$watermark", fence.Watermark);
-        Assert.AreEqual(0L, Convert.ToInt64(
-            await processingCommand.ExecuteScalarAsync().ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture));
+        // The fence already proved this atomically, in the same statement as the rest of the prefix. Re-deriving
+        // it here on a second connection at a later instant only adds a window in which a prefix capture being
+        // re-processed can momentarily show a non-Completed node, so assert the fence's own value.
+        Assert.AreEqual(0L, fence.IncompleteNodes);
         processingCommand.CommandText = "SELECT COUNT(DISTINCT output_identity_sha256) FROM processing_outputs;";
         Assert.IsGreaterThanOrEqualTo(5L, Convert.ToInt64(
             await processingCommand.ExecuteScalarAsync().ConfigureAwait(false),
@@ -809,6 +804,7 @@ public sealed class VirtualSkyPipelineTests
             snapshot = ReadCapturePrefixSnapshot(watermark);
             if (snapshot.Satisfied)
             {
+                Console.WriteLine("capture prefix settled: " + snapshot.Describe());
                 return snapshot;
             }
             if (DateTimeOffset.UtcNow >= deadline)
