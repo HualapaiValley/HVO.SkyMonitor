@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Results>
+    <UnitTestResult testName="A" outcome="Passed"/>
+    <UnitTestResult testName="B" outcome="NotExecuted"/>
+  </Results>
+  <ResultSummary outcome="Completed"><Counters total="2" executed="2" passed="2" /></ResultSummary>
+</TestRun>

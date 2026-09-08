@@ -8,6 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
+# shellcheck source=lib/trx-evidence.sh
+source "$SCRIPT_DIR/lib/trx-evidence.sh"
 readonly BUNDLE="${1:-}"
 readonly RUN_ID="${GITHUB_RUN_ID:-local}"
 readonly RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-$(date -u '+%Y%m%d%H%M%S')-$$}"
@@ -430,11 +432,9 @@ for entry in \
         dotnet test "$project" --no-build --configuration Release --filter "$UNIT_FILTER" \
         --results-directory "$RESULTS/unit-$name" --logger "trx;LogFileName=unit-$name-arm64.trx"
     trx="$RESULTS/unit-$name/unit-$name-arm64.trx"
-    executed="$(grep -c '<UnitTestResult ' "$trx")"
-    (( executed > 0 )) || fail "$name Unit filter selected no tests"
-    if grep '<UnitTestResult ' "$trx" | grep -vq 'outcome="Passed"'; then
-        fail "$name Unit evidence contains a result that is not Passed"
-    fi
+    # Shared with scripts/test:cameraagent-ui; anchored to the result element rather than to the
+    # line, because a collapsed TRX defeats a line-oriented check in both directions (#769).
+    trx_assert_executed_and_passed "$trx" "$name Unit" || fail "$name Unit evidence did not record an executed, passing run"
 done
 printf 'unit-tests,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
 [[ "$(docker info --format '{{.ID}}')" == "$DOCKER_SERVER_ID" ]] || fail "Docker daemon changed after Unit tests"

@@ -5,6 +5,8 @@ set -euo pipefail
 export LC_ALL=C
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/trx-evidence.sh
+source "$SCRIPT_DIR/lib/trx-evidence.sh"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly CONFIGURATION="Release"
@@ -49,37 +51,8 @@ dotnet test "$PROJECT" \
 # so the command above succeeding proves only that nothing failed, not that anything ran. The result
 # summary cannot settle it either: a run whose cases all skipped records notExecuted="0" and
 # inconclusive="0", so both "no failures" and "no not-executed results" are true of a run that executed
-# nothing. Only the per-result outcome attribute is load-bearing. Refuse anything that is not Passed,
-# as scripts/test:cameraagent-arm64-ci does for the same reason.
-[[ -s "$TRX" ]] || { printf 'No results file was written to %s.\n' "$TRX" >&2; exit 1; }
-recorded="$(grep -c '<UnitTestResult ' "$TRX")" || recorded=0
-if ((recorded == 0)); then
-    printf 'The UI selection recorded no results; the filter no longer matches the assembly.\n' >&2
-    exit 1
-fi
-if grep '<UnitTestResult ' "$TRX" | grep -vq 'outcome="Passed"'; then
-    printf 'The UI evidence contains a result that is not Passed, so this run proved nothing.\n' >&2
-    grep -o '<UnitTestResult [^>]*' "$TRX" | grep -v 'outcome="Passed"' \
-        | sed -E 's/.*testName="([^"]*)".*outcome="([^"]*)".*/  \1: \2/' >&2
-    # An Assert.Inconclusive message is one line but a failing assertion wraps across lines, so
-    # close the element explicitly instead of matching a line or a sed range. A sed range is wrong
-    # here: when the open and close tags share a line the end address is only sought on later
-    # lines, so each range would run to the next message and swallow the captured output between.
-    # Deduplicate whole messages rather than lines: piping this through `sort -u` would alphabetise
-    # a wrapped message and splice unrelated ones through it, so an expected/actual pair could
-    # print out of order.
-    reasons="$(awk '
-        /<Message>/ { sub(/.*<Message>/, ""); open = 1; message = "" }
-        open {
-            closing = /<\/Message>/
-            if (closing) { sub(/<\/Message>.*/, ""); open = 0 }
-            message = message (message == "" ? "" : "\n") "  " $0
-            if (closing && !(message in seen)) { seen[message] = 1; print message }
-        }' "$TRX")" || reasons=''
-    if [[ -n "${reasons//[[:space:]]/}" ]]; then
-        printf 'Reasons recorded by the tests themselves:\n' >&2
-        printf '%s\n' "$reasons" >&2
-    fi
-    exit 1
-fi
-printf '%s: %s results, every one Passed.\n' "${0##*/}" "$recorded"
+# nothing. Only the per-result outcome attribute is load-bearing.
+#
+# The assertion itself lives in scripts/lib/trx-evidence.sh, shared with the ARM64 CI runner. It used to
+# live here as a line-oriented grep, which read a collapsed TRX wrongly in both directions — see #769.
+trx_assert_executed_and_passed "$TRX" "${0##*/}" || exit 1
