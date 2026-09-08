@@ -149,10 +149,53 @@ def assembly_problems($bound):
       | problem("assembly-not-at-bound-head";
           "\(.path): informational version \(.informationalVersion) does not carry the bound head") ];
 
+# --- paths ------------------------------------------------------------------
+# Evidence paths are relative to the campaign root and stay inside it. An absolute
+# path leaks the producing host's layout into a record meant to be portable, and a
+# traversal segment escapes the root entirely. Both are refused before any content
+# is considered, because a path this validator cannot reason about is a path whose
+# content it cannot vouch for.
+#
+# Symlink, hard-link, ownership and mode checks are deliberately absent here: they
+# are filesystem facts, not JSON facts, and belong to the compiled helper. Asserting
+# them in jq would look like coverage without being any.
+def path_problems:
+    [ .artifacts[]?
+      | select((.path // "") | test("^(/|[A-Za-z]:[\\\\/]|\\\\\\\\)"))
+      | problem("path-not-relative";
+          "\(.path): evidence paths are relative to the campaign root") ]
+  + [ .artifacts[]?
+      | select((.path // "") | test("(^|/)\\.\\.(/|$)"))
+      | problem("path-escapes-root";
+          "\(.path): contains a traversal segment and leaves the campaign root") ]
+  + ( [ .artifacts[]?.path ] as $paths
+      | ($paths | length) as $n
+      | (($paths | unique) | length) as $u
+      | if $n != $u then
+          [ problem("path-duplicated";
+              "\($n - $u) artifact path(s) appear more than once; each path identifies one artifact") ]
+        else [] end );
+
+# --- sanitisation -----------------------------------------------------------
+# Evidence is published, so it must not carry credentials or the addresses of the
+# services that produced it. These patterns are deliberately coarse: a false alarm
+# costs someone a rename, and a miss publishes a secret.
+def sanitisation_problems:
+    ( [ .artifacts[]? | tostring ] ) as $texts
+    | [ $texts[]
+        | select(test("(?i)(authorization|bearer|password|secret|api[-_]?key|private key|BEGIN [A-Z ]*PRIVATE KEY)"))
+        | problem("possible-secret-in-evidence";
+            "an artifact record contains credential-like text and must be sanitised before publication") ]
+    + [ $texts[]
+        | select(test("[a-z][a-z0-9+.-]*://[^/\\s\"]+"))
+        | problem("service-authority-in-evidence";
+            "an artifact record contains a URI authority, which names the producing host") ];
+
 def all_problems($bound):
     revision_problems($bound) + claimability_problems + freshness_problems
     + admissibility_problems + heads_problems + command_problems
-    + assembly_problems($bound) + source_stability_problems;
+    + assembly_problems($bound) + source_stability_problems
+    + path_problems + sanitisation_problems;
 
 def evaluate($bound; $mode):
     (all_problems($bound)

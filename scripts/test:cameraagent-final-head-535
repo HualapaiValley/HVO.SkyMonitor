@@ -87,6 +87,15 @@ expect final assembly-debug-build.json   1 "assembly-not-release"
 expect local assembly-wrong-commit.json  1 "assembly-not-at-bound-head"
 expect final assembly-wrong-commit.json  1 "assembly-not-at-bound-head"
 
+# Paths and sanitisation. Filesystem facts — symlinks, hard links, ownership,
+# mode — are not asserted here; they belong to the compiled helper, and claiming
+# them in jq would look like coverage without being any.
+expect final path-absolute.json          1 "path-not-relative"
+expect final path-traversal.json         1 "path-escapes-root"
+expect final path-duplicated.json        1 "path-duplicated"
+expect final secret-in-evidence.json     1 "possible-secret-in-evidence"
+expect final authority-in-evidence.json  1 "service-authority-in-evidence"
+
 # The result is canonical, so the same input must produce byte-identical output.
 # A validator whose output drifts between runs cannot be diffed across generations,
 # and a generation that cannot be diffed cannot be shown to be unchanged.

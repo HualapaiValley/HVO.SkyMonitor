@@ -1,0 +1,45 @@
+{
+  "artifacts": [
+    {
+      "admissible": true,
+      "claimability": "clean-source-attributed-review-required",
+      "note": "uploaded to https://minio.hvo.lan:9000/bucket",
+      "path": "evidence/a.json",
+      "sha256": "aa",
+      "sourceRevision": "428e346ef16c00f6a3257315c95384092b1b3290",
+      "sourceTree": "t"
+    }
+  ],
+  "commands": [
+    {
+      "argv": [
+        "dotnet",
+        "test"
+      ],
+      "commandId": "cmd-1",
+      "exitCode": 0,
+      "receiptSha256": "bb"
+    }
+  ],
+  "heads": {
+    "aggregate": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "candidateB": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "execution": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "protectedCi": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "reviewed": "428e346ef16c00f6a3257315c95384092b1b3290"
+  },
+  "source": {
+    "clean": true,
+    "endFingerprint": "F0",
+    "startFingerprint": "F0"
+  },
+  "testAssemblies": [
+    {
+      "configuration": "Release",
+      "informationalVersion": "1.0.0+428e346ef16c00f6a3257315c95384092b1b3290",
+      "mvid": "m",
+      "path": "tests/X/bin/Release/net10.0/X.dll",
+      "sha256": "cc"
+    }
+  ]
+}
