@@ -62,6 +62,12 @@ expect stdout-quotes-markup.trx   0 '2 results, every one Passed'
 # start-tag does match. The consequence is fail-closed, and this fixture pins that direction:
 # a phantom non-Passed element refuses the run rather than admitting it.
 expect cdata-phantom-result.trx   1 'ghost: NotExecuted'
+# The other direction, and the reason the pair exists: a CDATA-wrapped Passed phantom cannot
+# turn a refusal into an acceptance, because every real element is still tested — but it does
+# inflate the reported count, and the count is the line a human reads. Two real results are
+# reported as three. Pinned so the discrepancy is a known, documented cost rather than a
+# surprise, and so that anyone who later makes the count authoritative has to face it.
+expect cdata-phantom-passed.trx   0 '3 results, every one Passed'
 
 # XML permits an unescaped ">" inside an attribute value, which truncates the match before
 # outcome=. The truncated element is refused for being unreadable rather than skipped.

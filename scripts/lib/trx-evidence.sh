@@ -32,9 +32,13 @@
 #
 #   1. CDATA is the exception to the escaping rule: inside <![CDATA[ ... ]]> a raw "<" is
 #      legal, so a CDATA-wrapped element start-tag does produce a literal match. The
-#      consequence here is fail-closed — a phantom element either adds a Passed that changes
-#      nothing, or adds a non-Passed that refuses a run — so the escaping argument is not
-#      load-bearing for these assertions. It WOULD be load-bearing for anything that reads a
+#      consequence here is fail-closed for the VERDICT: a phantom non-Passed element refuses a
+#      run that would otherwise be accepted, and a phantom Passed element cannot turn a refusal
+#      into an acceptance, because every real element is still matched and tested. It is not
+#      free, though, and the earlier wording that a Passed phantom "changes nothing" was wrong:
+#      it inflates the reported result count, which is the line a human reads. So the escaping
+#      argument is not load-bearing for the verdict, and the count is advisory rather than
+#      authoritative whenever a file contains CDATA. It WOULD be load-bearing for anything that reads a
 #      singleton element such as <Counters>, where a phantom match changes which value is
 #      read. If a counters assertion is ever added here, it must require exactly one such
 #      element and must not treat that requirement as defensive tidiness.

@@ -5,5 +5,5 @@
       testName="A"
       outcome="Passed" />
   </Results>
-  <ResultSummary outcome="Completed"><Counters total="2" executed="2" passed="2" /></ResultSummary>
+  <ResultSummary outcome="Completed"><Counters total="1" executed="1" passed="1" /></ResultSummary>
 </TestRun>
