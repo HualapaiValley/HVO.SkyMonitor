@@ -11,9 +11,31 @@ export LC_ALL=C
 # assert about itself -- that the checker REJECTS bad syntax, and that discovery reaches the
 # directories the enumeration missed -- rather than only that the checker exits zero.
 
+# Guarded before anything else, and using only constructs Bash 3.2 can parse, so an old
+# interpreter gets this message rather than a confusing cascade. Keep bash-5-only syntax
+# below this point: a construct above it would make the guard unreachable on the very
+# interpreter it exists to turn away.
+if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+    printf '%s requires Bash 5.1 or newer; running under %s (%s).\n' \
+        "${BASH_SOURCE[0]##*/}" "${BASH_VERSION}" "${BASH}" >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly CHECKER="$SCRIPT_DIR/ci:shell-syntax"
+
+# Invoke the checker under THIS interpreter, never through its shebang. Its shebang is
+# `/usr/bin/env bash`, so a bare "$CHECKER" inherits whatever bash PATH resolves; on a host
+# where that is below 5.1 every functional case below receives the version refusal instead of
+# the behaviour it asserts, and a self-test that only ever observes its own refusal reports a
+# red that says nothing about the gate. Pinning the interpreter here is the same fix the
+# checker applies to `bash -n`, one level up: the earlier fix pinned the interpreter that does
+# the work but not the one that runs the checker. Reported from a host whose PATH bash is
+# 3.2.57.
+run_checker() {
+    "$BASH" "$CHECKER" "$@"
+}
 
 WORK="$(mktemp -d)"
 readonly WORK
@@ -28,7 +50,7 @@ expect() {
     cases=$((cases + 1))
     local out status
     set +e
-    out="$("$CHECKER" "$@" 2>&1)"
+    out="$(run_checker "$@" 2>&1)"
     status=$?
     set -e
     if [[ "$status" != "$want_exit" ]] || [[ "$out" != *"$want_text"* ]]; then
@@ -74,7 +96,7 @@ predicate_case() {
     local fixture="$1" want="$2"
     cases=$((cases + 1))
     local selected
-    selected="$("$CHECKER" --list "$WORK/$fixture")"
+    selected="$(run_checker --list "$WORK/$fixture")"
     if [[ "$want" == 'accept' && "$selected" != *"$fixture" ]]; then
         failures=$((failures + 1))
         printf 'FAIL shebang predicate excluded %s\n' "$fixture" >&2
@@ -96,7 +118,7 @@ predicate_case no-shebang           reject
 
 # Discovery must reach the library directory whose omission from the enumerated list is the
 # reported defect, and must not regress to checking nothing.
-discovered="$("$CHECKER" --list)"
+discovered="$(run_checker --list)"
 for required in scripts/lib/trx-evidence.sh scripts/lib/registry-blob.sh .devcontainer/install-playwright.sh; do
     cases=$((cases + 1))
     if ! grep -qxF "$required" <<<"$discovered"; then
@@ -125,10 +147,44 @@ for excluded in scripts/lib/atomic-directory-publish.py scripts/lib/component-in
     fi
 done
 
+# The version refusal is the one case that CANNOT run under a pinned modern interpreter, so
+# it needs a deliberately old one. Look for a real pre-5.1 bash; HVO_LEGACY_BASH overrides the
+# search. Where none exists the case is reported as skipped by name -- an untested guard that
+# announces itself is recoverable, one that silently counts as passed is the failure mode this
+# whole PR is about.
+legacy_bash=''
+for candidate in "${HVO_LEGACY_BASH-}" /bin/bash /usr/bin/bash /bin/sh; do
+    [[ -n "$candidate" && -x "$candidate" ]] || continue
+    if "$candidate" -c '((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1)))' 2>/dev/null; then
+        legacy_bash="$candidate"
+        break
+    fi
+done
+
+if [[ -n "$legacy_bash" ]]; then
+    cases=$((cases + 1))
+    # shellcheck disable=SC2016 # BASH_VERSION must expand in the legacy shell, not this one.
+    legacy_version="$("$legacy_bash" -c 'printf %s "$BASH_VERSION"' 2>/dev/null)"
+    set +e
+    refusal="$("$legacy_bash" "$CHECKER" 2>&1)"
+    refusal_status=$?
+    set -e
+    if ((refusal_status == 0)) || [[ "$refusal" != *'requires Bash 5.1 or newer'* ]] \
+        || [[ "$refusal" != *"$legacy_version"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL version guard under %s (%s)\n  expected non-zero naming the version; got exit=%s:\n%s\n' \
+            "$legacy_bash" "$legacy_version" "$refusal_status" "$refusal" >&2
+    fi
+    skipped_note="version guard executed under $legacy_bash ($legacy_version)"
+else
+    skipped_note='version guard NOT executed: no pre-5.1 bash on this host (set HVO_LEGACY_BASH to cover it)'
+fi
+
 if ((failures > 0)); then
     printf '%s/%s ci:shell-syntax cases failed.\n' "$failures" "$cases" >&2
     exit 1
 fi
 
-printf 'ci:shell-syntax contract: %s cases passed (%s files discovered).\n' \
-    "$cases" "$discovered_count"
+printf 'ci:shell-syntax contract: %s cases passed (%s files discovered, Bash %s).\n' \
+    "$cases" "$discovered_count" "${BASH_VERSION}"
+printf '  %s\n' "$skipped_note"
