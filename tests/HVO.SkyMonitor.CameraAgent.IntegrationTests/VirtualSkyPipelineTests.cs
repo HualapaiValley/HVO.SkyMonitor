@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -209,6 +210,7 @@ public sealed class VirtualSkyPipelineTests
     [TestCategory("Integration")]
     public async Task ConfiguredPipelinePublishesPersistsReportsAndQueuesVirtualFrame()
     {
+        AssertReadinessQualificationIsSelective();
         using var scope = Fixture.CreateCameraAgentScope();
         using var hostTelemetryScope = Fixture.CreateHostScope();
         var services = scope.ServiceProvider;
@@ -226,13 +228,34 @@ public sealed class VirtualSkyPipelineTests
         using var activityListener = CreateActivityListener(activityNames, activityTagValues);
         var listenerStartedUtc = DateTimeOffset.UtcNow;
 
-        await WaitUntilAsync(() => telemetry.Latest is { FrameStored: true } sample &&
-            sample.StartedUtc > listenerStartedUtc &&
-            latest.TryGetSnapshot(FrameArtifactRole.Raw, out _) &&
-            latest.TryGetSnapshot(FrameArtifactRole.Combined, out _) &&
-            latest.TryGetSnapshot(out _), TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        // Baseline every observable role and the telemetry sample before waiting, so a role that is
+        // never republished is rejected instead of silently qualifying an incoherent observation.
+        var baseline = CaptureReadinessBaseline(telemetry, latest, listenerStartedUtc);
+        var observation = await WaitForPipelineObservationAsync(
+            telemetry, latest, baseline, ReadinessBudget).ConfigureAwait(false);
 
-        var sample = telemetry.Latest!;
+        // The shared-fixture half of the readiness diagnostic must render every required field and
+        // attribute the current consumer, so a future timeout reports the owner rather than a
+        // generic message.
+        var runtimeDiagnostic = Fixture.DescribeRuntimeState();
+        foreach (var field in RequiredRuntimeDiagnosticFields)
+        {
+            StringAssert.Contains(runtimeDiagnostic, field, StringComparison.Ordinal);
+        }
+        StringAssert.Contains(
+            runtimeDiagnostic,
+            "current=" + nameof(ConfiguredPipelinePublishesPersistsReportsAndQueuesVirtualFrame),
+            StringComparison.Ordinal);
+        // The warm-up barrier must report the elapsed time it measured, not merely its label: the
+        // measurement is how a first capture drifting toward the fixture budget becomes visible in
+        // the retained result instead of only when it turns fatal.
+        Assert.IsFalse(
+            runtimeDiagnostic.Contains("warm readiness: elapsed=<not measured>", StringComparison.Ordinal),
+            "The shared fixture did not record the warm-up it measured before the tests were admitted.");
+
+        // Every later assertion consumes this one coherent observation instead of rereading the
+        // mutable shared singletons, so the whole test describes a single capture.
+        var sample = observation.Telemetry;
         Assert.IsTrue(sample.FrameStored);
         CollectionAssert.AreEqual(
             ExpectedProcessingSteps,
@@ -243,7 +266,7 @@ public sealed class VirtualSkyPipelineTests
                 .Where(step => !step.Succeeded)
                 .Select(step => $"{step.Name}: {step.ErrorMessage}")));
 
-        Assert.IsTrue(latest.TryGetSnapshot(FrameArtifactRole.Raw, out var raw));
+        var raw = observation.Raw;
         Assert.AreEqual(CameraPixelFormat.Mono16, raw.PixelFormat);
         Assert.AreEqual("VirtualSky", raw.Metadata!.SourceId);
         Assert.IsNotNull(raw.Metadata.Scene);
@@ -270,9 +293,9 @@ public sealed class VirtualSkyPipelineTests
         Assert.AreEqual(1, transientProvenance.SensorPrimitiveCount);
         Assert.AreEqual(4095, ReadMono16(raw.PixelData.Span, raw.Width * 2, 1, 1));
 
-        Assert.IsTrue(latest.TryGetSnapshot(FrameArtifactRole.Combined, out var combined));
+        var combined = observation.Combined;
         Assert.AreEqual(CameraPixelFormat.Mono16, combined.PixelFormat);
-        Assert.IsTrue(latest.TryGetSnapshot(out var preview));
+        var preview = observation.Preview;
         Assert.AreEqual(CameraPixelFormat.Mono8, preview.PixelFormat);
         Assert.AreEqual("AnnotatedPreview", preview.Metadata!.SourceId);
         Assert.AreEqual("integration-annotation-v2", preview.RecipeVersion);
@@ -388,17 +411,19 @@ public sealed class VirtualSkyPipelineTests
         // Demoted to informational, because each counts work still in flight on a producer that never stops:
         // retry and replay-retry. Replay retry is demoted on exactly the reasoning that demotes ordinary retry,
         // a retry that later succeeds is recovery rather than a defect, and the terminal counterpart stays gated.
-        await WaitUntilAsync(() =>
-        {
-            var state = processingStateService.Snapshot;
-            return state.TerminalCount == 0 &&
-                state.ProcessingQuarantineCount == 0 &&
-                state.MissingProductCount == 0 &&
-                state.ReplayTerminalCount == 0 &&
-                !state.DurableStateUnavailable &&
-                !state.ReconciliationFailed;
-        }, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
-        var processingState = processingStateService.Snapshot;
+        // The observation that satisfied the wait is the one asserted, per #682: the capture loop runs for the
+        // whole test, so a snapshot re-read afterwards can already describe a later capture.
+        var processingState = await WaitForObservationAsync(
+            () => processingStateService.Snapshot is
+            {
+                TerminalCount: 0,
+                ProcessingQuarantineCount: 0,
+                MissingProductCount: 0,
+                ReplayTerminalCount: 0,
+                DurableStateUnavailable: false,
+                ReconciliationFailed: false
+            } state ? state : null,
+            TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         Console.WriteLine(string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
             $"processing beyond the fence: pendingCount={processingState.PendingCount} retryCount={processingState.RetryCount} "
@@ -630,6 +655,328 @@ public sealed class VirtualSkyPipelineTests
             metricMeasurements).ConfigureAwait(false);
     }
 
+    /// <summary>Unchanged semantic readiness budget for the configured pipeline observation.</summary>
+    private static readonly TimeSpan ReadinessBudget = TimeSpan.FromSeconds(20);
+
+    private static readonly string[] RequiredRuntimeDiagnosticFields =
+    [
+        "fixture consumers:",
+        "capture service:",
+        "fleet capture:",
+        "capture admission:",
+        "raw ingress:",
+        "capture processing:",
+        "durable lane:",
+        "camera agent logs",
+        "warm readiness: elapsed="
+    ];
+
+    private static VirtualSkyPipelineBaseline CaptureReadinessBaseline(
+        ICaptureTelemetryProvider telemetry,
+        ILatestFrameAccessor latest,
+        DateTimeOffset listenerStartedUtc)
+    {
+        latest.TryGetSnapshot(FrameArtifactRole.Raw, out var raw);
+        latest.TryGetSnapshot(FrameArtifactRole.Combined, out var combined);
+        latest.TryGetSnapshot(out var preview);
+        return new VirtualSkyPipelineBaseline(listenerStartedUtc, telemetry.Latest, raw, combined, preview);
+    }
+
+    /// <summary>
+    /// Waits for one internally consistent pipeline observation inside the unchanged budget and
+    /// returns it, or fails with the elapsed time, the unsatisfied requirement, and the shared
+    /// fixture's consumer, worker, durable-state and log evidence.
+    /// </summary>
+    private static async Task<VirtualSkyPipelineObservation> WaitForPipelineObservationAsync(
+        ICaptureTelemetryProvider telemetry,
+        ILatestFrameAccessor latest,
+        VirtualSkyPipelineBaseline baseline,
+        TimeSpan budget)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        VirtualSkyPipelineQualification qualification;
+        LatestFrameSnapshot? raw;
+        LatestFrameSnapshot? combined;
+        LatestFrameSnapshot? preview;
+        CaptureTelemetrySample? sample;
+        do
+        {
+            // Telemetry is read on both sides of the three role reads and the iteration is discarded
+            // unless both reads return the same instance. Reading the roles first bounds the pair
+            // below, rejecting telemetry older than the roles; the second read bounds it above,
+            // rejecting a pair whose telemetry could belong to a capture after the observed roles.
+            var sampleBeforeRoles = telemetry.Latest;
+            latest.TryGetSnapshot(FrameArtifactRole.Raw, out raw);
+            latest.TryGetSnapshot(FrameArtifactRole.Combined, out combined);
+            latest.TryGetSnapshot(out preview);
+            sample = telemetry.Latest;
+            qualification = VirtualSkyPipelineReadiness.Qualify(
+                baseline, sampleBeforeRoles, raw, combined, preview, sample);
+            if (qualification.Observation is { } observed)
+            {
+                return observed;
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+        }
+        while (stopwatch.Elapsed < budget);
+
+        throw new AssertFailedException(
+            "The configured VirtualSky pipeline did not publish one coherent observation." + Environment.NewLine +
+            VirtualSkyPipelineReadiness.DescribeObservationState(
+                baseline,
+                qualification.ReasonCode,
+                stopwatch.Elapsed,
+                budget,
+                telemetry.GetSnapshot(),
+                sample,
+                raw,
+                combined,
+                preview) +
+            Fixture.DescribeRuntimeState());
+    }
+
+    /// <summary>
+    /// Exercises the extracted readiness gate against synthetic states so its selectivity is proven
+    /// deterministically on every run. The unchanged-role case is the defect reported in issue #682:
+    /// telemetry newer than the listener boundary while every role snapshot is still the baseline.
+    /// </summary>
+    private static void AssertReadinessQualificationIsSelective()
+    {
+        var listenerStartedUtc = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var baselineUtc = listenerStartedUtc.AddSeconds(-1);
+        var advancedUtc = listenerStartedUtc.AddSeconds(1);
+        var baselineRaw = ProbeSnapshot(41, baselineUtc, "VirtualSky", CameraPixelFormat.Mono16);
+        var baselineCombined = ProbeSnapshot(41, baselineUtc, "RollingCombination", CameraPixelFormat.Mono16);
+        var baselinePreview = ProbeSnapshot(41, baselineUtc, "AnnotatedPreview", CameraPixelFormat.Mono8);
+        var baseline = new VirtualSkyPipelineBaseline(
+            listenerStartedUtc,
+            ProbeSample(baselineUtc),
+            baselineRaw,
+            baselineCombined,
+            baselinePreview);
+        var raw = ProbeSnapshot(42, advancedUtc, "VirtualSky", CameraPixelFormat.Mono16);
+        var combined = ProbeSnapshot(42, advancedUtc, "RollingCombination", CameraPixelFormat.Mono16);
+        var preview = ProbeSnapshot(42, advancedUtc, "AnnotatedPreview", CameraPixelFormat.Mono8);
+        var sample = ProbeSample(listenerStartedUtc.AddSeconds(2));
+
+        ExpectRejected(VirtualSkyPipelineReadiness.RawMissing, null, combined, preview, sample);
+        ExpectRejected(VirtualSkyPipelineReadiness.CombinedMissing, raw, null, preview, sample);
+        ExpectRejected(VirtualSkyPipelineReadiness.PreviewMissing, raw, combined, null, sample);
+
+        // The issue #682 defect: newer successful telemetry with unchanged baseline roles.
+        ExpectRejected(
+            VirtualSkyPipelineReadiness.RawUnchanged, baselineRaw, baselineCombined, baselinePreview, sample);
+        ExpectRejected(VirtualSkyPipelineReadiness.CombinedUnchanged, raw, baselineCombined, baselinePreview, sample);
+        ExpectRejected(VirtualSkyPipelineReadiness.PreviewUnchanged, raw, combined, baselinePreview, sample);
+
+        ExpectRejected(
+            VirtualSkyPipelineReadiness.TimestampMismatch,
+            raw,
+            combined,
+            ProbeSnapshot(42, advancedUtc.AddMilliseconds(500), "AnnotatedPreview", CameraPixelFormat.Mono8),
+            sample);
+        ExpectRejected(
+            VirtualSkyPipelineReadiness.SequenceMismatch,
+            raw,
+            ProbeSnapshot(43, advancedUtc, "RollingCombination", CameraPixelFormat.Mono16),
+            preview,
+            sample);
+        ExpectRejected(
+            VirtualSkyPipelineReadiness.SequencePartial,
+            ProbeSnapshot(null, advancedUtc, "VirtualSky", CameraPixelFormat.Mono16),
+            combined,
+            preview,
+            sample);
+        ExpectRejected(
+            VirtualSkyPipelineReadiness.NotAdvanced,
+            ProbeSnapshot(42, baselineUtc, "VirtualSky", CameraPixelFormat.Mono16),
+            ProbeSnapshot(42, baselineUtc, "RollingCombination", CameraPixelFormat.Mono16),
+            ProbeSnapshot(42, baselineUtc, "AnnotatedPreview", CameraPixelFormat.Mono8),
+            sample);
+
+        ExpectRejected(VirtualSkyPipelineReadiness.TelemetryMissing, raw, combined, preview, null);
+        ExpectRejected(VirtualSkyPipelineReadiness.TelemetryStale, raw, combined, preview, ProbeSample(baselineUtc));
+        ExpectRejected(
+            VirtualSkyPipelineReadiness.TelemetryFrameNotStored,
+            raw, combined, preview, ProbeSample(listenerStartedUtc.AddSeconds(2), frameStored: false));
+        ExpectRejected(
+            VirtualSkyPipelineReadiness.TelemetryStepsMissing,
+            raw, combined, preview, ProbeSample(listenerStartedUtc.AddSeconds(2), includeSteps: false));
+        ExpectRejected(
+            VirtualSkyPipelineReadiness.TelemetryStepFailed,
+            raw, combined, preview, ProbeSample(listenerStartedUtc.AddSeconds(2), stepsSucceeded: false));
+        ExpectRejected(
+            VirtualSkyPipelineReadiness.TelemetryOlderThanRoles,
+            ProbeSnapshot(43, listenerStartedUtc.AddSeconds(3), "VirtualSky", CameraPixelFormat.Mono16),
+            ProbeSnapshot(43, listenerStartedUtc.AddSeconds(3), "RollingCombination", CameraPixelFormat.Mono16),
+            ProbeSnapshot(43, listenerStartedUtc.AddSeconds(3), "AnnotatedPreview", CameraPixelFormat.Mono8),
+            sample);
+
+        // A candidate whose telemetry instance changed while the three roles were being read may
+        // span two captures: the roles of capture N paired with the telemetry of capture N+1 passes
+        // every one-sided check, including older-than-roles, and reintroduces exactly the mixing
+        // this observation exists to eliminate.
+        var laterCaptureSample = ProbeSample(listenerStartedUtc.AddSeconds(4));
+        ExpectRejectedAcrossReads(
+            VirtualSkyPipelineReadiness.TelemetryUnstable, sample, raw, combined, preview, laterCaptureSample);
+        ExpectRejectedAcrossReads(
+            VirtualSkyPipelineReadiness.TelemetryUnstable, null, raw, combined, preview, sample);
+
+        // A requirement that is unsatisfied on its own merits still names itself, so a readiness
+        // timeout reports the stalled part of the pipeline rather than a churning telemetry buffer.
+        ExpectRejectedAcrossReads(
+            VirtualSkyPipelineReadiness.RawUnchanged,
+            sample,
+            baselineRaw,
+            baselineCombined,
+            baselinePreview,
+            laterCaptureSample);
+
+        // One unchanged telemetry instance on both sides of the role reads is the qualifying case.
+        var stable = VirtualSkyPipelineReadiness.Qualify(baseline, sample, raw, combined, preview, sample);
+        Assert.IsTrue(stable.IsQualified, stable.ReasonCode);
+        Assert.AreSame(sample, stable.Observation!.Telemetry);
+        Assert.AreSame(raw, stable.Observation.Raw);
+
+        // The same qualifying state, asserted field by field. A caller holding a single telemetry
+        // read supplies it on both sides now that the one-sided form is private; that is exactly
+        // equivalent, because the stability comparison of one instance with itself always holds.
+        var qualified = VirtualSkyPipelineReadiness.Qualify(baseline, sample, raw, combined, preview, sample);
+        Assert.IsTrue(qualified.IsQualified, qualified.ReasonCode);
+        Assert.AreEqual(VirtualSkyPipelineReadiness.Qualified, qualified.ReasonCode);
+        var observation = qualified.Observation!;
+        Assert.AreEqual(42L, observation.CaptureSequence);
+        Assert.AreEqual(advancedUtc, observation.CaptureTimestampUtc);
+        Assert.AreSame(sample, observation.Telemetry);
+        Assert.AreSame(raw, observation.Raw);
+        Assert.AreSame(combined, observation.Combined);
+        Assert.AreSame(preview, observation.Preview);
+
+        // The live durable path rehydrates raw frames without any Extra dictionary, so the shape the
+        // fixture actually publishes carries no capture sequence and must still qualify on the frame
+        // timestamp alone.
+        var sequencelessRaw = ProbeSnapshot(null, advancedUtc, "VirtualSky", CameraPixelFormat.Mono16);
+        var sequencelessCombined = ProbeSnapshot(null, advancedUtc, "RollingCombination", CameraPixelFormat.Mono16);
+        var sequencelessPreview = ProbeSnapshot(null, advancedUtc, "AnnotatedPreview", CameraPixelFormat.Mono8);
+        var sequenceless = VirtualSkyPipelineReadiness.Qualify(
+            baseline, sample, sequencelessRaw, sequencelessCombined, sequencelessPreview, sample);
+        Assert.IsTrue(sequenceless.IsQualified, sequenceless.ReasonCode);
+        Assert.IsNull(sequenceless.Observation!.CaptureSequence);
+        Assert.AreEqual(advancedUtc, sequenceless.Observation.CaptureTimestampUtc);
+        ExpectRejected(
+            VirtualSkyPipelineReadiness.TimestampMismatch,
+            sequencelessRaw,
+            sequencelessCombined,
+            ProbeSnapshot(null, advancedUtc.AddMilliseconds(500), "AnnotatedPreview", CameraPixelFormat.Mono8),
+            sample);
+
+        // The timeout diagnostic must name the unsatisfied requirement and every observed field.
+        var diagnostic = VirtualSkyPipelineReadiness.DescribeObservationState(
+            baseline,
+            VirtualSkyPipelineReadiness.RawUnchanged,
+            TimeSpan.FromSeconds(20),
+            ReadinessBudget,
+            new CaptureTelemetrySnapshot(
+                [baseline.Telemetry!, sample],
+                CaptureTelemetryAggregate.FromSamples([baseline.Telemetry!, sample])),
+            sample,
+            baselineRaw,
+            baselineCombined,
+            baselinePreview);
+        string[] requiredDiagnosticFragments =
+        [
+            "reason: " + VirtualSkyPipelineReadiness.RawUnchanged,
+            "elapsed: 20.000 s of 20.000 s budget (exceeded: True)",
+            "listenerStartedUtc: " + listenerStartedUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+            "captureSequence=41",
+            "sourceId=AnnotatedPreview",
+            "changed=False",
+            "failed steps: <none>",
+            "telemetry buffer: count=2",
+            "postListener=1"
+        ];
+        foreach (var fragment in requiredDiagnosticFragments)
+        {
+            StringAssert.Contains(diagnostic, fragment, StringComparison.Ordinal);
+        }
+
+        // The single baseline instance is shared with every probe, so an "unchanged" role really is
+        // the baseline object rather than an equal copy.
+        void ExpectRejected(
+            string expectedReasonCode,
+            LatestFrameSnapshot? probeRaw,
+            LatestFrameSnapshot? probeCombined,
+            LatestFrameSnapshot? probePreview,
+            CaptureTelemetrySample? probeSample)
+        {
+            // One synthetic telemetry read supplied on both sides: the stability requirement is
+            // trivially satisfied, so the probe isolates the requirement it is named for.
+            var result = VirtualSkyPipelineReadiness.Qualify(
+                baseline, probeSample, probeRaw, probeCombined, probePreview, probeSample);
+            Assert.IsFalse(result.IsQualified, $"The readiness gate accepted a state it must reject: {expectedReasonCode}.");
+            Assert.AreEqual(expectedReasonCode, result.ReasonCode);
+        }
+
+        void ExpectRejectedAcrossReads(
+            string expectedReasonCode,
+            CaptureTelemetrySample? probeSampleBeforeRoles,
+            LatestFrameSnapshot? probeRaw,
+            LatestFrameSnapshot? probeCombined,
+            LatestFrameSnapshot? probePreview,
+            CaptureTelemetrySample? probeSampleAfterRoles)
+        {
+            var result = VirtualSkyPipelineReadiness.Qualify(
+                baseline, probeSampleBeforeRoles, probeRaw, probeCombined, probePreview, probeSampleAfterRoles);
+            Assert.IsFalse(result.IsQualified, $"The readiness gate accepted a state it must reject: {expectedReasonCode}.");
+            Assert.AreEqual(expectedReasonCode, result.ReasonCode);
+        }
+    }
+
+    private static LatestFrameSnapshot ProbeSnapshot(
+        long? captureSequence,
+        DateTimeOffset timestampUtc,
+        string sourceId,
+        CameraPixelFormat pixelFormat)
+    {
+        var extra = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (captureSequence is { } sequence)
+        {
+            extra[VirtualSkyPipelineReadiness.CaptureSequenceMetadataKey] =
+                sequence.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return new LatestFrameSnapshot(
+            timestampUtc,
+            64,
+            48,
+            pixelFormat,
+            new byte[16],
+            new FrameMetadata(TimeSpan.FromMilliseconds(10), 1.0, 20.0, sourceId, extra));
+    }
+
+    private static CaptureTelemetrySample ProbeSample(
+        DateTimeOffset startedUtc,
+        bool frameStored = true,
+        bool stepsSucceeded = true,
+        bool includeSteps = true)
+        => new(
+            startedUtc,
+            TimeSpan.FromMilliseconds(500),
+            TimeSpan.FromMilliseconds(10),
+            1.0,
+            null,
+            CaptureMode.Still,
+            false,
+            frameStored,
+            TimeSpan.FromMilliseconds(12),
+            TimeSpan.FromMilliseconds(40),
+            includeSteps
+                ? [.. ExpectedProcessingSteps.Select(name => new CaptureProcessingStepTelemetry(
+                    name,
+                    TimeSpan.FromMilliseconds(1),
+                    stepsSucceeded || name != "LocalStorage",
+                    stepsSucceeded || name != "LocalStorage" ? null : "durable publication refused"))]
+                : []);
+
 #endif
     private static async Task WriteRuntimeEvidenceAsync(
         RawIngressSnapshot ingress,
@@ -739,23 +1086,76 @@ public sealed class VirtualSkyPipelineTests
         Assert.Fail("The configured preview lineage did not reach a durable raw artifact.");
     }
 
+    /// <summary>
+    /// Waits for a condition inside a stopwatch-measured budget. On timeout the failure names the
+    /// exact condition and source line that did not become true, so the separate waits in this test
+    /// are distinguishable instead of sharing one generic message.
+    /// </summary>
     private static async Task WaitUntilAsync(
         Func<bool> condition,
         TimeSpan timeout,
-        TimeSpan? pollInterval = null)
+        TimeSpan? pollInterval = null,
+        [CallerArgumentExpression(nameof(condition))] string? conditionExpression = null,
+        [CallerLineNumber] int conditionLineNumber = 0)
     {
-        var deadline = DateTimeOffset.UtcNow + timeout;
+        ArgumentNullException.ThrowIfNull(condition);
+        var stopwatch = Stopwatch.StartNew();
         while (!condition())
         {
-            if (DateTimeOffset.UtcNow >= deadline)
+            if (stopwatch.Elapsed >= timeout)
             {
-                Assert.Fail("Timed out waiting for the configured VirtualSky pipeline.");
+                throw CreateWaitTimeout(stopwatch.Elapsed, timeout, conditionLineNumber, conditionExpression);
             }
             await Task.Delay(pollInterval ?? TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
         }
     }
 
     /// <summary>
+    /// Polls until <paramref name="observe"/> yields an observation and returns that exact value, so
+    /// callers assert on the state that satisfied the wait rather than on a later reread. The
+    /// capture loop runs for the whole test, so a reread can already describe a different capture.
+    /// </summary>
+    private static async Task<T> WaitForObservationAsync<T>(
+        Func<T?> observe,
+        TimeSpan timeout,
+        TimeSpan? pollInterval = null,
+        [CallerArgumentExpression(nameof(observe))] string? observeExpression = null,
+        [CallerLineNumber] int observeLineNumber = 0)
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(observe);
+        var stopwatch = Stopwatch.StartNew();
+        while (true)
+        {
+            if (observe() is { } observed)
+            {
+                return observed;
+            }
+            if (stopwatch.Elapsed >= timeout)
+            {
+                throw CreateWaitTimeout(stopwatch.Elapsed, timeout, observeLineNumber, observeExpression);
+            }
+            await Task.Delay(pollInterval ?? TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+        }
+    }
+
+    private static AssertFailedException CreateWaitTimeout(
+        TimeSpan elapsed,
+        TimeSpan timeout,
+        int lineNumber,
+        string? expression)
+        => new(
+            FormattableString.Invariant(
+                $"Timed out waiting for the configured VirtualSky pipeline after ") +
+            FormattableString.Invariant(
+                $"{elapsed.TotalSeconds:F3} s of {timeout.TotalSeconds:F3} s ") +
+            FormattableString.Invariant(
+                $"at line {lineNumber}: {expression ?? "<unknown condition>"}")
+#if COMBINED_INTEGRATION_TESTS
+            + Environment.NewLine + Fixture.DescribeRuntimeState()
+#endif
+            );
+
     /// One atomic view of the capture prefix at or below <paramref name="Watermark"/>, plus evidence of work
     /// beyond it. Every field comes from a single statement, so they all describe the same database state
     /// rather than a sequence of states a live producer moved through between reads.

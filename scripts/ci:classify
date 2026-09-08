@@ -263,7 +263,7 @@ is_host_private_path() {
     src/HVO.SkyMonitor.CameraAgent/Components/* | src/HVO.SkyMonitor.CameraAgent/Properties/* | src/HVO.SkyMonitor.CameraAgent/wwwroot/*)
       return 0
       ;;
-    src/HVO.SkyMonitor.CameraAgent.Common/Background/* | src/HVO.SkyMonitor.CameraAgent.Common/Diagnostics/* | src/HVO.SkyMonitor.CameraAgent.Common/Frames/* | src/HVO.SkyMonitor.CameraAgent.Common/Gallery/*)
+    src/HVO.SkyMonitor.CameraAgent.Common/Background/* | src/HVO.SkyMonitor.CameraAgent.Common/Diagnostics/* | src/HVO.SkyMonitor.CameraAgent.Common/Gallery/*)
       return 0
       ;;
     src/HVO.SkyMonitor.CameraAgent.Common/Imaging/* | src/HVO.SkyMonitor.CameraAgent.Common/Logging/* | src/HVO.SkyMonitor.CameraAgent.Common/Properties/* | src/HVO.SkyMonitor.CameraAgent.Common/Reflection/* | src/HVO.SkyMonitor.CameraAgent.Common/Scheduling/* | src/HVO.SkyMonitor.CameraAgent.Common/SkyMap/* | src/HVO.SkyMonitor.CameraAgent.Common/Storage/*)
