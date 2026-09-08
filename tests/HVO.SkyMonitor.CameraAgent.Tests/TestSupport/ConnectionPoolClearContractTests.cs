@@ -40,14 +40,35 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// them, so the constraint is invisible from inside the code it governs.
 /// </para>
 /// <para>
-/// Those two assembly markers are read only from a file's prologue, meaning the region after using
-/// directives and before the first namespace or type declaration, which is the only place C# permits a
-/// global attribute. Anything past that point is provably not one however it is spelled. Line anchoring
-/// alone was not enough and shipped a real defect: a raw string literal's content genuinely begins at
-/// column zero, so a file that merely quoted the opt-out attribute, which is the ordinary act of a test
-/// holding a sample of the text it documents, read as declaring it and silently excluded its entire
-/// assembly from this scan while the guard still reported green. A literal appearing inside a prologue is
-/// the one case left, and rather than guess, this reports it and asks for the literal to be moved.
+/// The two markers are matched differently, and deliberately. The opt-out is honoured only where it is
+/// unambiguously a declaration: inside the file's prologue, meaning the region after using directives and
+/// before the first namespace or type declaration, which is the only place C# permits a global attribute,
+/// and then only in what remains of that prologue once comments and conditional regions are removed. The
+/// opt-in is read from the whole file with nothing removed at all.
+/// </para>
+/// <para>
+/// The asymmetry is the point, because the two fail in opposite directions. Missing an opt-out means
+/// scanning an assembly that opted out, which produces a finding someone reads. Missing an opt-in means
+/// dropping an entire assembly from the scan with nothing said. So the opt-out is read strictly and the
+/// opt-in loosely, and every inaccuracy in either lands on the side of scanning more.
+/// </para>
+/// <para>
+/// Three attempts were needed to get that right, and each earlier one shipped a real false green with a
+/// genuine offending call still present. Matching the marker anywhere in a file let this guard's own string
+/// literals exclude its own assembly. Line anchoring did not fix it, because a raw string literal's content
+/// genuinely begins at column zero, so a file quoting the attribute read as declaring it. Restricting to
+/// the prologue did not fix it either, because a prologue legitimately contains text that is not a
+/// declaration: a marker inside a block comment, or inside an <c>#if</c> that is never defined, or in the
+/// dead branch of an <c>#else</c>. Commenting an attribute out is the most ordinary thing anyone does to
+/// one, so the rare case was closed first and the common ones were left.
+/// </para>
+/// <para>
+/// What remains is bounded and lands on the safe side. An opt-out spelled across several lines, or with a
+/// Unicode escape in its identifier, is not matched, so its assembly is scanned. Comment removal is
+/// textual, so a line comment containing a block-comment opener can over-strip, which again only scans
+/// more. A string literal inside a prologue is the one case that is neither matched nor safely ignorable,
+/// since a literal can forge either marker, and rather than guess this reports the file and asks for the
+/// literal to be moved.
 /// </para>
 /// <para>
 /// The general rule behind that, worth more than the instance: an exclusion marker deserves stricter
@@ -116,6 +137,12 @@ public sealed class ConnectionPoolClearContractTests
     private static readonly Regex PrologueTerminator = new(
         @"^[ \t]*(namespace\b|(public|internal|private|protected|static|sealed|abstract|partial|unsafe|file|class|struct|record|interface|enum|delegate)\b|\[\s*(?!assembly\s*:|module\s*:))",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Multiline);
+
+    private static readonly Regex BlockComment = new(
+        @"/\*.*?\*/", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Singleline);
+
+    private static readonly Regex LineComment = new(
+        @"//[^\n]*", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     // A prologue has no executable code, so it should never contain a string literal that could disguise an
     // attribute. If one appears, this cannot tell a declaration from quoted content, and it says so rather
@@ -242,15 +269,26 @@ public sealed class ConnectionPoolClearContractTests
             {
                 continue;
             }
-            var prologues = EnumerateSources(directory)
+            var sources = EnumerateSources(directory)
                 .Where(static file => !string.Equals(Path.GetFileName(file), ThisFileName, StringComparison.Ordinal))
-                .Select(file => PrologueOf(File.ReadAllText(file)))
+                .Select(File.ReadAllText)
                 .ToList();
-            if (prologues.Any(static prologue => AssemblyDoNotParallelize.IsMatch(prologue)))
+
+            // The opt-out is honoured only where it is unambiguously a declaration: in the prologue, and in
+            // the part of it left after comments and conditional regions are removed. Everything discarded
+            // there is provably not a declaration, and being wrong in this direction only means scanning an
+            // assembly that opted out, which produces a finding someone reads rather than silence.
+            var declarations = sources.Select(static source =>
+                StripCommentsAndConditionalRegions(PrologueOf(source))).ToList();
+            if (declarations.Any(static declaration => AssemblyDoNotParallelize.IsMatch(declaration)))
             {
                 continue;
             }
-            var declaresItself = prologues.Any(static prologue => AssemblyParallelize.IsMatch(prologue));
+
+            // The opt-in is read from the whole file with nothing removed, because its failure direction is
+            // the opposite: a missed opt-in drops an entire assembly from the scan silently, while a spurious
+            // one only scans an assembly that did not need it. Reading it loosely is the safe error.
+            var declaresItself = sources.Any(static source => AssemblyParallelize.IsMatch(source));
             var linksSharedSettings = File.ReadAllText(project)
                 .Contains("MSTestSettings.cs", StringComparison.Ordinal);
             if (declaresItself || linksSharedSettings)
@@ -269,6 +307,43 @@ public sealed class ConnectionPoolClearContractTests
 
     private static string FormatNames(List<string> directories) =>
         directories.Count == 0 ? "none" : string.Join(", ", directories.Select(Path.GetFileName));
+
+    /// <summary>
+    /// A prologue reduced to the text that can actually be a declaration. Comments and conditional regions
+    /// are removed rather than interpreted: a marker inside a block comment or inside any <c>#if</c> is not
+    /// a declaration this guard can rely on, and no string handling is needed because a prologue carrying a
+    /// literal has already failed the ambiguity check above.
+    /// </summary>
+    private static string StripCommentsAndConditionalRegions(string prologue)
+    {
+        var stripped = LineComment.Replace(BlockComment.Replace(prologue, string.Empty), string.Empty);
+        var kept = new System.Text.StringBuilder();
+        var depth = 0;
+        foreach (var line in stripped.Split('\n'))
+        {
+            var trimmed = line.TrimStart();
+            if (trimmed.StartsWith("#if", StringComparison.Ordinal))
+            {
+                depth++;
+                continue;
+            }
+            if (trimmed.StartsWith("#endif", StringComparison.Ordinal))
+            {
+                depth = Math.Max(0, depth - 1);
+                continue;
+            }
+            // #else and #elif open a branch of a region that is already being discarded.
+            if (trimmed.StartsWith("#el", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            if (depth == 0)
+            {
+                kept.Append(line).Append('\n');
+            }
+        }
+        return kept.ToString();
+    }
 
     /// <summary>
     /// The part of a file in which an assembly attribute can legally appear: after using directives and
