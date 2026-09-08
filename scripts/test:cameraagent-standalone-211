@@ -254,6 +254,139 @@ dotnet build "$PROJECT" --no-restore --no-incremental --configuration Release -w
 assert_worktree_unchanged
 readonly TEST_ASSEMBLY="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll"
 readonly TEST_ASSEMBLY_SHA256="$(sha256sum "$TEST_ASSEMBLY" | cut -d' ' -f1)"
+readonly TEST_OUTPUT_DIR="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0"
+
+# The browser evidence is gated inside the test by an Assert.Inconclusive, and a skipped MSTest returns
+# zero, so a host with no pinned Chromium produced "Test Run Successful" having opened no page at all.
+# Resolve the pinned browser here, before the first trial, so a campaign that cannot produce browser
+# evidence stops with the cause named instead of reporting a result it never obtained. The driver is asked
+# rather than a path being guessed, so this answers with the same install location the test resolves.
+verify_pinned_browser() {
+    local report location identity chrome
+    if ! report="$(PLAYWRIGHT_DRIVER_SEARCH_PATH="$TEST_OUTPUT_DIR" dotnet exec \
+            --runtimeconfig "$TEST_OUTPUT_DIR/HVO.SkyMonitor.CameraAgent.AcceptanceTests.runtimeconfig.json" \
+            --depsfile "$TEST_OUTPUT_DIR/HVO.SkyMonitor.CameraAgent.AcceptanceTests.deps.json" \
+            "$TEST_OUTPUT_DIR/Microsoft.Playwright.dll" install --dry-run chromium 2>&1)"; then
+        printf 'Could not ask the Playwright driver where the pinned Chromium lives:\n%s\n' "$report" >&2
+        exit 2
+    fi
+    # The report lists chromium, chromium-headless-shell and ffmpeg. Take the chromium block only; the
+    # headless shell is a different browser and satisfying the guard with it would be the same substitution
+    # this check exists to refuse.
+    identity="$(printf '%s\n' "$report" \
+        | awk '/^Chrome for Testing .*playwright chromium v[0-9]+\)$/ { print; exit }')"
+    location="$(printf '%s
+' "$report" \
+        | awk '/^Chrome for Testing .*playwright chromium v[0-9]+\)$/ { seen = 1; next }
+               seen && /Install location:/ { sub(/^[[:space:]]*Install location:[[:space:]]*/, ""); print; exit }')"
+    if [[ -z "$identity" || -z "$location" ]]; then
+        printf 'The Playwright driver did not report a pinned Chromium install location:\n%s\n' "$report" >&2
+        exit 2
+    fi
+    # The location is absent exactly when the browser is missing, and under pipefail a failing find would
+    # abort this check before it could say so — a fail-closed guard that exits silently is the defect this
+    # is here to remove.
+    chrome=""
+    if [[ -d "$location" ]]; then
+        chrome="$(find "$location" -maxdepth 2 -type f -name chrome -perm -u+x 2>/dev/null | head -n 1 || true)"
+    fi
+    if [[ -z "$chrome" ]]; then
+        printf 'The pinned Playwright Chromium is not installed, so this campaign cannot produce browser evidence.\n' >&2
+        printf '  required: %s\n' "$identity" >&2
+        printf '  expected at: %s\n' "$location" >&2
+        printf '  install it with: scripts/test:cameraagent-ui --install-browser\n' >&2
+        exit 2
+    fi
+    BROWSER_IDENTITY="$identity"
+    BROWSER_EXECUTABLE="$chrome"
+    printf 'Pinned browser verified: %s\n  %s\n' "$identity" "$chrome"
+}
+verify_pinned_browser
+readonly BROWSER_IDENTITY BROWSER_EXECUTABLE
+
+# The TRX is written on every trial, but until now it was only retained under Phase 14 and never inspected,
+# so the artefact recording what actually happened was the one nobody read. Assert against it here, on every
+# trial, whether or not Phase 14 retention is on.
+#
+# Read "executed" and "passed", not "notExecuted" or "inconclusive". A skipped run records notExecuted="0"
+# and inconclusive="0" in ResultSummary, so a validator that checked either of those would see green on a
+# run that executed nothing. The truth survives only in the executed and passed counts and in the per-result
+# outcome attribute, and this checks both.
+# A jq gate that evaluates false exits 1 and prints nothing, so under set -e the campaign dies wordlessly
+# and a failed gate is indistinguishable from a crash. That is what produced the silent exit on #738, where
+# the acceptance test passed and the campaign still stopped without a message. Every gate says which one it
+# was and which artefact it read.
+# For gates whose jq program spans several lines, the program is left as it stands and only its silence is
+# fixed. Without this the compound simply returns non-zero and set -e ends the campaign with nothing said.
+gate_failed() {
+    printf 'The %s gate did not pass, reading %s.\n' "$1" "$2" >&2
+    return 1
+}
+
+assert_gate() {
+    local file="$1"
+    local description="$2"
+    shift 2
+    if [[ ! -s "$file" ]]; then
+        printf 'The %s gate has no evidence to read at %s.\n' "$description" "$file" >&2
+        return 1
+    fi
+    if ! jq --exit-status "$@" "$file" >/dev/null; then
+        printf 'The %s gate did not pass, reading %s.\n' "$description" "$file" >&2
+        return 1
+    fi
+}
+
+assert_trial_executed_and_passed() {
+    local trx="$1"
+    local label="$2"
+    local results counters executed passed unpassed
+    if [[ ! -s "$trx" ]]; then
+        printf '%s produced no TRX at %s, so nothing records whether its tests ran.\n' "$label" "$trx" >&2
+        return 1
+    fi
+    # Match element start-tags rather than lines. One-element-per-line is a habit of a particular writer,
+    # not a property of the format, and this repository already produces a collapsed TRX
+    # (scripts/test:phase14-component). A line-level check reads a collapsed file wrongly in both
+    # directions: a line holding one Passed beside a NotExecuted satisfies a line-level invert, and a
+    # line-level count reports the number of lines rather than the number of results.
+    #
+    # Anchoring to the element is also what makes this immune to text that merely looks like markup:
+    # "<" must be escaped as "&lt;" in XML character data, so the literal "<Counters " or
+    # "<UnitTestResult " cannot appear inside StdOut. That is a stronger guarantee than matching on a
+    # leading space, which does not distinguish an attribute from console output that quotes one.
+    results="$(grep -o '<UnitTestResult [^>]*' "$trx" || true)"
+    if [[ -z "$results" ]]; then
+        printf '%s selected no tests, so its console output describes a run that executed nothing.\n' "$label" >&2
+        return 1
+    fi
+    # Anything without a readable outcome is refused rather than skipped: an element this cannot parse
+    # is not evidence that it passed.
+    unpassed="$(printf '%s\n' "$results" | grep -v 'outcome="Passed"' || true)"
+    if [[ -n "$unpassed" ]]; then
+        printf '%s contains a result that is not Passed:\n' "$label" >&2
+        printf '%s\n' "$unpassed" | grep -o 'testName="[^"]*"\|outcome="[^"]*"' | head -n 8 >&2
+        printf '  A skipped or inconclusive result is not a reduced pass; it is no result at all.\n' >&2
+        return 1
+    fi
+    # Read the counters out of the Counters element itself, not out of the first line that happens to
+    # contain the attribute name. A genuine pass whose StdOut quotes ' executed="0"' was refused by the
+    # line-based read, which is a fail-closed defect in a guard whose whole purpose is to be trusted.
+    counters="$(grep -o '<Counters [^>]*' "$trx" || true)"
+    if [[ "$(printf '%s\n' "$counters" | grep -c '<Counters ')" != 1 ]]; then
+        printf '%s does not contain exactly one Counters element, so its totals cannot be read.\n' "$label" >&2
+        return 1
+    fi
+    executed="$(printf '%s' "$counters" | sed -n 's/.*[[:space:]]executed="\([0-9]*\)".*/\1/p')"
+    passed="$(printf '%s' "$counters" | sed -n 's/.*[[:space:]]passed="\([0-9]*\)".*/\1/p')"
+    if [[ -z "$executed" || -z "$passed" ]] || ((executed == 0)) || ((passed != executed)); then
+        printf '%s TRX counters do not show every selected test executing and passing: executed=%s passed=%s\n' \
+            "$label" "${executed:-<absent>}" "${passed:-<absent>}" >&2
+        return 1
+    fi
+    printf '%s evidence verified: %s results, executed=%s passed=%s\n' \
+        "$label" "$(printf '%s\n' "$results" | grep -c '<UnitTestResult ')" "$executed" "$passed"
+}
 
 active_project=""
 active_env=""
@@ -400,6 +533,14 @@ EOF
         --logger "trx;LogFileName=$result_file" \
         --logger 'console;verbosity=normal' 8>&-
     assert_worktree_unchanged
+    assert_trial_executed_and_passed "$trial_result/$result_file" "$trial"
+    # Record which browser actually ran, so a later reader can tell a real trial from one that never opened
+    # a page. Without it the evidence is silent on the single fact that distinguishes them.
+    jq --null-input \
+        --arg identity "$BROWSER_IDENTITY" \
+        --arg executable "$BROWSER_EXECUTABLE" \
+        '{ pinnedBrowser: { identity: $identity, executable: $executable } }' \
+        > "$trial_result/evidence/browser.json"
     if [[ "$collect_phase14" == true ]]; then
         shopt -s nullglob
         local raw_trx_files=("$trial_result"/*.trx)
@@ -497,7 +638,7 @@ EOF
       }
     ' > "$trial_result/evidence/central-traffic-gate.json"
     docker stop --timeout 10 "hvo211-$suffix-collector" "hvo211-$suffix-central-deny" >/dev/null
-    jq --exit-status '.passed == true' "$trial_result/evidence/central-traffic-gate.json" >/dev/null
+    assert_gate "$trial_result/evidence/central-traffic-gate.json" 'central traffic' '.passed == true'
     cp -a "$trial_local/telemetry" "$trial_result/evidence/runtime"
     local raw_logs="$trial_local/raw-telemetry-logs.json"
     cp "$trial_result/evidence/runtime/logs.json" "$raw_logs"
@@ -835,7 +976,7 @@ EOF
       (.unsupportedMetricKeys | length) == 0 and
       (.forbiddenMetricValues | length) == 0 and
       (.excessiveMetricCardinality | length) == 0
-    ' "$trial_result/evidence/runtime/telemetry-scan.json" >/dev/null
+    ' "$trial_result/evidence/runtime/telemetry-scan.json" >/dev/null || gate_failed 'telemetry scan' "$trial_result/evidence/runtime/telemetry-scan.json"
     rm -f "$raw_logs"
     local sanitization_scan="$trial_result/evidence/runtime/sanitization-scan.json"
     local sanitization_matches="$trial_local/.sanitization-matches"
@@ -872,7 +1013,7 @@ EOF
         '{schemaVersion: $schemaVersion, matchedFiles: ($matches | unique), passed: ($matches | length == 0)}' \
         > "$sanitization_scan"
     rm -f "$sanitization_matches"
-    jq --exit-status '.passed == true' "$sanitization_scan" >/dev/null
+    assert_gate "$sanitization_scan" 'trial sanitization scan' '.passed == true'
     local collector_rg_status=0
     rg --ignore-case 'exporter.*(error|failed)|connection refused|retrying' \
         "$trial_result/evidence/collector.log" >/dev/null || collector_rg_status=$?
@@ -1156,12 +1297,12 @@ jq --exit-status --argjson declaredBoundedTrialFootprintBytes "$DECLARED_BOUNDED
      .finalDenyGateCount == 6 and .finalDenyHits == 0 and
      .allPassed == true and .retainedFilesystemWithinDeclaredBound == true and
      ([.candidateGates[]] | all) and .w6Ready == true' \
-    "$RESULTS/five-trial-summary.json" >/dev/null
+    "$RESULTS/five-trial-summary.json" >/dev/null || gate_failed 'five-trial summary' "$RESULTS/five-trial-summary.json"
 jq --exit-status '.result.passed == true and (.captures | length) == 5 and
     .centralTrafficAttempts == 0 and .centralHandlerAttempts == 0' \
-    "$RESULTS/mono8-control/evidence/issue-211-mono8.json" >/dev/null
+    "$RESULTS/mono8-control/evidence/issue-211-mono8.json" >/dev/null || gate_failed 'mono8 control profile' "$RESULTS/mono8-control/evidence/issue-211-mono8.json"
 jq --exit-status '.passed == true and .finalDenyHits == 0' \
-    "$RESULTS/mono8-control/evidence/central-traffic-gate.json" >/dev/null
+    "$RESULTS/mono8-control/evidence/central-traffic-gate.json" >/dev/null || gate_failed 'mono8 central traffic' "$RESULTS/mono8-control/evidence/central-traffic-gate.json"
 jq -s '
   {
     schemaVersion: "issue-211-telemetry-summary-v1",
@@ -1200,8 +1341,8 @@ jq -s '{schemaVersion: "issue-211-trial-sanitization-summary-v1", trialCount: le
   failedTrials: [to_entries[] | select(.value.passed != true) | .key],
   passed: (length == 6 and all(.[]; .passed == true))}' \
   "$RESULTS"/*/evidence/runtime/sanitization-scan.json > "$RESULTS/trial-sanitization-summary.json"
-jq --exit-status '.passed == true' "$RESULTS/telemetry-summary.json" >/dev/null
-jq --exit-status '.passed == true' "$RESULTS/trial-sanitization-summary.json" >/dev/null
+assert_gate "$RESULTS/telemetry-summary.json" 'telemetry summary' '.passed == true'
+assert_gate "$RESULTS/trial-sanitization-summary.json" 'trial sanitization summary' '.passed == true'
 root_scan_matches="$RESULTS/.root-sanitization-matches"
 root_scan_status=0
 rg --text --files-with-matches --null --hidden --ignore-case \
@@ -1227,7 +1368,7 @@ jq -n \
     '{schemaVersion: "issue-211-root-sanitization-scan-v1", matchedFiles: ($matches | unique),
       passed: ($matches | length == 0)}' > "$RESULTS/root-sanitization-scan.json"
 rm -f "$root_scan_matches"
-jq --exit-status '.passed == true' "$RESULTS/root-sanitization-scan.json" >/dev/null
+assert_gate "$RESULTS/root-sanitization-scan.json" 'root sanitization scan' '.passed == true'
 assert_no_owned_acceptance_resources
 jq -n '{schemaVersion: "issue-211-cleanup-gate-v1", ownedResourceCount: 0, passed: true}' \
     > "$RESULTS/cleanup-gate.json"
@@ -1271,7 +1412,7 @@ jq -n \
   }
 ' > "$RESULTS/final-acceptance-summary.json"
 jq --exit-status '.acceptanceReady == true and ([.gates[]] | all)' \
-    "$RESULTS/final-acceptance-summary.json" >/dev/null
+    "$RESULTS/final-acceptance-summary.json" >/dev/null || gate_failed 'final acceptance summary' "$RESULTS/final-acceptance-summary.json"
 run_inventory="$RESULTS/.run-manifest.jsonl"
 : > "$run_inventory"
 shopt -s globstar nullglob dotglob
