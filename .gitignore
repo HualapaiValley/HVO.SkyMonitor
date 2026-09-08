@@ -65,6 +65,9 @@ Generated\ Files/
 [Tt]est[Rr]esult*/
 [Bb]uild[Ll]og.*
 *.trx
+# Test output is never committed, but a real TRX kept deliberately as a fixture is not
+# output -- it is evidence a synthetic file cannot replace. Narrow, explicit exception.
+!tests/fixtures/**/*.trx
 
 # NUnit
 *.VisualState.xml

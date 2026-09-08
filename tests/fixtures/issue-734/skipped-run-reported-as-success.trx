@@ -1,0 +1,41 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="10ba3c93-c1eb-4bc1-ad7f-db603e0d7f58" name="@build-host 2026-09-08 01:02:49" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-09-08T01:02:49.5833873+00:00" queuing="2026-09-08T01:02:49.5833873+00:00" start="2026-09-08T01:02:48.6602726+00:00" finish="2026-09-08T01:02:49.5896784+00:00" />
+  <TestSettings name="default" id="cc54150f-a755-414f-a729-0cc75a8b7207">
+    <Deployment runDeploymentRoot="_build-host_2026-09-08_01_02_49" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="eff0242f-ed64-4371-badb-1662ea1490a5" testId="1ac6688a-c948-8597-b1b3-16918f906fd6" testName="FullCatalogAsi676StandaloneAsync" computerName="build-host" duration="00:00:00.3231552" startTime="2026-09-08T01:02:49.1130702+00:00" endTime="2026-09-08T01:02:49.4683482+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="NotExecuted" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="eff0242f-ed64-4371-badb-1662ea1490a5">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.Inconclusive. Install the pinned Playwright Chromium with scripts/test:cameraagent-ui --install-browser.</Message>
+          <StackTrace>   at HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.FullCatalogAsi676StandaloneAsync() in /repo/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/StandaloneW6DockerAcceptanceTests.cs:line 136
+   at Microsoft.VisualStudio.TestPlatform.MSTest.TestAdapter.Execution.TestMethodInfo.ExecuteInternalAsync(Object[] arguments, CancellationTokenSource timeoutTokenSource)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="FullCatalogAsi676StandaloneAsync" storage="/repo/tests/hvo.skymonitor.cameraagent.acceptancetests/bin/release/net10.0/hvo.skymonitor.cameraagent.acceptancetests.dll" id="1ac6688a-c948-8597-b1b3-16918f906fd6">
+      <TestCategory>
+        <TestCategoryItem TestCategory="Manual" />
+      </TestCategory>
+      <Execution id="eff0242f-ed64-4371-badb-1662ea1490a5" />
+      <TestMethod codeBase="/repo/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll" adapterTypeName="executor://mstestadapter/v4" className="HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests" name="FullCatalogAsi676StandaloneAsync" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="1ac6688a-c948-8597-b1b3-16918f906fd6" executionId="eff0242f-ed64-4371-badb-1662ea1490a5" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Completed">
+    <Counters total="1" executed="0" passed="0" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>Test 'FullCatalogAsi676StandaloneAsync' was skipped in the test run.
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>
