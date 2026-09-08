@@ -90,11 +90,19 @@ expect final assembly-wrong-commit.json  1 "assembly-not-at-bound-head"
 # #719 replay profiles, #197 admissibility, and central traffic.
 expect final replay-profile-missing.json    1 "replay-profiles-not-exact"
 expect final replay-profile-extra.json      1 "replay-profiles-not-exact"
-expect final replay-nodes-reordered.json    1 "replay-nodes-not-identical"
 expect final replay-output-published.json   1 "replay-output-published"
 expect final replay-live-dispatch.json      1 "replay-live-dispatch"
 expect final dual-agent-diagnostic.json     1 "dual-agent-not-citable"
 expect final central-traffic-nonzero.json   1 "central-traffic-observed"
+
+# Each replay profile is checked against #719's canonical ordered fourteen nodes,
+# not against the other profile. The absent case is the regression fixture for the
+# defect this replaced: two profiles that both omit the key used to compare equal,
+# so missing evidence scored as matching evidence and the record was acceptanceReady.
+# One problem per profile here is deliberate — two profiles are two assertions.
+expect local replay-nodes-absent.json       1 "replay-nodes-absent,replay-nodes-absent"
+expect final replay-nodes-absent.json       1 "replay-nodes-absent,replay-nodes-absent"
+expect final replay-nodes-reordered.json    1 "replay-nodes-not-canonical"
 
 # A deferral is not a neutral state. A record carrying imported CI slots is
 # refused, because a shape-only check in a file named for provenance is how a
@@ -102,14 +110,33 @@ expect final central-traffic-nonzero.json   1 "central-traffic-observed"
 expect local ci-slots-present.json       1 "ci-slots-unverifiable"
 expect final ci-slots-present.json       1 "ci-slots-unverifiable"
 
-# Paths and sanitisation. Filesystem facts — symlinks, hard links, ownership,
-# mode — are not asserted here; they belong to the compiled helper, and claiming
-# them in jq would look like coverage without being any.
+# Paths. Filesystem facts — symlinks, hard links, ownership, mode — are not
+# asserted here; they belong to the compiled helper, and claiming them in jq would
+# look like coverage without being any.
 expect final path-absolute.json          1 "path-not-relative"
 expect final path-traversal.json         1 "path-escapes-root"
 expect final path-duplicated.json        1 "path-duplicated"
-expect final secret-in-evidence.json     1 "possible-secret-in-evidence"
-expect final authority-in-evidence.json  1 "service-authority-in-evidence"
+
+# Sanitisation by construction. A field the schema does not name, and a value
+# without the shape its field requires, are both refused without anything being
+# recognised in them.
+expect local section-unknown.json        1 "evidence-section-unknown"
+expect final section-unknown.json        1 "evidence-section-unknown"
+expect local field-unknown.json          1 "evidence-field-unknown"
+expect final field-unknown.json          1 "evidence-field-unknown"
+expect local field-shape-invalid.json    1 "evidence-field-shape-invalid"
+expect final field-shape-invalid.json    1 "evidence-field-shape-invalid"
+
+# Declared free text is refused in final mode and kept locally — the fourth genuine
+# mode divergence. These two fixtures differ only in what the note says: one is
+# ordinary prose, the other carries a synthetic connection-string credential and a
+# service authority of exactly the kind the deleted scan failed to recognise. They
+# must produce identical results, because the refusal never examines the text. If
+# these two ever diverge, detection has crept back in.
+expect local free-text-note.json                 0 ""
+expect final free-text-note.json                 1 "evidence-free-text-in-final"
+expect local free-text-note-credential.json      0 ""
+expect final free-text-note-credential.json      1 "evidence-free-text-in-final"
 
 # The result is canonical, so the same input must produce byte-identical output.
 # A validator whose output drifts between runs cannot be diffed across generations,

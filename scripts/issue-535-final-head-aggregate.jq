@@ -176,25 +176,194 @@ def path_problems:
               "\($n - $u) artifact path(s) appear more than once; each path identifies one artifact") ]
         else [] end );
 
-# --- sanitisation -----------------------------------------------------------
-# Evidence is published, so it must not carry credentials or the addresses of the
-# services that produced it. These patterns are deliberately coarse: a false alarm
-# costs someone a rename, and a miss publishes a secret.
-def sanitisation_problems:
-    ( [ .artifacts[]? | tostring ] ) as $texts
-    | [ $texts[]
-        | select(test("(?i)(authorization|bearer|password|secret|api[-_]?key|private key|BEGIN [A-Z ]*PRIVATE KEY)"))
-        | problem("possible-secret-in-evidence";
-            "an artifact record contains credential-like text and must be sanitised before publication") ]
-    + [ $texts[]
-        | select(test("[a-z][a-z0-9+.-]*://[^/\\s\"]+"))
-        | problem("service-authority-in-evidence";
-            "an artifact record contains a URI authority, which names the producing host") ];
+# --- evidence schema: sanitisation by construction ---------------------------
+# This section replaces a scan. The scan matched artifact text against
+# credential-like words and a URI-authority pattern, and it was measured on
+# 2026-09-08 (PR #759, comment 5589048029): six of seventeen strings the AGENTS.md
+# sanitisation rule requires be refused were refused, against one false alarm in
+# six clean strings. Bare session material, bare host:port authorities and raw
+# payload or log dumps were not detected at all, and `Pwd=P@ssw0rd` inside a
+# connection string passed a predicate named for secrets, because it matches the
+# word `password` and that spelling is not that word.
+#
+# Tuning the patterns was rejected as the remedy. Nine successive rounds on #756
+# each closed one spelling and left the next, and a detector at that rate whose
+# output is a green is worse than no detector: the green reads as "scanned and
+# clean" when it means "scanned for two of five categories and found nothing".
+#
+# So this layer no longer tries to recognise a secret. Every field an evidence
+# record may carry is named below with the shape its value must have. A field that
+# is not named is refused, and a value that does not have its shape is refused. A
+# field constrained to a hash, a commit, a bounded token or a bounded single-line
+# path has no room for a connection string, a URI, a PEM block or a JWT, and
+# nothing has to be recognised for that to hold.
+#
+# Three boundaries, stated because each is easy to overclaim:
+#
+#   * The schema governs what may appear and in what shape. It does not govern
+#     what must appear. Required-field rules stay in the domain predicates above,
+#     so that one condition produces one problem instead of two.
+#   * `path` is the one field whose value is structurally free, and its shape only
+#     bounds length and forbids a line break. Relativity and traversal are refused
+#     by `path_problems`, which is where the AGENTS.md absolute-path category is
+#     actually covered; the measurement above tested the deleted scan alone and so
+#     did not credit it.
+#   * A bounded token cannot exclude every possible secret, because some secrets
+#     are short alphanumeric strings. It excludes every secret that needs a
+#     separator, an underscore, a scheme, a path or more than forty characters to
+#     express itself, and the domain predicates then constrain most such fields to
+#     a handful of literals.
+#
+# Where a field must carry free text — an argument vector, a note, a failure
+# reason — it is declared `free-text` and REFUSED in final mode rather than
+# scanned. Local mode accepts it, because the staging record of a failed run is
+# worth keeping. Final evidence carries the hash of that text instead of the text.
+# That is a fourth real divergence between the modes rather than a nominal one.
+#
+# The token bound is forty characters because the longest enumerated value the
+# schema carries, the claimability state clean-source-attributed-review-required,
+# is thirty-nine. It is not tuned against any particular secret format.
+def evidence_schema:
+    { "artifacts": { "many": true, "fields": {
+          "admissible": "bool", "claimability": "token", "note": "free-text",
+          "path": "path", "sha256": "sha256", "sourceRevision": "revision",
+          "sourceTree": "commit" } },
+      "commands": { "many": true, "fields": {
+          "argv": "array:free-text", "argvSha256": "sha256", "commandId": "token",
+          "exitCode": "uint", "receiptSha256": "sha256" } },
+      "testAssemblies": { "many": true, "fields": {
+          "configuration": "token", "informationalVersion": "version",
+          "mvid": "guid", "path": "path", "sha256": "sha256" } },
+      "replayProfiles": { "many": true, "fields": {
+          "fallbacks": "uint", "liveRunnerDispatches": "uint", "nodes": "array:token",
+          "phase": "uint", "publishedOutputs": "uint", "runner": "token",
+          "schemaVersion": "token" } },
+      "heads": { "many": false, "fields": {
+          "aggregate": "commit", "candidateB": "commit", "execution": "commit",
+          "protectedCi": "commit", "reviewed": "commit" } },
+      "source": { "many": false, "fields": {
+          "clean": "bool", "endFingerprint": "fingerprint",
+          "startFingerprint": "fingerprint" } },
+      "dualAgent": { "many": false, "fields": {
+          "citable": "bool", "evidenceMode": "token" } },
+      "centralTrafficAttempts": { "scalar": "uint" },
+      # Handled by ci_slot_problems, which refuses the section outright. Naming it
+      # here keeps that refusal the only problem such a record produces.
+      "ci": { "opaque": true } };
+
+def shape_test($shape):
+    . as $v
+    | if   $shape == "bool" then ($v | type) == "boolean"
+      elif $shape == "uint" then ($v | type) == "number" and $v >= 0 and ($v | floor) == $v
+      elif ($v | type) != "string" then false
+      elif $shape == "sha256"      then $v | test("^[0-9a-f]{64}$")
+      elif $shape == "commit"      then $v | test("^[0-9a-f]{40}$")
+      # The literal is admitted by the shape so that revision_problems can keep
+      # rejecting it by name; a shape rejection there would report one condition twice.
+      elif $shape == "revision"    then $v | test("^([0-9a-f]{40}|working-tree)$")
+      elif $shape == "fingerprint" then $v | test("^[0-9A-F]{64}$")
+      elif $shape == "guid"        then $v | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+      elif $shape == "version"     then $v | test("^[0-9]+\\.[0-9]+\\.[0-9]+\\+[0-9a-f]{40}$")
+      elif $shape == "token"       then $v | test("^[A-Za-z0-9][A-Za-z0-9.-]{0,39}$")
+      # `.` does not match a line break, so this also refuses an embedded log dump.
+      elif $shape == "path"        then $v | test("^.{1,200}$")
+      elif $shape == "free-text"   then true
+      else false end;
+
+def value_ok($shape):
+    if ($shape | startswith("array:")) then
+        (type == "array") and ([ .[] | shape_test($shape[6:]) ] | all)
+    else shape_test($shape) end;
+
+def schema_records:
+    evidence_schema as $schema
+    | [ to_entries[]
+        | .key as $section
+        | select($schema | has($section))
+        | .value as $value
+        | $schema[$section] as $spec
+        | select((($spec.opaque // false) | not) and (($spec.scalar // null) == null))
+        | if ($spec.many // false) then
+              (if ($value | type) == "array"
+               then ($value | to_entries[]
+                     | { section: $section, label: "\($section)[\(.key)]",
+                         spec: $spec, record: .value })
+               else empty end)
+          else
+              (if ($value | type) == "object"
+               then { section: $section, label: $section, spec: $spec, record: $value }
+               else empty end)
+          end ]
+    | map(select((.record | type) == "object"));
+
+def schema_problems:
+    evidence_schema as $schema
+    | [ keys_unsorted[] as $section
+        | select(($schema | has($section)) | not)
+        | problem("evidence-section-unknown";
+            "top-level section \($section) is not named by the evidence schema, so nothing here can vouch for it") ]
+    + [ to_entries[]
+        | .key as $section
+        | select($schema | has($section))
+        | .value as $value
+        | $schema[$section] as $spec
+        | select(($spec.opaque // false) | not)
+        | if ($spec.scalar // null) != null then
+              (if ($value | value_ok($spec.scalar)) then empty
+               else problem("evidence-field-shape-invalid";
+                   "\($section): value does not have shape \($spec.scalar)") end)
+          elif ($spec.many // false) then
+              (if ($value | type) == "array" then empty
+               else problem("evidence-section-shape-invalid";
+                   "\($section) must be an array of records") end)
+          else
+              (if ($value | type) == "object" then empty
+               else problem("evidence-section-shape-invalid";
+                   "\($section) must be a record") end)
+          end ]
+    + [ schema_records[]
+        | .label as $label
+        | .spec as $spec
+        | .record
+        | to_entries[]
+        | .key as $field
+        | if (($spec.fields | has($field)) | not) then
+              problem("evidence-field-unknown";
+                  "\($label): field \($field) is not named by the evidence schema")
+          elif (.value | value_ok($spec.fields[$field]) | not) then
+              problem("evidence-field-shape-invalid";
+                  "\($label): field \($field) does not have shape \($spec.fields[$field])")
+          else empty end ];
+
+# Free text is refused in final mode rather than scanned. The text itself is never
+# examined, so no spelling of a secret can defeat this.
+def free_text_final_problems:
+    [ schema_records[]
+      | .label as $label
+      | .spec as $spec
+      | .record
+      | to_entries[]
+      | .key as $field
+      | select($spec.fields | has($field))
+      | select($spec.fields[$field] | test("free-text"))
+      | problem("evidence-free-text-in-final";
+          "\($label): field \($field) is declared free text; final evidence carries its hash, not its text") ];
 
 # --- #719 replay profiles ---------------------------------------------------
 # #720 requires exactly two profiles and no extras, independently of what #719
 # claims to have emitted. "Exactly two" is asserted rather than "at least two",
 # because an extra profile is how a second run's evidence would enter unnoticed.
+# The ordered fourteen nodes #719 names in its acceptance criteria. Keeping the
+# list here as a literal is the point: a reader checks it against the issue by eye,
+# and the validator checks each profile against it rather than against the other
+# profile. If #719 changes its node set this literal must change with it, and the
+# fixture gate fails loudly when it has not.
+def canonical_replay_nodes:
+    ["projected-scene", "calibration", "calibrated-preview", "rolling",
+     "combined-preview", "quality", "cloud", "scene-presentation",
+     "cloud-presentation", "environment-presentation", "overlay-manifest",
+     "presentation-materializer", "storage", "telemetry"];
+
 def replay_problems:
     (.replayProfiles // []) as $p
     | ([$p[] | "\(.runner)/\(.phase)"] | sort) as $seen
@@ -202,12 +371,29 @@ def replay_problems:
         [ problem("replay-profiles-not-exact";
             "replay profiles are [\($seen | join(", "))]; exactly InProcess/1 and LocalRunner/2 are required") ]
       else [] end)
-    # Node order is part of the identity being compared, not an incidental listing:
-    # two profiles with the same nodes in a different order did not do the same work.
-    + (if ([$p[] | .nodes] | unique | length) > 1 then
-        [ problem("replay-nodes-not-identical";
-            "replay profiles do not present the same ordered nodes") ]
-      else [] end)
+    # Each profile is checked against the canonical list, not against the other
+    # profile. The differential check this replaces admitted, with zero problems and
+    # acceptanceReady true (PR #759, comment 5589072603): both profiles empty, both
+    # carrying one fabricated node, both reversed identically, and both omitting the
+    # key entirely. The last is why this changed — `[null] | unique | length` is 1, so
+    # missing evidence scored as matching evidence, which is the fail-open shape this
+    # issue exists to remove.
+    #
+    # An absolute check subsumes the differential one, because two lists that each
+    # equal the canonical list equal each other. The weaker check is therefore deleted
+    # rather than kept alongside: two checks where one is strictly stronger is how the
+    # weaker one is later read as the guarantee.
+    + [ $p[]
+        | select(has("nodes") | not)
+        | problem("replay-nodes-absent";
+            "\(.runner)/\(.phase): carries no node list, so nothing records which nodes executed") ]
+    + [ $p[]
+        | select(has("nodes"))
+        | select(.nodes != canonical_replay_nodes)
+        | problem("replay-nodes-not-canonical";
+            "\(.runner)/\(.phase): nodes are "
+            + (if (.nodes | type) == "array" then "[\(.nodes | join(", "))]" else (.nodes | tostring) end)
+            + "; #719 requires exactly [\(canonical_replay_nodes | join(", "))]") ]
     + [ $p[] | select((.publishedOutputs // 0) != 0)
         | problem("replay-output-published";
             "\(.runner)/\(.phase): \(.publishedOutputs) replay output(s) published; replay must publish nothing") ]
@@ -263,12 +449,13 @@ def all_problems($bound):
     revision_problems($bound) + claimability_problems + freshness_problems
     + admissibility_problems + heads_problems + command_problems
     + assembly_problems($bound) + source_stability_problems
-    + path_problems + sanitisation_problems + replay_problems
+    + path_problems + schema_problems + replay_problems
     + dual_agent_problems + central_traffic_problems + ci_slot_problems;
 
 def evaluate($bound; $mode):
     (all_problems($bound)
-      + (if $mode == "final" then claimability_final_problems + source_clean_problems + command_final_problems else [] end)) as $problems
+      + (if $mode == "final" then claimability_final_problems + source_clean_problems + command_final_problems
+          + free_text_final_problems else [] end)) as $problems
     | {
         schemaVersion: "issue-535-final-head-validation-v1",
         mode: $mode,

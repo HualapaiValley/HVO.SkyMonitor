@@ -29,6 +29,7 @@
     "protectedCi": "428e346ef16c00f6a3257315c95384092b1b3290",
     "reviewed": "428e346ef16c00f6a3257315c95384092b1b3290"
   },
+  "notes": "an unnamed top-level section",
   "replayProfiles": [
     {
       "fallbacks": 0,
@@ -86,7 +87,7 @@
   },
   "testAssemblies": [
     {
-      "configuration": "Debug",
+      "configuration": "Release",
       "informationalVersion": "1.0.0+428e346ef16c00f6a3257315c95384092b1b3290",
       "mvid": "6f1d2c3b-4a59-4867-9d0e-1f2a3b4c5d6e",
       "path": "tests/X/bin/Release/net10.0/X.dll",
