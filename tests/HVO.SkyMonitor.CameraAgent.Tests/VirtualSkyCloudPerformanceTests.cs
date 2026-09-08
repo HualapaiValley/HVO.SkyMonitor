@@ -213,7 +213,6 @@ public sealed partial class VirtualSkyCloudPerformanceTests
         finally
         {
             outbox?.Dispose();
-            SqliteConnection.ClearAllPools();
             if (Directory.Exists(root))
             {
                 Directory.Delete(root, recursive: true);

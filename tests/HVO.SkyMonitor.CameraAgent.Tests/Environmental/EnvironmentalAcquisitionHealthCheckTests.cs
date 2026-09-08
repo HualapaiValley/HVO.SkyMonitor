@@ -25,7 +25,6 @@ public sealed class EnvironmentalAcquisitionHealthCheckTests
     [TestCleanup]
     public void Cleanup()
     {
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         if (_root is not null && Directory.Exists(_root))
         {
             Directory.Delete(_root, recursive: true);

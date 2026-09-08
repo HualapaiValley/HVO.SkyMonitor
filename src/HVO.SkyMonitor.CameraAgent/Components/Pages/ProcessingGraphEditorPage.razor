@@ -29,7 +29,10 @@
             <p class="editor-note" role="note">Started from revision <code>@_model.SourceRevisionId</code>. Opaque node options carried from it stay attached to their rows and are re-emitted unchanged.</p>
         }
 
-        <form class="editor-form" @onsubmit="PreviewAsync" @onsubmit:preventDefault>
+        <form class="editor-form" aria-labelledby="editor-form-heading" @onsubmit="PreviewAsync" @onsubmit:preventDefault>
+            <header class="editor-form-header">
+                <h2 id="editor-form-heading">Graph definition</h2>
+            </header>
             <fieldset class="editor-group" disabled="@_busy">
                 <legend>Identity</legend>
                 <div class="field-grid">

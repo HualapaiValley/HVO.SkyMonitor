@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+# Pure validator for issue #535 final-head release-readiness evidence.
+#
+# Reads an evidence set, recomputes every predicate, and writes one canonical
+# JSON result to stdout. It mutates nothing: no staging, no publication, no
+# generation. `record:` owns mutation; this owns the verdict.
+#
+# Modes:
+#   local  every local evidence predicate must hold; yields localReady only.
+#   final  additionally requires the strongest claimability state. acceptanceReady
+#          is derived here and nowhere else, and a recorder may never set it.
+#
+# Exit status is the contract: 0 only when the requested mode's readiness holds.
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly AGGREGATE="$SCRIPT_DIR/issue-535-final-head-aggregate.jq"
+
+usage() {
+    printf 'Usage: %s <local|final> --evidence FILE --bound-head SHA\n' "${0##*/}" >&2
+    exit 2
+}
+
+mode="${1:-}"; shift || usage
+case "$mode" in local|final) ;; *) usage ;; esac
+
+evidence=""
+bound_head=""
+while (($# > 0)); do
+    case "$1" in
+        --evidence) evidence="${2:-}"; shift 2 || usage ;;
+        --bound-head) bound_head="${2:-}"; shift 2 || usage ;;
+        *) usage ;;
+    esac
+done
+[[ -n "$evidence" && -n "$bound_head" ]] || usage
+
+# A missing or unreadable evidence set is not an empty one. Reporting "no problems
+# found" over a file that was never read is the defect this issue exists to remove.
+[[ -f "$evidence" ]] || { printf 'Evidence set does not exist: %s\n' "$evidence" >&2; exit 1; }
+[[ -s "$evidence" ]] || { printf 'Evidence set is empty: %s\n' "$evidence" >&2; exit 1; }
+[[ -f "$AGGREGATE" ]] || { printf 'Aggregate contract is missing: %s\n' "$AGGREGATE" >&2; exit 1; }
+
+# A forty-character lowercase hex commit, so a bound head cannot be a branch name,
+# an abbreviation, or the literal this validator exists to reject.
+[[ "$bound_head" =~ ^[0-9a-f]{40}$ ]] || {
+    printf 'Bound head must be a full 40-character commit SHA: %s\n' "$bound_head" >&2
+    exit 1
+}
+
+# Distinguish a bad evidence set from a bad contract. Reporting the first when it
+# was the second sends the reader to the wrong file, which is how a real defect in
+# this validator would be mistaken for someone else's malformed input.
+jq --exit-status 'type == "object"' "$evidence" > /dev/null 2>&1 || {
+    printf 'Evidence set is not a well-formed JSON object: %s\n' "$evidence" >&2
+    exit 1
+}
+
+if ! result="$(jq --sort-keys \
+    --arg bound "$bound_head" \
+    --arg mode "$mode" \
+    'include "issue-535-final-head-aggregate"; evaluate($bound; $mode)' \
+    -L "$SCRIPT_DIR" "$evidence" 2>/tmp/hvo-535-jq-error)"; then
+    printf 'The aggregate contract failed to evaluate. This is a defect in %s, not in the evidence set:\n' \
+        "$AGGREGATE" >&2
+    cat /tmp/hvo-535-jq-error >&2
+    rm -f /tmp/hvo-535-jq-error
+    exit 1
+fi
+rm -f /tmp/hvo-535-jq-error
+
+printf '%s\n' "$result"
+
+ready_key="localReady"
+[[ "$mode" == "final" ]] && ready_key="acceptanceReady"
+printf '%s' "$result" | jq --exit-status --arg k "$ready_key" '.[$k] == true' > /dev/null

@@ -15,6 +15,16 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
+// Six of this class's seven pool clears are load-bearing, and they are why the class opts out of
+// parallelisation rather than losing them: one makes a simulated restart genuine, since a pooled
+// connection would otherwise survive it, and five bracket the raw DDL the schema-rejection tests apply,
+// so that no connection serves a cached schema across the mutation. Removing those would leave the tests
+// passing for a different reason than the one they assert, which the assertions cannot detect. The
+// seventh, in Cleanup, is an ordinary teardown clear; the rule elsewhere in this assembly is to delete
+// teardown clears in parallelisable classes, and this class is not one, so it is simply left alone. A
+// global clear is safe only when nothing else runs beside it, which the class-level opt-out provides;
+// that exclusion was verified by measurement under MSTest 4.3.3. See issue #754.
+[DoNotParallelize]
 public sealed class SqliteEnvironmentalObservationOutboxTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 7, 17, 6, 0, 0, TimeSpan.Zero);

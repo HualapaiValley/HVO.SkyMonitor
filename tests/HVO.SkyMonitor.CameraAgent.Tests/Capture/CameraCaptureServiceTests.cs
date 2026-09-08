@@ -65,7 +65,6 @@ public sealed class CameraCaptureServiceTests
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
             Directory.Delete(root, true);
         }
     }
@@ -146,7 +145,6 @@ public sealed class CameraCaptureServiceTests
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
             Directory.Delete(root, true);
         }
     }

@@ -1,0 +1,6 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'HVO.SkyMonitor.LogicHost.TestInfrastructure'">
+    <Compile Include="$(MSBuildThisFileDirectory)TestSettings/ConnectionPoolClearContract.cs" Link="ConnectionPoolClearContract.cs" />
+  </ItemGroup>
+</Project>
