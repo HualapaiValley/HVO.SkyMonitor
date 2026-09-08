@@ -10,10 +10,12 @@
     <nav class="breadcrumb" aria-label="Breadcrumb"><a href="@BackUrl">Transient candidates</a><span>/</span><span aria-current="page">Candidate detail</span></nav>
     @if (_isLoading)
     {
+        <PageHeader Title="Transient detail" />
         <section class="detail-state" role="status"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><strong>Loading candidate evidence</strong></section>
     }
     else if (_errorMessage is not null || _detail is null)
     {
+        <PageHeader Title="Transient detail" />
         <section class="detail-state detail-state--error" role="alert"><div><strong>Candidate unavailable</strong><p>@(_errorMessage ?? "The requested transient candidate was not found.")</p></div><a class="btn btn-outline-light" href="@BackUrl">Return to candidates</a></section>
     }
     else
