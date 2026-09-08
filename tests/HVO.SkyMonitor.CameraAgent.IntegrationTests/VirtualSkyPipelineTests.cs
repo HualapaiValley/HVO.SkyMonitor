@@ -327,6 +327,16 @@ public sealed class VirtualSkyPipelineTests
         // it must exist, which proves the producer stayed live rather than merely idle during the proof.
         var fence = await WaitForSettledCapturePrefixAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         Assert.IsGreaterThan(0L, fence.CommittedAtOrBelowWatermark);
+        // The fence proves something about the prefix; these assertions are what tie the subjects to it.
+        // Ordering does hold today through raw ingress reserving a sequence before publish, but that invariant
+        // lives in another assembly and is unasserted, so relying on it would let this test pass vacuously if it
+        // ever changed.
+        Assert.IsTrue(
+            pending.All(item => item.Descriptor.Capture.CaptureSequence <= fence.Watermark),
+            "Outbox subjects are outside the settled prefix; the fence proved nothing about them.");
+        Assert.IsTrue(
+            manifests.All(item => item.Parsed.Document!.Manifest.Descriptor.Capture.CaptureSequence <= fence.Watermark),
+            "Stored-manifest subjects are outside the settled prefix; the fence proved nothing about them.");
         var ingressState = services.GetRequiredService<RawIngressState>().Snapshot;
         Assert.AreEqual(RawIngressAvailability.Accepting, ingressState.Availability);
         // PendingCount and PendingBytes describe work admitted after the watermark on a still-running producer,
@@ -354,22 +364,33 @@ public sealed class VirtualSkyPipelineTests
             await processingCommand.ExecuteScalarAsync().ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture));
         var processingStateService = services.GetRequiredService<CaptureProcessingState>();
-        // Same reasoning as the capture fence: pending and retry counts describe post-watermark work on a live
-        // producer. Terminal failures are a real defect at any sequence, so they stay a gate.
+        // Availability is a composite: CaptureProcessingState.Compose adds a "retry" reason whenever the retry
+        // count is non-zero, and that count is SUM(state = 'retry_wait') across all lane work with no sequence
+        // scope. Gating on Healthy therefore re-imposes exactly the global-idle demand this test is removing,
+        // however the retry count itself is reported. Gate the defect-bearing members individually instead.
         await WaitUntilAsync(() =>
         {
             var state = processingStateService.Snapshot;
-            return state.Availability == CaptureProcessingAvailability.Healthy && state.TerminalCount == 0;
+            return state.Availability != CaptureProcessingAvailability.Unhealthy &&
+                state.TerminalCount == 0 &&
+                state.ProcessingQuarantineCount == 0 &&
+                state.MissingProductCount == 0 &&
+                !state.DurableStateUnavailable &&
+                !state.ReconciliationFailed;
         }, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         var processingState = processingStateService.Snapshot;
-        Assert.AreEqual(
-            CaptureProcessingAvailability.Healthy,
+        Assert.AreNotEqual(
+            CaptureProcessingAvailability.Unhealthy,
             processingState.Availability,
             processingState.Reason);
         Console.WriteLine(string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"processing beyond the fence: pendingCount={processingState.PendingCount} retryCount={processingState.RetryCount}"));
+            $"processing beyond the fence: pendingCount={processingState.PendingCount} retryCount={processingState.RetryCount} availability={processingState.Availability} reason={processingState.Reason}"));
         Assert.AreEqual(0L, processingState.TerminalCount);
+        Assert.AreEqual(0L, processingState.ProcessingQuarantineCount);
+        Assert.AreEqual(0L, processingState.MissingProductCount);
+        Assert.IsFalse(processingState.DurableStateUnavailable);
+        Assert.IsFalse(processingState.ReconciliationFailed);
         processingCommand.CommandText = "SELECT artifact_id FROM processing_outputs WHERE node_id = 'CalibratedPreview' ORDER BY capture_sequence DESC LIMIT 1;";
         var localOnlyPreviewId = Guid.ParseExact(
             Convert.ToString(await processingCommand.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture)!,
@@ -731,15 +752,22 @@ public sealed class VirtualSkyPipelineTests
         long IncompleteNodes,
         long CommittedAtOrBelowWatermark,
         long AssignmentsBeyondWatermark,
-        long CapturesBeyondWatermark)
+        long CapturesBeyondWatermark,
+        long UnmaterialisedAssignments)
     {
+        // RetriedLaneWork is deliberately absent: attempt_count increments on every claim and is never reset on
+        // success, so a row that retried once and then completed keeps a count above one forever. Gating on it
+        // against a fixed watermark would make a recovered producer permanently unsettleable, which is the same
+        // class of unsatisfiable wait this test is removing. Terminal outcomes are already gated through
+        // QuarantinedOrAbandonedLaneWork, so retries stay visible as a diagnostic only.
         internal bool PrefixSettled =>
             UncommittedCaptures == 0 &&
+            UnmaterialisedAssignments == 0 &&
             UnfinishedLaneWork == 0 &&
             QuarantinedOrAbandonedLaneWork == 0 &&
-            RetriedLaneWork == 0 &&
             RetentionHolds == 0 &&
-            IncompleteNodes == 0;
+            IncompleteNodes == 0 &&
+            CommittedAtOrBelowWatermark > 0;
 
         internal bool ProducerStillLive => AssignmentsBeyondWatermark > 0 || CapturesBeyondWatermark > 0;
 
@@ -748,17 +776,19 @@ public sealed class VirtualSkyPipelineTests
         internal string Describe()
         {
             var unsettled = UncommittedCaptures != 0 ? $"{UncommittedCaptures} uncommitted raw capture(s)"
+                : UnmaterialisedAssignments != 0 ? $"{UnmaterialisedAssignments} reserved sequence(s) with no committed capture row yet"
                 : UnfinishedLaneWork != 0 ? $"{UnfinishedLaneWork} unfinished lane work row(s)"
                 : QuarantinedOrAbandonedLaneWork != 0 ? $"{QuarantinedOrAbandonedLaneWork} quarantined or abandoned lane(s)"
-                : RetriedLaneWork != 0 ? $"{RetriedLaneWork} lane row(s) past the first attempt"
                 : RetentionHolds != 0 ? $"{RetentionHolds} retention hold(s)"
                 : IncompleteNodes != 0 ? $"{IncompleteNodes} incomplete processing node(s)"
+                : CommittedAtOrBelowWatermark == 0 ? "no committed capture at or below the watermark"
                 : !ProducerStillLive ? "no assignment or capture beyond the watermark, so the producer is not proven live"
                 : "nothing";
             return string.Create(
                 System.Globalization.CultureInfo.InvariantCulture,
                 $"watermark={Watermark} unsettled={unsettled} committedAtOrBelow={CommittedAtOrBelowWatermark} "
-                    + $"assignmentsBeyond={AssignmentsBeyondWatermark} capturesBeyond={CapturesBeyondWatermark}");
+                    + $"assignmentsBeyond={AssignmentsBeyondWatermark} capturesBeyond={CapturesBeyondWatermark} "
+                    + $"retriedThenSettled={RetriedLaneWork}");
         }
     }
 
@@ -822,7 +852,11 @@ public sealed class VirtualSkyPipelineTests
                 (SELECT COUNT(*) FROM raw_captures
                    WHERE capture_sequence <= $watermark AND state = 'committed'),
                 (SELECT COUNT(*) FROM raw_capture_assignments WHERE capture_sequence > $watermark),
-                (SELECT COUNT(*) FROM raw_captures WHERE capture_sequence > $watermark);
+                (SELECT COUNT(*) FROM raw_captures WHERE capture_sequence > $watermark),
+                (SELECT COUNT(*) FROM raw_capture_assignments a
+                   WHERE a.capture_sequence <= $watermark
+                     AND NOT EXISTS (SELECT 1 FROM raw_captures c
+                                     WHERE c.capture_id = a.capture_id AND c.state = 'committed'));
             """;
         command.Parameters.AddWithValue("$watermark", watermark);
         using var reader = command.ExecuteReader();
@@ -837,7 +871,8 @@ public sealed class VirtualSkyPipelineTests
             reader.GetInt64(5),
             reader.GetInt64(6),
             reader.GetInt64(7),
-            reader.GetInt64(8));
+            reader.GetInt64(8),
+            reader.GetInt64(9));
     }
 
     private static SqliteConnection OpenJournalReadConnection()
