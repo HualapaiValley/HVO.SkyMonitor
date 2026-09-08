@@ -1,5 +1,4 @@
-using System.Diagnostics;
-using System.Text.Json;
+using HVO.SkyMonitor.TestSettings;
 using System.Text.RegularExpressions;
 
 namespace HVO.SkyMonitor.Architecture.Tests;
@@ -56,7 +55,7 @@ public sealed class ConnectionPoolClearLinkageTests
         var evaluated = projects
             .AsParallel()
             .WithDegreeOfParallelism(8)
-            .Select(project => (Project: project, Items: EvaluateItems(Path.Combine(root, project))))
+            .Select(project => (Project: project, Items: ProjectEvaluation.Evaluate(Path.Combine(root, project))))
             .ToList();
 
         var unevaluated = evaluated.Where(static e => e.Items is null).Select(static e => e.Project).ToList();
@@ -113,43 +112,6 @@ public sealed class ConnectionPoolClearLinkageTests
             .Select(static match => match.Groups[1].Value.Replace('\\', '/'))
             .ToList();
 
-    private static EvaluatedItems? EvaluateItems(string projectPath)
-    {
-        var startInfo = new ProcessStartInfo("dotnet")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
-        foreach (var argument in new[] { "msbuild", projectPath, "-getItem:Compile", "-getItem:PackageReference", "-nologo" })
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-        try
-        {
-            using var process = Process.Start(startInfo);
-            if (process is null)
-            {
-                return null;
-            }
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit();
-            using var document = JsonDocument.Parse(output);
-            var items = document.RootElement.GetProperty("Items");
-            return new EvaluatedItems(Identities(items, "Compile"), Identities(items, "PackageReference"));
-        }
-        catch (Exception exception) when (exception is JsonException or KeyNotFoundException
-            or InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-            return null;
-        }
-    }
-
-    private static List<string> Identities(JsonElement items, string itemType) =>
-        items.TryGetProperty(itemType, out var array)
-            ? array.EnumerateArray().Select(static element => element.GetProperty("Identity").GetString() ?? string.Empty).ToList()
-            : [];
-
     private static string RepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -161,5 +123,4 @@ public sealed class ConnectionPoolClearLinkageTests
             ?? throw new DirectoryNotFoundException($"No ancestor of {AppContext.BaseDirectory} holds {SolutionFileName}.");
     }
 
-    private sealed record EvaluatedItems(List<string> Compiles, List<string> Packages);
 }

@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.TestSettings;
 
@@ -86,6 +88,9 @@ public sealed class ConnectionPoolClearContractTests
 {
     private const string GlobalClearMethod = "ClearAllPools";
     private const string SqliteConnectionType = "Microsoft.Data.Sqlite.SqliteConnection";
+    private const string LinkageFileName = "ConnectionPoolClearLinkageTests.cs";
+    private const string LinkageHostProject =
+        "tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj";
 
     private const int LoadFunctionPointer = 0x106;
     private const int LoadVirtualFunctionPointer = 0x107;
@@ -191,6 +196,42 @@ public sealed class ConnectionPoolClearContractTests
 
         var clean = TryReadCallTokens([0x00, 0x2A], out _);
         Assert.IsTrue(clean, "A nop followed by ret is a walkable body and must not be reported as unreadable.");
+    }
+
+    /// <summary>
+    /// The repository-wide linkage check catches any project that drops this contract, including the project
+    /// that hosts the linkage check itself. Nothing caught the reverse: one <c>&lt;Compile Remove&gt;</c> in
+    /// that host removed the linkage check and neither this contract nor any other project noticed, which is
+    /// the same defect one level up.
+    /// </summary>
+    /// <remarks>
+    /// This is where that regress stops, and it stops because the leverage is inverted rather than because we
+    /// ran out of appetite. The linkage check exists once and this contract exists in every test assembly,
+    /// so each protects what the other cannot: the linkage check reports a project dropping this contract,
+    /// and this reports the host dropping the linkage check. Removing either is loud. Removing both means
+    /// editing every test project, which is no longer a one-line edit that reads as tidying, and that was the
+    /// only threat this guard ever had.
+    /// </remarks>
+    [TestMethod]
+    public void TheRepositoryWideLinkageCheckIsStillCompiled()
+    {
+        var host = Path.Combine(RepositoryRoot(), LinkageHostProject);
+        Assert.IsTrue(
+            File.Exists(host),
+            $"The project that hosts the repository-wide linkage check is missing from {LinkageHostProject}. "
+                + "Without it, a project that stops compiling this contract would go unreported.");
+
+        var items = ProjectEvaluation.Evaluate(host);
+        Assert.IsNotNull(
+            items,
+            $"MSBuild could not evaluate {LinkageHostProject}, so whether it still compiles the linkage check "
+                + "is unknown rather than confirmed, and an unknown here covers a removed check.");
+
+        Assert.IsTrue(
+            items.Compiles.Any(static compile => compile.EndsWith(LinkageFileName, StringComparison.Ordinal)),
+            $"{LinkageHostProject} no longer compiles {LinkageFileName}, so nothing checks whether every test "
+                + "project still receives this contract. A project could then drop it silently, which is the "
+                + "defect this pair exists to make loud.");
     }
 
     private static ScanResult Scan(Assembly assembly)
@@ -412,6 +453,17 @@ public sealed class ConnectionPoolClearContractTests
         return sizes;
     }
 
+    private static string RepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))
+        {
+            directory = directory.Parent;
+        }
+        return directory?.FullName
+            ?? throw new DirectoryNotFoundException($"No ancestor of {AppContext.BaseDirectory} holds the solution.");
+    }
+
     /// <summary>
     /// Never invoked. It exists so the IL walk has something it is required to find on every run, and so the
     /// matcher has decoys it is required to ignore. Both are read as instructions, not executed.
@@ -458,4 +510,83 @@ public sealed class ConnectionPoolClearContractTests
         bool Parallelises,
         bool OptsIn,
         bool OptsOut);
+}
+
+/// <summary>
+/// Asks MSBuild what a project compiles and references, rather than reading its file. It lives beside the
+/// contract because the per-assembly contract and the repository-wide linkage check need the same answer,
+/// and a second copy would be a second thing to get wrong.
+/// </summary>
+internal static class ProjectEvaluation
+{
+    private static readonly int EvaluationTimeout = (int)TimeSpan.FromMinutes(2).TotalMilliseconds;
+
+    internal static EvaluatedItems? Evaluate(string projectPath)
+    {
+        var startInfo = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (var argument in new[] { "msbuild", projectPath, "-getItem:Compile", "-getItem:PackageReference", "-nologo" })
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+        try
+        {
+            using var process = Process.Start(startInfo);
+            if (process is null)
+            {
+                return null;
+            }
+
+            // Both pipes are drained before waiting. Reading one while the other fills its buffer deadlocks
+            // the pair, and a hung evaluation would stall the run rather than fail it. The wait is bounded
+            // for the same reason: an evaluation that never returns becomes an unevaluated project, which
+            // callers already assert against, rather than a test that never finishes.
+            var standardOutput = process.StandardOutput.ReadToEndAsync();
+            var standardError = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(EvaluationTimeout))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException)
+                {
+                    // The process ended between the wait expiring and the kill; nothing left to stop.
+                }
+                return null;
+            }
+            process.WaitForExit();
+            var output = standardOutput.GetAwaiter().GetResult();
+            _ = standardError.GetAwaiter().GetResult();
+
+            // An evaluation that failed is an unevaluated project, not a project with no items. A failure
+            // writes nothing to standard output today, so the parse below would throw and reach the same
+            // place; checking the exit code makes that true by construction rather than by the accident of
+            // unparseable output. Reading a failure as empty items would file a test project as an ordinary
+            // one and drop it from the check in silence.
+            if (process.ExitCode != 0)
+            {
+                return null;
+            }
+            using var document = JsonDocument.Parse(output);
+            var items = document.RootElement.GetProperty("Items");
+            return new EvaluatedItems(Identities(items, "Compile"), Identities(items, "PackageReference"));
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException
+            or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return null;
+        }
+    }
+
+    private static List<string> Identities(JsonElement items, string itemType) =>
+        items.TryGetProperty(itemType, out var array)
+            ? array.EnumerateArray().Select(static element => element.GetProperty("Identity").GetString() ?? string.Empty).ToList()
+            : [];
+
+    internal sealed record EvaluatedItems(List<string> Compiles, List<string> Packages);
 }
