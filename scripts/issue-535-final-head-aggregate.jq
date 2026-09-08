@@ -74,12 +74,39 @@ def admissibility_problems:
       | problem("artifact-not-admissible";
           "\(.path): admissible is not true") ];
 
+# --- head alignment --------------------------------------------------------
+# The reviewed head, the head the commands executed against, candidate B's source,
+# the protected-CI head and the aggregate's own source must all be the same commit.
+# Any inequality means the evidence describes more than one tree while claiming to
+# describe one, which no individual record can detect from inside itself.
+def heads_problems:
+    (.heads // null) as $h
+    | if $h == null then []
+      else
+        ([$h | to_entries[] | .value] | unique) as $distinct
+        | if ($distinct | length) <= 1 then []
+          else
+            [ $h | to_entries[]
+              | problem("heads-not-aligned";
+                  "heads.\(.key) is \(.value); every head in this section must be the same commit") ]
+          end
+      end;
+
+# Final evidence must be produced from a clean tree. A dirty tree means the source
+# fingerprint describes something no commit contains.
+def source_clean_problems:
+    if (.source.clean // null) == true then []
+    else [ problem("source-not-clean";
+             "source.clean is \(.source.clean // "absent"); final evidence requires a clean tree") ]
+    end;
+
 def all_problems($bound):
-    revision_problems($bound) + claimability_problems + freshness_problems + admissibility_problems;
+    revision_problems($bound) + claimability_problems + freshness_problems
+    + admissibility_problems + heads_problems;
 
 def evaluate($bound; $mode):
     (all_problems($bound)
-      + (if $mode == "final" then claimability_final_problems else [] end)) as $problems
+      + (if $mode == "final" then claimability_final_problems + source_clean_problems else [] end)) as $problems
     | {
         schemaVersion: "issue-535-final-head-validation-v1",
         mode: $mode,

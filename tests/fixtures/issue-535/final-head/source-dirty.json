@@ -5,7 +5,7 @@
       "claimability": "clean-source-attributed-review-required",
       "path": "evidence/a.json",
       "sha256": "aa",
-      "sourceRevision": "0000000000000000000000000000000000000000",
+      "sourceRevision": "428e346ef16c00f6a3257315c95384092b1b3290",
       "sourceTree": "t"
     }
   ],
@@ -17,6 +17,6 @@
     "reviewed": "428e346ef16c00f6a3257315c95384092b1b3290"
   },
   "source": {
-    "clean": true
+    "clean": false
   }
 }

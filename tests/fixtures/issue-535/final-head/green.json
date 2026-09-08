@@ -1,4 +1,22 @@
-{ "artifacts": [
-  { "path": "evidence/a.json", "sourceRevision": "428e346ef16c00f6a3257315c95384092b1b3290", "sourceTree": "574db085183de509bb3555ab8ed037347d99ce8b",
-    "sha256": "aa", "claimability": "clean-source-attributed-review-required", "admissible": true }
-] }
+{
+  "artifacts": [
+    {
+      "admissible": true,
+      "claimability": "clean-source-attributed-review-required",
+      "path": "evidence/a.json",
+      "sha256": "aa",
+      "sourceRevision": "428e346ef16c00f6a3257315c95384092b1b3290",
+      "sourceTree": "t"
+    }
+  ],
+  "heads": {
+    "aggregate": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "candidateB": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "execution": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "protectedCi": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "reviewed": "428e346ef16c00f6a3257315c95384092b1b3290"
+  },
+  "source": {
+    "clean": true
+  }
+}

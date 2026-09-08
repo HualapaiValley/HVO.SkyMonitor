@@ -1,5 +1,24 @@
-{ "artifacts": [
-  { "path": "evidence/a.json", "sourceRevision": "428e346ef16c00f6a3257315c95384092b1b3290", "sourceTree": "",
-    "sha256": "", "claimability": "clean-source-attributed-review-required", "admissible": true,
-    "assemblyWrittenUtc": "2026-09-08T00:00:00Z", "latestSourceWriteUtc": "2026-09-07T00:00:00Z" }
-] }
+{
+  "artifacts": [
+    {
+      "admissible": true,
+      "assemblyWrittenUtc": "2026-09-08T00:00:00Z",
+      "claimability": "clean-source-attributed-review-required",
+      "latestSourceWriteUtc": "2026-09-07T00:00:00Z",
+      "path": "evidence/a.json",
+      "sha256": "",
+      "sourceRevision": "428e346ef16c00f6a3257315c95384092b1b3290",
+      "sourceTree": ""
+    }
+  ],
+  "heads": {
+    "aggregate": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "candidateB": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "execution": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "protectedCi": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "reviewed": "428e346ef16c00f6a3257315c95384092b1b3290"
+  },
+  "source": {
+    "clean": true
+  }
+}

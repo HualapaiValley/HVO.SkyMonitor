@@ -63,6 +63,27 @@ expect local freshness-only-mtime.json   1 "freshness-without-content-binding"
 expect local local-but-not-final.json    0 ""
 expect final local-but-not-final.json    1 "claimability-not-final"
 
+expect local heads-mixed.json            1 "heads-not-aligned"
+expect final heads-mixed.json            1 "heads-not-aligned"
+# A dirty tree is ordinary during development and inadmissible as final evidence.
+expect local source-dirty.json           0 ""
+expect final source-dirty.json           1 "source-not-clean"
+
+# The result is canonical, so the same input must produce byte-identical output.
+# A validator whose output drifts between runs cannot be diffed across generations,
+# and a generation that cannot be diffed cannot be shown to be unchanged.
+determinism() {
+    cases=$((cases + 1))
+    local first second
+    first="$("$VALIDATE" final --evidence "$FIXTURES/green.json" --bound-head "$BOUND_HEAD")"
+    second="$("$VALIDATE" final --evidence "$FIXTURES/green.json" --bound-head "$BOUND_HEAD")"
+    if [[ "$first" != "$second" ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL determinism: repeated validation of the same input differed\n' >&2
+    fi
+}
+determinism
+
 expect_refusal "missing evidence" local --evidence "$FIXTURES/does-not-exist.json" --bound-head "$BOUND_HEAD"
 expect_refusal "abbreviated head" local --evidence "$FIXTURES/green.json" --bound-head "428e346e"
 expect_refusal "branch name as head" local --evidence "$FIXTURES/green.json" --bound-head "main"
