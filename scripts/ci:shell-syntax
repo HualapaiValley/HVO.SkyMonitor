@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Syntax-check the repository's Bash scripts.
+#
+# With no arguments this discovers every tracked shell file and runs `bash -n`
+# over it. `--list` prints the discovered set without checking it. With path
+# arguments it checks exactly those paths, which is how
+# scripts/test:ci-shell-syntax proves the checker actually rejects bad syntax
+# rather than only reporting that it ran.
+#
+# Discovery replaces the hand-maintained enumeration that used to live in
+# .github/workflows/ci.yml. That list lost coverage silently whenever a file or
+# a directory was added without someone remembering to extend it:
+# scripts/lib/*.sh was never in it, so a syntax error in a sourced library
+# survived `bash -n` on its consumers -- sourcing does not parse the sourced
+# file until runtime -- and broke at the point of use instead (issue #775).
+# Deriving the list keeps coverage attached to what the repository contains.
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# A file is a Bash script if it is named *.sh (sourced libraries often carry no
+# shebang) or if its interpreter resolves to bash or sh.
+is_shell_file() {
+    local path="$1" shebang interpreter
+
+    case "$path" in
+        *.sh) return 0 ;;
+    esac
+
+    IFS= read -r shebang <"$path" || return 1
+    case "$shebang" in
+        '#!'*) ;;
+        *) return 1 ;;
+    esac
+
+    # "#!/usr/bin/env bash" and "#!/bin/bash -e" both resolve to bash.
+    interpreter="${shebang#\#!}"
+    read -r interpreter _ <<<"$interpreter"
+    case "${interpreter##*/}" in
+        env)
+            read -r _ interpreter _ <<<"${shebang#\#!}"
+            ;;
+    esac
+
+    case "${interpreter##*/}" in
+        bash | sh) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+list_only=0
+if [[ "${1-}" == '--list' ]]; then
+    list_only=1
+    shift
+fi
+
+targets=()
+if (($# > 0)); then
+    targets=("$@")
+else
+    while IFS= read -r -d '' path; do
+        [[ -f "$REPO_ROOT/$path" ]] || continue
+        is_shell_file "$REPO_ROOT/$path" || continue
+        targets+=("$REPO_ROOT/$path")
+    done < <(git -C "$REPO_ROOT" ls-files -z)
+fi
+
+if ((${#targets[@]} == 0)); then
+    printf 'No shell files to syntax-check.\n' >&2
+    exit 1
+fi
+
+if ((list_only == 1)); then
+    printf '%s\n' "${targets[@]#"$REPO_ROOT/"}"
+    exit 0
+fi
+
+failed=()
+for target in "${targets[@]}"; do
+    if ! bash -n "$target"; then
+        failed+=("$target")
+    fi
+done
+
+if ((${#failed[@]} > 0)); then
+    printf 'Shell syntax check failed for %d of %d file(s):\n' "${#failed[@]}" "${#targets[@]}" >&2
+    printf '  %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+
+printf 'Shell syntax check passed for %d file(s).\n' "${#targets[@]}"

@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+# Deterministic gate for scripts/ci:shell-syntax.
+#
+# The defect this checker exists to catch (#775) is not "bash -n was never run". It is that
+# bash -n was run over a hand-written list, passed, and reported a coverage it did not have:
+# a sourced library outside the list kept its syntax error because sourcing does not parse
+# the sourced file until runtime. So this gate asserts the two properties a list cannot
+# assert about itself -- that the checker REJECTS bad syntax, and that discovery reaches the
+# directories the enumeration missed -- rather than only that the checker exits zero.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly CHECKER="$SCRIPT_DIR/ci:shell-syntax"
+
+WORK="$(mktemp -d)"
+readonly WORK
+trap 'rm -rf "$WORK"' EXIT
+
+failures=0
+cases=0
+
+expect() {
+    local name="$1" want_exit="$2" want_text="$3"
+    shift 3
+    cases=$((cases + 1))
+    local out status
+    set +e
+    out="$("$CHECKER" "$@" 2>&1)"
+    status=$?
+    set -e
+    if [[ "$status" != "$want_exit" ]] || [[ "$out" != *"$want_text"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL %s\n  expected exit=%s containing: %s\n  actual   exit=%s output:\n%s\n' \
+            "$name" "$want_exit" "$want_text" "$status" "$out" >&2
+    fi
+}
+
+printf '#!/usr/bin/env bash\nprintf "ok\\n"\n' >"$WORK/good.sh"
+# An unterminated `if`: valid-looking text that only bash -n rejects.
+# shellcheck disable=SC2016 # The fixture's "$1" is literal script text, not an expansion here.
+printf '#!/usr/bin/env bash\nif [[ -n "$1" ]]; then\n  printf "x\\n"\n' >"$WORK/broken.sh"
+
+expect 'valid file accepted' 0 'passed for 1 file' "$WORK/good.sh"
+expect 'syntax error rejected' 1 'broken.sh' "$WORK/broken.sh"
+# One bad file among good ones must still fail: a per-file loop that stops accumulating is
+# how a batch check silently narrows to its first argument.
+expect 'bad file in a batch rejected' 1 'failed for 1 of 3' "$WORK/good.sh" "$WORK/broken.sh" "$WORK/good.sh"
+
+# Discovery must reach the library directory whose omission from the enumerated list is the
+# reported defect, and must not regress to checking nothing.
+discovered="$("$CHECKER" --list)"
+for required in scripts/lib/trx-evidence.sh scripts/lib/registry-blob.sh .devcontainer/install-playwright.sh; do
+    cases=$((cases + 1))
+    if ! grep -qxF "$required" <<<"$discovered"; then
+        failures=$((failures + 1))
+        printf 'FAIL discovery omits %s\n' "$required" >&2
+    fi
+done
+
+# Discovery derives from the repository, so it must cover at least everything the retired
+# enumeration named. A lower bound catches a discovery predicate that quietly stops matching.
+cases=$((cases + 1))
+discovered_count="$(grep -c . <<<"$discovered")"
+if ((discovered_count < 100)); then
+    failures=$((failures + 1))
+    printf 'FAIL discovery found only %s shell files; the enumeration it replaced named ~80\n' \
+        "$discovered_count" >&2
+fi
+
+# Non-shell files that live beside the scripts must not be dragged in: bash -n over a Python
+# or jq file would fail for a reason that has nothing to do with shell syntax.
+for excluded in scripts/lib/atomic-directory-publish.py scripts/lib/component-inventory.jq; do
+    cases=$((cases + 1))
+    if grep -qxF "$excluded" <<<"$discovered"; then
+        failures=$((failures + 1))
+        printf 'FAIL discovery wrongly includes %s\n' "$excluded" >&2
+    fi
+done
+
+if ((failures > 0)); then
+    printf '%s/%s ci:shell-syntax cases failed.\n' "$failures" "$cases" >&2
+    exit 1
+fi
+
+printf 'ci:shell-syntax contract: %s cases passed (%s files discovered).\n' \
+    "$cases" "$discovered_count"
