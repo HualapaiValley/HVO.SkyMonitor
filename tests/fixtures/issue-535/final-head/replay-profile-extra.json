@@ -57,6 +57,19 @@
       "publishedOutputs": 0,
       "runner": "LocalRunner",
       "schemaVersion": "issue-535-w6-replay-profile-v1"
+    },
+    {
+      "fallbacks": 0,
+      "liveRunnerDispatches": 0,
+      "nodes": [
+        "n1",
+        "n2",
+        "n3"
+      ],
+      "phase": 3,
+      "publishedOutputs": 0,
+      "runner": "LocalRunner",
+      "schemaVersion": "issue-535-w6-replay-profile-v1"
     }
   ],
   "source": {

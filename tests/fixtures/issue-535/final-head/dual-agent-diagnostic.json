@@ -21,8 +21,8 @@
     }
   ],
   "dualAgent": {
-    "citable": true,
-    "evidenceMode": "final"
+    "citable": false,
+    "evidenceMode": "reduced-diagnostic"
   },
   "heads": {
     "aggregate": "428e346ef16c00f6a3257315c95384092b1b3290",

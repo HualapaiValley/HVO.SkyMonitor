@@ -87,6 +87,15 @@ expect final assembly-debug-build.json   1 "assembly-not-release"
 expect local assembly-wrong-commit.json  1 "assembly-not-at-bound-head"
 expect final assembly-wrong-commit.json  1 "assembly-not-at-bound-head"
 
+# #719 replay profiles, #197 admissibility, and central traffic.
+expect final replay-profile-missing.json    1 "replay-profiles-not-exact"
+expect final replay-profile-extra.json      1 "replay-profiles-not-exact"
+expect final replay-nodes-reordered.json    1 "replay-nodes-not-identical"
+expect final replay-output-published.json   1 "replay-output-published"
+expect final replay-live-dispatch.json      1 "replay-live-dispatch"
+expect final dual-agent-diagnostic.json     1 "dual-agent-not-citable"
+expect final central-traffic-nonzero.json   1 "central-traffic-observed"
+
 # Paths and sanitisation. Filesystem facts — symlinks, hard links, ownership,
 # mode — are not asserted here; they belong to the compiled helper, and claiming
 # them in jq would look like coverage without being any.

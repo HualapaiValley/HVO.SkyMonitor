@@ -36,8 +36,8 @@
       "fallbacks": 0,
       "liveRunnerDispatches": 0,
       "nodes": [
-        "n1",
         "n2",
+        "n1",
         "n3"
       ],
       "phase": 1,

@@ -54,7 +54,7 @@
         "n3"
       ],
       "phase": 2,
-      "publishedOutputs": 0,
+      "publishedOutputs": 1,
       "runner": "LocalRunner",
       "schemaVersion": "issue-535-w6-replay-profile-v1"
     }

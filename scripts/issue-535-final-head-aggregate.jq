@@ -191,11 +191,60 @@ def sanitisation_problems:
         | problem("service-authority-in-evidence";
             "an artifact record contains a URI authority, which names the producing host") ];
 
+# --- #719 replay profiles ---------------------------------------------------
+# #720 requires exactly two profiles and no extras, independently of what #719
+# claims to have emitted. "Exactly two" is asserted rather than "at least two",
+# because an extra profile is how a second run's evidence would enter unnoticed.
+def replay_problems:
+    (.replayProfiles // []) as $p
+    | ([$p[] | "\(.runner)/\(.phase)"] | sort) as $seen
+    | (if $seen != ["InProcess/1", "LocalRunner/2"] then
+        [ problem("replay-profiles-not-exact";
+            "replay profiles are [\($seen | join(", "))]; exactly InProcess/1 and LocalRunner/2 are required") ]
+      else [] end)
+    # Node order is part of the identity being compared, not an incidental listing:
+    # two profiles with the same nodes in a different order did not do the same work.
+    + (if ([$p[] | .nodes] | unique | length) > 1 then
+        [ problem("replay-nodes-not-identical";
+            "replay profiles do not present the same ordered nodes") ]
+      else [] end)
+    + [ $p[] | select((.publishedOutputs // 0) != 0)
+        | problem("replay-output-published";
+            "\(.runner)/\(.phase): \(.publishedOutputs) replay output(s) published; replay must publish nothing") ]
+    + [ $p[] | select((.liveRunnerDispatches // 0) != 0)
+        | problem("replay-live-dispatch";
+            "\(.runner)/\(.phase): \(.liveRunnerDispatches) live runner dispatch(es); archived replay must not dispatch live work") ]
+    + [ $p[] | select((.fallbacks // 0) != 0)
+        | problem("replay-fallback-taken";
+            "\(.runner)/\(.phase): \(.fallbacks) fallback(s) taken") ];
+
+# --- #197 dual-agent admissibility ------------------------------------------
+# Only a final, citable summary counts. A reduced diagnostic summary is a real
+# record of a real run and is still not evidence of the thing #535 claims, so it
+# is refused by name rather than filtered out quietly.
+def dual_agent_problems:
+    (.dualAgent // null) as $d
+    | if $d == null then []
+      elif ($d.evidenceMode != "final") or ($d.citable != true) then
+        [ problem("dual-agent-not-citable";
+            "dual-agent summary is evidenceMode=\($d.evidenceMode) citable=\($d.citable); only final and citable counts") ]
+      else [] end;
+
+# --- central traffic --------------------------------------------------------
+# A standalone campaign that reached the central host did not demonstrate
+# standalone operation, whatever else it demonstrated.
+def central_traffic_problems:
+    if (.centralTrafficAttempts // 0) != 0 then
+        [ problem("central-traffic-observed";
+            "\(.centralTrafficAttempts) central traffic attempt(s); standalone evidence requires zero") ]
+    else [] end;
+
 def all_problems($bound):
     revision_problems($bound) + claimability_problems + freshness_problems
     + admissibility_problems + heads_problems + command_problems
     + assembly_problems($bound) + source_stability_problems
-    + path_problems + sanitisation_problems;
+    + path_problems + sanitisation_problems + replay_problems
+    + dual_agent_problems + central_traffic_problems;
 
 def evaluate($bound; $mode):
     (all_problems($bound)
