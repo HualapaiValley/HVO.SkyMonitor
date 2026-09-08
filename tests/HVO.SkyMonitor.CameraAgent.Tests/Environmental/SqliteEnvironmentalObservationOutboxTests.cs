@@ -15,6 +15,11 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
+// This class clears every connection pool between phases, which is the only way to make its restart
+// and schema-rejection tests genuine: a pooled connection would otherwise survive the simulated
+// restart, or serve a cached schema across the raw DDL these tests apply. A global clear is safe only
+// when nothing else is running beside it, so the class opts out of parallelisation. See issue #754.
+[DoNotParallelize]
 public sealed class SqliteEnvironmentalObservationOutboxTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 7, 17, 6, 0, 0, TimeSpan.Zero);
