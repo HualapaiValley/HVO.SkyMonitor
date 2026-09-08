@@ -65,12 +65,17 @@ if grep '<UnitTestResult ' "$TRX" | grep -vq 'outcome="Passed"'; then
     # close the element explicitly instead of matching a line or a sed range. A sed range is wrong
     # here: when the open and close tags share a line the end address is only sought on later
     # lines, so each range would run to the next message and swallow the captured output between.
+    # Deduplicate whole messages rather than lines: piping this through `sort -u` would alphabetise
+    # a wrapped message and splice unrelated ones through it, so an expected/actual pair could
+    # print out of order.
     reasons="$(awk '
-        /<Message>/ { sub(/.*<Message>/, ""); open = 1 }
+        /<Message>/ { sub(/.*<Message>/, ""); open = 1; message = "" }
         open {
-            if (/<\/Message>/) { sub(/<\/Message>.*/, ""); open = 0 }
-            print "  " $0
-        }' "$TRX" | sort -u)" || reasons=''
+            closing = /<\/Message>/
+            if (closing) { sub(/<\/Message>.*/, ""); open = 0 }
+            message = message (message == "" ? "" : "\n") "  " $0
+            if (closing && !(message in seen)) { seen[message] = 1; print message }
+        }' "$TRX")" || reasons=''
     if [[ -n "${reasons//[[:space:]]/}" ]]; then
         printf 'Reasons recorded by the tests themselves:\n' >&2
         printf '%s\n' "$reasons" >&2
