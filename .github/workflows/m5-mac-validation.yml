@@ -71,7 +71,7 @@ jobs:
             "catalog-sqlite|81|80|1|tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"
             "cameraagent-logichost|4|4|0|tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"
             "astronomy|170|170|0|tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj"
-            "cameraagent|1834|1785|49|tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+            "cameraagent|1848|1799|49|tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
             "imaging|188|188|0|tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"
             "test-support|7|7|0|tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj"
             "deployment-distribution|82|82|0|tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj"
@@ -124,8 +124,8 @@ jobs:
             printf '%s: discovered=%s executed=%s skipped=%s\n' "$name" "$total" "$executed" "$skipped"
           done
 
-          test "$aggregate_total" -eq 2928
-          test "$aggregate_executed" -eq 2744
+          test "$aggregate_total" -eq 2942
+          test "$aggregate_executed" -eq 2758
           test "$aggregate_skipped" -eq 184
           printf 'aggregate: discovered=%s executed=%s skipped=%s\n' \
             "$aggregate_total" "$aggregate_executed" "$aggregate_skipped"
