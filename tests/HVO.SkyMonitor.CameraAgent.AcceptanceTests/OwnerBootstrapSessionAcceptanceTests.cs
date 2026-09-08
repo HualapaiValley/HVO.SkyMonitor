@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
+using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Data;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
@@ -41,7 +42,7 @@ public sealed class OwnerBootstrapSessionAcceptanceTests
             Assert.AreEqual(HttpStatusCode.Forbidden, refused.StatusCode, body);
             Assert.AreEqual(
                 OwnerBootstrapStates.PasswordChangeRequired,
-                refused.Headers.GetValues(OwnerBootstrapSession.AuthorizationReasonHeader).Single());
+                refused.Headers.GetValues(OwnerBootstrapGateMiddleware.AuthorizationReasonHeader).Single());
         }
 
         var replacement = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
@@ -53,7 +54,7 @@ public sealed class OwnerBootstrapSessionAcceptanceTests
         {
             var grantedBody = await granted.Content.ReadAsStringAsync().ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.OK, granted.StatusCode, grantedBody);
-            Assert.IsFalse(granted.Headers.Contains(OwnerBootstrapSession.AuthorizationReasonHeader));
+            Assert.IsFalse(granted.Headers.Contains(OwnerBootstrapGateMiddleware.AuthorizationReasonHeader));
         }
 
         Assert.AreEqual(

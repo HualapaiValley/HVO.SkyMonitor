@@ -13,7 +13,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Net;
-using System.Text.RegularExpressions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
@@ -340,18 +339,12 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         {
             using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
             login.EnsureSuccessStatusCode();
-            var html = await login.Content.ReadAsStringAsync().ConfigureAwait(false);
-            var match = Regex.Match(
-                html,
-                "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
-                RegexOptions.CultureInvariant);
-            if (!match.Success)
-            {
-                throw new InvalidOperationException("The local login antiforgery token was not rendered.");
-            }
+            var token = OwnerBootstrapSession.ExtractAntiforgeryToken(
+                await login.Content.ReadAsStringAsync().ConfigureAwait(false),
+                "in-process fixture owner login form");
             using var form = new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["__RequestVerificationToken"] = WebUtility.HtmlDecode(match.Groups[1].Value),
+                ["__RequestVerificationToken"] = token,
                 ["Input.Email"] = OwnerEmail,
                 ["Input.Password"] = password,
                 ["Input.RememberMe"] = "false",
