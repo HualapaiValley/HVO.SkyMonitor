@@ -322,33 +322,30 @@ public sealed class VirtualSkyPipelineTests
         Assert.IsTrue(pending.Any(item => item.Scene is not null));
         Assert.IsTrue(pending.All(item => item.Descriptor.Capture.CaptureId != item.Descriptor.Artifact.ArtifactId));
 
-        await WaitUntilAsync(HasNoUnfinishedLaneWork, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
-        using var journal = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
-        await journal.OpenAsync().ConfigureAwait(false);
-        using var countCommand = journal.CreateCommand();
-        countCommand.CommandText = "SELECT COUNT(*) FROM raw_captures WHERE state = 'committed';";
-        Assert.IsGreaterThan(0L, Convert.ToInt64(
-            await countCommand.ExecuteScalarAsync().ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture));
-        countCommand.CommandText = "SELECT COUNT(*) FROM capture_lane_work WHERE state <> 'completed';";
-        Assert.AreEqual(0L, Convert.ToInt64(
-            await countCommand.ExecuteScalarAsync().ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture));
-        countCommand.CommandText = "SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1;";
-        Assert.AreEqual(0L, Convert.ToInt64(
-            await countCommand.ExecuteScalarAsync().ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture));
+        // The agent never stops capturing, so no global "nothing is in flight" state is guaranteed to occur.
+        // Fence on a watermark instead: everything at or below it must be durably settled, and something beyond
+        // it must exist, which proves the producer stayed live rather than merely idle during the proof.
+        var fence = await WaitForSettledCapturePrefixAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        Assert.IsGreaterThan(0L, fence.CommittedAtOrBelowWatermark);
         var ingressState = services.GetRequiredService<RawIngressState>().Snapshot;
         Assert.AreEqual(RawIngressAvailability.Accepting, ingressState.Availability);
-        Assert.AreEqual(0L, ingressState.PendingCount);
-        Assert.AreEqual(0L, ingressState.PendingBytes);
+        // PendingCount and PendingBytes describe work admitted after the watermark on a still-running producer,
+        // so they are recorded rather than gated.
+        Console.WriteLine(string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"raw ingress beyond the fence: pendingCount={ingressState.PendingCount} pendingBytes={ingressState.PendingBytes}"));
         Assert.AreEqual(0L, ingressState.QuarantineCount);
         Assert.AreEqual(0L, ingressState.QuarantineBytes);
 
         using var processing = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
         await processing.OpenAsync().ConfigureAwait(false);
         using var processingCommand = processing.CreateCommand();
-        processingCommand.CommandText = "SELECT COUNT(*) FROM processing_nodes WHERE status <> 'Completed';";
+        processingCommand.CommandText = """
+            SELECT COUNT(*) FROM processing_nodes node
+            JOIN raw_captures capture ON capture.capture_id = node.capture_id
+            WHERE capture.capture_sequence <= $watermark AND node.status <> 'Completed';
+            """;
+        processingCommand.Parameters.AddWithValue("$watermark", fence.Watermark);
         Assert.AreEqual(0L, Convert.ToInt64(
             await processingCommand.ExecuteScalarAsync().ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture));
@@ -357,19 +354,21 @@ public sealed class VirtualSkyPipelineTests
             await processingCommand.ExecuteScalarAsync().ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture));
         var processingStateService = services.GetRequiredService<CaptureProcessingState>();
+        // Same reasoning as the capture fence: pending and retry counts describe post-watermark work on a live
+        // producer. Terminal failures are a real defect at any sequence, so they stay a gate.
         await WaitUntilAsync(() =>
         {
             var state = processingStateService.Snapshot;
-            return state.Availability == CaptureProcessingAvailability.Healthy &&
-                state.PendingCount == 0 && state.RetryCount == 0 && state.TerminalCount == 0;
+            return state.Availability == CaptureProcessingAvailability.Healthy && state.TerminalCount == 0;
         }, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         var processingState = processingStateService.Snapshot;
         Assert.AreEqual(
             CaptureProcessingAvailability.Healthy,
             processingState.Availability,
             processingState.Reason);
-        Assert.AreEqual(0L, processingState.PendingCount);
-        Assert.AreEqual(0L, processingState.RetryCount);
+        Console.WriteLine(string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"processing beyond the fence: pendingCount={processingState.PendingCount} retryCount={processingState.RetryCount}"));
         Assert.AreEqual(0L, processingState.TerminalCount);
         processingCommand.CommandText = "SELECT artifact_id FROM processing_outputs WHERE node_id = 'CalibratedPreview' ORDER BY capture_sequence DESC LIMIT 1;";
         var localOnlyPreviewId = Guid.ParseExact(
@@ -717,13 +716,135 @@ public sealed class VirtualSkyPipelineTests
         }
     }
 
-    private static bool HasNoUnfinishedLaneWork()
+    /// <summary>
+    /// One atomic view of the capture prefix at or below <paramref name="Watermark"/>, plus evidence of work
+    /// beyond it. Every field comes from a single statement, so they all describe the same database state
+    /// rather than a sequence of states a live producer moved through between reads.
+    /// </summary>
+    private sealed record CapturePrefixSnapshot(
+        long Watermark,
+        long UncommittedCaptures,
+        long UnfinishedLaneWork,
+        long QuarantinedOrAbandonedLaneWork,
+        long RetriedLaneWork,
+        long RetentionHolds,
+        long IncompleteNodes,
+        long CommittedAtOrBelowWatermark,
+        long AssignmentsBeyondWatermark,
+        long CapturesBeyondWatermark)
     {
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
-        connection.Open();
+        internal bool PrefixSettled =>
+            UncommittedCaptures == 0 &&
+            UnfinishedLaneWork == 0 &&
+            QuarantinedOrAbandonedLaneWork == 0 &&
+            RetriedLaneWork == 0 &&
+            RetentionHolds == 0 &&
+            IncompleteNodes == 0;
+
+        internal bool ProducerStillLive => AssignmentsBeyondWatermark > 0 || CapturesBeyondWatermark > 0;
+
+        internal bool Satisfied => PrefixSettled && ProducerStillLive;
+
+        internal string Describe()
+        {
+            var unsettled = UncommittedCaptures != 0 ? $"{UncommittedCaptures} uncommitted raw capture(s)"
+                : UnfinishedLaneWork != 0 ? $"{UnfinishedLaneWork} unfinished lane work row(s)"
+                : QuarantinedOrAbandonedLaneWork != 0 ? $"{QuarantinedOrAbandonedLaneWork} quarantined or abandoned lane(s)"
+                : RetriedLaneWork != 0 ? $"{RetriedLaneWork} lane row(s) past the first attempt"
+                : RetentionHolds != 0 ? $"{RetentionHolds} retention hold(s)"
+                : IncompleteNodes != 0 ? $"{IncompleteNodes} incomplete processing node(s)"
+                : !ProducerStillLive ? "no assignment or capture beyond the watermark, so the producer is not proven live"
+                : "nothing";
+            return string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"watermark={Watermark} unsettled={unsettled} committedAtOrBelow={CommittedAtOrBelowWatermark} "
+                    + $"assignmentsBeyond={AssignmentsBeyondWatermark} capturesBeyond={CapturesBeyondWatermark}");
+        }
+    }
+
+    /// <summary>
+    /// Waits until every capture assignment at or below the watermark is durably settled and at least one
+    /// assignment or capture exists beyond it. The old predicate demanded a global zero, which a producer that
+    /// never stops is under no obligation to reach; this one bounds the claim to a prefix the agent has already
+    /// finished with, while still requiring proof that it kept working.
+    /// </summary>
+    private static async Task<CapturePrefixSnapshot> WaitForSettledCapturePrefixAsync(TimeSpan timeout)
+    {
+        var watermark = ReadCaptureWatermark();
+        Assert.IsGreaterThan(0L, watermark, "No capture sequence had been assigned when the fence was taken.");
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        CapturePrefixSnapshot snapshot;
+        while (true)
+        {
+            snapshot = ReadCapturePrefixSnapshot(watermark);
+            if (snapshot.Satisfied)
+            {
+                return snapshot;
+            }
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                Assert.Fail(string.Create(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    $"The capture prefix did not settle within {timeout.TotalSeconds:F0}s. Last snapshot: {snapshot.Describe()}"));
+            }
+            Console.WriteLine(snapshot.Describe());
+            await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+        }
+    }
+
+    private static long ReadCaptureWatermark()
+    {
+        using var connection = OpenJournalReadConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM capture_lane_work WHERE state <> 'completed';";
-        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 0;
+        command.CommandText = "SELECT COALESCE(MAX(last_sequence), 0) FROM raw_capture_sequences;";
+        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static CapturePrefixSnapshot ReadCapturePrefixSnapshot(long watermark)
+    {
+        using var connection = OpenJournalReadConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                (SELECT COUNT(*) FROM raw_captures
+                   WHERE capture_sequence <= $watermark AND state <> 'committed'),
+                (SELECT COUNT(*) FROM capture_lane_work
+                   WHERE capture_sequence <= $watermark AND state <> 'completed'),
+                (SELECT COUNT(*) FROM capture_lane_work
+                   WHERE capture_sequence <= $watermark AND state IN ('quarantined', 'abandoned')),
+                (SELECT COUNT(*) FROM capture_lane_work
+                   WHERE capture_sequence <= $watermark AND attempt_count > 1),
+                (SELECT COUNT(*) FROM raw_captures
+                   WHERE capture_sequence <= $watermark AND retention_hold = 1),
+                (SELECT COUNT(*) FROM processing_nodes node
+                   JOIN raw_captures capture ON capture.capture_id = node.capture_id
+                   WHERE capture.capture_sequence <= $watermark AND node.status <> 'Completed'),
+                (SELECT COUNT(*) FROM raw_captures
+                   WHERE capture_sequence <= $watermark AND state = 'committed'),
+                (SELECT COUNT(*) FROM raw_capture_assignments WHERE capture_sequence > $watermark),
+                (SELECT COUNT(*) FROM raw_captures WHERE capture_sequence > $watermark);
+            """;
+        command.Parameters.AddWithValue("$watermark", watermark);
+        using var reader = command.ExecuteReader();
+        Assert.IsTrue(reader.Read(), "The capture prefix snapshot returned no row.");
+        return new CapturePrefixSnapshot(
+            watermark,
+            reader.GetInt64(0),
+            reader.GetInt64(1),
+            reader.GetInt64(2),
+            reader.GetInt64(3),
+            reader.GetInt64(4),
+            reader.GetInt64(5),
+            reader.GetInt64(6),
+            reader.GetInt64(7),
+            reader.GetInt64(8));
+    }
+
+    private static SqliteConnection OpenJournalReadConnection()
+    {
+        var connection = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
+        connection.Open();
+        return connection;
     }
 
     private static OutboxCheckpoint ReadPendingOutboxCheckpoint()
