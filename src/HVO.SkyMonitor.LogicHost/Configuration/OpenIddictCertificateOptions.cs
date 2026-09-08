@@ -50,12 +50,22 @@ internal sealed class OpenIddictCertificateOptions
     // before it looks at the file, so on macOS the loader failed for a reason that had nothing
     // to do with the certificate, ahead of the private-key, validity and key-usage checks.
     //
-    // The fallback drops only that flag, only on that exception, and NEVER on Linux. Linux is
-    // the production platform -- LogicHost ships as mcr.microsoft.com/dotnet/aspnet on Linux --
-    // so a PlatformNotSupportedException there is a real change in the platform's guarantees
-    // and must surface rather than silently downgrade to keys materialised on disk. Elsewhere,
-    // which today means a macOS development host, the downgrade is the only behaviour the
-    // platform offers, and it is a development accommodation rather than a production one.
+    // The fallback drops only that flag and only on that exception, and it is refused on the
+    // PRODUCTION PLATFORM. That is the invariant; Linux is merely what the production platform
+    // is today, because LogicHost ships as mcr.microsoft.com/dotnet/aspnet on Linux. Losing
+    // EphemeralKeySet in production is a change in the platform's guarantees and must surface
+    // rather than silently downgrade to a key materialised on disk.
+    //
+    // The predicate below therefore says "not the production platform", not "macOS". It returns
+    // true for every non-Linux platform, which is wider than the one host that needs it, and the
+    // width is deliberate: any platform without an ephemeral key path is a platform where the
+    // downgrade is the only behaviour on offer, and a development host is the only place we run
+    // those. **If the production platform ever stops being Linux, this predicate must move with
+    // it**, or it silently stops protecting production while continuing to look correct.
+    //
+    // Not live today on the one platform that makes the width visible: Windows supports
+    // EphemeralKeySet, so PlatformNotSupportedException does not fire and the fallback is
+    // unreachable there.
     private static X509Certificate2 LoadPkcs12(string path, string? password)
     {
         try
@@ -73,6 +83,8 @@ internal sealed class OpenIddictCertificateOptions
 
     // Separated from the call site so both answers are testable from either platform. A test
     // that could only exercise the branch its own host takes would leave the production branch
-    // -- the refusal -- unverified everywhere it matters.
+    // -- the refusal -- unverified everywhere it matters. That is not a testing convenience: it
+    // is the only reason a Linux host was able to falsify a macOS-shaped assumption at all, by
+    // forcing this to true and finding that nothing but this predicate's own assertion moved.
     internal static bool AllowsNonEphemeralFallback(bool isLinuxPlatform) => !isLinuxPlatform;
 }
