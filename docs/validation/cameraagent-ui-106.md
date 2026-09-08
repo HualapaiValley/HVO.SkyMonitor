@@ -31,7 +31,13 @@ The browser tests become inconclusive with an explicit install command when the
 pinned executable is absent, and the runner refuses that outcome: it writes a
 TRX, requires the selection to have recorded results, requires every recorded
 result to be `Passed`, and otherwise exits non-zero naming each non-passing test
-and, separately, the reasons the tests recorded. Omitting `--install-browser` on
+and, separately, the reasons the tests recorded. That assertion lives in
+`scripts/lib/trx-evidence.sh`, shared with the ARM64 CI runner, and is anchored to
+the `UnitTestResult` element rather than to the line: one result per line is a
+habit of a particular writer and not a property of the format, and a line-oriented
+check reads a collapsed TRX wrongly in both directions. `scripts/test:trx-evidence-contract`
+gates that behaviour against fixtures that vary the serialisation as deliberately
+as the content. Omitting `--install-browser` on
 a host without the pinned revision is therefore a hard failure rather than a run
 that reports success having executed almost nothing.
 The development container installs that pinned revision during post-create and

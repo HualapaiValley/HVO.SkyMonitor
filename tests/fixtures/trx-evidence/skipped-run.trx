@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Results>
+    <UnitTestResult testName="A" outcome="NotExecuted"><Output><ErrorInfo><Message>Install the pinned Playwright Chromium with scripts/test:cameraagent-ui --install-browser.</Message></ErrorInfo></Output></UnitTestResult>
+  </Results>
+  <ResultSummary outcome="Completed"><Counters total="1" executed="0" passed="0" failed="0" inconclusive="0" notExecuted="0" /></ResultSummary>
+</TestRun>
