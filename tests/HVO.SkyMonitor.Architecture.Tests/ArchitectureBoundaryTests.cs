@@ -209,12 +209,9 @@ public sealed class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void CameraAgentLogEventIdsAreUniqueAcrossProductionSources()
+    public void LogEventIdDeclarationGuardCoversEverySupportedForm()
     {
-        var root = RepositoryGraph.FindRepositoryRoot();
-        var declarationPattern = new System.Text.RegularExpressions.Regex(
-            """\b(?:EventId\s*=\s*|new\s+EventId\s*\(\s*|LoggerMessage\s*\(\s*|EventId\b[^;=]*=\s*new\s*\(\s*)(?<id>\d+)""",
-            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var declarationPattern = LogEventIdDeclarationPattern();
         const string syntaxWitness = """
             [LoggerMessage(EventId = 9100, Level = LogLevel.Information)]
             [LoggerMessage(
@@ -248,7 +245,27 @@ public sealed class ArchitectureBoundaryTests
             0,
             declarationPattern.Count(MaskCSharpCommentsAndLiterals(interpolationWitness)),
             "Nested literals inside interpolations must not be exposed as EventId declarations.");
+    }
 
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CameraAgentLogEventIdsAreUniqueAcrossProductionSources()
+        => AssertHostOwnedLogEventIdsAreUnique("CameraAgent", "HVO.SkyMonitor.CameraAgent");
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void LogicHostLogEventIdsAreUniqueAcrossProductionSources()
+        => AssertHostOwnedLogEventIdsAreUnique("LogicHost", "HVO.SkyMonitor.LogicHost");
+
+    private static System.Text.RegularExpressions.Regex LogEventIdDeclarationPattern()
+        => new(
+            """\b(?:EventId\s*=\s*|new\s+EventId\s*\(\s*|LoggerMessage\s*\(\s*|EventId\b[^;=]*=\s*new\s*\(\s*)(?<id>\d+)""",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static void AssertHostOwnedLogEventIdsAreUnique(string hostName, string projectDirectoryName)
+    {
+        var root = RepositoryGraph.FindRepositoryRoot();
+        var declarationPattern = LogEventIdDeclarationPattern();
         var declarations = new List<(int Id, string Path, int Line)>();
 
         foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
@@ -274,19 +291,18 @@ public sealed class ArchitectureBoundaryTests
             }
         }
 
+        var ownedPrefix = Path.Combine("src", projectDirectoryName);
         var duplicates = declarations
             .GroupBy(declaration => declaration.Id)
             .Where(group => group.Count() > 1)
-            .Where(group => group.Any(declaration => declaration.Path.StartsWith(
-                Path.Combine("src", "HVO.SkyMonitor.CameraAgent"),
-                StringComparison.Ordinal)))
+            .Where(group => group.Any(declaration => declaration.Path.StartsWith(ownedPrefix, StringComparison.Ordinal)))
             .OrderBy(group => group.Key)
             .Select(group => $"EventId {group.Key}: {string.Join(", ", group.Select(declaration => $"{declaration.Path}:{declaration.Line}"))}")
             .ToArray();
 
         Assert.IsEmpty(
             duplicates,
-            $"Every CameraAgent log event ID must be unique across src/:{Environment.NewLine}{string.Join(Environment.NewLine, duplicates)}");
+            $"Every {hostName} log event ID must be unique across src/:{Environment.NewLine}{string.Join(Environment.NewLine, duplicates)}");
     }
 
     private static string MaskCSharpCommentsAndLiterals(string source)
