@@ -126,6 +126,32 @@ abbreviated head and a branch name as a head must each be refused rather than
 reported as an absence of problems. Reading nothing and reporting no problems is
 the defect this issue exists to remove; the validator is not exempt from it.
 
+## What this gate covers, and what it does not
+
+Seven classes are covered: source and review identity, command receipts, test
+assembly identity, the #719 replay profiles, #197 dual-agent admissibility,
+central traffic, and paths and sanitisation.
+
+**Two are not, and the gate is deliberately short rather than apparently
+complete.** A gate that covers seven classes and says so is more useful than one
+that covers seven and reads as though it covers nine.
+
+*Filesystem and PE facts* — symlink, hard link, ownership, mode, byte length,
+MVID — are not JSON facts. Asserting them here would look like coverage without
+being any, so they belong to the compiled helper.
+
+*The CI import* is not implemented in this layer, and this is where a deferral
+would quietly become a pass. "Not implemented yet" reads as success to everything
+downstream, which is the same defect as evidence reporting what it did not
+observe. So a record carrying imported CI slots is **refused**, not skipped: it
+fails with `ci-slots-unverifiable` and says why. A predicate here could check the
+shape of a supplied CI conclusion while recomputing nothing about its provenance,
+and a shape-only check living in a file named for provenance is exactly how a
+later reader mistakes one for the other.
+
+When the helper can query a real run and attempt, that refusal is replaced by
+predicates that recompute. Until then the absence is loud rather than invisible.
+
 ## Extending it
 
 Add the fixture before the predicate. A predicate added without a fixture that fails

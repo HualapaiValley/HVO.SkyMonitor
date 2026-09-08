@@ -96,6 +96,12 @@ expect final replay-live-dispatch.json      1 "replay-live-dispatch"
 expect final dual-agent-diagnostic.json     1 "dual-agent-not-citable"
 expect final central-traffic-nonzero.json   1 "central-traffic-observed"
 
+# A deferral is not a neutral state. A record carrying imported CI slots is
+# refused, because a shape-only check in a file named for provenance is how a
+# later reader mistakes one for the other.
+expect local ci-slots-present.json       1 "ci-slots-unverifiable"
+expect final ci-slots-present.json       1 "ci-slots-unverifiable"
+
 # Paths and sanitisation. Filesystem facts — symlinks, hard links, ownership,
 # mode — are not asserted here; they belong to the compiled helper, and claiming
 # them in jq would look like coverage without being any.

@@ -239,12 +239,32 @@ def central_traffic_problems:
             "\(.centralTrafficAttempts) central traffic attempt(s); standalone evidence requires zero") ]
     else [] end;
 
+# --- imported CI slots ------------------------------------------------------
+# The CI import is not implemented in this layer, and a deferral is not a neutral
+# state: "not implemented yet" reads as a pass to everything downstream, which is
+# the same defect as a green reporting something unverified, one costume further on.
+#
+# So a record carrying imported CI slots is REFUSED rather than validated around.
+# A predicate here could check the shape of a supplied CI conclusion and recompute
+# nothing about where it came from, and a shape-only check living in a file named
+# for provenance is exactly how a later reader mistakes one for the other.
+#
+# When the compiled helper can query a real run and attempt, this refusal is
+# replaced by predicates that recompute. Until then the absence is loud.
+def ci_slot_problems:
+    if (.ci // null) != null then
+        [ problem("ci-slots-unverifiable";
+            "this record carries imported CI slots, and nothing in this layer can check their provenance; "
+            + "the CI import belongs to the compiled helper and until it exists such a record is refused rather than "
+            + "validated around") ]
+    else [] end;
+
 def all_problems($bound):
     revision_problems($bound) + claimability_problems + freshness_problems
     + admissibility_problems + heads_problems + command_problems
     + assembly_problems($bound) + source_stability_problems
     + path_problems + sanitisation_problems + replay_problems
-    + dual_agent_problems + central_traffic_problems;
+    + dual_agent_problems + central_traffic_problems + ci_slot_problems;
 
 def evaluate($bound; $mode):
     (all_problems($bound)
