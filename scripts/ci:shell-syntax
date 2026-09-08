@@ -4,10 +4,15 @@ set -euo pipefail
 # Syntax-check the repository's Bash scripts.
 #
 # With no arguments this discovers every tracked shell file and runs `bash -n`
-# over it. `--list` prints the discovered set without checking it. With path
-# arguments it checks exactly those paths, which is how
-# scripts/test:ci-shell-syntax proves the checker actually rejects bad syntax
-# rather than only reporting that it ran.
+# over it. With path arguments it checks exactly those paths -- unfiltered, so
+# an explicitly named file is never silently skipped -- which is how
+# scripts/test:ci-shell-syntax proves the checker rejects bad syntax rather
+# than only reporting that it ran.
+#
+# `--list` reports selection instead of checking it: with no arguments the whole
+# discovered set, with paths the subset the predicate accepts. That second form
+# is the only way to test the shebang predicate directly, since discovery reads
+# `git ls-files` and cannot see a temporary fixture.
 #
 # Discovery replaces the hand-maintained enumeration that used to live in
 # .github/workflows/ci.yml. That list lost coverage silently whenever a file or
@@ -17,12 +22,36 @@ set -euo pipefail
 # file until runtime -- and broke at the point of use instead (issue #775).
 # Deriving the list keeps coverage attached to what the repository contains.
 
+# `bash -n` is a property of the interpreter that runs it, not of the file. Four
+# scripts under scripts/ use `[[ -v VAR ]]`, which arrived in Bash 4.2, so a
+# checker that inherits whatever `bash` is first on PATH reports them as syntax
+# errors on a host whose /bin/bash is 3.2 -- four false positives that look
+# exactly like a real regression (reported from macOS against #779). The
+# enumerated line this replaces was immune only because it ran on Linux runners
+# alone; a script developers run locally is not. So the interpreter is pinned to
+# the one already vetted here, its version is reported alongside every result,
+# and anything below the repository's existing Bash 5.1 floor is refused loudly
+# rather than allowed to produce an attributable-looking red.
+if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+    printf '%s requires Bash 5.1 or newer; running under %s (%s).\n' \
+        "${BASH_SOURCE[0]##*/}" "${BASH_VERSION}" "${BASH}" >&2
+    printf 'Older interpreters reject the -v test and report correct scripts as broken.\n' >&2
+    exit 1
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # A file is a Bash script if it is named *.sh (sourced libraries often carry no
 # shebang) or if its interpreter resolves to bash or sh.
+#
+# The shebang parse must not fail closed and quiet: a form it does not
+# understand drops that file from the check silently, which is the same
+# silent-coverage-loss defect this script exists to remove. So it resolves
+# `env` wrappers -- including `env -S`, which is the portable way to pass an
+# interpreter argument -- rather than only the bare and plain-`env` forms.
 is_shell_file() {
-    local path="$1" shebang interpreter
+    local path="$1" shebang candidate index
+    local -a words
 
     case "$path" in
         *.sh) return 0 ;;
@@ -34,16 +63,39 @@ is_shell_file() {
         *) return 1 ;;
     esac
 
-    # "#!/usr/bin/env bash" and "#!/bin/bash -e" both resolve to bash.
-    interpreter="${shebang#\#!}"
-    read -r interpreter _ <<<"$interpreter"
-    case "${interpreter##*/}" in
-        env)
-            read -r _ interpreter _ <<<"${shebang#\#!}"
-            ;;
-    esac
+    read -r -a words <<<"${shebang#\#!}"
+    ((${#words[@]} > 0)) || return 1
+    candidate="${words[0]}"
 
-    case "${interpreter##*/}" in
+    # "#!/usr/bin/env bash", "#!/usr/bin/env -S bash -e",
+    # "#!/usr/bin/env --split-string=bash -e" and "#!/usr/bin/env FOO=1 bash"
+    # all name bash. Skip env's own options and assignments to reach it.
+    if [[ "${candidate##*/}" == 'env' ]]; then
+        index=1
+        while ((index < ${#words[@]})); do
+            case "${words[index]}" in
+                -S | --split-string) ;;
+                --split-string=*)
+                    candidate="${words[index]#--split-string=}"
+                    break
+                    ;;
+                -S?*)
+                    candidate="${words[index]#-S}"
+                    break
+                    ;;
+                -*) ;;
+                [A-Za-z_]*=*) ;;
+                *)
+                    candidate="${words[index]}"
+                    break
+                    ;;
+            esac
+            index=$((index + 1))
+        done
+        ((index < ${#words[@]})) || return 1
+    fi
+
+    case "${candidate##*/}" in
         bash | sh) return 0 ;;
         *) return 1 ;;
     esac
@@ -57,6 +109,15 @@ fi
 
 targets=()
 if (($# > 0)); then
+    if ((list_only == 1)); then
+        for path in "$@"; do
+            [[ -f "$path" ]] || continue
+            is_shell_file "$path" || continue
+            targets+=("$path")
+        done
+        printf '%s\n' "${targets[@]-}"
+        exit 0
+    fi
     targets=("$@")
 else
     while IFS= read -r -d '' path; do
@@ -78,15 +139,17 @@ fi
 
 failed=()
 for target in "${targets[@]}"; do
-    if ! bash -n "$target"; then
+    if ! "$BASH" -n "$target"; then
         failed+=("$target")
     fi
 done
 
 if ((${#failed[@]} > 0)); then
-    printf 'Shell syntax check failed for %d of %d file(s):\n' "${#failed[@]}" "${#targets[@]}" >&2
+    printf 'Shell syntax check failed for %d of %d file(s) under Bash %s (%s):\n' \
+        "${#failed[@]}" "${#targets[@]}" "${BASH_VERSION}" "${BASH}" >&2
     printf '  %s\n' "${failed[@]}" >&2
     exit 1
 fi
 
-printf 'Shell syntax check passed for %d file(s).\n' "${#targets[@]}"
+printf 'Shell syntax check passed for %d file(s) under Bash %s (%s).\n' \
+    "${#targets[@]}" "${BASH_VERSION}" "${BASH}"

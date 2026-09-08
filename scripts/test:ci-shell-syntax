@@ -43,11 +43,56 @@ printf '#!/usr/bin/env bash\nprintf "ok\\n"\n' >"$WORK/good.sh"
 # shellcheck disable=SC2016 # The fixture's "$1" is literal script text, not an expansion here.
 printf '#!/usr/bin/env bash\nif [[ -n "$1" ]]; then\n  printf "x\\n"\n' >"$WORK/broken.sh"
 
+# Every result names the interpreter that produced it. `bash -n` outcomes are interpreter-
+# dependent -- `[[ -v VAR ]]` is a syntax error before Bash 4.2 -- so a result that does not
+# say which bash it used cannot be attributed, and a false positive is indistinguishable
+# from a regression.
+expect 'result names the interpreter' 0 "under Bash ${BASH_VERSION}" "$WORK/good.sh"
 expect 'valid file accepted' 0 'passed for 1 file' "$WORK/good.sh"
 expect 'syntax error rejected' 1 'broken.sh' "$WORK/broken.sh"
 # One bad file among good ones must still fail: a per-file loop that stops accumulating is
 # how a batch check silently narrows to its first argument.
+expect 'failure names the interpreter' 1 "under Bash ${BASH_VERSION}" "$WORK/broken.sh"
 expect 'bad file in a batch rejected' 1 'failed for 1 of 3' "$WORK/good.sh" "$WORK/broken.sh" "$WORK/good.sh"
+
+# The shebang predicate decides what discovery selects, and its failure mode is silent
+# exclusion -- the same defect the enumeration had. `--list <paths>` reports the subset the
+# predicate accepts, which is the only way to exercise it: discovery reads `git ls-files` and
+# cannot see a fixture. Fixtures deliberately carry no .sh suffix, or the name would
+# short-circuit the shebang parse and these cases would prove nothing.
+printf '#!/usr/bin/env -S bash -e\ntrue\n' >"$WORK/env-dash-s"
+printf '#!/usr/bin/env -Sbash -e\ntrue\n' >"$WORK/env-dash-s-fused"
+printf '#!/usr/bin/env --split-string=bash -e\ntrue\n' >"$WORK/env-split-string"
+printf '#!/usr/bin/env FOO=1 bash\ntrue\n' >"$WORK/env-assignment"
+printf '#!/bin/bash -e\ntrue\n' >"$WORK/plain-bash-with-arg"
+printf '#!/bin/sh\ntrue\n' >"$WORK/posix-sh"
+printf '#!/usr/bin/env python3\nprint(1)\n' >"$WORK/python-script"
+printf '#!/usr/bin/env -S python3 -u\nprint(1)\n' >"$WORK/python-dash-s"
+printf 'plain text, no shebang\n' >"$WORK/no-shebang"
+
+predicate_case() {
+    local fixture="$1" want="$2"
+    cases=$((cases + 1))
+    local selected
+    selected="$("$CHECKER" --list "$WORK/$fixture")"
+    if [[ "$want" == 'accept' && "$selected" != *"$fixture" ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL shebang predicate excluded %s\n' "$fixture" >&2
+    elif [[ "$want" == 'reject' && "$selected" == *"$fixture" ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL shebang predicate wrongly included %s\n' "$fixture" >&2
+    fi
+}
+
+predicate_case env-dash-s           accept
+predicate_case env-dash-s-fused     accept
+predicate_case env-split-string     accept
+predicate_case env-assignment       accept
+predicate_case plain-bash-with-arg  accept
+predicate_case posix-sh             accept
+predicate_case python-script        reject
+predicate_case python-dash-s        reject
+predicate_case no-shebang           reject
 
 # Discovery must reach the library directory whose omission from the enumerated list is the
 # reported defect, and must not regress to checking nothing.
