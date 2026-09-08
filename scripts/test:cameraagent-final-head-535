@@ -116,6 +116,14 @@ expect final ci-slots-present.json       1 "ci-slots-unverifiable"
 expect final path-absolute.json          1 "path-not-relative"
 expect final path-traversal.json         1 "path-escapes-root"
 expect final path-duplicated.json        1 "path-duplicated"
+# `path` carries a grammar rather than a length bound. The free-text string is
+# refused by the shape, not scanned for; the Windows path is admitted by the shape
+# so that path_problems reports one problem rather than two. Both sides matter: a
+# grammar that refused the Windows path would double-report a single condition, and
+# one that admitted the connection string would be the length bound again.
+expect local path-free-text.json         1 "evidence-field-shape-invalid"
+expect final path-free-text.json         1 "evidence-field-shape-invalid"
+expect final path-windows.json           1 "path-not-relative"
 
 # Sanitisation by construction. A field the schema does not name, and a value
 # without the shape its field requires, are both refused without anything being
@@ -152,6 +160,28 @@ determinism() {
     fi
 }
 determinism
+
+# The free-text pair must produce the SAME result, not merely each match a fixed
+# expectation. Those are different guarantees: asserting each separately still passes
+# if the two ever start being treated differently, which is exactly what recognition
+# creeping back in would look like. The two fixtures differ only in whether the note
+# carries a synthetic credential and a service authority, so their outputs must be
+# byte-identical in both modes.
+free_text_is_content_independent() {
+    cases=$((cases + 1))
+    local mode plain loaded
+    for mode in local final; do
+        set +e
+        plain="$("$VALIDATE" "$mode" --evidence "$FIXTURES/free-text-note.json" --bound-head "$BOUND_HEAD" 2>/dev/null)"
+        loaded="$("$VALIDATE" "$mode" --evidence "$FIXTURES/free-text-note-credential.json" --bound-head "$BOUND_HEAD" 2>/dev/null)"
+        set -e
+        if [[ "$plain" != "$loaded" ]]; then
+            failures=$((failures + 1))
+            printf 'FAIL free-text content independence in %s mode: the two notes were treated differently\n' "$mode" >&2
+        fi
+    done
+}
+free_text_is_content_independent
 
 expect_refusal "missing evidence" local --evidence "$FIXTURES/does-not-exist.json" --bound-head "$BOUND_HEAD"
 expect_refusal "abbreviated head" local --evidence "$FIXTURES/green.json" --bound-head "428e346e"

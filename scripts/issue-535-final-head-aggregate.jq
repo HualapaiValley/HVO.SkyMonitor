@@ -265,8 +265,21 @@ def shape_test($shape):
       elif $shape == "guid"        then $v | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
       elif $shape == "version"     then $v | test("^[0-9]+\\.[0-9]+\\.[0-9]+\\+[0-9a-f]{40}$")
       elif $shape == "token"       then $v | test("^[A-Za-z0-9][A-Za-z0-9.-]{0,39}$")
-      # `.` does not match a line break, so this also refuses an embedded log dump.
-      elif $shape == "path"        then $v | test("^.{1,200}$")
+      # A grammar, not a length. `^.{1,200}$` was a length bound wearing a shape's
+      # name: any text under two hundred characters satisfied it, so a connection
+      # string sitting in `path` was admitted while the identical string in `note`
+      # was refused as free text (PR #759, comment 5589292726). That made the
+      # design's central claim — free text is confined to declared free-text fields
+      # — false as implemented, in the one field whose bound was never argued for.
+      #
+      # The grammar admits exactly what `path_problems` exists to adjudicate: an
+      # optional root, drive or UNC prefix, then segments of path characters. A
+      # leading "/", a drive prefix and a ".." segment are all admitted here so that
+      # path_problems keeps reporting each as one problem rather than two, the same
+      # reason the revision shape admits the working-tree literal.
+      elif $shape == "path" then
+          ($v | length) <= 200
+          and ($v | test("^([A-Za-z]:[\\\\/]|\\\\\\\\|/)?[A-Za-z0-9._-]+([\\\\/][A-Za-z0-9._-]+)*$"))
       elif $shape == "free-text"   then true
       else false end;
 

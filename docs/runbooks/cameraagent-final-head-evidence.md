@@ -140,18 +140,32 @@ it is declared `free-text` and **refused in `final` mode rather than scanned**, 
 failed run is worth keeping; final evidence carries the hash of that text instead of
 the text. The fixtures `free-text-note` and `free-text-note-credential` differ only
 in what the note says — one ordinary prose, one carrying a synthetic connection-string
-credential and a service authority — and they must produce identical results. If they
-ever diverge, detection has crept back in.
+credential and a service authority — and the gate requires their outputs to be
+**byte-identical**, not merely that each matches its own expectation. Those are
+different guarantees, and only the stronger one catches recognition creeping back:
+a refusal that quotes the text it refused still produces the same identifier and the
+same exit status for both fixtures, so every fixed expectation passes while the two
+are plainly being treated differently — and the quoted credential is then in the
+validator's own output.
 
 Three boundaries, because each is easy to overclaim:
 
 - The schema governs what may appear and in what shape. It does **not** govern what
   must appear; required-field rules stay in the domain predicates, so one condition
   produces one problem rather than two.
-- `path` is the one structurally free field, and its shape only bounds length and
-  forbids a line break. Relativity and traversal are refused by `path_problems` —
-  that is where the absolute-path category is actually covered, and the measurement
-  above tested the deleted scan in isolation and so did not credit it.
+- `path` carries a grammar, not a length bound. It once carried `^.{1,200}$`, which
+  is a length check wearing a shape's name: any text under two hundred characters
+  satisfied it, so a connection string sitting in `path` was admitted while the
+  identical string in `note` was refused as free text. That made the central claim
+  above — free text is confined to declared free-text fields — false as implemented.
+  The grammar now admits an optional root, drive or UNC prefix followed by segments
+  of `[A-Za-z0-9._-]`, and nothing else; a space, a `=`, a `;` or a `://` fails the
+  shape. A leading `/`, a drive prefix and a `..` segment are admitted **on purpose**
+  so that `path_problems` keeps reporting each as one problem rather than two, the
+  same reason the revision shape admits the `working-tree` literal. Relativity and
+  traversal remain `path_problems`' job — that is where the absolute-path category
+  is actually covered, and the measurement above tested the deleted scan in isolation
+  and so did not credit it. Evidence paths therefore may not contain spaces.
 - A bounded token cannot exclude every possible secret, because some secrets are
   short alphanumeric strings. It excludes every secret needing a separator, an
   underscore, a scheme, a path or more than forty characters, and the domain
@@ -174,7 +188,10 @@ remove, sitting inside a predicate written to remove it.
 `canonical_replay_nodes` now holds #719's ordered fourteen nodes as a literal, and
 each profile is checked against it. The list is kept here as a literal on purpose: a
 reader checks it against the issue by eye, and if #719 changes its node set this
-literal must change with it, which the fixture gate makes loud. An absolute check
+literal must change with it, which the fixture gate makes loud. **#719's acceptance
+criteria are authoritative and the literal is a copy of them.** A stale copy fails
+closed but still gives a wrong answer, refusing evidence that is correct, so when the
+two disagree the issue wins and the literal is what changes. An absolute check
 subsumes the differential one — two lists that each equal the canonical list equal
 each other — so `replay-nodes-not-identical` was **deleted** rather than kept
 alongside. Two checks where one is strictly stronger is how the weaker one is later
@@ -214,11 +231,14 @@ abbreviated head and a branch name as a head must each be refused rather than
 reported as an absence of problems. Reading nothing and reporting no problems is
 the defect this issue exists to remove; the validator is not exempt from it.
 
-The gate's own property has been shown by construction rather than by reading.
-Removing the free-text refusal, neutralising the canonical node check, and dropping
-the unknown-field refusal each turn the gate red and name the case that detects
-them. A gate whose assertions have never been observed to fail is a gate nobody has
-shown to work.
+The gate's own property has been shown by construction rather than by reading. Five
+mutations, each reverted: removing the free-text refusal, neutralising the canonical
+node check, dropping the unknown-field refusal, and restoring the old `^.{1,200}$`
+path bound each turn the gate red and name the case that detects them. The fifth —
+making the free-text refusal quote the text it refused — is caught **only** by the
+content-independence assertion, because every fixed expectation still passes. A gate
+whose assertions have never been observed to fail is a gate nobody has shown to
+work.
 
 ## What this gate covers, and what it does not
 
