@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+# Deterministic fixture gate for the issue #535 final-head validator.
+#
+# Every case states the mode, the fixture, the expected exit status and the exact
+# set of problem identifiers expected. Asserting the identifiers rather than only
+# the exit status is deliberate: a validator that fails for the wrong reason is a
+# validator that will pass for the wrong reason later, and an exit code alone
+# cannot tell those apart.
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly VALIDATE="$SCRIPT_DIR/validate:cameraagent-final-head-535"
+readonly FIXTURES="$REPO_ROOT/tests/fixtures/issue-535/final-head"
+readonly BOUND_HEAD="428e346ef16c00f6a3257315c95384092b1b3290"
+
+failures=0
+cases=0
+
+expect() {
+    local mode="$1" fixture="$2" want_exit="$3" want_ids="$4"
+    cases=$((cases + 1))
+    local out status ids
+    set +e
+    out="$("$VALIDATE" "$mode" --evidence "$FIXTURES/$fixture" --bound-head "$BOUND_HEAD" 2>/dev/null)"
+    status=$?
+    set -e
+    ids="$(printf '%s' "$out" | jq -r '[.problems[]?.id] | sort | join(",")' 2>/dev/null || printf '<unparseable>')"
+    if [[ "$status" != "$want_exit" || "$ids" != "$want_ids" ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL %s %s\n  expected exit=%s ids=[%s]\n  actual   exit=%s ids=[%s]\n' \
+            "$mode" "$fixture" "$want_exit" "$want_ids" "$status" "$ids" >&2
+    fi
+}
+
+# The validator must refuse to report over evidence it did not read. A missing or
+# empty set is not an empty set of problems, and that distinction is the defect
+# this whole issue exists to remove.
+expect_refusal() {
+    local label="$1"; shift
+    cases=$((cases + 1))
+    set +e
+    "$VALIDATE" "$@" > /dev/null 2>&1
+    local status=$?
+    set -e
+    if ((status == 0)); then
+        failures=$((failures + 1))
+        printf 'FAIL %s: validator returned success where it should have refused\n' "$label" >&2
+    fi
+}
+
+expect local green.json                  0 ""
+expect final green.json                  0 ""
+expect local revision-mismatch.json      1 "revision-not-bound-head"
+expect final revision-mismatch.json      1 "revision-not-bound-head"
+expect local working-tree.json           1 "revision-not-bound-head,revision-working-tree-literal"
+expect local claimability-invented.json  1 "claimability-above-ceiling"
+expect final claimability-invented.json  1 "claimability-above-ceiling,claimability-not-final"
+expect local freshness-only-mtime.json   1 "freshness-without-content-binding"
+# The mode distinction itself: admissible locally, refused as final evidence.
+expect local local-but-not-final.json    0 ""
+expect final local-but-not-final.json    1 "claimability-not-final"
+
+expect local heads-mixed.json            1 "heads-not-aligned"
+expect final heads-mixed.json            1 "heads-not-aligned"
+# A dirty tree is ordinary during development and inadmissible as final evidence.
+# A tree that moved during the run invalidates everything produced across the change.
+expect local source-fingerprint-moved.json    1 "source-fingerprint-changed"
+expect final source-fingerprint-moved.json    1 "source-fingerprint-changed"
+# The trap worth a fixture of its own: a consistently dirty tree has an unchanged
+# fingerprint, so a stability check alone is satisfied while the run executed
+# modified code under the committed revision. Cleanliness must be asserted
+# separately, and this case is what stops the two being collapsed later.
+expect local source-dirty-but-consistent.json 0 ""
+expect final source-dirty-but-consistent.json 1 "source-not-clean"
+
+# A failed run is retained as evidence of the failure and cannot support a final
+# claim. That is the third place local and final genuinely diverge.
+expect local command-nonzero-exit.json   0 ""
+expect final command-nonzero-exit.json   1 "command-exit-nonzero"
+expect local command-no-receipt.json     1 "command-receipt-unbound"
+expect final command-no-receipt.json     1 "command-receipt-unbound"
+expect local assembly-debug-build.json   1 "assembly-not-release"
+expect final assembly-debug-build.json   1 "assembly-not-release"
+expect local assembly-wrong-commit.json  1 "assembly-not-at-bound-head"
+expect final assembly-wrong-commit.json  1 "assembly-not-at-bound-head"
+
+# #719 replay profiles, #197 admissibility, and central traffic.
+expect final replay-profile-missing.json    1 "replay-profiles-not-exact"
+expect final replay-profile-extra.json      1 "replay-profiles-not-exact"
+expect final replay-output-published.json   1 "replay-output-published"
+expect final replay-live-dispatch.json      1 "replay-live-dispatch"
+expect final dual-agent-diagnostic.json     1 "dual-agent-not-citable"
+expect final central-traffic-nonzero.json   1 "central-traffic-observed"
+
+# Each replay profile is checked against #719's canonical ordered fourteen nodes,
+# not against the other profile. The absent case is the regression fixture for the
+# defect this replaced: two profiles that both omit the key used to compare equal,
+# so missing evidence scored as matching evidence and the record was acceptanceReady.
+# One problem per profile here is deliberate — two profiles are two assertions.
+expect local replay-nodes-absent.json       1 "replay-nodes-absent,replay-nodes-absent"
+expect final replay-nodes-absent.json       1 "replay-nodes-absent,replay-nodes-absent"
+expect final replay-nodes-reordered.json    1 "replay-nodes-not-canonical"
+
+# A deferral is not a neutral state. A record carrying imported CI slots is
+# refused, because a shape-only check in a file named for provenance is how a
+# later reader mistakes one for the other.
+expect local ci-slots-present.json       1 "ci-slots-unverifiable"
+expect final ci-slots-present.json       1 "ci-slots-unverifiable"
+
+# Paths. Filesystem facts — symlinks, hard links, ownership, mode — are not
+# asserted here; they belong to the compiled helper, and claiming them in jq would
+# look like coverage without being any.
+expect final path-absolute.json          1 "path-not-relative"
+expect final path-traversal.json         1 "path-escapes-root"
+expect final path-duplicated.json        1 "path-duplicated"
+# `path` carries a grammar rather than a length bound. The free-text string is
+# refused by the shape, not scanned for; the Windows path is admitted by the shape
+# so that path_problems reports one problem rather than two. Both sides matter: a
+# grammar that refused the Windows path would double-report a single condition, and
+# one that admitted the connection string would be the length bound again.
+expect local path-free-text.json         1 "evidence-field-shape-invalid"
+expect final path-free-text.json         1 "evidence-field-shape-invalid"
+expect final path-windows.json           1 "path-not-relative"
+
+# Sanitisation by construction. A field the schema does not name, and a value
+# without the shape its field requires, are both refused without anything being
+# recognised in them.
+expect local section-unknown.json        1 "evidence-section-unknown"
+expect final section-unknown.json        1 "evidence-section-unknown"
+expect local field-unknown.json          1 "evidence-field-unknown"
+expect final field-unknown.json          1 "evidence-field-unknown"
+expect local field-shape-invalid.json    1 "evidence-field-shape-invalid"
+expect final field-shape-invalid.json    1 "evidence-field-shape-invalid"
+
+# Declared free text is refused in final mode and kept locally — the fourth genuine
+# mode divergence. These two fixtures differ only in what the note says: one is
+# ordinary prose, the other carries a synthetic connection-string credential and a
+# service authority of exactly the kind the deleted scan failed to recognise. They
+# must produce identical results, because the refusal never examines the text. If
+# these two ever diverge, detection has crept back in.
+expect local free-text-note.json                 0 ""
+expect final free-text-note.json                 1 "evidence-free-text-in-final"
+expect local free-text-note-credential.json      0 ""
+expect final free-text-note-credential.json      1 "evidence-free-text-in-final"
+
+# The result is canonical, so the same input must produce byte-identical output.
+# A validator whose output drifts between runs cannot be diffed across generations,
+# and a generation that cannot be diffed cannot be shown to be unchanged.
+determinism() {
+    cases=$((cases + 1))
+    local first second
+    first="$("$VALIDATE" final --evidence "$FIXTURES/green.json" --bound-head "$BOUND_HEAD")"
+    second="$("$VALIDATE" final --evidence "$FIXTURES/green.json" --bound-head "$BOUND_HEAD")"
+    if [[ "$first" != "$second" ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL determinism: repeated validation of the same input differed\n' >&2
+    fi
+}
+determinism
+
+# The free-text pair must produce the SAME result, not merely each match a fixed
+# expectation. Those are different guarantees: asserting each separately still passes
+# if the two ever start being treated differently, which is exactly what recognition
+# creeping back in would look like. The two fixtures differ only in whether the note
+# carries a synthetic credential and a service authority, so their outputs must be
+# byte-identical in both modes.
+free_text_is_content_independent() {
+    cases=$((cases + 1))
+    local mode plain loaded
+    for mode in local final; do
+        set +e
+        plain="$("$VALIDATE" "$mode" --evidence "$FIXTURES/free-text-note.json" --bound-head "$BOUND_HEAD" 2>/dev/null)"
+        loaded="$("$VALIDATE" "$mode" --evidence "$FIXTURES/free-text-note-credential.json" --bound-head "$BOUND_HEAD" 2>/dev/null)"
+        set -e
+        if [[ "$plain" != "$loaded" ]]; then
+            failures=$((failures + 1))
+            printf 'FAIL free-text content independence in %s mode: the two notes were treated differently\n' "$mode" >&2
+        fi
+    done
+}
+free_text_is_content_independent
+
+expect_refusal "missing evidence" local --evidence "$FIXTURES/does-not-exist.json" --bound-head "$BOUND_HEAD"
+expect_refusal "abbreviated head" local --evidence "$FIXTURES/green.json" --bound-head "428e346e"
+expect_refusal "branch name as head" local --evidence "$FIXTURES/green.json" --bound-head "main"
+
+if ((failures > 0)); then
+    printf '%s of %s final-head validator cases failed.\n' "$failures" "$cases" >&2
+    exit 1
+fi
+printf 'All %s final-head validator cases passed.\n' "$cases"

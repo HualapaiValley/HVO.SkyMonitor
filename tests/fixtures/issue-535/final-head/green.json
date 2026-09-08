@@ -1,0 +1,96 @@
+{
+  "artifacts": [
+    {
+      "admissible": true,
+      "claimability": "clean-source-attributed-review-required",
+      "path": "evidence/a.json",
+      "sha256": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "sourceRevision": "428e346ef16c00f6a3257315c95384092b1b3290",
+      "sourceTree": "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432"
+    }
+  ],
+  "centralTrafficAttempts": 0,
+  "commands": [
+    {
+      "argvSha256": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a",
+      "commandId": "CMD-EXAMPLE-535-001",
+      "exitCode": 0,
+      "receiptSha256": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b"
+    }
+  ],
+  "dualAgent": {
+    "citable": true,
+    "evidenceMode": "final"
+  },
+  "heads": {
+    "aggregate": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "candidateB": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "execution": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "protectedCi": "428e346ef16c00f6a3257315c95384092b1b3290",
+    "reviewed": "428e346ef16c00f6a3257315c95384092b1b3290"
+  },
+  "replayProfiles": [
+    {
+      "fallbacks": 0,
+      "liveRunnerDispatches": 0,
+      "nodes": [
+        "projected-scene",
+        "calibration",
+        "calibrated-preview",
+        "rolling",
+        "combined-preview",
+        "quality",
+        "cloud",
+        "scene-presentation",
+        "cloud-presentation",
+        "environment-presentation",
+        "overlay-manifest",
+        "presentation-materializer",
+        "storage",
+        "telemetry"
+      ],
+      "phase": 1,
+      "publishedOutputs": 0,
+      "runner": "InProcess",
+      "schemaVersion": "issue-535-w6-replay-profile-v1"
+    },
+    {
+      "fallbacks": 0,
+      "liveRunnerDispatches": 0,
+      "nodes": [
+        "projected-scene",
+        "calibration",
+        "calibrated-preview",
+        "rolling",
+        "combined-preview",
+        "quality",
+        "cloud",
+        "scene-presentation",
+        "cloud-presentation",
+        "environment-presentation",
+        "overlay-manifest",
+        "presentation-materializer",
+        "storage",
+        "telemetry"
+      ],
+      "phase": 2,
+      "publishedOutputs": 0,
+      "runner": "LocalRunner",
+      "schemaVersion": "issue-535-w6-replay-profile-v1"
+    }
+  ],
+  "source": {
+    "clean": true,
+    "endFingerprint": "333652BC2DBB049959A86F75D70D71B879580DA843888C8CCF45146CBDA1AC74",
+    "startFingerprint": "333652BC2DBB049959A86F75D70D71B879580DA843888C8CCF45146CBDA1AC74"
+  },
+  "testAssemblies": [
+    {
+      "configuration": "Release",
+      "informationalVersion": "1.0.0+428e346ef16c00f6a3257315c95384092b1b3290",
+      "mvid": "6f1d2c3b-4a59-4867-9d0e-1f2a3b4c5d6e",
+      "path": "tests/X/bin/Release/net10.0/X.dll",
+      "sha256": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c"
+    }
+  ]
+}
