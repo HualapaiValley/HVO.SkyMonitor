@@ -4440,6 +4440,49 @@ public sealed class StandaloneW6DockerAcceptanceTests
             "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1").ConfigureAwait(false));
     }
 
+    /// <summary>
+    /// Asserts the page does not scroll horizontally at the narrow-portrait viewport. The measurement is
+    /// reported on failure because the magnitude and the widest offending element are what distinguish a
+    /// rounding artefact from a broken layout, and recovering them otherwise costs a full campaign run.
+    /// </summary>
+    private static async Task AssertNarrowPortraitFitsAsync(IPage page, string pageLabel)
+    {
+        var measurement = await page.EvaluateAsync<JsonElement>(
+            """
+            () => {
+                const root = document.documentElement;
+                let widest = null;
+                for (const element of document.querySelectorAll('*')) {
+                    const box = element.getBoundingClientRect();
+                    if (box.right > root.clientWidth + 1 && (widest === null || box.right > widest.right)) {
+                        widest = {
+                            right: Math.round(box.right),
+                            width: Math.round(box.width),
+                            description: element.tagName.toLowerCase()
+                                + (element.className ? '.' + String(element.className).trim().split(/\s+/).join('.') : '')
+                        };
+                    }
+                }
+                return {
+                    scrollWidth: root.scrollWidth,
+                    clientWidth: root.clientWidth,
+                    widest: widest === null ? 'none' : widest.description,
+                    widestRight: widest === null ? 0 : widest.right,
+                    widestWidth: widest === null ? 0 : widest.width
+                };
+            }
+            """).ConfigureAwait(false);
+        var scrollWidth = measurement.GetProperty("scrollWidth").GetInt32();
+        var clientWidth = measurement.GetProperty("clientWidth").GetInt32();
+        Assert.IsTrue(
+            scrollWidth <= clientWidth + 1,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"The {pageLabel} page overflows the 390x844 viewport: scrollWidth {scrollWidth} against clientWidth {clientWidth}, "
+                    + $"{scrollWidth - clientWidth} px wider. Widest offending element {measurement.GetProperty("widest").GetString()} "
+                    + $"ends at {measurement.GetProperty("widestRight").GetInt32()} px and is {measurement.GetProperty("widestWidth").GetInt32()} px wide."));
+    }
+
     private static async Task<TransientBrowserEvidence> AssertTransientBrowserEvidenceAsync(
         IPage page,
         TransientEvidence evidence)
@@ -4470,13 +4513,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
         }
 
         await page.SetViewportSizeAsync(390, 844).ConfigureAwait(false);
-        Assert.IsTrue(await page.EvaluateAsync<bool>(
-            "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1").ConfigureAwait(false));
+        await AssertNarrowPortraitFitsAsync(page, "transient detail").ConfigureAwait(false);
         await page.GotoAsync("/transients?pageSize=100").ConfigureAwait(false);
         await page.GetByRole(AriaRole.Heading, new() { Name = "Transient candidates", Level = 1 })
             .WaitForAsync().ConfigureAwait(false);
-        Assert.IsTrue(await page.EvaluateAsync<bool>(
-            "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1").ConfigureAwait(false));
+        await AssertNarrowPortraitFitsAsync(page, "transient list").ConfigureAwait(false);
         await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
         return new TransientBrowserEvidence(
             evidence.CandidateId,

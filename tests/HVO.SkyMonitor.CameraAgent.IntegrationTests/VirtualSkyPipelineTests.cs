@@ -176,14 +176,32 @@ public sealed class VirtualSkyPipelineTests
         Assert.AreEqual(RawIngressAvailability.Accepting,
             services.GetRequiredService<RawIngressState>().Snapshot.Availability);
         var processingStateService = services.GetRequiredService<CaptureProcessingState>();
+        // Healthy is a conjunction of eight conditions, two of which count work still in flight on a producer
+        // that never stops, so waiting for it asks a live agent to fall idle. Gate the six that are defects at
+        // any sequence and report the other two, exactly as the capture-fence wait below does.
         await WaitUntilAsync(
-            () => processingStateService.Snapshot.Availability == CaptureProcessingAvailability.Healthy,
+            () =>
+            {
+                var live = processingStateService.Snapshot;
+                return live.TerminalCount == 0 &&
+                    live.ProcessingQuarantineCount == 0 &&
+                    live.MissingProductCount == 0 &&
+                    live.ReplayTerminalCount == 0 &&
+                    !live.DurableStateUnavailable &&
+                    !live.ReconciliationFailed;
+            },
             TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         var processingState = processingStateService.Snapshot;
-        Assert.AreEqual(
-            CaptureProcessingAvailability.Healthy,
-            processingState.Availability,
-            processingState.Reason);
+        Console.WriteLine(string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"processing after publication: pendingCount={processingState.PendingCount} retryCount={processingState.RetryCount} "
+                + $"replayRetryCount={processingState.ReplayRetryCount} availability={processingState.Availability} reason={processingState.Reason}"));
+        Assert.AreEqual(0L, processingState.TerminalCount, processingState.Reason);
+        Assert.AreEqual(0L, processingState.ProcessingQuarantineCount, processingState.Reason);
+        Assert.AreEqual(0L, processingState.MissingProductCount, processingState.Reason);
+        Assert.AreEqual(0L, processingState.ReplayTerminalCount, processingState.Reason);
+        Assert.IsFalse(processingState.DurableStateUnavailable, processingState.Reason);
+        Assert.IsFalse(processingState.ReconciliationFailed, processingState.Reason);
     }
 
 #endif
@@ -345,51 +363,77 @@ public sealed class VirtualSkyPipelineTests
         Assert.IsTrue(pending.Any(item => item.Scene is not null));
         Assert.IsTrue(pending.All(item => item.Descriptor.Capture.CaptureId != item.Descriptor.Artifact.ArtifactId));
 
-        // Carry the observation that satisfied the wait into the assertions. The capture loop keeps
-        // enqueuing lane work for the whole test, so a fresh query issued after the wait can already
-        // describe a later capture than the one the wait observed.
-        var laneCounts = await WaitForObservationAsync(
-            static () => ReadLaneJournalCounts() is { UnfinishedLaneWork: 0 } counts ? counts : null,
-            TimeSpan.FromSeconds(20)).ConfigureAwait(false);
-        Assert.IsGreaterThan(0L, laneCounts.CommittedRawCaptures);
-        Assert.AreEqual(0L, laneCounts.UnfinishedLaneWork);
-        Assert.AreEqual(0L, laneCounts.RetentionHeldRawCaptures);
+        // The agent never stops capturing, so no global "nothing is in flight" state is guaranteed to occur.
+        // Fence on a watermark instead: everything at or below it must be durably settled, and something beyond
+        // it must exist, which proves the producer stayed live rather than merely idle during the proof.
+        var fence = await WaitForSettledCapturePrefixAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        // Terminal prefix states are asserted rather than waited on: nothing exits them, so waiting could only
+        // burn the timeout and report a stall where the real answer is a defect. Failing here names it at once.
+        Assert.AreEqual(0L, fence.TerminalLaneWork, "quarantined or abandoned lane work inside the fenced prefix");
+        Assert.AreEqual(0L, fence.TerminalCaptures, "quarantined or missing-evidence captures inside the fenced prefix");
+        Assert.AreEqual(0L, fence.TerminalNodes, "processing nodes in TerminalFailure inside the fenced prefix");
+        Assert.AreEqual(0L, fence.UnmaterialisedBelowWatermark, "reserved sequences below the watermark that never produced a committed capture");
+        // The fence proves something about the prefix; these assertions are what tie the subjects to it.
+        // Ordering does hold today through raw ingress reserving a sequence before publish, but that invariant
+        // lives in another assembly and is unasserted, so relying on it would let this test pass vacuously if it
+        // ever changed.
+        Assert.IsTrue(
+            pending.All(item => item.Descriptor.Capture.CaptureSequence <= fence.Watermark),
+            "Outbox subjects are outside the settled prefix; the fence proved nothing about them.");
+        Assert.IsTrue(
+            manifests.All(item => item.Parsed.Document!.Manifest.Descriptor.Capture.CaptureSequence <= fence.Watermark),
+            "Stored-manifest subjects are outside the settled prefix; the fence proved nothing about them.");
         var ingressState = services.GetRequiredService<RawIngressState>().Snapshot;
         Assert.AreEqual(RawIngressAvailability.Accepting, ingressState.Availability);
-        Assert.AreEqual(0L, ingressState.PendingCount);
-        Assert.AreEqual(0L, ingressState.PendingBytes);
+        // PendingCount and PendingBytes describe work admitted after the watermark on a still-running producer,
+        // so they are recorded rather than gated.
+        Console.WriteLine(string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"raw ingress beyond the fence: pendingCount={ingressState.PendingCount} pendingBytes={ingressState.PendingBytes}"));
         Assert.AreEqual(0L, ingressState.QuarantineCount);
         Assert.AreEqual(0L, ingressState.QuarantineBytes);
 
         using var processing = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
         await processing.OpenAsync().ConfigureAwait(false);
         using var processingCommand = processing.CreateCommand();
-        processingCommand.CommandText = "SELECT COUNT(*) FROM processing_nodes WHERE status <> 'Completed';";
-        Assert.AreEqual(0L, Convert.ToInt64(
-            await processingCommand.ExecuteScalarAsync().ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture));
         processingCommand.CommandText = "SELECT COUNT(DISTINCT output_identity_sha256) FROM processing_outputs;";
         Assert.IsGreaterThanOrEqualTo(5L, Convert.ToInt64(
             await processingCommand.ExecuteScalarAsync().ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture));
         var processingStateService = services.GetRequiredService<CaptureProcessingState>();
-        // The snapshot that satisfied the wait is the one asserted, for the same reason.
+        // Compose() builds Availability from eight conditions, so replacing it means deciding all eight rather
+        // than enumerating the ones that come to mind. Healthy means every one of terminal, retry,
+        // processing-quarantine, processing-missing, durable-state-unavailable, reconciliation-failed,
+        // replay-terminal and replay-retry is clear, and Unhealthy is exactly "terminal is non-zero", so
+        // "not Unhealthy" restates the terminal condition and is not a safety net for the other seven.
+        // Gated, because each is a defect at any sequence: terminal, processing-quarantine, processing-missing,
+        // durable-state-unavailable, reconciliation-failed, replay-terminal.
+        // Demoted to informational, because each counts work still in flight on a producer that never stops:
+        // retry and replay-retry. Replay retry is demoted on exactly the reasoning that demotes ordinary retry,
+        // a retry that later succeeds is recovery rather than a defect, and the terminal counterpart stays gated.
+        // The observation that satisfied the wait is the one asserted, per #682: the capture loop runs for the
+        // whole test, so a snapshot re-read afterwards can already describe a later capture.
         var processingState = await WaitForObservationAsync(
             () => processingStateService.Snapshot is
             {
-                Availability: CaptureProcessingAvailability.Healthy,
-                PendingCount: 0,
-                RetryCount: 0,
-                TerminalCount: 0
+                TerminalCount: 0,
+                ProcessingQuarantineCount: 0,
+                MissingProductCount: 0,
+                ReplayTerminalCount: 0,
+                DurableStateUnavailable: false,
+                ReconciliationFailed: false
             } state ? state : null,
             TimeSpan.FromSeconds(20)).ConfigureAwait(false);
-        Assert.AreEqual(
-            CaptureProcessingAvailability.Healthy,
-            processingState.Availability,
-            processingState.Reason);
-        Assert.AreEqual(0L, processingState.PendingCount);
-        Assert.AreEqual(0L, processingState.RetryCount);
+        Console.WriteLine(string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"processing beyond the fence: pendingCount={processingState.PendingCount} retryCount={processingState.RetryCount} "
+                + $"replayRetryCount={processingState.ReplayRetryCount} availability={processingState.Availability} reason={processingState.Reason}"));
         Assert.AreEqual(0L, processingState.TerminalCount);
+        Assert.AreEqual(0L, processingState.ProcessingQuarantineCount);
+        Assert.AreEqual(0L, processingState.MissingProductCount);
+        Assert.AreEqual(0L, processingState.ReplayTerminalCount);
+        Assert.IsFalse(processingState.DurableStateUnavailable);
+        Assert.IsFalse(processingState.ReconciliationFailed);
         processingCommand.CommandText = "SELECT artifact_id FROM processing_outputs WHERE node_id = 'CalibratedPreview' ORDER BY capture_sequence DESC LIMIT 1;";
         var localOnlyPreviewId = Guid.ParseExact(
             Convert.ToString(await processingCommand.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture)!,
@@ -1112,24 +1156,185 @@ public sealed class VirtualSkyPipelineTests
 #endif
             );
 
-    /// <summary>Raw-ingress journal counts read in one statement, so they describe one instant.</summary>
-    private sealed record LaneJournalCounts(
-        long CommittedRawCaptures,
-        long UnfinishedLaneWork,
-        long RetentionHeldRawCaptures);
-
-    private static LaneJournalCounts ReadLaneJournalCounts()
+    /// One atomic view of the capture prefix at or below <paramref name="Watermark"/>, plus evidence of work
+    /// beyond it. Every field comes from a single statement, so they all describe the same database state
+    /// rather than a sequence of states a live producer moved through between reads.
+    /// </summary>
+    private sealed record CapturePrefixSnapshot(
+        long Watermark,
+        long InMotionLaneWork,
+        long TerminalLaneWork,
+        long TerminalCaptures,
+        long RetryableNodes,
+        long TerminalNodes,
+        long SkippedNodes,
+        long RetentionHolds,
+        long RetriedLaneWork,
+        long CommittedAtOrBelowWatermark,
+        long AssignmentsBeyondWatermark,
+        long CapturesBeyondWatermark,
+        long UnmaterialisedBelowWatermark,
+        long UnmaterialisedAtWatermark)
     {
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
-        connection.Open();
+        // Every member of this predicate has to be a state the prefix can still leave. A member that can enter a
+        // state nothing exits makes the fence permanently unsatisfiable against a fixed watermark, which is the
+        // same unsatisfiable-wait class the issue exists to remove. Walking each member against the schema:
+        //   in motion, can settle: lane work in pending/leased/retry_wait; a capture reserved at the watermark
+        //     whose row is mid-publication; nodes in RetryableFailure, whose rows are upserted on re-processing.
+        //   terminal, cannot settle, so gated separately below and asserted rather than waited on: lane work in
+        //     quarantined or abandoned, which only reach completed from leased; captures in quarantined or
+        //     missing_evidence, which leave only through the repair path the raw ingress reconciler drives; nodes in TerminalFailure; and a
+        //     reservation below the watermark with no capture row, which nothing ever deletes.
+        //   legitimate and excluded entirely, for reasons that are not "never cleared": retention_hold is a
+        //     derived flag, recomputed as 1 while any of required lane work is unfinished, a transient candidate
+        //     source hold is unreleased, transient capture work is pending, or an unreleased row exists in
+        //     processing_execution_input_pins. It is cleared by the same recomputation, including on the lane-work
+        //     completion commit. It is excluded because a windowed execution for a capture beyond the watermark
+        //     pins the earlier captures it consumes as inputs, so a prefix capture stays held until post-watermark
+        //     work releases its pin. Gating on it would therefore re-impose the global idle demand. Also excluded:
+        //     nodes in Skipped, a normal terminal outcome, and lane rows past their first attempt.
+        // A terminal member ends the wait immediately. Without this a node stranded in RetryableFailure by
+        // quarantined lane work would look like work in motion, burn the whole budget and report the wrong
+        // member, while the terminal assertion that names the real defect never runs.
+        internal bool PrefixHasTerminalDefect =>
+            TerminalLaneWork != 0 ||
+            TerminalCaptures != 0 ||
+            TerminalNodes != 0 ||
+            UnmaterialisedBelowWatermark != 0;
+
+        internal bool PrefixInMotion =>
+            !PrefixHasTerminalDefect &&
+            (InMotionLaneWork != 0 ||
+             UnmaterialisedAtWatermark != 0 ||
+             RetryableNodes != 0);
+
+        internal bool PrefixSettled =>
+            PrefixHasTerminalDefect ||
+            (!PrefixInMotion && CommittedAtOrBelowWatermark > 0);
+
+        internal bool ProducerStillLive => AssignmentsBeyondWatermark > 0 || CapturesBeyondWatermark > 0;
+
+        internal bool Satisfied => PrefixSettled && ProducerStillLive;
+
+        internal string Describe()
+        {
+            var unsettled = InMotionLaneWork != 0 ? $"{InMotionLaneWork} lane work row(s) still pending, leased or waiting to retry"
+                : UnmaterialisedAtWatermark != 0 ? "the capture at the watermark has no committed row yet"
+                : RetryableNodes != 0 ? $"{RetryableNodes} processing node(s) in RetryableFailure"
+                : CommittedAtOrBelowWatermark == 0 ? "no committed capture at or below the watermark"
+                : !ProducerStillLive ? "no assignment or capture beyond the watermark, so the producer is not proven live"
+                : "nothing";
+            return string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"watermark={Watermark} unsettled={unsettled} committedAtOrBelow={CommittedAtOrBelowWatermark} "
+                    + $"assignmentsBeyond={AssignmentsBeyondWatermark} capturesBeyond={CapturesBeyondWatermark} "
+                    + $"terminalLaneWork={TerminalLaneWork} terminalCaptures={TerminalCaptures} terminalNodes={TerminalNodes} "
+                    + $"unmaterialisedBelowWatermark={UnmaterialisedBelowWatermark} retriedThenSettled={RetriedLaneWork} "
+                    + $"skippedNodes={SkippedNodes} retentionHolds={RetentionHolds}");
+        }
+    }
+
+    /// <summary>
+    /// Waits until every capture assignment at or below the watermark is durably settled and at least one
+    /// assignment or capture exists beyond it. The old predicate demanded a global zero, which a producer that
+    /// never stops is under no obligation to reach; this one bounds the claim to a prefix the agent has already
+    /// finished with, while still requiring proof that it kept working.
+    /// </summary>
+    private static async Task<CapturePrefixSnapshot> WaitForSettledCapturePrefixAsync(TimeSpan timeout)
+    {
+        var watermark = ReadCaptureWatermark();
+        Assert.IsGreaterThan(0L, watermark, "No capture sequence had been assigned when the fence was taken.");
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        CapturePrefixSnapshot snapshot;
+        while (true)
+        {
+            snapshot = ReadCapturePrefixSnapshot(watermark);
+            if (snapshot.Satisfied)
+            {
+                Console.WriteLine("capture prefix settled: " + snapshot.Describe());
+                return snapshot;
+            }
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                Assert.Fail(string.Create(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    $"The capture prefix did not settle within {timeout.TotalSeconds:F0}s. Last snapshot: {snapshot.Describe()}"));
+            }
+            Console.WriteLine(snapshot.Describe());
+            await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+        }
+    }
+
+    private static long ReadCaptureWatermark()
+    {
+        using var connection = OpenJournalReadConnection();
         using var command = connection.CreateCommand();
-        command.CommandText =
-            "SELECT (SELECT COUNT(*) FROM raw_captures WHERE state = 'committed'), " +
-            "(SELECT COUNT(*) FROM capture_lane_work WHERE state <> 'completed'), " +
-            "(SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1);";
+        command.CommandText = "SELECT COALESCE(MAX(last_sequence), 0) FROM raw_capture_sequences;";
+        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static CapturePrefixSnapshot ReadCapturePrefixSnapshot(long watermark)
+    {
+        using var connection = OpenJournalReadConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                (SELECT COUNT(*) FROM capture_lane_work
+                   WHERE capture_sequence <= $watermark AND state IN ('pending', 'leased', 'retry_wait')),
+                (SELECT COUNT(*) FROM capture_lane_work
+                   WHERE capture_sequence <= $watermark AND state IN ('quarantined', 'abandoned')),
+                (SELECT COUNT(*) FROM raw_captures
+                   WHERE capture_sequence <= $watermark AND state <> 'committed'),
+                (SELECT COUNT(*) FROM processing_nodes node
+                   JOIN raw_captures capture ON capture.capture_id = node.capture_id
+                   WHERE capture.capture_sequence <= $watermark AND node.status = 'RetryableFailure'),
+                (SELECT COUNT(*) FROM processing_nodes node
+                   JOIN raw_captures capture ON capture.capture_id = node.capture_id
+                   WHERE capture.capture_sequence <= $watermark AND node.status = 'TerminalFailure'),
+                (SELECT COUNT(*) FROM processing_nodes node
+                   JOIN raw_captures capture ON capture.capture_id = node.capture_id
+                   WHERE capture.capture_sequence <= $watermark AND node.status = 'Skipped'),
+                (SELECT COUNT(*) FROM raw_captures
+                   WHERE capture_sequence <= $watermark AND retention_hold = 1),
+                (SELECT COUNT(*) FROM capture_lane_work
+                   WHERE capture_sequence <= $watermark AND attempt_count > 1),
+                (SELECT COUNT(*) FROM raw_captures
+                   WHERE capture_sequence <= $watermark AND state = 'committed'),
+                (SELECT COUNT(*) FROM raw_capture_assignments WHERE capture_sequence > $watermark),
+                (SELECT COUNT(*) FROM raw_captures WHERE capture_sequence > $watermark),
+                (SELECT COUNT(*) FROM raw_capture_assignments a
+                   WHERE a.capture_sequence < $watermark
+                     AND NOT EXISTS (SELECT 1 FROM raw_captures c
+                                     WHERE c.capture_id = a.capture_id AND c.state = 'committed')),
+                (SELECT COUNT(*) FROM raw_capture_assignments a
+                   WHERE a.capture_sequence = $watermark
+                     AND NOT EXISTS (SELECT 1 FROM raw_captures c WHERE c.capture_id = a.capture_id));
+            """;
+        command.Parameters.AddWithValue("$watermark", watermark);
         using var reader = command.ExecuteReader();
-        Assert.IsTrue(reader.Read(), "The raw-ingress journal returned no lane counts.");
-        return new LaneJournalCounts(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2));
+        Assert.IsTrue(reader.Read(), "The capture prefix snapshot returned no row.");
+        return new CapturePrefixSnapshot(
+            watermark,
+            reader.GetInt64(0),
+            reader.GetInt64(1),
+            reader.GetInt64(2),
+            reader.GetInt64(3),
+            reader.GetInt64(4),
+            reader.GetInt64(5),
+            reader.GetInt64(6),
+            reader.GetInt64(7),
+            reader.GetInt64(8),
+            reader.GetInt64(9),
+            reader.GetInt64(10),
+            reader.GetInt64(11),
+            reader.GetInt64(12));
+    }
+
+    private static SqliteConnection OpenJournalReadConnection()
+    {
+        var connection = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
+        connection.Open();
+        return connection;
     }
 
     private static OutboxCheckpoint ReadPendingOutboxCheckpoint()
