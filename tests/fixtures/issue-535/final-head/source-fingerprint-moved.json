@@ -9,17 +9,21 @@
       "sourceTree": "t"
     }
   ],
+  "centralTrafficAttempts": 0,
   "commands": [
     {
       "argv": [
-        "dotnet",
-        "test"
+        "x"
       ],
-      "commandId": "cmd-1",
+      "commandId": "c",
       "exitCode": 0,
       "receiptSha256": "bb"
     }
   ],
+  "dualAgent": {
+    "citable": true,
+    "evidenceMode": "final"
+  },
   "heads": {
     "aggregate": "428e346ef16c00f6a3257315c95384092b1b3290",
     "candidateB": "428e346ef16c00f6a3257315c95384092b1b3290",
@@ -27,6 +31,34 @@
     "protectedCi": "428e346ef16c00f6a3257315c95384092b1b3290",
     "reviewed": "428e346ef16c00f6a3257315c95384092b1b3290"
   },
+  "replayProfiles": [
+    {
+      "fallbacks": 0,
+      "liveRunnerDispatches": 0,
+      "nodes": [
+        "n1",
+        "n2",
+        "n3"
+      ],
+      "phase": 1,
+      "publishedOutputs": 0,
+      "runner": "InProcess",
+      "schemaVersion": "issue-535-w6-replay-profile-v1"
+    },
+    {
+      "fallbacks": 0,
+      "liveRunnerDispatches": 0,
+      "nodes": [
+        "n1",
+        "n2",
+        "n3"
+      ],
+      "phase": 2,
+      "publishedOutputs": 0,
+      "runner": "LocalRunner",
+      "schemaVersion": "issue-535-w6-replay-profile-v1"
+    }
+  ],
   "source": {
     "clean": true,
     "endFingerprint": "F9",
@@ -36,7 +68,7 @@
     {
       "configuration": "Release",
       "informationalVersion": "1.0.0+428e346ef16c00f6a3257315c95384092b1b3290",
-      "mvid": "11111111-1111-1111-1111-111111111111",
+      "mvid": "m",
       "path": "tests/X/bin/Release/net10.0/X.dll",
       "sha256": "cc"
     }

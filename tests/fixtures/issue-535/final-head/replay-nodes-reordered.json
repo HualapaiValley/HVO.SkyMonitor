@@ -69,7 +69,7 @@
       "configuration": "Release",
       "informationalVersion": "1.0.0+428e346ef16c00f6a3257315c95384092b1b3290",
       "mvid": "m",
-      "path": "p",
+      "path": "tests/X/bin/Release/net10.0/X.dll",
       "sha256": "cc"
     }
   ]
