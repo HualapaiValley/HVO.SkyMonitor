@@ -69,6 +69,17 @@ expect final heads-mixed.json            1 "heads-not-aligned"
 expect local source-dirty.json           0 ""
 expect final source-dirty.json           1 "source-not-clean"
 
+# A failed run is retained as evidence of the failure and cannot support a final
+# claim. That is the third place local and final genuinely diverge.
+expect local command-nonzero-exit.json   0 ""
+expect final command-nonzero-exit.json   1 "command-exit-nonzero"
+expect local command-no-receipt.json     1 "command-receipt-unbound"
+expect final command-no-receipt.json     1 "command-receipt-unbound"
+expect local assembly-debug-build.json   1 "assembly-not-release"
+expect final assembly-debug-build.json   1 "assembly-not-release"
+expect local assembly-wrong-commit.json  1 "assembly-not-at-bound-head"
+expect final assembly-wrong-commit.json  1 "assembly-not-at-bound-head"
+
 # The result is canonical, so the same input must produce byte-identical output.
 # A validator whose output drifts between runs cannot be diffed across generations,
 # and a generation that cannot be diffed cannot be shown to be unchanged.

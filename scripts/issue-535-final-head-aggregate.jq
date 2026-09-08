@@ -102,13 +102,45 @@ def source_clean_problems:
              "source.clean is \(.source.clean // "absent"); final evidence requires a clean tree") ]
     end;
 
+# --- command receipts ------------------------------------------------------
+# A nonzero receipt is kept in staging, because the record of a failed run is
+# itself evidence, but it can never support a final claim. A receipt without a
+# content hash binds to nothing and is refused in either mode.
+def command_problems:
+    [ .commands[]?
+      | select((.receiptSha256 // "") == "")
+      | problem("command-receipt-unbound";
+          "command \(.commandId): receipt has no sha256, so nothing binds the recorded run to its output") ];
+
+def command_final_problems:
+    [ .commands[]?
+      | select(.exitCode != 0)
+      | problem("command-exit-nonzero";
+          "command \(.commandId): exit \(.exitCode); a failed run is retained but cannot support final evidence") ];
+
+# --- test assemblies -------------------------------------------------------
+# EvidenceSourceIdentity already refuses a non-Release binary and one whose
+# informational version does not carry the head. This builds on that binding
+# rather than duplicating it: the same two facts are required of every assembly
+# an aggregate cites, because an aggregate may cite an assembly no writer checked.
+def assembly_problems($bound):
+    [ .testAssemblies[]?
+      | select(.configuration != "Release")
+      | problem("assembly-not-release";
+          "\(.path): configuration is \(.configuration); evidence binaries are Release") ]
+  + [ .testAssemblies[]?
+      | select((.informationalVersion // "") | test($bound) | not)
+      | problem("assembly-not-at-bound-head";
+          "\(.path): informational version \(.informationalVersion) does not carry the bound head") ];
+
 def all_problems($bound):
     revision_problems($bound) + claimability_problems + freshness_problems
-    + admissibility_problems + heads_problems;
+    + admissibility_problems + heads_problems + command_problems
+    + assembly_problems($bound);
 
 def evaluate($bound; $mode):
     (all_problems($bound)
-      + (if $mode == "final" then claimability_final_problems + source_clean_problems else [] end)) as $problems
+      + (if $mode == "final" then claimability_final_problems + source_clean_problems + command_final_problems else [] end)) as $problems
     | {
         schemaVersion: "issue-535-final-head-validation-v1",
         mode: $mode,

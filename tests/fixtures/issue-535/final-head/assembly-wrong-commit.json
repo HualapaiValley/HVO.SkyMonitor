@@ -5,7 +5,7 @@
       "claimability": "clean-source-attributed-review-required",
       "path": "evidence/a.json",
       "sha256": "aa",
-      "sourceRevision": "working-tree",
+      "sourceRevision": "428e346ef16c00f6a3257315c95384092b1b3290",
       "sourceTree": "t"
     }
   ],
@@ -33,7 +33,7 @@
   "testAssemblies": [
     {
       "configuration": "Release",
-      "informationalVersion": "1.0.0+428e346ef16c00f6a3257315c95384092b1b3290",
+      "informationalVersion": "1.0.0+0000000000000000000000000000000000000000",
       "mvid": "11111111-1111-1111-1111-111111111111",
       "path": "tests/X/bin/Release/net10.0/X.dll",
       "sha256": "cc"

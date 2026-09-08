@@ -5,7 +5,7 @@
       "claimability": "clean-source-attributed-review-required",
       "path": "evidence/a.json",
       "sha256": "aa",
-      "sourceRevision": "working-tree",
+      "sourceRevision": "428e346ef16c00f6a3257315c95384092b1b3290",
       "sourceTree": "t"
     }
   ],
@@ -16,7 +16,7 @@
         "test"
       ],
       "commandId": "cmd-1",
-      "exitCode": 0,
+      "exitCode": 1,
       "receiptSha256": "bb"
     }
   ],
