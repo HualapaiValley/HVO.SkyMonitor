@@ -22,6 +22,17 @@ public sealed class CameraAgentGalleryPerformanceTests
     private const int PageSize = 50;
     private const int MaximumResponseBytes = 512 * 1024;
     private const double MaximumP95Milliseconds = 5_000;
+
+    // Browser-driven latency is load-sensitive in a way the read-model measurements are not: under
+    // contention the two browser families move +41.6% and +46.0% while the SQLite and Kestrel
+    // families stay flat (see #785). A wall-clock p95 measured on a busy host therefore describes
+    // the host rather than the product, so the browser bounds are only asserted when the machine was
+    // quiet before the workload began. Being wrong about this ceiling is safe in both directions: too
+    // strict yields Inconclusive, which scripts/lib/trx-evidence.sh refuses as "proved nothing", and
+    // too lenient is no worse than asserting unconditionally as before. It can never manufacture a
+    // false pass or a false regression, which is why a constant is defensible here and is not for the
+    // latency bound itself.
+    private const double MaximumAdmissibleLoadPerCore = 0.40;
     private const long MaximumWorkingSetGrowthBytes = 256L * 1024 * 1024;
     private const long MaximumRenderedPageBytes = 1024L * 1024;
     private const long MaximumPerSessionWorkingSetBytes = 32L * 1024 * 1024;
@@ -41,6 +52,9 @@ public sealed class CameraAgentGalleryPerformanceTests
     [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Await-using must retain the strongly typed Kestrel fixture for authenticated HTTP measurements.")]
     public async Task GalleryReadModelRecordsIssue106AcceptanceEvidenceAsync()
     {
+        // Sampled before any workload so it reflects the host we inherited rather than the load this
+        // test itself generates; by the browser phase the run has driven load well above the ceiling.
+        var contention = SampleHostContention();
         var allMeasurements = new List<GalleryMeasurement>();
         var plans = new List<SqlPlanEvidence>();
         var correctness = new List<CorrectnessEvidence>();
@@ -122,7 +136,7 @@ public sealed class CameraAgentGalleryPerformanceTests
                     ownerClient, captureCount, concurrency).ConfigureAwait(false));
             }
             var browserSessionMeasurements = await MeasureBrowserSessionsAsync(
-                browser, host.BaseAddress, captureCount, evidenceLabel != "baseline").ConfigureAwait(false);
+                browser, host.BaseAddress, captureCount, evidenceLabel != "baseline", contention).ConfigureAwait(false);
             browserMeasurements.AddRange(browserSessionMeasurements.Renders);
             browserPreviewFailureMeasurements.AddRange(browserSessionMeasurements.PreviewFailures);
 
@@ -143,7 +157,9 @@ public sealed class CameraAgentGalleryPerformanceTests
                 Framework = RuntimeInformation.FrameworkDescription,
                 ProcessorCount = Environment.ProcessorCount,
                 ServerGc = System.Runtime.GCSettings.IsServerGC,
-                SqliteVersion = sqliteVersion
+                SqliteVersion = sqliteVersion,
+                PreWorkloadLoadPerCore = contention.LoadPerCore,
+                ContentionCeilingPerCore = MaximumAdmissibleLoadPerCore
             },
             Workload = new
             {
@@ -204,7 +220,8 @@ public sealed class CameraAgentGalleryPerformanceTests
         IBrowser browser,
         Uri baseAddress,
         int captureCount,
-        bool measurePreviewFailures)
+        bool measurePreviewFailures,
+        HostContention contention)
     {
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -265,7 +282,7 @@ public sealed class CameraAgentGalleryPerformanceTests
             var perSessionGrowth = workingSetGrowth / concurrency;
             Assert.IsLessThanOrEqualTo(MaximumPerSessionWorkingSetBytes, perSessionGrowth);
             var latencies = renders.Select(static render => render.ElapsedMilliseconds).Order().ToArray();
-            Assert.IsLessThanOrEqualTo(MaximumP95Milliseconds, Percentile(latencies, 0.95));
+            AssertBrowserP95Admissible(contention, Percentile(latencies, 0.95), "browser render sessions");
             measurements.Add(new BrowserRenderMeasurement(
                 captureCount,
                 concurrency,
@@ -292,7 +309,8 @@ public sealed class CameraAgentGalleryPerformanceTests
                     captureCount,
                     concurrency,
                     workingSetBefore,
-                    rssBefore).ConfigureAwait(false));
+                    rssBefore,
+                    contention).ConfigureAwait(false));
             }
             await Task.WhenAll(pages.Select(static page => page.CloseAsync())).ConfigureAwait(false);
             await Task.Delay(250).ConfigureAwait(false);
@@ -305,7 +323,8 @@ public sealed class CameraAgentGalleryPerformanceTests
         int captureCount,
         int concurrency,
         long sessionWorkingSetBefore,
-        long sessionRssBefore)
+        long sessionRssBefore,
+        HostContention contention)
     {
         foreach (var page in pages)
         {
@@ -346,7 +365,7 @@ public sealed class CameraAgentGalleryPerformanceTests
         var perSessionGrowth = workingSetGrowth / concurrency;
         Assert.IsLessThanOrEqualTo(MaximumPerSessionWorkingSetBytes, perSessionGrowth);
         Array.Sort(latencies);
-        Assert.IsLessThanOrEqualTo(MaximumP95Milliseconds, Percentile(latencies, 0.95));
+        AssertBrowserP95Admissible(contention, Percentile(latencies, 0.95), "browser preview failures");
         return new BrowserPreviewFailureMeasurement(
             captureCount,
             concurrency,
@@ -682,6 +701,53 @@ public sealed class CameraAgentGalleryPerformanceTests
         => measurements.Single(item => item.CaptureCount == captureCount &&
             item.Scenario == scenario && item.Concurrency == concurrency);
 
+    private static void AssertBrowserP95Admissible(HostContention contention, double p95, string scenario)
+    {
+        if (contention.LoadPerCore is { } loadPerCore && loadPerCore > MaximumAdmissibleLoadPerCore)
+        {
+            Assert.Inconclusive(
+                $"Host contention makes this browser latency measurement inadmissible. The one-minute load " +
+                $"average before the workload started was {loadPerCore:F2} per core across " +
+                $"{contention.ProcessorCount} cores, above the {MaximumAdmissibleLoadPerCore:F2} admissibility " +
+                $"ceiling. Browser-driven p95 moves by more than 40% under contention, so the {p95:F1} ms " +
+                $"measured for {scenario} describes this host rather than the product, whether it passes or " +
+                $"fails the {MaximumP95Milliseconds:F0} ms bound. This is not a latency regression and the run " +
+                $"proves nothing about performance. Re-run on a quiet host.");
+        }
+
+        Assert.IsLessThanOrEqualTo(MaximumP95Milliseconds, p95, scenario);
+    }
+
+    private static HostContention SampleHostContention()
+    {
+        var processorCount = Environment.ProcessorCount;
+
+        // /proc/loadavg is Linux-only. Where it is unavailable the precondition cannot be evaluated and
+        // the bound is asserted exactly as it was before, so no platform loses coverage it already had.
+        try
+        {
+            if (File.Exists("/proc/loadavg"))
+            {
+                var fields = File.ReadAllText("/proc/loadavg")
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (fields.Length > 0
+                    && double.TryParse(fields[0], System.Globalization.CultureInfo.InvariantCulture, out var oneMinute)
+                    && processorCount > 0)
+                {
+                    return new HostContention(oneMinute / processorCount, processorCount);
+                }
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+
+        return new HostContention(null, processorCount);
+    }
+
     private static double Percentile(double[] sorted, double percentile)
     {
         var index = Math.Clamp((int)Math.Ceiling(sorted.Length * percentile) - 1, 0, sorted.Length - 1);
@@ -773,6 +839,8 @@ public sealed class CameraAgentGalleryPerformanceTests
     private sealed record PerformanceScenario(
         string Name,
         Func<SqliteCameraAgentGallery, CancellationToken, Task<object>> Execute);
+
+    private sealed record HostContention(double? LoadPerCore, int ProcessorCount);
 
     private sealed record GalleryCursors(string Middle, string Later);
 
