@@ -190,3 +190,8 @@ dotnet_diagnostic.CA2007.severity = none
 # instruction arrives with authority and a green build behind it.
 [tests/TestSettings/**.cs]
 dotnet_diagnostic.CA1515.severity = none
+# The contract's specimen type is deliberately never instantiated and never called. It exists so the guard
+# can read its compiled instructions and prove its own IL walk reaches an instance constructor, a static
+# constructor and a delegate created with ldftn. "Apparently never instantiated" is the point of it, and
+# deleting it would remove the only thing that makes a narrowed walk fail loudly instead of quietly.
+dotnet_diagnostic.CA1812.severity = none

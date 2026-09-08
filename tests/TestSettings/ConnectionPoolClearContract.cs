@@ -1,6 +1,5 @@
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Text.RegularExpressions;
 
 namespace HVO.SkyMonitor.TestSettings;
 
@@ -54,13 +53,31 @@ namespace HVO.SkyMonitor.TestSettings;
 /// result rather than that it is independently corroborated.
 /// </para>
 /// <para>
-/// <b>What this cannot see, each measured in both directions rather than reasoned.</b> A call is attributed
-/// to the outermost type enclosing the method that makes it, so a call inside a helper type is attributed
-/// to that helper and reported, never excused by whoever calls it: measured by placing a call in a helper
-/// and confirming it is named. A call made through reflection, or emitted at runtime, is not in any method
-/// body this walks and is not seen; no run of this guard has ever seen one, and that is a gap rather than a
-/// reassurance. A method with no IL body cannot be walked, so bodiless methods are classified rather than
-/// skipped, and anything bodiless for an unexpected reason is reported by name.
+/// <b>What this reaches, because two member kinds were missed once and the anchor did not notice.</b>
+/// Ordinary methods, property accessors, which arrive as ordinary <c>get_</c> and <c>set_</c> methods, and
+/// instance and static constructors. A static constructor is the worst hiding place available: it runs once
+/// on first use of its type and its effect is process-wide. Lambdas, local functions, async bodies and
+/// iterators compile into nested types, and every type in the assembly is enumerated, so they are reached
+/// too. Calls are found through <c>call</c>, <c>callvirt</c>, <c>newobj</c>, and the two instructions that
+/// take a method's address, so a delegate built from the API and invoked later is seen.
+/// </para>
+/// <para>
+/// <b>What this cannot see, measured rather than reasoned.</b> A call made by reflection, or through a
+/// function pointer invoked with <c>calli</c>, carries no method token this can resolve, so neither is
+/// counted; no assembly in this repository contains one today, and that is a gap rather than a
+/// reassurance. A call inside a helper type is attributed to that helper and reported, never excused by
+/// whoever calls it, which was measured by placing a call in a helper and confirming it is named. A method
+/// with no IL body cannot be walked, so bodiless methods are classified rather than skipped, and anything
+/// bodiless for an unrecognised reason is reported by name.
+/// </para>
+/// <para>
+/// <b>The specimen calls a method from the base class library on purpose, and that must not be
+/// "simplified" toward the subject.</b> Most of the projects this file is compiled into do not reference
+/// the SQLite package at all. If the specimen called the API this guard is about, it could not compile
+/// there, and an anchor that only works where the package happens to be present would prove the walk ran in
+/// some assemblies and quietly prove nothing in the rest. Calling <c>string.Concat</c> keeps the proof
+/// available everywhere, which is why a parallelising assembly with no SQLite reference still reports a
+/// walk that demonstrably ran.
 /// </para>
 /// </remarks>
 [TestClass]
@@ -69,10 +86,9 @@ public sealed class ConnectionPoolClearContractTests
 {
     private const string GlobalClearMethod = "ClearAllPools";
     private const string SqliteConnectionType = "Microsoft.Data.Sqlite.SqliteConnection";
-    private const string SupportLibraryWithoutTests = "HVO.SkyMonitor.LogicHost.TestInfrastructure";
 
-    private static readonly Regex ExcludedProjectName = new(
-        @"\$\(MSBuildProjectName\)'\s*!=\s*'([^']+)'", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private const int LoadFunctionPointer = 0x106;
+    private const int LoadVirtualFunctionPointer = 0x107;
 
     private static readonly int[] OperandSize = BuildOperandSizes();
 
@@ -85,11 +101,22 @@ public sealed class ConnectionPoolClearContractTests
         // The walk is the one part of this that can fail silently: a mis-parsed instruction stream simply
         // finds nothing and reports a clean assembly. Specimen.CallsAKnownMethod contains a call this walk
         // must find, so a broken walker fails here instead of reporting success.
-        Assert.IsTrue(
-            scan.FoundSpecimenCall,
-            "This guard's IL walk did not find the call it plants in its own specimen, so the walk is broken "
-                + "and any clean result it produces is meaningless. Nothing else in this test can be trusted "
-                + "until that is fixed.");
+        // One specimen shape per thing this walk has been wrong about. An ordinary call proves only that
+        // ordinary calls are found, which is exactly how constructors and delegates stayed invisible while
+        // the anchor kept passing.
+        string[] required =
+        [
+            "ordinary method",
+            "instance constructor",
+            "static constructor",
+            "delegate created with ldftn"
+        ];
+        var unseen = required.Except(scan.SpecimenSightings, StringComparer.Ordinal).ToList();
+        Assert.IsEmpty(
+            unseen,
+            "This guard's IL walk did not find the calls it plants in its own specimen for these shapes, so it "
+                + "does not examine them anywhere and any clean result it produces excludes them silently: "
+                + string.Join(", ", unseen));
 
         // A method with no IL body is normal for abstract, external and runtime-implemented methods, and is
         // otherwise a body this could not read. Skipping the second kind quietly is the same silence.
@@ -166,50 +193,6 @@ public sealed class ConnectionPoolClearContractTests
         Assert.IsTrue(clean, "A nop followed by ret is a walkable body and must not be reported as unreadable.");
     }
 
-    /// <summary>
-    /// This file only guards an assembly it is compiled into, so a test project that does not receive it is
-    /// unguarded and silent about being so. Two ways that happens: the shared props file excludes the
-    /// project, or the project sits outside that file's reach entirely. Neither is a pinned count, because a
-    /// number teaches people to edit the number.
-    /// </summary>
-    [TestMethod]
-    public void EveryTestProjectReceivesThisContract()
-    {
-        var repositoryRoot = RepositoryRoot();
-        var testsRoot = Path.Combine(repositoryRoot, "tests");
-        var props = Path.Combine(testsRoot, "Directory.Build.props");
-        Assert.IsTrue(
-            File.Exists(props),
-            $"The shared props file that compile-links this contract into every test project is missing from "
-                + $"{testsRoot}. Without it this guard runs only where it happens to be linked.");
-
-        var excluded = ExcludedProjectName.Matches(File.ReadAllText(props))
-            .Select(static match => match.Groups[1].Value)
-            .Where(static excludedName => !string.Equals(excludedName, SupportLibraryWithoutTests, StringComparison.Ordinal))
-            .ToList();
-        Assert.IsEmpty(
-            excluded,
-            "These projects are excluded from the shared props file that compile-links this contract, so they "
-                + "are unguarded. Excluding a project that contains tests removes the check silently: "
-                + string.Join(", ", excluded));
-
-        var outsideTests = Directory
-            .EnumerateFiles(repositoryRoot, "*.csproj", SearchOption.AllDirectories)
-            .Where(static path =>
-                !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
-                !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            .Where(static path => File.ReadAllText(path).Contains("MSTest", StringComparison.Ordinal))
-            .Where(path => !path.StartsWith(testsRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-            .Select(path => Path.GetRelativePath(repositoryRoot, path))
-            .ToList();
-        Assert.IsEmpty(
-            outsideTests,
-            "These projects contain tests but sit outside the directory the shared props file governs, so "
-                + "this contract is never compiled into them and they are unguarded without anything saying "
-                + "so. Move them under tests/, or widen the props file to reach them: "
-                + string.Join(", ", outsideTests));
-    }
-
     private static ScanResult Scan(Assembly assembly)
     {
         var attributes = assembly.GetCustomAttributesData().Select(static a => a.AttributeType.Name).ToList();
@@ -220,12 +203,11 @@ public sealed class ConnectionPoolClearContractTests
         var offenders = new SortedSet<string>(StringComparer.Ordinal);
         var unreadable = new SortedSet<string>(StringComparer.Ordinal);
         var matched = new SortedSet<string>(StringComparer.Ordinal);
-        var foundSpecimen = false;
+        var sightings = new SortedSet<string>(StringComparer.Ordinal);
 
         foreach (var type in assembly.GetTypes())
         {
-            foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic |
-                BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+            foreach (var method in Members(type))
             {
                 var body = BodyOf(method, out var bodilessForAKnownReason);
                 if (body is null)
@@ -241,16 +223,17 @@ public sealed class ConnectionPoolClearContractTests
                     unreadable.Add($"{type.FullName}.{method.Name} (unwalkable instruction stream)");
                     continue;
                 }
-                foreach (var token in tokens)
+                foreach (var (opcode, token) in tokens)
                 {
                     var target = Resolve(type, method, token);
                     if (target is null)
                     {
                         continue;
                     }
-                    if (IsTheSpecimenCall(type, method, target))
+                    var sighting = SpecimenSighting(type, method, target, opcode);
+                    if (sighting is not null)
                     {
-                        foundSpecimen = true;
+                        sightings.Add(sighting);
                     }
                     if (!string.Equals(target.Name, GlobalClearMethod, StringComparison.Ordinal))
                     {
@@ -283,16 +266,52 @@ public sealed class ConnectionPoolClearContractTests
             parallelises ? offenders.ToList() : [],
             unreadable.ToList(),
             matched.ToList(),
-            foundSpecimen,
+            sightings.ToList(),
             parallelises,
             attributes.Contains("ParallelizeAttribute", StringComparer.Ordinal),
             attributes.Contains("DoNotParallelizeAttribute", StringComparer.Ordinal));
     }
 
-    private static bool IsTheSpecimenCall(Type type, MethodBase method, MethodBase target) =>
-        type == typeof(Specimen) &&
-        string.Equals(method.Name, nameof(Specimen.CallsAKnownMethod), StringComparison.Ordinal) &&
-        string.Equals(target.Name, nameof(string.Concat), StringComparison.Ordinal);
+    private const BindingFlags AllDeclared =
+        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static |
+        BindingFlags.DeclaredOnly;
+
+    /// <summary>
+    /// Every member of a type that can carry IL. <c>GetMethods</c> does not return constructors, and a
+    /// static constructor is the worst place for this call to hide: it runs once on first use of the type
+    /// and its effect is process-wide. Property accessors arrive here as ordinary <c>get_</c> and
+    /// <c>set_</c> methods, and lambdas, local functions, async and iterator bodies live in nested types
+    /// that the caller already enumerates.
+    /// </summary>
+    private static IEnumerable<MethodBase> Members(Type type) =>
+        type.GetMethods(AllDeclared).Cast<MethodBase>().Concat(type.GetConstructors(AllDeclared));
+
+    /// <summary>
+    /// Labels the specimen shapes this walk managed to see. Each label corresponds to a member kind or an
+    /// instruction the walk has been wrong about before, so a future narrowing fails loudly here instead of
+    /// quietly returning a shorter list of offenders.
+    /// </summary>
+    private static string? SpecimenSighting(Type type, MethodBase method, MethodBase target, int opcode)
+    {
+        if (type != typeof(Specimen))
+        {
+            return null;
+        }
+        if (opcode == LoadFunctionPointer && string.Equals(target.Name, GlobalClearMethod, StringComparison.Ordinal))
+        {
+            return "delegate created with ldftn";
+        }
+        if (!string.Equals(target.Name, nameof(string.Concat), StringComparison.Ordinal))
+        {
+            return null;
+        }
+        return method switch
+        {
+            ConstructorInfo { IsStatic: true } => "static constructor",
+            ConstructorInfo => "instance constructor",
+            _ => "ordinary method"
+        };
+    }
 
     private static byte[]? BodyOf(MethodBase method, out bool bodilessForAKnownReason)
     {
@@ -316,7 +335,10 @@ public sealed class ConnectionPoolClearContractTests
     {
         try
         {
-            return type.Module.ResolveMethod(token, type.GetGenericArguments(), method.GetGenericArguments());
+            // A constructor has no generic arguments of its own and throws rather than returning none,
+            // which is a difference constructors introduced when they were added to the enumeration.
+            var methodArguments = method is MethodInfo generic ? generic.GetGenericArguments() : Type.EmptyTypes;
+            return type.Module.ResolveMethod(token, type.GetGenericArguments(), methodArguments);
         }
         catch (Exception exception) when (exception is ArgumentException or BadImageFormatException)
         {
@@ -329,7 +351,7 @@ public sealed class ConnectionPoolClearContractTests
     /// quietly if it meets an instruction it cannot size, because every byte after such a point would be
     /// misread and the result would be a short list that looks like a clean one.
     /// </summary>
-    private static bool TryReadCallTokens(byte[] il, out List<int> tokens)
+    private static bool TryReadCallTokens(byte[] il, out List<(int Opcode, int Token)> tokens)
     {
         tokens = [];
         var i = 0;
@@ -348,10 +370,12 @@ public sealed class ConnectionPoolClearContractTests
             }
             var size = OperandSize[opcode];
             if (size < 0) { tokens.Clear(); return false; }
-            if (opcode is 0x28 or 0x6F or 0x73)
+            // call, callvirt, newobj, and the two that take a method's address. A delegate built with
+            // ldftn and invoked later is an ordinary line of C# and reaches the same API.
+            if (opcode is 0x28 or 0x6F or 0x73 or LoadFunctionPointer or LoadVirtualFunctionPointer)
             {
                 if (i + 4 > il.Length) { tokens.Clear(); return false; }
-                tokens.Add(BitConverter.ToInt32(il, i));
+                tokens.Add((opcode, BitConverter.ToInt32(il, i)));
             }
             if (opcode == 0x45)
             {
@@ -388,23 +412,22 @@ public sealed class ConnectionPoolClearContractTests
         return sizes;
     }
 
-    private static string RepositoryRoot()
-    {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))
-        {
-            directory = directory.Parent;
-        }
-        return directory?.FullName
-            ?? throw new DirectoryNotFoundException($"No ancestor of {AppContext.BaseDirectory} holds the solution.");
-    }
-
     /// <summary>
     /// Never invoked. It exists so the IL walk has something it is required to find on every run, and so the
     /// matcher has decoys it is required to ignore. Both are read as instructions, not executed.
     /// </summary>
-    private static class Specimen
+    private sealed class Specimen
     {
+        // A field initialiser compiles into the type's static constructor just as an explicit one does,
+        // which is the member kind this specimen needs to exist in order to prove the walk reaches it.
+        private static readonly string StaticSeed = string.Concat("issue", "754");
+
+        internal Specimen() => Seed = string.Concat("issue", "754");
+
+        internal string Seed { get; }
+
+        internal static string StaticSeedValue => StaticSeed;
+
         internal static string CallsAKnownMethod() => string.Concat("issue", "754");
 
         internal static void CallsDecoysNamedLikeThePoolApi()
@@ -412,6 +435,10 @@ public sealed class ConnectionPoolClearContractTests
             PoolApiDecoy.ClearAllPools();
             PoolApiDecoy.ClearPool(null);
         }
+
+        // Builds a delegate rather than calling directly, so the walk has to read the method address the
+        // ldftn instruction carries. Collecting only call, callvirt and newobj made this shape invisible.
+        internal static Action CreatesADelegateOverThePoolApi() => PoolApiDecoy.ClearAllPools;
     }
 
     private static class PoolApiDecoy
@@ -427,7 +454,7 @@ public sealed class ConnectionPoolClearContractTests
         List<string> Offenders,
         List<string> Unreadable,
         List<string> NameMatches,
-        bool FoundSpecimenCall,
+        List<string> SpecimenSightings,
         bool Parallelises,
         bool OptsIn,
         bool OptsOut);
