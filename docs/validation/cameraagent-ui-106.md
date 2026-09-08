@@ -22,15 +22,18 @@ the repository root:
 The install option downloads the Chromium revision pinned by
 `Microsoft.Playwright.MSTest`; omit it after that revision is installed. The
 runner performs a warning-as-error Release build and then runs the CameraAgent
-browser and gallery-performance acceptance classes. Other manual hardware,
+browser, gallery-performance, and archive-performance acceptance classes. Only
+the browser and gallery-performance classes guard the pinned Chromium; the
+archive-performance class needs no browser and runs on any host, so a non-empty
+selection alone never proves the browser cases executed. Other manual hardware,
 standalone, and evidence harnesses in the assembly have separate entry points.
 The browser tests become inconclusive with an explicit install command when the
 pinned executable is absent, and the runner refuses that outcome: it writes a
 TRX, requires the selection to have recorded results, requires every recorded
 result to be `Passed`, and otherwise exits non-zero naming each non-passing test
-and the reason it recorded. Omitting `--install-browser` on a host without the
-pinned revision is therefore a hard failure rather than a run that reports
-success having executed almost nothing.
+and, separately, the reasons the tests recorded. Omitting `--install-browser` on
+a host without the pinned revision is therefore a hard failure rather than a run
+that reports success having executed almost nothing.
 The development container installs that pinned revision during post-create and
 retains it in the `hvo-skymonitor-playwright` volume across rebuilds.
 
