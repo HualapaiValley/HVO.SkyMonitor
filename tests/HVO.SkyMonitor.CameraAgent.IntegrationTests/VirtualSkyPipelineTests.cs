@@ -175,14 +175,32 @@ public sealed class VirtualSkyPipelineTests
         Assert.AreEqual(RawIngressAvailability.Accepting,
             services.GetRequiredService<RawIngressState>().Snapshot.Availability);
         var processingStateService = services.GetRequiredService<CaptureProcessingState>();
+        // Healthy is a conjunction of eight conditions, two of which count work still in flight on a producer
+        // that never stops, so waiting for it asks a live agent to fall idle. Gate the six that are defects at
+        // any sequence and report the other two, exactly as the capture-fence wait below does.
         await WaitUntilAsync(
-            () => processingStateService.Snapshot.Availability == CaptureProcessingAvailability.Healthy,
+            () =>
+            {
+                var live = processingStateService.Snapshot;
+                return live.TerminalCount == 0 &&
+                    live.ProcessingQuarantineCount == 0 &&
+                    live.MissingProductCount == 0 &&
+                    live.ReplayTerminalCount == 0 &&
+                    !live.DurableStateUnavailable &&
+                    !live.ReconciliationFailed;
+            },
             TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         var processingState = processingStateService.Snapshot;
-        Assert.AreEqual(
-            CaptureProcessingAvailability.Healthy,
-            processingState.Availability,
-            processingState.Reason);
+        Console.WriteLine(string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"processing after publication: pendingCount={processingState.PendingCount} retryCount={processingState.RetryCount} "
+                + $"replayRetryCount={processingState.ReplayRetryCount} availability={processingState.Availability} reason={processingState.Reason}"));
+        Assert.AreEqual(0L, processingState.TerminalCount, processingState.Reason);
+        Assert.AreEqual(0L, processingState.ProcessingQuarantineCount, processingState.Reason);
+        Assert.AreEqual(0L, processingState.MissingProductCount, processingState.Reason);
+        Assert.AreEqual(0L, processingState.ReplayTerminalCount, processingState.Reason);
+        Assert.IsFalse(processingState.DurableStateUnavailable, processingState.Reason);
+        Assert.IsFalse(processingState.ReconciliationFailed, processingState.Reason);
     }
 
 #endif
@@ -762,20 +780,37 @@ public sealed class VirtualSkyPipelineTests
         // state nothing exits makes the fence permanently unsatisfiable against a fixed watermark, which is the
         // same unsatisfiable-wait class the issue exists to remove. Walking each member against the schema:
         //   in motion, can settle: lane work in pending/leased/retry_wait; a capture reserved at the watermark
-        //     whose row is mid-publication; nodes in RetryableFailure, which are deleted and re-inserted on
-        //     re-processing.
+        //     whose row is mid-publication; nodes in RetryableFailure, whose rows are upserted on re-processing.
         //   terminal, cannot settle, so gated separately below and asserted rather than waited on: lane work in
         //     quarantined or abandoned, which only reach completed from leased; captures in quarantined or
-        //     missing_evidence, which leave only through an explicit repair; nodes in TerminalFailure; and a
+        //     missing_evidence, which leave only through the repair path the raw ingress reconciler drives; nodes in TerminalFailure; and a
         //     reservation below the watermark with no capture row, which nothing ever deletes.
-        //   legitimate and never cleared, so excluded entirely: retention_hold, set by processing and replay and
-        //     never reset to 0; nodes in Skipped, a normal outcome; and lane rows past their first attempt.
-        internal bool PrefixInMotion =>
-            InMotionLaneWork != 0 ||
-            UnmaterialisedAtWatermark != 0 ||
-            RetryableNodes != 0;
+        //   legitimate and excluded entirely, for reasons that are not "never cleared": retention_hold is a
+        //     derived flag, recomputed as 1 while any of required lane work is unfinished, a transient candidate
+        //     source hold is unreleased, transient capture work is pending, or an unreleased row exists in
+        //     processing_execution_input_pins. It is cleared by the same recomputation, including on the lane-work
+        //     completion commit. It is excluded because a windowed execution for a capture beyond the watermark
+        //     pins the earlier captures it consumes as inputs, so a prefix capture stays held until post-watermark
+        //     work releases its pin. Gating on it would therefore re-impose the global idle demand. Also excluded:
+        //     nodes in Skipped, a normal terminal outcome, and lane rows past their first attempt.
+        // A terminal member ends the wait immediately. Without this a node stranded in RetryableFailure by
+        // quarantined lane work would look like work in motion, burn the whole budget and report the wrong
+        // member, while the terminal assertion that names the real defect never runs.
+        internal bool PrefixHasTerminalDefect =>
+            TerminalLaneWork != 0 ||
+            TerminalCaptures != 0 ||
+            TerminalNodes != 0 ||
+            UnmaterialisedBelowWatermark != 0;
 
-        internal bool PrefixSettled => !PrefixInMotion && CommittedAtOrBelowWatermark > 0;
+        internal bool PrefixInMotion =>
+            !PrefixHasTerminalDefect &&
+            (InMotionLaneWork != 0 ||
+             UnmaterialisedAtWatermark != 0 ||
+             RetryableNodes != 0);
+
+        internal bool PrefixSettled =>
+            PrefixHasTerminalDefect ||
+            (!PrefixInMotion && CommittedAtOrBelowWatermark > 0);
 
         internal bool ProducerStillLive => AssignmentsBeyondWatermark > 0 || CapturesBeyondWatermark > 0;
 
@@ -873,8 +908,7 @@ public sealed class VirtualSkyPipelineTests
                                      WHERE c.capture_id = a.capture_id AND c.state = 'committed')),
                 (SELECT COUNT(*) FROM raw_capture_assignments a
                    WHERE a.capture_sequence = $watermark
-                     AND NOT EXISTS (SELECT 1 FROM raw_captures c
-                                     WHERE c.capture_id = a.capture_id AND c.state = 'committed'));
+                     AND NOT EXISTS (SELECT 1 FROM raw_captures c WHERE c.capture_id = a.capture_id));
             """;
         command.Parameters.AddWithValue("$watermark", watermark);
         using var reader = command.ExecuteReader();
