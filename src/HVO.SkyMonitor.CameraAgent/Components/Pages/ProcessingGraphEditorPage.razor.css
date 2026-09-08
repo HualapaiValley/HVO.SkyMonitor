@@ -5,6 +5,8 @@
 .editor-note { margin: .3rem 0; color: var(--hvo-muted-strong); font-size: .85rem; }
 .editor-note code { color: #e9c986; }
 .editor-form { display: grid; gap: 1rem; }
+.editor-form-header { display: grid; gap: .2rem; }
+.editor-form-header h2 { margin: 0; font-size: 1.08rem; }
 .editor-group { margin: 0; padding: .9rem 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-card-bg); min-inline-size: 0; }
 .editor-group legend, .node-row__dependencies legend { float: none; width: auto; padding: 0 .4rem; color: var(--hvo-success-fg); font-size: .72rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
 .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: .6rem .8rem; }
