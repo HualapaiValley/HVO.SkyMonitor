@@ -1,0 +1,4 @@
+{ "artifacts": [
+  { "path": "evidence/a.json", "sourceRevision": "0000000000000000000000000000000000000000", "sourceTree": "t",
+    "sha256": "aa", "claimability": "clean-source-attributed-review-required", "admissible": true }
+] }
