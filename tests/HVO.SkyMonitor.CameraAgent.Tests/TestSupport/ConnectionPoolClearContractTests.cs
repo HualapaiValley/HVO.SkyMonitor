@@ -40,6 +40,22 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// them, so the constraint is invisible from inside the code it governs.
 /// </para>
 /// <para>
+/// Those two assembly markers are read only from a file's prologue, meaning the region after using
+/// directives and before the first namespace or type declaration, which is the only place C# permits a
+/// global attribute. Anything past that point is provably not one however it is spelled. Line anchoring
+/// alone was not enough and shipped a real defect: a raw string literal's content genuinely begins at
+/// column zero, so a file that merely quoted the opt-out attribute, which is the ordinary act of a test
+/// holding a sample of the text it documents, read as declaring it and silently excluded its entire
+/// assembly from this scan while the guard still reported green. A literal appearing inside a prologue is
+/// the one case left, and rather than guess, this reports it and asks for the literal to be moved.
+/// </para>
+/// <para>
+/// The general rule behind that, worth more than the instance: an exclusion marker deserves stricter
+/// matching than an inclusion marker, because the two fail in different directions. An inclusion marker
+/// that over-matches produces noise, and someone investigates noise. An exclusion marker that over-matches
+/// produces quiet, and quiet is indistinguishable from correctness.
+/// </para>
+/// <para>
 /// This guard reads source text, not compiled metadata, and has three known limits. They are recorded here
 /// rather than only in the pull request, because the person reading a clean guard result in two years is
 /// reading this code and not that discussion.
@@ -85,19 +101,45 @@ public sealed class ConnectionPoolClearContractTests
     private static readonly Regex TestClassDeclaration = new(
         @"^\[TestClass\]", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Multiline);
 
-    // Assembly attributes sit at the start of a line. Matching them anywhere in the text would also match
-    // this file's own prose and string literals, which is how the first version of this discovery excluded
-    // the very assembly the issue was raised against.
+    // Assembly attributes sit at the start of a line, and only in a file's prologue. Line anchoring alone
+    // is not enough: a raw string literal's content genuinely begins at column zero, so a file merely
+    // quoting the opt-out attribute would read as declaring it and would exclude its whole assembly. That
+    // is why these are matched against the prologue only. See PrologueOf.
     private static readonly Regex AssemblyParallelize = new(
         @"^\[assembly:\s*Parallelize", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Multiline);
 
     private static readonly Regex AssemblyDoNotParallelize = new(
         @"^\[assembly:\s*DoNotParallelize\]", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Multiline);
 
+    // The first namespace or type declaration ends the region where an assembly attribute is legal. A
+    // non-global attribute such as [TestClass] also ends it, since it can only be attaching to a type.
+    private static readonly Regex PrologueTerminator = new(
+        @"^[ \t]*(namespace\b|(public|internal|private|protected|static|sealed|abstract|partial|unsafe|file|class|struct|record|interface|enum|delegate)\b|\[\s*(?!assembly\s*:|module\s*:))",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Multiline);
+
+    // A prologue has no executable code, so it should never contain a string literal that could disguise an
+    // attribute. If one appears, this cannot tell a declaration from quoted content, and it says so rather
+    // than guessing, because guessing wrong here is silent.
+    // Only raw and verbatim literals can span lines, and spanning lines is what lets quoted content sit at
+    // column zero and impersonate a declaration.
+    private static bool HasAmbiguousPrologue(string prologue) =>
+        prologue.Contains("\"\"\"", StringComparison.Ordinal) ||
+        prologue.Contains("@\"", StringComparison.Ordinal);
+
     [TestMethod]
     public void NoParallelisableTestClassClearsEveryConnectionPool()
     {
         var testsRoot = Path.Combine(GetRepositoryRoot(), "tests");
+
+        // Closed first, because it decides whether the rest of this method is reading what it thinks it is.
+        var ambiguous = FindAmbiguousPrologues(testsRoot);
+        Assert.IsEmpty(
+            ambiguous,
+            "These files have a string literal in the region where assembly attributes are declared, so this "
+                + "guard cannot tell a real [assembly: DoNotParallelize] from quoted text and would exclude "
+                + "the whole assembly from its scan if it guessed wrong. Move the literal below the first "
+                + "type declaration: " + string.Join(", ", ambiguous));
+
         var parallelising = FindParallelisingAssemblies(testsRoot);
 
         // Discovery is the part that can fail open. If the shared settings file is renamed or the marker
@@ -162,6 +204,31 @@ public sealed class ConnectionPoolClearContractTests
     }
 
     /// <summary>
+    /// Files whose prologue contains a string literal. A prologue holds only using directives, comments and
+    /// attributes, so a literal there means this cannot distinguish a declaration from quoted content, and
+    /// the failure direction of guessing wrong is silence.
+    /// </summary>
+    private static List<string> FindAmbiguousPrologues(string testsRoot)
+    {
+        var ambiguous = new List<string>();
+        foreach (var directory in Directory.EnumerateDirectories(testsRoot))
+        {
+            foreach (var file in EnumerateSources(directory))
+            {
+                if (string.Equals(Path.GetFileName(file), ThisFileName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (HasAmbiguousPrologue(PrologueOf(File.ReadAllText(file))))
+                {
+                    ambiguous.Add(Path.GetRelativePath(testsRoot, file));
+                }
+            }
+        }
+        return ambiguous;
+    }
+
+    /// <summary>
     /// Test assembly directories whose methods run in parallel, either by declaring the attribute or by
     /// compile-linking the shared settings file that declares it. An assembly-level opt-out wins over both.
     /// </summary>
@@ -175,15 +242,15 @@ public sealed class ConnectionPoolClearContractTests
             {
                 continue;
             }
-            var sources = EnumerateSources(directory)
+            var prologues = EnumerateSources(directory)
                 .Where(static file => !string.Equals(Path.GetFileName(file), ThisFileName, StringComparison.Ordinal))
-                .Select(File.ReadAllText)
+                .Select(file => PrologueOf(File.ReadAllText(file)))
                 .ToList();
-            if (sources.Any(static source => AssemblyDoNotParallelize.IsMatch(source)))
+            if (prologues.Any(static prologue => AssemblyDoNotParallelize.IsMatch(prologue)))
             {
                 continue;
             }
-            var declaresItself = sources.Any(static source => AssemblyParallelize.IsMatch(source));
+            var declaresItself = prologues.Any(static prologue => AssemblyParallelize.IsMatch(prologue));
             var linksSharedSettings = File.ReadAllText(project)
                 .Contains("MSTestSettings.cs", StringComparison.Ordinal);
             if (declaresItself || linksSharedSettings)
@@ -202,6 +269,18 @@ public sealed class ConnectionPoolClearContractTests
 
     private static string FormatNames(List<string> directories) =>
         directories.Count == 0 ? "none" : string.Join(", ", directories.Select(Path.GetFileName));
+
+    /// <summary>
+    /// The part of a file in which an assembly attribute can legally appear: after using directives and
+    /// before the first namespace or type declaration. Anything past that point is provably not an assembly
+    /// attribute however it is spelled, which is what makes a file that merely quotes the attribute text
+    /// harmless rather than authoritative.
+    /// </summary>
+    private static string PrologueOf(string source)
+    {
+        var terminator = PrologueTerminator.Match(source);
+        return terminator.Success ? source[..terminator.Index] : source;
+    }
 
     private static string GetRepositoryRoot()
     {
