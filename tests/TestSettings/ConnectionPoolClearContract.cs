@@ -46,13 +46,20 @@ namespace HVO.SkyMonitor.TestSettings;
 /// attribute's documentation, and the measurement establishes the observable rather than the mechanism.
 /// </para>
 /// <para>
-/// What stays approximate, all of it in the second half. A clear reached through a helper defined elsewhere
-/// is not seen, since that would need analysis of method bodies. Type names are read from source, so a
-/// declaration hidden in a block comment is still counted; that direction produces a finding someone reads
-/// rather than silence. Only names that metadata confirms are test classes are considered, so a file's
-/// private helper types and any stray word matching the pattern are ignored. Where a simple type name
-/// belongs to several types, it counts as serialised only when all of them are, so a collision in another
-/// namespace cannot excuse a file.
+/// What stays approximate, all of it in the second half. A clear reached through a helper is usually
+/// reported rather than missed, which corrects a limit this guard recorded as open for several revisions:
+/// a helper file declares no test class, so nothing excuses it and it is named. That holds only while the
+/// helper has a file to itself. A helper sharing a file with a serialised test class is still missed,
+/// because the file is excused by that class, and no analysis of method bodies happens here to notice the
+/// call came from elsewhere. Measured both ways rather than reasoned. Type names are read from source, so a
+/// comments are removed before declarations are read, so a comment naming a serialised class cannot excuse
+/// a file that declares none. A declaration inside a string literal still counts, which is the one route
+/// left by which text could excuse a file wrongly, and it needs a literal shaped exactly like a class
+/// declaration in a file that also clears pools and declares no test class of its own. Only names that
+/// metadata confirms are test classes are considered, so private helper types and stray words are ignored,
+/// and a generic test class would not be matched at all, which reports rather than excuses. Where a simple
+/// type name belongs to several types, it counts as serialised only when all of them are, so a collision in
+/// another namespace cannot excuse a file.
 /// </para>
 /// </remarks>
 [TestClass]
@@ -65,11 +72,22 @@ public sealed class ConnectionPoolClearContractTests
     private static readonly Regex GlobalClearInvocation = new(
         @"SqliteConnection\s*\.\s*ClearAllPools\s*\(", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    // Anchored at the start of a line and preceded only by modifiers, so prose such as "this class is not
-    // one" does not read as a declaration of a type called "is".
+    // Anchored at the start of a line, so prose such as "this class is not one" does not read as a
+    // declaration of a type called "is". An attribute list may precede the modifiers on the same line:
+    // "[TestClass] public sealed class X" is legal C#, and a pattern that only allowed modifiers there
+    // missed such a declaration entirely, which let a real clear hide in a file holding a serialised decoy.
     private static readonly Regex DeclaredTypeName = new(
-        @"^[ \t]*(?:(?:public|internal|private|protected|file|static|sealed|abstract|partial|readonly|unsafe)\s+)*(?:class|record|struct)\s+([A-Za-z_][A-Za-z0-9_]*)",
+        @"^[ \t]*(?:\[[^\]]*\]\s*)*(?:(?:public|internal|private|protected|file|static|sealed|abstract|partial|readonly|unsafe)\s+)*(?:class|record|struct)\s+([A-Za-z_][A-Za-z0-9_]*)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Multiline);
+
+    // Declarations are read from code, so comments are removed first. Without this, a file holding a clear
+    // and no test class of its own could be excused by a comment that merely names a serialised one, which
+    // is a false green rather than a false alarm.
+    private static readonly Regex BlockComment = new(
+        @"/\*.*?\*/", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Singleline);
+
+    private static readonly Regex LineComment = new(
+        @"//[^\n]*", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex ExcludedProjectName = new(
         @"\$\(MSBuildProjectName\)'\s*!=\s*'([^']+)'", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -102,7 +120,8 @@ public sealed class ConnectionPoolClearContractTests
             }
             // Only test classes decide this. A file's private helper types are never scheduled by the
             // runner, and a name metadata does not know as a test class cannot excuse or condemn anything.
-            var declared = DeclaredTypeName.Matches(source)
+            var code = LineComment.Replace(BlockComment.Replace(source, string.Empty), string.Empty);
+            var declared = DeclaredTypeName.Matches(code)
                 .Select(static match => match.Groups[1].Value)
                 .Where(testClasses.Contains)
                 .Distinct(StringComparer.Ordinal)
