@@ -228,6 +228,12 @@ public sealed class VirtualSkyPipelineTests
             runtimeDiagnostic,
             "current=" + nameof(ConfiguredPipelinePublishesPersistsReportsAndQueuesVirtualFrame),
             StringComparison.Ordinal);
+        // The warm-up barrier must report the elapsed time it measured, not merely its label: the
+        // measurement is how a first capture drifting toward the fixture budget becomes visible in
+        // the retained result instead of only when it turns fatal.
+        Assert.IsFalse(
+            runtimeDiagnostic.Contains("warm readiness: elapsed=<not measured>", StringComparison.Ordinal),
+            "The shared fixture did not record the warm-up it measured before the tests were admitted.");
 
         // Every later assertion consumes this one coherent observation instead of rereading the
         // mutable shared singletons, so the whole test describes a single capture.
@@ -617,7 +623,8 @@ public sealed class VirtualSkyPipelineTests
         "raw ingress:",
         "capture processing:",
         "durable lane:",
-        "camera agent logs"
+        "camera agent logs",
+        "warm readiness: elapsed="
     ];
 
     private static VirtualSkyPipelineBaseline CaptureReadinessBaseline(
@@ -650,13 +657,17 @@ public sealed class VirtualSkyPipelineTests
         CaptureTelemetrySample? sample;
         do
         {
-            // Roles are read before telemetry so the observed sample belongs to the roles' capture
-            // or to a later one, never to an earlier one.
+            // Telemetry is read on both sides of the three role reads and the iteration is discarded
+            // unless both reads return the same instance. Reading the roles first bounds the pair
+            // below, rejecting telemetry older than the roles; the second read bounds it above,
+            // rejecting a pair whose telemetry could belong to a capture after the observed roles.
+            var sampleBeforeRoles = telemetry.Latest;
             latest.TryGetSnapshot(FrameArtifactRole.Raw, out raw);
             latest.TryGetSnapshot(FrameArtifactRole.Combined, out combined);
             latest.TryGetSnapshot(out preview);
             sample = telemetry.Latest;
-            qualification = VirtualSkyPipelineReadiness.Qualify(baseline, raw, combined, preview, sample);
+            qualification = VirtualSkyPipelineReadiness.Qualify(
+                baseline, sampleBeforeRoles, raw, combined, preview, sample);
             if (qualification.Observation is { } observed)
             {
                 return observed;
@@ -757,6 +768,32 @@ public sealed class VirtualSkyPipelineTests
             ProbeSnapshot(43, listenerStartedUtc.AddSeconds(3), "AnnotatedPreview", CameraPixelFormat.Mono8),
             sample);
 
+        // A candidate whose telemetry instance changed while the three roles were being read may
+        // span two captures: the roles of capture N paired with the telemetry of capture N+1 passes
+        // every one-sided check, including older-than-roles, and reintroduces exactly the mixing
+        // this observation exists to eliminate.
+        var laterCaptureSample = ProbeSample(listenerStartedUtc.AddSeconds(4));
+        ExpectRejectedAcrossReads(
+            VirtualSkyPipelineReadiness.TelemetryUnstable, sample, raw, combined, preview, laterCaptureSample);
+        ExpectRejectedAcrossReads(
+            VirtualSkyPipelineReadiness.TelemetryUnstable, null, raw, combined, preview, sample);
+
+        // A requirement that is unsatisfied on its own merits still names itself, so a readiness
+        // timeout reports the stalled part of the pipeline rather than a churning telemetry buffer.
+        ExpectRejectedAcrossReads(
+            VirtualSkyPipelineReadiness.RawUnchanged,
+            sample,
+            baselineRaw,
+            baselineCombined,
+            baselinePreview,
+            laterCaptureSample);
+
+        // One unchanged telemetry instance on both sides of the role reads is the qualifying case.
+        var stable = VirtualSkyPipelineReadiness.Qualify(baseline, sample, raw, combined, preview, sample);
+        Assert.IsTrue(stable.IsQualified, stable.ReasonCode);
+        Assert.AreSame(sample, stable.Observation!.Telemetry);
+        Assert.AreSame(raw, stable.Observation.Raw);
+
         var qualified = VirtualSkyPipelineReadiness.Qualify(baseline, raw, combined, preview, sample);
         Assert.IsTrue(qualified.IsQualified, qualified.ReasonCode);
         Assert.AreEqual(VirtualSkyPipelineReadiness.Qualified, qualified.ReasonCode);
@@ -827,6 +864,20 @@ public sealed class VirtualSkyPipelineTests
         {
             var result = VirtualSkyPipelineReadiness.Qualify(
                 baseline, probeRaw, probeCombined, probePreview, probeSample);
+            Assert.IsFalse(result.IsQualified, $"The readiness gate accepted a state it must reject: {expectedReasonCode}.");
+            Assert.AreEqual(expectedReasonCode, result.ReasonCode);
+        }
+
+        void ExpectRejectedAcrossReads(
+            string expectedReasonCode,
+            CaptureTelemetrySample? probeSampleBeforeRoles,
+            LatestFrameSnapshot? probeRaw,
+            LatestFrameSnapshot? probeCombined,
+            LatestFrameSnapshot? probePreview,
+            CaptureTelemetrySample? probeSampleAfterRoles)
+        {
+            var result = VirtualSkyPipelineReadiness.Qualify(
+                baseline, probeSampleBeforeRoles, probeRaw, probeCombined, probePreview, probeSampleAfterRoles);
             Assert.IsFalse(result.IsQualified, $"The readiness gate accepted a state it must reject: {expectedReasonCode}.");
             Assert.AreEqual(expectedReasonCode, result.ReasonCode);
         }

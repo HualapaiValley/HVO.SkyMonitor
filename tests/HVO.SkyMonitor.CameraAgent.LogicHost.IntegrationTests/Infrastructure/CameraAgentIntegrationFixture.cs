@@ -60,13 +60,20 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         "HVO_ISSUE_250_EVIDENCE"
     ];
     /// <summary>Bounded warm-up budget for one complete published capture before the fixture is shared.</summary>
-    private static readonly TimeSpan WarmReadinessBudget = TimeSpan.FromSeconds(60);
+    /// <remarks>
+    /// This is the twenty-second semantic budget issue #682 requires. Raising it would let a real
+    /// first-capture regression be absorbed silently, so the measured warm-up is recorded instead
+    /// and rendered by <see cref="DescribeRuntimeState"/>; drift then reaches the retained result
+    /// before it becomes fatal, and any later budget change is backed by that measurement.
+    /// </remarks>
+    private static readonly TimeSpan WarmReadinessBudget = TimeSpan.FromSeconds(20);
     private readonly bool _hybridTransientMode;
     private readonly EnvironmentalDeliveryCompletionTracker _environmentalDelivery = new();
     private readonly IntegrationTestFixture _hostFixture = CreateHostFixture();
     private readonly BoundedLogRecorder _logRecorder = new(capacity: 200);
     private readonly object _consumerGate = new();
     private readonly List<string> _consumerHistory = [];
+    private TimeSpan? _warmReadinessElapsed;
     private string? _currentConsumer;
     private string? _previousConsumer;
     private WebApplicationFactory<Program>? _agentFactory;
@@ -300,11 +307,15 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 latest.TryGetSnapshot(out _) &&
                 telemetry.Latest is { FrameStored: true })
             {
+                // Recorded whether or not the barrier is close to its budget, so a warm-up drifting
+                // toward the bound is visible in the retained result instead of only when fatal.
+                _warmReadinessElapsed = stopwatch.Elapsed;
                 return;
             }
             await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
         }
 
+        _warmReadinessElapsed = stopwatch.Elapsed;
         throw new InvalidOperationException(FormattableString.Invariant(
             $"The shared CameraAgent fixture did not publish a complete capture within {WarmReadinessBudget.TotalSeconds:F0} s.{Environment.NewLine}") +
             FormattableString.Invariant($"telemetry: {VirtualSkyPipelineReadiness.DescribeSample(telemetry.Latest)}{Environment.NewLine}") +
@@ -437,8 +448,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
     /// <summary>
     /// Renders the shared-fixture runtime evidence needed to attribute a readiness stall: consumer
-    /// transitions, the capture worker task, fleet, admission, raw-ingress, durable-lane and
-    /// processing state, and the bounded CameraAgent log tail.
+    /// transitions, the measured warm-up against its budget, the capture worker task, fleet,
+    /// admission, raw-ingress, durable-lane and processing state, and the bounded CameraAgent log
+    /// tail.
     /// </summary>
     internal string DescribeRuntimeState()
     {
@@ -448,6 +460,12 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             $"fixture consumers: current={consumers.Current ?? "<none>"} previous={consumers.Previous ?? "<none>"}"));
         builder.AppendLine(FormattableString.Invariant(
             $"  history: {(consumers.History.Count == 0 ? "<none>" : string.Join(" -> ", consumers.History))}"));
+        var warmElapsed = _warmReadinessElapsed is { } measured
+            ? FormattableString.Invariant($"{measured.TotalSeconds:F3} s")
+            : "<not measured>";
+        builder.AppendLine(FormattableString.Invariant(
+            $"warm readiness: elapsed={warmElapsed} of {WarmReadinessBudget.TotalSeconds:F3} s budget") +
+            FormattableString.Invariant($" (exceeded: {_warmReadinessElapsed >= WarmReadinessBudget})"));
 
         if (_agentFactory is null)
         {

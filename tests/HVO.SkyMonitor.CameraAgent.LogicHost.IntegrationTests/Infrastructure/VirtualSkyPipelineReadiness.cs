@@ -96,15 +96,56 @@ internal static class VirtualSkyPipelineReadiness
     public const string TelemetryStepsMissing = "telemetry.steps-missing";
     public const string TelemetryStepFailed = "telemetry.step-failed";
     public const string TelemetryOlderThanRoles = "telemetry.older-than-roles";
+    public const string TelemetryUnstable = "telemetry.unstable";
+
+    /// <summary>
+    /// Decides whether the supplied candidate state is one internally consistent, fully advanced
+    /// observation of the configured pipeline, and additionally proves that no telemetry sample was
+    /// published while the three role snapshots were being read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Callers read telemetry, then the three roles, then telemetry again, and pass both telemetry
+    /// reads here. <see cref="TelemetryOlderThanRoles"/> alone bounds the pair on one side only: it
+    /// rejects telemetry older than the roles but accepts telemetry from any later capture, so a
+    /// preemption between the role reads and the telemetry read could pair capture N's roles with
+    /// capture N+1's telemetry. Requiring both telemetry reads to return the same instance closes
+    /// the other side. The configured graph publishes the three roles (<c>LocalStorage</c>, order
+    /// 100) before it reports telemetry (<c>Telemetry</c>, order 1000), so if that one stable
+    /// sample belonged to a capture later than the observed roles it would already have been
+    /// visible at the first read, and the roles read afterwards would have been that later
+    /// capture's. The two checks together therefore pin the pair to a single capture without
+    /// assuming anything about the capture cadence, which a comparison against the configured
+    /// interval would do and which would reject spuriously whenever a loaded host stretches one
+    /// module start past that interval.
+    /// </para>
+    /// <para>
+    /// The stability verdict is evaluated last so that a persistent unsatisfied requirement, not a
+    /// churning telemetry buffer, is what a readiness timeout reports.
+    /// </para>
+    /// </remarks>
+    public static VirtualSkyPipelineQualification Qualify(
+        VirtualSkyPipelineBaseline baseline,
+        CaptureTelemetrySample? telemetryBeforeRoles,
+        LatestFrameSnapshot? raw,
+        LatestFrameSnapshot? combined,
+        LatestFrameSnapshot? preview,
+        CaptureTelemetrySample? telemetryAfterRoles)
+    {
+        var qualification = Qualify(baseline, raw, combined, preview, telemetryAfterRoles);
+        return qualification.IsQualified && !ReferenceEquals(telemetryBeforeRoles, telemetryAfterRoles)
+            ? new VirtualSkyPipelineQualification(null, TelemetryUnstable)
+            : qualification;
+    }
 
     /// <summary>
     /// Decides whether the supplied candidate state is one internally consistent, fully advanced
     /// observation of the configured pipeline.
     /// </summary>
     /// <remarks>
-    /// Callers must read the three role snapshots before reading telemetry. Doing so makes the
-    /// observed telemetry sample belong to the same capture as the roles or to a later one, which
-    /// is what <see cref="TelemetryOlderThanRoles"/> enforces.
+    /// This overload bounds the telemetry/role pair on one side only. Callers observing the live
+    /// shared singletons must use the overload that also takes the telemetry read taken before the
+    /// roles, because only the pair of reads proves the sample and the roles describe one capture.
     /// </remarks>
     public static VirtualSkyPipelineQualification Qualify(
         VirtualSkyPipelineBaseline baseline,
