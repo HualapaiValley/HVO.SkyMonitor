@@ -343,7 +343,11 @@ public sealed class HybridTransientSubmissionTests
                 // discarding it is the defect this replaces.
                 var current = await progress().ConfigureAwait(false);
                 nextProbe = DateTimeOffset.UtcNow.Add(probeInterval);
-                if (current != lastProgress)
+                // A reading that could not be taken is not a reading. Counting the sentinel as an
+                // advance would let a frozen system with an intermittently locked journal escape idle
+                // detection entirely, and would make the failure message assert the opposite of the
+                // truth -- "the system was progressing" about a system that never moved.
+                if (current != ProgressUnobserved && current != lastProgress)
                 {
                     if (lastProgress != long.MinValue)
                     {
@@ -380,6 +384,11 @@ public sealed class HybridTransientSubmissionTests
     // A monotonic observation of the ingest pipeline, read from the same journal the acknowledged
     // submission is read from. Counting rows rather than timing anything keeps this a statement
     // about work completed rather than about how fast the host is.
+    // Returned when the journal cannot be read. It is deliberately NOT a progress value: see the
+    // handling in WaitUntilProgressingAsync, which treats it as "no observation" rather than as an
+    // observation that happens to differ from the last one.
+    private const long ProgressUnobserved = long.MinValue + 1;
+
     private static async Task<long> ReadIngestProgressAsync(string storageRoot)
     {
         try
@@ -401,9 +410,12 @@ public sealed class HybridTransientSubmissionTests
         catch (SqliteException)
         {
             // The journal is created by the agent under test, so it is legitimately absent or locked
-            // early in the run. An unreadable probe is "no progress observed", never a failure of its
-            // own: this observes the wait, it does not participate in it.
-            return long.MinValue + 1;
+            // early in the run. An unreadable probe reports "no observation" and the caller discards
+            // it: this observes the wait, it does not participate in it. Reporting it as a distinct
+            // VALUE would be worse than useless -- a frozen system whose journal locks intermittently
+            // would oscillate between its real count and this sentinel, and every oscillation would
+            // read as progress and buy another idle window.
+            return ProgressUnobserved;
         }
     }
 
