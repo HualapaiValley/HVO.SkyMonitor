@@ -73,7 +73,18 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     private readonly BoundedLogRecorder _logRecorder = new(capacity: 200);
     private readonly object _consumerGate = new();
     private readonly List<string> _consumerHistory = [];
-    private TimeSpan? _warmReadinessElapsed;
+    /// <summary>Sentinel for <see cref="_warmReadinessElapsedTicks"/> before the barrier measures.</summary>
+    private const long WarmReadinessNotMeasured = -1;
+    /// <summary>
+    /// The measured warm-up, in <see cref="TimeSpan"/> ticks, or <see cref="WarmReadinessNotMeasured"/>.
+    /// </summary>
+    /// <remarks>
+    /// Written by the initializing thread inside <see cref="WaitForWarmCaptureAsync"/> and read by
+    /// whichever thread renders <see cref="DescribeRuntimeState"/>. A <see cref="long"/> written and
+    /// read through <see cref="Volatile"/> is atomic on every supported target, so the renderer sees
+    /// either the sentinel or a complete measurement, never a partially published value.
+    /// </remarks>
+    private long _warmReadinessElapsedTicks = WarmReadinessNotMeasured;
     private string? _currentConsumer;
     private string? _previousConsumer;
     private WebApplicationFactory<Program>? _agentFactory;
@@ -309,13 +320,13 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             {
                 // Recorded whether or not the barrier is close to its budget, so a warm-up drifting
                 // toward the bound is visible in the retained result instead of only when fatal.
-                _warmReadinessElapsed = stopwatch.Elapsed;
+                Volatile.Write(ref _warmReadinessElapsedTicks, stopwatch.Elapsed.Ticks);
                 return;
             }
             await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
         }
 
-        _warmReadinessElapsed = stopwatch.Elapsed;
+        Volatile.Write(ref _warmReadinessElapsedTicks, stopwatch.Elapsed.Ticks);
         throw new InvalidOperationException(FormattableString.Invariant(
             $"The shared CameraAgent fixture did not publish a complete capture within {WarmReadinessBudget.TotalSeconds:F0} s.{Environment.NewLine}") +
             FormattableString.Invariant($"telemetry: {VirtualSkyPipelineReadiness.DescribeSample(telemetry.Latest)}{Environment.NewLine}") +
@@ -460,12 +471,20 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             $"fixture consumers: current={consumers.Current ?? "<none>"} previous={consumers.Previous ?? "<none>"}"));
         builder.AppendLine(FormattableString.Invariant(
             $"  history: {(consumers.History.Count == 0 ? "<none>" : string.Join(" -> ", consumers.History))}"));
-        var warmElapsed = _warmReadinessElapsed is { } measured
-            ? FormattableString.Invariant($"{measured.TotalSeconds:F3} s")
+        var measuredTicks = Volatile.Read(ref _warmReadinessElapsedTicks);
+        var warmMeasured = measuredTicks != WarmReadinessNotMeasured;
+        var warmElapsed = warmMeasured
+            ? FormattableString.Invariant($"{TimeSpan.FromTicks(measuredTicks).TotalSeconds:F3} s")
             : "<not measured>";
+        // An unmeasured barrier cannot say whether the budget was exceeded. A lifted comparison
+        // against a missing measurement renders False, which asserts a fact nobody measured; the
+        // hybrid-transient fixture and any failure before the barrier runs both reach that state.
+        var warmExceeded = warmMeasured
+            ? (measuredTicks >= WarmReadinessBudget.Ticks ? "True" : "False")
+            : "<unknown>";
         builder.AppendLine(FormattableString.Invariant(
             $"warm readiness: elapsed={warmElapsed} of {WarmReadinessBudget.TotalSeconds:F3} s budget") +
-            FormattableString.Invariant($" (exceeded: {_warmReadinessElapsed >= WarmReadinessBudget})"));
+            FormattableString.Invariant($" (exceeded: {warmExceeded})"));
 
         if (_agentFactory is null)
         {

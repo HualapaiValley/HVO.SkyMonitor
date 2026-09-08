@@ -794,7 +794,10 @@ public sealed class VirtualSkyPipelineTests
         Assert.AreSame(sample, stable.Observation!.Telemetry);
         Assert.AreSame(raw, stable.Observation.Raw);
 
-        var qualified = VirtualSkyPipelineReadiness.Qualify(baseline, raw, combined, preview, sample);
+        // The same qualifying state, asserted field by field. A caller holding a single telemetry
+        // read supplies it on both sides now that the one-sided form is private; that is exactly
+        // equivalent, because the stability comparison of one instance with itself always holds.
+        var qualified = VirtualSkyPipelineReadiness.Qualify(baseline, sample, raw, combined, preview, sample);
         Assert.IsTrue(qualified.IsQualified, qualified.ReasonCode);
         Assert.AreEqual(VirtualSkyPipelineReadiness.Qualified, qualified.ReasonCode);
         var observation = qualified.Observation!;
@@ -812,7 +815,7 @@ public sealed class VirtualSkyPipelineTests
         var sequencelessCombined = ProbeSnapshot(null, advancedUtc, "RollingCombination", CameraPixelFormat.Mono16);
         var sequencelessPreview = ProbeSnapshot(null, advancedUtc, "AnnotatedPreview", CameraPixelFormat.Mono8);
         var sequenceless = VirtualSkyPipelineReadiness.Qualify(
-            baseline, sequencelessRaw, sequencelessCombined, sequencelessPreview, sample);
+            baseline, sample, sequencelessRaw, sequencelessCombined, sequencelessPreview, sample);
         Assert.IsTrue(sequenceless.IsQualified, sequenceless.ReasonCode);
         Assert.IsNull(sequenceless.Observation!.CaptureSequence);
         Assert.AreEqual(advancedUtc, sequenceless.Observation.CaptureTimestampUtc);
@@ -862,8 +865,10 @@ public sealed class VirtualSkyPipelineTests
             LatestFrameSnapshot? probePreview,
             CaptureTelemetrySample? probeSample)
         {
+            // One synthetic telemetry read supplied on both sides: the stability requirement is
+            // trivially satisfied, so the probe isolates the requirement it is named for.
             var result = VirtualSkyPipelineReadiness.Qualify(
-                baseline, probeRaw, probeCombined, probePreview, probeSample);
+                baseline, probeSample, probeRaw, probeCombined, probePreview, probeSample);
             Assert.IsFalse(result.IsQualified, $"The readiness gate accepted a state it must reject: {expectedReasonCode}.");
             Assert.AreEqual(expectedReasonCode, result.ReasonCode);
         }

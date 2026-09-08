@@ -140,14 +140,19 @@ internal static class VirtualSkyPipelineReadiness
 
     /// <summary>
     /// Decides whether the supplied candidate state is one internally consistent, fully advanced
-    /// observation of the configured pipeline.
+    /// observation of the configured pipeline, bounding the telemetry/role pair on one side only.
     /// </summary>
     /// <remarks>
-    /// This overload bounds the telemetry/role pair on one side only. Callers observing the live
-    /// shared singletons must use the overload that also takes the telemetry read taken before the
-    /// roles, because only the pair of reads proves the sample and the roles describe one capture.
+    /// This form is deliberately unreachable outside this type. It accepts telemetry from any
+    /// capture at or after the observed roles, so on its own it cannot distinguish one capture from
+    /// capture N's roles paired with capture N+1's telemetry. The public entry point above supplies
+    /// the missing bound by requiring the telemetry reads taken on both sides of the role reads to
+    /// return the same instance; keeping this form private is what stops a later live-observation
+    /// caller from reintroducing that one-sided pairing. A caller that genuinely has only one
+    /// telemetry read passes it as both arguments, which is exactly the one-sided semantics because
+    /// the stability comparison is then trivially satisfied.
     /// </remarks>
-    public static VirtualSkyPipelineQualification Qualify(
+    private static VirtualSkyPipelineQualification Qualify(
         VirtualSkyPipelineBaseline baseline,
         LatestFrameSnapshot? raw,
         LatestFrameSnapshot? combined,
