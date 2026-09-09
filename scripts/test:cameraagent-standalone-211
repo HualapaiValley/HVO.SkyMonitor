@@ -398,12 +398,22 @@ active_compose_files=("--file" "$COMPOSE_FILE")
 active_client_network=""
 active_owner_email=""
 active_owner_password=""
+active_replay_auth_key=""
 cleanup() {
     if [[ -n "$active_project" ]]; then
         local failure_log="$RESULTS/failure-$active_project.log"
         while IFS= read -r line; do
-            line="${line//$active_owner_email/[REDACTED-OWNER]}"
-            line="${line//$active_owner_password/[REDACTED-PASSWORD]}"
+            # An empty needle substitutes between every character, so each replacement is
+            # guarded on the value being set. cleanup() runs before a trial assigns them.
+            if [[ -n "$active_owner_email" ]]; then
+                line="${line//$active_owner_email/[REDACTED-OWNER]}"
+            fi
+            if [[ -n "$active_owner_password" ]]; then
+                line="${line//$active_owner_password/[REDACTED-PASSWORD]}"
+            fi
+            if [[ -n "$active_replay_auth_key" ]]; then
+                line="${line//$active_replay_auth_key/[REDACTED-REPLAY-AUTH-KEY]}"
+            fi
             if [[ "$line" =~ [Aa]uthorization:[[:space:]]*(Basic|Bearer)|[Ss]et-[Cc]ookie:|[Rr]equest[Vv]erification[Tt]oken|[Aa]ntiforgery|[Cc]lient[_-]?[Ss]ecret|[Cc]onnection[_-]?[Ss]tring ]]; then
                 printf '%s\n' '[REDACTED-SENSITIVE-LOG-LINE]'
             else
@@ -493,6 +503,7 @@ run_profile_trial() {
             openssl rand -base64 48 | tr -d '\n' > "$trial_local/secrets/replay-runner-auth-key"
             chmod 600 "$trial_local/secrets/replay-runner-auth-key"
         fi
+        active_replay_auth_key="$(cat "$trial_local/secrets/replay-runner-auth-key")"
         active_compose_files=("--file" "$COMPOSE_FILE" "--file" "$LOCAL_RUNNER_COMPOSE_FILE")
     else
         active_compose_files=("--file" "$COMPOSE_FILE")
@@ -707,8 +718,8 @@ EOF
         printf 'Unable to scan unsanitized telemetry logs for %s (rg exit %s).\n' "$trial" "$raw_log_scan_status" >&2
         return 1
     fi
-    # shellcheck disable=SC2066 # Keep secret-file scans extensible while the current profile has one file.
-    for sensitive_file in "$trial_local/secrets/owner-password"; do
+    for sensitive_file in "$trial_local/secrets/owner-password" "$trial_local/secrets/replay-runner-auth-key"; do
+        [[ -s "$sensitive_file" ]] || continue
         raw_log_scan_status=0
         rg --text --fixed-strings --file "$sensitive_file" "$raw_logs" >/dev/null || raw_log_scan_status=$?
         if ((raw_log_scan_status == 0)); then
@@ -1113,8 +1124,8 @@ EOF
             "$trial" "$final_trial_scan_status" >&2
         return 1
     fi
-    # shellcheck disable=SC2066 # Keep secret-file scans extensible while the current profile has one file.
-    for sensitive_file in "$trial_local/secrets/owner-password"; do
+    for sensitive_file in "$trial_local/secrets/owner-password" "$trial_local/secrets/replay-runner-auth-key"; do
+        [[ -s "$sensitive_file" ]] || continue
         final_trial_scan_status=0
         rg --text --hidden --fixed-strings --file "$sensitive_file" \
             "$trial_result" >/dev/null || final_trial_scan_status=$?
@@ -1142,6 +1153,7 @@ EOF
     active_compose_files=("--file" "$COMPOSE_FILE")
     active_owner_email=""
     active_owner_password=""
+    active_replay_auth_key=""
     if [[ "$retain_state" == true ]]; then
         # Written only after every gate above has passed, so the marker means "this root holds
         # state a later invocation may rely on" and not merely "an invocation started here".

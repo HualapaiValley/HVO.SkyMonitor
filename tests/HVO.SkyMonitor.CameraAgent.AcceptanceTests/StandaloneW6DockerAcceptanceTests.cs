@@ -69,7 +69,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     // `CameraAgentRecipeExecutionAdapter.ExecuteAsync(context, request, ct)`, directly or through the
     // wrapper at `CaptureProcessingContext.ExecuteAsync(adapter, ...)`, because that overload is the
     // only one carrying the context whose execution class and configured profile select the
-    // LocalRunner branch. Nine step classes reach it; seven of them appear in the W6 template.
+    // LocalRunner branch. Eleven step classes reach it; seven of them appear in the W6 template.
     private static readonly string[] ReplayRecipeBackedNodeIds =
     [
         "projected-scene", "calibration", "calibrated-preview", "rolling",
