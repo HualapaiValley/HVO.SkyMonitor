@@ -174,8 +174,10 @@ public sealed class VirtualSkyPipelineTests
         }
 
         Assert.IsTrue(HasPendingOrRetryOutboxRecord());
-        Assert.AreEqual(RawIngressAvailability.Accepting,
-            services.GetRequiredService<RawIngressState>().Snapshot.Availability);
+        AssertIngressAdmitting(
+            services.GetRequiredService<RawIngressState>().Snapshot,
+            "after publication",
+            configured.ProjectedSceneStaging.MaximumReconciliationEntries);
         var processingStateService = services.GetRequiredService<CaptureProcessingState>();
         // Healthy is a conjunction of eight conditions, two of which count work still in flight on a producer
         // that never stops, so waiting for it asks a live agent to fall idle. Gate the six that are defects at
@@ -385,7 +387,9 @@ public sealed class VirtualSkyPipelineTests
             manifests.All(item => item.Parsed.Document!.Manifest.Descriptor.Capture.CaptureSequence <= fence.Watermark),
             "Stored-manifest subjects are outside the settled prefix; the fence proved nothing about them.");
         var ingressState = services.GetRequiredService<RawIngressState>().Snapshot;
-        Assert.AreEqual(RawIngressAvailability.Accepting, ingressState.Availability);
+        AssertIngressAdmitting(ingressState, "beyond the fence",
+            services.GetRequiredService<IOptions<CameraAgentHostOptions>>()
+                .Value.ProjectedSceneStaging.MaximumReconciliationEntries);
         // PendingCount and PendingBytes describe work admitted after the watermark on a still-running producer,
         // so they are recorded rather than gated.
         Console.WriteLine(string.Create(
@@ -435,11 +439,32 @@ public sealed class VirtualSkyPipelineTests
         Assert.AreEqual(0L, processingState.ReplayTerminalCount);
         Assert.IsFalse(processingState.DurableStateUnavailable);
         Assert.IsFalse(processingState.ReconciliationFailed);
-        processingCommand.CommandText = "SELECT artifact_id FROM processing_outputs WHERE node_id = 'CalibratedPreview' ORDER BY capture_sequence DESC LIMIT 1;";
+        // The subject has to come from inside the fenced prefix. Selecting the newest CalibratedPreview
+        // outright picks a capture that is routinely beyond the watermark, and `pending` is asserted above to
+        // hold nothing beyond the watermark -- so on any run where the producer advanced past the fence, which
+        // is the normal case, the assertion below could not fail for the reason it exists. Two disjoint
+        // sequence ranges cannot intersect, and that is all it would have been testing.
+        // Bounding the subject makes the local-only claim testable: this preview belongs to a capture the
+        // fence settled, so the outbox has already had its chance to enqueue it, and its absence from
+        // `pending` is then a fact about distribution policy rather than about arithmetic.
+        processingCommand.CommandText =
+            "SELECT artifact_id FROM processing_outputs WHERE node_id = 'CalibratedPreview' "
+                + "AND capture_sequence <= $watermark ORDER BY capture_sequence DESC LIMIT 1;";
+        processingCommand.Parameters.AddWithValue("$watermark", fence.Watermark);
+        var localOnlyPreviewRow = await processingCommand.ExecuteScalarAsync().ConfigureAwait(false);
+        if (localOnlyPreviewRow is null or DBNull)
+        {
+            Assert.Fail(string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"No CalibratedPreview output exists at or below the settled watermark {fence.Watermark}, "
+                    + $"so the local-only assertion would have had no subject to test."));
+        }
         var localOnlyPreviewId = Guid.ParseExact(
-            Convert.ToString(await processingCommand.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture)!,
+            Convert.ToString(localOnlyPreviewRow, System.Globalization.CultureInfo.InvariantCulture)!,
             "N");
-        Assert.IsFalse(pending.Any(item => item.Descriptor.Artifact.ArtifactId == localOnlyPreviewId));
+        Assert.IsFalse(
+            pending.Any(item => item.Descriptor.Artifact.ArtifactId == localOnlyPreviewId),
+            "A CalibratedPreview artifact from the settled prefix was queued for upload; the node is local-only.");
 
         var uploadCheckpoint = ReadPendingOutboxCheckpoint();
         var configuredUploadOptions = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
@@ -1252,7 +1277,14 @@ public sealed class VirtualSkyPipelineTests
             snapshot = ReadCapturePrefixSnapshot(watermark);
             if (snapshot.Satisfied)
             {
-                Console.WriteLine("capture prefix settled: " + snapshot.Describe());
+                // PrefixSettled short-circuits on PrefixHasTerminalDefect, so "satisfied" carries two
+                // unrelated meanings: the prefix finished cleanly, or it reached a state nothing exits and
+                // waiting longer is pointless. Printing "settled" for both makes the caller's terminal
+                // assertion read as a contradiction of the line above it rather than as its consequence.
+                Console.WriteLine(snapshot.PrefixHasTerminalDefect
+                    ? "capture prefix has a terminal defect; waiting stopped because nothing exits that state: "
+                        + snapshot.Describe()
+                    : "capture prefix settled: " + snapshot.Describe());
                 return snapshot;
             }
             if (DateTimeOffset.UtcNow >= deadline)
@@ -1329,6 +1361,69 @@ public sealed class VirtualSkyPipelineTests
             reader.GetInt64(10),
             reader.GetInt64(11),
             reader.GetInt64(12));
+    }
+
+    /// <summary>
+    /// Asserts that raw ingress is admitting work, tolerating the one degradation that is a property of a
+    /// live producer rather than of the pipeline under test.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="RawIngressState"/> collapses two independent things into <c>Availability</c>: the base
+    /// health of ingress, and an overlay that reports <c>Degraded</c> with reason
+    /// <c>projected-scene-backlog</c> whenever the staging reconciler still has entries it has not inspected.
+    /// That backlog is the <c>remaining</c> counter of a pass bounded to
+    /// <see cref="ProjectedSceneStagingOptions.MaximumReconciliationEntries"/>, so it is non-zero whenever the
+    /// producer stages scenes faster than one pass sweeps them. That is throughput on a host that never stops, not evidence that anything is wrong, and an
+    /// absolute equality gate here fails under load for a reason that says nothing about the property being
+    /// tested.
+    /// The overlay is applied only when the base availability is already <c>Accepting</c>
+    /// (see <c>RawIngressState.PublishSnapshot</c>), so the reason string discriminates exactly: observing
+    /// <c>projected-scene-backlog</c> is itself proof that the base was healthy. Every genuine degradation
+    /// keeps its own reason and still fails here -- <c>disk-pressure</c>, <c>index-projection-failed</c>,
+    /// <c>reconciliation-findings</c>, <c>capacity-exhausted</c>, <c>capacity-probe-failed</c>. Disk pressure
+    /// is deliberately still gated: it is a condition under which this pipeline's evidence is suspect, which
+    /// backlog is not.
+    /// </remarks>
+    private static void AssertIngressAdmitting(
+        RawIngressSnapshot snapshot,
+        string stage,
+        int reconciliationPassBound)
+    {
+        // Recorded on every run, degraded or not. The open question behind this gate is how close a normal
+        // run comes to the pass bound, and nobody finds that out from a test that only speaks when it fails.
+        // The bound is read from the configured options rather than written here: a literal would keep
+        // printing 512 after someone retuned the option, which is the failure this measurement exists to
+        // avoid making elsewhere.
+        Console.WriteLine(string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"raw ingress {stage}: availability={snapshot.Availability} reason={snapshot.Reason} "
+                + $"stagedProjectedScenes={CountStagedProjectedScenes()} "
+                + $"reconciliationPassBound={reconciliationPassBound}"));
+
+        if (snapshot.Availability == RawIngressAvailability.Degraded &&
+            string.Equals(snapshot.Reason, "projected-scene-backlog", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Assert.AreEqual(
+            RawIngressAvailability.Accepting,
+            snapshot.Availability,
+            string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"Raw ingress {stage} is not admitting: availability={snapshot.Availability} reason={snapshot.Reason}"));
+    }
+
+    /// <summary>
+    /// Counts entries in the projected-scene staging directory, which is what the bounded reconciliation pass
+    /// walks and therefore what the backlog counter is derived from.
+    /// </summary>
+    private static int CountStagedProjectedScenes()
+    {
+        var root = Path.Combine(Fixture.StorageRoot, "staging", "projected-scenes");
+        return Directory.Exists(root)
+            ? Directory.EnumerateFileSystemEntries(root, "*", SearchOption.TopDirectoryOnly).Count()
+            : 0;
     }
 
     private static SqliteConnection OpenJournalReadConnection()
