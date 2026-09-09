@@ -944,11 +944,12 @@ fi
 # half never, so trimming main out of the push triggers would leave every release unqualifiable
 # with both halves still passing their own tests.
 #
-# This recognizes one workflow shape and refuses every other. It deliberately does not interpret
-# GitHub's filter grammar: four adversarial rounds defeated guards that tried to, each one
-# answering "accepted" for a shape it did not actually understand. Refusing what it cannot
-# recognize means widening the workflow requires widening the guard in the same commit, which is
-# the intended cost.
+# This recognizes one workflow shape and refuses every other. It does not interpret GitHub's
+# filter grammar and it does not read the file as lines: nine adversarial findings across five
+# rounds all did the same thing, computing a value for a property of the document the guard could
+# not establish. The workflow is parsed with a real YAML parser and every structural question is
+# answered from the parsed document. Refusing what it cannot establish means widening the workflow
+# requires widening the guard in the same commit, which is the intended cost.
 python3 - "$workflow" <<'CI_PUSH_TRIGGER_PY' || exit 1
 """Assert that the CI workflow runs on pushes to main.
 
@@ -956,34 +957,41 @@ release.yml qualifies a release SHA by looking for a completed CI run produced
 by a push to main. Nothing else can answer that query, so a workflow that does
 not produce such a run leaves every release unqualifiable.
 
-Seven adversarial findings have now defeated guards over this one assertion,
-and every one of them is the same shape: the reader answered "accepted" for
-input it did not actually understand.
+Nine adversarial findings across five review rounds defeated the guards that
+preceded this one, and every single one was the same act: the guard computed a
+value for a property of the document it could not establish, instead of
+refusing. Four were in the branch filter grammar, which was replaced in round 2
+by the shape recognizer below and has held since. Five were in the reader: a
+duplicated mapping key resolved by taking the first, a tab measured as a column
+width, whitespace that is not a space measured as a column width, and a
+top-level key identified without establishing which document it was in.
 
-Four were in the pattern grammar. Shell-globbing semantics for `?`, escaped
-metacharacters, leading globstar zero-segment matches, and YAML 1.1 resolving
-a bare scalar to a boolean.
+The reader was a hand-rolled line-oriented YAML parser. The only method that
+ever caught anything was running a real parser beside it as the oracle. A
+parser that must be checked by a real parser to be trusted should be the real
+parser, so this one is.
 
-Two were in the document structure, outside any entry: a duplicated mapping
-key, where this reader took the first and every YAML parser takes the last or
-refuses the document, and a tab in a line's indentation, which measured as
-column zero and silently ended the block before the keys that had to be
-examined. Neither is an attack. A duplicated trigger key is an ordinary merge
-conflict artifact and a tab is an editor default.
+The acceptance rule, and the standard for changing this file: refuse every
+property of the document you cannot establish, rather than computing a value
+anyway.
 
-So this does not interpret patterns, and it does not measure around structure
-it cannot read. It recognizes the one shape this repository uses and refuses
-everything else. Anything unrecognized is "I
-cannot determine that this workflow runs on a main push", which is a red gate
-rather than a green one. Widening the workflow is meant to require widening
-this guard deliberately.
-
-Standard library only. The Quality job installs no Python packages, and the
-step that runs this gate carries no mode condition, so a third-party import
-would fail every Quality run.
+Structure comes from the parser. Scalars do not. The document is composed to a
+node graph rather than constructed to Python objects, so entries are compared
+as the raw text the parser read. That is deliberate: PyYAML implements YAML
+1.1, where a bare `on` resolves to True and `no` resolves to False, and one of
+the four grammar defeats was exactly that resolution rejecting a workflow whose
+literal `main` entry was still effective. GitHub does not resolve those to
+booleans. Reading scalars as text keeps this guard out of a disagreement it has
+no need to enter.
 """
 
 import sys
+
+PARSER_MISSING = None
+try:
+    import yaml
+except ImportError as error:  # pragma: no cover - environment dependent
+    PARSER_MISSING = error
 
 BRANCH = 'main'
 # The only characters that can invert an entry's meaning. `!` negates, and `\`
@@ -993,12 +1001,12 @@ BRANCH = 'main'
 # refusing them would buy nothing and would reject this repository's own
 # 'release/**' entry.
 #
-# The scope of that argument is one entry. It says nothing about suppression
-# from outside the entry, where a second `branches` key or a second `push`
-# block can replace the list wholesale without any entry containing either
-# character. Structural suppression is a separate class and it is the reader's
-# job, not this tuple's: see read_push_block and read_branches, which refuse a
-# duplicated key rather than choosing which occurrence wins.
+# The scope of that argument is one entry, and it is easy to over-read. It says
+# nothing about suppression from outside the entry, where a second `branches`
+# key, a second `push` block, or a trigger sitting in a second YAML document
+# replaces the list wholesale with no entry containing either character. That
+# class belongs to the reader below, which answers structural questions from
+# the parsed document and refuses whatever the parse leaves ambiguous.
 INVERTING = ('!', '\\')
 # A push block may name these. Any other key is a part of the grammar this
 # guard has not been taught, so it fails closed.
@@ -1012,235 +1020,137 @@ class Unrecognized(Exception):
     pass
 
 
-def strip_comment(line):
-    """Remove a YAML comment, respecting quotes.
+def load_single_document(path):
+    """Compose the workflow to one node graph, or refuse.
 
-    A `#` inside a quoted scalar is literal, and a `#` not preceded by
-    whitespace is part of the token. Getting this wrong is how a guard reads
-    `branches: # [main]` as a branch list.
+    Anchors, aliases and explicit tags are refused before composition. An alias
+    makes a node's content depend on a definition elsewhere in the file, and an
+    explicit tag changes what a node means; neither is used by this repository
+    and neither would be established by looking at the node alone.
     """
-    out = []
-    quote = None
-    for index, char in enumerate(line):
-        if quote:
-            out.append(char)
-            if char == quote:
-                quote = None
-            continue
-        if char in '"\'':
-            quote = char
-            out.append(char)
-            continue
-        if char == '#' and (index == 0 or line[index - 1] in ' \t'):
-            break
-        out.append(char)
-    if quote:
-        raise Unrecognized('unterminated quote: %s' % line.strip())
-    return ''.join(out).rstrip()
-
-
-def indent_of(line):
-    """Return the line's indentation width, refusing what it cannot measure.
-
-    Counting only spaces would read a tab-indented line as column zero, which
-    ends the enclosing block early and leaves every later key unexamined. YAML
-    forbids tabs in indentation outright, so a tab here means the document does
-    not parse and there is nothing to measure.
-    """
-    leading = line[:len(line) - len(line.lstrip())]
-    if '\t' in leading:
-        raise Unrecognized(
-            'a tab indents %r; YAML forbids tabs in indentation, so this '
-            'document does not parse and its shape cannot be recognized'
-            % line.strip())
-    return len(leading)
-
-
-def unquote(token):
-    token = token.strip()
-    if not token:
-        raise Unrecognized('empty list entry')
-    if token[0] in '"\'':
-        if len(token) < 2 or token[-1] != token[0]:
-            raise Unrecognized('unbalanced quoting in entry: %s' % token)
-        inner = token[1:-1]
-        if token[0] in inner:
-            raise Unrecognized('nested quote in entry: %s' % token)
-        return inner
-    if '"' in token or "'" in token:
-        raise Unrecognized('quote inside a bare entry: %s' % token)
-    return token
-
-
-def split_flow_sequence(text):
-    """Split `[a, 'b, c']` on its top-level commas only.
-
-    Splitting on every comma is how a guard reads `["release,main"]` as an
-    entry named main.
-    """
-    text = text.strip()
-    if not (text.startswith('[') and text.endswith(']')):
-        raise Unrecognized('branch list is not a flow sequence: %s' % text)
-    body = text[1:-1]
-    entries = []
-    current = []
-    quote = None
-    for char in body:
-        if quote:
-            current.append(char)
-            if char == quote:
-                quote = None
-            continue
-        if char in '"\'':
-            quote = char
-            current.append(char)
-            continue
-        if char in '[]{}':
-            raise Unrecognized('nested collection in branch list')
-        if char == ',':
-            entries.append(''.join(current))
-            current = []
-            continue
-        current.append(char)
-    if quote:
-        raise Unrecognized('unterminated quote in branch list')
-    tail = ''.join(current)
-    if tail.strip() or entries:
-        entries.append(tail)
-    return [unquote(entry) for entry in entries]
-
-
-def read_block(lines, start, parent_indent):
-    """Collect the lines of a block nested under lines[start]."""
-    block = []
-    index = start + 1
-    while index < len(lines):
-        raw = lines[index]
-        stripped = strip_comment(raw)
-        if not stripped.strip():
-            index += 1
-            continue
-        if indent_of(stripped) <= parent_indent:
-            break
-        block.append(stripped)
-        index += 1
-    return block, index
-
-
-def read_push_block(path):
     with open(path, encoding='utf-8') as handle:
-        lines = handle.read().splitlines()
+        text = handle.read()
 
-    on_indexes = []
-    for index, raw in enumerate(lines):
-        # A top-level key carries no leading whitespace at all. Testing the
-        # first character rather than measuring an indent keeps this scan away
-        # from block scalar bodies, whose `run:` content is not YAML structure
-        # and may legitimately contain tabs.
-        if raw[:1].isspace():
-            continue
-        stripped = strip_comment(raw)
-        key = stripped.split(':', 1)[0].strip()
-        # YAML 1.1 lets `on` be written bare or quoted; all three spellings are
-        # the same key.
-        if key in ('on', "'on'", '"on"') and stripped.rstrip().endswith(':'):
-            on_indexes.append(index)
-    if not on_indexes:
-        raise Unrecognized('workflow has no top-level `on:` key')
-    if len(on_indexes) > 1:
+    try:
+        for event in yaml.parse(text):
+            if isinstance(event, yaml.AliasEvent):
+                raise Unrecognized(
+                    'the workflow uses a YAML alias (*%s); this guard does not '
+                    'resolve references' % event.anchor)
+            if getattr(event, 'anchor', None):
+                raise Unrecognized(
+                    'the workflow defines a YAML anchor (&%s); this guard does '
+                    'not resolve references' % event.anchor)
+            if isinstance(event, yaml.ScalarEvent):
+                if event.tag is not None and not any(event.implicit):
+                    raise Unrecognized('the workflow gives an explicit tag %r, '
+                                       'which changes what a node means'
+                                       % event.tag)
+            elif isinstance(event, (yaml.MappingStartEvent,
+                                    yaml.SequenceStartEvent)):
+                if event.tag is not None and not event.implicit:
+                    raise Unrecognized('the workflow gives an explicit tag %r, '
+                                       'which changes what a node means'
+                                       % event.tag)
+
+        documents = list(yaml.compose_all(text))
+    except yaml.YAMLError as error:
+        # Tabs and non-space indentation land here, as does any other malformed
+        # document. There is no shape to recognize in a file that does not
+        # parse, and nothing to measure around.
+        detail = str(error).replace('\n', ' ').strip()
+        raise Unrecognized('the parser refused the document: %s' % detail)
+
+    if not documents:
+        raise Unrecognized('the file contains no YAML document')
+    if len(documents) > 1:
+        # A bare `---` puts everything after it in a second document. GitHub
+        # reads the first; a guard reading the last would be inspecting a
+        # trigger that never takes effect.
         raise Unrecognized(
-            'the workflow defines %d top-level `on:` keys (lines %s); parsers '
-            'either resolve a duplicate mapping key last-wins or refuse the '
-            'document, and this reader will not pick between those answers'
-            % (len(on_indexes), ', '.join(str(i + 1) for i in on_indexes)))
-    on_index = on_indexes[0]
+            'the file contains %d YAML documents; GitHub reads the first, and '
+            'a trigger in any later document never takes effect'
+            % len(documents))
 
-    on_block, _ = read_block(lines, on_index, 0)
-    if not on_block:
-        raise Unrecognized('`on:` block is empty')
-    on_indent = indent_of(on_block[0])
-
-    push_offsets = []
-    for offset, stripped in enumerate(on_block):
-        if indent_of(stripped) != on_indent:
-            continue
-        if stripped.strip().split(':', 1)[0].strip() != 'push':
-            continue
-        remainder = stripped.strip()[len('push'):]
-        if not remainder.startswith(':'):
-            continue
-        if remainder[1:].strip():
-            raise Unrecognized('inline `push:` value is not recognized')
-        push_offsets.append(offset)
-    if not push_offsets:
-        raise Unrecognized('workflow has no `push:` trigger')
-    if len(push_offsets) > 1:
-        # Taking the first would read a filter list that a parser discards. A
-        # second `push:` naming only a release branch removes main from the
-        # effective trigger without touching the first block at all.
-        raise Unrecognized(
-            '`on:` defines `push:` %d times; parsers either resolve a '
-            'duplicate mapping key last-wins or refuse the document, and this '
-            'reader will not pick between those answers' % len(push_offsets))
-    block, _ = read_block(on_block, push_offsets[0], on_indent)
-    return block
+    root = documents[0]
+    if root is None:
+        raise Unrecognized('the workflow document is empty')
+    return root
 
 
-def read_branches(push_block):
-    """Return the push block's branch entries, or raise Unrecognized."""
-    if not push_block:
-        raise Unrecognized('`push:` names no filters, so its shape is not the '
-                           'recognized one')
-    key_indent = indent_of(push_block[0])
-    branches = None
-    seen_keys = []
-    for offset, stripped in enumerate(push_block):
-        if indent_of(stripped) != key_indent:
-            continue
-        if stripped.strip().startswith('- '):
+def mapping_pairs(node, where):
+    """Return a mapping node's (key text, value node) pairs, or refuse.
+
+    A non-scalar key and a repeated key both leave the mapping's meaning
+    unestablished: parsers resolve a duplicate key last-wins or refuse the
+    document, and this guard will not pick between those answers.
+    """
+    if not isinstance(node, yaml.MappingNode):
+        raise Unrecognized('%s is not a mapping' % where)
+    pairs = []
+    seen = []
+    for key_node, value_node in node.value:
+        if not isinstance(key_node, yaml.ScalarNode):
+            raise Unrecognized('%s has a key that is not a plain scalar' % where)
+        key = key_node.value
+        if key in seen:
             raise Unrecognized(
-                'a block sequence entry sits where a key of `push:` was '
-                'expected: %s; this reader recognizes a branch list written '
-                'as a flow sequence on the `branches:` line, or as a block '
-                'sequence indented under it' % stripped.strip())
-        if ':' not in stripped:
-            raise Unrecognized('unrecognized line in `push:`: %s'
-                               % stripped.strip())
-        key, _, value = stripped.strip().partition(':')
-        key = key.strip()
+                '%s defines %r more than once; parsers either resolve a '
+                'duplicate mapping key last-wins or refuse the document, and '
+                'this guard will not pick between those answers' % (where, key))
+        seen.append(key)
+        pairs.append((key, value_node))
+    return pairs
+
+
+def read_push_block(root):
+    """Return the `push:` mapping node from the workflow's `on:` key."""
+    on_values = [value for key, value in mapping_pairs(root, 'the workflow')
+                 if key == 'on']
+    if not on_values:
+        raise Unrecognized('the workflow has no top-level `on:` key')
+    # mapping_pairs already refuses a repeated key, so this cannot be reached
+    # by a duplicate; it holds the invariant if that ever changes.
+    if len(on_values) > 1:
+        raise Unrecognized('the workflow has %d top-level `on:` keys'
+                           % len(on_values))
+
+    push_values = [value for key, value in mapping_pairs(on_values[0], '`on:`')
+                   if key == 'push']
+    if not push_values:
+        raise Unrecognized('`on:` has no `push:` trigger')
+    if len(push_values) > 1:
+        raise Unrecognized('`on:` defines `push:` %d times' % len(push_values))
+    return push_values[0]
+
+
+def read_branches(push_node):
+    """Return the push trigger's branch entries as raw text, or refuse."""
+    branches_node = None
+    for key, value in mapping_pairs(push_node, '`push:`'):
         if key not in KNOWN_PUSH_KEYS:
             raise Unrecognized('unrecognized key in `push:`: %s' % key)
-        if key in seen_keys:
-            raise Unrecognized(
-                '`push:` defines %s more than once; parsers either resolve a '
-                'duplicate mapping key last-wins or refuse the document, and '
-                'this reader will not pick between those answers' % key)
-        seen_keys.append(key)
         if key in DISQUALIFYING_PUSH_KEYS:
             raise Unrecognized('`push:` defines %s, which can suppress or '
                                'narrow the main-push run' % key)
-        if key != 'branches':
-            continue
-        if value.strip():
-            branches = split_flow_sequence(value)
-        else:
-            nested, _ = read_block(push_block, offset, key_indent)
-            entries = []
-            for item in nested:
-                text = item.strip()
-                if not text.startswith('- '):
-                    raise Unrecognized('unrecognized branch list entry: %s'
-                                       % text)
-                entries.append(unquote(text[2:]))
-            branches = entries
-    if branches is None:
+        if key == 'branches':
+            branches_node = value
+    if branches_node is None:
         raise Unrecognized('`push:` does not name `branches`, so no push to a '
                            'named branch is guaranteed')
-    return branches
+    if not isinstance(branches_node, yaml.SequenceNode):
+        raise Unrecognized('`branches` is not a sequence')
+
+    entries = []
+    for item in branches_node.value:
+        if not isinstance(item, yaml.ScalarNode):
+            raise Unrecognized('a `branches` entry is not a plain scalar')
+        entries.append(item.value)
+    return entries
 
 
 def evaluate(path):
-    branches = read_branches(read_push_block(path))
+    branches = read_branches(read_push_block(load_single_document(path)))
     if not branches:
         raise Unrecognized('`branches` is empty')
     for entry in branches:
@@ -1255,17 +1165,34 @@ def evaluate(path):
 
 
 def main(argv):
+    if PARSER_MISSING is not None:
+        # A check that skips itself when a dependency is missing reports "no
+        # problem found" having looked at nothing, which is the defect this
+        # whole guard exists to prevent, aimed at the guard's own dependency.
+        sys.stderr.write(
+            'CI must run on pushes to %s; release qualification requires a '
+            'main-push run for the release SHA.\n'
+            'This guard could not run at all: the YAML parser it reads the '
+            'workflow with is not importable, so nothing about the workflow '
+            'was established.\n'
+            'Reason: PyYAML is not available: %s\n'
+            'Install it in this environment (Debian and Ubuntu package it as '
+            'python3-yaml). This guard fails rather than skipping, because a '
+            'check that skips itself reports success having inspected '
+            'nothing.\n' % (BRANCH, PARSER_MISSING))
+        return 1
     try:
         evaluate(argv[1])
     except Unrecognized as error:
         sys.stderr.write(
             'CI must run on pushes to %s; release qualification requires a '
             'main-push run for the release SHA.\n'
-            'This guard recognizes one shape only: a `push:` block naming '
-            '`branches`, containing the bare literal `%s`, with no '
-            '`branches-ignore`, `paths` or `paths-ignore`, and no entry '
-            'containing `!` or a backslash. Anything else is refused because '
-            'it cannot be shown to produce the run.\n'
+            'This guard recognizes one shape only: a single YAML document '
+            'whose `on:` key holds a `push:` block naming `branches`, '
+            'containing the bare literal `%s`, with no `branches-ignore`, '
+            '`paths` or `paths-ignore`, and no entry containing `!` or a '
+            'backslash. Anything it cannot establish is refused rather than '
+            'assumed.\n'
             'Reason: %s\n'
             'If you are widening the workflow deliberately, widen this guard '
             'in the same commit.\n' % (BRANCH, BRANCH, error))
