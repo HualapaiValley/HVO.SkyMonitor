@@ -292,8 +292,14 @@ another PR holds it, but no other PR may perform final synchronization, run
 protected CI, or merge.
 
 1. Acquire the lock only after draft review converges and no ordinary product
-   correction is expected. Use live issue/PR API data, not search-indexed list
-   results, to confirm no open PR has `workflow:finalizing`. If a holder exists,
+   correction is expected. Confirm no open PR has `workflow:finalizing` by
+   direct object read of each open PR, not by a filtered or search-indexed
+   list. A filtered read proves presence, never absence: a result naming a
+   holder is authoritative, but an empty result means only that the index has
+   not caught up, and it returns a well-formed `200` rather than an error.
+   Enumerate open PRs, read each `issues/<n>` object, and treat only that set
+   as the lock state. The same rule applies to every recheck of sole ownership
+   and to reading a PR head after a push. If a holder exists,
    do not apply the label. Otherwise, apply it to this PR, then use live queries
    to confirm sole ownership at both ends of a minimum thirty-second
    stabilization interval. If concurrent claims appear, the lowest PR number
