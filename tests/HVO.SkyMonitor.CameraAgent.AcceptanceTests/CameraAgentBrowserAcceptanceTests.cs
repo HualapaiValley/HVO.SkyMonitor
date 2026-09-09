@@ -1994,7 +1994,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
             ("/Account/Recovery", "Recover owner access"),
             ("/Account/Manage", "Profile"),
             ("/Account/Manage/Email", "Owner email"),
-            ("/Account/Manage/ChangePassword", "Change password")
+            ("/Account/Manage/ChangePassword", "Change password"),
+            ("/not-found", "Page not found")
         };
         // A heading that names more than one route names none of them, so the table itself is checked
         // before it is used. Without this, restoring a shared constant heading would leave the walk green.
