@@ -945,11 +945,13 @@ fi
 # with both halves still passing their own tests.
 #
 # This recognizes one workflow shape and refuses every other. It does not interpret GitHub's
-# filter grammar and it does not read the file as lines: nine adversarial findings across five
-# rounds all did the same thing, computing a value for a property of the document the guard could
-# not establish. The workflow is parsed with a real YAML parser and every structural question is
-# answered from the parsed document. Refusing what it cannot establish means widening the workflow
-# requires widening the guard in the same commit, which is the intended cost.
+# filter grammar and it does not read the file as lines: every adversarial finding that has
+# defeated a guard here did the same thing, computing a value for a property of the document the
+# guard could not establish. The workflow is parsed with a real YAML parser, every structural
+# question is answered from the parsed document, and a key or an entry the parser cannot pin down
+# is refused rather than compared as the text that spells it. Refusing what it cannot establish
+# means widening the workflow requires widening the guard in the same commit, which is the
+# intended cost.
 python3 - "$workflow" <<'CI_PUSH_TRIGGER_PY' || exit 1
 """Assert that the CI workflow runs on pushes to main.
 
@@ -957,14 +959,16 @@ release.yml qualifies a release SHA by looking for a completed CI run produced
 by a push to main. Nothing else can answer that query, so a workflow that does
 not produce such a run leaves every release unqualifiable.
 
-Nine adversarial findings across five review rounds defeated the guards that
-preceded this one, and every single one was the same act: the guard computed a
-value for a property of the document it could not establish, instead of
-refusing. Four were in the branch filter grammar, which was replaced in round 2
-by the shape recognizer below and has held since. Five were in the reader: a
-duplicated mapping key resolved by taking the first, a tab measured as a column
-width, whitespace that is not a space measured as a column width, and a
-top-level key identified without establishing which document it was in.
+Every adversarial finding that has defeated a guard in this file did the same
+thing: the guard computed a value for a property of the document it could not
+establish, instead of refusing. Four were in the branch filter grammar, which
+was replaced in round 2 by the shape recognizer below and has held since. The
+rest were in the reader: a duplicated mapping key resolved by taking the first,
+a tab measured as a column width, whitespace that is not a space measured as a
+column width, a top-level key identified without establishing which document it
+was in, a duplicate key spelled with quotes, a duplicate key created by boolean
+resolution, branch list entries that are not branch patterns, and a
+non-specific tag reaching composition through a refusal that did not fire.
 
 The reader was a hand-rolled line-oriented YAML parser. The only method that
 ever caught anything was running a real parser beside it as the oracle. A
@@ -975,28 +979,50 @@ The acceptance rule, and the standard for changing this file: refuse every
 property of the document you cannot establish, rather than computing a value
 anyway.
 
-Structure comes from the parser. Scalars do not. The document is composed to a
-node graph rather than constructed to Python objects, so entries are compared
-as the raw text the parser read. That is deliberate: PyYAML implements YAML
-1.1, where a bare `on` resolves to True and `no` resolves to False, and one of
-the four grammar defeats was exactly that resolution rejecting a workflow whose
-literal `main` entry was still effective. GitHub does not resolve those to
-booleans. Reading scalars as text keeps this guard out of a disagreement it has
-no need to enter.
+What that means for each kind of question:
+
+Structure comes from the parser. The document is composed to a node graph and
+every structural question is answered from it.
+
+A key's identity comes from the text and from the parser's resolution of that
+text, and a collision under either refuses. GitHub reads workflow keys as text
+and resolves no YAML 1.1 booleans, so to GitHub `on:` and `True:` are two
+distinct keys and the block spelled `on` is the trigger. PyYAML resolves `on`,
+`On`, `ON`, `yes` and `True` to one boolean key, so the last of them in
+document order wins and the trigger binds wherever that one points. The same
+bytes, two different triggers. Refusing a collision under either reading is the
+only answer that does not require this guard to pick a side.
+
+An entry's value is compared as the text the parser read, but only once the
+parser has established the entry is a string. Comparing text is what keeps this
+guard out of the boolean disagreement above; it is not a licence to treat every
+scalar as its own spelling. A `~` entry is read as null by every conformant
+parser in either YAML version, GitHub included, so reading it as the text `~`
+would not be applying the text rule, it would be applying it past its scope.
+
+Keys are checked against a known list at all three levels this guard reads. An
+unrecognized key is a part of the workflow grammar this guard has not been
+taught, at the root as much as in `push:`, and GitHub does not load a workflow
+that has one. Refusing what it cannot establish means widening the workflow
+requires widening this guard in the same commit, which is the intended cost.
 """
 
+import string
 import sys
 
 PARSER_MISSING = None
 try:
     import yaml
+    from yaml.constructor import SafeConstructor
 except ImportError as error:  # pragma: no cover - environment dependent
     PARSER_MISSING = error
 
 BRANCH = 'main'
+TRIGGER = 'on'
+STRING_TAG = 'tag:yaml.org,2002:str'
 # The only characters that can invert an entry's meaning. `!` negates, and `\`
 # escapes. Either one, in any entry, can suppress the main-push run that
-# another entry appears to provide. Characters like `*` and `[` are not listed:
+# another entry appears to provide. Characters like `*` and `?` are not listed:
 # a positive pattern can only add branches to a trigger, never remove main, so
 # refusing them would buy nothing and would reject this repository's own
 # 'release/**' entry.
@@ -1007,7 +1033,29 @@ BRANCH = 'main'
 # replaces the list wholesale with no entry containing either character. That
 # class belongs to the reader below, which answers structural questions from
 # the parsed document and refuses whatever the parse leaves ambiguous.
+#
+# It also says nothing about an entry that is not a positive pattern at all,
+# which is a question about the entry rather than about what patterns mean.
+# PATTERN_CHARS answers that one.
 INVERTING = ('!', '\\')
+# The characters this guard recognizes in a positive branch pattern: those git
+# allows in a ref name, plus the `*`, `?` and `+` of GitHub's filter grammar,
+# each of which can only widen the set of branches an entry matches. `[` and
+# `]` are left out deliberately. A character range is a grammar this guard has
+# not been taught, and an unterminated one is not a pattern at all; an entry
+# GitHub cannot parse can make it refuse the whole workflow, which produces no
+# runs of any kind. Teaching the range grammar is the way to accept one, not
+# assuming the entry is well formed because it is a string.
+PATTERN_CHARS = frozenset(string.ascii_letters + string.digits + '-._/+*?@')
+# The complete set of top-level workflow keys GitHub defines.
+KNOWN_WORKFLOW_KEYS = ('name', 'run-name', 'on', 'permissions', 'env',
+                       'defaults', 'concurrency', 'jobs')
+# The trigger events this repository's workflows use. An unrecognized sibling
+# event is refused for the same reason as an unrecognized push filter: it is
+# grammar this guard has not been taught, and GitHub does not load a workflow
+# that names one.
+KNOWN_TRIGGER_KEYS = ('push', 'pull_request', 'workflow_dispatch', 'schedule',
+                      'repository_dispatch')
 # A push block may name these. Any other key is a part of the grammar this
 # guard has not been taught, so it fails closed.
 KNOWN_PUSH_KEYS = ('branches', 'branches-ignore', 'tags', 'tags-ignore',
@@ -1020,39 +1068,90 @@ class Unrecognized(Exception):
     pass
 
 
-def load_single_document(path):
-    """Compose the workflow to one node graph, or refuse.
+def refuse_reference(event):
+    """Refuse an anchor, alias or explicit tag on a node the reader consumes.
 
-    Anchors, aliases and explicit tags are refused before composition. An alias
-    makes a node's content depend on a definition elsewhere in the file, and an
-    explicit tag changes what a node means; neither is used by this repository
-    and neither would be established by looking at the node alone.
+    An alias makes a node's content depend on a definition elsewhere in the
+    file, and an explicit tag changes what a node means; neither would be
+    established by looking at the node alone. `event.tag is not None` is the
+    complete condition for both scalars and collections: the parser reports
+    `None` for every untagged node, plain scalar and quoted scalar and block
+    and flow collection alike, and reports the non-specific tag `!` as a tag
+    like any other.
     """
+    if isinstance(event, yaml.AliasEvent):
+        raise Unrecognized(
+            'the trigger uses a YAML alias (*%s); this guard does not resolve '
+            'references' % event.anchor)
+    if getattr(event, 'anchor', None):
+        raise Unrecognized(
+            'the trigger defines a YAML anchor (&%s); this guard does not '
+            'resolve references' % event.anchor)
+    if getattr(event, 'tag', None) is not None:
+        raise Unrecognized('the trigger gives an explicit tag %r, which '
+                           'changes what a node means' % event.tag)
+
+
+def scan_references(text):
+    """Refuse a reference anywhere the reader will look.
+
+    The reader consumes the root mapping's keys, the value of its `on` key and
+    everything under it. A reference there is refused. A reference under
+    another top-level key is not this guard's business: an anchor in `env:` or
+    a tag in `permissions:` leaves the trigger byte-identical, and refusing the
+    whole workflow for one would be this guard having an opinion about a part
+    of the file it never reads. An anchor defined outside the trigger and used
+    inside it is still refused, because the alias is inside.
+
+    Root keys are checked rather than skipped, so a reference cannot introduce
+    a top-level key without being seen. A merge key is refused a second way, by
+    KNOWN_WORKFLOW_KEYS, since `<<` is not a workflow key.
+    """
+    depth = 0
+    slot = 0            # in the root mapping: 0 expects a key, 1 its value
+    key = None
+    skip_depth = None   # depth at which a subtree the reader never reads began
+
+    for event in yaml.parse(text):
+        opening = isinstance(event, (yaml.MappingStartEvent,
+                                     yaml.SequenceStartEvent))
+        closing = isinstance(event, (yaml.MappingEndEvent,
+                                     yaml.SequenceEndEvent))
+        leaf = isinstance(event, (yaml.ScalarEvent, yaml.AliasEvent))
+
+        outside = skip_depth is not None
+        if not outside and depth == 1 and slot == 1 and (opening or leaf):
+            outside = key != TRIGGER
+        if not outside:
+            refuse_reference(event)
+
+        if opening:
+            if outside and skip_depth is None:
+                skip_depth = depth
+            depth += 1
+        elif closing:
+            depth -= 1
+            if skip_depth == depth:
+                skip_depth = None
+            if depth == 1:
+                if slot == 0:
+                    key = None      # a complex key, which mapping_pairs refuses
+                slot = 1 - slot
+        elif leaf and depth == 1 and skip_depth is None:
+            if slot == 0:
+                key = event.value if isinstance(event, yaml.ScalarEvent) else None
+            slot = 1 - slot
+        elif isinstance(event, yaml.DocumentEndEvent):
+            depth, slot, key, skip_depth = 0, 0, None, None
+
+
+def load_single_document(path):
+    """Compose the workflow to one node graph, or refuse."""
     with open(path, encoding='utf-8') as handle:
         text = handle.read()
 
     try:
-        for event in yaml.parse(text):
-            if isinstance(event, yaml.AliasEvent):
-                raise Unrecognized(
-                    'the workflow uses a YAML alias (*%s); this guard does not '
-                    'resolve references' % event.anchor)
-            if getattr(event, 'anchor', None):
-                raise Unrecognized(
-                    'the workflow defines a YAML anchor (&%s); this guard does '
-                    'not resolve references' % event.anchor)
-            if isinstance(event, yaml.ScalarEvent):
-                if event.tag is not None and not any(event.implicit):
-                    raise Unrecognized('the workflow gives an explicit tag %r, '
-                                       'which changes what a node means'
-                                       % event.tag)
-            elif isinstance(event, (yaml.MappingStartEvent,
-                                    yaml.SequenceStartEvent)):
-                if event.tag is not None and not event.implicit:
-                    raise Unrecognized('the workflow gives an explicit tag %r, '
-                                       'which changes what a node means'
-                                       % event.tag)
-
+        scan_references(text)
         documents = list(yaml.compose_all(text))
     except yaml.YAMLError as error:
         # Tabs and non-space indentation land here, as does any other malformed
@@ -1078,12 +1177,29 @@ def load_single_document(path):
     return root
 
 
-def mapping_pairs(node, where):
+def key_identities(key_node, where):
+    """Return every identity a parser can bind this key to.
+
+    Both readings are collected, the text and the resolved value, because the
+    two consumers of this file disagree about which one a key is. See the
+    module docstring; the disagreement is the reason this returns a list rather
+    than a value.
+    """
+    try:
+        resolved = SafeConstructor().construct_object(key_node)
+    except yaml.YAMLError as error:
+        raise Unrecognized('%s has a key this guard cannot resolve: %s'
+                           % (where, error))
+    return [('text', key_node.value), ('value', key_node.tag, resolved)]
+
+
+def mapping_pairs(node, where, known_keys):
     """Return a mapping node's (key text, value node) pairs, or refuse.
 
-    A non-scalar key and a repeated key both leave the mapping's meaning
-    unestablished: parsers resolve a duplicate key last-wins or refuse the
-    document, and this guard will not pick between those answers.
+    A non-scalar key, a repeated key and a key this guard has not been taught
+    all leave the mapping's meaning unestablished: parsers resolve a duplicate
+    key last-wins or refuse the document, and this guard will not pick between
+    those answers.
     """
     if not isinstance(node, yaml.MappingNode):
         raise Unrecognized('%s is not a mapping' % where)
@@ -1093,20 +1209,34 @@ def mapping_pairs(node, where):
         if not isinstance(key_node, yaml.ScalarNode):
             raise Unrecognized('%s has a key that is not a plain scalar' % where)
         key = key_node.value
-        if key in seen:
-            raise Unrecognized(
-                '%s defines %r more than once; parsers either resolve a '
-                'duplicate mapping key last-wins or refuse the document, and '
-                'this guard will not pick between those answers' % (where, key))
-        seen.append(key)
+        identities = key_identities(key_node, where)
+        for identity in identities:
+            for seen_identity, seen_key in seen:
+                if seen_identity != identity:
+                    continue
+                if seen_key == key:
+                    raise Unrecognized(
+                        '%s defines %r more than once; parsers either resolve '
+                        'a duplicate mapping key last-wins or refuse the '
+                        'document, and this guard will not pick between those '
+                        'answers' % (where, key))
+                raise Unrecognized(
+                    '%s spells one key two ways, as %r and %r; a parser binds '
+                    'both to the same key and takes the last, so the block '
+                    'this guard reads is not the block that takes effect'
+                    % (where, seen_key, key))
+        seen.extend((identity, key) for identity in identities)
+        if key not in known_keys:
+            raise Unrecognized('unrecognized key in %s: %s' % (where, key))
         pairs.append((key, value_node))
     return pairs
 
 
 def read_push_block(root):
     """Return the `push:` mapping node from the workflow's `on:` key."""
-    on_values = [value for key, value in mapping_pairs(root, 'the workflow')
-                 if key == 'on']
+    on_values = [value for key, value
+                 in mapping_pairs(root, 'the workflow', KNOWN_WORKFLOW_KEYS)
+                 if key == TRIGGER]
     if not on_values:
         raise Unrecognized('the workflow has no top-level `on:` key')
     # mapping_pairs already refuses a repeated key, so this cannot be reached
@@ -1115,7 +1245,8 @@ def read_push_block(root):
         raise Unrecognized('the workflow has %d top-level `on:` keys'
                            % len(on_values))
 
-    push_values = [value for key, value in mapping_pairs(on_values[0], '`on:`')
+    push_values = [value for key, value
+                   in mapping_pairs(on_values[0], '`on:`', KNOWN_TRIGGER_KEYS)
                    if key == 'push']
     if not push_values:
         raise Unrecognized('`on:` has no `push:` trigger')
@@ -1124,12 +1255,46 @@ def read_push_block(root):
     return push_values[0]
 
 
+def read_entry(item):
+    """Return a branch entry as text, or refuse what is not a pattern.
+
+    The order of these questions is deliberate. An entry that is a string and
+    carries an inverting character keeps the disposition and the reason it has
+    always had; the questions added in front of that one are about whether the
+    entry is a branch pattern, not about what a pattern means.
+    """
+    if not isinstance(item, yaml.ScalarNode):
+        raise Unrecognized('a `branches` entry is not a plain scalar')
+    entry = item.value
+    if item.tag != STRING_TAG:
+        raise Unrecognized(
+            'branch entry %r is not a string; the parser reads it as %s, and '
+            'this guard compares entries as the text the parser read, so it '
+            'would be comparing a spelling against a branch name'
+            % (entry, item.tag.rsplit(':', 1)[-1]))
+    for char in INVERTING:
+        if char in entry:
+            raise Unrecognized(
+                'branch entry %r contains %r, which can invert the meaning '
+                'of another entry' % (entry, char))
+    if not entry:
+        raise Unrecognized('a `branches` entry is empty, which is not a branch '
+                           'pattern')
+    unknown = sorted(set(entry) - PATTERN_CHARS)
+    if unknown:
+        raise Unrecognized(
+            'branch entry %r contains %s, which this guard does not recognize '
+            'in a branch pattern; it cannot establish the entry is a valid '
+            'positive pattern, and an entry GitHub cannot parse can make it '
+            'refuse the whole workflow'
+            % (entry, ', '.join(repr(char) for char in unknown)))
+    return entry
+
+
 def read_branches(push_node):
     """Return the push trigger's branch entries as raw text, or refuse."""
     branches_node = None
-    for key, value in mapping_pairs(push_node, '`push:`'):
-        if key not in KNOWN_PUSH_KEYS:
-            raise Unrecognized('unrecognized key in `push:`: %s' % key)
+    for key, value in mapping_pairs(push_node, '`push:`', KNOWN_PUSH_KEYS):
         if key in DISQUALIFYING_PUSH_KEYS:
             raise Unrecognized('`push:` defines %s, which can suppress or '
                                'narrow the main-push run' % key)
@@ -1140,25 +1305,13 @@ def read_branches(push_node):
                            'named branch is guaranteed')
     if not isinstance(branches_node, yaml.SequenceNode):
         raise Unrecognized('`branches` is not a sequence')
-
-    entries = []
-    for item in branches_node.value:
-        if not isinstance(item, yaml.ScalarNode):
-            raise Unrecognized('a `branches` entry is not a plain scalar')
-        entries.append(item.value)
-    return entries
+    return [read_entry(item) for item in branches_node.value]
 
 
 def evaluate(path):
     branches = read_branches(read_push_block(load_single_document(path)))
     if not branches:
         raise Unrecognized('`branches` is empty')
-    for entry in branches:
-        for char in INVERTING:
-            if char in entry:
-                raise Unrecognized(
-                    'branch entry %r contains %r, which can invert the meaning '
-                    'of another entry' % (entry, char))
     if BRANCH not in branches:
         raise Unrecognized('no entry is the literal string %r; entries are %r'
                            % (BRANCH, branches))
@@ -1188,11 +1341,15 @@ def main(argv):
             'CI must run on pushes to %s; release qualification requires a '
             'main-push run for the release SHA.\n'
             'This guard recognizes one shape only: a single YAML document '
-            'whose `on:` key holds a `push:` block naming `branches`, '
-            'containing the bare literal `%s`, with no `branches-ignore`, '
-            '`paths` or `paths-ignore`, and no entry containing `!` or a '
-            'backslash. Anything it cannot establish is refused rather than '
-            'assumed.\n'
+            'whose keys are workflow keys it knows, whose `on:` key names '
+            'events it knows, whose `push:` block names `branches` and no '
+            '`branches-ignore`, `paths` or `paths-ignore`, whose branch '
+            'entries are strings made of branch-pattern characters and free '
+            'of `!` and backslash, and one of which is the bare literal '
+            '`%s`. No key may be spelled twice, by text or by resolution, and '
+            'no node the trigger is read from may carry an anchor, an alias '
+            'or an explicit tag. Anything it cannot establish is refused '
+            'rather than assumed.\n'
             'Reason: %s\n'
             'If you are widening the workflow deliberately, widen this guard '
             'in the same commit.\n' % (BRANCH, BRANCH, error))
