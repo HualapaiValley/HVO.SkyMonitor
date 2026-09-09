@@ -435,10 +435,25 @@ run_profile_trial() {
     # InProcess unless a trial asks otherwise, so existing trials are unchanged by construction
     # rather than by a default chosen to look safe.
     local replay_profile="${12:-InProcess}"
+    # The durable root is named separately from the trial so two invocations can share one, which
+    # is what #719 requires: the issue's acceptance criteria say to "recreate only CameraAgent
+    # against the same durable root under LocalRunner". Defaulting to the trial name leaves every
+    # existing caller with a private root, unchanged by construction.
+    local state_key="${13:-$trial}"
+    # Whether this invocation hands its durable root to a later one. The last invocation over a
+    # shared root is the one that deletes it.
+    local retain_state="${14:-false}"
     assert_worktree_unchanged
     local trial_result="$RESULTS/$trial"
-    local trial_local="$BIND_LOCAL_ROOT/$trial"
-    local trial_host="$BIND_HOST_ROOT/$trial"
+    local trial_local="$BIND_LOCAL_ROOT/$state_key"
+    local trial_host="$BIND_HOST_ROOT/$state_key"
+    # A marker rather than the presence of the directory: an invocation that died partway through
+    # setup leaves directories behind, and treating that as established state would silently run
+    # the second invocation against a root the first never finished writing.
+    local reuse_state=false
+    if [[ -f "$trial_local/.state-established" ]]; then
+        reuse_state=true
+    fi
     mkdir -p "$trial_result/evidence" "$trial_local"/{config,runtime/home,dataprotection,secrets,telemetry,catalog}
     jq '
       .schedule.blackouts = [{
@@ -448,13 +463,22 @@ run_profile_trial() {
       }]
     ' "$config_template" > "$trial_local/config/cameraagent.json"
     cp "$COLLECTOR_CONFIG" "$trial_local/config/otel-collector.yml"
-    cp -a "$HVO_CATALOG_PERF_ROOT/." "$trial_local/catalog/"
-    local owner_password="Aa!$(openssl rand -base64 36 | tr -d '\n')"
+    local owner_password
     local owner_email='standalone-owner@cameraagent.test'
+    if [[ "$reuse_state" == true ]]; then
+        # The Identity store inside this root already holds this owner, so bootstrap will not run
+        # again. Minting a fresh password here would leave the second invocation unable to
+        # authenticate against the state the first one established -- which is the whole reason
+        # the root is shared.
+        owner_password="$(< "$trial_local/secrets/owner-password")"
+    else
+        cp -a "$HVO_CATALOG_PERF_ROOT/." "$trial_local/catalog/"
+        owner_password="Aa!$(openssl rand -base64 36 | tr -d '\n')"
+        printf '%s\n' "$owner_password" > "$trial_local/secrets/owner-password"
+        chmod 600 "$trial_local/secrets/owner-password"
+    fi
     active_owner_email="$owner_email"
     active_owner_password="$owner_password"
-    printf '%s\n' "$owner_password" > "$trial_local/secrets/owner-password"
-    chmod 600 "$trial_local/secrets/owner-password"
 
     local suffix="${REVISION:0:8}-${trial//[^a-zA-Z0-9]/}-$$"
     active_project="hvo211-$suffix"
@@ -464,9 +488,11 @@ run_profile_trial() {
         # both are created per trial and neither is shared between them. 0700 and 0600 are the
         # installer's modes; a looser mode here would prove a topology nobody deploys.
         install -d -m 700 "$trial_local/replay-runner"
-        umask 077
-        openssl rand -base64 48 | tr -d '\n' > "$trial_local/secrets/replay-runner-auth-key"
-        chmod 600 "$trial_local/secrets/replay-runner-auth-key"
+        if [[ ! -s "$trial_local/secrets/replay-runner-auth-key" ]]; then
+            umask 077
+            openssl rand -base64 48 | tr -d '\n' > "$trial_local/secrets/replay-runner-auth-key"
+            chmod 600 "$trial_local/secrets/replay-runner-auth-key"
+        fi
         active_compose_files=("--file" "$COMPOSE_FILE" "--file" "$LOCAL_RUNNER_COMPOSE_FILE")
     else
         active_compose_files=("--file" "$COMPOSE_FILE")
@@ -551,6 +577,9 @@ EOF
     HVO_ISSUE_211_CENTRAL_DENY_IMAGE="$CENTRAL_DENY_IMAGE" \
     HVO_ISSUE_211_WARMUP_CAPTURES="$warmup_capture_count" \
     HVO_ISSUE_211_MEASURED_CAPTURES="$measured_capture_count" \
+    HVO_ISSUE_211_REPLAY_PROFILE="$replay_profile" \
+    HVO_ISSUE_211_STATE_KEY="$state_key" \
+    HVO_ISSUE_211_STATE_REUSED="$reuse_state" \
         dotnet test "$PROJECT" --no-build --configuration Release \
         --filter "FullyQualifiedName=$test_filter" \
         --results-directory "$trial_result" \
@@ -1113,8 +1142,15 @@ EOF
     active_compose_files=("--file" "$COMPOSE_FILE")
     active_owner_email=""
     active_owner_password=""
-    chmod -R u+w "$trial_local" 2>/dev/null || true
-    rm -rf -- "$trial_local"
+    if [[ "$retain_state" == true ]]; then
+        # Written only after every gate above has passed, so the marker means "this root holds
+        # state a later invocation may rely on" and not merely "an invocation started here".
+        : > "$trial_local/.state-established"
+        chmod 600 "$trial_local/.state-established"
+    else
+        chmod -R u+w "$trial_local" 2>/dev/null || true
+        rm -rf -- "$trial_local"
+    fi
     assert_no_owned_acceptance_resources
     assert_worktree_unchanged
 }
