@@ -24,6 +24,10 @@ services:
       LocalIdentity__AdminPasswordFile: /run/secrets/owner_password
       DeviceProvisioning__StateDirectory: /var/lib/hvo/data/agent/provisioning
       Calibration__Required: ${CAMERA_AGENT_CALIBRATION_REQUIRED:-true}
+      # Default InProcess so the base topology is unchanged for every existing trial; the
+      # local-runner overlay sets LocalRunner. Binds CameraAgentHostOptions.ProcessingGraphs
+      # .ReplayProfile (ReplayExecutionProfile: InProcess | LocalRunner). See #719.
+      CameraAgent__ProcessingGraphs__ReplayProfile: ${CAMERA_AGENT_REPLAY_PROFILE:-InProcess}
       CameraAgent__TransientDetection__Mode: ${CAMERA_AGENT_TRANSIENT_MODE:-Edge}
       CameraAgent__TransientDetection__Required: ${CAMERA_AGENT_TRANSIENT_REQUIRED:-true}
       OTEL_SERVICE_NAME: hvo-camera-w6
