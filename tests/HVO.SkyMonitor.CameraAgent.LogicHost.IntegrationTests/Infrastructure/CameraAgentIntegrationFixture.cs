@@ -321,6 +321,13 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 // Recorded whether or not the barrier is close to its budget, so a warm-up drifting
                 // toward the bound is visible in the retained result instead of only when fatal.
                 Volatile.Write(ref _warmReadinessElapsedTicks, stopwatch.Elapsed.Ticks);
+                // Recording it is not the same as producing it. `DescribeRuntimeState()` reaches a
+                // human only inside a failure diagnostic, which is the one case where the number is
+                // least useful: the failure already says the budget was exceeded. The budget was set
+                // without a distribution behind it, so emit the measurement on the success path and
+                // let every passing run contribute a data point instead of only a bound.
+                Console.WriteLine(FormattableString.Invariant(
+                    $"warm readiness: elapsed={stopwatch.Elapsed.TotalSeconds:F3} s of {WarmReadinessBudget.TotalSeconds:F3} s budget"));
                 return;
             }
             await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);

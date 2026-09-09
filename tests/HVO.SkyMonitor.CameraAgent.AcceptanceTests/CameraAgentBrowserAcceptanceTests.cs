@@ -717,8 +717,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
         Assert.AreEqual(viewerTriggerId, await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
 
-        await advanced.Locator("summary").ClickAsync().ConfigureAwait(false);
-        Assert.IsTrue(await advanced.EvaluateAsync<bool>("details => details.open").ConfigureAwait(false));
+        await CollapsibleSection.EnsureOpenAsync(advanced, page.GetByLabel("Evidence origin")).ConfigureAwait(false);
         await page.GetByLabel("Evidence origin").SelectOptionAsync("Simulated").ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Apply filters" }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal)).ConfigureAwait(false);
@@ -1011,8 +1010,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }
 
         Assert.AreEqual(2, await page.Locator(".capture-navigation__control[href]").CountAsync().ConfigureAwait(false));
-        await page.Locator(".technical-evidence > summary").ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Artifacts", Level = 2 })).ConfigureAwait(false);
+        await CollapsibleSection.EnsureOpenAsync(
+            page.Locator(".technical-evidence"),
+            page.GetByRole(AriaRole.Heading, new() { Name = "Artifacts", Level = 2 })).ConfigureAwait(false);
         Assert.IsGreaterThan(0, await page.Locator("a[download]").CountAsync().ConfigureAwait(false));
         await page.GotoAsync($"/gallery/{Guid.NewGuid():D}").ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Capture unavailable", new() { Exact = true })).ConfigureAwait(false);
@@ -1267,9 +1267,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.IsTrue(await previewTimes.EvaluateAllAsync<bool>(
             "elements => elements.every(element => Boolean(element.getAttribute('datetime')))").ConfigureAwait(false));
 
-        await page.Locator("details.editor-advanced summary").ClickAsync().ConfigureAwait(false);
         var editor = page.GetByLabel("Local profile JSON");
-        await VisibleAsync(editor).ConfigureAwait(false);
+        await CollapsibleSection.EnsureOpenAsync(page.Locator("details.editor-advanced"), editor)
+            .ConfigureAwait(false);
         var candidate = await editor.EvaluateAsync<string>("""
             element => {
                 const profile = JSON.parse(element.value);
@@ -1621,8 +1621,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         // The retained revision history is collapsed by default; expanding it shows the recorded reason.
         var history = page.Locator("details.revision-history");
         await VisibleAsync(history).ConfigureAwait(false);
-        await history.Locator("summary").ClickAsync().ConfigureAwait(false);
-        await page.Locator("details.revision-history table").WaitForAsync().ConfigureAwait(false);
+        await CollapsibleSection.EnsureOpenAsync(history, page.Locator("details.revision-history table"))
+            .ConfigureAwait(false);
         StringAssert.Contains(
             await history.InnerTextAsync().ConfigureAwait(false),
             "browser acceptance evidence",
@@ -1828,10 +1828,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         var advanced = page.Locator(".advanced-filters");
-        if (!await advanced.EvaluateAsync<bool>("details => details.open").ConfigureAwait(false))
-        {
-            await advanced.Locator("summary").ClickAsync().ConfigureAwait(false);
-        }
+        await CollapsibleSection.EnsureOpenAsync(advanced, page.GetByLabel("Evidence origin")).ConfigureAwait(false);
         await page.GetByLabel("Evidence origin").SelectOptionAsync("Simulated").ConfigureAwait(false);
         await page.GetByLabel("Page size").SelectOptionAsync("24").ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Apply filters" }).ClickAsync().ConfigureAwait(false);
@@ -1849,8 +1846,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
         StringAssert.Contains(detailUrl, "returnUrl=", StringComparison.Ordinal);
         await detailLink.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture detail", Level = 1 })).ConfigureAwait(false);
-        await page.Locator(".technical-evidence > summary").ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Artifacts", Level = 2 })).ConfigureAwait(false);
+        await CollapsibleSection.EnsureOpenAsync(
+            page.Locator(".technical-evidence"),
+            page.GetByRole(AriaRole.Heading, new() { Name = "Artifacts", Level = 2 })).ConfigureAwait(false);
 
         var image = page.Locator(".detail-capture-image img");
         await VisibleAsync(image).ConfigureAwait(false);

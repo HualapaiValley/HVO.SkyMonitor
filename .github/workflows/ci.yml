@@ -107,11 +107,12 @@ jobs:
           /tmp/actionlint .github/workflows/*.yml
       - name: Run static and lightweight contract checks
         run: |
-          bash -n .devcontainer/*.sh scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/deploy:environment scripts/deploy/*.sh deploy/split-host/provision-sql.sh deploy/split-host/provision-minio.sh scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:devcontainer scripts/test:deploy-environment scripts/test:deploy-environment-cli scripts/test:cameraagent-ui scripts/test:logichost-ui scripts/test:cameraagent-standalone-production-smoke scripts/test:cameraagent-arm64-ci scripts/test:cameraagent-dual-standalone-smoke scripts/test:deployment-logichost-outage-contract scripts/test:deployment-normal-flow-contract scripts/coordination:guard scripts/pr:review-request scripts/pr:dispatch-review scripts/test:coordination-guard scripts/test:pr-review-tools scripts/ci:classify scripts/ci:require scripts/ci:canonical-migration scripts/ci:component-build scripts/ci:component-publish scripts/ci:release-tag scripts/release:cameraagent-image scripts/coverage:enforce scripts/coverage:component scripts/coverage:policy scripts/test:ci-classification scripts/test:trx-evidence-contract scripts/catalog/*.sh scripts/catalog:install scripts/install-hvo-skymonitor.sh
+          ./scripts/ci:shell-syntax
           ./scripts/docs:audit-operations
           ./scripts/test:coordination-guard
           ./scripts/test:pr-review-tools
           ./scripts/test:trx-evidence-contract
+          ./scripts/test:ci-shell-syntax
           ./scripts/test:infra
           ./scripts/test:smoke-env
           ./scripts/test:devcontainer
@@ -157,7 +158,15 @@ jobs:
           catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
           mkdir -m 700 "$catalog_root"
           tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact/hyg-v42-contracts.tar.gz" -C "$catalog_root"
-          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s/build/hyg-v4.2-p3-s2-r1.bundle\n' "$catalog_root" >> "$GITHUB_ENV"
+          bundle_path="$catalog_root/build/hyg-v4.2-p3-s2-r1.bundle"
+          # The Deployment.Cli installer and lifecycle contracts skip themselves with
+          # Assert.Inconclusive when this bundle is absent, and a skipped MSTest records
+          # notExecuted="0" and inconclusive="0" in its TRX, so the job stays green having
+          # executed none of them. Fail here, where the cause is visible, rather than let a
+          # broken artifact restore turn into a green run that proved nothing.
+          test -d "$bundle_path" ||
+            { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
+          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -171,7 +180,8 @@ jobs:
             exit 1
           fi
           ./scripts/test:deploy-environment --list-shards
-          bash -n scripts/test:deployment-installer scripts/test:deployment-installer-qualification \
+          ./scripts/ci:shell-syntax scripts/test:deployment-installer \
+            scripts/test:deployment-installer-qualification \
             scripts/lib/deployment-installer-qualification.sh
           ./scripts/test:deployment-installer-qualification
       - name: Run exhaustive production catalog lifecycle
@@ -247,7 +257,15 @@ jobs:
           catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
           mkdir -m 700 "$catalog_root"
           tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact/hyg-v42-contracts.tar.gz" -C "$catalog_root"
-          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s/build/hyg-v4.2-p3-s2-r1.bundle\n' "$catalog_root" >> "$GITHUB_ENV"
+          bundle_path="$catalog_root/build/hyg-v4.2-p3-s2-r1.bundle"
+          # The Deployment.Cli installer and lifecycle contracts skip themselves with
+          # Assert.Inconclusive when this bundle is absent, and a skipped MSTest records
+          # notExecuted="0" and inconclusive="0" in its TRX, so the job stays green having
+          # executed none of them. Fail here, where the cause is visible, rather than let a
+          # broken artifact restore turn into a green run that proved nothing.
+          test -d "$bundle_path" ||
+            { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
+          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -719,7 +737,15 @@ jobs:
           catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
           mkdir -m 700 "$catalog_root"
           tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact/hyg-v42-contracts.tar.gz" -C "$catalog_root"
-          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s/build/hyg-v4.2-p3-s2-r1.bundle\n' "$catalog_root" >> "$GITHUB_ENV"
+          bundle_path="$catalog_root/build/hyg-v4.2-p3-s2-r1.bundle"
+          # The Deployment.Cli installer and lifecycle contracts skip themselves with
+          # Assert.Inconclusive when this bundle is absent, and a skipped MSTest records
+          # notExecuted="0" and inconclusive="0" in its TRX, so the job stays green having
+          # executed none of them. Fail here, where the cause is visible, rather than let a
+          # broken artifact restore turn into a green run that proved nothing.
+          test -d "$bundle_path" ||
+            { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
+          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Every assertion below names itself when it fails. A bare `grep -Fqx` under `set -e`
+# aborts the suite with exit 1 and nothing on stderr, so the reader learns that
+# something broke but not which invariant, and a positive control that trips one of
+# them is pinned by exit status alone. This is detection without attribution. It is a
+# weaker defect than the one this pull request removes from the tool, where the guard
+# ran, returned a well-formed answer, and returned the wrong one in exactly the state
+# it existed for -- and the two are worth keeping apart.
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 request_tool="$repo_root/scripts/pr:review-request"
 dispatch_tool="$repo_root/scripts/pr:dispatch-review"
@@ -11,6 +20,22 @@ mkdir -p "$work_root/bin" "$work_root/logs"
 cat > "$work_root/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+# The tool reads the target branch tip from the repository the PR lives in, by name.
+# Resolve it against the fixture repository, which is that repository here, so the
+# mock cannot drift from the objects the assertions are computed against. `--jq .sha`
+# is emulated by printing the bare SHA rather than by running jq.
+if [[ "$1" == api && "$2" == repos/*/commits/* ]]; then
+    # The owner and repository in this path are the whole authority of the range's left
+    # endpoint now that the tool no longer derives one from the remote. A mock that
+    # matched the path shape and discarded them could not tell one repository from
+    # another, so asking a different repository for the tip was invisible to the suite.
+    [[ "$2" == "repos/$MOCK_API_REPO/commits/"* ]] ||
+        { printf 'Asked for a branch tip in the wrong repository: %s\n' "$2" >&2; exit 1; }
+    branch="${2##*/commits/}"
+    git -C "$MOCK_FIXTURE_REPO" rev-parse --verify --quiet "refs/heads/$branch" ||
+        { printf 'No such branch in the fixture repository: %s\n' "$branch" >&2; exit 1; }
+    exit 0
+fi
 if [[ "$1 $2" == "pr view" ]]; then
     printf '%s\n' "$(<"$MOCK_PR_JSON")"
     exit 0
@@ -105,7 +130,10 @@ printf 'Follow AGENTS.md and the PR lifecycle skill.\n' > "$work_root/instructio
 # Build the range fixtures locally instead of assuming the caller's checkout
 # has multiple ancestors. Protected CI intentionally uses a depth-one PR merge
 # checkout, while these tests need divergent target/topic histories.
-fixture_repo="$work_root/git-fixture"
+# The path's last two segments are the fixture PR's owner/repo on purpose: the request
+# tool now refuses a remote that does not resolve to the repository the PR lives in, and
+# a remote named `origin` that points somewhere else is the shape that defect takes.
+fixture_repo="$work_root/RoySalisbury/HVO.SkyMonitor"
 mkdir -p "$fixture_repo"
 git -C "$fixture_repo" init --quiet --initial-branch=main
 git -C "$fixture_repo" config user.name 'Review Tool Test'
@@ -115,8 +143,12 @@ git -C "$fixture_repo" add history.txt
 git -C "$fixture_repo" commit --quiet -m base
 base="$(git -C "$fixture_repo" rev-parse HEAD)"
 git -C "$fixture_repo" switch --quiet -c target
-printf 'target\n' >> "$fixture_repo/history.txt"
-git -C "$fixture_repo" commit --quiet -am target
+# The target branch changes its own file so that merging it into the topic branch
+# succeeds without conflict resolution; the post-sync case needs the merge to happen,
+# not to be adjudicated.
+printf 'target\n' > "$fixture_repo/target.txt"
+git -C "$fixture_repo" add target.txt
+git -C "$fixture_repo" commit --quiet -m target
 divergent_target="$(git -C "$fixture_repo" rev-parse HEAD)"
 git -C "$fixture_repo" switch --quiet -c topic "$base"
 printf 'initial\n' >> "$fixture_repo/history.txt"
@@ -125,6 +157,15 @@ initial_head="$(git -C "$fixture_repo" rev-parse HEAD)"
 printf 'correction\n' >> "$fixture_repo/history.txt"
 git -C "$fixture_repo" commit --quiet -am correction
 correction_head="$(git -C "$fixture_repo" rev-parse HEAD)"
+# The request tool takes the range's left endpoint from a freshly fetched target
+# tip, so the fixture needs a real remote. A repository can serve as its own
+# remote, which keeps this offline and keeps protected CI's depth-one checkout
+# irrelevant to these cases.
+git -C "$fixture_repo" remote add origin "$fixture_repo"
+git -C "$fixture_repo" fetch --quiet origin
+export MOCK_FIXTURE_REPO="$fixture_repo"
+export MOCK_API_REPO="RoySalisbury/HVO.SkyMonitor"
+
 new_base="$divergent_target"
 sync_head="$correction_head"
 participant='codex-cli:openai:hvo-dev-02:01a0beef'
@@ -132,9 +173,9 @@ resume_session='01a0beef-0000-4000-8000-000000000001'
 cd "$fixture_repo"
 
 write_pr_fixture() {
-    local target="$1" head="$2" comments_file="${3:-}"
-    jq -n --arg base "$target" --arg head "$head" \
-        '{baseRefOid:$base,headRefOid:$head,title:"fixture"}' > "$MOCK_PR_JSON"
+    local target="$1" head="$2" comments_file="${3:-}" base_ref="${4:-target}"
+    jq -n --arg base "$target" --arg head "$head" --arg ref "$base_ref" \
+        '{baseRefOid:$base,headRefOid:$head,baseRefName:$ref,title:"fixture"}' > "$MOCK_PR_JSON"
     if [[ -n "$comments_file" ]]; then
         jq -n --rawfile body "$comments_file" '[{body:$body}]' > "$MOCK_LEDGER"
     else
@@ -144,7 +185,7 @@ write_pr_fixture() {
 
 common_args=(
     --repo RoySalisbury/HVO.SkyMonitor --pr 700 --issue 699 --round 0
-    --command-id CMD-REVIEW-001 --participant-id "$participant"
+    --command-id CMD-REVIEW-001 --reviewer-id "$participant"
     --acceptance-file "$work_root/acceptance.txt" --lens-file "$work_root/lens.txt"
     --profile standard --primary Codex --fallback Copilot --route local
     --model gpt-5.6-terra --effort high --tests-file "$work_root/tests.txt"
@@ -154,25 +195,33 @@ common_args=(
 write_pr_fixture "$base" "$initial_head"
 $request_tool "${common_args[@]}" --mode initial --output "$work_root/initial.request"
 initial_merge_base="$(git merge-base "$base" "$initial_head")"
-grep -Fqx "PR merge-base SHA: $initial_merge_base" "$work_root/initial.request"
-grep -Fqx "Exact review range: $initial_merge_base..$initial_head (complete merge-base-to-head PR diff)" "$work_root/initial.request"
+grep -Fqx "PR merge-base SHA: $initial_merge_base" "$work_root/initial.request" ||
+    fail 'Initial request did not record the computed merge base as the PR merge-base SHA.'
+grep -Fqx "Exact review range: $initial_merge_base..$initial_head (complete merge-base-to-head PR diff)" "$work_root/initial.request" ||
+    fail 'Initial request did not carry the merge-base-to-head range.'
 
 divergent_head="$initial_head"
 divergent_base="$(git merge-base "$divergent_target" "$divergent_head")"
 write_pr_fixture "$divergent_target" "$divergent_head"
 $request_tool "${common_args[@]}" --mode initial --output "$work_root/divergent.request"
-grep -Fqx "Target base SHA: $divergent_target" "$work_root/divergent.request"
-grep -Fqx "PR merge-base SHA: $divergent_base" "$work_root/divergent.request"
-grep -Fqx "Exact review range: $divergent_base..$divergent_head (complete merge-base-to-head PR diff)" "$work_root/divergent.request"
+grep -Fqx "Target base SHA: $divergent_target" "$work_root/divergent.request" ||
+    fail 'Divergent-target request did not record the target branch tip.'
+grep -Fqx "PR merge-base SHA: $divergent_base" "$work_root/divergent.request" ||
+    fail 'Divergent-target request did not record the merge base taken against that tip.'
+grep -Fqx "Exact review range: $divergent_base..$divergent_head (complete merge-base-to-head PR diff)" "$work_root/divergent.request" ||
+    fail 'Divergent-target request did not carry the merge-base-to-head range.'
 
 printf '## Initial review completed — verdict: corrections required\nRange attested: %s..%s\nFinding M1 unresolved.\n' "$base" "$initial_head" > "$work_root/initial-report.txt"
 write_pr_fixture "$base" "$correction_head" "$work_root/initial-report.txt"
 $request_tool "${common_args[@]}" --mode correction --round 1 \
     --call-sites-file "$work_root/call-sites.txt" --instructions-file "$work_root/instructions.txt" \
     --evidence-pack "$work_root/correction-pack.md" --output "$work_root/correction.request"
-grep -Fqx "Exact review range: $initial_head..$correction_head (correction delta and its concrete interactions)" "$work_root/correction.request"
-grep -Fq 'Finding M1 unresolved.' "$work_root/correction-pack.md"
-grep -Fq 'All changed-symbol callers inspected.' "$work_root/correction-pack.md"
+grep -Fqx "Exact review range: $initial_head..$correction_head (correction delta and its concrete interactions)" "$work_root/correction.request" ||
+    fail 'Correction request did not carry the previous-head-to-correction-head delta range.'
+grep -Fq 'Finding M1 unresolved.' "$work_root/correction-pack.md" ||
+    fail 'Correction evidence pack did not carry the unresolved finding from the ledger.'
+grep -Fq 'All changed-symbol callers inspected.' "$work_root/correction-pack.md" ||
+    fail 'Correction evidence pack did not carry the call-site input.'
 
 jq -n '[range(0;100) | {body:("filler-" + tostring)}]' > "$work_root/comments-page-1.json"
 jq -n --rawfile body "$work_root/initial-report.txt" '[{body:$body}]' > "$work_root/comments-page-2.json"
@@ -182,18 +231,134 @@ write_pr_fixture "$base" "$correction_head"
 $request_tool "${common_args[@]}" --mode correction --round 1 \
     --call-sites-file "$work_root/call-sites.txt" --instructions-file "$work_root/instructions.txt" \
     --evidence-pack "$work_root/paginated-pack.md" --output "$work_root/paginated.request"
-grep -Fq 'Finding M1 unresolved.' "$work_root/paginated-pack.md"
+grep -Fq 'Finding M1 unresolved.' "$work_root/paginated-pack.md" ||
+    fail 'Paginated ledger read did not reach the unresolved finding on the second page.'
 unset MOCK_PAGINATED_LEDGER
 
 printf '## Correction review completed — verdict: CLEAN\nRange attested: %s..%s\nM1 verified corrected.\n' "$initial_head" "$correction_head" > "$work_root/correction-report.txt"
 write_pr_fixture "$new_base" "$sync_head" "$work_root/correction-report.txt"
 $request_tool "${common_args[@]}" --mode base-sync --round 1 --output "$work_root/base-sync.request"
-grep -Fqx "Exact review range: merge resolution $correction_head..$sync_head and complete PR diff $new_base..$sync_head" "$work_root/base-sync.request"
+base_sync_merge_base="$(git merge-base "$divergent_target" "$sync_head")"
+grep -Fqx "Exact review range: merge resolution $correction_head..$sync_head and complete PR diff $base_sync_merge_base..$sync_head" "$work_root/base-sync.request" ||
+    fail 'Base-sync request did not carry the merge-resolution and complete-PR-diff ranges.'
+
+# The defect this pins is only visible after finalization step 2. Merge the advanced
+# target into the topic branch, leave baseRefOid at its stale recorded value, and
+# check that neither the range nor the merge base is computed from that value. Before
+# the fix, merge-base(recorded base, synced head) returned the recorded base and both
+# modes handed the reviewer the target's own already-merged commits as the PR's diff.
+git -C "$fixture_repo" switch --quiet topic
+git -C "$fixture_repo" merge --quiet --no-edit target
+post_sync_head="$(git -C "$fixture_repo" rev-parse HEAD)"
+post_sync_merge_base="$(git -C "$fixture_repo" merge-base "$divergent_target" "$post_sync_head")"
+[[ "$post_sync_merge_base" == "$divergent_target" ]] ||
+    { printf 'Fixture is not in the post-sync state the case exists to pin.\n' >&2; exit 1; }
+# A two-parent head whose recorded base is still an ancestor is what makes the old
+# merge-base an identity function. Only the merge half of that can go missing, so only
+# it is asserted. The ancestry half held whether or not the merge happened, because
+# `base` is this fixture's root commit; it was deleted rather than annotated, since a
+# guard that cannot fail still reads as coverage to anyone who greps for one.
+[[ "$(git -C "$fixture_repo" rev-list --parents -n 1 "$post_sync_head" | wc -w)" -eq 3 ]] ||
+    { printf 'Fixture head is not a merge commit; the identity-function case is not set up.\n' >&2; exit 1; }
+
+write_pr_fixture "$base" "$post_sync_head"
+$request_tool "${common_args[@]}" --mode initial --output "$work_root/post-sync.request"
+grep -Fqx "PR merge-base SHA: $post_sync_merge_base" "$work_root/post-sync.request" ||
+    fail 'Post-sync request did not record the recomputed merge base.'
+grep -Fqx "Exact review range: $post_sync_merge_base..$post_sync_head (complete merge-base-to-head PR diff)" "$work_root/post-sync.request" ||
+    fail 'Post-sync request did not carry the recomputed merge-base-to-head range.'
+grep -Fqx "PR-recorded base SHA: $base (baseRefOid; provenance only, never a range endpoint)" "$work_root/post-sync.request" ||
+    fail 'Post-sync request did not record the stale baseRefOid as provenance only.'
+! grep -Fq "Exact review range: $base..$post_sync_head" "$work_root/post-sync.request" ||
+    { printf 'Initial range was computed from the PR-recorded base.\n' >&2; exit 1; }
+
+write_pr_fixture "$base" "$post_sync_head" "$work_root/correction-report.txt"
+$request_tool "${common_args[@]}" --mode base-sync --round 1 --output "$work_root/post-sync-base.request"
+grep -Fqx "Exact review range: merge resolution $correction_head..$post_sync_head and complete PR diff $post_sync_merge_base..$post_sync_head" "$work_root/post-sync-base.request" ||
+    fail 'Post-sync base-sync request did not carry the recomputed complete-PR-diff range.'
+! grep -Fq "complete PR diff $base..$post_sync_head" "$work_root/post-sync-base.request" ||
+    { printf 'Base-sync complete-PR-diff range was computed from the PR-recorded base.\n' >&2; exit 1; }
+
+# A target branch that cannot be fetched must fail loudly rather than fall back to a
+# stale remote-tracking ref, which would reproduce the defect without saying so. The
+# tool no longer inspects the remote's URL, so an unresolvable remote reaches `git
+# fetch` and this case exercises the fetch branch rather than a name lookup in front
+# of it.
+if $request_tool "${common_args[@]}" --mode initial --remote no-such-remote \
+    --output "$work_root/unfetchable.request" 2> "$work_root/unfetchable.err"; then
+    printf 'Request generation succeeded against an unfetchable target remote.\n' >&2
+    exit 1
+fi
+# Exit status alone would also be satisfied by the tool failing earlier for an
+# unrelated reason, which is the same class of defect as a test that cannot fail.
+grep -Fq 'Cannot fetch no-such-remote/target' "$work_root/unfetchable.err" ||
+    { printf 'Unfetchable-remote case failed for some other reason.\n' >&2; exit 1; }
+[[ ! -e "$work_root/unfetchable.request" ]] ||
+    { printf 'Unfetchable-remote case wrote a request file.\n' >&2; exit 1; }
+
+# L1's case: a remote that fetches cleanly but is not serving this repository's target
+# branch. Before the containment check the tool emitted this fixture's recorded base as
+# the range's left endpoint, labelled as a freshly fetched tip.
+# A fork that shares this history and whose `target` sits behind, not an unrelated
+# repository: an unrelated one aborts anyway on an impossible merge base, which would
+# make the case pass for the wrong reason. Behind-but-related is the shape that used
+# to emit the PR-recorded base as the range's left endpoint under the label "freshly
+# fetched tip", and it is the only shape that proves the containment check is what
+# stops it.
+other_repo="$work_root/SomeoneElse/HVO.SkyMonitor"
+mkdir -p "$(dirname "$other_repo")"
+git clone --quiet --bare "$fixture_repo" "$other_repo"
+git -C "$other_repo" update-ref refs/heads/target "$base"
+git -C "$fixture_repo" remote add stalefork "$other_repo"
+if $request_tool "${common_args[@]}" --mode initial --remote stalefork \
+    --output "$work_root/wrong-repo.request" 2> "$work_root/wrong-repo.err"; then
+    printf 'Request generation succeeded against a remote in another repository.\n' >&2
+    exit 1
+fi
+grep -Fq "does not contain RoySalisbury/HVO.SkyMonitor target at $divergent_target" "$work_root/wrong-repo.err" ||
+    { printf 'Wrong-repository remote failed for some other reason.\n' >&2; exit 1; }
+[[ ! -e "$work_root/wrong-repo.request" ]] ||
+    { printf 'Wrong-repository remote case wrote a request file.\n' >&2; exit 1; }
+
+# The containment check deliberately accepts a remote that is strictly ahead of the
+# target, because equality would abort on an ordinary concurrent push during
+# finalization and name the remote as the cause -- the wrong-diagnosis shape this
+# change removes. That acceptance is safe only because the left endpoint comes from
+# the API and never from the fetched tip, and until this case existed nothing held the
+# tool to it: in every other fixture the two values are the same commit, so taking the
+# endpoint from the fetched tip instead passed the whole suite. A remote that advances
+# between the API read and the fetch is also the one condition the finalization lock
+# actually produces, which makes it the case worth building rather than a curiosity.
+ahead_repo="$work_root/AheadFork/HVO.SkyMonitor"
+mkdir -p "$(dirname "$ahead_repo")"
+ahead_tip="$(git -C "$fixture_repo" commit-tree "$divergent_target^{tree}" -p "$divergent_target" -m 'target advanced after the API read')"
+git -C "$fixture_repo" update-ref refs/heads/ahead-holder "$ahead_tip"
+git clone --quiet --bare "$fixture_repo" "$ahead_repo"
+git -C "$ahead_repo" update-ref refs/heads/target "$ahead_tip"
+git -C "$fixture_repo" remote add aheadfork "$ahead_repo"
+$request_tool "${common_args[@]}" --mode initial --remote aheadfork \
+    --output "$work_root/ahead.request" ||
+    fail 'A remote strictly ahead of the target was rejected.'
+# Both halves are asserted. Acceptance alone would pass with the endpoint taken from
+# the fetched tip, which is the defect; the endpoint assertion is the one that fails
+# under that mutation.
+grep -Fqx "Target base SHA: $divergent_target" "$work_root/ahead.request" ||
+    fail 'Left endpoint did not come from the API when the remote was ahead.'
+
+# L2's case: the remote name reaches `git fetch` in option position.
+if $request_tool "${common_args[@]}" --mode initial --remote -origin \
+    --output "$work_root/dash-remote.request" 2> "$work_root/dash-remote.err"; then
+    printf 'Request generation succeeded with a remote name in option position.\n' >&2
+    exit 1
+fi
+grep -Fq 'not a usable git remote name' "$work_root/dash-remote.err" ||
+    { printf 'Dash-prefixed remote failed for some other reason.\n' >&2; exit 1; }
 
 printf '%s\n%s\n%s\nExact review range: %s..%s\n%s\n%s\n' \
     prefix '```text' 'Review mode: initial' "$base" "$initial_head" '```' suffix > "$MOCK_COMMENT_BODY"
 $request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 --output "$work_root/replayed.request"
-grep -Fqx "Exact review range: $base..$initial_head" "$work_root/replayed.request"
+grep -Fqx "Exact review range: $base..$initial_head" "$work_root/replayed.request" ||
+    fail 'Replayed request did not reproduce the range recorded in the referenced comment.'
 
 jq -n --arg participant "$participant" '{participants:[{id:$participant,status:"ACTIVE",joinState:"JOINED",joinAckId:"JOINACK-REVIEW-001",lease:{generation:1,expiresAt:null}}]}' > "$work_root/registry.json"
 jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-001",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command.json"
@@ -204,17 +369,20 @@ $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" --resume-session "$resume_session" \
+    --reviewer-id "$participant" --resume-session "$resume_session" \
     --dry-run > "$work_root/dry-run.txt"
-[[ ! -s "$MOCK_EVENT_LOG" ]]
-grep -Fq 'DRY-RUN: no comment posted and no reviewer launched.' "$work_root/dry-run.txt"
-grep -Fq 'codex exec resume' "$work_root/dry-run.txt"
+[[ ! -s "$MOCK_EVENT_LOG" ]] ||
+    fail 'Dry run wrote to the event log.'
+grep -Fq 'DRY-RUN: no comment posted and no reviewer launched.' "$work_root/dry-run.txt" ||
+    fail 'Dry run did not report that nothing was posted and no reviewer was launched.'
+grep -Fq 'codex exec resume' "$work_root/dry-run.txt" ||
+    fail 'Dry run did not show the resume invocation it would have run.'
 
 $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" --resume-session "$resume_session" \
+    --reviewer-id "$participant" --resume-session "$resume_session" \
     > "$work_root/dispatch-result.json"
 
 for _ in $(seq 1 50); do
@@ -229,18 +397,22 @@ launch_line="$(grep -n CODEX_LAUNCH "$MOCK_EVENT_LOG" | cut -d: -f1)"
     printf 'Reviewer launch did not follow the durable request and reservation returns.\n' >&2
     exit 1
 }
-jq -e '.requestCommentId == "9001" and .reservationCommentId == "9002" and .launchCommentId == "9003" and .completionCommentId == "9004" and .conclusion == "COMPLETED" and .exitCode == 0' "$work_root/dispatch-result.json" >/dev/null
+jq -e '.requestCommentId == "9001" and .reservationCommentId == "9002" and .launchCommentId == "9003" and .completionCommentId == "9004" and .conclusion == "COMPLETED" and .exitCode == 0' "$work_root/dispatch-result.json" >/dev/null ||
+    fail 'Dispatch result did not carry the four durable comment IDs and a clean completion.'
 complete_line="$(grep -n CODEX_COMPLETE "$MOCK_EVENT_LOG" | cut -d: -f1)"
-[[ -n "$complete_line" && "$launch_line" -lt "$complete_line" ]]
+[[ -n "$complete_line" && "$launch_line" -lt "$complete_line" ]] ||
+    fail 'Reviewer completion was not logged after the launch.'
 
 $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" --resume-session "$resume_session" \
+    --reviewer-id "$participant" --resume-session "$resume_session" \
     > "$work_root/retry-result.txt"
-grep -Fqx "ALREADY_CONSUMED CMD-REVIEW-001 $participant launch-comment=9003" "$work_root/retry-result.txt"
-[[ "$(<"$MOCK_POST_COUNT")" == 4 ]]
+grep -Fqx "ALREADY_CONSUMED CMD-REVIEW-001 $participant launch-comment=9003" "$work_root/retry-result.txt" ||
+    fail 'Retry did not report the already-consumed command and its recorded launch comment.'
+[[ "$(<"$MOCK_POST_COUNT")" == 4 ]] ||
+    fail 'Retry posted more comments instead of reusing the four already recorded.'
 
 printf '[]\n' > "$MOCK_LEDGER"
 : > "$MOCK_EVENT_LOG"
@@ -255,7 +427,7 @@ $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/concurrent.jsonl" --registry "$MOCK_REGISTRY" \
     --command "$work_root/command-concurrent.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" --resume-session "$resume_session" \
+    --reviewer-id "$participant" --resume-session "$resume_session" \
     > "$work_root/concurrent-first.json" 2> "$work_root/concurrent-first.err" &
 first_dispatch_pid=$!
 for _ in $(seq 1 100); do
@@ -271,17 +443,20 @@ if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_r
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/concurrent.jsonl" --registry "$MOCK_REGISTRY" \
     --command "$work_root/command-concurrent.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" --resume-session "$resume_session" \
+    --reviewer-id "$participant" --resume-session "$resume_session" \
     > "$work_root/concurrent-second.out" 2> "$work_root/concurrent-second.err"; then
     wait "$first_dispatch_pid" || true
     printf 'A concurrent dispatcher acquired the same participant/session.\n' >&2
     exit 1
 fi
-grep -Fq "DISPATCH_BUSY CMD-REVIEW-CONCURRENT $participant" "$work_root/concurrent-second.err"
+grep -Fq "DISPATCH_BUSY CMD-REVIEW-CONCURRENT $participant" "$work_root/concurrent-second.err" ||
+    fail 'Concurrent dispatcher did not report DISPATCH_BUSY for the held participant.'
 wait "$first_dispatch_pid"
 unset MOCK_LEDGER_GET_DELAY
-[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]]
-[[ "$(grep -Fc '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER")" == 1 ]]
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]] ||
+    fail 'Serialized dispatch did not launch the reviewer exactly once.'
+[[ "$(grep -Fc '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER")" == 1 ]] ||
+    fail 'Serialized dispatch did not write exactly one durable reservation.'
 
 printf '[]\n' > "$MOCK_LEDGER"
 : > "$MOCK_EVENT_LOG"
@@ -295,13 +470,15 @@ if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_r
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/lease.jsonl" --registry "$MOCK_REGISTRY" \
     --command "$work_root/command-lease.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" --resume-session "$resume_session" >/dev/null 2>&1; then
+    --reviewer-id "$participant" --resume-session "$resume_session" >/dev/null 2>&1; then
     printf 'A replaced lease launched a reviewer.\n' >&2
     exit 1
 fi
 unset MOCK_REPLACE_LEASE_ON_RESERVATION
-[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG" || true)" == 0 ]]
-grep -Fq '## Review launch — ABORTED' "$MOCK_LEDGER"
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG" || true)" == 0 ]] ||
+    fail 'A replaced lease reached the reviewer launch.'
+grep -Fq '## Review launch — ABORTED' "$MOCK_LEDGER" ||
+    fail 'Replaced lease did not record the aborted launch in the ledger.'
 
 printf '[]\n' > "$MOCK_LEDGER"
 : > "$MOCK_EVENT_LOG"
@@ -315,23 +492,28 @@ if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_r
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/postfail.jsonl" --registry "$MOCK_REGISTRY" \
     --command "$work_root/command-postfail.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" --resume-session "$resume_session" > "$work_root/postfail-result.json" 2>/dev/null; then
+    --reviewer-id "$participant" --resume-session "$resume_session" > "$work_root/postfail-result.json" 2>/dev/null; then
     printf 'A missing STARTED receipt was accepted as complete.\n' >&2
     exit 1
 fi
 unset MOCK_FAIL_POST_NUMBER
-[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]]
-[[ "$(grep -Fc CODEX_COMPLETE "$MOCK_EVENT_LOG")" == 1 ]]
-grep -Fq '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER"
-grep -Fq '## Review process — ERROR' "$MOCK_LEDGER"
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]] ||
+    fail 'Failed-receipt run did not launch the reviewer exactly once.'
+[[ "$(grep -Fc CODEX_COMPLETE "$MOCK_EVENT_LOG")" == 1 ]] ||
+    fail 'Failed-receipt run did not record exactly one reviewer completion.'
+grep -Fq '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER" ||
+    fail 'Failed-receipt run did not write the durable reservation.'
+grep -Fq '## Review process — ERROR' "$MOCK_LEDGER" ||
+    fail 'Failed-receipt run did not record the review process error.'
 if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/postfail.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/postfail.jsonl" --registry "$MOCK_REGISTRY" \
     --command "$work_root/command-postfail.json" --receipts "$work_root/receipts.json" \
-    --participant-id "$participant" --resume-session "$resume_session" >/dev/null 2>&1; then
+    --reviewer-id "$participant" --resume-session "$resume_session" >/dev/null 2>&1; then
     printf 'A reserved command retried without recovery.\n' >&2
     exit 1
 fi
-[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]]
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]] ||
+    fail 'Retry after a failed receipt launched the reviewer a second time.'
 
 printf 'Review request merge-base/pagination, evidence-pack/replay, serialized dispatch, reservation, lease-race, failed-receipt, harness-lifetime, and retry tests passed.\n'

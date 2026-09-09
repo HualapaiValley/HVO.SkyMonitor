@@ -57,6 +57,38 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string CentralHandlerAttemptRecord = "HVO211_HANDLER_ATTEMPT";
     private static readonly string[] ExpectedCatalogRows = ["11734", "24378", "24549", "27919", "32263", "37173"];
     private static readonly string[] QualityDependentNodeIds = ["storage", "telemetry"];
+    // Issue #719 phase 2. Every value below is sourced from the W6 template's `pipeline.steps`
+    // (`src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6.json`) or from the issue's stated
+    // bounds, never from an observed execution. A node set read off one run would assert only that
+    // the run did what the run did.
+    private const int ReplayRollingWindowCaptures = 5;
+    private const int ReplayStartIntervalMaximumMilliseconds = 12_000;
+    private const int ReplayGraphMaximumMilliseconds = 180_000;
+
+    // A node is recipe-backed exactly when its step class reaches
+    // `CameraAgentRecipeExecutionAdapter.ExecuteAsync(context, request, ct)`, directly or through the
+    // wrapper at `CaptureDescriptorProcessingContext.ExecuteAsync(adapter, ...)`, because that
+    // overload is the only one carrying the context whose execution class and configured profile
+    // select the LocalRunner branch. Eleven step classes reach it: eight from their own file, plus
+    // the three sealed previews that share the single call site in their abstract base. That base is
+    // never registered and never appears in a template, so counting it as a ninth direct class
+    // yields twelve and is wrong. Seven of the eleven appear in the W6 template.
+    private static readonly string[] ReplayRecipeBackedNodeIds =
+    [
+        "projected-scene", "calibration", "calibrated-preview", "rolling",
+        "combined-preview", "quality", "cloud"
+    ];
+
+    private static readonly string[] ReplayComplementaryNodeIds =
+    [
+        "scene-presentation", "cloud-presentation", "environment-presentation",
+        "overlay-manifest", "presentation-materializer", "storage", "telemetry"
+    ];
+
+    // `quality` and `cloud` are declared optional in the template, and the suite already has a path
+    // that disables optional quality. A trial that disables them leaves five recipe-backed nodes,
+    // and the partition above would then be wrong rather than merely narrower.
+    private static readonly string[] ReplayOptionalRecipeBackedNodeIds = ["quality", "cloud"];
     private static readonly IReadOnlyDictionary<string, DurableQueueBound> DurableQueueBounds =
         new Dictionary<string, DurableQueueBound>(StringComparer.Ordinal)
         {
@@ -524,6 +556,19 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.Inconclusive("Run through scripts/test:cameraagent-standalone-211.");
         }
 
+        // Evaluate the browser precondition before any host interaction. Placed after the
+        // container reads, login and owner bootstrap it used to follow, this skipped only after
+        // starting containers, authenticating and mutating owner provisioning state -- and the
+        // skip is reported as success, so nothing downstream revealed that the run had got that
+        // far. The placement now matches where FullCatalogAsi676StandaloneAsync puts its own
+        // Playwright check; the preconditions as a whole still differ, because that method also
+        // gates on OperatingSystem.IsLinux() and this one never has.
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        if (!File.Exists(playwright.Chromium.ExecutablePath))
+        {
+            Assert.Inconclusive("Install the pinned Playwright Chromium with scripts/test:cameraagent-ui --install-browser.");
+        }
+
         var baseUri = new Uri(baseUriText, UriKind.Absolute);
         var runtimeRoot = RequiredPath("HVO_ISSUE_211_RUNTIME_ROOT");
         var evidenceRoot = RequiredPath("HVO_ISSUE_211_EVIDENCE_ROOT");
@@ -539,11 +584,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
         var ownerPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
             session, password, "Mono8 control").ConfigureAwait(false);
-        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive("Install the pinned Playwright Chromium with scripts/test:cameraagent-ui --install-browser.");
-        }
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -710,6 +750,516 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var evidencePath = Path.Combine(evidenceRoot, "issue-211-mono8.json");
         await File.WriteAllTextAsync(evidencePath, JsonSerializer.Serialize(evidence, EvidenceJson)).ConfigureAwait(false);
         TestContext.WriteLine($"Issue #211 Mono8 evidence: {evidencePath}");
+    }
+
+    /// <summary>
+    /// Issue #719. One archived capture, replayed once under each replay execution profile against a
+    /// single shared durable root, must produce byte-identical outputs and hold the live cadence
+    /// bounds.
+    /// <para>
+    /// The profile is <c>CameraAgent__ProcessingGraphs__ReplayProfile</c>, a container-start
+    /// environment variable owned by compose and the campaign script, so one method cannot switch
+    /// it. The campaign invokes this method twice against one durable root: first under
+    /// <c>InProcess</c>, which establishes the capture and the first replay, then under
+    /// <c>LocalRunner</c>, which reuses that root. The second invocation reads the live outputs and
+    /// the first replay's outputs from persisted state rather than remembering them, so the
+    /// three-way identity is asserted there and nowhere else. Transitivity would not substitute for
+    /// this: two pairwise identities give the third only when the shared term is the same object in
+    /// both, and separate trials produce separate captures.
+    /// </para>
+    /// </summary>
+    [TestMethod]
+    [Timeout(1_800_000)]
+    public async Task CanonicalArchivedReplayMaintainsLiveCadenceAsync()
+    {
+        var baseUriText = Environment.GetEnvironmentVariable("HVO_ISSUE_211_BASE_URI");
+        if (string.IsNullOrWhiteSpace(baseUriText))
+        {
+            Assert.Inconclusive("Run through scripts/test:cameraagent-standalone-211.");
+        }
+
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("The W6 container evidence requires Linux.");
+        }
+
+        // The guards above skip because the trial cannot run at all. Everything below is a
+        // measurement, and a measurement that cannot be taken fails rather than skips: a skipped
+        // result reports zero executed with a passing outcome, so a gate that skips under load would
+        // report success under load.
+        var baseUri = new Uri(baseUriText!, UriKind.Absolute);
+        var runtimeRoot = RequiredPath("HVO_ISSUE_211_RUNTIME_ROOT");
+        var evidenceRoot = RequiredPath("HVO_ISSUE_211_EVIDENCE_ROOT");
+        var container = Required("HVO_ISSUE_211_CONTAINER");
+        var profile = Required("HVO_ISSUE_211_REPLAY_PROFILE");
+        var stateKey = Required("HVO_ISSUE_211_STATE_KEY");
+        var stateReusedText = Required("HVO_ISSUE_211_STATE_REUSED");
+        Assert.IsTrue(
+            bool.TryParse(stateReusedText, out var stateReused),
+            $"HVO_ISSUE_211_STATE_REUSED is '{stateReusedText}', which is not a boolean.");
+
+        // The invocation's role comes from two variables the campaign sets independently, and a
+        // disagreement between them means the pair was wired wrongly. Fail on that rather than
+        // trusting either alone, because each on its own is a plausible-looking single source.
+        var expectedProfile = stateReused ? "LocalRunner" : "InProcess";
+        Assert.AreEqual(
+            expectedProfile,
+            profile,
+            $"State reuse '{stateReused}' and replay profile '{profile}' disagree about which #719 invocation this is.");
+
+        var password = (await File.ReadAllTextAsync(RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE"))
+            .ConfigureAwait(false)).Trim();
+        Directory.CreateDirectory(evidenceRoot);
+
+        await WaitForHostAsync(baseUri).ConfigureAwait(false);
+        var declaredProfile = await ReadContainerReplayProfileAsync(container).ConfigureAwait(false);
+        Assert.AreEqual(
+            profile,
+            declaredProfile,
+            $"The campaign asked for {profile} and the container is running {declaredProfile}.");
+
+        using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
+        var evidence = stateReused
+            ? await AssertLocalRunnerReplayAsync(session, profile, stateKey).ConfigureAwait(false)
+            : await AssertInProcessReplayAsync(session, runtimeRoot, profile, stateKey).ConfigureAwait(false);
+
+        // The profile name goes into the filename verbatim rather than lower-cased, because the two
+        // invocations must write distinct files and a case fold is one more thing to keep in step
+        // with the campaign script.
+        var evidencePath = Path.Combine(evidenceRoot, $"issue-719-replay-{profile}.json");
+        await File.WriteAllTextAsync(
+            evidencePath,
+            JsonSerializer.Serialize(
+                new
+                {
+                    schemaVersion = "issue-719-replay-evidence-v1",
+                    profile,
+                    stateKey,
+                    stateReused,
+                    declaredProfile,
+                    replay = evidence,
+                    result = new { passed = true }
+                },
+                EvidenceJson)).ConfigureAwait(false);
+        TestContext.WriteLine($"Issue #719 replay evidence ({profile}): {evidencePath}");
+    }
+
+    /// <summary>
+    /// First invocation. Establishes the shared durable root: the canonical profile, a rolling
+    /// window wide enough to freeze the five-input combination plus one source capture, and one
+    /// archived replay executed in process. It asserts its own cadence and node set but not the
+    /// three-way identity, which cannot exist until a second profile has run.
+    /// </summary>
+    private static async Task<object> AssertInProcessReplayAsync(
+        HttpClient session,
+        string runtimeRoot,
+        string profile,
+        string stateKey)
+    {
+        // A shared durable root that already carries replay executions means an earlier campaign
+        // left residue, and the second invocation's "exactly one prior replay" read would then
+        // select its referent by luck. Fail here, where the cause is still legible.
+        var existingReplays = await ReadExecutionsAsync(session, ProcessingGraphExecutionClass.Replay)
+            .ConfigureAwait(false);
+        Assert.IsEmpty(
+            existingReplays,
+            $"The durable root '{stateKey}' already holds {existingReplays.Count} replay executions before the first #719 invocation.");
+
+        await ActivateCanonicalCaptureProfileAsync(session).ConfigureAwait(false);
+        var registry = await session
+            .GetFromJsonAsync<ProcessingGraphRegistryState>("/api/v1/operations/processing-graphs/")
+            .ConfigureAwait(false);
+        Assert.IsNotNull(registry);
+        var graphRevisionId = registry.ActiveRevisionId;
+
+        // The frozen rolling window is five inputs, so the source capture needs at least five
+        // predecessors. Stating the requirement where it is used keeps it from being an unexplained
+        // constant in the campaign script.
+        var requestedCaptures = ReadPositiveInteger(
+            "HVO_ISSUE_211_MEASURED_CAPTURES",
+            ReplayRollingWindowCaptures + 1);
+        Assert.IsGreaterThanOrEqualTo(
+            ReplayRollingWindowCaptures + 1,
+            requestedCaptures,
+            $"The #719 replay needs at least {ReplayRollingWindowCaptures + 1} captures to freeze a {ReplayRollingWindowCaptures}-input rolling window.");
+
+        var window = await CaptureExactWindowAsync(
+            session,
+            runtimeRoot,
+            requestedCaptures,
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMinutes(12)).ConfigureAwait(false);
+        var source = window.Captures[^1];
+        var primaryArtifactId = source.Artifacts
+            .Single(static artifact => artifact.Role == FrameArtifactRole.Raw)
+            .ArtifactId;
+
+        var submitted = await SubmitReplayAsync(session, source.CaptureId, primaryArtifactId, graphRevisionId)
+            .ConfigureAwait(false);
+        var detail = await WaitForTerminalExecutionAsync(session, submitted.ExecutionId).ConfigureAwait(false);
+        AssertReplayCadence(detail.Execution, profile);
+        AssertReplayNodeSets(detail, profile);
+        var live = await ReadLiveExecutionAsync(session, source.CaptureId).ConfigureAwait(false);
+
+        return new
+        {
+            role = "establish",
+            graphRevisionId,
+            captureCount = window.Captures.Count,
+            sourceCaptureId = source.CaptureId,
+            sourceCaptureSequence = source.CaptureSequence,
+            primaryArtifactId,
+            liveExecutionId = live.ExecutionId,
+            replay = DescribeExecution(detail),
+            note = "The three-way identity is asserted by the LocalRunner invocation, which is the only one that can read all three output sets."
+        };
+    }
+
+    /// <summary>
+    /// Second invocation. Reads the capture, the primary artifact and the graph revision off the
+    /// first invocation's persisted replay execution, replays exactly those, and compares the live
+    /// outputs, the first replay's outputs and its own by recorded output identity.
+    /// </summary>
+    private static async Task<object> AssertLocalRunnerReplayAsync(
+        HttpClient session,
+        string profile,
+        string stateKey)
+    {
+        // Everything this invocation needs is read from durable state rather than carried across the
+        // container recreation. Requiring exactly one prior replay is what makes "the same capture"
+        // a fact rather than a selection: with two, taking the newest would silently choose.
+        var priorReplays = await ReadExecutionsAsync(session, ProcessingGraphExecutionClass.Replay)
+            .ConfigureAwait(false);
+        Assert.HasCount(
+            1,
+            priorReplays,
+            $"The shared durable root '{stateKey}' must hold exactly the first invocation's replay, and holds {priorReplays.Count}.");
+        var prior = priorReplays[0];
+        Assert.AreEqual(
+            ProcessingGraphExecutionStatus.Completed,
+            prior.Status,
+            $"The first #719 replay is {prior.Status}, so there is nothing to compare against.");
+
+        var priorDetail = await ReadExecutionDetailAsync(session, prior.ExecutionId).ConfigureAwait(false);
+        var live = await ReadLiveExecutionAsync(session, prior.CaptureId).ConfigureAwait(false);
+        var liveDetail = await ReadExecutionDetailAsync(session, live.ExecutionId).ConfigureAwait(false);
+
+        var submitted = await SubmitReplayAsync(
+            session, prior.CaptureId, prior.PrimaryArtifactId, prior.GraphRevisionId).ConfigureAwait(false);
+        Assert.AreNotEqual(
+            prior.ExecutionId,
+            submitted.ExecutionId,
+            "The LocalRunner submission returned the first invocation's execution, so the comparison would compare it against itself.");
+        var detail = await WaitForTerminalExecutionAsync(session, submitted.ExecutionId).ConfigureAwait(false);
+
+        AssertReplayCadence(detail.Execution, profile);
+        AssertReplayNodeSets(detail, profile);
+
+        // The plan identities must match before the outputs are compared. Identical outputs from
+        // different plans would be a coincidence rather than the reproducibility #719 claims.
+        Assert.AreEqual(prior.GraphDefinitionIdentitySha256, detail.Execution.GraphDefinitionIdentitySha256);
+        Assert.AreEqual(prior.SharedPlanIdentitySha256, detail.Execution.SharedPlanIdentitySha256);
+        Assert.AreEqual(prior.LocalPlanIdentitySha256, detail.Execution.LocalPlanIdentitySha256);
+
+        var identity = AssertThreeWayOutputIdentity(liveDetail, priorDetail, detail);
+
+        return new
+        {
+            role = "compare",
+            readFrom = "durable state",
+            sourceCaptureId = prior.CaptureId,
+            prior.PrimaryArtifactId,
+            prior.GraphRevisionId,
+            liveExecutionId = live.ExecutionId,
+            inProcessExecutionId = prior.ExecutionId,
+            localRunnerExecutionId = detail.Execution.ExecutionId,
+            replay = DescribeExecution(detail),
+            identity
+        };
+    }
+
+    /// <summary>
+    /// Submits one archived replay and returns the execution the host accepted. The 202 body already
+    /// carries the execution, so there is no poll to discover the identifier this call just created.
+    /// </summary>
+    private static async Task<ProcessingGraphExecutionState> SubmitReplayAsync(
+        HttpClient client,
+        Guid captureId,
+        Guid primaryArtifactId,
+        string graphRevisionId)
+    {
+        var token = await GetAntiforgeryTokenAsync(client).ConfigureAwait(false);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/processing-graphs/replays", UriKind.Relative));
+        request.Headers.Add("Idempotency-Key", $"issue-719-replay-{Guid.NewGuid():N}");
+        request.Headers.Add("RequestVerificationToken", token);
+        request.Content = JsonContent.Create(new
+        {
+            captureId,
+            graphRevisionId,
+            primaryArtifactId,
+            triggerKind = "operator",
+            triggerReference = "issue-719",
+            priority = 0,
+            reason = "Issue #719 canonical archived replay"
+        });
+        using var response = await client.SendAsync(request).ConfigureAwait(false);
+        Assert.AreEqual(
+            HttpStatusCode.Accepted,
+            response.StatusCode,
+            $"The replay submission returned {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync().ConfigureAwait(false)}");
+        var result = await response.Content.ReadFromJsonAsync<ProcessingReplaySubmissionResult>()
+            .ConfigureAwait(false);
+        Assert.IsNotNull(result);
+
+        // A submission answered from the idempotency cache returns the earlier execution instead of
+        // creating one. Every later comparison would then hold, for the wrong reason.
+        Assert.IsTrue(
+            result.Replayed,
+            "The replay submission was answered from the idempotency cache, so it created no new execution.");
+        return result.Execution;
+    }
+
+    /// <summary>
+    /// Polls one execution to a terminal state. A failed, cancelled or expired execution is a
+    /// different defect from a timeout and must not produce the same message as one.
+    /// </summary>
+    private static async Task<ProcessingGraphExecutionDetail> WaitForTerminalExecutionAsync(
+        HttpClient client,
+        Guid executionId)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReplayGraphMaximumMilliseconds * 2L);
+        ProcessingGraphExecutionDetail? detail = null;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            detail = await ReadExecutionDetailAsync(client, executionId).ConfigureAwait(false);
+            if (detail.Execution.Status == ProcessingGraphExecutionStatus.Completed)
+            {
+                return detail;
+            }
+
+            if (detail.Execution.Status is ProcessingGraphExecutionStatus.Failed
+                or ProcessingGraphExecutionStatus.Cancelled
+                or ProcessingGraphExecutionStatus.Expired)
+            {
+                Assert.Fail(
+                    $"Replay execution {executionId:D} ended {detail.Execution.Status}: {detail.Execution.FailureReason ?? "no reason recorded"}.");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+        }
+
+        Assert.Fail(
+            $"Replay execution {executionId:D} did not reach a terminal state; last observed status {detail?.Execution.Status.ToString() ?? "none"}.");
+        throw new InvalidOperationException("Unreachable.");
+    }
+
+    private static async Task<ProcessingGraphExecutionDetail> ReadExecutionDetailAsync(
+        HttpClient client,
+        Guid executionId)
+    {
+        var detail = await client
+            .GetFromJsonAsync<ProcessingGraphExecutionDetail>(
+                $"/api/v1/operations/processing-graphs/executions/{executionId:D}")
+            .ConfigureAwait(false);
+        Assert.IsNotNull(detail);
+        return detail;
+    }
+
+    private static async Task<IReadOnlyList<ProcessingGraphExecutionState>> ReadExecutionsAsync(
+        HttpClient client,
+        ProcessingGraphExecutionClass executionClass)
+    {
+        var executions = await client
+            .GetFromJsonAsync<IReadOnlyList<ProcessingGraphExecutionState>>(
+                $"/api/v1/operations/processing-graphs/executions?executionClass={executionClass}&maximumCount=200")
+            .ConfigureAwait(false);
+        Assert.IsNotNull(executions);
+        return executions;
+    }
+
+    private static async Task<ProcessingGraphExecutionState> ReadLiveExecutionAsync(
+        HttpClient client,
+        Guid captureId)
+    {
+        var live = (await ReadExecutionsAsync(client, ProcessingGraphExecutionClass.Live).ConfigureAwait(false))
+            .Where(execution => execution.CaptureId == captureId)
+            .ToArray();
+        Assert.HasCount(
+            1,
+            live,
+            $"Capture {captureId:D} has {live.Length} live executions, so the live baseline is not a single object.");
+        return live[0];
+    }
+
+    /// <summary>
+    /// The cadence bounds #719 states, applied to the accepted-to-started and started-to-completed
+    /// intervals of one execution.
+    /// </summary>
+    private static void AssertReplayCadence(ProcessingGraphExecutionState execution, string profile)
+    {
+        Assert.IsNotNull(
+            execution.StartedUtc,
+            $"The {profile} replay never started, so its start interval cannot be measured.");
+        Assert.IsNotNull(
+            execution.CompletedUtc,
+            $"The {profile} replay never completed, so its graph interval cannot be measured.");
+
+        var startInterval = execution.StartedUtc.Value - execution.AcceptedUtc;
+        var graphInterval = execution.CompletedUtc.Value - execution.StartedUtc.Value;
+        Assert.IsGreaterThanOrEqualTo(TimeSpan.Zero, startInterval);
+        Assert.IsGreaterThanOrEqualTo(TimeSpan.Zero, graphInterval);
+        Assert.IsLessThanOrEqualTo(
+            TimeSpan.FromMilliseconds(ReplayStartIntervalMaximumMilliseconds),
+            startInterval,
+            $"The {profile} replay took {startInterval.TotalMilliseconds:F0} ms to start.");
+        Assert.IsLessThanOrEqualTo(
+            TimeSpan.FromMilliseconds(ReplayGraphMaximumMilliseconds),
+            graphInterval,
+            $"The {profile} replay graph took {graphInterval.TotalMilliseconds:F0} ms.");
+    }
+
+    /// <summary>
+    /// Asserts the executed graph's node identities and the recipe-backed/complementary partition.
+    /// <para>
+    /// Read what this does and does not establish before relying on it. The node identities and
+    /// their completion are read from the execution, so they are checked. The partition itself is a
+    /// static derivation from which step classes reach
+    /// <c>CameraAgentRecipeExecutionAdapter.ExecuteAsync</c>, and this test does not verify which
+    /// nodes actually dispatched to the local runner, because no surface exports a dispatched node's
+    /// identity. See issue #799. A change that moves a node between the two sets fails here, because
+    /// both sets are pinned by identity against the template. A change that swaps one recipe-backed
+    /// node for another does not, because nothing observable distinguishes them. The one case the
+    /// count cannot catch is the one case F4 was written to catch.
+    /// </para>
+    /// </summary>
+    private static void AssertReplayNodeSets(ProcessingGraphExecutionDetail detail, string profile)
+    {
+        var expectedNodeIds = ReplayRecipeBackedNodeIds.Concat(ReplayComplementaryNodeIds).ToArray();
+        CollectionAssert.AreEquivalent(
+            expectedNodeIds,
+            detail.Nodes.Select(static node => node.NodeId).ToArray(),
+            $"The {profile} replay graph's node set does not match the pinned W6 template.");
+
+        foreach (var node in detail.Nodes)
+        {
+            Assert.AreEqual(
+                "Completed",
+                node.Status,
+                $"Node '{node.NodeId}' is {node.Status} in the {profile} replay: {node.Reason ?? "no reason recorded"}.");
+        }
+
+        // The partition holds only while both optional recipe-backed nodes are enabled. Assert that
+        // precondition rather than inferring it from the node set just checked, which would make the
+        // check confirm its own premise.
+        foreach (var optional in ReplayOptionalRecipeBackedNodeIds)
+        {
+            var node = detail.Nodes.Single(
+                candidate => string.Equals(candidate.NodeId, optional, StringComparison.Ordinal));
+            Assert.IsFalse(
+                node.Required,
+                $"Node '{optional}' must be an optional recipe-backed node for the #719 partition to hold.");
+        }
+    }
+
+    /// <summary>
+    /// Compares the live outputs, the in-process replay's outputs and the local-runner replay's
+    /// outputs by <c>OutputIdentitySha256</c>, per node and per ordinal. The identity is recorded on
+    /// the execution, so this needs no artifact download and none of the content endpoint's range or
+    /// conditional-request surface.
+    /// </summary>
+    private static object AssertThreeWayOutputIdentity(
+        ProcessingGraphExecutionDetail live,
+        ProcessingGraphExecutionDetail inProcess,
+        ProcessingGraphExecutionDetail localRunner)
+    {
+        var liveOutputs = ReadOutputIdentities(live);
+        var inProcessOutputs = ReadOutputIdentities(inProcess);
+        var localRunnerOutputs = ReadOutputIdentities(localRunner);
+
+        Assert.IsNotEmpty(liveOutputs, "The live execution recorded no outputs, so the comparison would be vacuous.");
+        Assert.IsTrue(
+            liveOutputs.Any(static entry => entry.Value.Length > 0),
+            "Every live node recorded an empty output list, so the comparison would be vacuous.");
+        CollectionAssert.AreEquivalent(liveOutputs.Keys.ToArray(), inProcessOutputs.Keys.ToArray());
+        CollectionAssert.AreEquivalent(liveOutputs.Keys.ToArray(), localRunnerOutputs.Keys.ToArray());
+
+        foreach (var (nodeId, expected) in liveOutputs)
+        {
+            CollectionAssert.AreEqual(
+                expected,
+                inProcessOutputs[nodeId],
+                $"Node '{nodeId}' produced different outputs live and under InProcess replay.");
+            CollectionAssert.AreEqual(
+                expected,
+                localRunnerOutputs[nodeId],
+                $"Node '{nodeId}' produced different outputs live and under LocalRunner replay.");
+        }
+
+        return new
+        {
+            comparedNodes = liveOutputs.Count,
+            comparedOutputs = liveOutputs.Sum(static entry => entry.Value.Length),
+            outputs = liveOutputs
+        };
+    }
+
+    private static SortedDictionary<string, string[]> ReadOutputIdentities(
+        ProcessingGraphExecutionDetail detail)
+    {
+        var identities = new SortedDictionary<string, string[]>(StringComparer.Ordinal);
+        foreach (var node in detail.Nodes)
+        {
+            identities[node.NodeId] = [.. node.Outputs
+                .OrderBy(static output => output.Ordinal)
+                .Select(static output => output.OutputIdentitySha256)];
+        }
+
+        return identities;
+    }
+
+    private static object DescribeExecution(ProcessingGraphExecutionDetail detail) => new
+    {
+        detail.Execution.ExecutionId,
+        detail.Execution.Status,
+        detail.Execution.AcceptedUtc,
+        detail.Execution.StartedUtc,
+        detail.Execution.CompletedUtc,
+        startIntervalMilliseconds = (detail.Execution.StartedUtc - detail.Execution.AcceptedUtc)?.TotalMilliseconds,
+        graphIntervalMilliseconds = (detail.Execution.CompletedUtc - detail.Execution.StartedUtc)?.TotalMilliseconds,
+        detail.Execution.GraphDefinitionIdentitySha256,
+        detail.Execution.SharedPlanIdentitySha256,
+        detail.Execution.LocalPlanIdentitySha256,
+        detail.Execution.AttemptCount,
+        nodes = detail.Nodes
+            .Select(static node => new { node.NodeId, node.Required, node.Status, outputs = node.Outputs.Count })
+            .ToArray()
+    };
+
+    /// <summary>
+    /// Reads the replay execution profile the container was started with. The profile is not exposed
+    /// on any API route, only on an operator UI projection, so the container environment is the only
+    /// machine-readable source. Without this check both invocations could run in process and every
+    /// identity assertion would pass while establishing nothing about the local runner.
+    /// </summary>
+    private static async Task<string> ReadContainerReplayProfileAsync(string container)
+    {
+        const string Key = "CameraAgent__ProcessingGraphs__ReplayProfile";
+        var environment = await ProcessAsync(
+            "docker",
+            ["inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", container])
+            .ConfigureAwait(false);
+        var declared = environment
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(entry => entry.StartsWith(Key + "=", StringComparison.Ordinal))
+            .Select(entry => entry[(Key.Length + 1)..])
+            .ToArray();
+        Assert.HasCount(
+            1,
+            declared,
+            $"The container declares {declared.Length} values for {Key}, so the replay profile under test is not a single value.");
+        return declared[0];
     }
 
     private static async Task WaitForHostAsync(Uri baseUri)
@@ -4373,8 +4923,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var layered = page.Locator(".layered-presentation");
         if (expectLayeredPresentation)
         {
-            await page.Locator(".layered-workspace > summary").ClickAsync().ConfigureAwait(false);
-            await layered.WaitForAsync().ConfigureAwait(false);
+            await CollapsibleSection.EnsureOpenAsync(page.Locator(".layered-workspace"), layered)
+                .ConfigureAwait(false);
             Assert.AreEqual(1, await layered.Locator(".layered-canvas > img").CountAsync().ConfigureAwait(false));
             Assert.AreEqual(1, await layered.Locator(".layered-overlay svg").CountAsync().ConfigureAwait(false));
             var layerToggles = layered.Locator(".layer-controls input[type='checkbox']");
@@ -4398,9 +4948,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(0, await layered.CountAsync().ConfigureAwait(false));
             Assert.AreEqual(1, await primaryImage.CountAsync().ConfigureAwait(false));
         }
-        await page.Locator(".technical-evidence > summary").ClickAsync().ConfigureAwait(false);
         var comparisonImages = page.Locator(".comparison-grid img");
-        await comparisonImages.First.WaitForAsync().ConfigureAwait(false);
+        await CollapsibleSection.EnsureOpenAsync(page.Locator(".technical-evidence"), comparisonImages)
+            .ConfigureAwait(false);
         Assert.AreEqual(2, await comparisonImages.CountAsync().ConfigureAwait(false));
         await page.WaitForFunctionAsync(
             "() => [...document.querySelectorAll('.comparison-grid img')].every(image => image.complete && image.naturalWidth > 0)")
