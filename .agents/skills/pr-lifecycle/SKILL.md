@@ -55,9 +55,11 @@ Review mode: initial | correction | base-sync
 Issue and PR:
 Dispatch command ID and target participant ID:
 Acceptance criteria:
-Target base SHA: (the freshly fetched tip of the target ref; this is the
-  range's left endpoint, not the base the PR recorded when it was opened)
-Target base ref: (the remote and branch the tip above was read from)
+Target base SHA: (the tip of the base branch read from the repository by
+  branch name; this is the range's left endpoint, not the base the PR
+  recorded when it was opened)
+Target base ref: (the remote and branch used to transport that tip, verified
+  to contain it; transport only, never the source of the endpoint)
 PR-recorded base SHA: (baseRefOid; provenance only, never a range endpoint)
 PR merge-base SHA:
 Previous reviewed head SHA:
