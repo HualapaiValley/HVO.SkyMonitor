@@ -5,7 +5,15 @@ using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
-internal abstract record DeploymentCommand(bool Json);
+internal abstract record DeploymentCommand(bool Json)
+{
+    /// <summary>
+    /// Whether this invocation may address a product root other than <see cref="InstallRequest.DefaultProductRoot"/>.
+    /// Deny by default and decided once at the command-line boundary, so validation answers from the request it
+    /// was given rather than from process state that anything else can change under it.
+    /// </summary>
+    public bool AllowTestProductRoot { get; init; }
+}
 
 internal sealed record InstallDeploymentCommand(InstallRequest Request) : DeploymentCommand(Request.Json);
 
@@ -25,7 +33,7 @@ internal sealed record OwnerRecoveryRequest(
         }
         ValidateAbsolutePath(ProductRoot, "--product-root");
         if (!string.Equals(ProductRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
-            Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT") != "1")
+            !AllowTestProductRoot)
         {
             throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
         }
@@ -85,7 +93,7 @@ internal sealed record CameraAgentStatePreflightRequest(
         {
             throw new InstallUsageException("--instance-id is required.");
         }
-        ValidateProductRoot(ProductRoot);
+        ValidateProductRoot(ProductRoot, AllowTestProductRoot);
         if (NamesSignedImageRelease)
         {
             // A preflight selects its candidate by exactly the rules an install and an upgrade use, so the mutual
@@ -115,6 +123,7 @@ internal sealed record CameraAgentStatePreflightRequest(
     /// </summary>
     internal InstallRequest ImageSelection() => new()
     {
+        AllowTestProductRoot = AllowTestProductRoot,
         FriendlyName = "preflight",
         OwnerEmail = "preflight@localhost.invalid",
         ImageReference = ImageReference ?? string.Empty,
@@ -126,7 +135,7 @@ internal sealed record CameraAgentStatePreflightRequest(
         NoDownload = NoDownload
     };
 
-    internal static void ValidateProductRoot(string productRoot)
+    internal static void ValidateProductRoot(string productRoot, bool allowTestProductRoot)
     {
         if (!Path.IsPathFullyQualified(productRoot) || productRoot.Contains("//", StringComparison.Ordinal) ||
             Path.GetFullPath(productRoot) != productRoot.TrimEnd('/') || productRoot == "/")
@@ -134,7 +143,7 @@ internal sealed record CameraAgentStatePreflightRequest(
             throw new InstallUsageException("--product-root must be an absolute normalized path other than root.");
         }
         if (!string.Equals(productRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
-            Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT") != "1")
+            !allowTestProductRoot)
         {
             throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
         }
@@ -154,7 +163,7 @@ internal sealed record CameraAgentStateResetRequest(
         {
             throw new InstallUsageException("--instance-id is required.");
         }
-        CameraAgentStatePreflightRequest.ValidateProductRoot(ProductRoot);
+        CameraAgentStatePreflightRequest.ValidateProductRoot(ProductRoot, AllowTestProductRoot);
         if (ConfirmationInstanceId != InstanceId)
         {
             throw new InstallUsageException("reset-state requires --confirm-instance-id matching --instance-id.");
@@ -213,7 +222,7 @@ internal sealed record LifecycleRequest : DeploymentCommand
     {
         ValidateAbsolutePath(ProductRoot, "--product-root");
         if (!string.Equals(ProductRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
-            Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT") != "1")
+            !AllowTestProductRoot)
         {
             throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
         }

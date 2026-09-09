@@ -49,19 +49,6 @@ public sealed class PreflightSignedReleaseTests
     private static readonly uint RuntimeUid = NativeLinux.getuid();
     private static readonly uint RuntimeGid = NativeLinux.getgid();
 
-    private string? previousTestRoot;
-
-    [TestInitialize]
-    public void AllowTestProductRoot()
-    {
-        previousTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
-    }
-
-    [TestCleanup]
-    public void RestoreTestProductRoot()
-        => Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previousTestRoot);
-
     [TestMethod]
     public void CommandLine_PreflightSignedRelease_ParsesEveryReleaseSelector()
     {
@@ -72,7 +59,7 @@ public sealed class PreflightSignedReleaseTests
             "cameraagent", "preflight", "--instance-id", instanceId.ToString("D"),
             "--product-root", "/tmp/hvo-preflight",
             "--image-manifest", "/media/hvo/image-v1.4.0/image-manifest.json", "--json"
-        ]);
+        ], allowTestProductRoot: true);
         Assert.AreEqual(instanceId, manifestForm.InstanceId);
         Assert.AreEqual("/media/hvo/image-v1.4.0/image-manifest.json", manifestForm.ImageManifest);
         Assert.IsNull(manifestForm.ImageReference);
@@ -87,7 +74,7 @@ public sealed class PreflightSignedReleaseTests
             "--image-version", "1.4.0",
             "--asset-base-url", "https://mirror.example/releases",
             "--channel", "stable"
-        ]);
+        ], allowTestProductRoot: true);
         Assert.AreEqual("https://mirror.example/indexes/image-stable-index.json", indexForm.ImageIndex);
         Assert.AreEqual("1.4.0", indexForm.ImageVersion);
         Assert.AreEqual("https://mirror.example/releases", indexForm.AssetBaseUrl);
@@ -103,7 +90,7 @@ public sealed class PreflightSignedReleaseTests
             "--product-root", "/tmp/hvo-preflight",
             "--image-manifest", "/media/hvo/image-v1.4.0/image-manifest.json",
             "--image-ref", $"sha256:{new string('a', 64)}"
-        ]));
+        ], allowTestProductRoot: true));
 
         StringAssert.Contains(exception.Message, "--image-ref cannot be combined", StringComparison.Ordinal);
     }
@@ -117,7 +104,7 @@ public sealed class PreflightSignedReleaseTests
             "--product-root", "/tmp/hvo-preflight",
             "--image-manifest", "/media/hvo/image-v1.4.0/image-manifest.json",
             "--image-index", "/media/hvo/image-index.json"
-        ]));
+        ], allowTestProductRoot: true));
 
         StringAssert.Contains(exception.Message, "cannot be combined with --image-index", StringComparison.Ordinal);
     }
@@ -129,7 +116,7 @@ public sealed class PreflightSignedReleaseTests
         [
             "cameraagent", "preflight", "--instance-id", Guid.NewGuid().ToString("D"),
             "--product-root", "/tmp/hvo-preflight", "--image-version", "1.4.0"
-        ]));
+        ], allowTestProductRoot: true));
 
         StringAssert.Contains(exception.Message, "--image-version requires --image-index", StringComparison.Ordinal);
     }
@@ -142,7 +129,7 @@ public sealed class PreflightSignedReleaseTests
             "cameraagent", "preflight", "--instance-id", Guid.NewGuid().ToString("D"),
             "--product-root", "/tmp/hvo-preflight",
             "--image-manifest", "https://mirror.example/releases/image-v1.4.0/image-manifest.json"
-        ]));
+        ], allowTestProductRoot: true));
 
         StringAssert.Contains(exception.Message, "cannot use HTTPS with the local channel", StringComparison.Ordinal);
     }
@@ -161,7 +148,7 @@ public sealed class PreflightSignedReleaseTests
         [
             "cameraagent", "preflight", "--instance-id", Guid.NewGuid().ToString("D"),
             "--product-root", "/tmp/hvo-preflight", option, value
-        ]));
+        ], allowTestProductRoot: true));
 
         StringAssert.Contains(exception.Message, "require --image-manifest or --image-index", StringComparison.Ordinal);
     }
@@ -173,7 +160,7 @@ public sealed class PreflightSignedReleaseTests
         [
             "cameraagent", "preflight", "--instance-id", Guid.NewGuid().ToString("D"),
             "--product-root", "/tmp/hvo-preflight", "--no-download"
-        ]));
+        ], allowTestProductRoot: true));
 
         StringAssert.Contains(exception.Message, "require --image-manifest or --image-index", StringComparison.Ordinal);
     }
@@ -187,7 +174,7 @@ public sealed class PreflightSignedReleaseTests
             "cameraagent", "preflight", "--instance-id", Guid.NewGuid().ToString("D"),
             "--product-root", "/tmp/hvo-preflight",
             "--image-manifest", "/media/hvo/image-v1.4.0/image-manifest.json", "--no-download"
-        ]);
+        ], allowTestProductRoot: true);
 
         Assert.IsTrue(request.NoDownload);
         Assert.IsTrue(request.ImageSelection().NoDownload);
@@ -202,7 +189,7 @@ public sealed class PreflightSignedReleaseTests
             "--product-root", "/tmp/hvo-preflight", "--channel", "stable",
             "--image-index", "https://mirror.example/indexes/image-stable-index.json",
             "--asset-base-url", "http://mirror.example/releases"
-        ]));
+        ], allowTestProductRoot: true));
 
         StringAssert.Contains(exception.Message, "--asset-base-url", StringComparison.Ordinal);
     }
@@ -720,6 +707,79 @@ public sealed class PreflightSignedReleaseTests
         CollectionAssert.AreEqual(before, SnapshotPaths(instance.Root), "preflight must create no file");
     }
 
+    /// <summary>
+    /// A database read through a private copy must be copied whole or not at all. Preflight runs before the
+    /// drain, so the instance can still commit while the copy is being made, and the copy is made in two steps:
+    /// the main database first, then the journal beside it. A commit landing between those two steps leaves a
+    /// pair belonging to two different generations, and replaying it does not fail. It succeeds, and the report
+    /// then describes durable state the instance never had. Here the commit records a migration the candidate
+    /// image does not declare, so the copy that straddles it rolls the migration back and calls an incompatible
+    /// lineage compatible. That is worse than refusing to read, because nothing about the answer looks wrong.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ExecuteAsync_CommitBetweenTheCopiedHalves_IsRetriedAndThenReportedRatherThanRead()
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync(
+            JournalShape.HotIdentityRollbackJournal);
+        using var release = SignedImageReleaseFixture.Create(
+            instance.Root, $"sha256:{new string('c', 64)}", SignedImageReleaseFixture.ContractLabels);
+        var before = SnapshotPaths(instance.Root);
+        var commits = 0;
+
+        try
+        {
+            // One commit under the copy: the straddled pair is discarded, the read is taken again, and the
+            // second copy reads the settled database and reports the incompatibility the first would have hidden.
+            CameraAgentStatePreflight.SnapshotCopyBarrier = () =>
+            {
+                if (++commits == 1)
+                {
+                    instance.AdvanceGeneration();
+                }
+            };
+
+            var report = await CameraAgentStatePreflightManager.ExecuteAsync(
+                instance.Request(release.ManifestPath),
+                new RefusingProcessRunner(),
+                CancellationToken.None,
+                release.CreateAcquirer);
+
+            Assert.AreEqual(2, commits, "the straddled copy must be discarded and the read attempted again");
+            Assert.IsFalse(report.Compatible, CameraAgentStatePreflight.Render(report));
+            var lineage = report.Findings.Single(finding => finding.Code == "identity-migration-lineage");
+            StringAssert.Contains(lineage.Observed, "99999999999999_Uncommitted", StringComparison.Ordinal);
+
+            // An instance that never settles is reported as a database preflight could not read, in the same
+            // consolidated report as every other boundary, rather than through a snapshot it cannot trust.
+            commits = 0;
+            CameraAgentStatePreflight.SnapshotCopyBarrier = () =>
+            {
+                commits++;
+                instance.AdvanceGeneration();
+            };
+
+            report = await CameraAgentStatePreflightManager.ExecuteAsync(
+                instance.Request(release.ManifestPath),
+                new RefusingProcessRunner(),
+                CancellationToken.None,
+                release.CreateAcquirer);
+
+            Assert.AreEqual(3, commits, "the read must be retried a bounded number of times, then given up on");
+            Assert.IsFalse(report.Compatible, CameraAgentStatePreflight.Render(report));
+            var unreadable = report.Findings.Single(finding => finding.Code == "identity-lineage-unreadable");
+            Assert.IsTrue(unreadable.Blocking);
+            StringAssert.Contains(
+                unreadable.Observed, "kept changing while preflight was copying it", StringComparison.Ordinal);
+        }
+        finally
+        {
+            CameraAgentStatePreflight.SnapshotCopyBarrier = static () => { };
+        }
+
+        CollectionAssert.AreEqual(before, SnapshotPaths(instance.Root), "preflight must create no file");
+    }
+
     private static string[] SnapshotPaths(string root)
         => Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
             .Select(path => Path.GetRelativePath(root, path))
@@ -794,6 +854,9 @@ public sealed class PreflightSignedReleaseTests
     private sealed class InstalledInstanceFixture : IDisposable
     {
         private SqliteConnection? writer;
+        private SqliteTransaction? pending;
+        private string pendingMigration = "99999999999999_Uncommitted";
+        private int generation;
 
         private InstalledInstanceFixture(string root, Guid instanceId, InstallationPaths paths)
         {
@@ -807,7 +870,11 @@ public sealed class PreflightSignedReleaseTests
         public InstallationPaths Paths { get; }
 
         public CameraAgentStatePreflightRequest Request(string manifestPath)
-            => new(InstanceId, Root, null, Json: false) { ImageManifest = manifestPath };
+            => new(InstanceId, Root, null, Json: false)
+            {
+                AllowTestProductRoot = true,
+                ImageManifest = manifestPath
+            };
 
         public static async Task<InstalledInstanceFixture> CreateCurrentAsync(
             JournalShape shape = JournalShape.Checkpointed,
@@ -876,11 +943,12 @@ public sealed class PreflightSignedReleaseTests
                 // rollback journal and no wal-index. Only a private copy can be rolled back to read it.
                 writer = new SqliteConnection($"Data Source={identity}");
                 writer.Open();
-                var transaction = writer.BeginTransaction();
+                pending = writer.BeginTransaction();
                 using var command = writer.CreateCommand();
-                command.Transaction = transaction;
+                command.Transaction = pending;
                 command.CommandText =
-                    "INSERT INTO __EFMigrationsHistory VALUES ('99999999999999_Uncommitted', '10.0.0');";
+                    "INSERT INTO __EFMigrationsHistory VALUES ($migration, '10.0.0');";
+                command.Parameters.AddWithValue("$migration", pendingMigration);
                 command.ExecuteNonQuery();
                 AssertJournalFiles(identity, "-journal");
                 AssertJournalFiles(database);
@@ -902,8 +970,35 @@ public sealed class PreflightSignedReleaseTests
             }
         }
 
+        /// <summary>
+        /// Commits the pending migration row and immediately opens another transaction holding a different one,
+        /// so the database advances a generation and keeps the shape it was in: the same rollback journal still
+        /// sits beside the same database, and every file a copy expects is still there. That is the quiet half
+        /// of the copy race. A writer that merely committed and stopped would take the journal away and raise
+        /// the loud half, which the retry already handles.
+        ///
+        /// The committed row matters. It leaves the durable lineage carrying a migration the candidate image
+        /// does not declare, which is a blocking incompatibility. A copy made across this commit takes the
+        /// database from before it and the journal from after, rolls the row back, and reports the lineage as
+        /// compatible: the wrong answer, in the direction that lets an incompatible upgrade proceed.
+        /// </summary>
+        public void AdvanceGeneration()
+        {
+            pending!.Commit();
+            pending.Dispose();
+            pendingMigration = $"99999999999999_Uncommitted{++generation}";
+            pending = writer!.BeginTransaction();
+            using var command = writer.CreateCommand();
+            command.Transaction = pending;
+            command.CommandText =
+                "INSERT INTO __EFMigrationsHistory VALUES ($migration, '10.0.0');";
+            command.Parameters.AddWithValue("$migration", pendingMigration);
+            command.ExecuteNonQuery();
+        }
+
         public void Dispose()
         {
+            pending?.Dispose();
             writer?.Dispose();
             SqliteConnection.ClearAllPools();
             if (!Directory.Exists(Root))
@@ -1048,7 +1143,7 @@ public sealed class PreflightSignedReleaseTests
                 "--product-root", productRoot, "--channel", "stable",
                 "--image-index", IndexUri.AbsoluteUri, "--image-version", "1.2.3",
                 "--asset-base-url", AssetBase
-            ]);
+            ], allowTestProductRoot: true);
 
         public static NetworkImageReleaseFixture Create()
         {

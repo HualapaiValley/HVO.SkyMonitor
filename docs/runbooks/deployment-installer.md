@@ -429,8 +429,15 @@ W6 performance disposition defined in
 
 Production installation always uses `/var/lib/hvo/skymonitor` and the canonical
 layout in [product-instance-layout.md](product-instance-layout.md). The
-`--product-root` override is rejected unless
-`HVO_INSTALLER_ALLOW_TEST_ROOT=1` is deliberately set by an isolated test.
+`--product-root` override is rejected unless the invocation was admitted for a
+test root. Admission is decided exactly once, when the command line is parsed:
+the process environment is read there and nowhere else, and only
+`HVO_INSTALLER_ALLOW_TEST_ROOT=1` admits. The decision then travels on the
+request itself, so a later change to the environment cannot revoke an admission
+already granted or grant one already refused, and an installer configuration
+file cannot reach the decision at all because the flag is never deserialized.
+Tests that need a temporary root set that admission on the request they build
+rather than mutating the environment of the process they share.
 
 The installer records owner-only files beneath the UUID instance root:
 

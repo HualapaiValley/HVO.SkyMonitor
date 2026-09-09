@@ -322,4 +322,72 @@ public sealed class CommandLineTests
         Assert.AreEqual(LifecycleOperationKind.CatalogInstall, install.Operation);
         Assert.AreEqual(LifecycleOperationKind.CatalogSelect, select.Operation);
     }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Parse_TestRootAdmission_IsDecidedOnceAndCarriedOnTheRequest()
+    {
+        // Admission to a non-production product root is read from the environment once, at the command-line
+        // boundary, and then travels on the request. This test states the ambient value rather than assuming
+        // it, because every assertion below is only meaningful while nothing in the test process sets it.
+        Assert.IsNull(
+            Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT"),
+            "no test may set the admission variable; admission belongs on the request");
+
+        var testRoot = Path.Combine(Path.GetTempPath(), $"hvo-admission-{Guid.NewGuid():N}");
+        var arguments = ValidArguments.Concat(["--product-root", testRoot]).ToArray();
+
+        // Admitted at the boundary. Revalidating the same request succeeds even though the environment that
+        // admitted it says nothing, which is the whole point: validation never rereads process state.
+        var admitted = CommandLine.Parse(arguments, allowTestProductRoot: true);
+        Assert.AreEqual(testRoot, admitted.ProductRoot);
+        Assert.IsTrue(admitted.AllowTestProductRoot);
+        admitted.Validate();
+
+        // Deny by default.
+        var denied = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.Parse(arguments, allowTestProductRoot: false));
+        StringAssert.Contains(denied.Message, "--product-root", StringComparison.Ordinal);
+
+        var configPath = Path.GetTempFileName();
+        try
+        {
+            var config = JsonSerializer.Serialize(
+                CommandLine.Parse(arguments, allowTestProductRoot: true) with { AllowTestProductRoot = false },
+                InstallRequestJsonContext.Default.InstallRequest);
+
+            // An installer configuration file carries the non-production root but cannot admit it.
+            File.WriteAllText(configPath, config);
+            var fromConfig = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(
+                ["cameraagent", "install", "--config", configPath], allowTestProductRoot: false));
+            StringAssert.Contains(fromConfig.Message, "--product-root", StringComparison.Ordinal);
+
+            // Naming the flag in the file changes nothing. The member is not deserialized, and the boundary
+            // decision overwrites it either way, so the file cannot admit a root the boundary refused.
+            File.WriteAllText(
+                configPath,
+                config.Insert(config.IndexOf('{', StringComparison.Ordinal) + 1, "\"allowTestProductRoot\":true,"));
+            var forged = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(
+                ["cameraagent", "install", "--config", configPath], allowTestProductRoot: false));
+            StringAssert.Contains(forged.Message, "--product-root", StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(configPath);
+        }
+
+        // Opposite explicit decisions in flight together do not interfere, because neither reads shared state.
+        Parallel.For(0, 64, index =>
+        {
+            if (index % 2 == 0)
+            {
+                Assert.IsTrue(CommandLine.Parse(arguments, allowTestProductRoot: true).AllowTestProductRoot);
+            }
+            else
+            {
+                Assert.ThrowsExactly<InstallUsageException>(
+                    () => CommandLine.Parse(arguments, allowTestProductRoot: false));
+            }
+        });
+    }
 }

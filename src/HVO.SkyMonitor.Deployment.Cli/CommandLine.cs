@@ -6,28 +6,51 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal static class CommandLine
 {
+    /// <summary>
+    /// The one place a non-production product root can be admitted. The variable is read here, where the
+    /// process boundary is crossed, and never again: every request carries the answer it was parsed with, so
+    /// validation cannot be changed by anything that mutates process state after a request exists. Only the
+    /// ordinal value <c>1</c> admits, and an installer configuration file cannot reach this decision at all.
+    /// </summary>
+    private static bool TestProductRootAdmittedByEnvironment()
+        => string.Equals(
+            Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT"),
+            "1",
+            StringComparison.Ordinal);
+
     public static DeploymentCommand ParseCommand(string[] args)
+        => ParseCommand(args, TestProductRootAdmittedByEnvironment());
+
+    /// <summary>Parses with admission stated explicitly, so a caller never has to mutate process state.</summary>
+    internal static DeploymentCommand ParseCommand(string[] args, bool allowTestProductRoot)
     {
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "install")
         {
-            return new InstallDeploymentCommand(Parse(args));
+            return new InstallDeploymentCommand(Parse(args, allowTestProductRoot))
+            {
+                AllowTestProductRoot = allowTestProductRoot
+            };
         }
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "recover-owner")
         {
-            return ParseOwnerRecovery(args);
+            return ParseOwnerRecovery(args, allowTestProductRoot);
         }
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "preflight")
         {
-            return ParseStatePreflight(args);
+            return ParseStatePreflight(args, allowTestProductRoot);
         }
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "reset-state")
         {
-            return ParseStateReset(args);
+            return ParseStateReset(args, allowTestProductRoot);
         }
-        return ParseLifecycle(args);
+        return ParseLifecycle(args, allowTestProductRoot);
     }
 
     public static InstallRequest Parse(string[] args)
+        => Parse(args, TestProductRootAdmittedByEnvironment());
+
+    /// <summary>Parses with admission stated explicitly, so a caller never has to mutate process state.</summary>
+    internal static InstallRequest Parse(string[] args, bool allowTestProductRoot)
     {
         if (args.Length < 2 || args[0] != "cameraagent" || args[1] != "install")
         {
@@ -113,6 +136,7 @@ internal static class CommandLine
 
         request = request with
         {
+            AllowTestProductRoot = allowTestProductRoot,
             DryRun = flags.Contains("--dry-run") || request.DryRun,
             Resume = flags.Contains("--resume") || request.Resume,
             Json = flags.Contains("--json") || request.Json,
@@ -197,7 +221,7 @@ internal static class CommandLine
             _ => throw new InstallUsageException("--replay-profile must be in-process or local-runner.")
         };
 
-    private static LifecycleRequest ParseLifecycle(string[] args)
+    private static LifecycleRequest ParseLifecycle(string[] args, bool allowTestProductRoot)
     {
         var (operation, optionOffset) = args switch
         {
@@ -251,6 +275,7 @@ internal static class CommandLine
             flags.Contains("--resume"),
             flags.Contains("--json"))
         {
+            AllowTestProductRoot = allowTestProductRoot,
             ImageReference = Get(values, "--image-ref"),
             ImageArchive = Get(values, "--image-archive"),
             ImageArchiveSha256 = Get(values, "--image-archive-sha256"),
@@ -275,7 +300,7 @@ internal static class CommandLine
         return request;
     }
 
-    private static CameraAgentStatePreflightRequest ParseStatePreflight(string[] args)
+    private static CameraAgentStatePreflightRequest ParseStatePreflight(string[] args, bool allowTestProductRoot)
     {
         var (values, flags) = ParseOptions(args, 2, ["--json", "--no-download"]);
         RejectUnknown(values, [
@@ -288,6 +313,7 @@ internal static class CommandLine
             Get(values, "--image-ref"),
             flags.Contains("--json"))
         {
+            AllowTestProductRoot = allowTestProductRoot,
             ImageManifest = Get(values, "--image-manifest"),
             ImageIndex = Get(values, "--image-index"),
             ImageVersion = Get(values, "--image-version"),
@@ -301,7 +327,7 @@ internal static class CommandLine
         return request;
     }
 
-    private static CameraAgentStateResetRequest ParseStateReset(string[] args)
+    private static CameraAgentStateResetRequest ParseStateReset(string[] args, bool allowTestProductRoot)
     {
         var (values, flags) = ParseOptions(args, 2, ["--json", "--dry-run"]);
         RejectUnknown(values, ["--instance-id", "--confirm-instance-id", "--product-root"]);
@@ -310,7 +336,10 @@ internal static class CommandLine
             ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
             Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
             flags.Contains("--dry-run"),
-            flags.Contains("--json"));
+            flags.Contains("--json"))
+        {
+            AllowTestProductRoot = allowTestProductRoot
+        };
         request.Validate();
         return request;
     }
@@ -349,7 +378,7 @@ internal static class CommandLine
         if (unknown is not null) throw new InstallUsageException($"Unknown option '{unknown}'.");
     }
 
-    private static OwnerRecoveryRequest ParseOwnerRecovery(string[] args)
+    private static OwnerRecoveryRequest ParseOwnerRecovery(string[] args, bool allowTestProductRoot)
     {
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         var flags = new HashSet<string>(StringComparer.Ordinal);
@@ -393,7 +422,10 @@ internal static class CommandLine
             Get(values, "--password-file"),
             flags.Contains("--generate-password"),
             flags.Contains("--resume"),
-            flags.Contains("--json"));
+            flags.Contains("--json"))
+        {
+            AllowTestProductRoot = allowTestProductRoot
+        };
         request.Validate();
         return request;
     }
