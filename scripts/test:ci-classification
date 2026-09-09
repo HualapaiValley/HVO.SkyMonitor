@@ -956,14 +956,24 @@ release.yml qualifies a release SHA by looking for a completed CI run produced
 by a push to main. Nothing else can answer that query, so a workflow that does
 not produce such a run leaves every release unqualifiable.
 
-Four adversarial review rounds defeated guards that tried to *interpret*
-GitHub's branch filter grammar: shell-globbing semantics for `?`, escaped
-metacharacters, leading globstar zero-segment matches, YAML 1.1 resolving a
-bare scalar to a boolean, and whole branches of the grammar never examined at
-all. Each fix answered "accepted" for a shape it did not actually understand.
+Seven adversarial findings have now defeated guards over this one assertion,
+and every one of them is the same shape: the reader answered "accepted" for
+input it did not actually understand.
 
-So this does not interpret patterns. It recognizes the one shape this
-repository uses and refuses everything else. Anything unrecognized is "I
+Four were in the pattern grammar. Shell-globbing semantics for `?`, escaped
+metacharacters, leading globstar zero-segment matches, and YAML 1.1 resolving
+a bare scalar to a boolean.
+
+Two were in the document structure, outside any entry: a duplicated mapping
+key, where this reader took the first and every YAML parser takes the last or
+refuses the document, and a tab in a line's indentation, which measured as
+column zero and silently ended the block before the keys that had to be
+examined. Neither is an attack. A duplicated trigger key is an ordinary merge
+conflict artifact and a tab is an editor default.
+
+So this does not interpret patterns, and it does not measure around structure
+it cannot read. It recognizes the one shape this repository uses and refuses
+everything else. Anything unrecognized is "I
 cannot determine that this workflow runs on a main push", which is a red gate
 rather than a green one. Widening the workflow is meant to require widening
 this guard deliberately.
@@ -982,6 +992,13 @@ BRANCH = 'main'
 # a positive pattern can only add branches to a trigger, never remove main, so
 # refusing them would buy nothing and would reject this repository's own
 # 'release/**' entry.
+#
+# The scope of that argument is one entry. It says nothing about suppression
+# from outside the entry, where a second `branches` key or a second `push`
+# block can replace the list wholesale without any entry containing either
+# character. Structural suppression is a separate class and it is the reader's
+# job, not this tuple's: see read_push_block and read_branches, which refuse a
+# duplicated key rather than choosing which occurrence wins.
 INVERTING = ('!', '\\')
 # A push block may name these. Any other key is a part of the grammar this
 # guard has not been taught, so it fails closed.
@@ -1023,7 +1040,20 @@ def strip_comment(line):
 
 
 def indent_of(line):
-    return len(line) - len(line.lstrip(' '))
+    """Return the line's indentation width, refusing what it cannot measure.
+
+    Counting only spaces would read a tab-indented line as column zero, which
+    ends the enclosing block early and leaves every later key unexamined. YAML
+    forbids tabs in indentation outright, so a tab here means the document does
+    not parse and there is nothing to measure.
+    """
+    leading = line[:len(line) - len(line.lstrip())]
+    if '\t' in leading:
+        raise Unrecognized(
+            'a tab indents %r; YAML forbids tabs in indentation, so this '
+            'document does not parse and its shape cannot be recognized'
+            % line.strip())
+    return len(leading)
 
 
 def unquote(token):
@@ -1101,25 +1131,36 @@ def read_push_block(path):
     with open(path, encoding='utf-8') as handle:
         lines = handle.read().splitlines()
 
-    on_index = None
+    on_indexes = []
     for index, raw in enumerate(lines):
-        stripped = strip_comment(raw)
-        if indent_of(stripped) != 0:
+        # A top-level key carries no leading whitespace at all. Testing the
+        # first character rather than measuring an indent keeps this scan away
+        # from block scalar bodies, whose `run:` content is not YAML structure
+        # and may legitimately contain tabs.
+        if raw[:1].isspace():
             continue
+        stripped = strip_comment(raw)
         key = stripped.split(':', 1)[0].strip()
         # YAML 1.1 lets `on` be written bare or quoted; all three spellings are
         # the same key.
         if key in ('on', "'on'", '"on"') and stripped.rstrip().endswith(':'):
-            on_index = index
-            break
-    if on_index is None:
+            on_indexes.append(index)
+    if not on_indexes:
         raise Unrecognized('workflow has no top-level `on:` key')
+    if len(on_indexes) > 1:
+        raise Unrecognized(
+            'the workflow defines %d top-level `on:` keys (lines %s); parsers '
+            'either resolve a duplicate mapping key last-wins or refuse the '
+            'document, and this reader will not pick between those answers'
+            % (len(on_indexes), ', '.join(str(i + 1) for i in on_indexes)))
+    on_index = on_indexes[0]
 
     on_block, _ = read_block(lines, on_index, 0)
     if not on_block:
         raise Unrecognized('`on:` block is empty')
     on_indent = indent_of(on_block[0])
 
+    push_offsets = []
     for offset, stripped in enumerate(on_block):
         if indent_of(stripped) != on_indent:
             continue
@@ -1130,9 +1171,19 @@ def read_push_block(path):
             continue
         if remainder[1:].strip():
             raise Unrecognized('inline `push:` value is not recognized')
-        block, _ = read_block(on_block, offset, on_indent)
-        return block
-    raise Unrecognized('workflow has no `push:` trigger')
+        push_offsets.append(offset)
+    if not push_offsets:
+        raise Unrecognized('workflow has no `push:` trigger')
+    if len(push_offsets) > 1:
+        # Taking the first would read a filter list that a parser discards. A
+        # second `push:` naming only a release branch removes main from the
+        # effective trigger without touching the first block at all.
+        raise Unrecognized(
+            '`on:` defines `push:` %d times; parsers either resolve a '
+            'duplicate mapping key last-wins or refuse the document, and this '
+            'reader will not pick between those answers' % len(push_offsets))
+    block, _ = read_block(on_block, push_offsets[0], on_indent)
+    return block
 
 
 def read_branches(push_block):
@@ -1142,11 +1193,16 @@ def read_branches(push_block):
                            'recognized one')
     key_indent = indent_of(push_block[0])
     branches = None
+    seen_keys = []
     for offset, stripped in enumerate(push_block):
         if indent_of(stripped) != key_indent:
             continue
         if stripped.strip().startswith('- '):
-            raise Unrecognized('`push:` is a sequence, not a mapping')
+            raise Unrecognized(
+                'a block sequence entry sits where a key of `push:` was '
+                'expected: %s; this reader recognizes a branch list written '
+                'as a flow sequence on the `branches:` line, or as a block '
+                'sequence indented under it' % stripped.strip())
         if ':' not in stripped:
             raise Unrecognized('unrecognized line in `push:`: %s'
                                % stripped.strip())
@@ -1154,6 +1210,12 @@ def read_branches(push_block):
         key = key.strip()
         if key not in KNOWN_PUSH_KEYS:
             raise Unrecognized('unrecognized key in `push:`: %s' % key)
+        if key in seen_keys:
+            raise Unrecognized(
+                '`push:` defines %s more than once; parsers either resolve a '
+                'duplicate mapping key last-wins or refuse the document, and '
+                'this reader will not pick between those answers' % key)
+        seen_keys.append(key)
         if key in DISQUALIFYING_PUSH_KEYS:
             raise Unrecognized('`push:` defines %s, which can suppress or '
                                'narrow the main-push run' % key)
