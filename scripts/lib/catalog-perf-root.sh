@@ -64,7 +64,11 @@ assert_catalog_perf_root_shape() {
     # bare "?" here admits "versions/.", whose single dot satisfies the pattern, is not a link, resolves to
     # versions/ inside the root, and counts one database on a single-version root. The container refuses it twice,
     # in the contained-path check and again in version validation, so this admitted a root the container rejects.
-    if [[ "$target" != versions/[A-Za-z0-9]* || "$target" == */*/* ]]; then
+    # The first character is not the whole rule. IsValidVersion also constrains every remaining character to an
+    # ASCII alphanumeric or . _ + - so a name like "1.0 0" passes a first-character-only pattern, is not a link,
+    # resolves inside the root and counts one database. The third clause tests the segment after versions/ for any
+    # character outside that set. The prefix is stripped first because the slash itself is outside the set.
+    if [[ "$target" != versions/[A-Za-z0-9]* || "$target" == */*/* || "${target#versions/}" == *[!A-Za-z0-9._+-]* ]]; then
         printf 'The "current" pointer in %s must target versions/PACKAGE_VERSION; it targets %s.\n' \
             "$root" "$target" >&2
         return 2
