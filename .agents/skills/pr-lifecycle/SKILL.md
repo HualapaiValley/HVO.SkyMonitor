@@ -295,13 +295,16 @@ protected CI, or merge.
    correction is expected. Confirm no open PR has `workflow:finalizing` by
    direct object read of each open PR, not by a filtered or search-indexed
    list. A filtered read proves presence, never absence: a result naming a
-   holder is authoritative, but an empty result means only that the index has
-   not caught up, and it returns a well-formed `200` rather than an error.
-   Enumerate open PRs, read each `issues/<n>` object, and treat only that set
-   as the lock state. The same rule applies to every recheck of sole ownership
-   and to reading a PR head after a push. If a holder exists,
-   do not apply the label. Otherwise, apply it to this PR, then use live queries
-   to confirm sole ownership at both ends of a minimum thirty-second
+   holder is authoritative, but an empty result cannot distinguish no holder
+   from an index that has not caught up, and it returns a well-formed `200`
+   in both cases rather than an error. Enumerate open PRs with
+   `gh pr list --state open`, which reads primary data, then read each
+   `issues/<n>` object, and treat only that set as the lock state. Do not add
+   `--label workflow:finalizing`: that one flag routes the same command
+   through search, and nothing at the call site announces it. The same rule
+   applies to every recheck of sole ownership. If a holder exists, do not
+   apply the label. Otherwise, apply it to this PR, then use live queries to
+   confirm sole ownership at both ends of a minimum thirty-second
    stabilization interval. If concurrent claims appear, the lowest PR number
    retains the label and every other claimant removes it and waits. Recheck sole
    ownership immediately before final synchronization, the ready transition,
@@ -319,7 +322,8 @@ protected CI, or merge.
    shared-file/contract overlap, or material changed interaction; use `deep` for
    any of those conditions.
 4. Fetch again and prove the target base and PR head are current, mergeable, and
-   reviewed. If either moved, repeat synchronization or review as applicable.
+   reviewed. The same rule stated in step 1 applies to reading a PR head after
+   a push. If either moved, repeat synchronization or review as applicable.
    At this draft pre-ready gate, use the provider's structural mergeability
    result: for GitHub, require `mergeable: true`, retry a bounded `null` or
    unknown result, and stop on `false` or conflicts. Do not require
