@@ -11,6 +11,7 @@ readonly SCRIPT_DIR="$(cd "$script_directory" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/issue-211/compose.yml"
+readonly LOCAL_RUNNER_COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/issue-211/compose.local-runner.yml"
 readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/cameraagent-dual-standalone-smoke/otel-collector.yml"
 readonly CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6.json"
 readonly MONO_CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6-mono8.json"
@@ -44,6 +45,14 @@ for command in cat chmod cp curl date dirname docker dotnet env flock git hostna
 done
 readonly LOCAL_UID="$(id -u)"
 readonly LOCAL_GID="$(id -g)"
+
+# Every generated secret whose literal value must never reach retained evidence, named once so a
+# secret added to one scan cannot be missed by another. Each site prefixes "$trial_local/secrets/"
+# and skips a name the current trial did not generate. `rg --file` aborts on a missing file, which
+# is the case the guard exists for: the replay runner key exists only in the LocalRunner trial, so
+# an unguarded site would fail every other trial's evidence gate rather than leak anything. A
+# zero-byte file is the quieter half; rg reports no match and the scan silently asserts nothing.
+readonly SECRET_FILE_NAMES=(owner-password replay-runner-auth-key)
 
 prepare_private_root() {
     local path="$1"
@@ -390,27 +399,41 @@ assert_trial_executed_and_passed() {
 
 active_project=""
 active_env=""
+# The compose files backing the active project. Set with active_project so the EXIT trap tears
+# down exactly what was brought up: a cleanup that omitted the overlay would leave the replay
+# runner running and the socket directory populated, and the next trial would inherit both.
+active_compose_files=("--file" "$COMPOSE_FILE")
 active_client_network=""
 active_owner_email=""
 active_owner_password=""
+active_replay_auth_key=""
 cleanup() {
     if [[ -n "$active_project" ]]; then
         local failure_log="$RESULTS/failure-$active_project.log"
         while IFS= read -r line; do
-            line="${line//$active_owner_email/[REDACTED-OWNER]}"
-            line="${line//$active_owner_password/[REDACTED-PASSWORD]}"
+            # An empty needle substitutes between every character, so each replacement is
+            # guarded on the value being set. cleanup() runs before a trial assigns them.
+            if [[ -n "$active_owner_email" ]]; then
+                line="${line//$active_owner_email/[REDACTED-OWNER]}"
+            fi
+            if [[ -n "$active_owner_password" ]]; then
+                line="${line//$active_owner_password/[REDACTED-PASSWORD]}"
+            fi
+            if [[ -n "$active_replay_auth_key" ]]; then
+                line="${line//$active_replay_auth_key/[REDACTED-REPLAY-AUTH-KEY]}"
+            fi
             if [[ "$line" =~ [Aa]uthorization:[[:space:]]*(Basic|Bearer)|[Ss]et-[Cc]ookie:|[Rr]equest[Vv]erification[Tt]oken|[Aa]ntiforgery|[Cc]lient[_-]?[Ss]ecret|[Cc]onnection[_-]?[Ss]tring ]]; then
                 printf '%s\n' '[REDACTED-SENSITIVE-LOG-LINE]'
             else
                 printf '%s\n' "$line"
             fi
-        done < <(docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" logs --no-color --tail 20000 2>&1 || true) \
+        done < <(docker compose --env-file "$active_env" --project-name "$active_project" "${active_compose_files[@]}" logs --no-color --tail 20000 2>&1 || true) \
             > "$failure_log"
         if [[ -n "$active_client_network" ]]; then
             docker network disconnect "$active_client_network" "$(hostname)" >/dev/null 2>&1 || true
             active_client_network=""
         fi
-        docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true
+        docker compose --env-file "$active_env" --project-name "$active_project" "${active_compose_files[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
@@ -427,10 +450,28 @@ run_profile_trial() {
     local transient_mode="$9"
     local transient_required="${10}"
     local collect_phase14="${11}"
+    # InProcess unless a trial asks otherwise, so existing trials are unchanged by construction
+    # rather than by a default chosen to look safe.
+    local replay_profile="${12:-InProcess}"
+    # The durable root is named separately from the trial so two invocations can share one, which
+    # is what #719 requires: the issue's acceptance criteria say to "recreate only CameraAgent
+    # against the same durable root under LocalRunner". Defaulting to the trial name leaves every
+    # existing caller with a private root, unchanged by construction.
+    local state_key="${13:-$trial}"
+    # Whether this invocation hands its durable root to a later one. The last invocation over a
+    # shared root is the one that deletes it.
+    local retain_state="${14:-false}"
     assert_worktree_unchanged
     local trial_result="$RESULTS/$trial"
-    local trial_local="$BIND_LOCAL_ROOT/$trial"
-    local trial_host="$BIND_HOST_ROOT/$trial"
+    local trial_local="$BIND_LOCAL_ROOT/$state_key"
+    local trial_host="$BIND_HOST_ROOT/$state_key"
+    # A marker rather than the presence of the directory: an invocation that died partway through
+    # setup leaves directories behind, and treating that as established state would silently run
+    # the second invocation against a root the first never finished writing.
+    local reuse_state=false
+    if [[ -f "$trial_local/.state-established" ]]; then
+        reuse_state=true
+    fi
     mkdir -p "$trial_result/evidence" "$trial_local"/{config,runtime/home,dataprotection,secrets,telemetry,catalog}
     jq '
       .schedule.blackouts = [{
@@ -440,17 +481,41 @@ run_profile_trial() {
       }]
     ' "$config_template" > "$trial_local/config/cameraagent.json"
     cp "$COLLECTOR_CONFIG" "$trial_local/config/otel-collector.yml"
-    cp -a "$HVO_CATALOG_PERF_ROOT/." "$trial_local/catalog/"
-    local owner_password="Aa!$(openssl rand -base64 36 | tr -d '\n')"
+    local owner_password
     local owner_email='standalone-owner@cameraagent.test'
+    if [[ "$reuse_state" == true ]]; then
+        # The Identity store inside this root already holds this owner, so bootstrap will not run
+        # again. Minting a fresh password here would leave the second invocation unable to
+        # authenticate against the state the first one established -- which is the whole reason
+        # the root is shared.
+        owner_password="$(< "$trial_local/secrets/owner-password")"
+    else
+        cp -a "$HVO_CATALOG_PERF_ROOT/." "$trial_local/catalog/"
+        owner_password="Aa!$(openssl rand -base64 36 | tr -d '\n')"
+        printf '%s\n' "$owner_password" > "$trial_local/secrets/owner-password"
+        chmod 600 "$trial_local/secrets/owner-password"
+    fi
     active_owner_email="$owner_email"
     active_owner_password="$owner_password"
-    printf '%s\n' "$owner_password" > "$trial_local/secrets/owner-password"
-    chmod 600 "$trial_local/secrets/owner-password"
 
     local suffix="${REVISION:0:8}-${trial//[^a-zA-Z0-9]/}-$$"
     active_project="hvo211-$suffix"
     active_env="$trial_local/compose.env"
+    if [[ "$replay_profile" == LocalRunner ]]; then
+        # The runner reaches the agent only over this socket and authenticates with this key, so
+        # both are created per trial and neither is shared between them. 0700 and 0600 are the
+        # installer's modes; a looser mode here would prove a topology nobody deploys.
+        install -d -m 700 "$trial_local/replay-runner"
+        if [[ ! -s "$trial_local/secrets/replay-runner-auth-key" ]]; then
+            umask 077
+            openssl rand -base64 48 | tr -d '\n' > "$trial_local/secrets/replay-runner-auth-key"
+            chmod 600 "$trial_local/secrets/replay-runner-auth-key"
+        fi
+        active_replay_auth_key="$(cat "$trial_local/secrets/replay-runner-auth-key")"
+        active_compose_files=("--file" "$COMPOSE_FILE" "--file" "$LOCAL_RUNNER_COMPOSE_FILE")
+    else
+        active_compose_files=("--file" "$COMPOSE_FILE")
+    fi
     cat > "$active_env" <<EOF
 CAMERA_AGENT_IMAGE=$CAMERA_AGENT_IMAGE
 CAMERA_AGENT_CONTAINER=hvo211-$suffix-camera
@@ -459,6 +524,10 @@ CAMERA_AGENT_ID=$agent_id
 CAMERA_AGENT_CALIBRATION_REQUIRED=$calibration_required
 CAMERA_AGENT_TRANSIENT_MODE=$transient_mode
 CAMERA_AGENT_TRANSIENT_REQUIRED=$transient_required
+CAMERA_AGENT_REPLAY_PROFILE=$replay_profile
+REPLAY_RUNNER_CONTAINER=hvo211-$suffix-replay
+REPLAY_RUNNER_SOCKET_DIR=$trial_host/replay-runner
+REPLAY_RUNNER_AUTH_KEY_FILE=$trial_host/secrets/replay-runner-auth-key
 ISSUE211_BIND_ADDRESS=$DOCKER_HOST_ADDRESS
 ISSUE211_HTTP_PORT=$HTTP_PORT
 CAMERA_AGENT_RUNTIME_SOURCE=$trial_host/runtime
@@ -476,8 +545,8 @@ CENTRAL_DENY_CONTAINER=hvo211-$suffix-central-deny
 LOCAL_UID=$LOCAL_UID
 LOCAL_GID=$LOCAL_GID
 EOF
-    docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" config --quiet
-    docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" up --detach
+    docker compose --env-file "$active_env" --project-name "$active_project" "${active_compose_files[@]}" config --quiet
+    docker compose --env-file "$active_env" --project-name "$active_project" "${active_compose_files[@]}" up --detach
     local base_uri="http://$DOCKER_HOST_ADDRESS:$HTTP_PORT"
     if [[ -n "$host_workspace" ]]; then
         active_client_network="${active_project}_isolated"
@@ -527,6 +596,9 @@ EOF
     HVO_ISSUE_211_CENTRAL_DENY_IMAGE="$CENTRAL_DENY_IMAGE" \
     HVO_ISSUE_211_WARMUP_CAPTURES="$warmup_capture_count" \
     HVO_ISSUE_211_MEASURED_CAPTURES="$measured_capture_count" \
+    HVO_ISSUE_211_REPLAY_PROFILE="$replay_profile" \
+    HVO_ISSUE_211_STATE_KEY="$state_key" \
+    HVO_ISSUE_211_STATE_REUSED="$reuse_state" \
         dotnet test "$PROJECT" --no-build --configuration Release \
         --filter "FullyQualifiedName=$test_filter" \
         --results-directory "$trial_result" \
@@ -654,8 +726,10 @@ EOF
         printf 'Unable to scan unsanitized telemetry logs for %s (rg exit %s).\n' "$trial" "$raw_log_scan_status" >&2
         return 1
     fi
-    # shellcheck disable=SC2066 # Keep secret-file scans extensible while the current profile has one file.
-    for sensitive_file in "$trial_local/secrets/owner-password"; do
+    local secret_name sensitive_file
+    for secret_name in "${SECRET_FILE_NAMES[@]}"; do
+        sensitive_file="$trial_local/secrets/$secret_name"
+        [[ -s "$sensitive_file" ]] || continue
         raw_log_scan_status=0
         rg --text --fixed-strings --file "$sensitive_file" "$raw_logs" >/dev/null || raw_log_scan_status=$?
         if ((raw_log_scan_status == 0)); then
@@ -997,14 +1071,19 @@ EOF
         printf 'Unable to scan forbidden evidence patterns for %s (rg exit %s).\n' "$trial" "$sanitization_rg_status" >&2
         return 1
     fi
-    sanitization_rg_status=0
-    rg --text --files-with-matches --null --hidden --fixed-strings \
-        --file "$trial_local/secrets/owner-password" \
-        "$trial_result" >> "$sanitization_matches" || sanitization_rg_status=$?
-    if ((sanitization_rg_status > 1)); then
-        printf 'Unable to scan the generated owner password for %s (rg exit %s).\n' "$trial" "$sanitization_rg_status" >&2
-        return 1
-    fi
+    for secret_name in "${SECRET_FILE_NAMES[@]}"; do
+        sensitive_file="$trial_local/secrets/$secret_name"
+        [[ -s "$sensitive_file" ]] || continue
+        sanitization_rg_status=0
+        rg --text --files-with-matches --null --hidden --fixed-strings \
+            --file "$sensitive_file" \
+            "$trial_result" >> "$sanitization_matches" || sanitization_rg_status=$?
+        if ((sanitization_rg_status > 1)); then
+            printf 'Unable to scan generated credentials (%s) for %s (rg exit %s).\n' \
+                "$secret_name" "$trial" "$sanitization_rg_status" >&2
+            return 1
+        fi
+    done
     sanitization_rg_status=0
     rg --text --files-with-matches --null --hidden --fixed-strings "$owner_email" \
         "$trial_result" >> "$sanitization_matches" || sanitization_rg_status=$?
@@ -1060,8 +1139,9 @@ EOF
             "$trial" "$final_trial_scan_status" >&2
         return 1
     fi
-    # shellcheck disable=SC2066 # Keep secret-file scans extensible while the current profile has one file.
-    for sensitive_file in "$trial_local/secrets/owner-password"; do
+    for secret_name in "${SECRET_FILE_NAMES[@]}"; do
+        sensitive_file="$trial_local/secrets/$secret_name"
+        [[ -s "$sensitive_file" ]] || continue
         final_trial_scan_status=0
         rg --text --hidden --fixed-strings --file "$sensitive_file" \
             "$trial_result" >/dev/null || final_trial_scan_status=$?
@@ -1083,13 +1163,22 @@ EOF
         docker network disconnect "$active_client_network" "$(hostname)"
         active_client_network=""
     fi
-    docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" down --volumes --remove-orphans
+    docker compose --env-file "$active_env" --project-name "$active_project" "${active_compose_files[@]}" down --volumes --remove-orphans
     active_project=""
     active_env=""
+    active_compose_files=("--file" "$COMPOSE_FILE")
     active_owner_email=""
     active_owner_password=""
-    chmod -R u+w "$trial_local" 2>/dev/null || true
-    rm -rf -- "$trial_local"
+    active_replay_auth_key=""
+    if [[ "$retain_state" == true ]]; then
+        # Written only after every gate above has passed, so the marker means "this root holds
+        # state a later invocation may rely on" and not merely "an invocation started here".
+        : > "$trial_local/.state-established"
+        chmod 600 "$trial_local/.state-established"
+    else
+        chmod -R u+w "$trial_local" 2>/dev/null || true
+        rm -rf -- "$trial_local"
+    fi
     assert_no_owned_acceptance_resources
     assert_worktree_unchanged
 }
@@ -1120,6 +1209,51 @@ run_profile_trial \
     5 \
     'Off' \
     'false' \
+    'false'
+
+# Issue #719. Two invocations over one durable root, named 'replay-719'. The first establishes the
+# capture and replays it in process and retains the root; the second recreates only CameraAgent
+# against that same root under LocalRunner, reads the first invocation's work out of durable state,
+# and asserts the three-way output identity before deleting the root.
+#
+# The order is load-bearing and the pair is not separable. The second invocation is told nothing
+# about the first: it finds the capture by requiring exactly one prior replay execution in the
+# shared root. Running these in the other order, or either one alone, therefore fails outright
+# rather than reporting a narrower pass.
+#
+# The capture counts are consumed only by the first invocation, which needs six captures to freeze
+# a five-input rolling window. The second captures nothing; it is given the same numbers because
+# the positional signature requires them, not because it uses them.
+run_profile_trial \
+    'replay-inprocess' \
+    "$CONFIG_TEMPLATE" \
+    'cameraagent-standalone-w6-asi676mc' \
+    'true' \
+    'HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.CanonicalArchivedReplayMaintainsLiveCadenceAsync' \
+    'issue-719-replay-inprocess.trx' \
+    1 \
+    6 \
+    'Off' \
+    'false' \
+    'false' \
+    'InProcess' \
+    'replay-719' \
+    'true'
+
+run_profile_trial \
+    'replay-localrunner' \
+    "$CONFIG_TEMPLATE" \
+    'cameraagent-standalone-w6-asi676mc' \
+    'true' \
+    'HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.CanonicalArchivedReplayMaintainsLiveCadenceAsync' \
+    'issue-719-replay-localrunner.trx' \
+    1 \
+    6 \
+    'Off' \
+    'false' \
+    'false' \
+    'LocalRunner' \
+    'replay-719' \
     'false'
 
 jq -s '
@@ -1351,6 +1485,15 @@ jq -s '{schemaVersion: "issue-211-trial-sanitization-summary-v1", trialCount: le
   "$RESULTS"/*/evidence/runtime/sanitization-scan.json > "$RESULTS/trial-sanitization-summary.json"
 assert_gate "$RESULTS/telemetry-summary.json" 'telemetry summary' '.passed == true'
 assert_gate "$RESULTS/trial-sanitization-summary.json" 'trial sanitization summary' '.passed == true'
+# This root scan searches the whole retained tree for header/cookie patterns and the synthetic owner
+# email, and deliberately not for the two generated secret values. The reason is scope, not content:
+# the per-trial scans above search "$RESULTS/<trial>" for exactly those literals, so the retained
+# tree can certainly contain them. What protects this scan is that by the time it runs both globals
+# were cleared at the end of every trial and $trial_local is local to run_profile_trial, so nothing
+# here holds a secret's value or a path to its file. The owner email is scannable here only because
+# it is a fixed literal known at every scope. The one root-level artifact that could carry a secret
+# is "$RESULTS/failure-$active_project.log", which cleanup() writes only on the abort path and only
+# with the values already substituted out.
 root_scan_matches="$RESULTS/.root-sanitization-matches"
 root_scan_status=0
 rg --text --files-with-matches --null --hidden --ignore-case \
