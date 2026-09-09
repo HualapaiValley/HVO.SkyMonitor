@@ -25,13 +25,47 @@ public sealed class CameraAgentGalleryPerformanceTests
 
     // Browser-driven latency is load-sensitive in a way the read-model measurements are not: under
     // contention the two browser families move +41.6% and +46.0% while the SQLite and Kestrel
-    // families stay flat (see #785). A wall-clock p95 measured on a busy host therefore describes
-    // the host rather than the product, so the browser bounds are only asserted when the machine was
-    // quiet before the workload began. Being wrong about this ceiling is safe in both directions: too
-    // strict yields Inconclusive, which scripts/lib/trx-evidence.sh refuses as "proved nothing", and
-    // too lenient is no worse than asserting unconditionally as before. It can never manufacture a
-    // false pass or a false regression, which is why a constant is defensible here and is not for the
-    // latency bound itself.
+    // families stay flat (see #785). That sensitivity does not make every measurement taken on a busy
+    // host worthless, and an earlier revision of this file was wrong to treat it as though it did.
+    // Contention makes a deadline harder to meet, so it biases a wall-clock bound against the pass: a
+    // p95 that clears the bound while the host is contended cleared it with less machine available
+    // than an idle run had, and is the stronger of the two results. Refusing it would discard the
+    // stronger measurement and keep the weaker one. What contention cannot support is a MISS, which a
+    // slow product and a busy host produce identically.
+    //
+    // So this ceiling does not decide whether to measure or whether to assert. It decides whether a
+    // miss is attributable. A met bound is asserted at any load; a missed bound on a quiet host is a
+    // real failure; a missed bound above the ceiling is refused as unattributable, and Inconclusive is
+    // what scripts/lib/trx-evidence.sh refuses as "proved nothing". Being wrong about the constant is
+    // safe in both directions: too strict turns a genuine failure on a moderately busy host into a
+    // loud refusal the operator must reproduce quietly, and too lenient reports a contended miss as a
+    // red, which is exactly what this file did unconditionally before. Neither direction can
+    // manufacture a false pass, which is why a constant is defensible here and is not for the latency
+    // bound itself.
+    //
+    // Where the ceiling applies is a mechanical test, not a judgement about which tests look
+    // timing-sensitive. It applies exactly where an assertion compares a measured quantity to a bound
+    // that contention pushes toward the miss, and only to the miss. Everything else in this file
+    // records its timings into the evidence document and asserts nothing against them, and for those
+    // the load belongs BESIDE the number rather than in a refusal: host load moves the number and
+    // moves no verdict, so refusing the run would discard evidence to protect a conclusion nobody
+    // drew. MeasureHttpApiAsync is the case in point. It records a p95 and asserts none, so it is out
+    // of scope here for that reason alone, before any argument about how load-sensitive it measured.
+    // Naming a test is never the test: a name that says "responsive" can mean layout across viewports
+    // rather than any deadline at all, and keying a refusal on the name would misfire on it.
+    //
+    // The bounds refused here are the p95 and the per-session working set, which is bytes rather than
+    // milliseconds. It is included because the direction is what matters and memory pressure pushes
+    // growth toward its miss the same way contention pushes latency toward its own; see the note on
+    // RefuseUnattributableBrowserMiss for why that is an argument from direction and not from a
+    // measurement.
+    //
+    // What no load ceiling addresses, and this one does not claim to: a race that only appears when
+    // the machine is fast. That is the opposite shape from a deadline, it is not what a latency budget
+    // is asked to show, and refusing slow-host measurements does nothing about it. Nor does it reach a
+    // deadline enforced by a timeout or a cancellation token rather than by an assertion: that is the
+    // same directional shape wearing a different mechanism, it never reaches this method, and nothing
+    // in this branch covers it.
     private const double MaximumAdmissibleLoadPerCore = 0.40;
     private const string RefusalFileName = "cameraagent-gallery-performance-refusal.json";
     private const long MaximumWorkingSetGrowthBytes = 256L * 1024 * 1024;
@@ -178,7 +212,8 @@ public sealed class CameraAgentGalleryPerformanceTests
                     "Recorded, never adjudicated. This sample is dominated by the workload this run "
                     + "generated, and load1 carries no decomposition that could separate that from "
                     + "inherited contention, so it is not comparable with ContentionCeilingPerCore. "
-                    + "Only PreWorkloadLoadPerCore gates admissibility.",
+                    + "Only PreWorkloadLoadPerCore is compared with ContentionCeilingPerCore, and "
+                    + "only to decide whether a MISSED bound is attributable to the product.",
                 ContentionCeilingPerCore = MaximumAdmissibleLoadPerCore,
                 ContentionProcessorCount = contention.ProcessorCount,
                 ContentionProcessorCountSource = contention.ProcessorCountSource
@@ -306,7 +341,7 @@ public sealed class CameraAgentGalleryPerformanceTests
             var workingSetGrowth = Math.Max(0, workingSetAfter - workingSetBefore);
             var perSessionGrowth = workingSetGrowth / concurrency;
             var latencies = renders.Select(static render => render.ElapsedMilliseconds).Order().ToArray();
-            RefuseInadmissibleBrowserMeasurement(
+            RefuseUnattributableBrowserMiss(
                 contention, Percentile(latencies, 0.95), perSessionGrowth, "browser render sessions");
             Assert.IsLessThanOrEqualTo(MaximumPerSessionWorkingSetBytes, perSessionGrowth);
             Assert.IsLessThanOrEqualTo(MaximumP95Milliseconds, Percentile(latencies, 0.95), "browser render sessions");
@@ -391,7 +426,7 @@ public sealed class CameraAgentGalleryPerformanceTests
         var workingSetGrowth = Math.Max(0, workingSetAfter - sessionWorkingSetBefore);
         var perSessionGrowth = workingSetGrowth / concurrency;
         Array.Sort(latencies);
-        RefuseInadmissibleBrowserMeasurement(
+        RefuseUnattributableBrowserMiss(
             contention, Percentile(latencies, 0.95), perSessionGrowth, "browser preview failures");
         Assert.IsLessThanOrEqualTo(MaximumPerSessionWorkingSetBytes, perSessionGrowth);
         Assert.IsLessThanOrEqualTo(MaximumP95Milliseconds, Percentile(latencies, 0.95), "browser preview failures");
@@ -730,41 +765,59 @@ public sealed class CameraAgentGalleryPerformanceTests
         => measurements.Single(item => item.CaptureCount == captureCount &&
             item.Scenario == scenario && item.Concurrency == concurrency);
 
-    // Called before every load-sensitive assertion in the measured region, not after. The p95 bound is
-    // not the only assertion contention can move: MaximumPerSessionWorkingSetBytes is 32 MiB per
-    // session and a host under memory pressure — swapping, GC under stress, the condition this gate
-    // exists for — can fail it hard. Asserting it first would report a red result from a measurement
-    // this method is about to declare inadmissible, so admissibility is settled before any bound is
-    // adjudicated. The card-count and rendered-byte assertions above are left ungated deliberately:
-    // they are load-insensitive by construction, and a busy host does not change how many cards a page
-    // contains. Note that #785 measured latency under contention and is silent about working set, so
-    // this ordering does not depend on working set being load-sensitive; it depends only on it not
-    // being demonstrably insensitive.
-    private static void RefuseInadmissibleBrowserMeasurement(
+    // Called before either bound is adjudicated, and refuses only a MISS. A met bound is admissible at
+    // any load, for the reason recorded at MaximumAdmissibleLoadPerCore: contention biases a deadline
+    // against the pass, so a pass taken under contention is stronger than one taken idle and refusing
+    // it would throw away the better result.
+    //
+    // Both bounds are adjudicated here rather than the p95 alone, because MaximumPerSessionWorkingSetBytes
+    // is 32 MiB per session and a host under memory pressure — swapping, GC under stress, the condition
+    // the ceiling exists for — can miss it for the host's reasons rather than the product's. #785
+    // measured latency under contention and is silent about working set, so this does not claim working
+    // set is load-sensitive; it declines to claim the opposite. The card-count and rendered-byte
+    // assertions above stay ungated deliberately: a busy host does not change how many cards a page
+    // contains.
+    private static void RefuseUnattributableBrowserMiss(
         HostContention contention, double p95, long perSessionGrowthBytes, string scenario)
     {
-        if (contention.LoadPerCore is not { } loadPerCore || loadPerCore <= MaximumAdmissibleLoadPerCore)
+        var missed = new List<string>();
+        if (p95 > MaximumP95Milliseconds)
+        {
+            missed.Add($"p95 {p95:F1} ms against the {MaximumP95Milliseconds:F0} ms bound");
+        }
+        if (perSessionGrowthBytes > MaximumPerSessionWorkingSetBytes)
+        {
+            missed.Add(
+                $"per-session working-set growth {perSessionGrowthBytes} bytes against the " +
+                $"{MaximumPerSessionWorkingSetBytes} byte bound");
+        }
+
+        // Nothing missed, or the host was quiet enough for the miss to be the product's: in both cases
+        // the caller's assertions adjudicate, and a quiet-host miss is a real red.
+        if (missed.Count == 0
+            || contention.LoadPerCore is not { } loadPerCore
+            || loadPerCore <= MaximumAdmissibleLoadPerCore)
         {
             return;
         }
 
         var reason =
-            $"Host contention makes this browser measurement inadmissible. The one-minute load " +
+            $"This browser measurement missed a bound on a contended host, so the miss is " +
+            $"unattributable: {string.Join(" and ", missed)} for {scenario}. The one-minute load " +
             $"average before the workload started was {loadPerCore:F2} per core across " +
             $"{contention.ProcessorCount} cores ({contention.ProcessorCountSource}), above the " +
-            $"{MaximumAdmissibleLoadPerCore:F2} admissibility ceiling. Browser-driven p95 moves by more " +
-            $"than 40% under contention, so the {p95:F1} ms measured for {scenario} describes this host " +
-            $"rather than the product, whether it passes or fails the {MaximumP95Milliseconds:F0} ms " +
-            $"bound. Per-session working-set growth of {perSessionGrowthBytes} bytes is refused with it " +
-            $"rather than adjudicated separately. This is not a latency regression and the run proves " +
-            $"nothing about performance. Re-run on a quiet host.";
+            $"{MaximumAdmissibleLoadPerCore:F2} ceiling. Browser-driven p95 moves by more than 40% " +
+            $"under contention, so a slow product and a busy host produce the same red and this run " +
+            $"cannot tell them apart. Had the bounds been met at this load the run would have passed, " +
+            $"and that pass would have been stronger than an idle one. This is not a latency " +
+            $"regression, and it is not evidence against one either. Re-run on a quiet host.";
 
         // The refusal is persisted here because Assert.Inconclusive unwinds past the evidence writer at
         // the end of the test method, so a refused run would otherwise leave no durable record at all
         // and PreWorkloadLoadPerCore would only ever be published with an admissible value. See #802
         // for why the TRX alone is not sufficient: MSTest serialises Assert.Inconclusive as
         // outcome="NotExecuted", indistinguishable from a skipped test except in the message body.
-        WriteRefusalEvidence(contention, p95, perSessionGrowthBytes, scenario, reason);
+        WriteRefusalEvidence(contention, p95, perSessionGrowthBytes, scenario, missed, reason);
         Assert.Inconclusive(reason);
     }
 
@@ -773,7 +826,12 @@ public sealed class CameraAgentGalleryPerformanceTests
         "CA1031:Do not catch general exception types",
         Justification = "A refusal that cannot be written is still a refusal; no failure of this best-effort writer may convert one into a test failure.")]
     private static void WriteRefusalEvidence(
-        HostContention contention, double p95, long perSessionGrowthBytes, string scenario, string reason)
+        HostContention contention,
+        double p95,
+        long perSessionGrowthBytes,
+        string scenario,
+        IReadOnlyList<string> missed,
+        string reason)
     {
         try
         {
@@ -784,8 +842,9 @@ public sealed class CameraAgentGalleryPerformanceTests
             {
                 SchemaVersion = "cameraagent-archive-441-performance-refusal-v1",
                 RecordedUtc = DateTimeOffset.UtcNow,
-                Outcome = "Refused",
+                Outcome = "RefusedUnattributableMiss",
                 Scenario = scenario,
+                MissedBounds = missed,
                 Reason = reason,
                 PreWorkloadLoadPerCore = contention.LoadPerCore,
                 ContentionCeilingPerCore = MaximumAdmissibleLoadPerCore,
