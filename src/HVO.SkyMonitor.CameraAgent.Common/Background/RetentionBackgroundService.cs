@@ -160,15 +160,20 @@ public sealed class RetentionBackgroundService(
                 }
 
                 var cutoffDate = evaluatedUtc.UtcDateTime.Date.AddDays(-effectiveRetentionDays);
+                // Frame day directories and index file names are written in UTC by every
+                // producer, so the prunes that read those names compare whole days rather than
+                // instants. DateOnly carries no time zone, which is what keeps the comparison in
+                // the writers' frame on a host whose local zone is not UTC. See issue #823.
+                var cutoffDay = DateOnly.FromDateTime(cutoffDate);
                 var pending = await ReadPendingArtifactsAsync(
                     plan.StorageRoot, processingHoldsUnderLifecycleLock, cancellationToken).ConfigureAwait(false);
                 pending = AddPolicyRetentionHolds(plan, evaluatedUtc, pending, cancellationToken);
-                var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDate, pending, cancellationToken);
+                var deletedFiles = PruneFrameDirectories(plan.StorageRoot, cutoffDay, pending, cancellationToken);
                 var indexGate = FrameIndexLock.ForRoot(plan.StorageRoot);
                 await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    deletedFiles += PruneIndexFiles(plan.StorageRoot, cutoffDate, pending.ArtifactIds, cancellationToken);
+                    deletedFiles += PruneIndexFiles(plan.StorageRoot, cutoffDay, pending.ArtifactIds, cancellationToken);
                 }
                 finally
                 {
@@ -474,7 +479,7 @@ public sealed class RetentionBackgroundService(
 
     private static int PruneFrameDirectories(
         string storageRoot,
-        DateTime cutoffDate,
+        DateOnly cutoffDay,
         PendingArtifacts pending,
         CancellationToken cancellationToken)
     {
@@ -502,17 +507,20 @@ public sealed class RetentionBackgroundService(
                         Path.GetFileName(monthDirectory),
                         Path.GetFileName(dayDirectory));
 
-                    if (!DateTime.TryParseExact(
+                    // A name that does not parse leaves the day's frame unestablished, so the
+                    // directory is kept. Retention that keeps too much is a bug report; retention
+                    // that deletes too much is unrecoverable.
+                    if (!DateOnly.TryParseExact(
                             dateString,
                             "yyyy-MM-dd",
                             CultureInfo.InvariantCulture,
-                            DateTimeStyles.AssumeUniversal,
-                            out var directoryDate))
+                            DateTimeStyles.None,
+                            out var directoryDay))
                     {
                         continue;
                     }
 
-                    if (directoryDate.Date <= cutoffDate)
+                    if (directoryDay <= cutoffDay)
                     {
                         foreach (var file in Directory.EnumerateFiles(dayDirectory, "*", SearchOption.AllDirectories))
                         {
@@ -544,7 +552,7 @@ public sealed class RetentionBackgroundService(
 
     private int PruneIndexFiles(
         string storageRoot,
-        DateTime cutoffDate,
+        DateOnly cutoffDay,
         IReadOnlySet<Guid> pendingArtifactIds,
         CancellationToken cancellationToken)
     {
@@ -562,8 +570,9 @@ public sealed class RetentionBackgroundService(
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, file);
             var fileName = Path.GetFileNameWithoutExtension(file);
             var datePart = fileName.Replace("frames_", string.Empty, StringComparison.OrdinalIgnoreCase);
-            if (DateTime.TryParseExact(datePart, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var fileDate)
-                && fileDate.Date <= cutoffDate)
+            // As above, an unparsable name is kept rather than guessed at.
+            if (DateOnly.TryParseExact(datePart, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var fileDay)
+                && fileDay <= cutoffDay)
             {
                 var retainedLines = File.ReadLines(file)
                     .Where(line => TryGetArtifactId(line, out var artifactId) && pendingArtifactIds.Contains(artifactId))
