@@ -4,9 +4,10 @@ set -euo pipefail
 # Every assertion below names itself when it fails. A bare `grep -Fqx` under `set -e`
 # aborts the suite with exit 1 and nothing on stderr, so the reader learns that
 # something broke but not which invariant, and a positive control that trips one of
-# them is pinned by exit status alone. This is detection without attribution, which is
-# a weaker defect than the one this pull request removes from the tool -- those checks
-# passed without evaluating their subject at all -- and the two are worth keeping apart.
+# them is pinned by exit status alone. This is detection without attribution. It is a
+# weaker defect than the one this pull request removes from the tool, where the guard
+# ran, returned a well-formed answer, and returned the wrong one in exactly the state
+# it existed for -- and the two are worth keeping apart.
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
