@@ -189,6 +189,8 @@
     captureIdSetsDisjoint: $capture_ids_disjoint,
     sharedCaptureIds: ($shared_capture_ids | map(.[0].id)),
     distinctCaptureIdCount: ([ $trial_capture_ids[].ids[] ] | unique | length),
+    distinctArtifactIdCount:
+      ([ .[] | .captureProvenance[]? | .artifacts[]? | .artifactId | tostring | ascii_downcase ] | unique | length),
     recordedArtifactCount: ([ .[].captureProvenance[]?.artifacts[]? ] | length),
     recordedCaptureCount: ([ .[].captureProvenance[]? ] | length),
     recordedRoleCount: ([ .[].captureProvenance[]?.artifacts[]?.role ] | unique | length),

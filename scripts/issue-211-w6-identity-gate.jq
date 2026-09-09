@@ -27,6 +27,10 @@ and .trialLabels == ($expectedTrialLabels | sort)
 and .expectedMeasuredCaptureCount == $measuredCaptureCount
 and .recordedCaptureCount == (($expectedTrialLabels | length) * $measuredCaptureCount)
 and .distinctCaptureIdCount == .recordedCaptureCount
+# Both sides are document-derived, unlike every other term here. It is still sound: a
+# legitimate reduction shortens both together, so the equality holds; only reuse — many
+# entries carrying few distinct identifiers — makes distinctArtifactIdCount fall short.
+and .distinctArtifactIdCount == .recordedArtifactCount
 and .recordedRoleCount == ($expectedCaptureRoles | unique | length)
 and .expectedCaptureArtifactRoleCounts == $expectedCaptureArtifactRoleCounts
 # Issue #770, correction round 5. captureArtifactRoleCounts is the DISTINCT set of

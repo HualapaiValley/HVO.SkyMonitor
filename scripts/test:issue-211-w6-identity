@@ -244,6 +244,18 @@ else
     printf '      redistribution case is not constructible and is not being reported as passing.\n'
 fi
 
+# The ID-reuse corpus. Every capture's artifact array is replaced by the first capture's,
+# so nine hundred entries carry eighteen distinct identifiers while recordedArtifactCount
+# is still nine hundred and the histogram, role set, and capture IDs are all unchanged.
+IDREUSE_DIR="$(build_corpus idreuse "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS")"
+for f in "$IDREUSE_DIR"/*.json; do
+    jq '(.captureProvenance[0].artifacts) as $first |
+        .captureProvenance |= [.[] | .artifacts = $first]' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+done
+CASE_NAMES+=("idreuse")
+CASE_EXPECTED+=("REFUSE")
+CASE_DIRECTORIES+=("$IDREUSE_DIR")
+
 readonly CONTROL_DIRECTORY="${CASE_DIRECTORIES[0]}"
 
 printf '%-16s | %-11s | %9s | %8s | %-6s | %s\n' \
