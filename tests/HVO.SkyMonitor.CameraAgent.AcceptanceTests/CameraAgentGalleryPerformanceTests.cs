@@ -33,6 +33,7 @@ public sealed class CameraAgentGalleryPerformanceTests
     // false pass or a false regression, which is why a constant is defensible here and is not for the
     // latency bound itself.
     private const double MaximumAdmissibleLoadPerCore = 0.40;
+    private const string RefusalFileName = "cameraagent-gallery-performance-refusal.json";
     private const long MaximumWorkingSetGrowthBytes = 256L * 1024 * 1024;
     private const long MaximumRenderedPageBytes = 1024L * 1024;
     private const long MaximumPerSessionWorkingSetBytes = 32L * 1024 * 1024;
@@ -63,12 +64,7 @@ public sealed class CameraAgentGalleryPerformanceTests
         var browserPreviewFailureMeasurements = new List<BrowserPreviewFailureMeasurement>();
         PreviewCacheEvidence? previewCache = null;
         string? sqliteVersion = null;
-        var evidenceLabel = string.Equals(
-            Environment.GetEnvironmentVariable("HVO_GALLERY_EVIDENCE_LABEL"),
-            "baseline",
-            StringComparison.Ordinal)
-            ? "baseline"
-            : "candidate";
+        var evidenceLabel = ReadEvidenceLabel();
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         if (!File.Exists(playwright.Chromium.ExecutablePath))
         {
@@ -144,6 +140,16 @@ public sealed class CameraAgentGalleryPerformanceTests
         }
 
         AssertScaling(allMeasurements);
+
+        // A second sample, recorded and never adjudicated. L1 of the #787 review is right that one
+        // pre-workload reading is blind to contention that starts after it: measured RMS divergence
+        // from the instantaneous runnable count was 1.454/core against a 0.40 ceiling. It does not
+        // follow that this sample can gate anything. By this point the run has driven load well above
+        // the ceiling by itself, and load1 cannot separate contention that arrived mid-run from load
+        // this test generated, so comparing it with MaximumAdmissibleLoadPerCore would refuse every
+        // run for the test's own workload. Recording it makes the blindness visible to whoever reads
+        // the evidence instead of pretending it was closed.
+        var postWorkloadContention = SampleHostContention();
         var evidence = new
         {
             SchemaVersion = "cameraagent-archive-441-performance-v2",
@@ -159,7 +165,10 @@ public sealed class CameraAgentGalleryPerformanceTests
                 ServerGc = System.Runtime.GCSettings.IsServerGC,
                 SqliteVersion = sqliteVersion,
                 PreWorkloadLoadPerCore = contention.LoadPerCore,
-                ContentionCeilingPerCore = MaximumAdmissibleLoadPerCore
+                PostWorkloadLoadPerCore = postWorkloadContention.LoadPerCore,
+                ContentionCeilingPerCore = MaximumAdmissibleLoadPerCore,
+                ContentionProcessorCount = contention.ProcessorCount,
+                ContentionProcessorCountSource = contention.ProcessorCountSource
             },
             Workload = new
             {
@@ -211,6 +220,9 @@ public sealed class CameraAgentGalleryPerformanceTests
         var outputPath = Path.Combine(outputDirectory, "cameraagent-gallery-performance.json");
         var evidenceBytes = JsonSerializer.SerializeToUtf8Bytes(evidence, EvidenceJson);
         await File.WriteAllBytesAsync(outputPath, evidenceBytes).ConfigureAwait(false);
+        // A refusal document from an earlier contended run would otherwise sit beside admissible
+        // evidence and read as current.
+        File.Delete(Path.Combine(outputDirectory, RefusalFileName));
         TestContext.WriteLine($"Issue #441 performance evidence: {outputPath}");
         TestContext.WriteLine($"Issue #441 performance evidence SHA-256: {Convert.ToHexString(SHA256.HashData(evidenceBytes))}");
     }
@@ -280,9 +292,11 @@ public sealed class CameraAgentGalleryPerformanceTests
             Assert.IsTrue(renders.All(static render => render.RenderedBytes <= MaximumRenderedPageBytes));
             var workingSetGrowth = Math.Max(0, workingSetAfter - workingSetBefore);
             var perSessionGrowth = workingSetGrowth / concurrency;
-            Assert.IsLessThanOrEqualTo(MaximumPerSessionWorkingSetBytes, perSessionGrowth);
             var latencies = renders.Select(static render => render.ElapsedMilliseconds).Order().ToArray();
-            AssertBrowserP95Admissible(contention, Percentile(latencies, 0.95), "browser render sessions");
+            RefuseInadmissibleBrowserMeasurement(
+                contention, Percentile(latencies, 0.95), perSessionGrowth, "browser render sessions");
+            Assert.IsLessThanOrEqualTo(MaximumPerSessionWorkingSetBytes, perSessionGrowth);
+            Assert.IsLessThanOrEqualTo(MaximumP95Milliseconds, Percentile(latencies, 0.95), "browser render sessions");
             measurements.Add(new BrowserRenderMeasurement(
                 captureCount,
                 concurrency,
@@ -363,9 +377,11 @@ public sealed class CameraAgentGalleryPerformanceTests
         var allocationsAfter = GC.GetTotalAllocatedBytes(precise: true);
         var workingSetGrowth = Math.Max(0, workingSetAfter - sessionWorkingSetBefore);
         var perSessionGrowth = workingSetGrowth / concurrency;
-        Assert.IsLessThanOrEqualTo(MaximumPerSessionWorkingSetBytes, perSessionGrowth);
         Array.Sort(latencies);
-        AssertBrowserP95Admissible(contention, Percentile(latencies, 0.95), "browser preview failures");
+        RefuseInadmissibleBrowserMeasurement(
+            contention, Percentile(latencies, 0.95), perSessionGrowth, "browser preview failures");
+        Assert.IsLessThanOrEqualTo(MaximumPerSessionWorkingSetBytes, perSessionGrowth);
+        Assert.IsLessThanOrEqualTo(MaximumP95Milliseconds, Percentile(latencies, 0.95), "browser preview failures");
         return new BrowserPreviewFailureMeasurement(
             captureCount,
             concurrency,
@@ -701,26 +717,102 @@ public sealed class CameraAgentGalleryPerformanceTests
         => measurements.Single(item => item.CaptureCount == captureCount &&
             item.Scenario == scenario && item.Concurrency == concurrency);
 
-    private static void AssertBrowserP95Admissible(HostContention contention, double p95, string scenario)
+    // Called before every load-sensitive assertion in the measured region, not after. The p95 bound is
+    // not the only assertion contention can move: MaximumPerSessionWorkingSetBytes is 32 MiB per
+    // session and a host under memory pressure — swapping, GC under stress, the condition this gate
+    // exists for — can fail it hard. Asserting it first would report a red result from a measurement
+    // this method is about to declare inadmissible, so admissibility is settled before any bound is
+    // adjudicated. The card-count and rendered-byte assertions above are left ungated deliberately:
+    // they are load-insensitive by construction, and a busy host does not change how many cards a page
+    // contains. Note that #785 measured latency under contention and is silent about working set, so
+    // this ordering does not depend on working set being load-sensitive; it depends only on it not
+    // being demonstrably insensitive.
+    private static void RefuseInadmissibleBrowserMeasurement(
+        HostContention contention, double p95, long perSessionGrowthBytes, string scenario)
     {
-        if (contention.LoadPerCore is { } loadPerCore && loadPerCore > MaximumAdmissibleLoadPerCore)
+        if (contention.LoadPerCore is not { } loadPerCore || loadPerCore <= MaximumAdmissibleLoadPerCore)
         {
-            Assert.Inconclusive(
-                $"Host contention makes this browser latency measurement inadmissible. The one-minute load " +
-                $"average before the workload started was {loadPerCore:F2} per core across " +
-                $"{contention.ProcessorCount} cores, above the {MaximumAdmissibleLoadPerCore:F2} admissibility " +
-                $"ceiling. Browser-driven p95 moves by more than 40% under contention, so the {p95:F1} ms " +
-                $"measured for {scenario} describes this host rather than the product, whether it passes or " +
-                $"fails the {MaximumP95Milliseconds:F0} ms bound. This is not a latency regression and the run " +
-                $"proves nothing about performance. Re-run on a quiet host.");
+            return;
         }
 
-        Assert.IsLessThanOrEqualTo(MaximumP95Milliseconds, p95, scenario);
+        var reason =
+            $"Host contention makes this browser measurement inadmissible. The one-minute load " +
+            $"average before the workload started was {loadPerCore:F2} per core across " +
+            $"{contention.ProcessorCount} cores ({contention.ProcessorCountSource}), above the " +
+            $"{MaximumAdmissibleLoadPerCore:F2} admissibility ceiling. Browser-driven p95 moves by more " +
+            $"than 40% under contention, so the {p95:F1} ms measured for {scenario} describes this host " +
+            $"rather than the product, whether it passes or fails the {MaximumP95Milliseconds:F0} ms " +
+            $"bound. Per-session working-set growth of {perSessionGrowthBytes} bytes is refused with it " +
+            $"rather than adjudicated separately. This is not a latency regression and the run proves " +
+            $"nothing about performance. Re-run on a quiet host.";
+
+        // The refusal is persisted here because Assert.Inconclusive unwinds past the evidence writer at
+        // the end of the test method, so a refused run would otherwise leave no durable record at all
+        // and PreWorkloadLoadPerCore would only ever be published with an admissible value. See #802
+        // for why the TRX alone is not sufficient: MSTest serialises Assert.Inconclusive as
+        // outcome="NotExecuted", indistinguishable from a skipped test except in the message body.
+        WriteRefusalEvidence(contention, p95, perSessionGrowthBytes, scenario, reason);
+        Assert.Inconclusive(reason);
     }
+
+    private static void WriteRefusalEvidence(
+        HostContention contention, double p95, long perSessionGrowthBytes, string scenario, string reason)
+    {
+        try
+        {
+            var directory = Path.Combine(
+                GetRepositoryRoot(), "TestResults", "issue-441", ReadEvidenceLabel());
+            Directory.CreateDirectory(directory);
+            var refusal = new
+            {
+                SchemaVersion = "cameraagent-archive-441-performance-refusal-v1",
+                RecordedUtc = DateTimeOffset.UtcNow,
+                Outcome = "Refused",
+                Scenario = scenario,
+                Reason = reason,
+                PreWorkloadLoadPerCore = contention.LoadPerCore,
+                ContentionCeilingPerCore = MaximumAdmissibleLoadPerCore,
+                ContentionProcessorCount = contention.ProcessorCount,
+                ContentionProcessorCountSource = contention.ProcessorCountSource,
+                ObservedP95Milliseconds = p95,
+                ObservedPerSessionWorkingSetGrowthBytes = perSessionGrowthBytes
+            };
+            File.WriteAllBytes(
+                Path.Combine(directory, RefusalFileName),
+                JsonSerializer.SerializeToUtf8Bytes(refusal, EvidenceJson));
+        }
+        catch (IOException)
+        {
+            // A refusal that cannot be written is still a refusal; never convert this into a failure
+            // that would be read as a latency regression.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static string ReadEvidenceLabel()
+        => string.Equals(
+            Environment.GetEnvironmentVariable("HVO_GALLERY_EVIDENCE_LABEL"),
+            "baseline",
+            StringComparison.Ordinal)
+            ? "baseline"
+            : "candidate";
 
     private static HostContention SampleHostContention()
     {
-        var processorCount = Environment.ProcessorCount;
+        // The numerator from /proc/loadavg is host-wide and is not namespaced, so the denominator has
+        // to be host-wide too. Environment.ProcessorCount honours a cgroup CPU quota, which pairs a
+        // host numerator with a container denominator: inside `docker run --cpus=2` on an eight-core
+        // host the ratio reads four times high and every run is refused, which is L3 of the #787
+        // review. Counting the CPUs the kernel reports online keeps both halves on the same machine.
+        // A container on a genuinely busy host is still refused, and correctly so — the contention is
+        // real and the measurement is contaminated whether or not the quota hides it.
+        var onlineProcessors = ReadOnlineProcessorCount();
+        var processorCount = onlineProcessors ?? Environment.ProcessorCount;
+        var processorCountSource = onlineProcessors is null
+            ? "Environment.ProcessorCount, cgroup-quota-aware and possibly narrower than the host"
+            : "/sys/devices/system/cpu/online";
 
         // /proc/loadavg is Linux-only. Where it is unavailable the precondition cannot be evaluated and
         // the bound is asserted exactly as it was before, so no platform loses coverage it already had.
@@ -734,7 +826,8 @@ public sealed class CameraAgentGalleryPerformanceTests
                     && double.TryParse(fields[0], System.Globalization.CultureInfo.InvariantCulture, out var oneMinute)
                     && processorCount > 0)
                 {
-                    return new HostContention(oneMinute / processorCount, processorCount);
+                    return new HostContention(
+                        oneMinute / processorCount, processorCount, processorCountSource);
                 }
             }
         }
@@ -745,7 +838,54 @@ public sealed class CameraAgentGalleryPerformanceTests
         {
         }
 
-        return new HostContention(null, processorCount);
+        return new HostContention(null, processorCount, processorCountSource);
+    }
+
+    // Parses the kernel's online-CPU list, "0-11" or "0-3,8-11". Returns null rather than a guess when
+    // the file is absent or unparseable, so the caller falls back explicitly and records that it did.
+    private static int? ReadOnlineProcessorCount()
+    {
+        try
+        {
+            const string OnlinePath = "/sys/devices/system/cpu/online";
+            if (!File.Exists(OnlinePath))
+            {
+                return null;
+            }
+
+            var total = 0;
+            foreach (var range in File.ReadAllText(OnlinePath).Trim()
+                .Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var bounds = range.Split('-', StringSplitOptions.RemoveEmptyEntries);
+                if (bounds.Length == 1
+                    && int.TryParse(bounds[0], System.Globalization.CultureInfo.InvariantCulture, out _))
+                {
+                    total++;
+                }
+                else if (bounds.Length == 2
+                    && int.TryParse(bounds[0], System.Globalization.CultureInfo.InvariantCulture, out var first)
+                    && int.TryParse(bounds[1], System.Globalization.CultureInfo.InvariantCulture, out var last)
+                    && last >= first)
+                {
+                    total += last - first + 1;
+                }
+                else
+                {
+                    return null;
+                }
+            }
+
+            return total > 0 ? total : null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static double Percentile(double[] sorted, double percentile)
@@ -840,7 +980,8 @@ public sealed class CameraAgentGalleryPerformanceTests
         string Name,
         Func<SqliteCameraAgentGallery, CancellationToken, Task<object>> Execute);
 
-    private sealed record HostContention(double? LoadPerCore, int ProcessorCount);
+    private sealed record HostContention(
+        double? LoadPerCore, int ProcessorCount, string ProcessorCountSource);
 
     private sealed record GalleryCursors(string Middle, string Later);
 

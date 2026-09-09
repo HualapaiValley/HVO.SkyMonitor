@@ -119,8 +119,15 @@ deterministic per-card preview failures without retries. The harness proves:
 - exact descending traversal without gaps or duplicate captures;
 - bounded 50-item pages and responses no larger than 512 KiB;
 - pre-cancelled reads terminate within two seconds;
-- p95 remains at or below five seconds and working-set growth remains at or
-  below 256 MiB for every measured scenario;
+- working-set growth remains at or below 256 MiB for every measured scenario;
+- p95 remains at or below five seconds for every measured scenario, with the two
+  browser families conditional on admissibility: when the one-minute load average
+  sampled before the workload exceeds 0.40 per core, the browser measurement is
+  refused as inadmissible rather than adjudicated, the run reports Inconclusive,
+  and a refusal document is written beside the evidence. Under contention the
+  browser families move by more than 40% while the SQLite and Kestrel families
+  stay flat, so a browser p95 measured on a busy host describes the host and not
+  the product (see #774 and #785);
 - rendered pages remain at or below 1 MiB and cumulative working-set growth
   remains at or below 32 MiB per browser session;
 - later-page latency and allocation do not scale linearly with total history;
