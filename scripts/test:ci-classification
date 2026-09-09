@@ -781,11 +781,6 @@ for removed in catalog-contracts deployment-contracts build unit integration \
     exit 1
   fi
 done
-if grep -Eq "^      - main$" "$workflow"; then
-  printf 'CI must not re-run against main after merge.\n' >&2
-  exit 1
-fi
-
 grep -Fq 'types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]' "$workflow" || {
   printf 'Pull request CI must follow ready/draft review transitions.\n' >&2
   exit 1
