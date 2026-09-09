@@ -935,4 +935,14 @@ if grep -Fq 'select(.conclusion == "success")' "$release_workflow"; then
   exit 1
 fi
 
+# The release lookup above only ever matches a CI run produced by a push to main. Asserting the
+# query without asserting that CI answers it checks one half of a contract twice and the other
+# half never, so trimming main out of the push triggers would leave every release unqualifiable
+# with both halves still passing their own tests.
+ci_push_branches="$(sed -n '/^  push:/,/^  [a-z_]*:/p' "$workflow" | grep -m1 -F '    branches:')"
+grep -Fq 'main' <<< "$ci_push_branches" || {
+  printf 'CI must run on pushes to main; release qualification requires a main-push run for the release SHA.\n' >&2
+  exit 1
+}
+
 printf 'CI classification and Required CI contract tests passed.\n'
