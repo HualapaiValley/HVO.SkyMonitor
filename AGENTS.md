@@ -16,9 +16,34 @@ must not redefine its policy inconsistently.
   dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror
   dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
   ./scripts/package:audit
+  ./scripts/ci:shell-syntax
+  ./scripts/test:ci-classification
+  ./scripts/test:coordination-guard
+  ./scripts/test:pr-review-tools
   DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
   dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Integration" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
   ```
+- `scripts/test:ci-classification`, `scripts/test:coordination-guard` and
+  `scripts/test:pr-review-tools` are the CI-control guards, and
+  `scripts/ci:shell-syntax` is grouped with them because it has the same
+  property. All four are Docker-free, need no build, and complete in well under
+  a minute, and until now all four spoke only in protected CI. PR #740 reached
+  protected CI through a deep initial review, two correction rounds, a base sync
+  and a base-sync review before `scripts/test:ci-classification` reported that a
+  combined test assembly had taken a dependency the classifier routes away from
+  its lane. None of those rounds could have found it, because none of them ran
+  it. A check that cannot speak until after the finalization lock is taken is a
+  check bought at the highest available price.
+- Run them under Bash 5.1 or newer. `scripts/ci:require` and `scripts/ci:classify`
+  use `declare -A`, which the macOS system Bash 3.2 does not have, and
+  `scripts/ci:shell-syntax` refuses to run under it rather than reporting a
+  clean pass it did not perform. On macOS invoke the Homebrew Bash explicitly.
+- Run the guards again on the base-synced head, in the local candidate gate,
+  before requesting the base-sync review. This settles the question PR #740's
+  base-sync reviewer recorded rather than answered: a base-sync review verifies
+  that the merge preserved both sides' behaviour, and a classifier lane that
+  both sides always satisfied separately can still be violated by their union,
+  so the review is the wrong instrument and the gate is the right one.
 - Reproduce the exact category/project evidence, architecture/publish, migration, and canonical coverage gates with `docs/runbooks/ci-pipeline.md` and `.github/workflows/ci.yml`.
 - Unit selection is positive and passes with an invalid Docker endpoint. Integration selection is a separate required gate and requires Docker for the Testcontainers assemblies.
 - Run a focused MSTest with `dotnet test <project> --filter "FullyQualifiedName~Namespace.Class.Method"`.
@@ -30,6 +55,18 @@ must not redefine its policy inconsistently.
   candidate gate; Tier A/B work relies on focused/affected local evidence plus
   protected CI. Do not repeatedly run unchanged long suites or performance
   harnesses.
+- Select the local gate set with `scripts/ci:classify`, not by reading the diff,
+  whenever it reports `complete=true`. Run it on the review range and record its
+  output alongside the gate results; a ledger that lists gates without naming
+  the selector that chose them is incomplete evidence, because a gate that was
+  never selected then shows up as an absence rather than as a silence. The
+  classifier is the only selector in this repository that is not bounded by the
+  diff, and until the ready transition it is the only one available at all: the
+  `changes` job is gated on `draft == false`, so through the whole convergence
+  phase every gate decision would otherwise be made from the diff by parties
+  whose view is the diff. On PR #756 the classifier returned `mode=full
+  complete=true` on the first head and would have named Unit Tests, which owns
+  the test-category audit that had been failing since round 4.
 
 ## Architecture Boundaries
 

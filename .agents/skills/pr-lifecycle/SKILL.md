@@ -40,6 +40,15 @@ reviewed head without explicit operator approval.
 2. Use the risk-tiered validation ladder: focused inner-loop tests, then one
    tier-appropriate candidate gate before the first push. Record the commands
    and the commit or worktree fingerprint they validate.
+   Select the candidate gate set by running `scripts/ci:classify` on the review
+   range whenever it reports `complete=true`, not by reading the diff, and
+   record which selector produced the set. Until the ready transition the
+   classifier is the only selector that is not bounded by the diff, because the
+   `changes` job is gated on `draft == false`. A ledger that lists gate results
+   without naming the selector cannot distinguish a gate that passed from one
+   that was never chosen. The gate includes the CI-control guards, which are
+   Docker-free and are listed in `AGENTS.md`; run them again on the base-synced
+   head before requesting the base-sync review.
 3. Commit only intended files, push the issue branch, and open a draft PR.
 4. Keep the PR draft while acquiring review, correcting findings, and
    synchronizing the target branch. Draft pushes must not run protected CI.
@@ -420,7 +429,13 @@ protected CI, or merge.
 3. After an advancing-target merge, resolve conflicts, run affected local gates,
    and obtain a base-sync review. Use `standard` when there was no conflict,
    shared-file/contract overlap, or material changed interaction; use `deep` for
-   any of those conditions.
+   any of those conditions. Run the CI-control guards on the merged head before
+   requesting that review, and do not expect the review to substitute for them:
+   a base-sync review verifies that the merge preserved both sides' behaviour,
+   which it can do correctly while a classifier lane that each side satisfied
+   separately is violated by their union. PR #740 is the case; its base-sync
+   reviewer said so itself rather than letting a CLEAN verdict look wider than
+   it was.
 4. Fetch again and prove the target base and PR head are current, mergeable, and
    reviewed. If either moved, repeat synchronization or review as applicable.
    At this draft pre-ready gate, use the provider's structural mergeability

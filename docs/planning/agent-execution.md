@@ -399,8 +399,19 @@ downgrade a durable or measured-path change to avoid its affected gate.
    the complete matrix. Correct a failed gate and rerun every failed or
    invalidated portion; preserve unaffected evidence only when its recorded
    boundary did not change.
+   Choose the gate set with `scripts/ci:classify` on the review range, not by
+   reading the diff, whenever it reports `complete=true`, and record which
+   selector produced the set alongside the results. A ledger that lists gate
+   results without naming the selector cannot distinguish a gate that passed
+   from one that was never chosen, so a missing gate reads as silence rather
+   than as an absence. This matters most exactly where it is least visible: the
+   `changes` job is gated on `draft == false`, so through the entire draft
+   convergence phase the classifier is the only selector available and every
+   other view -- the implementer's and the reviewer's lenses alike -- is bounded
+   by the diff.
 4. **Review correction:** run the reproducer, focused regression, and full
-   affected gate. Review the correction delta before final CI. Let protected CI
+   affected gate, with the affected set taken from the classifier when it
+   reports `complete=true`. Review the correction delta before final CI. Let protected CI
    provide the complete classifier-selected plan unless the
    correction changes shared contracts, migrations, test infrastructure,
    category/coverage logic, or another cross-cutting boundary with uncertain
@@ -534,6 +545,10 @@ dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Debug -warnaser
 dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror
 dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
 ./scripts/package:audit
+./scripts/ci:shell-syntax
+./scripts/test:ci-classification
+./scripts/test:coordination-guard
+./scripts/test:pr-review-tools
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
   --filter "TestCategory=Unit" \
@@ -551,6 +566,20 @@ assemblies. This complete block is the tier C/M local candidate gate, not the
 default inner loop. Tier A/B uses its recorded focused/affected local evidence
 and relies on the same complete protected CI before merge. Follow the correction
 rules in section 4 after review feedback.
+
+The four script lines are the CI-control guards plus the shell syntax check.
+They are Docker-free, need no build, and complete in under a minute, and they
+belong here because the alternative is protected CI, which no draft reaches. On
+PR #740 `scripts/test:ci-classification` failed on the first protected run after
+a deep initial review, two correction rounds, a base sync and a base-sync review
+had all passed; the defect was present throughout and none of those rounds could
+have seen it. Run them again on the base-synced head before requesting the
+base-sync review, since a review that verifies the merge preserved both sides'
+behaviour cannot see a classifier lane that only their union violates.
+
+Run this block under Bash 5.1 or newer. The macOS system Bash is 3.2, which
+lacks `declare -A`; `scripts/ci:shell-syntax` refuses to run under it rather
+than reporting a pass it did not perform, so invoke the Homebrew Bash there.
 
 Additional issue-specific gates may include:
 

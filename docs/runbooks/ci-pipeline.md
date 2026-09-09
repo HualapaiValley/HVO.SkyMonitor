@@ -206,6 +206,14 @@ matrix:
 bash ./scripts/test:ci-classification
 ```
 
+That suite, `scripts/test:coordination-guard` and `scripts/test:pr-review-tools`
+are the CI-control guards, and they are part of the local candidate gate in
+`AGENTS.md` rather than protected-CI-only checks. They are Docker-free and need
+no build. Run them on the base-synced head too, before requesting the base-sync
+review: a base-sync review verifies that the merge preserved both sides'
+behaviour, which is the wrong instrument for a classifier lane that each side
+satisfied separately and their union does not.
+
 Use a fresh result root for every collection. Before merging, require exactly one report from each of the 22 category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those 22 explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
 ```bash
@@ -513,6 +521,23 @@ Inspect the exact plan for any two commits without pushing:
 ```bash
 ./scripts/ci:classify pull_request <base-sha> <head-sha>
 ```
+
+Run this on the review range before choosing a local gate set, and use what it
+returns rather than a reading of the diff, whenever it reports `complete=true`.
+Record its output next to the gate results; a ledger that lists gates without
+naming the selector that chose them cannot distinguish a gate that passed from
+one that was never selected. The classifier is the only selector here that is
+not bounded by the diff, and on a draft pull request it is the only one
+available at all, because the `changes` job carries `draft == false` and every
+downstream job is gated on its outputs. Measured on PR #756 at head `7f232172`
+it returned `mode=full complete=true deployment=false` over 14 paths and would
+have named Unit Tests, which owns the test-category audit, on the first head
+instead of the eighth.
+
+`scripts/ci:classify` and `scripts/ci:require` use `declare -A` and need Bash
+4 or newer, and `scripts/ci:shell-syntax` requires Bash 5.1 and refuses to run
+under anything older rather than reporting a pass it did not perform. The macOS
+system Bash is 3.2, so invoke the Homebrew Bash explicitly there.
 
 Reproduce one lane locally with the same scripts CI runs:
 
