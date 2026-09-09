@@ -3350,6 +3350,18 @@ public sealed class StandaloneW6DockerAcceptanceTests
         throw new InvalidOperationException();
     }
 
+    /// <summary>
+    /// Issue #770, correction round 2. <see cref="ReadManifests"/> accepts every valid v2 sidecar
+    /// under the runtime root, including the ones <c>FileSystemFrameStorageService</c> writes for
+    /// artefacts the pipeline's storage step produced, so labelling all of them
+    /// <c>raw-ingress-manifest</c> recorded a producer the run never observed. That is the same
+    /// failure this evidence document exists to remove, one level down. The label is now read off
+    /// the manifest: its schema, and the producer it names, falling back to the artefact's own
+    /// recorded source when the manifest declares no producing step.
+    /// </summary>
+    private static string DescribeProducer(string schemaVersion, string? producerStepId, string sourceId)
+        => $"{schemaVersion}:{(string.IsNullOrWhiteSpace(producerStepId) ? sourceId : producerStepId)}";
+
     private static IEnumerable<ManifestObservation> ReadManifests(string root, string agentId = ExpectedAgentId)
     {
         var clearReferencePath = Path.Combine(root, "w6", "clear-reference.manifest.json");
@@ -3468,7 +3480,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                         descriptor.Artifact.Role.ToString(),
                         artifact.Variant,
                         manifest.RelativeArtifactPath,
-                        "raw-ingress-manifest",
+                        DescribeProducer(manifest.SchemaVersion, manifest.ProducerStepId, descriptor.Artifact.SourceId),
                         descriptor.Artifact.ChecksumSha256,
                         computedSha256,
                         descriptor.Layout.ByteLength,
@@ -3498,7 +3510,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                         product.Artifact.Role.ToString(),
                         artifact.Variant,
                         product.RelativeArtifactPath,
-                        "durable-processing-product-manifest",
+                        DescribeProducer(product.SchemaVersion, product.ProducerStepId, product.Artifact.SourceId),
                         product.Artifact.ChecksumSha256,
                         computedSha256,
                         product.ByteLength,

@@ -1262,19 +1262,35 @@ run_profile_trial \
 # counter that was never recorded and a counter that was genuinely zero produced the same summary.
 # Each counter is now required to be a number, and the input count is recorded, because `add` and
 # `all` over an empty list also score as a perfect run when the glob matches nothing.
+#
+# Issue #770, correction round 2. Requiring a number is not the same as requiring a valid
+# measurement. Corrupt one trial to a finalDenyHits of 1 and another to -1 and the sum is zero
+# again, so a type check alone lets two corrupted trials cancel each other out and every gate
+# below passes. An event count is a non-negative whole number, and that is now the requirement.
+# `passed` is recomputed here from the five counters the trial derived it from, rather than read
+# back as a flag that a corrupted document keeps after its counters have stopped supporting it.
 jq -s '
-  def require_number($field): if type == "number" then . else
-    error("a central-traffic-gate.json has no numeric \($field)") end;
+  def is_count: (type == "number") and (isnan | not) and (isinfinite | not)
+    and (. >= 0) and (. == floor);
+  def require_count($field): if is_count then . else
+    error("a central-traffic-gate.json has \($field) = \(tojson), which is not a non-negative whole count") end;
+  def recomputed_passed:
+    ((.inTestCentralTrafficAttempts | require_count("inTestCentralTrafficAttempts")) == 0)
+    and ((.inTestCentralHandlerAttempts | require_count("inTestCentralHandlerAttempts")) == 0)
+    and ((.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) == 0)
+    and ((.finalCentralHandlerReadyRecords | require_count("finalCentralHandlerReadyRecords")) >= 1)
+    and ((.finalDenyHits | require_count("finalDenyHits")) == 0);
   {
-    schemaVersion: "issue-211-final-central-traffic-summary-v2",
+    schemaVersion: "issue-211-final-central-traffic-summary-v3",
     gateCount: length,
-    trials: sort_by(.trial),
+    trials: (sort_by(.trial) | map(.recordedPassed = .passed | .passed = recomputed_passed)),
     centralHandlerAttempts:
-      (map(.inTestCentralHandlerAttempts | require_number("inTestCentralHandlerAttempts")) | add // 0),
+      (map(.inTestCentralHandlerAttempts | require_count("inTestCentralHandlerAttempts")) | add // 0),
     finalCentralHandlerAttempts:
-      (map(.finalCentralHandlerAttempts | require_number("finalCentralHandlerAttempts")) | add // 0),
-    finalDenyHits: (map(.finalDenyHits | require_number("finalDenyHits")) | add // 0),
-    allPassed: (length > 0 and all(.passed == true))
+      (map(.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) | add // 0),
+    finalDenyHits: (map(.finalDenyHits | require_count("finalDenyHits")) | add // 0),
+    recordedFlagsAgreeWithCounters: (length > 0 and all(.passed == recomputed_passed)),
+    allPassed: (length > 0 and all(recomputed_passed))
   }
 ' "$RESULTS"/*/evidence/central-traffic-gate.json > "$RESULTS/final-central-traffic-summary.json"
 
@@ -1285,7 +1301,14 @@ jq -s '
 # and the recomputed digest is re-derived here from the record itself, which is the property that
 # lets a later reader stop trusting the runner.
 jq -s --arg expectedSchemaVersion 'issue-211-w6-evidence-v3' '
-  def is_sha256: (type == "string") and test("^[0-9A-Fa-f]{64}$");
+  # Issue #770, correction round 2. jq 1.7 lets `$` match before a final newline, so a digest
+  # with a trailing "\n" satisfied `^[0-9A-Fa-f]{64}$` and then compared equal to nothing. The
+  # length is required outright now and the pattern is anchored to the absolute end of the
+  # string. A format check in an evidence gate is not here to catch a slip by a cooperative
+  # producer; it is here to refuse a value that is not a digest, whoever wrote it.
+  def is_sha256: (type == "string") and (length == 64) and test("^[0-9A-Fa-f]{64}\\z");
+  def is_byte_count: (type == "number") and (isnan | not) and (isinfinite | not)
+    and (. >= 0) and (. == floor);
   def eqi($other): (type == "string") and ($other | type == "string") and (ascii_downcase == ($other | ascii_downcase));
   def trial_problems($index):
     . as $t |
@@ -1296,6 +1319,19 @@ jq -s --arg expectedSchemaVersion 'issue-211-w6-evidence-v3' '
        else "trial \($label): schemaVersion is \($t.schemaVersion // "absent"), expected \($expectedSchemaVersion)" end),
       (if (($t.captureProvenance | type) == "array" and ($t.captureProvenance | length) > 0) then empty
        else "trial \($label): captureProvenance is absent or empty, so no capture identity was recorded" end),
+      # Issue #770, correction round 2. Non-emptiness is not completeness. A document truncated
+      # to one valid provenance record satisfied every check below and reported clean while the
+      # measured digests for nine of every ten captures were simply gone. The record count and
+      # the capture identities it names must now match what the document says it measured.
+      (if (($t.workload.measuredCount | is_byte_count)
+           and ($t.captureProvenance | length) == $t.workload.measuredCount) then empty
+       else "trial \($label): captureProvenance holds \($t.captureProvenance | length) records against a workload measuredCount of \($t.workload.measuredCount | tojson)" end),
+      (if (($t.captures | type) == "array"
+           and ([$t.captureProvenance[]?.captureId | tostring | ascii_downcase] | unique)
+               == ([$t.captures[]?.captureId | tostring | ascii_downcase] | unique)
+           and ([$t.captureProvenance[]?.captureId] | length)
+               == ([$t.captureProvenance[]?.captureId | tostring | ascii_downcase] | unique | length)) then empty
+       else "trial \($label): the captures named by captureProvenance are not exactly the captures the document records, so provenance is incomplete or duplicated" end),
       ($t.captureProvenance[]? |
         . as $c |
         (if ($c.rigSha256 | is_sha256) then empty else "trial \($label) capture \($c.captureId): rigSha256 is not a digest" end),
@@ -1318,8 +1354,9 @@ jq -s --arg expectedSchemaVersion 'issue-211-w6-evidence-v3' '
           (if ($a.computedSha256 | is_sha256) then empty else "trial \($label) artefact \($a.artifactId): computedSha256 is not a digest" end),
           (if ($a.declaredSha256 | eqi($a.computedSha256)) then empty
            else "trial \($label) artefact \($a.artifactId): the recomputed digest does not equal the declared one" end),
-          (if (($a.observedByteLength | type) == "number" and $a.observedByteLength == $a.declaredByteLength) then empty
-           else "trial \($label) artefact \($a.artifactId): observedByteLength does not equal declaredByteLength" end),
+          (if (($a.observedByteLength | is_byte_count) and ($a.declaredByteLength | is_byte_count)
+               and $a.observedByteLength == $a.declaredByteLength) then empty
+           else "trial \($label) artefact \($a.artifactId): observedByteLength and declaredByteLength are not equal non-negative whole byte counts" end),
           (if (($a.relativeArtifactPath | type) == "string" and ($a.relativeArtifactPath | length) > 0) then empty
            else "trial \($label) artefact \($a.artifactId): relativeArtifactPath is absent, so the digest cannot be re-derived" end),
           (if (($a.sourceArtifactIds | type) == "array") then empty
@@ -1372,17 +1409,24 @@ jq -s \
   # now be a number and each list must be non-empty for the run to produce a summary at all.
   def require_number($field): if type == "number" then . else
     error("an issue-211-w6.json has no numeric \($field)") end;
+  # Issue #770, correction round 2. Event counts and byte totals are non-negative whole numbers.
+  # A type check alone admits a negative or fractional value, which is well typed and impossible,
+  # and lets two corrupted trials cancel to a clean aggregate.
+  def is_byte_count: (type == "number") and (isnan | not) and (isinfinite | not)
+    and (. >= 0) and (. == floor);
+  def require_count($field): if is_byte_count then . else
+    error("an issue-211-w6.json has \($field) = \(tojson), which is not a non-negative whole count") end;
   def require_present($what): if (type == "array" and length > 0) then . else
     error("\($what) is empty, so this summary would have been computed over no measurements") end;
   ($finalCentralTraffic[0].trials | require_present("the final central-traffic gate list"))
     as $final_central_traffic |
   (require_present("the five-trial evidence list")
-    | map(.centralTrafficAttempts | require_number("centralTrafficAttempts")) | add)
+    | map(.centralTrafficAttempts | require_count("centralTrafficAttempts")) | add)
     as $central_traffic_attempts |
-  ($final_central_traffic | map(.finalDenyHits | require_number("finalDenyHits")) | add)
+  ($final_central_traffic | map(.finalDenyHits | require_count("finalDenyHits")) | add)
     as $final_deny_hits |
   ($final_central_traffic
-    | map(.finalCentralHandlerAttempts | require_number("finalCentralHandlerAttempts")) | add)
+    | map(.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) | add)
     as $central_handler_attempts |
   ([
     percent_change(
@@ -1498,7 +1542,7 @@ jq -s \
     finalDenyHits: $final_deny_hits,
     allPassed: all(.result.passed),
     retainedFilesystemWithinDeclaredBound:
-      all((.performance.peakFilesystemBytes | type) == "number"
+      all((.performance.peakFilesystemBytes | is_byte_count)
         and .performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes),
     candidateGates: {
       exactlyFiveTrials: (length == 5),
@@ -1513,8 +1557,11 @@ jq -s \
       normalizedRegressionWithinFifteenPercent:
         all($normalized_percent_changes[]; . <= 15),
       retainedFilesystemWithinDeclaredBound:
-        all((.performance.peakFilesystemBytes | type) == "number"
-          and .performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes)
+        all((.performance.peakFilesystemBytes | is_byte_count)
+          and .performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes),
+      filesystemBytesAreValidMeasurements:
+        all((.performance.peakFilesystemBytes | is_byte_count)
+          and (.performance.retainedFilesystemBytes | is_byte_count))
     },
     w6Ready: (
       length == 5 and
@@ -1526,7 +1573,8 @@ jq -s \
       $final_deny_hits == 0 and
       all(.performance.durableQueuesWithinDeclaredBounds == true) and
       all($normalized_percent_changes[]; . <= 15) and
-      all((.performance.peakFilesystemBytes | type) == "number"
+      all((.performance.peakFilesystemBytes | is_byte_count)
+        and (.performance.retainedFilesystemBytes | is_byte_count)
         and .performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes))
   }
 ' "$RESULTS"/trial-*/evidence/issue-211-w6.json > "$RESULTS/five-trial-summary.json"
@@ -1534,6 +1582,7 @@ jq -s \
 jq --exit-status --argjson declaredBoundedTrialFootprintBytes "$DECLARED_BOUNDED_TRIAL_FOOTPRINT_BYTES" \
     '.trialCount == 5 and
      .declaredBoundedTrialFootprintBytes == $declaredBoundedTrialFootprintBytes and
+     .peakFilesystemBytes.minimum >= 0 and
      .peakFilesystemBytes.maximum <= $declaredBoundedTrialFootprintBytes and
      .centralTrafficAttempts == 0 and .centralHandlerAttempts == 0 and
      .finalDenyGateCount == 6 and .finalDenyHits == 0 and
