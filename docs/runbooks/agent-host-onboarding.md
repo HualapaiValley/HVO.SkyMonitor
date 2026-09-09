@@ -33,6 +33,13 @@ Do this before any agent session starts. None of it requires the agent.
   under emulation reliably. Record that limitation up front; that lane comes
   from protected CI on such a host, and a failure there is not evidence about
   the change.
+- **Shared-service environment.** Copy `.env.template` to `.env` and fill it in.
+  `scripts/with-env` and the infrastructure scripts read the SQL Server, Redis,
+  MinIO and Mailpit endpoints and credentials from it, and they abort on an
+  unbound variable rather than degrading, so a machine without `.env` looks ready
+  until the first host or infrastructure command fails with no obvious cause. The
+  values come from the operator; the file is intentionally ignored and is never
+  committed.
 - **Worktree root.** Choose a durable, host-owned path outside any container's
   writable layer. Concurrent work goes in separate worktrees and no two sessions
   ever share one.
@@ -45,21 +52,32 @@ or close an issue, and the refusal looks identical whether the cause is the
 classifier, the token, or the repository.
 
 Pre-approve the commands the role actually needs, in the repository's
-`.claude/settings.local.json`, which is git-ignored:
+`.claude/settings.local.json`. This repository ignores that path, so the file
+stays out of commits. Confirm it on the machine you are setting up rather than
+assuming it: run `git check-ignore -v .claude/settings.local.json` and read
+which file supplied the matching rule. A rule that comes from the operator's
+global ignore rather than from the repository is true on that machine and false
+on the next one, which is how this sentence was wrong when it was first
+written.
 
 ```json
 {
   "permissions": {
     "allow": [
-      "Bash(gh *)"
+      "Bash(gh:*)"
     ]
   }
 }
 ```
 
 Narrower rules such as `Bash(gh pr merge:*)` and `Bash(gh issue close:*)` work
-the same way. The `:*` suffix matters: without it the rule matches only the bare
-command and never fires on a real invocation.
+the same way; the `:*` suffix is what extends a rule past the bare command to a
+real invocation with arguments.
+
+Do not take the form on trust, including from this runbook. Add the rule, then
+run one command it should cover and confirm no prompt appears. That check takes
+a few seconds and is the only thing that distinguishes a rule that fires from a
+rule that reads as though it should.
 
 Two consequences worth stating, because both cost real time before they were
 understood:
@@ -84,10 +102,22 @@ to decide without seeing the original prompt, and act on his answer yourself.
 ## 3. Enrol the session
 
 - **Mint the participant identity** as `<harness>:<provider>:<host>:<session-short-id>`.
-  The short id is the session's own directory name, not a value copied from
-  another session and not derived from a process, socket path, or connection
-  handle. Never put a credential or a complete token in it.
-- **Send `JOIN REQUEST`** to the coordinator on the owning roadmap epic. The
+  Propose a short id from your own session's scratchpad directory name, which
+  on some harnesses is a session identifier and on others is not. Do not copy
+  one from another session, and never derive it from a live process, socket
+  path, or connection handle. Never put a credential or a complete token in it.
+  **The proposal is not the identity.** The `JOIN ACK` the coordinator returns
+  is authoritative, and the identity you sign comments with and answer targeted
+  commands under is the one in that `ACK`. Sessions on this fleet have enrolled
+  under ids that the directory-name rule does not reproduce, so a session that
+  mints its own and skips the acknowledgement can end up unaddressable.
+- **Send `JOIN REQUEST`** to the coordinator on the owning roadmap epic, which
+  is issue #513 at the time of writing. `AGENTS.md` names #89, which is the
+  retired virtual-first epic and is not where current coordination happens; if
+  #513 is closed when you read this, ask the operator which epic is live rather
+  than guessing from the issue list. The coordinator's participant identity is
+  not published anywhere and is not derivable: you learn it from the `JOIN ACK`
+  and from the footnote it signs its own comments with. The
   session stays `UNREGISTERED/WAIT` until the coordinator returns a
   participant-bound `JOIN ACK` and the session returns `JOINED ACK`. Reading
   `AGENTS.md` is not enrolment.
@@ -100,10 +130,20 @@ to decide without seeing the original prompt, and act on his answer yourself.
 
 ## 4. Coordinator-only setup
 
-- **Arm the heartbeat.** One recurring job, currently fifteen minutes. It is a
-  safety net, not the transport: workers message directly, so events arrive by
-  push. Do not poll what a worker has promised to report. Check the job still
-  exists on every tick, because it has silently disappeared mid-session before.
+- **Arm the heartbeat, and confirm the cadence with the operator.** Two
+  different intervals live in the protocol and they are easy to collapse into
+  one. Section 4 of `docs/planning/agent-execution.md` specifies a five-minute
+  operator-visible heartbeat, and separately gives fifteen minutes as the
+  interval for emitting the `still running, no change` line. This fleet has also
+  run a fifteen-minute fallback tick, on the operator's judgement that push
+  messaging carries the events and the tick only catches what push misses. Which
+  applies is the operator's call, so ask rather than infer, and say in your first
+  relay which one you armed.
+- **Prove the job exists on every tick**, because it has silently disappeared
+  mid-session before and a heartbeat that stopped looks exactly like a fleet
+  with nothing to report. List the harness's scheduled jobs as the first action
+  of each tick, before anything else; in Claude Code that is the `CronList`
+  tool. If the job is gone, recreate it and say so in that tick's relay.
 - **Verify the slot write path once.** A malformed write can leave a two-byte
   body and destroy the sequence counter with no error. Read the slot back after
   the first write.
@@ -123,7 +163,11 @@ to decide without seeing the original prompt, and act on his answer yourself.
 - **Confirm host quiet before any timed or gated run.** Read the load average and
   name any foreign process. A failure produced under contention is unattributable
   in either direction and has to be discarded. A pass under worse contention than
-  the disputed run is still admissible; only a failure is not.
+  the disputed run is still admissible; only a failure is not. That asymmetry is
+  only usable afterwards if you recorded the contention at the time, so capture
+  the load average and processor count with every timed run and put them in the
+  evidence. Without them, a later pass cannot be shown to be the worse case and
+  the argument is unavailable.
 - **Never reuse build output across a commit boundary.** Evidence guards bind an
   assembly's stamped commit to the checked-out head. Whether the compiled
   behaviour changed is irrelevant; evidence claiming to be about a commit must
