@@ -78,7 +78,8 @@ internal static class ReplayUiTestData
                         null,
                         Now,
                         terminal ? Now.AddSeconds(3) : null,
-                        terminal ? TimeSpan.FromSeconds(3) : null)],
+                        terminal ? TimeSpan.FromSeconds(3) : null,
+                        terminal ? "LocalRunner" : "Unknown")],
                     [new ReplayExecutionInputView(
                         0, 0, "RawCapture", CaptureId, ArtifactId, new string('D', 64), new string('E', 64))],
                     [new ReplayExecutionOutputView(

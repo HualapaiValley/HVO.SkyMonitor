@@ -60,6 +60,7 @@ public sealed class CameraAgentRecipeExecutionAdapter
         {
             var deadlineUtc = execution.DeadlineUtc
                 ?? throw new LocalReplayRunnerProtocolException("The replay execution has no deadline.");
+            context.RecordExecutionRoute(ProcessingNodeExecutionRoute.LocalRunner);
             outcome = await ExecuteLocalReplayAsync(
                 context,
                 execution,
@@ -69,6 +70,7 @@ public sealed class CameraAgentRecipeExecutionAdapter
         }
         else
         {
+            context.RecordExecutionRoute(ProcessingNodeExecutionRoute.InProcess);
             outcome = await _executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
         }
         context.RecordExecutionOutcome(outcome);

@@ -103,6 +103,11 @@ internal sealed record CameraAgentProcessingExecutionsView(
         => (executionClass == ProcessingGraphExecutionClass.Live ? Live : Replay).Count(execution => execution.Status == status);
 }
 
+/// <summary>
+/// One attempt as the operations read path reports it, carrying the recorded execution route so a reader can
+/// tell a node that dispatched to the local replay runner from one that ran in process (#799). Storing the route
+/// without projecting it would leave the question unanswerable from outside the database.
+/// </summary>
 internal sealed record CameraAgentProcessingNodeAttemptView(
     int AttemptNumber,
     DateTimeOffset StartedUtc,
@@ -110,7 +115,8 @@ internal sealed record CameraAgentProcessingNodeAttemptView(
     string Status,
     string? Outcome,
     string? Reason,
-    TimeSpan? Duration);
+    TimeSpan? Duration,
+    string ExecutionRoute);
 
 internal sealed record CameraAgentProcessingNodeView(
     string NodeId,
@@ -194,7 +200,8 @@ internal static class CameraAgentProcessingExecutionProjection
                     attempt.Status,
                     attempt.Outcome?.ToString(),
                     CameraAgentReplayUiService.Sanitize(attempt.Reason),
-                    attempt.Duration)).ToArray(),
+                    attempt.Duration,
+                    attempt.ExecutionRoute.ToString())).ToArray(),
                 node.Outputs.Select(static output => output with { AvailabilityReason = CameraAgentReplayUiService.Sanitize(output.AvailabilityReason) }).ToArray())).ToArray());
     }
 }

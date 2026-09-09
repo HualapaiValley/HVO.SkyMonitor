@@ -326,10 +326,11 @@ public sealed class ProcessingGraphEvidenceProjectionTests
                         new(
                             1, "capture-loop", GoldenBaseUtc.AddSeconds(1), GoldenBaseUtc.AddSeconds(2),
                             "RetryableFailure", ProcessingOutcomeStatus.RetryableFailure,
-                            "processing.transient-io", TimeSpan.FromSeconds(1)),
+                            "processing.transient-io", TimeSpan.FromSeconds(1), ProcessingNodeExecutionRoute.InProcess),
                         new(
                             2, "capture-loop", GoldenBaseUtc.AddSeconds(3), GoldenBaseUtc.AddSeconds(4),
-                            "Completed", ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(1))
+                            "Completed", ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(1),
+                            ProcessingNodeExecutionRoute.InProcess)
                     ],
                     [
                         new(
@@ -364,7 +365,7 @@ public sealed class ProcessingGraphEvidenceProjectionTests
                         new(
                             1, "capture-loop", GoldenBaseUtc.AddSeconds(5), GoldenBaseUtc.AddSeconds(5),
                             "TerminalFailure", ProcessingOutcomeStatus.TerminalFailure,
-                            "processing.optional-node-failed", TimeSpan.Zero)
+                            "processing.optional-node-failed", TimeSpan.Zero, ProcessingNodeExecutionRoute.InProcess)
                     ],
                     [])
             ]);
@@ -468,7 +469,8 @@ public sealed class ProcessingGraphEvidenceProjectionTests
                             "RetryableFailure",
                             ProcessingOutcomeStatus.RetryableFailure,
                             "processing.transient-io",
-                            TimeSpan.FromSeconds(1)),
+                            TimeSpan.FromSeconds(1),
+                            ProcessingNodeExecutionRoute.InProcess),
                         new(
                             2,
                             "capture-loop",
@@ -477,7 +479,8 @@ public sealed class ProcessingGraphEvidenceProjectionTests
                             "Completed",
                             ProcessingOutcomeStatus.Produced,
                             null,
-                            TimeSpan.FromSeconds(1))
+                            TimeSpan.FromSeconds(1),
+                            ProcessingNodeExecutionRoute.InProcess)
                     ],
                     [
                         new(
@@ -518,7 +521,8 @@ public sealed class ProcessingGraphEvidenceProjectionTests
                             "Skipped",
                             ProcessingOutcomeStatus.Skipped,
                             "processing.optional-input-missing",
-                            TimeSpan.Zero)
+                            TimeSpan.Zero,
+                            ProcessingNodeExecutionRoute.Unknown)
                     ],
                     [])
             ]);
