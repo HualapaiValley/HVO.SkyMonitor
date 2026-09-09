@@ -1349,8 +1349,15 @@ jq -s \
     --argjson declaredBoundedTrialFootprintBytes "$DECLARED_BOUNDED_TRIAL_FOOTPRINT_BYTES" \
     --slurpfile finalCentralTraffic "$RESULTS/final-central-traffic-summary.json" '
   def percent_change($baseline; $candidate): (($candidate / $baseline) - 1) * 100;
-  def stats:
-    sort as $values |
+  # Issue #770. `sort` puts null below every number, so a five-sample list with one absent
+  # field still has a number at the median index: sampleCount still reports 5 while the median
+  # shifts one rank toward the low end, and nothing in the run ever says a sample was missing.
+  # On the four normalized ratios below that shift is optimistic in the candidate direction, so
+  # every sample must now be a number for a summary to be produced at all.
+  def stats($what):
+    (if all(type == "number") then . else
+      error("\($what) has a sample that is not a number, so its median would have been taken over an absent measurement") end)
+    | sort as $values |
     {
       sampleCount: ($values | length),
       minimum: $values[0],
@@ -1358,8 +1365,8 @@ jq -s \
         (($values[(($values | length) / 2 - 1)] + $values[(($values | length) / 2)]) / 2)
       else $values[(($values | length) / 2 | floor)] end),
       p95: (if ($values | length) >= 30 then $values[((($values | length) * 0.95 | ceil) - 1)] else null end),
-       maximum: $values[-1]
-     };
+      maximum: $values[-1]
+    };
   # Issue #770. Every one of these was `add // 0`, which cannot distinguish an absent counter
   # from a zero one, and an empty input list summed to a clean zero as well. Each counter must
   # now be a number and each list must be non-empty for the run to produce a summary at all.
@@ -1380,45 +1387,45 @@ jq -s \
   ([
     percent_change(
       (37.973 / (14 * 4708352 / 1073741824));
-      ((map(.performance.cpuSeconds) | stats).median / (10 * 25233408 / 1073741824))),
+      ((map(.performance.cpuSeconds) | stats("cpuSeconds")).median / (10 * 25233408 / 1073741824))),
     percent_change(
       (13320000000 / (14 * 4708352));
-      ((map(.performance.allocatedBytes) | stats).median / (10 * 25233408))),
+      ((map(.performance.allocatedBytes) | stats("allocatedBytes")).median / (10 * 25233408))),
     percent_change(
       (1101000000 / 4708352);
-      ((map(.performance.peakRssBytes) | stats).median / 25233408)),
+      ((map(.performance.peakRssBytes) | stats("peakRssBytes")).median / 25233408)),
     percent_change(
       (2703000000 / (14 * 4708352));
-      ((map(.performance.processWriteBytes) | stats).median / (10 * 25233408)))
+      ((map(.performance.processWriteBytes) | stats("processWriteBytes")).median / (10 * 25233408)))
   ]) as $normalized_percent_changes |
   {
     schemaVersion: "issue-211-w6-summary-v1",
     worktreeFingerprint: $fingerprint,
     trialCount: length,
     declaredBoundedTrialFootprintBytes: $declaredBoundedTrialFootprintBytes,
-    elapsedMilliseconds: (map(.performance.elapsedMilliseconds) | stats),
-    cpuSeconds: (map(.performance.cpuSeconds) | stats),
-    peakRssBytes: (map(.performance.peakRssBytes) | stats),
-    allocatedBytes: (map(.performance.allocatedBytes) | stats),
-    peakContainerMemoryUsageBytes: (map(.performance.peakContainerMemoryUsageBytes) | stats),
+    elapsedMilliseconds: (map(.performance.elapsedMilliseconds) | stats("elapsedMilliseconds")),
+    cpuSeconds: (map(.performance.cpuSeconds) | stats("cpuSeconds")),
+    peakRssBytes: (map(.performance.peakRssBytes) | stats("peakRssBytes")),
+    allocatedBytes: (map(.performance.allocatedBytes) | stats("allocatedBytes")),
+    peakContainerMemoryUsageBytes: (map(.performance.peakContainerMemoryUsageBytes) | stats("peakContainerMemoryUsageBytes")),
     maximumObservedLastCollectionLohBytes:
-      (map(.performance.maximumObservedLastCollectionLohBytes) | stats),
-    operationalCaptureRatePerSecond: (map(.performance.operationalCaptureRatePerSecond) | stats),
-    rawStorageGrowthBytes: (map(.performance.rawStorageGrowthBytes) | stats),
-    declaredRawBytesPerDay: (map(.performance.declaredRawBytesPerDay) | stats),
+      (map(.performance.maximumObservedLastCollectionLohBytes) | stats("maximumObservedLastCollectionLohBytes")),
+    operationalCaptureRatePerSecond: (map(.performance.operationalCaptureRatePerSecond) | stats("operationalCaptureRatePerSecond")),
+    rawStorageGrowthBytes: (map(.performance.rawStorageGrowthBytes) | stats("rawStorageGrowthBytes")),
+    declaredRawBytesPerDay: (map(.performance.declaredRawBytesPerDay) | stats("declaredRawBytesPerDay")),
     hypotheticalFiveSecondStartIntervalRawBytesPerDay:
-      (map(.performance.hypotheticalFiveSecondStartIntervalRawBytesPerDay) | stats),
-    derivativeStorageGrowthBytes: (map(.performance.derivativeStorageGrowthBytes) | stats),
-    sqliteFootprintGrowthBytes: (map(.performance.sqliteFootprintGrowthBytes) | stats),
-    processReadBytes: (map(.performance.processReadBytes) | stats),
-    processWriteBytes: (map(.performance.processWriteBytes) | stats),
-    containerBlockReadBytes: (map(.performance.containerBlockReadBytes) | stats),
-    containerBlockWriteBytes: (map(.performance.containerBlockWriteBytes) | stats),
-    maximumBacklogCount: (map(.performance.maximumBacklogCount) | stats),
-    maximumBacklogBytes: (map(.performance.maximumBacklogBytes) | stats),
-    maximumBacklogAgeSeconds: (map(.performance.maximumBacklogAgeSeconds) | stats),
-    peakFilesystemBytes: (map(.performance.peakFilesystemBytes) | stats),
-    retainedFilesystemBytes: (map(.performance.retainedFilesystemBytes) | stats),
+      (map(.performance.hypotheticalFiveSecondStartIntervalRawBytesPerDay) | stats("hypotheticalFiveSecondStartIntervalRawBytesPerDay")),
+    derivativeStorageGrowthBytes: (map(.performance.derivativeStorageGrowthBytes) | stats("derivativeStorageGrowthBytes")),
+    sqliteFootprintGrowthBytes: (map(.performance.sqliteFootprintGrowthBytes) | stats("sqliteFootprintGrowthBytes")),
+    processReadBytes: (map(.performance.processReadBytes) | stats("processReadBytes")),
+    processWriteBytes: (map(.performance.processWriteBytes) | stats("processWriteBytes")),
+    containerBlockReadBytes: (map(.performance.containerBlockReadBytes) | stats("containerBlockReadBytes")),
+    containerBlockWriteBytes: (map(.performance.containerBlockWriteBytes) | stats("containerBlockWriteBytes")),
+    maximumBacklogCount: (map(.performance.maximumBacklogCount) | stats("maximumBacklogCount")),
+    maximumBacklogBytes: (map(.performance.maximumBacklogBytes) | stats("maximumBacklogBytes")),
+    maximumBacklogAgeSeconds: (map(.performance.maximumBacklogAgeSeconds) | stats("maximumBacklogAgeSeconds")),
+    peakFilesystemBytes: (map(.performance.peakFilesystemBytes) | stats("peakFilesystemBytes")),
+    retainedFilesystemBytes: (map(.performance.retainedFilesystemBytes) | stats("retainedFilesystemBytes")),
     durableQueueMaxima: ([.[].performance.maximumDurableQueues[]] | group_by(.name) | map({
       name: .[0].name,
       count: (map(.count) | max),
@@ -1444,45 +1451,45 @@ jq -s \
       normalized: {
         cpuSecondsPerRawGiB: {
           baseline: (37.973 / (14 * 4708352 / 1073741824)),
-          candidate: ((map(.performance.cpuSeconds) | stats).median / (10 * 25233408 / 1073741824)),
+          candidate: ((map(.performance.cpuSeconds) | stats("cpuSeconds")).median / (10 * 25233408 / 1073741824)),
           percentChange: percent_change(
             (37.973 / (14 * 4708352 / 1073741824));
-            ((map(.performance.cpuSeconds) | stats).median / (10 * 25233408 / 1073741824)))
+            ((map(.performance.cpuSeconds) | stats("cpuSeconds")).median / (10 * 25233408 / 1073741824)))
         },
         allocatedBytesPerRawByte: {
           baseline: (13320000000 / (14 * 4708352)),
-          candidate: ((map(.performance.allocatedBytes) | stats).median / (10 * 25233408)),
+          candidate: ((map(.performance.allocatedBytes) | stats("allocatedBytes")).median / (10 * 25233408)),
           percentChange: percent_change(
             (13320000000 / (14 * 4708352));
-            ((map(.performance.allocatedBytes) | stats).median / (10 * 25233408)))
+            ((map(.performance.allocatedBytes) | stats("allocatedBytes")).median / (10 * 25233408)))
         },
         peakRssBytesPerRawFrameByte: {
           baseline: (1101000000 / 4708352),
-          candidate: ((map(.performance.peakRssBytes) | stats).median / 25233408),
+          candidate: ((map(.performance.peakRssBytes) | stats("peakRssBytes")).median / 25233408),
           percentChange: percent_change(
             (1101000000 / 4708352);
-            ((map(.performance.peakRssBytes) | stats).median / 25233408))
+            ((map(.performance.peakRssBytes) | stats("peakRssBytes")).median / 25233408))
         },
         processWriteBytesPerRawByte: {
           baseline: (2703000000 / (14 * 4708352)),
-          candidate: ((map(.performance.processWriteBytes) | stats).median / (10 * 25233408)),
+          candidate: ((map(.performance.processWriteBytes) | stats("processWriteBytes")).median / (10 * 25233408)),
           percentChange: percent_change(
             (2703000000 / (14 * 4708352));
-            ((map(.performance.processWriteBytes) | stats).median / (10 * 25233408)))
+            ((map(.performance.processWriteBytes) | stats("processWriteBytes")).median / (10 * 25233408)))
         }
       },
       disposition: "Issue #171 and W6 use different cadence, frame size, graph, and measurement boundaries. The normalized values are descriptive, but the conservative <=15% regression guard remains executable."
     },
     pipeline: {
-      moduleDurationMilliseconds: ([.[].performance.pipeline.moduleDurationMilliseconds.samples[]] | stats),
-      moduleOverheadMilliseconds: ([.[].performance.pipeline.moduleOverheadMilliseconds.samples[]] | stats),
-      ingressDurationMilliseconds: ([.[].performance.pipeline.ingressDurationMilliseconds.samples[]] | stats),
-      graphDurationMilliseconds: ([.[].performance.pipeline.graphDurationMilliseconds.samples[]] | stats),
-      endToEndDurationMilliseconds: ([.[].performance.pipeline.endToEndDurationMilliseconds.samples[]] | stats),
-      cadenceHeadroomMilliseconds: ([.[].performance.pipeline.cadenceHeadroomMilliseconds.samples[]] | stats),
+      moduleDurationMilliseconds: ([.[].performance.pipeline.moduleDurationMilliseconds.samples[]] | stats("moduleDurationMilliseconds")),
+      moduleOverheadMilliseconds: ([.[].performance.pipeline.moduleOverheadMilliseconds.samples[]] | stats("moduleOverheadMilliseconds")),
+      ingressDurationMilliseconds: ([.[].performance.pipeline.ingressDurationMilliseconds.samples[]] | stats("ingressDurationMilliseconds")),
+      graphDurationMilliseconds: ([.[].performance.pipeline.graphDurationMilliseconds.samples[]] | stats("graphDurationMilliseconds")),
+      endToEndDurationMilliseconds: ([.[].performance.pipeline.endToEndDurationMilliseconds.samples[]] | stats("endToEndDurationMilliseconds")),
+      cadenceHeadroomMilliseconds: ([.[].performance.pipeline.cadenceHeadroomMilliseconds.samples[]] | stats("cadenceHeadroomMilliseconds")),
       nodes: ([.[].performance.pipeline.nodes[]] | group_by(.nodeId) | map({
         nodeId: .[0].nodeId,
-        durationMilliseconds: ([.[].durationMilliseconds.samples[]] | stats)
+        durationMilliseconds: ([.[].durationMilliseconds.samples[]] | stats("durationMilliseconds"))
       }))
     },
     centralTrafficAttempts: $central_traffic_attempts,
