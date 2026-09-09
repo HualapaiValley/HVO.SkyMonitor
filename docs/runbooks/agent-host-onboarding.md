@@ -74,10 +74,13 @@ Narrower rules such as `Bash(gh pr merge:*)` and `Bash(gh issue close:*)` work
 the same way; the `:*` suffix is what extends a rule past the bare command to a
 real invocation with arguments.
 
-Do not take the form on trust, including from this runbook. Add the rule, then
-run one command it should cover and confirm no prompt appears. That check takes
-a few seconds and is the only thing that distinguishes a rule that fires from a
-rule that reads as though it should.
+Do not take the form on trust, including from this runbook. The check has to be
+able to fail, which rules out the obvious one: adding a rule and then watching a
+command succeed proves nothing, because a broader rule may already cover it or
+the same command may have been approved earlier in the session. What does
+establish it is a command that was refused before the rule existed succeeding
+after it, in a session started since the change. If you have no refusal to point
+at, record the rule as unverified rather than as working.
 
 Two consequences worth stating, because both cost real time before they were
 understood:
@@ -108,14 +111,22 @@ to decide without seeing the original prompt, and act on his answer yourself.
   path, or connection handle. Never put a credential or a complete token in it.
   **The proposal is not the identity.** The `JOIN ACK` the coordinator returns
   is authoritative, and the identity you sign comments with and answer targeted
-  commands under is the one in that `ACK`. Sessions on this fleet have enrolled
-  under ids that the directory-name rule does not reproduce, so a session that
-  mints its own and skips the acknowledgement can end up unaddressable.
+  commands under is the one in that `ACK`.
+
+  More than one derivation is live on this fleet and no single rule explains all
+  of them, so say which input you used. Two are measured: one participant's
+  suffix is the first eight hex of the SHA-256 of its API session identifier,
+  and another's is the plain first segment of its scratchpad directory name.
+  Neither reproduces the other, hashing the first participant's directory name
+  reproduces nothing, and suffix lengths are not even uniform across the fleet.
+  A session that mints a suffix, states no input, and skips the acknowledgement
+  can end up enrolled under an identity that targeted commands never reach.
 - **Send `JOIN REQUEST`** to the coordinator on the owning roadmap epic, which
-  is issue #513 at the time of writing. `AGENTS.md` names #89, which is the
-  retired virtual-first epic and is not where current coordination happens; if
-  #513 is closed when you read this, ask the operator which epic is live rather
-  than guessing from the issue list. The coordinator's participant identity is
+  is issue #513 at the time of writing. `AGENTS.md` correctly tells you to use
+  the active initiative's epic and cites #89 only as retained virtual-first
+  history, but it does not name the active one, so a new session cannot get
+  there from the policy alone. If #513 is closed when you read this, ask the
+  operator which epic is live rather than guessing from the issue list. The coordinator's participant identity is
   not published anywhere and is not derivable: you learn it from the `JOIN ACK`
   and from the footnote it signs its own comments with. The
   session stays `UNREGISTERED/WAIT` until the coordinator returns a
@@ -133,8 +144,11 @@ to decide without seeing the original prompt, and act on his answer yourself.
 - **Arm the heartbeat, and confirm the cadence with the operator.** Two
   different intervals live in the protocol and they are easy to collapse into
   one. Section 4 of `docs/planning/agent-execution.md` specifies a five-minute
-  operator-visible heartbeat, and separately gives fifteen minutes as the
-  interval for emitting the `still running, no change` line. This fleet has also
+  operator-visible heartbeat, and separately gives fifteen minutes to the
+  cross-provider slot writer for its state line. The fifteen-minute figure is
+  scoped to that writer and is not a licence to relay to the operator every
+  fifteen minutes; `AGENTS.md` sends the `still running, no change` line to the
+  operator on every wake of the five-minute heartbeat. This fleet has also
   run a fifteen-minute fallback tick, on the operator's judgement that push
   messaging carries the events and the tick only catches what push misses. Which
   applies is the operator's call, so ask rather than infer, and say in your first
