@@ -96,7 +96,7 @@ fi
 [[ "$authorization" == AUTHORIZED* ]] || fail "Coordination authorization failed."
 
 command_id="$(jq -er '.commandId' "$command_file")"
-grep -Fq "Dispatch command ID and assigned reviewer participant ID: $command_id / $reviewer_id" "$request_file" ||
+grep -Fq "Dispatch command ID and target participant ID: $command_id / $reviewer_id" "$request_file" ||
     fail "Request command/participant binding does not match authorization."
 grep -Fq "Requested model and reasoning effort: $model / $effort" "$request_file" ||
     fail "Request model/effort does not match launcher configuration."

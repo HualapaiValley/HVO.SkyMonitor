@@ -11,6 +11,16 @@ mkdir -p "$work_root/bin" "$work_root/logs"
 cat > "$work_root/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+# The tool reads the target branch tip from the repository the PR lives in, by name.
+# Resolve it against the fixture repository, which is that repository here, so the
+# mock cannot drift from the objects the assertions are computed against. `--jq .sha`
+# is emulated by printing the bare SHA rather than by running jq.
+if [[ "$1" == api && "$2" == repos/*/commits/* ]]; then
+    branch="${2##*/commits/}"
+    git -C "$MOCK_FIXTURE_REPO" rev-parse --verify --quiet "refs/heads/$branch" ||
+        { printf 'No such branch in the fixture repository: %s\n' "$branch" >&2; exit 1; }
+    exit 0
+fi
 if [[ "$1 $2" == "pr view" ]]; then
     printf '%s\n' "$(<"$MOCK_PR_JSON")"
     exit 0
@@ -138,6 +148,7 @@ correction_head="$(git -C "$fixture_repo" rev-parse HEAD)"
 # irrelevant to these cases.
 git -C "$fixture_repo" remote add origin "$fixture_repo"
 git -C "$fixture_repo" fetch --quiet origin
+export MOCK_FIXTURE_REPO="$fixture_repo"
 
 new_base="$divergent_target"
 sync_head="$correction_head"
@@ -216,14 +227,13 @@ post_sync_head="$(git -C "$fixture_repo" rev-parse HEAD)"
 post_sync_merge_base="$(git -C "$fixture_repo" merge-base "$divergent_target" "$post_sync_head")"
 [[ "$post_sync_merge_base" == "$divergent_target" ]] ||
     { printf 'Fixture is not in the post-sync state the case exists to pin.\n' >&2; exit 1; }
-# `merge-base(base, post_sync_head) == base` holds whether or not the merge happened,
-# because base is this fixture's root commit. Assert the merge instead: a two-parent
-# head whose recorded base is still an ancestor is what makes the old merge-base an
-# identity function, and only the first half of that can go missing.
+# A two-parent head whose recorded base is still an ancestor is what makes the old
+# merge-base an identity function. Only the merge half of that can go missing, so only
+# it is asserted. The ancestry half held whether or not the merge happened, because
+# `base` is this fixture's root commit; it was deleted rather than annotated, since a
+# guard that cannot fail still reads as coverage to anyone who greps for one.
 [[ "$(git -C "$fixture_repo" rev-list --parents -n 1 "$post_sync_head" | wc -w)" -eq 3 ]] ||
     { printf 'Fixture head is not a merge commit; the identity-function case is not set up.\n' >&2; exit 1; }
-[[ "$(git -C "$fixture_repo" merge-base "$base" "$post_sync_head")" == "$base" ]] ||
-    { printf 'Fixture does not reproduce the identity-function merge base.\n' >&2; exit 1; }
 
 write_pr_fixture "$base" "$post_sync_head"
 $request_tool "${common_args[@]}" --mode initial --output "$work_root/post-sync.request"
@@ -239,8 +249,11 @@ grep -Fqx "Exact review range: merge resolution $correction_head..$post_sync_hea
 ! grep -Fq "complete PR diff $base..$post_sync_head" "$work_root/post-sync-base.request" ||
     { printf 'Base-sync complete-PR-diff range was computed from the PR-recorded base.\n' >&2; exit 1; }
 
-# A target tip that cannot be fetched must fail loudly rather than fall back to a
-# stale remote-tracking ref, which would reproduce the defect without saying so.
+# A target branch that cannot be fetched must fail loudly rather than fall back to a
+# stale remote-tracking ref, which would reproduce the defect without saying so. The
+# tool no longer inspects the remote's URL, so an unresolvable remote reaches `git
+# fetch` and this case exercises the fetch branch rather than a name lookup in front
+# of it.
 if $request_tool "${common_args[@]}" --mode initial --remote no-such-remote \
     --output "$work_root/unfetchable.request" 2> "$work_root/unfetchable.err"; then
     printf 'Request generation succeeded against an unfetchable target remote.\n' >&2
@@ -248,19 +261,20 @@ if $request_tool "${common_args[@]}" --mode initial --remote no-such-remote \
 fi
 # Exit status alone would also be satisfied by the tool failing earlier for an
 # unrelated reason, which is the same class of defect as a test that cannot fail.
-grep -Fq 'No such git remote: no-such-remote' "$work_root/unfetchable.err" ||
+grep -Fq 'Cannot fetch no-such-remote/target' "$work_root/unfetchable.err" ||
     { printf 'Unfetchable-remote case failed for some other reason.\n' >&2; exit 1; }
 [[ ! -e "$work_root/unfetchable.request" ]] ||
     { printf 'Unfetchable-remote case wrote a request file.\n' >&2; exit 1; }
 
-# L1's case: a remote that fetches cleanly but is not the repository the PR lives in.
-# Before the binding check the tool emitted this fixture's recorded base as the range's
-# left endpoint, labelled as a freshly fetched tip.
+# L1's case: a remote that fetches cleanly but is not serving this repository's target
+# branch. Before the containment check the tool emitted this fixture's recorded base as
+# the range's left endpoint, labelled as a freshly fetched tip.
 # A fork that shares this history and whose `target` sits behind, not an unrelated
 # repository: an unrelated one aborts anyway on an impossible merge base, which would
 # make the case pass for the wrong reason. Behind-but-related is the shape that used
 # to emit the PR-recorded base as the range's left endpoint under the label "freshly
-# fetched tip", and it is the only shape that proves the binding check is what stops it.
+# fetched tip", and it is the only shape that proves the containment check is what
+# stops it.
 other_repo="$work_root/SomeoneElse/HVO.SkyMonitor"
 mkdir -p "$(dirname "$other_repo")"
 git clone --quiet --bare "$fixture_repo" "$other_repo"
@@ -271,7 +285,7 @@ if $request_tool "${common_args[@]}" --mode initial --remote stalefork \
     printf 'Request generation succeeded against a remote in another repository.\n' >&2
     exit 1
 fi
-grep -Fq 'resolves to SomeoneElse/HVO.SkyMonitor, not RoySalisbury/HVO.SkyMonitor' "$work_root/wrong-repo.err" ||
+grep -Fq "does not contain RoySalisbury/HVO.SkyMonitor target at $divergent_target" "$work_root/wrong-repo.err" ||
     { printf 'Wrong-repository remote failed for some other reason.\n' >&2; exit 1; }
 [[ ! -e "$work_root/wrong-repo.request" ]] ||
     { printf 'Wrong-repository remote case wrote a request file.\n' >&2; exit 1; }
