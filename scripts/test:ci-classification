@@ -1000,11 +1000,12 @@ scalar as its own spelling. A `~` entry is read as null by every conformant
 parser in either YAML version, GitHub included, so reading it as the text `~`
 would not be applying the text rule, it would be applying it past its scope.
 
-Keys are checked against a known list at all three levels this guard reads. An
-unrecognized key is a part of the workflow grammar this guard has not been
-taught, at the root as much as in `push:`, and GitHub does not load a workflow
-that has one. Refusing what it cannot establish means widening the workflow
-requires widening this guard in the same commit, which is the intended cost.
+Keys are checked against a known list where an unrecognized key could change
+which branches match, and not where it could not. That is a decision rather
+than an accident and the comment above KNOWN_PUSH_KEYS argues it. Refusing what
+it cannot establish means widening the workflow requires widening this guard in
+the same commit, which is the intended cost; the point of drawing the line at
+what can change the answer is to keep that cost attached to something.
 """
 
 import string
@@ -1050,14 +1051,21 @@ PATTERN_CHARS = frozenset(string.ascii_letters + string.digits + '-._/+*?@')
 # The complete set of top-level workflow keys GitHub defines.
 KNOWN_WORKFLOW_KEYS = ('name', 'run-name', 'on', 'permissions', 'env',
                        'defaults', 'concurrency', 'jobs')
-# The trigger events this repository's workflows use. An unrecognized sibling
-# event is refused for the same reason as an unrecognized push filter: it is
-# grammar this guard has not been taught, and GitHub does not load a workflow
-# that names one.
-KNOWN_TRIGGER_KEYS = ('push', 'pull_request', 'workflow_dispatch', 'schedule',
-                      'repository_dispatch')
 # A push block may name these. Any other key is a part of the grammar this
 # guard has not been taught, so it fails closed.
+#
+# The rule that decides where a known-key list belongs, since this guard is
+# strict about unknown keys in one place and permissive in another and that
+# has to be a decision rather than an accident: be strict where an unknown key
+# can change which branches match, and permissive where it cannot. An
+# unrecognized key inside `push:` can do exactly that, `branches-ignore` being
+# the example already in the list, so `push:` takes a list. An unrecognized key
+# beside `push:` under `on:` is an additional trigger event; it cannot stop a
+# push to main from matching, so a list there would defend nothing and would
+# guarantee a false rejection the day someone adds a legitimate trigger. What
+# does defend the property at that level is the duplicate rule in
+# mapping_pairs, which refuses a second `push` under any spelling, and it
+# applies whether or not the other keys are recognized.
 KNOWN_PUSH_KEYS = ('branches', 'branches-ignore', 'tags', 'tags-ignore',
                    'paths', 'paths-ignore')
 # These suppress or narrow the main-push run and must be absent.
@@ -1193,13 +1201,16 @@ def key_identities(key_node, where):
     return [('text', key_node.value), ('value', key_node.tag, resolved)]
 
 
-def mapping_pairs(node, where, known_keys):
+def mapping_pairs(node, where, known_keys=None):
     """Return a mapping node's (key text, value node) pairs, or refuse.
 
-    A non-scalar key, a repeated key and a key this guard has not been taught
-    all leave the mapping's meaning unestablished: parsers resolve a duplicate
-    key last-wins or refuse the document, and this guard will not pick between
-    those answers.
+    A non-scalar key and a repeated key both leave the mapping's meaning
+    unestablished: parsers resolve a duplicate key last-wins or refuse the
+    document, and this guard will not pick between those answers.
+
+    `known_keys` is passed where an unrecognized key could change which
+    branches match, and omitted where it could not. See the comment above
+    KNOWN_PUSH_KEYS for which is which and why.
     """
     if not isinstance(node, yaml.MappingNode):
         raise Unrecognized('%s is not a mapping' % where)
@@ -1226,7 +1237,7 @@ def mapping_pairs(node, where, known_keys):
                     'this guard reads is not the block that takes effect'
                     % (where, seen_key, key))
         seen.extend((identity, key) for identity in identities)
-        if key not in known_keys:
+        if known_keys is not None and key not in known_keys:
             raise Unrecognized('unrecognized key in %s: %s' % (where, key))
         pairs.append((key, value_node))
     return pairs
@@ -1245,8 +1256,11 @@ def read_push_block(root):
         raise Unrecognized('the workflow has %d top-level `on:` keys'
                            % len(on_values))
 
+    # No known-key list here on purpose: an unknown sibling event cannot stop a
+    # push to main from matching. mapping_pairs still refuses a second `push`
+    # under any spelling, which is the part that defends the property.
     push_values = [value for key, value
-                   in mapping_pairs(on_values[0], '`on:`', KNOWN_TRIGGER_KEYS)
+                   in mapping_pairs(on_values[0], '`on:`')
                    if key == 'push']
     if not push_values:
         raise Unrecognized('`on:` has no `push:` trigger')
@@ -1341,8 +1355,8 @@ def main(argv):
             'CI must run on pushes to %s; release qualification requires a '
             'main-push run for the release SHA.\n'
             'This guard recognizes one shape only: a single YAML document '
-            'whose keys are workflow keys it knows, whose `on:` key names '
-            'events it knows, whose `push:` block names `branches` and no '
+            'whose top-level keys are workflow keys it knows, whose `on:` key '
+            'holds a `push:` block naming `branches` and no '
             '`branches-ignore`, `paths` or `paths-ignore`, whose branch '
             'entries are strings made of branch-pattern characters and free '
             'of `!` and backslash, and one of which is the bare literal '
