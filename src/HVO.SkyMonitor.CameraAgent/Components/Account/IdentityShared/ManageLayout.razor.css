@@ -1,23 +1,7 @@
-.manage-page > header p {
-    margin: 0 0 0.35rem;
-    color: var(--hvo-accent);
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.13em;
-    text-transform: uppercase;
-}
-
-.manage-page > header h1 {
-    margin: 0;
-    font-size: clamp(2rem, 7vw, 2.8rem);
-    letter-spacing: -0.04em;
-}
-
 .manage-layout {
     display: grid;
     grid-template-columns: minmax(11rem, 14rem) minmax(0, 1fr);
     gap: clamp(1.5rem, 4vw, 3rem);
-    margin-top: 1.75rem;
 }
 
 .manage-content {

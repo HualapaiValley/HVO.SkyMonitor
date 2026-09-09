@@ -18,15 +18,34 @@ var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringCo
     ["tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj"] = Counts(unit: 27),
     ["tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj"] = Counts(unit: 11),
     ["tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj"] = Counts(unit: 11),
-    ["tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"] = Counts(unit: 13, integration: 7),
+    ["tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"] = Counts(unit: 15, integration: 7),
     ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 1852, integration: 217, manual: 34, soak: 1, hardware: 1),
-    ["tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"] = Counts(unit: 6, integration: 7, manual: 21),
+    ["tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"] = Counts(unit: 6, integration: 7, manual: 22),
     ["tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj"] = Counts(unit: 4, integration: 21),
-    ["tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj"] = Counts(unit: 416),
+    ["tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj"] = Counts(unit: 418),
     ["tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"] = Counts(unit: 4, integration: 407, manual: 31),
     ["tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"] = Counts(unit: 8, manual: 1),
     ["tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj"] = Counts(unit: 4, integration: 6, manual: 3),
 };
+// The M5 macOS validation workflow pinned its own per-project expected Unit totals by hand, and
+// they went stale the moment a repository-wide compile item added test methods to every project
+// (#764). Two sources describing the same thing, and only one of them moved. Emitting this matrix
+// lets that workflow read the numbers this audit already validates against a real discovery run,
+// so the two cannot drift apart again. Tab-separated rather than JSON so the consumer needs only
+// awk, which is present wherever the workflow runs.
+if (args.Contains("--emit-matrix", StringComparer.Ordinal))
+{
+    foreach (var (relativeProject, counts) in expected.OrderBy(static entry => entry.Key, StringComparer.Ordinal))
+    {
+        foreach (var category in categories)
+        {
+            Console.WriteLine($"{category}\t{relativeProject}\t{counts[category]}");
+        }
+    }
+
+    return 0;
+}
+
 var totals = categories.ToDictionary(static category => category, static _ => 0, StringComparer.Ordinal);
 var failures = new List<string>();
 var discoveredProjects = Directory.EnumerateFiles(Path.Combine(root, "tests"), "*.csproj", SearchOption.AllDirectories)

@@ -1,0 +1,98 @@
+# LocalRunner overlay for the issue-211 W6 campaign, applied only for the LocalRunner profile
+# phase. Layer it over compose.yml; the base file alone is the InProcess profile and is unchanged
+# by this overlay except for the two mounts and the runner configuration the agent needs to reach
+# the socket.
+#
+# The runner topology below MIRRORS the installer, at
+# src/HVO.SkyMonitor.Deployment.Cli/ComposeDeployment.cs ReplayRunnerTemplate. That is deliberate
+# and is the whole point of the exercise: evidence gathered against a runner configured more
+# loosely than the installed one would prove the protocol works but not that the shipped topology
+# does.
+#
+# Every security, resource and lifecycle property is mirrored exactly -- entrypoint, network_mode,
+# read_only, cap_drop, security_opt, tmpfs, cpus, mem_limit, pids_limit, healthcheck,
+# stop_grace_period, pull_policy, logging and all six HVO_REPLAY_* values. Verified by comparing
+# this file against the parsed template rather than by reading both.
+#
+# TWO PROPERTIES ARE DELIBERATELY NOT MIRRORED, and both are recorded here because a silent
+# omission is indistinguishable from an oversight:
+#
+#   restart: unless-stopped  -- omitted ON PURPOSE. A runner that restarts itself would let a
+#     crash present as a healthy container, and the campaign would record evidence from a process
+#     that had already died once. The installer wants resilience; a measurement wants the failure
+#     to stay visible. The campaign controls the lifecycle explicitly instead.
+#   labels                   -- omitted. Installer provenance labels identify a deployed instance;
+#     they carry no behaviour and nothing in this campaign reads them.
+#
+# Nothing else differs. See #719.
+services:
+  cameraagent:
+    environment:
+      CameraAgent__ProcessingGraphs__ReplayProfile: LocalRunner
+      CameraAgent__ProcessingGraphs__LocalRunner__Transport: UnixDomainSocket
+      CameraAgent__ProcessingGraphs__LocalRunner__SocketPath: /run/hvo-replay/runner.sock
+      CameraAgent__ProcessingGraphs__LocalRunner__AuthorizationKeyFile: /run/hvo-secrets/replay-runner-auth-key
+      # Concurrency 1 and 128 MiB are the installer's values, not tuned for this campaign. Five
+      # full W6 raw inputs are 126,167,040 bytes, leaving 8,050,688 for metadata within the
+      # 134,217,728 cap. Request and response declarations fail independently before transfer
+      # exceeds it; raising the cap to make a run pass would discard the thing being measured.
+      CameraAgent__ProcessingGraphs__ReplayMaximumConcurrency: "1"
+      CameraAgent__ProcessingGraphs__LocalRunner__MaximumTransferBytes: "134217728"
+    volumes:
+      - type: bind
+        source: ${REPLAY_RUNNER_SOCKET_DIR:?REPLAY_RUNNER_SOCKET_DIR must be set}
+        target: /run/hvo-replay
+      - type: bind
+        source: ${REPLAY_RUNNER_AUTH_KEY_FILE:?REPLAY_RUNNER_AUTH_KEY_FILE must be set}
+        target: /run/hvo-secrets/replay-runner-auth-key
+        read_only: true
+
+  replay-runner:
+    image: ${CAMERA_AGENT_IMAGE:?CAMERA_AGENT_IMAGE must be a content-addressed image ID}
+    pull_policy: never
+    container_name: ${REPLAY_RUNNER_CONTAINER:?REPLAY_RUNNER_CONTAINER must be set}
+    hostname: ${REPLAY_RUNNER_CONTAINER}
+    user: "${LOCAL_UID:?LOCAL_UID must be set}:${LOCAL_GID:?LOCAL_GID must be set}"
+    entrypoint: [/app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner]
+    environment:
+      HVO_REPLAY_TRANSPORT: unix
+      HVO_REPLAY_SOCKET_PATH: /run/hvo-replay/runner.sock
+      HVO_REPLAY_AUTH_KEY_FILE: /run/hvo-secrets/replay-runner-auth-key
+      HVO_REPLAY_MAX_CONCURRENCY: "1"
+      HVO_REPLAY_MAX_TRANSFER_BYTES: "134217728"
+      HVO_REPLAY_IDLE_SHUTDOWN_SECONDS: "0"
+    volumes:
+      # The only two mounts. No raw, archive, catalog, identity or Data Protection root reaches
+      # this container: the runner receives work over the socket and has no business reading the
+      # agent's state directly. A mount added here to make something work would silently widen the
+      # blast radius the installer topology exists to keep narrow.
+      - type: bind
+        source: ${REPLAY_RUNNER_SOCKET_DIR:?REPLAY_RUNNER_SOCKET_DIR must be set}
+        target: /run/hvo-replay
+      - type: bind
+        source: ${REPLAY_RUNNER_AUTH_KEY_FILE:?REPLAY_RUNNER_AUTH_KEY_FILE must be set}
+        target: /run/hvo-secrets/replay-runner-auth-key
+        read_only: true
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777,size=64m
+    stop_grace_period: 30s
+    healthcheck:
+      # The runner's own authenticated probe, not a port check. A probe that proved only that a
+      # process was alive would pass for a runner that could not authenticate a single request.
+      test: [CMD, /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner, --probe]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    cpus: "0.5"
+    mem_limit: 2G
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

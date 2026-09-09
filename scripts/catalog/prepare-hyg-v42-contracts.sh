@@ -21,5 +21,11 @@ mkdir -m 700 -- "$OUTPUT"
 
 "$SCRIPT_DIR/build-hyg-v42.sh" --fetch "$BUILD_ROOT" >&2
 
-[[ "$(hyg_resolve_catalog_identity "$V2_BUNDLE")" == "$HYG_CATALOG_ID" ]]
+# A bare `[[ ]]` here killed the job with nothing on stderr, so a bundle built with the
+# wrong catalog identity surfaced later, at whichever consumer tripped over it, rather
+# than at the build that produced it. Name the identity that was actually built.
+built_identity="$(hyg_resolve_catalog_identity "$V2_BUNDLE")" ||
+    hyg_fail "cannot resolve the catalog identity of the bundle just built at $V2_BUNDLE"
+[[ "$built_identity" == "$HYG_CATALOG_ID" ]] ||
+    hyg_fail "built bundle identity is $built_identity, not $HYG_CATALOG_ID"
 printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$V2_BUNDLE"

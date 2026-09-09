@@ -651,6 +651,9 @@ public sealed class LifecycleContractTests
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed, seedCatalogSelection: false);
+        // Deliberately environment-gated; see the note in InstallerFlowTests. The CI Unit lane
+        // restores the catalog bundle and asserts it exists before exporting this variable, so a
+        // skip there means the restore broke rather than that the gate is working as intended.
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
         if (string.IsNullOrEmpty(bundle)) Assert.Inconclusive("Set HVO_PRODUCTION_CATALOG_BUNDLE to run catalog transitions.");
         var selected = CatalogInstaller.Install(bundle, fixture.Paths.CatalogRoot, Guid.NewGuid());

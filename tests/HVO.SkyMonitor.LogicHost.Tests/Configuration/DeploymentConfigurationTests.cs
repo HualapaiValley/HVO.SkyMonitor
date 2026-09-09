@@ -179,6 +179,93 @@ public sealed class DeploymentConfigurationTests
         }
     }
 
+    // #687: the loader asked for EphemeralKeySet unconditionally and macOS has no ephemeral
+    // path, so it threw PlatformNotSupportedException before any of the checks below could run.
+    // Every one of these rejections has to survive the fix, because a portability change that
+    // quietly stopped refusing bad certificates would be a worse defect than the one it fixed.
+    [TestMethod]
+    public void ProductionCertificateLoaderRejectsEveryUnusableCertificate()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-cert-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            static string Write(string root, string name, X509Certificate2 certificate)
+            {
+                var path = Path.Combine(root, name);
+                File.WriteAllBytes(path, certificate.Export(X509ContentType.Pfx, "secret"));
+                return path;
+            }
+
+            static X509Certificate2 Make(RSA key, DateTimeOffset from, DateTimeOffset to, X509KeyUsageFlags usage)
+            {
+                var request = new CertificateRequest("CN=hvo-test", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                request.CertificateExtensions.Add(new X509KeyUsageExtension(usage, true));
+                return request.CreateSelfSigned(from, to);
+            }
+
+            using var rsa = RSA.Create(2048);
+            var now = DateTimeOffset.UtcNow;
+
+            Assert.ThrowsExactly<InvalidOperationException>(
+                () => OpenIddictCertificateOptions.Load("relative/signing.pfx", "secret", X509KeyUsageFlags.DigitalSignature),
+                "a relative path must be refused before the file is opened");
+
+            var empty = Path.Combine(root, "empty.pfx");
+            File.WriteAllBytes(empty, []);
+            Assert.ThrowsExactly<InvalidOperationException>(
+                () => OpenIddictCertificateOptions.Load(empty, "secret", X509KeyUsageFlags.DigitalSignature),
+                "an empty file must be refused");
+
+            var oversized = Path.Combine(root, "oversized.pfx");
+            File.WriteAllBytes(oversized, new byte[(1024 * 1024) + 1]);
+            Assert.ThrowsExactly<InvalidOperationException>(
+                () => OpenIddictCertificateOptions.Load(oversized, "secret", X509KeyUsageFlags.DigitalSignature),
+                "a file above the size bound must be refused");
+
+            using var expired = Make(rsa, now.AddHours(-2), now.AddHours(-1), X509KeyUsageFlags.DigitalSignature);
+            Assert.ThrowsExactly<InvalidOperationException>(
+                () => OpenIddictCertificateOptions.Load(Write(root, "expired.pfx", expired), "secret", X509KeyUsageFlags.DigitalSignature),
+                "an expired certificate must be refused");
+
+            using var future = Make(rsa, now.AddHours(1), now.AddHours(2), X509KeyUsageFlags.DigitalSignature);
+            Assert.ThrowsExactly<InvalidOperationException>(
+                () => OpenIddictCertificateOptions.Load(Write(root, "future.pfx", future), "secret", X509KeyUsageFlags.DigitalSignature),
+                "a not-yet-valid certificate must be refused");
+
+            using var withKey = Make(rsa, now.AddMinutes(-1), now.AddHours(1), X509KeyUsageFlags.DigitalSignature);
+            using var publicOnly = X509CertificateLoader.LoadCertificate(withKey.Export(X509ContentType.Cert));
+            Assert.IsFalse(publicOnly.HasPrivateKey, "the public-only fixture must genuinely carry no private key");
+            Assert.ThrowsExactly<InvalidOperationException>(
+                () => OpenIddictCertificateOptions.Load(Write(root, "public-only.pfx", publicOnly), "secret", X509KeyUsageFlags.DigitalSignature),
+                "a certificate without a private key must be refused");
+
+            using var wrongUsage = Make(rsa, now.AddMinutes(-1), now.AddHours(1), X509KeyUsageFlags.KeyEncipherment);
+            Assert.ThrowsExactly<InvalidOperationException>(
+                () => OpenIddictCertificateOptions.Load(Write(root, "wrong-usage.pfx", wrongUsage), "secret", X509KeyUsageFlags.DigitalSignature),
+                "a certificate whose key usage excludes the configured use must be refused");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // The production branch is the refusal, and it is the branch this host never takes. Reading
+    // the decision through a parameter is what makes both answers checkable from either
+    // platform; a test that could only exercise its own host's branch would leave the one that
+    // matters unverified everywhere it matters.
+    [TestMethod]
+    public void NonEphemeralFallbackIsRefusedOnLinuxAndAllowedElsewhere()
+    {
+        Assert.IsFalse(
+            OpenIddictCertificateOptions.AllowsNonEphemeralFallback(isLinuxPlatform: true),
+            "Linux is the production platform: losing EphemeralKeySet there must surface, not downgrade to keys on disk");
+        Assert.IsTrue(
+            OpenIddictCertificateOptions.AllowsNonEphemeralFallback(isLinuxPlatform: false),
+            "a development platform without an ephemeral key path must still be able to load a certificate");
+    }
+
     [TestMethod]
     public void InsecureOpenIddictTransportRequiresExplicitIsolatedModeInProduction()
     {

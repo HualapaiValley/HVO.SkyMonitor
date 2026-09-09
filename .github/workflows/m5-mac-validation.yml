@@ -64,29 +64,89 @@ jobs:
           export TMPDIR="$results_root/tmp"
           mkdir -m 700 "$TMPDIR"
 
+          # Expected Unit totals come from the category audit matrix rather than from pins kept here.
+          # This workflow is dispatch-only, so nothing surfaces a stale pin until someone dispatches
+          # it, and a repository-wide compile item that adds methods to every test project breaks
+          # every pin at once with no protected-CI signal (#764). The audit validates that matrix
+          # against a real per-project discovery run on every full CI run, so reading it here means
+          # the two count sources cannot drift apart again.
+          matrix="$results_root/category-matrix.tsv"
+          dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj \
+            --configuration Release -- --emit-matrix > "$matrix"
+          test -s "$matrix"
+
+          # Only the skipped count stays pinned. It is a property of this host rather than of the
+          # sources -- these are the macOS-gated and environment-gated cases -- so it cannot be
+          # derived from a discovery matrix, and the executed count follows from the other two.
           projects=(
-            "agent-core|63|63|0|tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj"
-            "cameraagent-acceptance|2|2|0|tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
-            "fleet-contracts|7|7|0|tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj"
-            "catalog-sqlite|81|80|1|tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"
-            "cameraagent-logichost|4|4|0|tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"
-            "astronomy|170|170|0|tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj"
-            "cameraagent|1848|1799|49|tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
-            "imaging|188|188|0|tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"
-            "test-support|7|7|0|tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj"
-            "deployment-distribution|82|82|0|tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj"
-            "processing|198|198|0|tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
-            "processing-runner|25|25|0|tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj"
-            "common|23|23|0|tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj"
-            "architecture|7|7|0|tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"
-            "deployment-cli|237|103|134|tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj"
+            "agent-core|0|tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj"
+            "cameraagent-acceptance|0|tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
+            "fleet-contracts|0|tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj"
+            "catalog-sqlite|1|tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"
+            "cameraagent-logichost|0|tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"
+            "astronomy|0|tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj"
+            "cameraagent|49|tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+            "imaging|0|tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"
+            "test-support|0|tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj"
+            "deployment-distribution|0|tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj"
+            "processing|0|tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
+            "processing-runner|0|tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj"
+            "common|0|tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj"
+            "architecture|0|tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"
+            "deployment-cli|134|tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj"
           )
+
+          # Membership is what goes stale here, not length. #764 came from the repository
+          # growing, and a count pinned below the array only moves when someone edits the
+          # array: a sixteenth test project appearing tomorrow leaves it at 15, passing, with
+          # that project silently unvalidated on this host. The matrix makes the derived form
+          # available, so every project it reports Unit cases for must be either listed above
+          # or named as an exclusion below.
+          #
+          # The exclusions are the central-host unit suite, the Unit tails of the three
+          # Testcontainers-backed assemblies, and the performance harness. This step runs
+          # host-neutral unit suites and the workflow recorded no reason for the original set
+          # when it was added in 9e58f899, so the list below names that set rather than
+          # justifying it. What it buys is that the lane's share of the Unit selection is
+          # written down, and that a new test project has to be placed in one list or the
+          # other before this step passes.
+          excluded_projects=(
+            "tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj"
+            "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"
+            "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj"
+            "tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj"
+            "tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj"
+          )
+
+          covered_projects="$(
+            for entry in "${projects[@]}"; do printf '%s\n' "${entry##*|}"; done
+            printf '%s\n' "${excluded_projects[@]}"
+          )"
+          while IFS= read -r matrix_project; do
+            printf '%s\n' "$covered_projects" | grep -Fqx "$matrix_project" ||
+              { printf 'Unit project %s is in the category matrix but in neither the list above nor its exclusions\n' \
+                  "$matrix_project" >&2; exit 1; }
+          done < <(awk -F'\t' '$1 == "Unit" && $3 > 0 { print $2 }' "$matrix")
+
+          # The other direction. An exclusion naming a project the matrix no longer reports is
+          # a stale entry, and a stale entry silently widens the list it exists to bound.
+          for excluded in "${excluded_projects[@]}"; do
+            awk -F'\t' -v p="$excluded" '$1 == "Unit" && $2 == p { found = 1 } END { exit !found }' "$matrix" ||
+              { printf 'Excluded project %s has no Unit row in the category matrix\n' "$excluded" >&2; exit 1; }
+          done
 
           aggregate_total=0
           aggregate_executed=0
           aggregate_skipped=0
           for entry in "${projects[@]}"; do
-            IFS='|' read -r name expected_total expected_executed expected_skipped project <<< "$entry"
+            IFS='|' read -r name expected_skipped project <<< "$entry"
+            expected_total="$(awk -F'\t' -v p="$project" '$1 == "Unit" && $2 == p { print $3 }' "$matrix")"
+            # An empty lookup would make every comparison below compare against nothing, which is
+            # the failure this change exists to remove rather than reintroduce one level in.
+            case "$expected_total" in
+              ''|*[!0-9]*) printf 'No Unit total in the category matrix for %s\n' "$project" >&2; exit 1 ;;
+            esac
+            expected_executed=$((expected_total - expected_skipped))
             project_results="$results_root/$name"
             mkdir -m 700 "$project_results"
             dotnet test "$project" \
@@ -124,8 +184,21 @@ jobs:
             printf '%s: discovered=%s executed=%s skipped=%s\n' "$name" "$total" "$executed" "$skipped"
           done
 
-          test "$aggregate_total" -eq 2942
-          test "$aggregate_executed" -eq 2758
-          test "$aggregate_skipped" -eq 184
+          # The aggregate is a printed record and carries no assertion, because no assertion
+          # placed here could fail. The step has no `shell:` override, so `bash -e` aborts on
+          # the first per-project comparison that fails; every iteration that completes has
+          # therefore already proven its own numbers and moves both a real accumulator and an
+          # expected one by the identical amount, and an iteration that does not complete never
+          # reaches this point. Comparing the two sums is an arithmetic identity, which is the
+          # same shape as the pins this change removes. The per-project comparisons above are
+          # the gate. The one post-loop check kept is reachable, and not only in principle:
+          # empty `projects` and reduce the matrix to the five exclusions so that membership still
+          # passes, and the step runs no suite at all. With this line the step exits 1; delete it
+          # and the same input is a green run printing `aggregate: discovered=0`. It names itself
+          # because a bare `test` failing here would abort with nothing on stderr, and this is the
+          # one assertion in the step whose subject is the absence of work rather than a number
+          # that some earlier line already printed.
+          test "$aggregate_total" -gt 0 ||
+            { printf 'No suite ran: the project list produced an aggregate discovered count of zero\n' >&2; exit 1; }
           printf 'aggregate: discovered=%s executed=%s skipped=%s\n' \
             "$aggregate_total" "$aggregate_executed" "$aggregate_skipped"
