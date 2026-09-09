@@ -12,6 +12,12 @@ Usage:
     --evidence-file FILE [--call-sites-file FILE] [--instructions-file FILE] \
     [--evidence-pack FILE] [--output FILE] [--remote NAME]
 
+  Correction and base-sync modes additionally require:
+    --previous-command-id CMD-ID
+  and accept, in decreasing order of authority:
+    [--previous-request-comment N] [--previous-report-comment N]
+    [--previous-head SHA]
+
   scripts/pr:review-request --repo OWNER/REPO --pr N \
     --recorded-comment COMMENT_ID [--output FILE]
 
@@ -22,6 +28,12 @@ from the PR object's recorded baseRefOid, which goes stale the moment the topic
 branch merges the advanced target. Caller-provided files hold
 issue-specific lenses and evidence pointers. The recorded-comment form replays
 an immutable historical request for range-validation dry runs.
+
+The previous reviewed head comes from the request this tool emitted for the
+previous round, read back by comment ID or found by its dispatch command ID.
+It is never recovered from the previous reviewer's prose. --previous-head is
+the escape hatch for a round dispatched before this tool recorded one, and the
+emitted request says which of the two produced the value.
 EOF
 }
 
@@ -59,10 +71,14 @@ evidence_pack=""
 output_file=""
 recorded_comment=""
 target_remote="origin"
+previous_command_id=""
+previous_request_comment=""
+previous_report_comment=""
+previous_head_override=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --repo|--pr|--issue|--mode|--round|--command-id|--reviewer-id|--acceptance-file|--lens-file|--profile|--primary|--fallback|--route|--model|--effort|--tests-file|--evidence-file|--call-sites-file|--instructions-file|--evidence-pack|--output|--recorded-comment|--remote)
+        --repo|--pr|--issue|--mode|--round|--command-id|--reviewer-id|--acceptance-file|--lens-file|--profile|--primary|--fallback|--route|--model|--effort|--tests-file|--evidence-file|--call-sites-file|--instructions-file|--evidence-pack|--output|--recorded-comment|--remote|--previous-command-id|--previous-request-comment|--previous-report-comment|--previous-head)
             [[ -n "${2:-}" ]] || fail "Missing value for $1."
             case "$1" in
                 --repo) repo="$2" ;;
@@ -88,6 +104,10 @@ while [[ $# -gt 0 ]]; do
                 --output) output_file="$2" ;;
                 --recorded-comment) recorded_comment="$2" ;;
                 --remote) target_remote="$2" ;;
+                --previous-command-id) previous_command_id="$2" ;;
+                --previous-request-comment) previous_request_comment="$2" ;;
+                --previous-report-comment) previous_report_comment="$2" ;;
+                --previous-head) previous_head_override="$2" ;;
             esac
             shift 2
             ;;
@@ -110,16 +130,43 @@ emit() {
     fi
 }
 
+# A request this tool emitted, recovered from a comment body on stdin.
+#
+# Two shapes reach this, and only one of them was ever accepted. A request
+# pasted inside a ```text fence is the shape the recorded-comment replay was
+# written for; a request posted as the whole comment body, which is what every
+# dispatch in this repository's ledger actually looks like, was rejected as
+# "no fenced review request". That is the same defect this tool is being
+# corrected for, one level up: a parser's expectation reported as a property of
+# the comment. Take the fenced block when there is one and the whole body when
+# there is not, and let the field requirements decide whether what came back is
+# a request rather than letting the fence decide it.
+request_block_from_body() {
+    local body="$1" block
+    block="$(awk '
+        /^```text[[:space:]]*$/ { capture = 1; found = 1; next }
+        capture && /^```[[:space:]]*$/ { capture = 0; next }
+        capture { print }
+        END { if (!found) exit 3 }
+    ' <<<"$body")" || block="$body"
+    [[ -n "$block" ]] || block="$body"
+    printf '%s\n' "$block"
+}
+
+# One field of a request block, by its exact label, with the label removed.
+# Returns empty and succeeds when the field is absent, so the caller decides
+# whether an absent field is fatal; that decision differs by field.
+request_field() {
+    local block="$1" label="$2"
+    printf '%s\n' "$block" | sed -n "s/^${label}: //p" | head -n 1
+}
+
 if [[ -n "$recorded_comment" ]]; then
     [[ "$recorded_comment" =~ ^[1-9][0-9]*$ ]] || fail "Recorded comment ID is invalid."
     recorded_body="$(gh api "repos/$repo/issues/comments/$recorded_comment" --jq .body)"
-    recorded_request="$(awk '
-        /^```text[[:space:]]*$/ { capture = 1; next }
-        capture && /^```[[:space:]]*$/ { exit }
-        capture { print }
-    ' <<<"$recorded_body")"
-    [[ -n "$recorded_request" ]] || fail "Recorded comment has no fenced review request."
-    grep -Fq 'Exact review range:' <<<"$recorded_request" || fail "Recorded request has no exact range."
+    recorded_request="$(request_block_from_body "$recorded_body")"
+    [[ -n "$recorded_request" ]] || fail "Recorded comment $recorded_comment is empty."
+    grep -Fq 'Exact review range:' <<<"$recorded_request" || fail "Recorded comment $recorded_comment carries no review request: no 'Exact review range:' field in its fenced block or in its body."
     emit "$recorded_request"
     exit 0
 fi
@@ -128,6 +175,19 @@ fi
 [[ "$mode" =~ ^(initial|correction|base-sync)$ ]] || fail "--mode is invalid."
 [[ "$round" =~ ^[0-3]$ ]] || fail "--round must be 0 through 3."
 [[ "$command_id" =~ ^CMD-[A-Z0-9][A-Z0-9-]*$ ]] || fail "--command-id is invalid."
+if [[ "$mode" == initial ]]; then
+    [[ -z "$previous_command_id$previous_request_comment$previous_report_comment$previous_head_override" ]] ||
+        fail "An initial review has no previous round; --previous-command-id, --previous-request-comment, --previous-report-comment, and --previous-head are not accepted with --mode initial."
+else
+    [[ "$previous_command_id" =~ ^CMD-[A-Z0-9][A-Z0-9-]*$ ]] ||
+        fail "--previous-command-id is required in $mode mode: the previous reviewed head is selected by the dispatch command ID of the round that produced it."
+    [[ -z "$previous_request_comment" || "$previous_request_comment" =~ ^[1-9][0-9]*$ ]] ||
+        fail "--previous-request-comment must be a comment ID."
+    [[ -z "$previous_report_comment" || "$previous_report_comment" =~ ^[1-9][0-9]*$ ]] ||
+        fail "--previous-report-comment must be a comment ID."
+    [[ -z "$previous_head_override" || "$previous_head_override" =~ ^[0-9a-f]{40}$ ]] ||
+        fail "--previous-head must be a full 40-hex SHA."
+fi
 [[ "$reviewer_id" =~ ^[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || fail "--reviewer-id is invalid."
 [[ "$profile" =~ ^(fast|standard|deep)$ ]] || fail "--profile is invalid."
 [[ "$effort" =~ ^(medium|high|xhigh|max)$ ]] || fail "--effort is invalid for review."
@@ -211,23 +271,118 @@ merge_base="$(git merge-base "$target_base" "$current_head")" ||
 comments_stream="$(gh api --method GET --paginate "repos/$repo/issues/$pr/comments?per_page=100")"
 comments_json="$(jq -cs '[.[][]]' <<<"$comments_stream")"
 
-previous_head="none"
-prior_report=""
-prior_checklist="none"
-if [[ "$mode" != initial ]]; then
-    prior_report="$(jq -r '
-        [.[] | select(.body | test("(?i)(review (started and )?completed|review complete|verdict:[[:space:]]*(clean|converged|corrections required))"))]
-        | last | .body // empty
-    ' <<<"$comments_json")"
-    [[ -n "$prior_report" ]] || fail "No prior completed review was found in the PR ledger."
-    previous_range="$(printf '%s\n' "$prior_report" | grep -Eo '[0-9a-f]{40}\.\.[0-9a-f]{40}' | tail -n 1 || true)"
-    [[ -n "$previous_range" ]] || fail "Prior review does not attest a full-SHA range."
-    previous_head="${previous_range##*..}"
+finding_pattern='(^|[^[:alnum:]])([HMLS][0-9]+)([^[:alnum:]]|$)|finding|unresolved|verified (corrected|deferred)'
 
-    prior_checklist="$(printf '%s\n' "$prior_report" |
-        grep -Ei '(^|[^[:alnum:]])([HMLS][0-9]+)([^[:alnum:]]|$)|finding|unresolved|verified (corrected|deferred)' |
-        tail -n 40 || true)"
-    [[ -n "$prior_checklist" ]] || prior_checklist="none; prior report states no findings"
+previous_head="none"
+previous_head_source="not applicable; an initial review has no previous round"
+prior_report=""
+prior_report_source="not applicable; an initial review has no prior report"
+prior_checklist="none"
+
+# The previous reviewed head is not a fact about the previous reviewer's prose. It is
+# a value this tool computed and published in the request that opened the previous
+# round, and the only correct way to recover it is to read that request back. What
+# stood here scraped the last 40-hex..40-hex pair out of the reviewer's report, which
+# selects on the shape of a SHA and nothing else: a report that quotes an unrelated
+# range, mentions a reverted head, or lists two ranges in the wrong order yields a
+# well-formed, plausible, wrong left endpoint, and the request that carries it reads
+# exactly like a correct one. Measured against this repository's ledger the scrape is
+# also empty far more often than it is wrong -- the contractual verdict vocabulary
+# matches nothing on #821, #816 or #826 -- so its failure mode in practice was an
+# abort blamed on the reviewer.
+#
+# Selection now runs in decreasing order of authority, and the emitted request records
+# which rung produced the value, because a caller-asserted head and a head read out of
+# the tool's own prior request are not the same evidence and must not read the same.
+if [[ "$mode" != initial ]]; then
+    prior_request=""
+    prior_request_id=""
+
+    if [[ -n "$previous_request_comment" ]]; then
+        prior_request_body="$(gh api "repos/$repo/issues/comments/$previous_request_comment" --jq .body)" ||
+            fail "Cannot read comment $previous_request_comment on $repo; --previous-request-comment names a comment that could not be fetched."
+        prior_request="$(request_block_from_body "$prior_request_body")"
+        grep -Fq 'Exact review range:' <<<"$prior_request" ||
+            fail "Comment $previous_request_comment is not a review request emitted by this tool: it has no 'Exact review range:' field."
+        prior_request_id="$previous_request_comment"
+    else
+        prior_request_id="$(jq -r --arg cmd "$previous_command_id" '
+            [ .[]
+              | select((.body // "") | test("(^|\n)Dispatch command ID and target participant ID: " + $cmd + "( |/|\n|$)"))
+              | select((.body // "") | contains("Exact review range:"))
+            ] | last | .id // empty
+        ' <<<"$comments_json")"
+        if [[ -n "$prior_request_id" ]]; then
+            prior_request="$(jq -r --arg id "$prior_request_id" '
+                [.[] | select((.id | tostring) == $id)] | last | .body // empty
+            ' <<<"$comments_json")"
+            prior_request="$(request_block_from_body "$prior_request")"
+        fi
+    fi
+
+    if [[ -n "$prior_request" ]]; then
+        # Selecting on the command ID is what makes this a selector rather than a
+        # match-anything scan, so the pinned path is held to the same test: a request
+        # that carries a different dispatch command ID is the wrong round's request,
+        # and reading a head out of it would be the original defect with a tidier
+        # source.
+        prior_dispatch="$(request_field "$prior_request" 'Dispatch command ID and target participant ID')"
+        prior_dispatch_cmd="${prior_dispatch%% *}"
+        [[ "$prior_dispatch_cmd" == "$previous_command_id" ]] ||
+            fail "Comment $prior_request_id records dispatch command ID '${prior_dispatch_cmd:-none}', not $previous_command_id; it is a different round's request and cannot supply this round's previous reviewed head."
+        previous_head="$(request_field "$prior_request" 'Current head SHA')"
+        [[ "$previous_head" =~ ^[0-9a-f]{40}$ ]] ||
+            fail "The request in comment $prior_request_id has no usable 'Current head SHA:' field; it records '${previous_head:-nothing}' where a full SHA is required."
+        previous_head_source="request comment $prior_request_id emitted by this tool for $previous_command_id"
+    elif [[ -n "$previous_head_override" ]]; then
+        previous_head="$previous_head_override"
+        previous_head_source="--previous-head asserted by the caller; no request comment for $previous_command_id was found in the PR ledger, so this value is unverified by this tool"
+    else
+        fail "No review request emitted by this tool for $previous_command_id was found on $repo#$pr, and --previous-head was not supplied. The previous reviewed head has no source. Pass --previous-request-comment N to pin the request comment, or --previous-head SHA to assert the head for a round dispatched before this tool recorded one."
+    fi
+
+    # The prior report is selected the same way and for the same reason. It is the
+    # round's report because it echoes the round's command ID, not because its prose
+    # happens to contain the word "completed".
+    if [[ -n "$previous_report_comment" ]]; then
+        prior_report="$(gh api "repos/$repo/issues/comments/$previous_report_comment" --jq .body)" ||
+            fail "Cannot read comment $previous_report_comment on $repo; --previous-report-comment names a comment that could not be fetched."
+        grep -Fq "$previous_command_id" <<<"$prior_report" ||
+            fail "Comment $previous_report_comment does not echo $previous_command_id; it is not the report for this round."
+        prior_report_source="report comment $previous_report_comment pinned by the caller"
+    else
+        prior_report_id="$(jq -r --arg cmd "$previous_command_id" '
+            [ .[]
+              | select((.body // "") | contains($cmd))
+              | select(((.body // "") | test("(^|\n)Dispatch command ID and target participant ID:")) | not)
+            ] | last | .id // empty
+        ' <<<"$comments_json")"
+        [[ -n "$prior_report_id" ]] ||
+            fail "No comment on $repo#$pr echoes $previous_command_id other than the request this tool emitted, so the round has no report to verify findings against. Pass --previous-report-comment N if the report is recorded elsewhere."
+        prior_report="$(jq -r --arg id "$prior_report_id" '
+            [.[] | select((.id | tostring) == $id)] | last | .body // empty
+        ' <<<"$comments_json")"
+        prior_report_source="report comment $prior_report_id selected by $previous_command_id"
+    fi
+
+    # An empty checklist meant two different things and said one. "The pattern matched
+    # no line" and "the report recorded no findings" are opposite states -- the second
+    # is an attestation, the first is this tool failing to read -- and the old text
+    # asserted the second whenever the first happened. Report what was measured.
+    # Truncation also kept the last 40 matches, which discards the severity-ordered
+    # head of a findings list and keeps its tail; keep the first 40 and say so.
+    checklist_matches="$(printf '%s\n' "$prior_report" | grep -Eci "$finding_pattern" || true)"
+    checklist_matches="${checklist_matches//[^0-9]/}"
+    : "${checklist_matches:=0}"
+    if (( checklist_matches == 0 )); then
+        prior_checklist="none extracted: the finding pattern matched no line of the prior report. This is not an attestation that the prior review recorded no findings; read the full report, which is reproduced in the evidence pack."
+    else
+        prior_checklist="$(printf '%s\n' "$prior_report" | grep -Ei "$finding_pattern" | head -n 40 || true)"
+        if (( checklist_matches > 40 )); then
+            prior_checklist="$prior_checklist
+[truncated: first 40 of $checklist_matches matching lines; read the full report in the evidence pack]"
+        fi
+    fi
 fi
 
 case "$mode" in
@@ -248,8 +403,8 @@ if [[ -n "$evidence_pack" ]]; then
     [[ -d "$pack_dir" ]] || fail "Evidence-pack directory does not exist: $pack_dir"
     {
         printf '# Bounded Review Evidence Pack\n\n'
-        printf 'Mode: %s\nTarget base: %s\nPrevious reviewed head: %s\nCurrent head: %s\nExact range: %s\n\n' \
-            "$mode" "$target_base" "$previous_head" "$current_head" "$exact_range"
+        printf 'Mode: %s\nTarget base: %s\nPrevious reviewed head: %s\nPrevious reviewed head selection: %s\nCurrent head: %s\nExact range: %s\nPrior report selection: %s\n\n' \
+            "$mode" "$target_base" "$previous_head" "$previous_head_source" "$current_head" "$exact_range" "$prior_report_source"
         if [[ "$previous_head" != none ]]; then
             printf '## Delta files and size\n\n```text\n'
             git diff --stat "$previous_head..$current_head"
@@ -275,6 +430,7 @@ request="$(printf '%s\n' \
     "PR-recorded base SHA: $recorded_base (baseRefOid; provenance only, never a range endpoint)" \
     "PR merge-base SHA: $merge_base" \
     "Previous reviewed head SHA: $previous_head" \
+    "Previous reviewed head selection: $previous_head_source" \
     "Current head SHA: $current_head" \
     "Exact review range: $exact_range" \
     "Correction rereview count: $round/3" \
@@ -287,6 +443,7 @@ request="$(printf '%s\n' \
     "Actual provider, model, and reasoning effort: pending dispatch/completion ledger" \
     "Tests and failure modes to evaluate: $(<"$tests_file")" \
     "Local evidence: $(<"$evidence_file")" \
+    "Prior report selection: $prior_report_source" \
     "Prior findings and dispositions: $prior_checklist" \
     "Prior-finding verification checklist: $prior_checklist" \
     "Evidence pack: ${evidence_pack:-not required for this mode}" \

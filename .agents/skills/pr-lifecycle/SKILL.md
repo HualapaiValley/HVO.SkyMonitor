@@ -63,6 +63,9 @@ Target base ref: (the remote and branch used to transport that tip, verified
 PR-recorded base SHA: (baseRefOid; provenance only, never a range endpoint)
 PR merge-base SHA:
 Previous reviewed head SHA:
+Previous reviewed head selection: (the request comment this tool emitted for
+  the previous round, or a caller assertion marked as unverified; never the
+  previous reviewer's prose)
 Current head SHA:
 Exact review range:
 Correction rereview count: <N>/3
@@ -75,6 +78,8 @@ Requested model and reasoning effort:
 Actual provider, model, and reasoning effort:
 Tests and failure modes to evaluate:
 Local evidence:
+Prior report selection: (the comment selected by the previous round's dispatch
+  command ID, or the comment the caller pinned)
 Prior findings and dispositions:
 Prior-finding verification checklist (finding ID/link, expected disposition,
   and evidence location):
@@ -103,6 +108,23 @@ The participant identity binds the session to one host; migrating it to another
 host requires a new identity and join rather than reuse across host-local locks.
 Do not reconstruct ranges or causal ordering in an ad hoc shell pipeline when
 these scripts support the route.
+
+A correction or base-sync request also requires `--previous-command-id`, the
+dispatch command ID of the round whose reviewed head this round starts from.
+The tool recovers that head from the request it emitted for that round, found by
+its command ID or pinned with `--previous-request-comment`. It never reads a
+range out of a reviewer's report. For a round dispatched before the tool
+recorded a request, assert the head with `--previous-head`; the emitted request
+then records it as caller-asserted and unverified, and a reviewer must treat it
+as an input to check rather than as an attested range. If neither is available
+the tool fails and names what was missing, which is correct: a correction review
+whose left endpoint is a guess reviews the wrong commits and says nothing about
+it.
+
+An empty `Prior findings and dispositions:` is not an attestation that the
+previous round was clean. When the tool could not extract a checklist it says
+so in that field and points at the full report in the evidence pack; verify
+findings against the report itself, not against the summary.
 
 If a resumed CLI reports that its nested read-only sandbox cannot execute, mark
 the attempt `INCOMPLETE` and use an explicitly enrolled collaboration-agent or
