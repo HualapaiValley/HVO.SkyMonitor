@@ -1270,6 +1270,17 @@ public sealed class CentralDerivativeWindowIntegrationTests
             Mode = TransientDetectorExecutionMode.Central,
             StarMaximumMagnitude = -30
         };
+        // The worker telemetry is a host singleton every test in this assembly shares, and the health assertion below
+        // reads its failure axes over a LeaseDuration-wide window, so a failure any earlier test recorded in the last
+        // two minutes would be attributed to this run. Retire both axes here, with the same backdating the teardown
+        // below uses, so the assertion describes this test rather than the assembly's recent past. The instance must
+        // stay shared: the worker resolves its collaborators from the host provider, so a dependency failure raised by
+        // the graph scheduler or the submission service during this run reaches only the singleton, and a test-owned
+        // instance would be blind to exactly the failures the assertion exists to catch.
+        var telemetry = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<CentralDerivativeWorkerTelemetry>();
+        var retiredFailure = DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1));
+        telemetry.RecordDependencyFailure("storage", retiredFailure);
+        telemetry.RecordRenewal("failed", retiredFailure);
         using var collector = new TransientRuntimeCollector();
         using var logs = new TransientLogProvider();
         AssemblyHooks.Fixture.Factory.Services.GetRequiredService<ILoggerFactory>().AddProvider(logs);
@@ -1301,7 +1312,6 @@ public sealed class CentralDerivativeWindowIntegrationTests
         }
         await DisableOtherActiveJobsAsync(jobId).ConfigureAwait(false);
 
-        var telemetry = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<CentralDerivativeWorkerTelemetry>();
         var workerOptions = Options.Create(new CentralDerivativeWorkerOptions
         {
             Enabled = true,
@@ -1384,7 +1394,10 @@ public sealed class CentralDerivativeWindowIntegrationTests
             telemetry.RecordDependencyFailure("storage", DateTimeOffset.UtcNow);
             (await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false)).Status
                 .Should().Be(HealthStatus.Degraded);
-            telemetry.RecordDependencyFailure("storage", DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1)));
+            // Retire both axes again so this test is not itself the writer that degrades whatever runs next.
+            var retiredAfter = DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1));
+            telemetry.RecordDependencyFailure("storage", retiredAfter);
+            telemetry.RecordRenewal("failed", retiredAfter);
         }
 
         Guid[] privateEventIds;
