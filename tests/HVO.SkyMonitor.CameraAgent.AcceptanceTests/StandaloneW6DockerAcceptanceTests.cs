@@ -491,7 +491,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 resource.MaximumBacklogAgeSeconds,
                 maximumDurableQueues = durableQueueMaxima,
                 declaredDurableQueueBounds = DurableQueueBounds,
-                durableQueuesWithinDeclaredBounds = true,
+                durableQueuesWithinDeclaredBounds =
+                    DurableQueuesWithinDeclaredBounds(durableQueueMaxima),
                 peakFilesystemBytes,
                 retainedFilesystemBytes,
                 resource.SampleCount,
@@ -5411,6 +5412,18 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 group.Max(static queue => queue.AgeSeconds)))
             .OrderBy(static queue => queue.Name, StringComparer.Ordinal)
             .ToArray();
+
+    // Issue #770, correction round 4. This boolean was written into the evidence document as the
+    // literal `true`, so it was a claim the producer had never made about anything, and the gate
+    // that read it back could not have rejected any document. It is computed here from the maxima
+    // being written and the bounds they are held to, so the field says what this run observed.
+    private static bool DurableQueuesWithinDeclaredBounds(IReadOnlyList<DurableQueueMaximum> maxima)
+        => maxima.Count == DurableQueueBounds.Count
+            && maxima.All(queue =>
+                DurableQueueBounds.TryGetValue(queue.Name, out var bound)
+                && queue.Count <= bound.Count
+                && queue.Bytes <= bound.Bytes
+                && queue.AgeSeconds <= bound.AgeSeconds);
 
     private static void AssertDurableQueueBounds(IReadOnlyList<DurableQueueMaximum> maxima)
     {

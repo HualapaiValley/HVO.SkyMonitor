@@ -16,6 +16,7 @@ readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/cameraagent-dual-standal
 readonly CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6.json"
 readonly MONO_CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6-mono8.json"
 readonly DEFAULT_RESULTS_BASE="$REPO_ROOT/TestResults/issue-211"
+readonly W6_IDENTITY_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity.jq"
 readonly BIND_LOCAL_ROOT="$REPO_ROOT/data/agent/issue-211"
 readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6'
 readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
@@ -23,6 +24,13 @@ readonly HTTP_PORT="${HVO_ISSUE_211_HTTP_PORT:-52110}"
 readonly TRIAL_COUNT="${HVO_ISSUE_211_TRIAL_COUNT:-5}"
 readonly WARMUP_CAPTURE_COUNT=2
 readonly MEASURED_CAPTURE_COUNT=10
+# Issue #770, correction round 4. Every W6 capture carries the same set of artefact roles, and
+# that set is a property of the campaign rather than of any document the campaign produces. It is
+# declared here so the identity gate can require it from outside each document, the way
+# MEASURED_CAPTURE_COUNT is required from outside. The producer builds a capture's provenance
+# artefacts and its roles list from one collection, so a capture that under-reports its artefacts
+# shortens both together and no cross-check inside the document can see it.
+readonly EXPECTED_CAPTURE_ARTIFACT_ROLES='["AnnotatedPreview","Calibrated","Combined","Metadata","Preview","Raw"]'
 
 if [[ $# -ne 0 || -z "${HVO_CATALOG_PERF_ROOT:-}" || -z "${HVO_OTEL_COLLECTOR_IMAGE:-}" ]]; then
     printf 'Usage: HVO_CATALOG_PERF_ROOT=INSTALLED_PRODUCTION_CATALOG_ROOT HVO_OTEL_COLLECTOR_IMAGE=IMAGE@sha256:DIGEST %s\n' "${0##*/}" >&2
@@ -1263,8 +1271,11 @@ run_profile_trial \
 # every gate passing while the summary printed trial 1 twice in its own output. The labels the
 # campaign actually ran are built here, outside any document, and the documents must name exactly
 # that set.
-EXPECTED_CENTRAL_TRAFFIC_TRIALS="$(jq -nc --argjson trialCount "$TRIAL_COUNT" \
-    '["mono8-control"] + [range(1; $trialCount + 1) | "trial-\(.)"]')"
+EXPECTED_W6_TRIALS="$(jq -nc --argjson trialCount "$TRIAL_COUNT" \
+    '[range(1; $trialCount + 1) | "trial-\(.)"]')"
+readonly EXPECTED_W6_TRIALS
+EXPECTED_CENTRAL_TRAFFIC_TRIALS="$(jq -nc --argjson expectedW6Trials "$EXPECTED_W6_TRIALS" \
+    '["mono8-control"] + $expectedW6Trials')"
 readonly EXPECTED_CENTRAL_TRAFFIC_TRIALS
 
 # Issue #770. `add` over a list of nulls is null and `// 0` turned that into a clean zero, so a
@@ -1322,117 +1333,31 @@ jq --exit-status '.trialsIdentified == true and .recordedFlagsAgreeWithCounters 
 # missing field fails the run rather than scoring as clean. The comparison between the declared
 # and the recomputed digest is re-derived here from the record itself, which is the property that
 # lets a later reader stop trusting the runner.
-jq -s --arg expectedSchemaVersion 'issue-211-w6-evidence-v3' \
-    --argjson measuredCaptureCount "$MEASURED_CAPTURE_COUNT" '
-  # Issue #770, correction round 2. jq 1.7 lets `$` match before a final newline, so a digest
-  # with a trailing "\n" satisfied `^[0-9A-Fa-f]{64}$` and then compared equal to nothing. The
-  # length is required outright now and the pattern is anchored to the absolute end of the
-  # string. A format check in an evidence gate is not here to catch a slip by a cooperative
-  # producer; it is here to refuse a value that is not a digest, whoever wrote it.
-  def is_sha256: (type == "string") and (length == 64) and test("^[0-9A-Fa-f]{64}\\z");
-  def is_byte_count: (type == "number") and (isnan | not) and (isinfinite | not)
-    and (. >= 0) and (. == floor);
-  def eqi($other): (type == "string") and ($other | type == "string") and (ascii_downcase == ($other | ascii_downcase));
-  def trial_problems($index):
-    . as $t |
-    # The document names its own trial, which is what a reader has to go and open. The slurp
-    # index is only a fallback for a document that did not record one.
-    ($t.trial // "index \($index)") as $label |
-    [ (if ($t.schemaVersion == $expectedSchemaVersion) then empty
-       else "trial \($label): schemaVersion is \($t.schemaVersion // "absent"), expected \($expectedSchemaVersion)" end),
-      (if (($t.captureProvenance | type) == "array" and ($t.captureProvenance | length) > 0) then empty
-       else "trial \($label): captureProvenance is absent or empty, so no capture identity was recorded" end),
-      # Issue #770, correction round 2. Non-emptiness is not completeness. A document truncated
-      # to one valid provenance record satisfied every check below and reported clean while the
-      # measured digests for nine of every ten captures were simply gone.
-      #
-      # Issue #770, correction round 3. That completeness check was anchored to a number living
-      # inside the document under test, so truncating provenance, captures and the measuredCount
-      # field together to one left the identity flag true. The real anchor is the campaign
-      # MEASURED_CAPTURE_COUNT constant, passed in here from outside every document. The
-      # in-document count is now a claim to be checked rather than the standard to check against.
-      (if (($t.workload.measuredCount | is_byte_count)
-           and $t.workload.measuredCount == $measuredCaptureCount) then empty
-       else "trial \($label): workload measuredCount is \($t.workload.measuredCount | tojson) against the \($measuredCaptureCount) captures this campaign measures" end),
-      (if (($t.captureProvenance | length) == $measuredCaptureCount) then empty
-       else "trial \($label): captureProvenance holds \($t.captureProvenance | length) records against the \($measuredCaptureCount) captures this campaign measures" end),
-      (if (($t.captures | type) == "array" and ($t.captures | length) == $measuredCaptureCount) then empty
-       else "trial \($label): captures holds \($t.captures | length) records against the \($measuredCaptureCount) captures this campaign measures" end),
-      (if (($t.captures | type) == "array"
-           and ([$t.captureProvenance[]?.captureId | tostring | ascii_downcase] | unique)
-               == ([$t.captures[]?.captureId | tostring | ascii_downcase] | unique)
-           and ([$t.captureProvenance[]?.captureId] | length)
-               == ([$t.captureProvenance[]?.captureId | tostring | ascii_downcase] | unique | length)) then empty
-       else "trial \($label): the captures named by captureProvenance are not exactly the captures the document records, so provenance is incomplete or duplicated" end),
-      ($t.captureProvenance[]? |
-        . as $c |
-        (if ($c.rigSha256 | is_sha256) then empty else "trial \($label) capture \($c.captureId): rigSha256 is not a digest" end),
-        (if ($c.processingSha256 | is_sha256) then empty else "trial \($label) capture \($c.captureId): processingSha256 is not a digest" end),
-        (if ($c.localProfileSha256 | is_sha256) then empty else "trial \($label) capture \($c.captureId): localProfileSha256 is not a digest" end),
-        (if ($c.scheduleRevisionSha256 | is_sha256) then empty else "trial \($label) capture \($c.captureId): scheduleRevisionSha256 is not a digest" end),
-        (if ($c.rigSha256 | eqi($t.workload.rigSha256)) then empty
-         else "trial \($label) capture \($c.captureId): observed rigSha256 does not match the pinned workload value" end),
-        (if ($c.processingSha256 | eqi($t.workload.processingSha256)) then empty
-         else "trial \($label) capture \($c.captureId): observed processingSha256 does not match the pinned workload value" end),
-        (if ($c.localProfileSha256 | eqi($t.workload.localProfileSha256)) then empty
-         else "trial \($label) capture \($c.captureId): observed localProfileSha256 does not match the pinned workload value" end),
-        (if ($c.scheduleRevisionSha256 | eqi($t.workload.scheduleSha256)) then empty
-         else "trial \($label) capture \($c.captureId): observed scheduleRevisionSha256 does not match the pinned workload value" end),
-        (if (($c.artifacts | type) == "array" and ($c.artifacts | length) > 0) then empty
-         else "trial \($label) capture \($c.captureId): artifacts is absent or empty, so no artefact identity was recorded" end),
-        ($c.artifacts[]? |
-          . as $a |
-          (if ($a.declaredSha256 | is_sha256) then empty else "trial \($label) artefact \($a.artifactId): declaredSha256 is not a digest" end),
-          (if ($a.computedSha256 | is_sha256) then empty else "trial \($label) artefact \($a.artifactId): computedSha256 is not a digest" end),
-          (if ($a.declaredSha256 | eqi($a.computedSha256)) then empty
-           else "trial \($label) artefact \($a.artifactId): the recomputed digest does not equal the declared one" end),
-          (if (($a.observedByteLength | is_byte_count) and ($a.declaredByteLength | is_byte_count)
-               and $a.observedByteLength == $a.declaredByteLength) then empty
-           else "trial \($label) artefact \($a.artifactId): observedByteLength and declaredByteLength are not equal non-negative whole byte counts" end),
-          (if (($a.relativeArtifactPath | type) == "string" and ($a.relativeArtifactPath | length) > 0) then empty
-           else "trial \($label) artefact \($a.artifactId): relativeArtifactPath is absent, so the digest cannot be re-derived" end),
-          (if (($a.sourceArtifactIds | type) == "array") then empty
-           else "trial \($label) artefact \($a.artifactId): sourceArtifactIds is absent, so lineage was not recorded" end),
-          (if (($a.role | type) == "string" and ($a.role | length) > 0) then empty
-           else "trial \($label) artefact \($a.artifactId): role is \($a.role | tojson), so it cannot be cross-checked against the roles its capture records" end))),
-      # Issue #770, correction round 3. Counting artefacts is the weak fix and does not catch the
-      # truncation that motivated it: cutting every capture from three artefacts to one leaves the
-      # counts equal to each other, the capture identities untouched, and any count-based
-      # assertion satisfied. Uniformity defeats a count. The document already carries the same
-      # fact written a second time and by a different path, the role list on each captures[]
-      # entry, and a truncation of the provenance artefacts has to be mirrored there to survive
-      # this. That is a cross-check rather than a count, and it is what is asserted here.
-      ($t.captureProvenance[]? |
-        . as $c |
-        ([$t.captures[]?
-          | select((.captureId | tostring | ascii_downcase) == ($c.captureId | tostring | ascii_downcase))
-          | .roles] | first) as $recordedRoles |
-        (($c.artifacts // []) | map(.role | tostring) | unique) as $provenanceRoles |
-        (if (($recordedRoles | type) == "array" and ($recordedRoles | length) > 0
-             and ($recordedRoles | map(tostring) | unique) == $provenanceRoles) then empty
-         else "trial \($label) capture \($c.captureId): the artefact roles the capture records, \(($recordedRoles // "absent") | tojson), are not the roles its provenance artefacts carry, \($provenanceRoles | tojson)" end)),
-      (if ($t.calibrationResiduals.observedCatalogSha256 | is_sha256) then empty
-       else "trial \($label): calibrationResiduals.observedCatalogSha256 is not a digest" end),
-      (if ($t.calibrationResiduals.observedCatalogSha256 | eqi($t.workload.catalogSha256)) then empty
-       else "trial \($label): the observed catalog digest does not match the pinned workload value" end) ];
-  ([ range(0; length) as $i | (.[$i] | trial_problems($i)) ] | add // []) as $problems |
-  {
-    schemaVersion: "issue-211-w6-identity-v1",
-    expectedEvidenceSchemaVersion: $expectedSchemaVersion,
-    trialCount: length,
-    expectedMeasuredCaptureCount: $measuredCaptureCount,
-    recordedArtifactCount: ([ .[].captureProvenance[]?.artifacts[]? ] | length),
-    recordedCaptureCount: ([ .[].captureProvenance[]? ] | length),
-    recordedRoleCount: ([ .[].captureProvenance[]?.artifacts[]?.role ] | unique | length),
-    problems: $problems,
-    identityRecorded: (($problems | length) == 0)
-  }
-' "$RESULTS"/trial-*/evidence/issue-211-w6.json > "$RESULTS/w6-identity-summary.json"
+#
+# Issue #770, correction round 4. The program itself now lives in scripts/issue-211-w6-identity.jq
+# rather than in a string here, so the same standard can be run on its own over a directory of
+# finished documents without rerunning a two-hour campaign. Every standard it checks against is
+# passed in on this command line, which is the point: a gate that reads its standard out of the
+# documents under test cannot reject a document that misstates it.
+jq -s -f "$W6_IDENTITY_PROGRAM" \
+    --arg expectedSchemaVersion 'issue-211-w6-evidence-v3' \
+    --argjson measuredCaptureCount "$MEASURED_CAPTURE_COUNT" \
+    --argjson expectedTrialLabels "$EXPECTED_W6_TRIALS" \
+    --argjson expectedCaptureRoles "$EXPECTED_CAPTURE_ARTIFACT_ROLES" \
+    "$RESULTS"/trial-*/evidence/issue-211-w6.json > "$RESULTS/w6-identity-summary.json"
 
 jq --exit-status --argjson measuredCaptureCount "$MEASURED_CAPTURE_COUNT" \
-    '.identityRecorded == true and .trialCount == 5
+    --argjson expectedTrialLabels "$EXPECTED_W6_TRIALS" \
+    --argjson expectedCaptureRoles "$EXPECTED_CAPTURE_ARTIFACT_ROLES" \
+    '.identityRecorded == true
+     and .trialsIdentified == true
+     and .captureIdSetsDisjoint == true
+     and .trialCount == ($expectedTrialLabels | length)
+     and .trialLabels == ($expectedTrialLabels | sort)
      and .expectedMeasuredCaptureCount == $measuredCaptureCount
-     and .recordedCaptureCount == (5 * $measuredCaptureCount)
+     and .recordedCaptureCount == (($expectedTrialLabels | length) * $measuredCaptureCount)
+     and .distinctCaptureIdCount == .recordedCaptureCount
+     and .recordedRoleCount == ($expectedCaptureRoles | unique | length)
      and .recordedArtifactCount >= .recordedCaptureCount' \
     "$RESULTS/w6-identity-summary.json" >/dev/null \
     || gate_failed 'W6 evidence identity' "$RESULTS/w6-identity-summary.json"
@@ -1528,11 +1453,15 @@ jq -s \
     and ($durable_queue_maxima | all(.sampleCount == $trial_count))
     and ($durable_queue_maxima | all(.withinDeclaredBound)))
     as $durable_queues_within_bounds |
-  # The boolean the producers wrote is not discarded; it must agree with the recomputation
-  # above, which is what the central-traffic aggregate does with `passed`. A recorded true over
-  # recomputed false is now a refusal rather than a silent pass.
-  ((all(.performance.durableQueuesWithinDeclaredBounds == true)) == $durable_queues_within_bounds)
-    as $durable_queue_flags_agree |
+  # Issue #770, correction round 4. This compared the recorded boolean against the recomputation
+  # above and called the comparison an agreement check. It never was one. The producer wrote the
+  # literal true, so there was no recorded value that could differ, and now that the producer
+  # computes the boolean it does so from the same maxima and bounds this document carries, so the
+  # two still cannot disagree. The recomputation is the check. The recorded flag is required to be
+  # true, which refuses a document whose own producer reports its queues out of bounds, and that
+  # is the whole of what it can honestly be asked to decide.
+  (all(.performance.durableQueuesWithinDeclaredBounds == true))
+    as $durable_queues_recorded_within_bounds |
   ($finalCentralTraffic[0].trials | require_present("the final central-traffic gate list"))
     as $final_central_traffic |
   (require_present("the five-trial evidence list")
@@ -1555,6 +1484,15 @@ jq -s \
   # non-negativity guard on `stats` would have traded this fail-open for a fail-closed on all
   # four of those. Each of the four is summarized once here, so the guarded value is also the
   # value the comparison block prints rather than a second computation that could drift from it.
+  # Issue #770, correction round 4. The backlog maxima reached this summary through the bare
+  # statistics helper, so a trial reporting a backlog depth of minus five printed a minimum of
+  # minus five under the same schema as the guarded values, with nothing saying it had not been
+  # checked. They are event counts and byte totals, unlike the cadence headroom and the storage
+  # deltas, which are excluded from this guard because they are legitimately negative.
+  def counted_stats($what):
+    (if all(is_byte_count) then . else
+      error("\($what) has a sample that is not a non-negative whole count, so its summary would have reported an impossible backlog") end)
+    | stats($what);
   def measured_stats($what):
     (if all((type == "number") and (isnan | not) and (isinfinite | not) and (. >= 0)) then . else
       error("\($what) has a sample that is not a non-negative finite measurement, so the normalized regression comparison would have rested on an impossible value") end)
@@ -1600,9 +1538,12 @@ jq -s \
     processWriteBytes: $process_write_bytes,
     containerBlockReadBytes: (map(.performance.containerBlockReadBytes) | stats("containerBlockReadBytes")),
     containerBlockWriteBytes: (map(.performance.containerBlockWriteBytes) | stats("containerBlockWriteBytes")),
-    maximumBacklogCount: (map(.performance.maximumBacklogCount) | stats("maximumBacklogCount")),
-    maximumBacklogBytes: (map(.performance.maximumBacklogBytes) | stats("maximumBacklogBytes")),
-    maximumBacklogAgeSeconds: (map(.performance.maximumBacklogAgeSeconds) | stats("maximumBacklogAgeSeconds")),
+    maximumBacklogCount:
+      (map(.performance.maximumBacklogCount) | counted_stats("maximumBacklogCount")),
+    maximumBacklogBytes:
+      (map(.performance.maximumBacklogBytes) | counted_stats("maximumBacklogBytes")),
+    maximumBacklogAgeSeconds:
+      (map(.performance.maximumBacklogAgeSeconds) | measured_stats("maximumBacklogAgeSeconds")),
     peakFilesystemBytes: (map(.performance.peakFilesystemBytes) | stats("peakFilesystemBytes")),
     retainedFilesystemBytes: (map(.performance.retainedFilesystemBytes) | stats("retainedFilesystemBytes")),
     durableQueueMaxima: $durable_queue_maxima,
@@ -1685,7 +1626,7 @@ jq -s \
         (($final_central_traffic | length) == 6 and all($final_central_traffic[]; .passed == true)),
       zeroFinalDenyHits: ($final_deny_hits == 0),
       durableQueuesWithinDeclaredBounds: $durable_queues_within_bounds,
-      durableQueueFlagsAgreeWithMaxima: $durable_queue_flags_agree,
+      durableQueuesRecordedWithinDeclaredBounds: $durable_queues_recorded_within_bounds,
       finalDenyGateFlagsAgreeWithCounters:
         ($finalCentralTraffic[0].recordedFlagsAgreeWithCounters == true),
       finalDenyGateTrialsIdentified:
@@ -1708,7 +1649,7 @@ jq -s \
       all($final_central_traffic[]; .passed == true) and
       $final_deny_hits == 0 and
       $durable_queues_within_bounds and
-      $durable_queue_flags_agree and
+      $durable_queues_recorded_within_bounds and
       ($finalCentralTraffic[0].recordedFlagsAgreeWithCounters == true) and
       ($finalCentralTraffic[0].trialsIdentified == true) and
       all($normalized_percent_changes[]; . <= 15) and
