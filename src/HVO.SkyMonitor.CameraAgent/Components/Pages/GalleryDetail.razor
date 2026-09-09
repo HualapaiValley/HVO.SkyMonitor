@@ -11,10 +11,12 @@
     <nav class="breadcrumb" aria-label="Breadcrumb"><a href="@BackUrl">Archive</a><span>/</span><span aria-current="page">Capture detail</span></nav>
     @if (_isLoading)
     {
+        <PageHeader Title="Capture detail" />
         <section class="detail-state" role="status"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><strong>Loading exact capture facts</strong></section>
     }
     else if (_errorMessage is not null || _capture is null)
     {
+        <PageHeader Title="Capture detail" />
         <section class="detail-state detail-state--error" role="alert"><div><strong>Capture unavailable</strong><p>@(_errorMessage ?? "The requested capture was not found.")</p></div><a class="btn btn-outline-light" href="@BackUrl">Return to gallery results</a></section>
     }
     else

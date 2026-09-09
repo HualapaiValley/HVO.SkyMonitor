@@ -457,11 +457,15 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var accountSettings = page.GetByRole(AriaRole.Link, new() { Name = "Account settings", Exact = true });
         Assert.AreEqual("Account/Manage", await accountSettings.GetAttributeAsync("href").ConfigureAwait(false));
         await page.GotoAsync("/Account/Manage").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Account settings", Level = 1 }))
+        // Each Manage route names itself. "Account settings" is the navigation region's name and
+        // the link that reaches it, not the page name; asserting it here passed on all three routes.
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Profile", Level = 1, Exact = true }))
             .ConfigureAwait(false);
         var ownerEmail = page.GetByRole(AriaRole.Link, new() { Name = "Owner email", Exact = true });
         Assert.AreEqual("Account/Manage/Email", await ownerEmail.GetAttributeAsync("href").ConfigureAwait(false));
         await page.GotoAsync("/Account/Manage/Email").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Owner email", Level = 1, Exact = true }))
+            .ConfigureAwait(false);
         Assert.AreEqual("", await page.Locator("#owner-email").GetAttributeAsync("readonly").ConfigureAwait(false));
         Assert.AreEqual(
             0,
@@ -1962,21 +1966,52 @@ public sealed class CameraAgentBrowserAcceptanceTests
             new ViewportSize { Width = 844, Height = 390 },
             new ViewportSize { Width = 320, Height = 700 }
         };
-        var routes = new[]
+        // Each route is paired with the level-1 heading that names it. Asserting only that some h1
+        // exists is what let the three Manage routes share the constant "Account settings": presence
+        // was satisfied while none of the three had a name of its own. The operations workspace walk
+        // in StandaloneW6DockerAcceptanceTests already pairs routes with names; this is that form.
+        var routes = new (string Route, string Heading)[]
         {
-            "/", "/operations", "/operations/quarantine?kind=Artifact", "/gallery?pageSize=24", detailUrl,
-            "/schedule", "/calibration", "/system", "/operations/camera", "/operations/pipeline",
-            "/operations/automations", "/operations/data", "/operations/sky-map", "/operations/pipeline/executions",
-            "/operations/pipeline/graphs", "/operations/pipeline/graphs/new", "/Account/Login", "/Account/Recovery",
-            "/Account/Manage", "/Account/Manage/Email", "/Account/Manage/ChangePassword"
+            ("/", "Current sky"),
+            ("/operations", "Operations overview"),
+            ("/operations/quarantine?kind=Artifact", "Quarantine browser"),
+            ("/gallery?pageSize=24", "Archive"),
+            (detailUrl, "Capture detail"),
+            ("/schedule", "Capture schedule"),
+            ("/calibration", "Calibration library"),
+            ("/system", "System snapshot"),
+            ("/operations/camera", "Camera & rig"),
+            ("/operations/pipeline", "Pipeline summary"),
+            ("/operations/automations", "Automations"),
+            ("/operations/data", "Data & storage"),
+            ("/operations/sky-map", "Sky map & catalog"),
+            ("/operations/pipeline/executions", "Processing executions"),
+            ("/operations/pipeline/graphs", "Named graphs"),
+            ("/operations/pipeline/graphs/new", "Draft graph"),
+            ("/Account/Login", "Log in"),
+            ("/Account/Recovery", "Recover owner access"),
+            ("/Account/Manage", "Profile"),
+            ("/Account/Manage/Email", "Owner email"),
+            ("/Account/Manage/ChangePassword", "Change password"),
+            ("/not-found", "Page not found")
         };
+        // A heading that names more than one route names none of them, so the table itself is checked
+        // before it is used. Without this, restoring a shared constant heading would leave the walk green.
+        Assert.AreEqual(
+            routes.Length,
+            routes.Select(entry => entry.Heading).Distinct(StringComparer.Ordinal).Count(),
+            "Two routes in the responsive walk expect the same level-1 heading.");
         foreach (var viewport in viewports)
         {
             await page.SetViewportSizeAsync(viewport.Width, viewport.Height).ConfigureAwait(false);
-            foreach (var route in routes)
+            foreach (var (route, heading) in routes)
             {
                 await page.GotoAsync(route).ConfigureAwait(false);
                 await VisibleAsync(page.Locator("main#mainContent h1").First).ConfigureAwait(false);
+                Assert.AreEqual(
+                    heading,
+                    (await page.Locator("main#mainContent h1").First.InnerTextAsync().ConfigureAwait(false)).Trim(),
+                    $"Unexpected level-1 heading on {route} at {viewport.Width}x{viewport.Height}.");
                 var overflowing = await page.EvaluateAsync<string>("""
                     () => {
                       const limit = document.documentElement.clientWidth + 1;
