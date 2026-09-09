@@ -289,7 +289,8 @@ fi
 # ["tests/….csproj"]=Counts(name:N,…), with recognized, non-repeating category
 # names and the comma separator after every entry, the final one included.
 category_matrix=scripts/test-categories/Program.cs
-if ! category_totals="$(awk '
+architecture_project=tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj
+if ! category_totals="$(awk -v target_project="$architecture_project" '
     function fail(message) {
         print message > "/dev/stderr"
         failed = 1
@@ -336,6 +337,9 @@ if ! category_totals="$(awk '
             fail("unrecognized category matrix row: " entry)
         }
         gsub(/ /, "", entry)
+        row_project = entry
+        sub(/^\["/, "", row_project)
+        sub(/"\].*$/, "", row_project)
         rows++
         # Every entry, including the final one, ends with the comma separator this
         # matrix uses. The comma may also stand alone on the next line, which the
@@ -354,6 +358,10 @@ if ! category_totals="$(awk '
             }
             seen[parts[1]] = 1
             totals[parts[1]] += parts[2]
+            if (row_project == target_project) {
+                target_totals[parts[1]] += parts[2]
+                target_seen = 1
+            }
         }
     }
     {
@@ -403,13 +411,19 @@ if ! category_totals="$(awk '
         if (rows == 0) {
             fail("no category matrix rows were found")
         }
-        printf "%d %d %d %d %d %d %d\n", rows, totals["unit"], totals["integration"], totals["manual"], totals["soak"], totals["external"], totals["hardware"]
+        # A missing project would otherwise hand the architecture assertions an empty
+        # expected value, which every document trivially contains.
+        if (!target_seen) {
+            fail("the category matrix has no row for " target_project)
+        }
+        printf "%d %d %d %d %d %d %d %d %d\n", rows, totals["unit"], totals["integration"], totals["manual"], totals["soak"], totals["external"], totals["hardware"], target_totals["unit"], target_totals["integration"]
     }' "$category_matrix")"; then
     printf 'Could not derive the test category totals from %s.\n' "$category_matrix" >&2
     exit 1
 fi
-read -r category_rows category_unit category_integration category_manual category_soak category_external category_hardware <<< "$category_totals"
-if [[ ! "$category_rows" =~ ^[1-9][0-9]*$ || ! "$category_unit" =~ ^[1-9][0-9]*$ || ! "$category_integration" =~ ^[1-9][0-9]*$ ]]; then
+read -r category_rows category_unit category_integration category_manual category_soak category_external category_hardware architecture_unit architecture_integration <<< "$category_totals"
+if [[ ! "$category_rows" =~ ^[1-9][0-9]*$ || ! "$category_unit" =~ ^[1-9][0-9]*$ || ! "$category_integration" =~ ^[1-9][0-9]*$ ||
+      ! "$architecture_unit" =~ ^[1-9][0-9]*$ || ! "$architecture_integration" =~ ^[1-9][0-9]*$ ]]; then
     printf 'Derived implausible test category totals from %s: %s\n' "$category_matrix" "$category_totals" >&2
     exit 1
 fi
@@ -431,7 +445,14 @@ require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMo
 require_required_check_row '\*\*Unit Tests\*\*' "${category_unit} Unit cases"
 require_required_check_row '\*\*Integration Tests\*\*' "${category_integration} Integration-category cases"
 require_source_reference "Current discovery is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, and \`Hardware=${category_hardware}\`." docs/runbooks/ci-pipeline.md
-require_source_reference 'seven Unit-category boundary cases' docs/runbooks/ci-pipeline.md
+# Both halves of the architecture sentence are the architecture project's own
+# category discovery totals, so both are derived here. Pinned as the English word
+# "seven", the first of these asserted that the document said seven and never that
+# seven was correct: it passed while the real count moved to 15, and it would have
+# failed on the edit that corrected it. Membership is stated in the runbook itself
+# so the number is checkable by something other than this line.
+require_source_reference "${architecture_unit} Unit-category boundary cases" docs/runbooks/ci-pipeline.md
+require_source_reference "${architecture_integration} Integration-category repository graph" docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md
 require_source_reference "report count other than the expected $coverage_report_count" docs/runbooks/ci-pipeline.md
 require_source_reference "each of the $coverage_report_count category/project slots" docs/runbooks/ci-pipeline.md

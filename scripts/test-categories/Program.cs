@@ -27,6 +27,25 @@ var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringCo
     ["tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"] = Counts(unit: 8, manual: 1),
     ["tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj"] = Counts(unit: 4, integration: 6, manual: 3),
 };
+// The M5 macOS validation workflow pinned its own per-project expected Unit totals by hand, and
+// they went stale the moment a repository-wide compile item added test methods to every project
+// (#764). Two sources describing the same thing, and only one of them moved. Emitting this matrix
+// lets that workflow read the numbers this audit already validates against a real discovery run,
+// so the two cannot drift apart again. Tab-separated rather than JSON so the consumer needs only
+// awk, which is present wherever the workflow runs.
+if (args.Contains("--emit-matrix", StringComparer.Ordinal))
+{
+    foreach (var (relativeProject, counts) in expected.OrderBy(static entry => entry.Key, StringComparer.Ordinal))
+    {
+        foreach (var category in categories)
+        {
+            Console.WriteLine($"{category}\t{relativeProject}\t{counts[category]}");
+        }
+    }
+
+    return 0;
+}
+
 var totals = categories.ToDictionary(static category => category, static _ => 0, StringComparer.Ordinal);
 var failures = new List<string>();
 var discoveredProjects = Directory.EnumerateFiles(Path.Combine(root, "tests"), "*.csproj", SearchOption.AllDirectories)

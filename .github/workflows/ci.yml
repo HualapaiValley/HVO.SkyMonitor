@@ -158,7 +158,15 @@ jobs:
           catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
           mkdir -m 700 "$catalog_root"
           tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact/hyg-v42-contracts.tar.gz" -C "$catalog_root"
-          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s/build/hyg-v4.2-p3-s2-r1.bundle\n' "$catalog_root" >> "$GITHUB_ENV"
+          bundle_path="$catalog_root/build/hyg-v4.2-p3-s2-r1.bundle"
+          # The Deployment.Cli installer and lifecycle contracts skip themselves with
+          # Assert.Inconclusive when this bundle is absent, and a skipped MSTest records
+          # notExecuted="0" and inconclusive="0" in its TRX, so the job stays green having
+          # executed none of them. Fail here, where the cause is visible, rather than let a
+          # broken artifact restore turn into a green run that proved nothing.
+          test -d "$bundle_path" ||
+            { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
+          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -249,7 +257,15 @@ jobs:
           catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
           mkdir -m 700 "$catalog_root"
           tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact/hyg-v42-contracts.tar.gz" -C "$catalog_root"
-          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s/build/hyg-v4.2-p3-s2-r1.bundle\n' "$catalog_root" >> "$GITHUB_ENV"
+          bundle_path="$catalog_root/build/hyg-v4.2-p3-s2-r1.bundle"
+          # The Deployment.Cli installer and lifecycle contracts skip themselves with
+          # Assert.Inconclusive when this bundle is absent, and a skipped MSTest records
+          # notExecuted="0" and inconclusive="0" in its TRX, so the job stays green having
+          # executed none of them. Fail here, where the cause is visible, rather than let a
+          # broken artifact restore turn into a green run that proved nothing.
+          test -d "$bundle_path" ||
+            { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
+          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -721,7 +737,15 @@ jobs:
           catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
           mkdir -m 700 "$catalog_root"
           tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact/hyg-v42-contracts.tar.gz" -C "$catalog_root"
-          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s/build/hyg-v4.2-p3-s2-r1.bundle\n' "$catalog_root" >> "$GITHUB_ENV"
+          bundle_path="$catalog_root/build/hyg-v4.2-p3-s2-r1.bundle"
+          # The Deployment.Cli installer and lifecycle contracts skip themselves with
+          # Assert.Inconclusive when this bundle is absent, and a skipped MSTest records
+          # notExecuted="0" and inconclusive="0" in its TRX, so the job stays green having
+          # executed none of them. Fail here, where the cause is visible, rather than let a
+          # broken artifact restore turn into a green run that proved nothing.
+          test -d "$bundle_path" ||
+            { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
+          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:

@@ -36,6 +36,12 @@ public sealed class InstallerFlowTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity()
     {
+        // Deliberately environment-gated. These contracts install a real catalog bundle, which is
+        // too large to check in, so the CI Unit lane restores it from the hyg-v42-contracts artifact
+        // and exports this variable; locally it is absent and the test skips. The skip is silent --
+        // a skipped MSTest records notExecuted="0" and inconclusive="0" in its TRX -- so the lane
+        // that is supposed to run these asserts the bundle exists before exporting the variable,
+        // and a skip there is a broken restore rather than an expected local condition.
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
         if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
         {
