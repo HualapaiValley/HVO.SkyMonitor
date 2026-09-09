@@ -65,7 +65,19 @@ public sealed class CameraAgentGalleryPerformanceTests
     // is asked to show, and refusing slow-host measurements does nothing about it. Nor does it reach a
     // deadline enforced by a timeout or a cancellation token rather than by an assertion: that is the
     // same directional shape wearing a different mechanism, it never reaches this method, and nothing
-    // in this branch covers it.
+    // in this branch covers it. LogicHostDependencyOutageAcceptanceTests is the worked example, checked
+    // rather than taken on description: a sixty-second recovery assertion, and around it a Timeout of
+    // 480 seconds on the class, two twelve-second CancellationTokenSource deadlines on the health
+    // polls, and a ten-second one on a request. Only the sixty-second bound is an assertion. A
+    // twelve-second client deadline tripping under contention is exactly the unattributable failure a
+    // ceiling exists to catch, and it never reaches an assert to be gated at.
+    //
+    // So the condition to encode, when something encodes it, is not the one this file implements:
+    // refuse a contended measurement wherever an elapsed-time bound governs the outcome, whether that
+    // bound is enforced by an assertion, a timeout, or a cancellation token. That is deliberately not
+    // implemented here. Widening this branch to chase it would be the reflex the repository's filing
+    // and scope discipline exists to stop, and the rule has been restated three times in a morning, so
+    // it is written down rather than built.
     private const double MaximumAdmissibleLoadPerCore = 0.40;
     private const string RefusalFileName = "cameraagent-gallery-performance-refusal.json";
     private const long MaximumWorkingSetGrowthBytes = 256L * 1024 * 1024;
