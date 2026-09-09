@@ -55,7 +55,11 @@ Review mode: initial | correction | base-sync
 Issue and PR:
 Dispatch command ID and target participant ID:
 Acceptance criteria:
-Target base SHA:
+Target base SHA: (the freshly fetched tip of the target ref; this is the
+  range's left endpoint, not the base the PR recorded when it was opened)
+Target base ref: (the remote and branch the tip above was read from)
+PR-recorded base SHA: (baseRefOid; provenance only, never a range endpoint)
+PR merge-base SHA:
 Previous reviewed head SHA:
 Current head SHA:
 Exact review range:
@@ -72,6 +76,7 @@ Local evidence:
 Prior findings and dispositions:
 Prior-finding verification checklist (finding ID/link, expected disposition,
   and evidence location):
+Evidence pack:
 Expected output:
 Start acknowledgement: acknowledge on this PR within 15 minutes and identify
   the execution route, provider, model, effort, and exact range.
