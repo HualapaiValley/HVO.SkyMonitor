@@ -153,7 +153,8 @@ internal sealed partial class CentralDerivativeWorker(
 
     /// <summary>
     /// Runs one maintenance duty; returns false when it faulted. Only real database faults degrade database health;
-    /// an activation failure or a duty's own state fault is logged and retried without a misleading dependency label.
+    /// an activation failure, a duty's own state fault, and any fault raised because the worker is stopping are
+    /// logged and retried without a misleading dependency label.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Design",
@@ -169,6 +170,18 @@ internal sealed partial class CentralDerivativeWorker(
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (Exception exception) when (stoppingToken.IsCancellationRequested)
+        {
+            // Stopping the worker cancels whatever command the duty had in flight, and a cancelled command does not
+            // always come back as an OperationCanceledException: SQL Server reports the aborted batch as error 3980
+            // and the provider raises it as a DbException, which the classifier below is right to call a database
+            // failure when nobody asked for the cancellation. Recording it here reports the act of shutting the
+            // worker down as a database fault, and the health check then reads Degraded with
+            // Status=dependency-failure for a full LeaseDuration after a clean stop. Shutdown is not a dependency
+            // failure. The duty still faults and is still logged; only the health signal is withheld.
+            Log.MaintenanceFailed(logger, exception);
+            return false;
         }
         catch (Exception exception)
         {
@@ -209,7 +222,15 @@ internal sealed partial class CentralDerivativeWorker(
             catch (Exception exception)
             {
                 telemetry.RecordClaim("failed", timeProvider.GetElapsedTime(claimStarted));
-                telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+                if (!stoppingToken.IsCancellationRequested)
+                {
+                    // Same reason the maintenance duty withholds this signal: stopping the worker cancels the claim
+                    // command, and SQL Server reports the aborted batch as a provider fault rather than as an
+                    // OperationCanceledException, so the handler above does not catch it. Recording it here reports
+                    // a clean shutdown as a database dependency failure. The claim is still counted as failed and
+                    // still logged; only the health signal is withheld.
+                    telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+                }
                 Log.ClaimFailed(logger, exception, slot);
                 await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
                 continue;

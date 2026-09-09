@@ -374,6 +374,71 @@ public sealed class CentralDerivativeWorkerTests
             .Should().BeFalse("an activation failure is not a database dependency failure");
     }
 
+    /// <summary>
+    /// Stopping the worker cancels the command a maintenance duty has in flight, and the provider does not always
+    /// report that as an <see cref="OperationCanceledException"/>: SQL Server aborts the batch and raises a
+    /// <see cref="DbException"/>, which the database classifier is right to treat as a dependency failure when
+    /// nobody asked for the cancellation. Recording it on a stop would publish a dependency failure caused by the
+    /// stop itself, and the health check reads that for a full lease duration afterwards.
+    /// </summary>
+    [TestMethod]
+    public async Task StopDoesNotRecordADependencyFailureForACancelledMaintenanceCommandAsync()
+    {
+        var jobs = new ScriptedJobService();
+        var resolver = new CancellationFaultingWindowResolver();
+        await using var harness = CreateHarness(jobs, _ => new ImmediateExecutor(), windowResolver: resolver);
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await resolver.Entered.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        resolver.Faulted.Should().BeTrue("the duty must have thrown the provider fault the stop caused");
+        harness.Telemetry.HasRecentDependencyFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse("stopping the worker is not a database dependency failure");
+    }
+
+    /// <summary>
+    /// The claim loop carries the same fault as the maintenance loop and is reached far more often, because a slot
+    /// is sitting in <c>ClaimNextAsync</c> whenever it is idle. Stopping the worker cancels that command, and the
+    /// provider reports the aborted batch rather than the cancellation, so the general handler classified an
+    /// ordinary shutdown as a database dependency failure.
+    /// </summary>
+    [TestMethod]
+    public async Task StopDoesNotRecordADependencyFailureForACancelledClaimAsync()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var faulted = 0;
+        var jobs = new ScriptedJobService
+        {
+            Claim = async (_, cancellationToken) =>
+            {
+                entered.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Swallowed on purpose. The worker already handles a cancellation correctly; the fault this test
+                    // exists for is the provider exception SQL Server raises instead when it aborts the batch.
+                }
+                Interlocked.Exchange(ref faulted, 1);
+                throw new InvalidOperationException(
+                    "An exception has been raised that is likely due to a transient failure.",
+                    new TestDbException("The request failed to run because the batch is aborted."));
+            }
+        };
+        await using var harness = CreateHarness(jobs, _ => new ImmediateExecutor());
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Volatile.Read(ref faulted).Should().Be(1, "the claim must have thrown the provider fault the stop caused");
+        harness.Telemetry.HasRecentDependencyFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse("stopping the worker is not a database dependency failure");
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
@@ -724,6 +789,46 @@ public sealed class CentralDerivativeWorkerTests
             Interlocked.Increment(ref _batches);
             return Task.CompletedTask;
         }
+    }
+
+    /// <summary>
+    /// Blocks inside the waiting-window duty until the worker is stopped and then throws the provider fault a
+    /// cancelled command produces, rather than the cancellation itself.
+    /// </summary>
+    private sealed class CancellationFaultingWindowResolver : ICentralDerivativeWindowResolver
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _faulted;
+
+        public Task Entered => _entered.Task;
+
+        public bool Faulted => Volatile.Read(ref _faulted) != 0;
+
+        public Task ResolveAffectedAsync(
+            CentralArtifact artifact,
+            DateTimeOffset now,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public async Task ResolveWaitingAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            _entered.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Swallowed deliberately. The provider surfaces an aborted batch as its own exception type, so the
+                // duty must not hand the worker the cancellation the caller would recognise.
+            }
+            Interlocked.Exchange(ref _faulted, 1);
+            throw new InvalidOperationException(
+                "An exception has been raised that is likely due to a transient failure.",
+                new TestDbException("The request failed to run because the batch is aborted."));
+        }
+
+        public Task ResolveAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken)
+            => Task.CompletedTask;
     }
 
     private sealed class NoopWindowResolver : ICentralDerivativeWindowResolver
