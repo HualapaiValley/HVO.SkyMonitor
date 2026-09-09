@@ -43,16 +43,35 @@ public sealed class CameraAgentGalleryPerformanceTests
     // manufacture a false pass, which is why a constant is defensible here and is not for the latency
     // bound itself.
     //
-    // Where the ceiling applies is a mechanical test, not a judgement about which tests look
-    // timing-sensitive. It applies exactly where an assertion compares a measured quantity to a bound
-    // that contention pushes toward the miss, and only to the miss. Everything else in this file
-    // records its timings into the evidence document and asserts nothing against them, and for those
-    // the load belongs BESIDE the number rather than in a refusal: host load moves the number and
-    // moves no verdict, so refusing the run would discard evidence to protect a conclusion nobody
-    // drew. MeasureHttpApiAsync is the case in point. It records a p95 and asserts none, so it is out
-    // of scope here for that reason alone, before any argument about how load-sensitive it measured.
-    // Naming a test is never the test: a name that says "responsive" can mean layout across viewports
-    // rather than any deadline at all, and keying a refusal on the name would misfire on it.
+    // Where the ceiling applies takes two premises, and the mechanical one alone does not reach the
+    // answer. The mechanical condition is that an assertion compares a measured quantity to a bound
+    // that contention pushes toward the miss, and that only the miss is refused. That condition
+    // selects four sites in this file, not two: the two browser p95 asserts gated below, the
+    // read-model p95 against this same constant in MeasureAsync, and the two-second
+    // post-cancellation bound in AssertCancellationAsync. An earlier revision of this comment said
+    // the condition described the two gated sites and nowhere else. It does not. That claim came
+    // from reading one method and inferring the file, which is the same shape as the defect this
+    // branch exists to prevent, one level up: a property of the sample reported as a property of the
+    // population.
+    //
+    // The second premise is #785's stability table, and it is load-bearing rather than
+    // corroborating. Both ungated sites measure the SQLite family through SqliteCameraAgentGallery,
+    // and #785 measured that family flat under the contention that moved the two browser families
+    // more than forty percent. A bound whose measured quantity does not move under load has no
+    // attribution problem for a ceiling to solve, so gating it would refuse runs to guard against a
+    // confusion that family has been shown not to produce. That is the real reason those two are
+    // excluded. It is a narrower rule than a purely mechanical one and it is the honest one; a rule
+    // that reaches four sites and gates two is not mechanical, and calling it mechanical would be
+    // the wrong-standard error in a file written to state the standard.
+    //
+    // Where a timing is recorded and asserted against nothing, the load belongs BESIDE the number
+    // rather than in a refusal: host load moves the number and moves no verdict, so refusing the run
+    // would discard evidence to protect a conclusion nobody drew. MeasureHttpApiAsync is that case
+    // and, having now enumerated the file rather than sampled it, the only one. It records a p95 and
+    // asserts none against it, so it is out of scope before any argument about how load-sensitive it
+    // measured. Naming a test is never the test: a name that says "responsive" can mean layout
+    // across viewports rather than any deadline at all, and keying a refusal on the name would
+    // misfire on it.
     //
     // The bounds refused here are the p95 and the per-session working set, which is bytes rather than
     // milliseconds. It is included because the direction is what matters and memory pressure pushes
@@ -80,6 +99,7 @@ public sealed class CameraAgentGalleryPerformanceTests
     // it is written down rather than built.
     private const double MaximumAdmissibleLoadPerCore = 0.40;
     private const string RefusalFileName = "cameraagent-gallery-performance-refusal.json";
+    private const string EvidenceFileName = "cameraagent-gallery-performance.json";
     private const long MaximumWorkingSetGrowthBytes = 256L * 1024 * 1024;
     private const long MaximumRenderedPageBytes = 1024L * 1024;
     private const long MaximumPerSessionWorkingSetBytes = 32L * 1024 * 1024;
@@ -277,7 +297,7 @@ public sealed class CameraAgentGalleryPerformanceTests
 
         var outputDirectory = Path.Combine(GetRepositoryRoot(), "TestResults", "issue-441", evidenceLabel);
         Directory.CreateDirectory(outputDirectory);
-        var outputPath = Path.Combine(outputDirectory, "cameraagent-gallery-performance.json");
+        var outputPath = Path.Combine(outputDirectory, EvidenceFileName);
         var evidenceBytes = JsonSerializer.SerializeToUtf8Bytes(evidence, EvidenceJson);
         await File.WriteAllBytesAsync(outputPath, evidenceBytes).ConfigureAwait(false);
         // A refusal document from an earlier contended run would otherwise sit beside admissible
@@ -868,6 +888,12 @@ public sealed class CameraAgentGalleryPerformanceTests
             File.WriteAllBytes(
                 Path.Combine(directory, RefusalFileName),
                 JsonSerializer.SerializeToUtf8Bytes(refusal, EvidenceJson));
+            // The mirror of the success path's delete, and the stronger of the two cases. An
+            // evidence document from an earlier admissible run would otherwise sit beside this
+            // refusal and read as current, and it is the file that gets hashed, published and read
+            // by scripts while nothing yet consumes the refusal. The runner clears only its own TRX,
+            // under a different root, so nothing else removes it.
+            File.Delete(Path.Combine(directory, EvidenceFileName));
         }
         catch (Exception exception)
         {
@@ -920,9 +946,15 @@ public sealed class CameraAgentGalleryPerformanceTests
         // reopen the band, so re-measure rather than trust that sentence.
         var onlineProcessors = ReadOnlineProcessorCount();
         var processorCount = onlineProcessors ?? Environment.ProcessorCount;
-        var processorCountSource = onlineProcessors is null
-            ? "Environment.ProcessorCount, cgroup-quota-aware and possibly narrower than the host"
-            : "/sys/devices/system/cpu/online";
+        // The caveat is a statement about cgroups, so it is only true where cgroups exist. Published
+        // unconditionally it told every macOS and Windows reader that the count might be narrowed by
+        // a quota mechanism their platform does not have, in a document written to outlive the branch
+        // and be read without the source open.
+        var processorCountSource = onlineProcessors is not null
+            ? "/sys/devices/system/cpu/online"
+            : OperatingSystem.IsLinux()
+                ? "Environment.ProcessorCount, cgroup-quota-aware and possibly narrower than the host"
+                : "Environment.ProcessorCount; this platform has no cgroup CPU quota to narrow it";
 
         // /proc/loadavg is Linux-only. Where it is unavailable the precondition cannot be evaluated and
         // the bound is asserted exactly as it was before, so no platform loses coverage it already had.

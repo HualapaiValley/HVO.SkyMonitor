@@ -144,14 +144,25 @@ deterministic per-card preview failures without retries. The harness proves:
 - every preview-failure page contains exactly 50 failed cards and zero retry
   actions before interaction.
 
-The directional condition above reaches only the two bounds that are asserted.
-Every other timing in this evidence, the Kestrel p95 included, is recorded and
-compared to nothing, so host load moves the number and moves no verdict. For
-those the pre-workload load is published beside the measurement in the
-environment block rather than used to refuse the run, because refusing would
-discard evidence to protect a conclusion nobody drew. A deadline enforced by a
-timeout or a cancellation token rather than by an assertion is the same
-directional shape wearing a different mechanism and is not covered.
+Four of the bounds above compare a measured elapsed time to a fixed limit that
+contention pushes toward the miss: the two browser p95 bounds, the read-model
+p95 against the same five-second limit, and the two-second pre-cancelled-read
+bound. Only the two browser bounds are refused. The other two are excluded
+because of what was measured rather than because of how they are written: both
+read the SQLite gallery, and #785 measured that family flat under the same
+contention that moved the browser families by more than 40%. A bound whose
+measured quantity does not move under load has no attribution problem for a
+ceiling to solve. The rule is therefore not purely mechanical; the stability
+table is a premise it needs, not a corroboration it can drop.
+
+Timings that are recorded and compared to nothing are a separate case, and the
+Kestrel p95 in the HTTP measurement is the one this evidence contains. For it
+the pre-workload load is published beside the measurement in the environment
+block rather than used to refuse the run, because host load moves the number and
+moves no verdict, and refusing would discard evidence to protect a conclusion
+nobody drew. A deadline enforced by a timeout or a cancellation token rather
+than by an assertion is the same directional shape wearing a different mechanism
+and is not covered.
 
 The browser-render workload substitutes deterministic valid one-pixel images so
 that its latency and memory numbers isolate server rendering, component state,
