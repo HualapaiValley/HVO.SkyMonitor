@@ -18,8 +18,8 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 /// new call site has rather than trusting either description alone. Most sections declare no
 /// <c>open</c> attribute; there it is pure DOM state that Blazor's diff never tracks, and any
 /// re-render recreating the element silently drops it. Two sections bind it instead.
-/// <c>GalleryPage.razor</c> renders <c>open="@HasAdvancedFilters"</c>, which the gallery call sites
-/// drive, and <c>ProcessingExecutionDetailPage.razor</c> renders
+/// <c>GalleryPage.razor</c> renders <c>open="@HasAdvancedFilters"</c>, which the call sites in
+/// <c>GalleryPage</c> drive, and <c>ProcessingExecutionDetailPage.razor</c> renders
 /// <c>open="@(node.Status is not "Completed")"</c>, which none currently drive. There Blazor does
 /// track the attribute, so a re-render leaving the bound value unchanged emits no edit and an
 /// out-of-band assignment survives; it is a transition of that value to false that removes the
@@ -27,20 +27,24 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 /// the trigger. At least one of those transitions is reachable in the product rather than
 /// hypothetical: <c>GalleryPage</c> has a Clear button bound to <c>ClearFilters</c>, which
 /// navigates to <c>/gallery</c> and drops every filter, taking the predicate to false. No test
-/// clicks it today, and that is the only reason nothing trips this — the quiet is a fact about
-/// which buttons the current tests press, not about the markup.
+/// exercises that transition today — the quiet is a fact about which buttons the current tests
+/// press, not about the markup.
 /// </para>
 /// <para>
 /// Assignment plus the reveal wait covers both shapes. Assignment is idempotent and therefore safe
 /// to repeat, and the loop re-applies it after either a recreation or a removal, so a bound value
-/// that transitions to false once inside the budget is recovered on the next attempt. A value that
-/// is merely false and stays false is not a problem at all: no edit is emitted, the assignment
-/// survives, and the helper succeeds — which is exactly what the gallery call sites do, since both
-/// are reached through a bare <c>/gallery</c> navigation that sets no filters, leaving the
-/// predicate false and the section closed. What this helper cannot win is a value that keeps
-/// transitioning to false, or one that transitions during the final attempt when no budget is left
-/// to re-apply. Exhausting the timeout in those two cases is the correct outcome rather than a
-/// defect here.
+/// that transitions to false once inside the budget has the assignment re-applied on the next
+/// attempt. Re-application is the whole guarantee and it is not the same as recovery: the reveal
+/// budget is what remains of the total, so a transition late in the budget is re-applied and then
+/// given only the milliseconds left to prove it. A value that is merely false and stays false is
+/// not a problem at all: no edit is emitted, the assignment survives, and the helper succeeds —
+/// which is exactly what the call sites in <c>GalleryPage</c> do, since both are reached through a
+/// bare <c>/gallery</c> navigation that sets no filters, leaving the predicate false and the
+/// section closed. What this helper cannot win is a value that keeps transitioning to false, or
+/// either loss shape arriving during the final attempt when no budget is left to re-apply: a
+/// transition of the bound value, or a recreation, which drops an already-applied assignment the
+/// same way and does not require the bound value to move at all. Exhausting the timeout in those
+/// cases is the correct outcome rather than a defect here.
 /// </para>
 /// </remarks>
 internal static class CollapsibleSection
