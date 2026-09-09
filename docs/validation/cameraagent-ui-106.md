@@ -144,25 +144,38 @@ deterministic per-card preview failures without retries. The harness proves:
 - every preview-failure page contains exactly 50 failed cards and zero retry
   actions before interaction.
 
-Four of the bounds above compare a measured elapsed time to a fixed limit that
-contention pushes toward the miss: the two browser p95 bounds, the read-model
-p95 against the same five-second limit, and the two-second pre-cancelled-read
-bound. Only the two browser bounds are refused. The other two are excluded
-because of what was measured rather than because of how they are written: both
-read the SQLite gallery, and #785 measured that family flat under the same
-contention that moved the browser families by more than 40%. A bound whose
-measured quantity does not move under load has no attribution problem for a
-ceiling to solve. The rule is therefore not purely mechanical; the stability
-table is a premise it needs, not a corroboration it can drop.
+Seven of the assertions behind the bounds above compare a measured quantity to a
+fixed limit that contention pushes toward the miss. The condition is not limited
+to elapsed time; working-set bounds meet it too, because memory pressure pushes
+growth toward its own miss the same way. Four are refused when the host is
+contended: the browser render p95 and per-session working set, and the
+preview-failure p95 and per-session working set. Three are not: the read-model
+p95 against the same five-second limit, the 256 MiB working-set growth bound in
+the same measurement, and the two-second pre-cancelled-read bound.
 
-Timings that are recorded and compared to nothing are a separate case, and the
-Kestrel p95 in the HTTP measurement is the one this evidence contains. For it
-the pre-workload load is published beside the measurement in the environment
-block rather than used to refuse the run, because host load moves the number and
-moves no verdict, and refusing would discard evidence to protect a conclusion
-nobody drew. A deadline enforced by a timeout or a cancellation token rather
-than by an assertion is the same directional shape wearing a different mechanism
-and is not covered.
+Those three are excluded because of what was measured rather than because of how
+they are written. All three exercise the SQLite gallery, and #785 measured that
+family flat under the same contention that moved the browser families by more
+than 40%. A bound whose measured quantity does not move under load has no
+attribution problem for a ceiling to solve. The rule is therefore not purely
+mechanical; the stability table is a premise it needs, not a corroboration it
+can drop. One asymmetry is recorded rather than resolved: #785 measured latency
+and not memory, so neither the gating of the per-session working-set bound nor
+the exclusion of the 256 MiB bound rests on a measurement of whether working-set
+growth moves under contention. Both follow from which family the enclosing
+measurement belongs to.
+
+Timings that are recorded and compared to nothing are a separate case, and this
+evidence contains eight such fields outside the HTTP measurement: wall and
+median from the read-model measurement, and wall, median and maximum from each
+of the two browser measurements. For all of them the pre-workload load is
+published beside the measurement in the environment block rather than used to
+refuse the run, because host load moves the number and moves no verdict, and
+refusing would discard evidence to protect a conclusion nobody drew. The HTTP
+measurement is the only one here that asserts no timing at all, and its Kestrel
+p95 is the only recorded p95 that nothing asserts. A deadline enforced by a
+timeout or a cancellation token rather than by an assertion is the same
+directional shape wearing a different mechanism and is not covered.
 
 The browser-render workload substitutes deterministic valid one-pixel images so
 that its latency and memory numbers isolate server rendering, component state,

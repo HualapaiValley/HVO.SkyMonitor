@@ -45,33 +45,57 @@ public sealed class CameraAgentGalleryPerformanceTests
     //
     // Where the ceiling applies takes two premises, and the mechanical one alone does not reach the
     // answer. The mechanical condition is that an assertion compares a measured quantity to a bound
-    // that contention pushes toward the miss, and that only the miss is refused. That condition
-    // selects four sites in this file, not two: the two browser p95 asserts gated below, the
-    // read-model p95 against this same constant in MeasureAsync, and the two-second
-    // post-cancellation bound in AssertCancellationAsync. An earlier revision of this comment said
-    // the condition described the two gated sites and nowhere else. It does not. That claim came
-    // from reading one method and inferring the file, which is the same shape as the defect this
-    // branch exists to prevent, one level up: a property of the sample reported as a property of the
-    // population.
+    // that contention pushes toward the miss, and that only the miss is refused. It is not limited
+    // to elapsed time, and the per-session working-set bound is gated under it for the same
+    // directional reason. Enumerated at this head rather than reasoned about, the condition selects
+    // seven assertions. Four are gated: the browser render p95 and per-session working set, and the
+    // preview-failure p95 and per-session working set. Three are not: the read-model p95 against
+    // this same constant in MeasureAsync, the 256 MiB working-set growth bound in that same method,
+    // and the two-second post-cancellation bound in AssertCancellationAsync. The four gated
+    // assertions are reached through two gate call sites, so "four" and "two" are counts of
+    // different things and this comment states which each time.
+    //
+    // Two earlier revisions of this comment got those counts wrong. The first said the condition
+    // described the two gated call sites and nowhere else. The second corrected that to four, but
+    // counted only the elapsed-time bounds while stating a quantity-general rule, which silently
+    // dropped the working-set assertions the rule reaches. Both came from reasoning about the file
+    // instead of enumerating it, which is the defect this branch exists to prevent, one level up: a
+    // property of the sample reported as a property of the population. The count is now taken from
+    // the file, and a later revision that changes the assertions must retake it rather than adjust
+    // the number.
     //
     // The second premise is #785's stability table, and it is load-bearing rather than
-    // corroborating. Both ungated sites measure the SQLite family through SqliteCameraAgentGallery,
-    // and #785 measured that family flat under the contention that moved the two browser families
-    // more than forty percent. A bound whose measured quantity does not move under load has no
-    // attribution problem for a ceiling to solve, so gating it would refuse runs to guard against a
-    // confusion that family has been shown not to produce. That is the real reason those two are
-    // excluded. It is a narrower rule than a purely mechanical one and it is the honest one; a rule
-    // that reaches four sites and gates two is not mechanical, and calling it mechanical would be
-    // the wrong-standard error in a file written to state the standard.
+    // corroborating. All three ungated assertions measure the SQLite family through
+    // SqliteCameraAgentGallery, and #785 measured that family flat under the contention that moved
+    // the two browser families more than forty percent. A bound whose measured quantity does not
+    // move under load has no attribution problem for a ceiling to solve, so gating it would refuse
+    // runs to guard against a confusion that family has been shown not to produce. That is also why
+    // the gate sits at a call site rather than at each assertion: the two call sites are the two
+    // families #785 measured moving, and every bound asserted at them is adjudicated together. It
+    // is a narrower rule than a purely mechanical one and it is the honest one; a condition that
+    // selects seven assertions while the gate covers four is not mechanical, and calling it
+    // mechanical would be the wrong-standard error in a file written to state the standard.
+    //
+    // One asymmetry follows from that and is recorded rather than resolved. #785 measured latency,
+    // not memory. The per-session working-set bound is gated because it is asserted at a call site
+    // the stability table selected, and the 256 MiB growth bound is not because its call site is in
+    // a family that measured flat. Neither placement rests on a measurement of whether working-set
+    // growth moves under contention, because nobody has made one. Making it could move the 256 MiB
+    // bound into the gate or the per-session bound out of it. Both are code changes and neither is
+    // this branch's.
     //
     // Where a timing is recorded and asserted against nothing, the load belongs BESIDE the number
     // rather than in a refusal: host load moves the number and moves no verdict, so refusing the run
-    // would discard evidence to protect a conclusion nobody drew. MeasureHttpApiAsync is that case
-    // and, having now enumerated the file rather than sampled it, the only one. It records a p95 and
-    // asserts none against it, so it is out of scope before any argument about how load-sensitive it
-    // measured. Naming a test is never the test: a name that says "responsive" can mean layout
-    // across viewports rather than any deadline at all, and keying a refusal on the name would
-    // misfire on it.
+    // would discard evidence to protect a conclusion nobody drew. Most of this file's recorded
+    // timings are in that position, not few. Enumerated, eight timing fields outside
+    // MeasureHttpApiAsync are written to the evidence document and compared to nothing: wall and
+    // median from MeasureAsync, and wall, median and maximum from each of the two browser
+    // measurements. What is true of MeasureHttpApiAsync alone is narrower, and an earlier revision
+    // of this comment overstated it by calling it the only such case: it is the only method here
+    // that asserts no timing at all, and its p95 is the only recorded p95 that nothing asserts.
+    // Naming a test is never the test: a name that says "responsive" can mean layout across
+    // viewports rather than any deadline at all, and keying a refusal on the name would misfire on
+    // it.
     //
     // The bounds refused here are the p95 and the per-session working set, which is bytes rather than
     // milliseconds. It is included because the direction is what matters and memory pressure pushes
