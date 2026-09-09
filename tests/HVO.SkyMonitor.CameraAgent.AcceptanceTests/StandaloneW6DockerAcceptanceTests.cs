@@ -4373,8 +4373,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var layered = page.Locator(".layered-presentation");
         if (expectLayeredPresentation)
         {
-            await page.Locator(".layered-workspace > summary").ClickAsync().ConfigureAwait(false);
-            await layered.WaitForAsync().ConfigureAwait(false);
+            await CollapsibleSection.EnsureOpenAsync(page.Locator(".layered-workspace"), layered)
+                .ConfigureAwait(false);
             Assert.AreEqual(1, await layered.Locator(".layered-canvas > img").CountAsync().ConfigureAwait(false));
             Assert.AreEqual(1, await layered.Locator(".layered-overlay svg").CountAsync().ConfigureAwait(false));
             var layerToggles = layered.Locator(".layer-controls input[type='checkbox']");
@@ -4398,9 +4398,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(0, await layered.CountAsync().ConfigureAwait(false));
             Assert.AreEqual(1, await primaryImage.CountAsync().ConfigureAwait(false));
         }
-        await page.Locator(".technical-evidence > summary").ClickAsync().ConfigureAwait(false);
         var comparisonImages = page.Locator(".comparison-grid img");
-        await comparisonImages.First.WaitForAsync().ConfigureAwait(false);
+        await CollapsibleSection.EnsureOpenAsync(page.Locator(".technical-evidence"), comparisonImages)
+            .ConfigureAwait(false);
         Assert.AreEqual(2, await comparisonImages.CountAsync().ConfigureAwait(false));
         await page.WaitForFunctionAsync(
             "() => [...document.querySelectorAll('.comparison-grid img')].every(image => image.complete && image.naturalWidth > 0)")

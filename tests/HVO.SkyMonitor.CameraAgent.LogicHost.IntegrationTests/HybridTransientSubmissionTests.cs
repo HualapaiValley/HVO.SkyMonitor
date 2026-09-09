@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -36,11 +37,22 @@ public sealed class HybridTransientSubmissionTests
         try
         {
             TransientCandidateSubmissionEnvelopeV1? submission = null;
-            await WaitUntilAsync(async () =>
-            {
-                submission = await ReadAcknowledgedSubmissionAsync(fixture.StorageRoot).ConfigureAwait(false);
-                return submission is not null;
-            }, TimeSpan.FromSeconds(90)).ConfigureAwait(false);
+            // This budget spans the whole path -- capture, transient detection, durable submission,
+            // central acknowledgement, and the envelope becoming readable -- so it is an end-to-end
+            // liveness budget rather than one operation's latency bound. A fixed wall-clock number is
+            // the wrong instrument for that: under host saturation the same work simply takes longer,
+            // and measurement showed this failing while the pipeline was still making progress every
+            // second (activity in 116 of 125 seconds, median 19 log lines per second). See #737.
+            await WaitUntilProgressingAsync(
+                async () =>
+                {
+                    submission = await ReadAcknowledgedSubmissionAsync(fixture.StorageRoot).ConfigureAwait(false);
+                    return submission is not null;
+                },
+                idleTimeout: TimeSpan.FromSeconds(90),
+                totalTimeout: TimeSpan.FromMinutes(5),
+                progress: () => ReadIngestProgressAsync(fixture.StorageRoot),
+                describeState: fixture.DescribeRuntimeState).ConfigureAwait(false);
             Assert.IsNotNull(submission);
             var causalTailCompletedUtc = fixture.TransientEpochUtc.AddSeconds(3);
             var causalTailDelay = causalTailCompletedUtc - DateTimeOffset.UtcNow;
@@ -282,6 +294,129 @@ public sealed class HybridTransientSubmissionTests
         parameter.ParameterName = name;
         parameter.Value = value;
         command.Parameters.Add(parameter);
+    }
+
+    // A deadline that distinguishes slow from stuck, for waits that span a whole pipeline.
+    //
+    // WaitUntilAsync below takes a bare Func<Task<bool>> and therefore cannot tell the two apart: a
+    // system doing the same work more slowly and a system doing nothing produce the identical
+    // "Condition was not met within ..." message. That is why #737 was diagnosed three times from
+    // scratch, and why its own first citation pointed at a teardown frame.
+    //
+    // The rule here is that time alone never fails the wait; a lack of PROGRESS does. The idle
+    // timeout is what a stuck system spends before it is refused, so keeping it at the site's
+    // original budget means this can only ever be more permissive than the fixed deadline it
+    // replaces -- it cannot make a currently passing run fail. The total timeout is what stops an
+    // endlessly slow system from waiting forever, because "still progressing" is not the same as
+    // "will finish".
+    private static async Task WaitUntilProgressingAsync(
+        Func<Task<bool>> condition,
+        TimeSpan idleTimeout,
+        TimeSpan totalTimeout,
+        Func<Task<long>> progress,
+        Func<string> describeState)
+    {
+        var started = DateTimeOffset.UtcNow;
+        var hardDeadline = started.Add(totalTimeout);
+        var idleDeadline = started.Add(idleTimeout);
+        var lastProgress = long.MinValue;
+        var advances = 0;
+        // Sample progress far less often than the condition is polled. Measured, not chosen: probing
+        // the agent's live journal on the 100 ms condition cadence doubled the connection churn against
+        // a database the agent is actively writing, and made this test fail at five minutes on a host
+        // where it otherwise passes in one. An observer that changes what it observes is worse than no
+        // observer. Idle detection is a 90-second judgement, so two-second granularity costs nothing.
+        var probeInterval = TimeSpan.FromSeconds(2);
+        var nextProbe = started;
+
+        while (true)
+        {
+            if (await condition().ConfigureAwait(false))
+            {
+                return;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (now >= nextProbe)
+            {
+                // Read progress even when the condition is false: that reading is the whole point, and
+                // discarding it is the defect this replaces.
+                var current = await progress().ConfigureAwait(false);
+                nextProbe = DateTimeOffset.UtcNow.Add(probeInterval);
+                // A reading that could not be taken is not a reading. Counting the sentinel as an
+                // advance would let a frozen system with an intermittently locked journal escape idle
+                // detection entirely, and would make the failure message assert the opposite of the
+                // truth -- "the system was progressing" about a system that never moved.
+                if (current != ProgressUnobserved && current != lastProgress)
+                {
+                    if (lastProgress != long.MinValue)
+                    {
+                        advances++;
+                    }
+
+                    lastProgress = current;
+                    idleDeadline = DateTimeOffset.UtcNow.Add(idleTimeout);
+                }
+            }
+
+            if (now >= hardDeadline)
+            {
+                // Report what was observed and stop there. An earlier wording concluded "so this is not
+                // host slowness alone", which asserts a cause this cannot know: a host saturated far
+                // past its core count reaches exactly this state, progressing while never draining.
+                // The runtime state below carries the backlog that tells the two apart.
+                var exceeded = FormattableString.Invariant(
+                    $"Condition was not met within {totalTimeout}, having observed {advances} advances (last observation {lastProgress}). The system was progressing throughout, so it was not stuck; whether it was merely slow or failing to drain is a question for the state below.");
+                Assert.Fail(exceeded + Environment.NewLine + describeState());
+            }
+
+            if (now >= idleDeadline)
+            {
+                var stalled = FormattableString.Invariant(
+                    $"Condition was not met and no progress was observed for {idleTimeout} ({advances} advances in total, last observation {lastProgress}). The system is stuck rather than slow, so a longer budget would not have helped.");
+                Assert.Fail(stalled + Environment.NewLine + describeState());
+            }
+
+            await Task.Delay(100).ConfigureAwait(false);
+        }
+    }
+
+    // A monotonic observation of the ingest pipeline, read from the same journal the acknowledged
+    // submission is read from. Counting rows rather than timing anything keeps this a statement
+    // about work completed rather than about how fast the host is.
+    // Returned when the journal cannot be read. It is deliberately NOT a progress value: see the
+    // handling in WaitUntilProgressingAsync, which treats it as "no observation" rather than as an
+    // observation that happens to differ from the last one.
+    private const long ProgressUnobserved = long.MinValue + 1;
+
+    private static async Task<long> ReadIngestProgressAsync(string storageRoot)
+    {
+        try
+        {
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(storageRoot, "journal", "raw-ingress.db"),
+                Mode = SqliteOpenMode.ReadOnly
+            }.ToString());
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT (SELECT COUNT(*) FROM raw_captures)
+                     + (SELECT COUNT(*) FROM transient_candidates)
+                     + (SELECT COALESCE(SUM(last_sequence), 0) FROM raw_capture_sequences);
+                """;
+            return Convert.ToInt64(await command.ExecuteScalarAsync().ConfigureAwait(false), CultureInfo.InvariantCulture);
+        }
+        catch (SqliteException)
+        {
+            // The journal is created by the agent under test, so it is legitimately absent or locked
+            // early in the run. An unreadable probe reports "no observation" and the caller discards
+            // it: this observes the wait, it does not participate in it. Reporting it as a distinct
+            // VALUE would be worse than useless -- a frozen system whose journal locks intermittently
+            // would oscillate between its real count and this sentinel, and every oscillation would
+            // read as progress and buy another idle window.
+            return ProgressUnobserved;
+        }
     }
 
     private static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout)
