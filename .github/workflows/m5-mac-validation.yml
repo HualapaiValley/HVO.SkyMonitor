@@ -191,9 +191,14 @@ jobs:
           # expected one by the identical amount, and an iteration that does not complete never
           # reaches this point. Comparing the two sums is an arithmetic identity, which is the
           # same shape as the pins this change removes. The per-project comparisons above are
-          # the gate. The one post-loop check kept is reachable: a `projects` array that ran no
-          # iterations at all leaves the total at zero, and that is a state the membership check
-          # above rejects only while the exclusion list stays smaller than the matrix.
-          test "$aggregate_total" -gt 0
+          # the gate. The one post-loop check kept is reachable, and not only in principle:
+          # empty `projects` and reduce the matrix to the five exclusions so that membership still
+          # passes, and the step runs no suite at all. With this line the step exits 1; delete it
+          # and the same input is a green run printing `aggregate: discovered=0`. It names itself
+          # because a bare `test` failing here would abort with nothing on stderr, and this is the
+          # one assertion in the step whose subject is the absence of work rather than a number
+          # that some earlier line already printed.
+          test "$aggregate_total" -gt 0 ||
+            { printf 'No suite ran: the project list produced an aggregate discovered count of zero\n' >&2; exit 1; }
           printf 'aggregate: discovered=%s executed=%s skipped=%s\n' \
             "$aggregate_total" "$aggregate_executed" "$aggregate_skipped"
