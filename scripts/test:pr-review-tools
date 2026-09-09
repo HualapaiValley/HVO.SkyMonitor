@@ -4,8 +4,9 @@ set -euo pipefail
 # Every assertion below names itself when it fails. A bare `grep -Fqx` under `set -e`
 # aborts the suite with exit 1 and nothing on stderr, so the reader learns that
 # something broke but not which invariant, and a positive control that trips one of
-# them is pinned by exit status alone. That is a check reporting less than it knows,
-# which is the same shape this pull request removes from the tool itself.
+# them is pinned by exit status alone. This is detection without attribution, which is
+# a weaker defect than the one this pull request removes from the tool -- those checks
+# passed without evaluating their subject at all -- and the two are worth keeping apart.
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,6 +24,12 @@ set -euo pipefail
 # mock cannot drift from the objects the assertions are computed against. `--jq .sha`
 # is emulated by printing the bare SHA rather than by running jq.
 if [[ "$1" == api && "$2" == repos/*/commits/* ]]; then
+    # The owner and repository in this path are the whole authority of the range's left
+    # endpoint now that the tool no longer derives one from the remote. A mock that
+    # matched the path shape and discarded them could not tell one repository from
+    # another, so asking a different repository for the tip was invisible to the suite.
+    [[ "$2" == "repos/$MOCK_API_REPO/commits/"* ]] ||
+        { printf 'Asked for a branch tip in the wrong repository: %s\n' "$2" >&2; exit 1; }
     branch="${2##*/commits/}"
     git -C "$MOCK_FIXTURE_REPO" rev-parse --verify --quiet "refs/heads/$branch" ||
         { printf 'No such branch in the fixture repository: %s\n' "$branch" >&2; exit 1; }
@@ -156,6 +163,7 @@ correction_head="$(git -C "$fixture_repo" rev-parse HEAD)"
 git -C "$fixture_repo" remote add origin "$fixture_repo"
 git -C "$fixture_repo" fetch --quiet origin
 export MOCK_FIXTURE_REPO="$fixture_repo"
+export MOCK_API_REPO="RoySalisbury/HVO.SkyMonitor"
 
 new_base="$divergent_target"
 sync_head="$correction_head"
@@ -310,6 +318,31 @@ grep -Fq "does not contain RoySalisbury/HVO.SkyMonitor target at $divergent_targ
     { printf 'Wrong-repository remote failed for some other reason.\n' >&2; exit 1; }
 [[ ! -e "$work_root/wrong-repo.request" ]] ||
     { printf 'Wrong-repository remote case wrote a request file.\n' >&2; exit 1; }
+
+# The containment check deliberately accepts a remote that is strictly ahead of the
+# target, because equality would abort on an ordinary concurrent push during
+# finalization and name the remote as the cause -- the wrong-diagnosis shape this
+# change removes. That acceptance is safe only because the left endpoint comes from
+# the API and never from the fetched tip, and until this case existed nothing held the
+# tool to it: in every other fixture the two values are the same commit, so taking the
+# endpoint from the fetched tip instead passed the whole suite. A remote that advances
+# between the API read and the fetch is also the one condition the finalization lock
+# actually produces, which makes it the case worth building rather than a curiosity.
+ahead_repo="$work_root/AheadFork/HVO.SkyMonitor"
+mkdir -p "$(dirname "$ahead_repo")"
+ahead_tip="$(git -C "$fixture_repo" commit-tree "$divergent_target^{tree}" -p "$divergent_target" -m 'target advanced after the API read')"
+git -C "$fixture_repo" update-ref refs/heads/ahead-holder "$ahead_tip"
+git clone --quiet --bare "$fixture_repo" "$ahead_repo"
+git -C "$ahead_repo" update-ref refs/heads/target "$ahead_tip"
+git -C "$fixture_repo" remote add aheadfork "$ahead_repo"
+$request_tool "${common_args[@]}" --mode initial --remote aheadfork \
+    --output "$work_root/ahead.request" ||
+    fail 'A remote strictly ahead of the target was rejected.'
+# Both halves are asserted. Acceptance alone would pass with the endpoint taken from
+# the fetched tip, which is the defect; the endpoint assertion is the one that fails
+# under that mutation.
+grep -Fqx "Target base SHA: $divergent_target" "$work_root/ahead.request" ||
+    fail 'Left endpoint did not come from the API when the remote was ahead.'
 
 # L2's case: the remote name reaches `git fetch` in option position.
 if $request_tool "${common_args[@]}" --mode initial --remote -origin \
