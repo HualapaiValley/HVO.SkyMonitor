@@ -1,0 +1,339 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    bogus: 1
+  pull_request:
+    branches: [main, 'release/**']
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  changes:
+    name: Change Classification
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
+      deployment: ${{ steps.classify.outputs.deployment }}
+      deployment_catalog: ${{ steps.classify.outputs.deployment_catalog }}
+      deployment_shards: ${{ steps.classify.outputs.deployment_shards }}
+      deployment_installer: ${{ steps.classify.outputs.deployment_installer }}
+      complete: ${{ steps.classify.outputs.complete }}
+      shared: ${{ steps.classify.outputs.shared }}
+      cameraagent: ${{ steps.classify.outputs.cameraagent }}
+      logichost: ${{ steps.classify.outputs.logichost }}
+      combined: ${{ steps.classify.outputs.combined }}
+      delivery: ${{ steps.classify.outputs.delivery }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select full or reduced CI
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/ci:classify "$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+  quality:
+    name: Quality
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        if: needs.changes.outputs.mode == 'full'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore dependencies and tools
+        if: needs.changes.outputs.mode == 'full'
+        run: |
+          dotnet tool restore
+          dotnet restore HVO.SkyMonitor.v9.slnx
+      - name: Verify formatting
+        if: needs.changes.outputs.mode == 'full'
+        run: dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
+      - name: Lint GitHub Actions workflows
+        run: |
+          curl -fsSL -o /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' /tmp/actionlint.tar.gz | sha256sum --check
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint .github/workflows/*.yml
+      - name: Run static and lightweight contract checks
+        run: |
+          ./scripts/ci:shell-syntax
+          ./scripts/docs:audit-operations
+          ./scripts/test:coordination-guard
+          ./scripts/test:pr-review-tools
+          ./scripts/test:trx-evidence-contract
+          ./scripts/test:ci-shell-syntax
+          ./scripts/test:infra
+          ./scripts/test:smoke-env
+          ./scripts/test:devcontainer
+          bash ./scripts/test:ci-classification
+          SQLSERVER_PASSWORD=validation-only REDIS_PASSWORD=validation-only MINIO_ACCESS_KEY=validation-only MINIO_SECRET_KEY=validation-only CAMERA_AGENT_ADMIN_PASSWORD=validation-only-password CAMERA_AGENT_OAUTH_CLIENT_SECRET=validation-only-oauth-secret docker compose --env-file .env.template -f docker-compose.apps.yml config --quiet
+          MINIO_ROOT_USER=validation-only MINIO_ROOT_PASSWORD=validation-only REDIS_PASSWORD=validation-only docker compose --env-file .env.template -f deploy/hvo-docker/docker-compose.shared-services.yml config --quiet
+          HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_RUNTIME_UID=1000 HVO_RUNTIME_GID=1000 HVO_SQL_MEMORY=4G MSSQL_MEMORY_LIMIT_MB=3072 SQLSERVER_PORT=1433 REDIS_PORT=6379 MINIO_PORT=9000 SMTP_PORT=1025 MAILPIT_HTTP_PORT=8025 SQLSERVER_IMAGE=example/sql@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa REDIS_IMAGE=example/redis@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb MINIO_IMAGE=example/minio@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc MINIO_CLIENT_IMAGE=example/mc@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd MAILPIT_IMAGE=example/mailpit@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee SQL_DATABASE=hvo-test SQL_ADMIN_USER=sa SQL_INITIALIZER_USER=hvo-init SQL_RUNTIME_USER=hvo-runtime REDIS_RUNTIME_USER=hvo-runtime REDIS_PREFIX=hvo-test: MINIO_ARTIFACT_BUCKET=hvo-test-artifacts MINIO_DIAGNOSTICS_BUCKET=hvo-test-diagnostics docker compose -f deploy/split-host/compose.shared-services.yml --profile provision --profile test-smtp config --quiet
+          HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_CATALOG_ROOT=/srv/hvo/catalog HVO_CONTAINER_NAME=hvo-skymonitor-11111111111141118111111111111111 HVO_PUBLIC_PORT=5174 LOGICHOST_IMAGE=example/logichost@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa docker compose -f deploy/split-host/compose.logichost.yml --profile initialize config --quiet
+          HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_CATALOG_ROOT=/srv/hvo/catalog HVO_CONTAINER_NAME=hvo-skymonitor-22222222222242228222222222222222 HVO_PUBLIC_PORT=5130 CAMERAAGENT_IMAGE=example/cameraagent@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb docker compose -f deploy/split-host/compose.cameraagent.yml config --quiet
+          docker compose --env-file deploy/acceptance/cameraagent-dual-standalone-smoke/compose.validation.env.template -f deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml config --quiet
+      - name: Verify catalog contracts
+        if: needs.changes.outputs.mode == 'full'
+        run: |
+          ./scripts/catalog/smoke-test.sh
+          ./scripts/catalog/prepare-hyg-v42-contracts.sh "$RUNNER_TEMP/hyg-v42-contracts" >/dev/null
+      - name: Audit vulnerable and deprecated packages
+        if: needs.changes.outputs.mode == 'full'
+        run: ./scripts/package:audit
+      - name: Upload package audit
+        if: always() && needs.changes.outputs.mode == 'full'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: package-audit
+          path: TestResults/package-audit/*.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Run historical Phase 14 acceptance inventory contract
+        if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'
+        run: ./scripts/test:phase14-acceptance
+  architecture:
+    name: Architecture & Publish
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore and build Release
+        run: |
+          dotnet restore HVO.SkyMonitor.v9.slnx
+          dotnet clean HVO.SkyMonitor.v9.slnx --configuration Release
+          dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+      - name: Audit behavioral test categories
+        run: dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
+      - name: Validate architecture unit contracts
+        env:
+          UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+        run: dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/architecture-unit --logger "trx;LogFileName=architecture-unit.trx"
+      - name: Validate architecture graph and publish outputs
+        env:
+          HVO_PUBLISH_EVIDENCE_ROOT: ${{ github.workspace }}/TestResults/publish
+        run: |
+          dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter "TestCategory=Integration&FullyQualifiedName~ArchitectureBoundaryTests" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/architecture --logger "trx;LogFileName=architecture-publish.trx"
+          dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-x64 --output TestResults/publish/installer/linux-x64
+          dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/installer/linux-arm64
+          dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj --no-restore --configuration Release --runtime linux-x64 --output TestResults/publish/replay-runner/linux-x64
+          dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/replay-runner/linux-arm64
+          dotnet publish src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj --no-restore --configuration Release --runtime linux-x64 --output TestResults/publish/processing-runner/linux-x64
+          dotnet publish src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/processing-runner/linux-arm64
+          mv TestResults/publish/installer/linux-x64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-x64/hvo-skymonitor
+          mv TestResults/publish/installer/linux-arm64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-arm64/hvo-skymonitor
+          test -x TestResults/publish/installer/linux-x64/hvo-skymonitor
+          test -x TestResults/publish/installer/linux-arm64/hvo-skymonitor
+          file TestResults/publish/installer/linux-arm64/hvo-skymonitor | grep -q 'ARM aarch64'
+          test -x TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner
+          test -x TestResults/publish/replay-runner/linux-arm64/HVO.SkyMonitor.CameraAgent.ReplayRunner
+          TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner --capabilities > TestResults/publish/replay-runner-linux-x64-capabilities.json
+          grep -q '"protocolVersion":1' TestResults/publish/replay-runner-linux-x64-capabilities.json
+          grep -q '"status":"Completed"' TestResults/publish/replay-runner-linux-x64-capabilities.json
+          file TestResults/publish/replay-runner/linux-arm64/HVO.SkyMonitor.CameraAgent.ReplayRunner | grep -q 'ARM aarch64'
+          test -x TestResults/publish/processing-runner/linux-x64/HVO.SkyMonitor.ProcessingRunner
+          test -x TestResults/publish/processing-runner/linux-arm64/HVO.SkyMonitor.ProcessingRunner
+          TestResults/publish/processing-runner/linux-x64/HVO.SkyMonitor.ProcessingRunner --capabilities > TestResults/publish/processing-runner-linux-x64-capabilities.json
+          grep -q '"protocolVersion":1' TestResults/publish/processing-runner-linux-x64-capabilities.json
+          grep -q '"warmState":"Warm"' TestResults/publish/processing-runner-linux-x64-capabilities.json
+          file TestResults/publish/processing-runner/linux-arm64/HVO.SkyMonitor.ProcessingRunner | grep -q 'ARM aarch64'
+      - name: Create retained publish manifests
+        run: |
+          (cd TestResults/publish/cameraagent && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../cameraagent.sha256)
+          (cd TestResults/publish/logichost && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../logichost.sha256)
+          (cd TestResults/publish/installer/linux-x64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../installer-linux-x64.sha256)
+          (cd TestResults/publish/installer/linux-arm64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../installer-linux-arm64.sha256)
+          (cd TestResults/publish/replay-runner/linux-x64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../replay-runner-linux-x64.sha256)
+          (cd TestResults/publish/replay-runner/linux-arm64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../replay-runner-linux-arm64.sha256)
+          (cd TestResults/publish/processing-runner/linux-x64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../processing-runner-linux-x64.sha256)
+          (cd TestResults/publish/processing-runner/linux-arm64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../processing-runner-linux-arm64.sha256)
+          cameraagent_files=$(find TestResults/publish/cameraagent -type f | wc -l)
+          cameraagent_bytes=$(find TestResults/publish/cameraagent -type f -printf '%s\n' | awk '{total += $1} END {print total}')
+          cameraagent_dependencies=$(find TestResults/publish/cameraagent -maxdepth 1 -type f -name '*.dll' | wc -l)
+          logichost_files=$(find TestResults/publish/logichost -type f | wc -l)
+          logichost_bytes=$(find TestResults/publish/logichost -type f -printf '%s\n' | awk '{total += $1} END {print total}')
+          logichost_dependencies=$(find TestResults/publish/logichost -maxdepth 1 -type f -name '*.dll' | wc -l)
+          installer_x64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-x64/hvo-skymonitor)
+          installer_arm64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-arm64/hvo-skymonitor)
+          replay_runner_x64_bytes=$(find TestResults/publish/replay-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
+          replay_runner_arm64_bytes=$(find TestResults/publish/replay-runner/linux-arm64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
+          processing_runner_x64_bytes=$(find TestResults/publish/processing-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
+          processing_runner_arm64_bytes=$(find TestResults/publish/processing-runner/linux-arm64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
+          printf 'CameraAgent files=%s bytes=%s dependencies=%s\nLogicHost files=%s bytes=%s dependencies=%s\nInstaller linux-x64 bytes=%s\nInstaller linux-arm64 bytes=%s\nReplayRunner linux-x64 bytes=%s\nReplayRunner linux-arm64 bytes=%s\nProcessingRunner linux-x64 bytes=%s\nProcessingRunner linux-arm64 bytes=%s\n' \
+            "$cameraagent_files" "$cameraagent_bytes" "$cameraagent_dependencies" \
+            "$logichost_files" "$logichost_bytes" "$logichost_dependencies" \
+            "$installer_x64_bytes" "$installer_arm64_bytes" \
+            "$replay_runner_x64_bytes" "$replay_runner_arm64_bytes" \
+            "$processing_runner_x64_bytes" "$processing_runner_arm64_bytes" \
+            > TestResults/publish/summary.txt
+      - name: Upload architecture unit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: architecture-unit-evidence
+          path: TestResults/architecture-unit/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload architecture coverage
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: architecture-test-evidence
+          path: TestResults/architecture/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload publish evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: publish-evidence
+          path: |
+            TestResults/publish/*.sha256
+            TestResults/publish/summary.txt
+            TestResults/publish/*capabilities.json
+          if-no-files-found: error
+          retention-days: 30
+
+  migrations-cameraagent:
+    name: CameraAgent Migrations
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore tools and build the CameraAgent project root
+        run: |
+          dotnet tool restore
+          dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
+          dotnet build src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --no-restore --configuration Release
+      - name: Enforce one canonical CameraAgent migration
+        run: ./scripts/ci:canonical-migration cameraagent
+      - name: Reject pending CameraAgent model changes
+        run: dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --startup-project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build
+
+  migrations-logichost:
+    name: LogicHost Migrations
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore tools and build the LogicHost project root
+        run: |
+          dotnet tool restore
+          dotnet restore src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
+          dotnet build src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --no-restore --configuration Release
+      - name: Enforce one canonical LogicHost migration
+        run: ./scripts/ci:canonical-migration logichost
+      - name: Reject pending LogicHost model changes
+        env:
+          ConnectionStrings__skymonitordb: Server=127.0.0.1,1433;Database=ModelCheck;User Id=sa;Password=Model_check1!;TrustServerCertificate=True
+        run: dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --startup-project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --context HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext --configuration Release --no-build
+
+  coverage-policy:
+    name: Coverage Policy
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject weakened aggregate or component coverage thresholds
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"
+
+  required:
+    name: Required CI
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [changes, quality, architecture, coverage-policy, migrations-cameraagent, migrations-logichost]
+    steps:
+      - name: Block merge while review is in progress
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
+        run: |
+          echo 'Required CI is intentionally blocked while the pull request is draft.' >&2
+          exit 1
+      - name: Checkout
+        if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require every current-head gate
+        if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PLAN: >-
+            mode=${{ needs.changes.outputs.mode }}
+            complete=${{ needs.changes.outputs.complete }}
+            shared=${{ needs.changes.outputs.shared }}
+            cameraagent=${{ needs.changes.outputs.cameraagent }}
+            logichost=${{ needs.changes.outputs.logichost }}
+            combined=${{ needs.changes.outputs.combined }}
+            delivery=${{ needs.changes.outputs.delivery }}
+            deployment=${{ needs.changes.outputs.deployment }}
+          RESULTS: >-
+            changes=${{ needs.changes.result }}
+            quality=${{ needs.quality.result }}
+            architecture=${{ needs.architecture.result }}
+            coverage-policy=${{ needs.coverage-policy.result }}
+            migrations-cameraagent=${{ needs.migrations-cameraagent.result }}
+            migrations-logichost=${{ needs.migrations-logichost.result }}
+        run: ./scripts/ci:require "$EVENT_NAME" "$PLAN" "$RESULTS"

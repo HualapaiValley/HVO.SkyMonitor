@@ -1,0 +1,59 @@
+alias-as-on-value	REFUSE	the whole trigger supplied by an alias
+alias-in-branches	REFUSE	a branch entry whose content is defined elsewhere
+anchor-deep-in-jobs	ACCEPT	an anchor deep inside a job step, trigger byte-identical
+anchor-in-jobs	ACCEPT	an anchor on a job, trigger byte-identical
+anchor-in-trigger	REFUSE	an anchor on the push block itself
+anchor-on-branch-entry	REFUSE	an anchor on a branch entry
+anchor-on-on-value	REFUSE	an anchor on the `on:` value node
+anchor-on-top-key	REFUSE	an anchor on a top-level key node
+anchor-outside-trigger	ACCEPT	an anchor and alias in `env:`, trigger byte-identical
+backslash-entry	REFUSE	an entry containing the escape character
+branches-ignore	REFUSE	`branches-ignore` can suppress the main-push run
+complex-root-key	REFUSE	a root key that is not a scalar
+dup-trigger-ON	REFUSE	second top-level trigger key that resolves to the same key as `on`
+dup-trigger-On	REFUSE	second top-level trigger key that resolves to the same key as `on`
+dup-trigger-True	REFUSE	second top-level trigger key that resolves to the same key as `on`
+dup-trigger-yes	REFUSE	second top-level trigger key that resolves to the same key as `on`
+duplicate-branches	REFUSE	two `branches` keys in one push block
+duplicate-on	REFUSE	two literal `on:` keys
+empty-branches	REFUSE	empty branch list
+entry-empty	REFUSE	empty entry
+entry-nonspecific-tag	REFUSE	non-specific tag reaches composition
+entry-null-tilde	REFUSE	null entry that would read as the text ~ if the text rule were applied past its scope
+entry-null-word	REFUSE	null entry that would read as the text null under the same mistake
+entry-unterminated-range	REFUSE	entry is not a pattern the guard can establish: unterminated range
+flow-trigger-with-anchor	REFUSE	an anchor inside the flow-mapping trigger
+jobs-absent	REFUSE	no `jobs` key at all
+jobs-empty-mapping	REFUSE	`jobs` present and a mapping, but declaring nothing
+jobs-not-mapping	REFUSE	`jobs` present but not a mapping
+jobs-null	REFUSE	`jobs` present but empty, which composes as null
+merge-key-root	REFUSE	merge key at the workflow root can inject keys
+misspelled-on-key	REFUSE	the same shape one level up: a near miss for the `on` key itself
+misspelled-push-beside-real-push	REFUSE	the realistic spelling of the same defect: a typo beside the real key rather than an invented word (expectation reversed in round 5, see the comment above this case)
+misspelled-push-key	REFUSE	a near miss for `push` with a well-formed body and no real push trigger
+negated-entry	REFUSE	an entry that negates another
+no-branches	REFUSE	`push:` does not name `branches`
+no-main-entry	REFUSE	no entry is the literal main
+no-push	REFUSE	`on:` has no `push:`
+on-not-mapping	REFUSE	`on:` is a scalar, so no branch filter is established
+paths-filter	REFUSE	`paths` narrows the main-push run
+quoted-push-duplicate	REFUSE	quoted spelling of an existing key
+real-workflow	ACCEPT	the file as it stands on this branch; the control every other case is one change away from
+root-description-key	ACCEPT	a top-level key GitHub defines and this guard once refused
+second-document	REFUSE	a trigger in a later document never takes effect
+spelling-compact-block-sequence	ACCEPT	a block sequence not indented under its key
+spelling-explicit-key-push	ACCEPT	the `push` key in explicit-key form
+spelling-flow-mapping	ACCEPT	the whole trigger as a flow mapping
+spelling-folded-entry	ACCEPT	a folded block scalar entry
+spelling-hex-escape	ACCEPT	a double-quoted entry using a hex escape
+spelling-line-continuation	ACCEPT	a double-quoted entry broken by a line continuation
+spelling-literal-entry	ACCEPT	a literal block scalar entry
+spelling-quoted-branches-key	ACCEPT	the `branches` key quoted
+tab-indent	REFUSE	a tab where the parser expects indentation
+tag-in-pull-request	REFUSE	an explicit tag elsewhere inside the trigger
+tag-in-trigger	REFUSE	an explicit tag on a node the reader consumes
+tag-outside-trigger	ACCEPT	an explicit tag in `permissions:`, trigger byte-identical
+unknown-on-key	REFUSE	undefined event name beside a correct push trigger; GitHub refuses to load the workflow, so no run is produced at all (expectation reversed in round 5, see the comment above this case)
+unknown-push-key	REFUSE	unrecognized key in `push:`
+unknown-top-key	REFUSE	undefined top-level workflow key; GitHub refuses to load the workflow
+x-prefixed-top-key	REFUSE	a top-level key GitHub does not define, anchor or not

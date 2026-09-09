@@ -1,0 +1,374 @@
+#!/usr/bin/env python3
+"""Regenerate the CI push-trigger guard's fixture corpus from the real workflow.
+
+Usage: tests/fixtures/ci-classification/generate [--check]
+
+Every fixture is this repository's real `.github/workflows/ci.yml` with exactly
+one property changed. That derivation is the point of generating them rather
+than writing them by hand: a corpus of standalone miniature workflows tests the
+guard against files nobody ships, and the guard's whole job is to decide about
+this file. Deriving each case from the real one also means a case cannot quietly
+stop being a near miss when the workflow moves, because regeneration fails loudly
+instead.
+
+Generation is deterministic. `--check` regenerates into memory and compares
+against what is committed, which is how `scripts/test:ci-classification` detects
+that the workflow changed without the corpus being refreshed.
+
+The expectation and the reason for it live beside each case in expectations.tsv,
+which this script writes. Expectations are stated here, in one place, and they do
+not move to meet the guard: when a case's expectation and the guard's behaviour
+disagree, one of them is a defect and the test says which case.
+"""
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(HERE, '..', '..', '..'))
+WORKFLOW = os.path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml')
+CASES_DIR = os.path.join(HERE, 'cases')
+EXPECTATIONS = os.path.join(HERE, 'expectations.tsv')
+
+REAL_PUSH = "  push:\n    branches: [main, 'release/**']\n"
+
+
+def load_workflow():
+    """Split the real workflow into the part before the trigger, the trigger and the rest.
+
+    The split is by line number because the trigger block is the thing being
+    mutated and it has to be replaceable wholesale. The assertions below are what
+    make that safe: if the workflow's shape moves, this fails with the line it
+    found rather than silently splitting in the wrong place and emitting a corpus
+    of cases that no longer mean what their names say.
+    """
+    lines = open(WORKFLOW, encoding='utf-8').read().splitlines(True)
+    if lines[2].rstrip() != 'on:':
+        raise SystemExit(
+            'ci.yml line 3 is %r, expected `on:`. The trigger block moved; '
+            'update this generator rather than the fixtures.' % lines[2].rstrip())
+    if not lines[8].lstrip().startswith('types:'):
+        raise SystemExit(
+            'ci.yml line 9 is %r, expected the pull_request `types:` line that '
+            'ends the trigger block. Update this generator.' % lines[8].rstrip())
+    text = ''.join(lines)
+    if REAL_PUSH not in text:
+        raise SystemExit(
+            'ci.yml no longer contains the push block this generator mutates:\n%r'
+            % REAL_PUSH)
+    return ''.join(lines[:2]), ''.join(lines[2:9]), ''.join(lines[9:])
+
+
+HEAD, TRIGGER, REST = load_workflow()
+
+
+def build(trigger=None, append='', push=None):
+    """Assemble a workflow from the real file with one property changed."""
+    if push is not None:
+        trigger = TRIGGER.replace(REAL_PUSH, push)
+    return HEAD + (TRIGGER if trigger is None else trigger) + REST + append
+
+
+def edit(old, new):
+    """Build the real workflow with one substitution outside the trigger block.
+
+    The substitution is required to fire. A silent no-op would produce a file
+    byte-identical to the control, and the case would then pass for the wrong
+    reason forever: an ACCEPT case that accidentally became a second copy of the
+    control still says ACCEPT.
+    """
+    text = build()
+    if old not in text:
+        raise SystemExit('ci.yml no longer contains the text this case edits:\n%r' % old)
+    edited = text.replace(old, new, 1)
+    if edited == text:
+        raise SystemExit('substitution changed nothing:\n%r' % old)
+    return edited
+
+
+CASES = []
+
+
+def case(name, expect, text, reason):
+    if any(existing == name for existing, _, _, _ in CASES):
+        raise SystemExit('duplicate case name: %s' % name)
+    CASES.append((name, expect, text, reason))
+
+
+# --------------------------------------------------------------- must refuse
+
+# The five spellings PyYAML folds into one boolean key. GitHub reads workflow
+# keys as text and resolves none of them, so to GitHub these are two distinct
+# keys and the block spelled `on` is the trigger; to PyYAML they are one key and
+# the last in document order wins. The same bytes, two different triggers.
+for spelling in ('True', 'yes', 'ON', 'On'):
+    case('dup-trigger-%s' % spelling, 'REFUSE',
+         build(append='\n%s:\n  push:\n    branches: [not-main]\n' % spelling),
+         'second top-level trigger key that resolves to the same key as `on`')
+
+case('entry-unterminated-range', 'REFUSE',
+     build(push='  push:\n    branches: [main, "rel[ease"]\n'),
+     'entry is not a pattern the guard can establish: unterminated range')
+case('entry-empty', 'REFUSE',
+     build(push='  push:\n    branches: [main, ""]\n'),
+     'empty entry')
+case('entry-null-tilde', 'REFUSE',
+     build(push='  push:\n    branches: [main, ~]\n'),
+     'null entry that would read as the text ~ if the text rule were applied past its scope')
+case('entry-null-word', 'REFUSE',
+     build(push='  push:\n    branches: [main, null]\n'),
+     'null entry that would read as the text null under the same mistake')
+case('entry-nonspecific-tag', 'REFUSE',
+     build(push='  push:\n    branches: [! main]\n'),
+     'non-specific tag reaches composition')
+
+# The guard's contract is not only that the push filter matches main. It is that
+# a push to main produces a completed CI run release.yml can find. A workflow
+# with no push trigger at all reaches the same bad end by a different road, so a
+# rule about what an unknown key does to *matching* is not sufficient on its own.
+# These three prove the reader fails closed on the absence of the block rather
+# than only being strict inside it. Do not delete them for looking redundant
+# with `no-push`: the point is the near miss, a key that reads like the real one
+# and carries a well-formed body, which is what a typo or a tidying edit
+# actually produces.
+case('misspelled-push-key', 'REFUSE',
+     build(push="  pushh:\n    branches: [main, 'release/**']\n"),
+     'a near miss for `push` with a well-formed body and no real push trigger')
+case('misspelled-on-key', 'REFUSE',
+     build(trigger=TRIGGER.replace('on:\n', 'onn:\n', 1)),
+     'the same shape one level up: a near miss for the `on` key itself')
+
+# The two cases whose expectation has already moved once. Their reasons are
+# recorded here because a case with a history is the one most likely to move
+# again silently, and because both of them once said ACCEPT.
+#
+# Round 4 accepted both under a rule that read: be strict where an unknown key
+# can change which branches match, permissive where it cannot. Inside `push:` an
+# unknown key can, because `branches-ignore` exists; beside `push:` under `on:`
+# it cannot, because no sibling event suppresses a push.
+#
+# Round 5 reversed that, and the reversal is not a preference. The rule only
+# considered whether an unknown name changes *matching*, and matching is not the
+# only way to reach no CI run for a main push. GitHub refuses to load a workflow
+# carrying an undefined event name, and a workflow it refuses to load produces no
+# runs of any kind, so a file that reads as a correct push trigger can trigger
+# nothing at all. The argument was already in this guard: PATTERN_CHARS refuses
+# `[` because an entry GitHub cannot parse can make it refuse the whole workflow.
+# Applying that reasoning to a branch entry and declining it for an event name
+# twelve lines away was the inconsistency, and this is the side it resolves to.
+# Measured on 2026-09-09: control run 34408161825 loaded and reported the run by
+# the workflow's own `name:`; probes 34407816543 and 34407819598, carrying an
+# undefined root key and an undefined event name, produced zero jobs and reports
+# named by the file path, because the loader never reached `name:`.
+case('unknown-on-key', 'REFUSE',
+     build(trigger='on:\n  bogus_event: {}\n  push:\n    branches: [main]\n'),
+     'undefined event name beside a correct push trigger; GitHub refuses to load '
+     'the workflow, so no run is produced at all (expectation reversed in round 5, '
+     'see the comment above this case)')
+case('misspelled-push-beside-real-push', 'REFUSE',
+     build(push=REAL_PUSH + "  pushh:\n    branches: [not-main]\n"),
+     'the realistic spelling of the same defect: a typo beside the real key rather '
+     'than an invented word (expectation reversed in round 5, see the comment above '
+     'this case)')
+
+case('unknown-top-key', 'REFUSE',
+     build(append='\nbogus_top: 1\n'),
+     'undefined top-level workflow key; GitHub refuses to load the workflow')
+case('merge-key-root', 'REFUSE',
+     'x-defaults: &d\n  a: 1\n<<: *d\n' + build(),
+     'merge key at the workflow root can inject keys')
+
+# The three shapes of an absent jobs block. GitHub marks `jobs` required, and a
+# workflow with no jobs produces no completed run for release qualification to
+# find even when its trigger is perfect.
+case('jobs-absent', 'REFUSE',
+     ''.join(part for part in [HEAD, TRIGGER, REST.split('\njobs:\n')[0], '\n']),
+     'no `jobs` key at all')
+case('jobs-null', 'REFUSE',
+     ''.join([HEAD, TRIGGER, REST.split('\njobs:\n')[0], '\njobs:\n']),
+     '`jobs` present but empty, which composes as null')
+case('jobs-empty-mapping', 'REFUSE',
+     ''.join([HEAD, TRIGGER, REST.split('\njobs:\n')[0], '\njobs: {}\n']),
+     '`jobs` present and a mapping, but declaring nothing')
+case('jobs-not-mapping', 'REFUSE',
+     ''.join([HEAD, TRIGGER, REST.split('\njobs:\n')[0], '\njobs: []\n']),
+     '`jobs` present but not a mapping')
+
+# Refusals the guard already makes, retained as regression cases.
+case('quoted-push-duplicate', 'REFUSE',
+     build(trigger='on:\n  push:\n    branches: [main]\n  "push":\n'
+                   '    branches: [not-main]\n'),
+     'quoted spelling of an existing key')
+case('no-push', 'REFUSE', build(trigger='on:\n  workflow_dispatch:\n'),
+     '`on:` has no `push:`')
+case('branches-ignore', 'REFUSE',
+     build(push='  push:\n    branches: [main]\n    branches-ignore: [x]\n'),
+     '`branches-ignore` can suppress the main-push run')
+case('paths-filter', 'REFUSE',
+     build(push="  push:\n    branches: [main]\n    paths: ['**.cs']\n"),
+     '`paths` narrows the main-push run')
+case('negated-entry', 'REFUSE',
+     build(push="  push:\n    branches: [main, '!main']\n"),
+     'an entry that negates another')
+case('backslash-entry', 'REFUSE',
+     build(push="  push:\n    branches: [main, 'ma\\in']\n"),
+     'an entry containing the escape character')
+case('no-main-entry', 'REFUSE',
+     build(push="  push:\n    branches: ['release/**']\n"),
+     'no entry is the literal main')
+case('second-document', 'REFUSE',
+     build() + '---\non:\n  push:\n    branches: [not-main]\n',
+     'a trigger in a later document never takes effect')
+case('duplicate-on', 'REFUSE',
+     build(append='\non:\n  push:\n    branches: [not-main]\n'),
+     'two literal `on:` keys')
+case('duplicate-branches', 'REFUSE',
+     build(push='  push:\n    branches: [main]\n    branches: [not-main]\n'),
+     'two `branches` keys in one push block')
+case('no-branches', 'REFUSE', build(push='  push:\n    tags: [v1]\n'),
+     '`push:` does not name `branches`')
+case('empty-branches', 'REFUSE', build(push='  push:\n    branches: []\n'),
+     'empty branch list')
+case('tab-indent', 'REFUSE',
+     build(push='  push:\n\t\t branches: [main]\n'),
+     'a tab where the parser expects indentation')
+case('alias-in-branches', 'REFUSE',
+     'x-defaults: &b main\n' + build(push='  push:\n    branches: [*b]\n'),
+     'a branch entry whose content is defined elsewhere')
+case('anchor-in-trigger', 'REFUSE',
+     build(push='  push: &p\n    branches: [main]\n'),
+     'an anchor on the push block itself')
+case('tag-in-trigger', 'REFUSE',
+     build(push='  push:\n    branches: !!seq [main]\n'),
+     'an explicit tag on a node the reader consumes')
+case('unknown-push-key', 'REFUSE',
+     build(push='  push:\n    branches: [main]\n    bogus: 1\n'),
+     'unrecognized key in `push:`')
+case('on-not-mapping', 'REFUSE', build(trigger='on: push\n'),
+     '`on:` is a scalar, so no branch filter is established')
+case('x-prefixed-top-key', 'REFUSE',
+     'x-defaults: &dotnet\n  DOTNET_NOLOGO: true\n' + build(),
+     'a top-level key GitHub does not define, anchor or not')
+
+# Cases aimed at the scoping walker, which is the newest reader logic.
+case('anchor-on-on-value', 'REFUSE',
+     build(trigger='on: &t\n  push:\n    branches: [main]\n'),
+     'an anchor on the `on:` value node')
+case('alias-as-on-value', 'REFUSE',
+     build(trigger='env: &e\n  push:\n    branches: [not-main]\non: *e\n'),
+     'the whole trigger supplied by an alias')
+case('anchor-on-branch-entry', 'REFUSE',
+     build(push='  push:\n    branches: [&b main]\n'),
+     'an anchor on a branch entry')
+case('anchor-on-top-key', 'REFUSE', '&k ' + build(),
+     'an anchor on a top-level key node')
+case('tag-in-pull-request', 'REFUSE',
+     build(trigger="on:\n  push:\n    branches: [main]\n"
+                   "  pull_request:\n    branches: !!seq [main]\n"),
+     'an explicit tag elsewhere inside the trigger')
+case('flow-trigger-with-anchor', 'REFUSE',
+     build(trigger='on: {push: {branches: [main]}, pull_request: &p {}}\n'),
+     'an anchor inside the flow-mapping trigger')
+case('complex-root-key', 'REFUSE', '? [a, b]\n: 1\n' + build(),
+     'a root key that is not a scalar')
+
+# --------------------------------------------------------------- must accept
+
+case('real-workflow', 'ACCEPT', build(),
+     'the file as it stands on this branch; the control every other case is one change away from')
+
+# Spellings of the accepted shape. These are the cases that keep the guard from
+# becoming a text matcher: each is a different serialisation of a document the
+# guard must read as the same thing.
+case('spelling-flow-mapping', 'ACCEPT',
+     build(trigger='on: {workflow_dispatch: , push: {branches: [main]}}\n'),
+     'the whole trigger as a flow mapping')
+case('spelling-quoted-branches-key', 'ACCEPT',
+     build(push='  push:\n    "branches": [main]\n'),
+     'the `branches` key quoted')
+case('spelling-explicit-key-push', 'ACCEPT',
+     build(trigger='on:\n  ? push\n  :\n    branches: [main]\n'),
+     'the `push` key in explicit-key form')
+case('spelling-folded-entry', 'ACCEPT',
+     build(push='  push:\n    branches:\n      - >-\n          main\n'),
+     'a folded block scalar entry')
+case('spelling-literal-entry', 'ACCEPT',
+     build(push='  push:\n    branches:\n      - |-\n          main\n'),
+     'a literal block scalar entry')
+case('spelling-hex-escape', 'ACCEPT',
+     build(push='  push:\n    branches: ["m\\x61in"]\n'),
+     'a double-quoted entry using a hex escape')
+case('spelling-line-continuation', 'ACCEPT',
+     build(push='  push:\n    branches:\n      - "ma\\\n        in"\n'),
+     'a double-quoted entry broken by a line continuation')
+case('spelling-compact-block-sequence', 'ACCEPT',
+     build(push='  push:\n    branches:\n    - main\n'),
+     'a block sequence not indented under its key')
+
+# Anchors and tags outside the trigger. The guard refuses them inside the
+# trigger, and these prove the refusal is scoped rather than a file-wide ban:
+# in every one of these the trigger block is byte-identical to the control.
+case('anchor-outside-trigger', 'ACCEPT',
+     edit('\nenv:\n  DOTNET_NOLOGO: true\n  DOTNET_CLI_TELEMETRY_OPTOUT: true\n',
+          '\nenv:\n  DOTNET_NOLOGO: &flag true\n  DOTNET_CLI_TELEMETRY_OPTOUT: *flag\n'),
+     'an anchor and alias in `env:`, trigger byte-identical')
+case('anchor-in-jobs', 'ACCEPT', edit('  quality:\n', '  quality: &quality\n'),
+     'an anchor on a job, trigger byte-identical')
+case('tag-outside-trigger', 'ACCEPT',
+     edit('permissions:\n  contents: read\n', 'permissions:\n  contents: !!str read\n'),
+     'an explicit tag in `permissions:`, trigger byte-identical')
+case('anchor-deep-in-jobs', 'ACCEPT',
+     edit('      - name: Checkout\n', '      - name: &step Checkout\n'),
+     'an anchor deep inside a job step, trigger byte-identical')
+
+# The ninth top-level key. GitHub's own parser schema names nine root keys and
+# `description` is one of them; a guard that refuses it refuses a valid workflow.
+# SchemaStore disagrees and rejects it, which is why this case is decided on
+# GitHub's own schema: workflow-parser/src/workflows/workflow-constants.ts names
+# `workflow-root-strict` as the live root, and that root maps `description` to
+# `workflow-description`.
+case('root-description-key', 'ACCEPT', build(append='\ndescription: builds and tests\n'),
+     'a top-level key GitHub defines and this guard once refused')
+
+
+def render():
+    files = {name: text for name, _, text, _ in CASES}
+    rows = ''.join('%s\t%s\t%s\n' % (name, expect, reason)
+                   for name, expect, _, reason in sorted(CASES))
+    return files, rows
+
+
+def main(argv):
+    files, rows = render()
+    check = '--check' in argv[1:]
+    stale = []
+    for name, text in sorted(files.items()):
+        path = os.path.join(CASES_DIR, name + '.yml')
+        if check:
+            if not os.path.exists(path) or open(path, encoding='utf-8').read() != text:
+                stale.append(name + '.yml')
+        else:
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write(text)
+    if check:
+        if not os.path.exists(EXPECTATIONS) or open(EXPECTATIONS, encoding='utf-8').read() != rows:
+            stale.append('expectations.tsv')
+        committed = set(os.listdir(CASES_DIR)) if os.path.isdir(CASES_DIR) else set()
+        for extra in sorted(committed - {name + '.yml' for name in files}):
+            stale.append(extra + ' (not produced by this generator)')
+        if stale:
+            sys.stderr.write(
+                'The committed fixture corpus does not match this generator run over the '
+                'current .github/workflows/ci.yml.\nStale or unexpected: %s\n'
+                'Run tests/fixtures/ci-classification/generate and commit the result.\n'
+                % ', '.join(stale))
+            return 1
+        return 0
+    os.makedirs(CASES_DIR, exist_ok=True)
+    with open(EXPECTATIONS, 'w', encoding='utf-8') as handle:
+        handle.write(rows)
+    sys.stderr.write('wrote %d cases and expectations.tsv\n' % len(files))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

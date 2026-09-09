@@ -952,7 +952,8 @@ fi
 # is refused rather than compared as the text that spells it. Refusing what it cannot establish
 # means widening the workflow requires widening the guard in the same commit, which is the
 # intended cost.
-python3 - "$workflow" <<'CI_PUSH_TRIGGER_PY' || exit 1
+guard_py="$work_root/ci-push-trigger.py"
+cat > "$guard_py" <<'CI_PUSH_TRIGGER_PY'
 """Assert that the CI workflow runs on pushes to main.
 
 release.yml qualifies a release SHA by looking for a completed CI run produced
@@ -1000,12 +1001,30 @@ scalar as its own spelling. A `~` entry is read as null by every conformant
 parser in either YAML version, GitHub included, so reading it as the text `~`
 would not be applying the text rule, it would be applying it past its scope.
 
-Keys are checked against a known list where an unrecognized key could change
-which branches match, and not where it could not. That is a decision rather
-than an accident and the comment above KNOWN_PUSH_KEYS argues it. Refusing what
-it cannot establish means widening the workflow requires widening this guard in
-the same commit, which is the intended cost; the point of drawing the line at
-what can change the answer is to keep that cost attached to something.
+Names are checked against the lists GitHub's own parser defines, at every level
+where such a list exists. What that rule is for, since it has been stated three
+ways and only this one survives the cases:
+
+This guard decides one thing, whether the classifier can rely on what this file
+says it does, and it answers no whenever it cannot establish an answer. That is
+why it refuses shapes that are merely unrecognized rather than provably wrong.
+An unknown key or event name may be a name GitHub's parser rejects, and a
+workflow GitHub declines to load produces no runs at all, so a file that reads
+as a correct push trigger can trigger nothing. This guard cannot tell that case
+apart from a valid extension it has not been taught, so it treats them the same.
+The cost of the first mistake is a classification stated with confidence and
+unsupported by any run; the cost of the second is widening this guard in the
+same commit that widens the workflow, which is a cost with an owner.
+
+Read that way the individual refusals stop needing separate arguments. `[` is
+not in PATTERN_CHARS, `pushh` is not in KNOWN_ON_KEYS and `bogus_top` is not in
+KNOWN_WORKFLOW_KEYS for one reason, not three, and the next name nobody has
+thought of yet is decidable without another ruling. An earlier version of this
+paragraph drew the line at whether an unknown name could change which branches
+*match*, which is narrower than the property being defended and put those three
+refusals on different footings; a branch entry GitHub cannot parse and an event
+name GitHub cannot parse end in the same place, and the lists below now say so
+together instead of contradicting each other.
 """
 
 import string
@@ -1048,24 +1067,44 @@ INVERTING = ('!', '\\')
 # runs of any kind. Teaching the range grammar is the way to accept one, not
 # assuming the entry is well formed because it is a string.
 PATTERN_CHARS = frozenset(string.ascii_letters + string.digits + '-._/+*?@')
-# The complete set of top-level workflow keys GitHub defines.
-KNOWN_WORKFLOW_KEYS = ('name', 'run-name', 'on', 'permissions', 'env',
-                       'defaults', 'concurrency', 'jobs')
-# A push block may name these. Any other key is a part of the grammar this
-# guard has not been taught, so it fails closed.
+# The three key lists below are transcribed from GitHub's own workflow parser
+# schema, workflow-parser/src/workflow-v1.0.json in actions/languageservices,
+# entered at the root that parser actually uses. That entry point is the part to
+# get right and it is not guessable from the schema: the file defines both
+# `workflow-root` and `workflow-root-strict`, they disagree about exactly the
+# question these lists answer, and
+# workflow-parser/src/workflows/workflow-constants.ts names the strict one as
+# WORKFLOW_ROOT. `workflow-root` routes `on:` to a mapping carrying
+# "loose-key-type": "non-empty-string", which accepts any event name at all.
+# Read that root instead and you conclude GitHub accepts an unknown event, which
+# is the opposite of what its parser does.
 #
-# The rule that decides where a known-key list belongs, since this guard is
-# strict about unknown keys in one place and permissive in another and that
-# has to be a decision rather than an accident: be strict where an unknown key
-# can change which branches match, and permissive where it cannot. An
-# unrecognized key inside `push:` can do exactly that, `branches-ignore` being
-# the example already in the list, so `push:` takes a list. An unrecognized key
-# beside `push:` under `on:` is an additional trigger event; it cannot stop a
-# push to main from matching, so a list there would defend nothing and would
-# guarantee a false rejection the day someone adds a legitimate trigger. What
-# does defend the property at that level is the duplicate rule in
-# mapping_pairs, which refuses a second `push` under any spelling, and it
-# applies whether or not the other keys are recognized.
+# SchemaStore's github-workflow.json is a reasonable corroborating source and a
+# poor deciding one, being a third-party transcription rather than the parser
+# itself. On the `description` key below the two disagree outright: SchemaStore
+# rejects it and GitHub's own strict root defines it. These lists follow the
+# parser.
+
+# The nine top-level workflow keys GitHub defines. Nine, not eight:
+# `description` is one of them, and refusing it refused a valid workflow.
+KNOWN_WORKFLOW_KEYS = ('name', 'description', 'run-name', 'on', 'permissions',
+                       'env', 'defaults', 'concurrency', 'jobs')
+# The two top-level keys GitHub marks required. A workflow missing either
+# produces no run for a push to main, whatever its trigger says.
+REQUIRED_WORKFLOW_KEYS = ('on', 'jobs')
+# The 37 event names GitHub's strict `on:` mapping defines. It carries no loose
+# key type, so an event name outside this list is not an extension the platform
+# tolerates; it is a workflow the platform declines to load.
+KNOWN_ON_KEYS = (
+    'branch_protection_rule', 'check_run', 'check_suite', 'create', 'delete',
+    'deployment', 'deployment_status', 'discussion', 'discussion_comment',
+    'fork', 'gollum', 'image_version', 'issue_comment', 'issues', 'label',
+    'merge_group', 'milestone', 'page_build', 'project', 'project_card',
+    'project_column', 'public', 'pull_request', 'pull_request_comment',
+    'pull_request_review', 'pull_request_review_comment', 'pull_request_target',
+    'push', 'registry_package', 'release', 'repository_dispatch', 'schedule',
+    'status', 'watch', 'workflow_call', 'workflow_dispatch', 'workflow_run')
+# The keys a push block may name.
 KNOWN_PUSH_KEYS = ('branches', 'branches-ignore', 'tags', 'tags-ignore',
                    'paths', 'paths-ignore')
 # These suppress or narrow the main-push run and must be absent.
@@ -1208,9 +1247,9 @@ def mapping_pairs(node, where, known_keys=None):
     unestablished: parsers resolve a duplicate key last-wins or refuse the
     document, and this guard will not pick between those answers.
 
-    `known_keys` is passed where an unrecognized key could change which
-    branches match, and omitted where it could not. See the comment above
-    KNOWN_PUSH_KEYS for which is which and why.
+    `known_keys` is a list of the names GitHub defines at this level. It is
+    passed wherever such a list exists, because a name outside it is one this
+    guard cannot establish the meaning of and GitHub may decline to load.
     """
     if not isinstance(node, yaml.MappingNode):
         raise Unrecognized('%s is not a mapping' % where)
@@ -1256,17 +1295,42 @@ def read_push_block(root):
         raise Unrecognized('the workflow has %d top-level `on:` keys'
                            % len(on_values))
 
-    # No known-key list here on purpose: an unknown sibling event cannot stop a
-    # push to main from matching. mapping_pairs still refuses a second `push`
-    # under any spelling, which is the part that defends the property.
     push_values = [value for key, value
-                   in mapping_pairs(on_values[0], '`on:`')
+                   in mapping_pairs(on_values[0], '`on:`', KNOWN_ON_KEYS)
                    if key == 'push']
     if not push_values:
         raise Unrecognized('`on:` has no `push:` trigger')
     if len(push_values) > 1:
         raise Unrecognized('`on:` defines `push:` %d times' % len(push_values))
     return push_values[0]
+
+
+def require_declared_jobs(root):
+    """Refuse a workflow that declares no jobs, in any of the shapes that takes.
+
+    A trigger this guard accepts is only half of what release qualification
+    needs. release.yml looks for a *completed CI run* produced by a push to
+    main, and a workflow with no jobs produces no such run however exactly its
+    push filter names the branch. GitHub marks `jobs` required for the same
+    reason.
+
+    Absent, null and non-mapping are one refusal rather than three, because they
+    are one property: this guard cannot establish that the workflow declares any
+    work. An empty mapping is refused on the stronger ground that it establishes
+    the opposite.
+    """
+    jobs = [value for key, value
+            in mapping_pairs(root, 'the workflow', KNOWN_WORKFLOW_KEYS)
+            if key == 'jobs']
+    if not jobs:
+        raise Unrecognized('the workflow has no top-level `jobs:` key')
+    node = jobs[0]
+    if not isinstance(node, yaml.MappingNode):
+        raise Unrecognized('`jobs:` is not a mapping, so the workflow declares '
+                           'no job that could produce a run')
+    if not mapping_pairs(node, '`jobs:`'):
+        raise Unrecognized('`jobs:` is empty, so the workflow declares no job '
+                           'that could produce a run')
 
 
 def read_entry(item):
@@ -1323,7 +1387,9 @@ def read_branches(push_node):
 
 
 def evaluate(path):
-    branches = read_branches(read_push_block(load_single_document(path)))
+    root = load_single_document(path)
+    require_declared_jobs(root)
+    branches = read_branches(read_push_block(root))
     if not branches:
         raise Unrecognized('`branches` is empty')
     if BRANCH not in branches:
@@ -1375,4 +1441,61 @@ if __name__ == '__main__':
     sys.exit(main(sys.argv))
 CI_PUSH_TRIGGER_PY
 
+# The real workflow, which is the only file this guard exists to decide about.
+python3 "$guard_py" "$workflow" || exit 1
+
+# Everything below runs the same guard over a committed corpus of mutations of that
+# same file. Running the guard against one input that is expected to pass proves the
+# guard is satisfiable, not that it discriminates: a guard that accepted everything
+# would pass that check too. The corpus is what separates those two, and it is
+# committed rather than generated in a scratch directory so that the number below is
+# reproducible by anyone, on any machine, after the session that measured it is gone.
+fixtures="$repo_root/tests/fixtures/ci-classification"
+generator="$fixtures/generate"
+expectations="$fixtures/expectations.tsv"
+
+# A corpus derived from a file that has since moved is a corpus that no longer means
+# what its case names say. Regenerating and comparing costs one process and turns
+# that from a silent rot into a failure with instructions.
+python3 "$generator" --check || exit 1
+
+wrong=0
+total=0
+while IFS=$'\t' read -r name expect reason; do
+  [[ -n "$name" ]] || continue
+  total=$((total + 1))
+  fixture="$fixtures/cases/$name.yml"
+  if [[ ! -f "$fixture" ]]; then
+    printf 'Fixture %s is named in expectations.tsv and does not exist.\n' "$name" >&2
+    wrong=$((wrong + 1))
+    continue
+  fi
+  if guard_output="$(python3 "$guard_py" "$fixture" 2>&1)"; then
+    actual=ACCEPT
+  else
+    actual=REFUSE
+  fi
+  if [[ "$actual" != "$expect" ]]; then
+    wrong=$((wrong + 1))
+    printf 'WRONG %-38s expected %s, got %s\n  case: %s\n' \
+      "$name" "$expect" "$actual" "$reason" >&2
+    if [[ "$actual" == REFUSE ]]; then
+      printf '%s\n' "$guard_output" | sed -n 's/^Reason: /  guard: /p' >&2
+    fi
+  fi
+done < "$expectations"
+
+if (( total == 0 )); then
+  printf 'The fixture corpus is empty, so this gate inspected nothing.\n' >&2
+  exit 1
+fi
+
+if (( wrong > 0 )); then
+  printf '%d of %d workflow fixtures were classified wrongly.\n' "$wrong" "$total" >&2
+  printf 'A case and the guard disagree. One of them is a defect; fix that one, and do\n' >&2
+  printf 'not move the expectation to match the behaviour.\n' >&2
+  exit 1
+fi
+
+printf 'CI push-trigger guard agreed with all %d workflow fixtures.\n' "$total"
 printf 'CI classification and Required CI contract tests passed.\n'
