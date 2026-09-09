@@ -27,6 +27,17 @@
 # pointer, its target shape, and that the target resolves. Package identity, schema versions,
 # database hash and row identity remain the campaign's own fail-closed gates; duplicating
 # them here would be a second contract to keep in step.
+#
+# ONE COUPLING TO KNOW ABOUT BEFORE PINNING A PACKAGE VERSION
+#
+# The pointer requirement is coupled to the pointer mode. When Catalog:RequiredPackageVersion is
+# set, CatalogSnapshotResolver.Resolve takes ReadExactVersion and never reads the `current`
+# pointer at all, so a root with no pointer is fully acceptable to the container while this check
+# refuses it. That is the one direction this check must never run in, and it is unreachable today:
+# none of the three campaign compose files sets Catalog__RequiredPackageVersion, and the only path
+# that does is the Deployment CLI lifecycle, which does not use HVO_CATALOG_PERF_ROOT. A future
+# campaign that pins a package version has to relax this check rather than meet it as a refusal of
+# a good root.
 
 # Refuse a catalog installation root that will not satisfy the container, naming both the
 # expected level and the version-directory mistake. Callers exit 2 on failure, matching the
@@ -77,7 +88,11 @@ _catalog_perf_root_refuse() {
 
     parent="${root%/}"
     parent="${parent%/*}"
-    if [[ "${parent##*/}" == versions && -d "${parent%/*}" ]]; then
+    # The pattern requires a slash before `versions` so that the strip below always shortens.
+    # Matching the last segment alone accepted a relative wrong-level path, whose parent is the
+    # bare word `versions`, and then suggested `versions` -- a path this check would itself
+    # refuse. A rooted `/versions/x` now degrades to no suggestion, which is the right outcome.
+    if [[ "$parent" == */versions && -d "${parent%/*}" ]]; then
         suggestion="${parent%/*}"
     elif [[ -f "$root/manifest.json" && -f "$root/hyg_v42.sqlite" ]]; then
         suggestion='the directory that contains versions/ and current'

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -1303,7 +1304,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             log = await DockerLogsAsync(container).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is InvalidOperationException or IOException)
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or Win32Exception)
         {
             return $"The log for container '{container}' could not be read: {exception.Message}";
         }
