@@ -10,13 +10,16 @@ Usage:
     --profile fast|standard|deep --primary PROVIDER --fallback PROVIDER \
     --route TEXT --model MODEL --effort EFFORT --tests-file FILE \
     --evidence-file FILE [--call-sites-file FILE] [--instructions-file FILE] \
-    [--evidence-pack FILE] [--output FILE]
+    [--evidence-pack FILE] [--output FILE] [--remote NAME]
 
   scripts/pr:review-request --repo OWNER/REPO --pr N \
     --recorded-comment COMMENT_ID [--output FILE]
 
 The normal mode derives target/head SHAs, the previous reviewed head, exact
-range, and prior-finding checklist from live PR data. Caller-provided files hold
+range, and prior-finding checklist from live PR data. The left endpoint comes
+from the freshly fetched target-branch tip (--remote, default origin), never
+from the PR object's recorded baseRefOid, which goes stale the moment the topic
+branch merges the advanced target. Caller-provided files hold
 issue-specific lenses and evidence pointers. The recorded-comment form replays
 an immutable historical request for range-validation dry runs.
 EOF
@@ -55,10 +58,11 @@ instructions_file=""
 evidence_pack=""
 output_file=""
 recorded_comment=""
+target_remote="origin"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --repo|--pr|--issue|--mode|--round|--command-id|--participant-id|--acceptance-file|--lens-file|--profile|--primary|--fallback|--route|--model|--effort|--tests-file|--evidence-file|--call-sites-file|--instructions-file|--evidence-pack|--output|--recorded-comment)
+        --repo|--pr|--issue|--mode|--round|--command-id|--participant-id|--acceptance-file|--lens-file|--profile|--primary|--fallback|--route|--model|--effort|--tests-file|--evidence-file|--call-sites-file|--instructions-file|--evidence-pack|--output|--recorded-comment|--remote)
             [[ -n "${2:-}" ]] || fail "Missing value for $1."
             case "$1" in
                 --repo) repo="$2" ;;
@@ -83,6 +87,7 @@ while [[ $# -gt 0 ]]; do
                 --evidence-pack) evidence_pack="$2" ;;
                 --output) output_file="$2" ;;
                 --recorded-comment) recorded_comment="$2" ;;
+                --remote) target_remote="$2" ;;
             esac
             shift 2
             ;;
@@ -134,10 +139,30 @@ require_file --evidence-file "$evidence_file"
 [[ -z "$call_sites_file" ]] || require_file --call-sites-file "$call_sites_file"
 [[ -z "$instructions_file" ]] || require_file --instructions-file "$instructions_file"
 
-pr_json="$(gh pr view "$pr" --repo "$repo" --json baseRefOid,headRefOid,title)"
-target_base="$(jq -er '.baseRefOid' <<<"$pr_json")"
+pr_json="$(gh pr view "$pr" --repo "$repo" --json baseRefOid,headRefOid,baseRefName,title)"
+recorded_base="$(jq -er '.baseRefOid' <<<"$pr_json")"
 current_head="$(jq -er '.headRefOid' <<<"$pr_json")"
-[[ "$target_base" =~ ^[0-9a-f]{40}$ && "$current_head" =~ ^[0-9a-f]{40}$ ]] || fail "PR SHAs are not immutable full SHAs."
+base_ref_name="$(jq -er '.baseRefName' <<<"$pr_json")"
+[[ "$recorded_base" =~ ^[0-9a-f]{40}$ && "$current_head" =~ ^[0-9a-f]{40}$ ]] || fail "PR SHAs are not immutable full SHAs."
+[[ "$base_ref_name" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "PR base ref name is not a usable branch name: $base_ref_name"
+
+# `baseRefOid` is the base-branch tip recorded on the PR object, not the current tip
+# of the target branch, so it is only a usable left endpoint while the topic branch
+# has not merged the target. After finalization step 2 merges the advanced target in,
+# the head contains a descendant of the recorded tip and `git merge-base
+# "$recorded_base" "$current_head"` returns "$recorded_base" unchanged. That is not a
+# guard that fails, it is a guard that is an identity function in exactly the state it
+# exists to handle: measured on #787, it hands the reviewer 18 files and 1012
+# insertions for a PR that changes 2 files and 233. Fetch the target branch and take
+# the left endpoint from its real tip, and fetch here rather than trusting that a
+# caller already did, because a stale remote-tracking ref reproduces the same defect
+# silently.
+git fetch --quiet "$target_remote" \
+    "+refs/heads/$base_ref_name:refs/remotes/$target_remote/$base_ref_name" ||
+    fail "Cannot fetch $target_remote/$base_ref_name; the review range cannot be computed against a branch tip that was not fetched."
+target_base="$(git rev-parse --verify --quiet "refs/remotes/$target_remote/$base_ref_name^{commit}")" ||
+    fail "Fetched $target_remote/$base_ref_name but cannot resolve it to a commit."
+[[ "$target_base" =~ ^[0-9a-f]{40}$ ]] || fail "Target branch tip is not a full SHA."
 merge_base="$(git merge-base "$target_base" "$current_head")" ||
     fail "Cannot calculate the PR merge base from local commit objects."
 [[ "$merge_base" =~ ^[0-9a-f]{40}$ ]] || fail "PR merge base is not a full SHA."
@@ -167,7 +192,7 @@ fi
 case "$mode" in
     initial) exact_range="$merge_base..$current_head (complete merge-base-to-head PR diff)" ;;
     correction) exact_range="$previous_head..$current_head (correction delta and its concrete interactions)" ;;
-    base-sync) exact_range="merge resolution $previous_head..$current_head and complete PR diff $target_base..$current_head" ;;
+    base-sync) exact_range="merge resolution $previous_head..$current_head and complete PR diff $merge_base..$current_head" ;;
 esac
 
 if [[ "$mode" == correction && -z "$evidence_pack" ]]; then
@@ -205,6 +230,8 @@ request="$(printf '%s\n' \
     "Dispatch command ID and target participant ID: $command_id / $participant_id" \
     "Acceptance criteria: $(<"$acceptance_file")" \
     "Target base SHA: $target_base" \
+    "Target base ref: $target_remote/$base_ref_name (freshly fetched tip; source of the range's left endpoint)" \
+    "PR-recorded base SHA: $recorded_base (baseRefOid; provenance only, never a range endpoint)" \
     "PR merge-base SHA: $merge_base" \
     "Previous reviewed head SHA: $previous_head" \
     "Current head SHA: $current_head" \

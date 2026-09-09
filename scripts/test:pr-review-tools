@@ -115,8 +115,12 @@ git -C "$fixture_repo" add history.txt
 git -C "$fixture_repo" commit --quiet -m base
 base="$(git -C "$fixture_repo" rev-parse HEAD)"
 git -C "$fixture_repo" switch --quiet -c target
-printf 'target\n' >> "$fixture_repo/history.txt"
-git -C "$fixture_repo" commit --quiet -am target
+# The target branch changes its own file so that merging it into the topic branch
+# succeeds without conflict resolution; the post-sync case needs the merge to happen,
+# not to be adjudicated.
+printf 'target\n' > "$fixture_repo/target.txt"
+git -C "$fixture_repo" add target.txt
+git -C "$fixture_repo" commit --quiet -m target
 divergent_target="$(git -C "$fixture_repo" rev-parse HEAD)"
 git -C "$fixture_repo" switch --quiet -c topic "$base"
 printf 'initial\n' >> "$fixture_repo/history.txt"
@@ -125,6 +129,13 @@ initial_head="$(git -C "$fixture_repo" rev-parse HEAD)"
 printf 'correction\n' >> "$fixture_repo/history.txt"
 git -C "$fixture_repo" commit --quiet -am correction
 correction_head="$(git -C "$fixture_repo" rev-parse HEAD)"
+# The request tool takes the range's left endpoint from a freshly fetched target
+# tip, so the fixture needs a real remote. A repository can serve as its own
+# remote, which keeps this offline and keeps protected CI's depth-one checkout
+# irrelevant to these cases.
+git -C "$fixture_repo" remote add origin "$fixture_repo"
+git -C "$fixture_repo" fetch --quiet origin
+
 new_base="$divergent_target"
 sync_head="$correction_head"
 participant='codex-cli:openai:hvo-dev-02:01a0beef'
@@ -132,9 +143,9 @@ resume_session='01a0beef-0000-4000-8000-000000000001'
 cd "$fixture_repo"
 
 write_pr_fixture() {
-    local target="$1" head="$2" comments_file="${3:-}"
-    jq -n --arg base "$target" --arg head "$head" \
-        '{baseRefOid:$base,headRefOid:$head,title:"fixture"}' > "$MOCK_PR_JSON"
+    local target="$1" head="$2" comments_file="${3:-}" base_ref="${4:-target}"
+    jq -n --arg base "$target" --arg head "$head" --arg ref "$base_ref" \
+        '{baseRefOid:$base,headRefOid:$head,baseRefName:$ref,title:"fixture"}' > "$MOCK_PR_JSON"
     if [[ -n "$comments_file" ]]; then
         jq -n --rawfile body "$comments_file" '[{body:$body}]' > "$MOCK_LEDGER"
     else
@@ -188,7 +199,42 @@ unset MOCK_PAGINATED_LEDGER
 printf '## Correction review completed — verdict: CLEAN\nRange attested: %s..%s\nM1 verified corrected.\n' "$initial_head" "$correction_head" > "$work_root/correction-report.txt"
 write_pr_fixture "$new_base" "$sync_head" "$work_root/correction-report.txt"
 $request_tool "${common_args[@]}" --mode base-sync --round 1 --output "$work_root/base-sync.request"
-grep -Fqx "Exact review range: merge resolution $correction_head..$sync_head and complete PR diff $new_base..$sync_head" "$work_root/base-sync.request"
+base_sync_merge_base="$(git merge-base "$divergent_target" "$sync_head")"
+grep -Fqx "Exact review range: merge resolution $correction_head..$sync_head and complete PR diff $base_sync_merge_base..$sync_head" "$work_root/base-sync.request"
+
+# The defect this pins is only visible after finalization step 2. Merge the advanced
+# target into the topic branch, leave baseRefOid at its stale recorded value, and
+# check that neither the range nor the merge base is computed from that value. Before
+# the fix, merge-base(recorded base, synced head) returned the recorded base and both
+# modes handed the reviewer the target's own already-merged commits as the PR's diff.
+git -C "$fixture_repo" switch --quiet topic
+git -C "$fixture_repo" merge --quiet --no-edit target
+post_sync_head="$(git -C "$fixture_repo" rev-parse HEAD)"
+post_sync_merge_base="$(git -C "$fixture_repo" merge-base "$divergent_target" "$post_sync_head")"
+[[ "$post_sync_merge_base" == "$divergent_target" ]] ||
+    { printf 'Fixture is not in the post-sync state the case exists to pin.\n' >&2; exit 1; }
+[[ "$(git -C "$fixture_repo" merge-base "$base" "$post_sync_head")" == "$base" ]] ||
+    { printf 'Fixture does not reproduce the identity-function merge base.\n' >&2; exit 1; }
+
+write_pr_fixture "$base" "$post_sync_head"
+$request_tool "${common_args[@]}" --mode initial --output "$work_root/post-sync.request"
+grep -Fqx "PR merge-base SHA: $post_sync_merge_base" "$work_root/post-sync.request"
+grep -Fqx "Exact review range: $post_sync_merge_base..$post_sync_head (complete merge-base-to-head PR diff)" "$work_root/post-sync.request"
+grep -Fqx "PR-recorded base SHA: $base (baseRefOid; provenance only, never a range endpoint)" "$work_root/post-sync.request"
+! grep -Fq "Exact review range: $base..$post_sync_head" "$work_root/post-sync.request"
+
+write_pr_fixture "$base" "$post_sync_head" "$work_root/correction-report.txt"
+$request_tool "${common_args[@]}" --mode base-sync --round 1 --output "$work_root/post-sync-base.request"
+grep -Fqx "Exact review range: merge resolution $correction_head..$post_sync_head and complete PR diff $post_sync_merge_base..$post_sync_head" "$work_root/post-sync-base.request"
+! grep -Fq "complete PR diff $base..$post_sync_head" "$work_root/post-sync-base.request"
+
+# A target tip that cannot be fetched must fail loudly rather than fall back to a
+# stale remote-tracking ref, which would reproduce the defect without saying so.
+if $request_tool "${common_args[@]}" --mode initial --remote no-such-remote \
+    --output "$work_root/unfetchable.request" 2>/dev/null; then
+    printf 'Request generation succeeded against an unfetchable target remote.\n' >&2
+    exit 1
+fi
 
 printf '%s\n%s\n%s\nExact review range: %s..%s\n%s\n%s\n' \
     prefix '```text' 'Review mode: initial' "$base" "$initial_head" '```' suffix > "$MOCK_COMMENT_BODY"
