@@ -295,9 +295,9 @@ line/90 percent branch floors, and renderer/catalog paths retain 90/85 floors. T
 native JPEG wrapper retains 95/80 because defensive null/failure branches inside
 successful Skia factory and codec calls cannot be induced deterministically.
 
-ReportGenerator is the single authoritative merger. CI collects 22 explicit
-Unit, Integration, and architecture reports, creates one canonical Cobertura
-report, and enforces and publishes that same result. Pull requests cannot remove
+ReportGenerator is the single authoritative merger. A local run collects the explicit
+Unit, Integration, and architecture reports named by `scripts/coverage:component --list-slots`, creates one canonical Cobertura
+report, and enforces that same result. Continuous integration no longer collects coverage; Coverage Policy checks the checked-in baselines instead. Pull requests cannot remove
 risk paths, lower thresholds, or widen tolerance relative to the target branch.
 Approved generated/platform exclusions remain path-specific; ordinary coverage
 regressions are corrected rather than accepted through a generic disposition.
