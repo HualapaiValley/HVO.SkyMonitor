@@ -312,28 +312,29 @@ protected CI, or merge.
    routes the same command through search, and nothing at the call site
    announces it. The same rule applies to every recheck of sole ownership.
    Direct object reads fix the staleness half of that failure and leave the
-   spelling half untouched: a mistyped literal matches no holder in the
-   direct-read form exactly as it does in the filtered form, and it matches
-   none permanently, because a label that was never created never acquires
-   members. So before an empty result is believed to mean a free lock,
-   confirm the predicate matches something known: either assert
-   `workflow:finalizing` is present in the repository's label set, or
-   observe the same comparison naming a known holder. The control and the
-   comparison must resolve one definition of the label name, which in shell
-   means a single variable read by both rather than the string typed twice.
-   A control that checks its own separate copy passes while the comparison
-   stays misspelled, which is worse than no control, because it converts an
-   unexamined assumption into a checked one that was never checked. If a
-   holder exists, do not apply the label. Otherwise, apply it to this PR,
-   then confirm sole ownership by the same direct object reads at both ends
-   of a minimum thirty-second stabilization interval. If concurrent claims
-   appear, the lowest PR number retains the label and every other claimant
-   removes it and waits. Recheck sole ownership immediately before final
-   synchronization, the ready transition, every CI rerun, and merge; losing
-   ownership aborts the guarded transition. With `gh api`, use an explicit
-   `--method GET` when passing query fields, or put the encoded query in the
-   URL; otherwise `-f` fields default to a POST and can accidentally target
-   issue creation instead of performing a read.
+   spelling half untouched: a mistyped literal produces the same empty
+   result in the direct-read form as in the filtered form, though not for
+   the same reason, and it produces it permanently, because a label that was
+   never created never acquires members. So before an empty result is
+   believed to mean a free lock, confirm the predicate matches something
+   known: either assert `workflow:finalizing` is present in the repository's
+   label set, or observe the same comparison naming a known holder. The
+   control and the comparison must resolve one definition of the label name,
+   which in shell means a single variable read by both rather than the
+   string typed twice. A control that checks its own separate copy passes
+   while the comparison stays misspelled, which is worse than no control,
+   because it converts an unexamined assumption into a checked one that was
+   never checked. If a holder exists, do not apply the label. Otherwise,
+   apply it to this PR, then confirm sole ownership by the same direct
+   object reads at both ends of a minimum thirty-second stabilization
+   interval. If concurrent claims appear, the lowest PR number retains the
+   label and every other claimant removes it and waits. Recheck sole
+   ownership immediately before final synchronization, the ready transition,
+   every CI rerun, and merge; losing ownership aborts the guarded
+   transition. With `gh api`, use an explicit `--method GET` when passing
+   query fields, or put the encoded query in the URL; otherwise `-f` fields
+   default to a POST and can accidentally target issue creation instead of
+   performing a read.
 2. Fetch the target branch and compare its exact SHA with the target-base SHA
    already covered by the converged review. When they are equal, append `base
    unchanged at <sha>; no merge and no base-sync review required` and proceed
