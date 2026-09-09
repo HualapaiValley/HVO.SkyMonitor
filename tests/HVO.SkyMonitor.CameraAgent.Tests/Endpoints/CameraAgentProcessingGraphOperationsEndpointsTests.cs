@@ -1,10 +1,12 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
+using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Http;
@@ -15,6 +17,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
@@ -26,6 +29,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
 {
     private static readonly string[] ContentMethods = ["GET", "HEAD"];
+    private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
     public async Task RoutesRequireOperationsPolicyAndMutationsRequireAntiforgery()
@@ -43,7 +47,7 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
             .Where(static endpoint => endpoint.RoutePattern.RawText?.StartsWith(
                 "/api/v1/operations/processing-graphs", StringComparison.Ordinal) == true)
             .ToArray();
-            Assert.HasCount(11, routes);
+            Assert.HasCount(12, routes);
             foreach (var route in routes)
             {
                 var methods = route.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods;
@@ -257,13 +261,82 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
         }
     }
 
+    /// <summary>
+    /// The route exists so a deployment check can read the resolved replay execution configuration
+    /// instead of the container environment, which reports what the process was started with rather
+    /// than what it resolved (#804). Every value asserted here therefore differs from the
+    /// <see cref="ProcessingGraphExecutionOptions"/> default, so a handler that returned defaults, or
+    /// that read a different options object, fails rather than passing on a coincidence.
+    /// </summary>
+    [TestMethod]
+    public async Task ReplayCapacityReportsTheResolvedConfigurationRatherThanTheDefaults()
+    {
+        var hostOptions = new CameraAgentHostOptions
+        {
+            ProcessingGraphs = new ProcessingGraphExecutionOptions
+            {
+                ReplayProfile = ReplayExecutionProfile.LocalRunner,
+                ReplayMaximumConcurrency = 3,
+                ReplayMaximumPendingCount = 17,
+                ReplayDeadlineSeconds = 120,
+                ReplayMaximumQueueAgeSeconds = 900
+            }
+        };
+        await using var app = CreateApp(
+            Mock.Of<IProcessingGraphOperations>(), Mock.Of<ICameraAgentArtifactService>(), hostOptions);
+
+        var (status, payload) = await InvokeForBodyAsync(
+            app, "GetCameraAgentReplayCapacity", HttpMethods.Get).ConfigureAwait(false);
+
+        Assert.AreEqual(StatusCodes.Status200OK, status);
+        var capacity = JsonSerializer.Deserialize<CameraAgentReplayCapacityResponse>(
+            payload, WebJson);
+        Assert.IsNotNull(capacity);
+        Assert.AreEqual("LocalRunner", capacity.ReplayProfile);
+        Assert.AreEqual(3, capacity.MaximumConcurrency);
+        Assert.AreEqual(17, capacity.MaximumPendingCount);
+        Assert.AreEqual(120, capacity.DeadlineSeconds);
+        Assert.AreEqual(900, capacity.MaximumQueueAgeSeconds);
+    }
+
+    /// <summary>
+    /// The read is configuration and not a probe, so it answers identically whether or not the local
+    /// replay runner is reachable and without touching <see cref="IProcessingGraphOperations"/>. The
+    /// strict mock is the assertion: any call to the operations boundary throws.
+    /// </summary>
+    [TestMethod]
+    public async Task ReplayCapacityDoesNotTouchTheOperationsBoundary()
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        await using var app = CreateApp(
+            operations.Object,
+            Mock.Of<ICameraAgentArtifactService>(),
+            new CameraAgentHostOptions());
+
+        var (status, payload) = await InvokeForBodyAsync(
+            app, "GetCameraAgentReplayCapacity", HttpMethods.Get).ConfigureAwait(false);
+
+        Assert.AreEqual(StatusCodes.Status200OK, status);
+        var capacity = JsonSerializer.Deserialize<CameraAgentReplayCapacityResponse>(
+            payload, WebJson);
+        Assert.IsNotNull(capacity);
+        Assert.AreEqual("InProcess", capacity.ReplayProfile);
+        operations.VerifyNoOtherCalls();
+    }
+
     private static WebApplication CreateApp(
         IProcessingGraphOperations operations,
-        ICameraAgentArtifactService artifacts)
+        ICameraAgentArtifactService artifacts,
+        CameraAgentHostOptions? hostOptions = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Services.AddSingleton(operations);
         builder.Services.AddSingleton(artifacts);
+        if (hostOptions is not null)
+        {
+            builder.Services.AddSingleton<IOptions<CameraAgentHostOptions>>(
+                new OptionsWrapper<CameraAgentHostOptions>(hostOptions));
+        }
         var app = builder.Build();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
         return app;
@@ -309,6 +382,30 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
 
         await endpoint.RequestDelegate!(context).ConfigureAwait(false);
         return context.Response.StatusCode;
+    }
+
+    private static async Task<(int Status, string Body)> InvokeForBodyAsync(
+        WebApplication app,
+        string endpointName,
+        string method)
+    {
+        var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(static source => source.Endpoints)
+            .OfType<RouteEndpoint>()
+            .Single(candidate => string.Equals(
+                candidate.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName,
+                endpointName,
+                StringComparison.Ordinal));
+        var context = new DefaultHttpContext
+        {
+            RequestServices = app.Services,
+            User = CreateUser()
+        };
+        context.Request.Method = method;
+        var body = new MemoryStream();
+        context.Response.Body = body;
+
+        await endpoint.RequestDelegate!(context).ConfigureAwait(false);
+        return (context.Response.StatusCode, Encoding.UTF8.GetString(body.ToArray()));
     }
 
     private static ClaimsPrincipal CreateUser()

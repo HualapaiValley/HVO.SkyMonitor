@@ -11,7 +11,7 @@ var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringCo
     ["tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"] = Counts(unit: 202, manual: 7),
     ["tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj"] = Counts(unit: 29),
     ["tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"] = Counts(unit: 85),
-    ["tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj"] = Counts(unit: 241),
+    ["tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj"] = Counts(unit: 243),
     ["tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj"] = Counts(unit: 86),
     ["tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj"] = Counts(unit: 4, manual: 3),
     ["tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj"] = Counts(unit: 67),
@@ -19,10 +19,10 @@ var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringCo
     ["tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj"] = Counts(unit: 11),
     ["tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj"] = Counts(unit: 11),
     ["tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"] = Counts(unit: 15, integration: 7),
-    ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 1852, integration: 217, manual: 34, soak: 1, hardware: 1),
+    ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 1861, integration: 217, manual: 34, soak: 1, hardware: 1),
     ["tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"] = Counts(unit: 6, integration: 7, manual: 22),
     ["tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj"] = Counts(unit: 4, integration: 21),
-    ["tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj"] = Counts(unit: 418),
+    ["tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj"] = Counts(unit: 426),
     ["tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"] = Counts(unit: 4, integration: 407, manual: 31),
     ["tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"] = Counts(unit: 8, manual: 1),
     ["tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj"] = Counts(unit: 4, integration: 6, manual: 3),
@@ -65,8 +65,8 @@ foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "tests"), "*.cs
              .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
                  !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)))
 {
-    foreach (Match match in CategoryPatterns.TestCategoryExpression().Matches(
-                 await File.ReadAllTextAsync(file).ConfigureAwait(false)))
+    var text = await File.ReadAllTextAsync(file).ConfigureAwait(false);
+    foreach (Match match in CategoryPatterns.TestCategoryExpression().Matches(text))
     {
         if (match.Groups[2].Success)
         {
@@ -79,6 +79,20 @@ foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "tests"), "*.cs
         {
             failures.Add($"unknown test category '{category}' in {Path.GetRelativePath(root, file)}");
         }
+    }
+
+    // Every count below comes from static discovery, which expands a DataRow into one case per row but reports a
+    // method whose rows come from a data source once however many rows that source yields. The matrix would then be
+    // satisfied by a number smaller than what the Unit and Integration jobs execute, and it would stay satisfied while
+    // the difference grew, because the audit and the runner would each be internally consistent and disagreeing only
+    // with each other. That is the one failure this audit cannot see, so refuse the shape instead of counting it: a
+    // pin that cannot enumerate what it is pinning is not a pin. The escape is either a DataRow per row, or teaching
+    // this audit to expand the source and re-pinning the matrix against the expanded count.
+    foreach (Match match in CategoryPatterns.UnexpandableTestDataExpression().Matches(text))
+    {
+        failures.Add(
+            $"test data source that static discovery cannot expand in {Path.GetRelativePath(root, file)}: " +
+            $"{match.Value.Trim()}; use DataRow so every row is discovered, or teach this audit (scripts/test-categories/Program.cs) to expand the source and re-pin the matrix against the expanded count");
     }
 }
 
@@ -321,4 +335,17 @@ static partial class CategoryPatterns
 {
     [GeneratedRegex("(?:Microsoft\\.VisualStudio\\.TestTools\\.UnitTesting\\.)?TestCategory(?:Attribute)?\\s*\\(\\s*(?:\"([^\"]+)\"|([^\\)]*))\\s*\\)", RegexOptions.CultureInvariant)]
     internal static partial Regex TestCategoryExpression();
+
+    // A denylist of names, deliberately, rather than anything that decides whether a source looks expandable. The
+    // first alternative is a DynamicData attribute in an attribute list, which is why it requires an opening bracket
+    // or a separating comma ahead of the name rather than matching the word anywhere. The second is a type declaring
+    // MSTest's data-source interface or deriving from the attribute, which are the custom forms of the same thing; a
+    // base list is the only place either name follows a colon or a comma.
+    //
+    // The holes are the ones a name list has and are worth stating rather than discovering: a using-alias for either
+    // name, and a type reaching ITestDataSource through an intermediate base or interface rather than declaring it.
+    // Both are visible in review; neither is silent the way the counting failure this replaces was. The pattern is
+    // text, so it also matches these names in a comment or a string, which fails loudly in the safe direction.
+    [GeneratedRegex("(?:\\[|,)\\s*(?:Microsoft\\.VisualStudio\\.TestTools\\.UnitTesting\\.)?DynamicData(?:Attribute)?\\s*\\(|[:,]\\s*(?:ITestDataSource|DynamicDataAttribute)\\b", RegexOptions.CultureInvariant)]
+    internal static partial Regex UnexpandableTestDataExpression();
 }

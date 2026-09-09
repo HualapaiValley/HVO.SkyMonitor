@@ -1380,6 +1380,16 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 $"Activity '{activity.Name}' was not connected to the production execute span.");
         }
 
+        // The worker is stopped, so nothing further is written by this run. Six of the health check's axes are read
+        // from tables every test in this assembly shares, and unlike the telemetry axes none of them is bounded by a
+        // window: a foreign non-terminal graph execution degrades the check no matter how old it is, and a foreign
+        // input pin degrades it once it passes BacklogDegradedAfter. Retire the rows this test does not own so the
+        // assertion below describes this run. Ownership is this run's device, which is a fresh identifier per run and
+        // is carried by the derivative outputs the worker wrote as well as by the sources seeded above, so nothing
+        // this run produced is retired. An inconsistent runnable window or an unsealed graph produced by the run
+        // under test therefore still fails the assertion, which is the whole point of scoping rather than truncating.
+        await RetireForeignActiveStateAsync(devicePublicId).ConfigureAwait(false);
+
         await using (var healthScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
             var health = new HVO.SkyMonitor.LogicHost.HealthChecks.CentralDerivativeWorkerHealthCheck(
@@ -1387,17 +1397,26 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 workerOptions,
                 telemetry,
                 TimeProvider.System);
-            var healthy = await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
-            healthy.Status.Should().Be(HealthStatus.Healthy,
-                "worker health after the run should be clean; data: {0}",
-                string.Join(", ", healthy.Data.Select(pair => $"{pair.Key}={pair.Value}")));
-            telemetry.RecordDependencyFailure("storage", DateTimeOffset.UtcNow);
-            (await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false)).Status
-                .Should().Be(HealthStatus.Degraded);
-            // Retire both axes again so this test is not itself the writer that degrades whatever runs next.
-            var retiredAfter = DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1));
-            telemetry.RecordDependencyFailure("storage", retiredAfter);
-            telemetry.RecordRenewal("failed", retiredAfter);
+            try
+            {
+                var healthy = await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+                healthy.Status.Should().Be(HealthStatus.Healthy,
+                    "worker health after the run should be clean; data: {0}",
+                    string.Join(", ", healthy.Data.Select(pair => $"{pair.Key}={pair.Value}")));
+                telemetry.RecordDependencyFailure("storage", DateTimeOffset.UtcNow);
+                (await health.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false)).Status
+                    .Should().Be(HealthStatus.Degraded);
+            }
+            finally
+            {
+                // Retire both axes again so this test is not itself the writer that degrades whatever runs next.
+                // This has to run even when an assertion above throws. The dependency failure written to prove the
+                // degraded reading is live and on the shared singleton, so an escaping exception would leave it set
+                // for a full LeaseDuration and hand the next test the exact failure #753 was filed for.
+                var retiredAfter = DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1));
+                telemetry.RecordDependencyFailure("storage", retiredAfter);
+                telemetry.RecordRenewal("failed", retiredAfter);
+            }
         }
 
         Guid[] privateEventIds;
@@ -2524,6 +2543,92 @@ public sealed class CentralDerivativeWindowIntegrationTests
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
                 .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)));
+
+    /// <summary>
+    /// Statuses in which a derivative job is finished. Every other status is one the health check still treats as an
+    /// open window.
+    /// </summary>
+    /// <remarks>
+    /// This is deliberately the terminal set rather than the active set. The health check reads five active statuses
+    /// for its pin axis while <see cref="DisableOtherActiveJobsAsync"/> retires three, which is how foreign
+    /// <c>Leased</c> and <c>CancelRequested</c> rows kept contributing input pins to an assertion that had already
+    /// been told to ignore foreign state. Naming what is finished rather than what is open means a status added to
+    /// the product later is covered here without anyone having to notice.
+    /// </remarks>
+    private static readonly CentralDerivativeJobStatus[] TerminalDerivativeJobStatuses =
+    [
+        CentralDerivativeJobStatus.Completed,
+        CentralDerivativeJobStatus.TerminalFailure,
+        CentralDerivativeJobStatus.Canceled,
+        CentralDerivativeJobStatus.Skipped,
+        CentralDerivativeJobStatus.Quarantined,
+        CentralDerivativeJobStatus.Superseded
+    ];
+
+    /// <summary>
+    /// Statuses in which a processing-graph execution is finished, matching the set the health check excludes.
+    /// </summary>
+    private static readonly CentralProcessingGraphExecutionStatus[] TerminalGraphExecutionStatuses =
+    [
+        CentralProcessingGraphExecutionStatus.Completed,
+        CentralProcessingGraphExecutionStatus.CompletedWithOptionalFailures,
+        CentralProcessingGraphExecutionStatus.Failed,
+        CentralProcessingGraphExecutionStatus.Canceled,
+        CentralProcessingGraphExecutionStatus.Superseded
+    ];
+
+    /// <summary>
+    /// Retires every open derivative job and processing-graph execution anchored to an artifact that does not belong
+    /// to <paramref name="ownedDevicePublicId"/>, so a health assertion afterwards reads the caller's own state
+    /// rather than the assembly's accumulated database.
+    /// </summary>
+    /// <remarks>
+    /// Ownership is the device, not the job and not the seeded source list. The worker legitimately creates jobs and
+    /// derivative artifacts during a run, and the derivative output writer copies the source frame's
+    /// device onto every output it writes, so a per-run device identifier covers the whole causal cone of the run
+    /// while a list of seeded source ids would not. That keeps every row the run under test produced, so a genuine
+    /// defect in that run still degrades the check; only rows anchored to another test's data are retired. The graph
+    /// table is included because nothing else covers it: <see cref="DisableOtherActiveJobsAsync"/> touches derivative
+    /// jobs alone, and a single foreign execution with a null <c>ExpandedAtUtc</c> reports the check Unhealthy
+    /// outright.
+    /// </remarks>
+    private static async Task RetireForeignActiveStateAsync(Guid ownedDevicePublicId)
+    {
+        await WithDbAsync(async db =>
+        {
+            var ownedArtifactIds = db.CentralArtifacts
+                .Where(artifact => artifact.DevicePublicId == ownedDevicePublicId)
+                .Select(artifact => artifact.Id);
+            await db.CentralDerivativeJobs
+                .Where(job => !ownedArtifactIds.Contains(job.SourceCentralArtifactId)
+                    && !TerminalDerivativeJobStatuses.Contains(job.Status))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+            // Superseding an execution is not a single-column write. Superseded requires a CompletedAtUtc, and
+            // UpdatedAtUtc must not precede ExpandedAtUtc, so all three columns move together.
+            //
+            // Only a sealed execution is retired, and that limit is imposed by the schema rather than chosen. A row
+            // whose ExpandedAtUtc is null is required by CK_CentralProcessingGraphExecutions_Expansion to stay
+            // Pending, so retiring it means sealing it; sealing fires the frozen-count check in
+            // TR_CentralProcessingGraphExecutions_IdentityImmutable, which requires the actual source, node,
+            // dependency and output rows to match the four frozen counts, and those counts are themselves in the
+            // trigger's immutable set. Deleting the row instead is rejected by the same trigger's first clause.
+            // A partially expanded foreign execution is therefore permanently non-retirable by design, and a test
+            // that meets one is looking at a genuine product state that the health check is right to report.
+            var retiredAtUtc = DateTimeOffset.UtcNow;
+            await db.CentralProcessingGraphExecutions
+                .Where(execution => !ownedArtifactIds.Contains(execution.AnchorSourceCentralArtifactId)
+                    && execution.ExpandedAtUtc != null
+                    && !TerminalGraphExecutionStatuses.Contains(execution.Status))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(execution => execution.Status, CentralProcessingGraphExecutionStatus.Superseded)
+                    .SetProperty(execution => execution.CompletedAtUtc, (DateTimeOffset?)retiredAtUtc)
+                    .SetProperty(execution => execution.UpdatedAtUtc, retiredAtUtc))
+                .ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
 
     private static async Task WithDbAsync(Func<ApplicationDbContext, Task> action)
     {

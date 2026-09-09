@@ -448,137 +448,116 @@ public sealed class UpgradePreflightTests
     [TestMethod]
     public void CommandLine_ParsesPreflightAndConfirmedStateReset()
     {
-        var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
-        try
-        {
-            var instanceId = Guid.NewGuid();
-            var preflight = (CameraAgentStatePreflightRequest)CommandLine.ParseCommand(
-            [
-                "cameraagent", "preflight", "--instance-id", instanceId.ToString("D"),
-                "--product-root", "/tmp/hvo-preflight", "--image-ref", $"sha256:{new string('a', 64)}",
-                "--json"
-            ]);
-            Assert.AreEqual(instanceId, preflight.InstanceId);
-            Assert.AreEqual($"sha256:{new string('a', 64)}", preflight.ImageReference);
-            Assert.IsTrue(preflight.Json);
+        var instanceId = Guid.NewGuid();
+        var preflight = (CameraAgentStatePreflightRequest)CommandLine.ParseCommand(
+        [
+            "cameraagent", "preflight", "--instance-id", instanceId.ToString("D"),
+            "--product-root", "/tmp/hvo-preflight", "--image-ref", $"sha256:{new string('a', 64)}",
+            "--json"
+        ], allowTestProductRoot: true);
+        Assert.AreEqual(instanceId, preflight.InstanceId);
+        Assert.AreEqual($"sha256:{new string('a', 64)}", preflight.ImageReference);
+        Assert.IsTrue(preflight.Json);
 
-            var reset = (CameraAgentStateResetRequest)CommandLine.ParseCommand(
-            [
-                "cameraagent", "reset-state", "--instance-id", instanceId.ToString("D"),
-                "--confirm-instance-id", instanceId.ToString("D"),
-                "--product-root", "/tmp/hvo-preflight", "--dry-run"
-            ]);
-            Assert.AreEqual(instanceId, reset.InstanceId);
-            Assert.IsTrue(reset.DryRun);
+        var reset = (CameraAgentStateResetRequest)CommandLine.ParseCommand(
+        [
+            "cameraagent", "reset-state", "--instance-id", instanceId.ToString("D"),
+            "--confirm-instance-id", instanceId.ToString("D"),
+            "--product-root", "/tmp/hvo-preflight", "--dry-run"
+        ], allowTestProductRoot: true);
+        Assert.AreEqual(instanceId, reset.InstanceId);
+        Assert.IsTrue(reset.DryRun);
 
-            var usage = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(
-            [
-                "cameraagent", "reset-state", "--instance-id", instanceId.ToString("D"),
-                "--product-root", "/tmp/hvo-preflight"
-            ]));
-            StringAssert.Contains(usage.Message, "--confirm-instance-id", StringComparison.Ordinal);
+        var usage = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(
+        [
+            "cameraagent", "reset-state", "--instance-id", instanceId.ToString("D"),
+            "--product-root", "/tmp/hvo-preflight"
+        ], allowTestProductRoot: true));
+        StringAssert.Contains(usage.Message, "--confirm-instance-id", StringComparison.Ordinal);
 
-            var mismatched = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(
-            [
-                "cameraagent", "reset-state", "--instance-id", instanceId.ToString("D"),
-                "--confirm-instance-id", Guid.NewGuid().ToString("D"),
-                "--product-root", "/tmp/hvo-preflight"
-            ]));
-            StringAssert.Contains(mismatched.Message, "--confirm-instance-id", StringComparison.Ordinal);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previous);
-        }
+        var mismatched = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(
+        [
+            "cameraagent", "reset-state", "--instance-id", instanceId.ToString("D"),
+            "--confirm-instance-id", Guid.NewGuid().ToString("D"),
+            "--product-root", "/tmp/hvo-preflight"
+        ], allowTestProductRoot: true));
+        StringAssert.Contains(mismatched.Message, "--confirm-instance-id", StringComparison.Ordinal);
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResetStateAsync_DeletesOnlyCameraAgentRuntimeStateAndPreservesDeploymentConfiguration()
     {
-        var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
         using var fixture = new PreflightFixture();
-        try
+        fixture.WriteCatalogManifest(manifestVersion: 1);
+        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 11);
+        fixture.CreateBindSources();
+        await fixture.WriteInstalledStateAsync(InstanceLifecycleCondition.Uninstalled);
+        var secret = Path.Combine(fixture.Paths.ConfigRoot, "secrets", "LocalIdentity__DatabasePath");
+        var temporaryPassword = Path.Combine(fixture.Paths.ConfigRoot, "owner-bootstrap", "temporary-password");
+        var request = new CameraAgentStateResetRequest(
+            fixture.InstanceId, fixture.InstanceId, fixture.Root, DryRun: true, Json: false)
         {
-            fixture.WriteCatalogManifest(manifestVersion: 1);
-            fixture.WriteIdentityDatabase(LegacyIdentityMigration);
-            fixture.WriteRawIngressDatabase(schemaVersion: 11);
-            fixture.CreateBindSources();
-            await fixture.WriteInstalledStateAsync(InstanceLifecycleCondition.Uninstalled);
-            var secret = Path.Combine(fixture.Paths.ConfigRoot, "secrets", "LocalIdentity__DatabasePath");
-            var temporaryPassword = Path.Combine(fixture.Paths.ConfigRoot, "owner-bootstrap", "temporary-password");
-            var request = new CameraAgentStateResetRequest(
-                fixture.InstanceId, fixture.InstanceId, fixture.Root, DryRun: true, Json: false);
+            AllowTestProductRoot = true
+        };
 
-            var planned = await CameraAgentStateResetManager.ExecuteAsync(
-                request, new AbsentContainerRunner(), RuntimeUid, RuntimeGid, CancellationToken.None);
+        var planned = await CameraAgentStateResetManager.ExecuteAsync(
+            request, new AbsentContainerRunner(), RuntimeUid, RuntimeGid, CancellationToken.None);
 
-            Assert.AreEqual("planned", planned.Outcome);
-            Assert.IsTrue(File.Exists(planned.EvidencePath));
-            Assert.IsTrue(File.Exists(CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot)));
-            CollectionAssert.Contains(planned.PreservedPaths.ToArray(), fixture.Paths.ManifestPath);
+        Assert.AreEqual("planned", planned.Outcome);
+        Assert.IsTrue(File.Exists(planned.EvidencePath));
+        Assert.IsTrue(File.Exists(CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot)));
+        CollectionAssert.Contains(planned.PreservedPaths.ToArray(), fixture.Paths.ManifestPath);
 
-            var completed = await CameraAgentStateResetManager.ExecuteAsync(
-                request with { DryRun = false }, new AbsentContainerRunner(), RuntimeUid, RuntimeGid,
-                CancellationToken.None);
+        var completed = await CameraAgentStateResetManager.ExecuteAsync(
+            request with { DryRun = false }, new AbsentContainerRunner(), RuntimeUid, RuntimeGid,
+            CancellationToken.None);
 
-            Assert.AreEqual("completed", completed.Outcome);
-            foreach (var directory in ComposeDeployment.WritableStateDirectories(fixture.Paths.StateRoot))
-            {
-                Assert.IsTrue(Directory.Exists(directory), directory);
-                Assert.AreEqual(0, Directory.EnumerateFileSystemEntries(directory).Count(), directory);
-                var identity = NativeLinux.GetDirectoryIdentity(directory);
-                Assert.AreEqual(
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, identity.Mode);
-            }
-
-            Assert.IsTrue(File.Exists(secret), "deployment secrets must survive a CameraAgent state reset");
-            Assert.IsTrue(File.Exists(temporaryPassword), "the owner bootstrap credential must survive the reset");
-            Assert.IsTrue(File.Exists(fixture.Paths.ManifestPath));
-            Assert.IsTrue(File.Exists(fixture.Paths.ApplicationIdentityPath));
-            Assert.IsTrue(Directory.Exists(fixture.Paths.CatalogRoot), "shared catalogs stay outside the boundary");
-            Assert.IsFalse(File.Exists(fixture.Paths.ResultPath), "the completed result is withdrawn for re-seeding");
-
-            await using var stateStream = SafeFileSystem.OpenOwnerFileRead(fixture.Paths.StatePath);
-            var state = await JsonSerializer.DeserializeAsync(
-                stateStream, DeploymentJsonContext.Default.InstallationState, CancellationToken.None);
-            Assert.AreEqual(InstallationPhase.Preflight, state!.Phase);
-            Assert.AreEqual(InstallationStatus.Pending, state.Status);
-            Assert.AreEqual(fixture.InstallationId, state.InstallationId);
-        }
-        finally
+        Assert.AreEqual("completed", completed.Outcome);
+        foreach (var directory in ComposeDeployment.WritableStateDirectories(fixture.Paths.StateRoot))
         {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previous);
+            Assert.IsTrue(Directory.Exists(directory), directory);
+            Assert.AreEqual(0, Directory.EnumerateFileSystemEntries(directory).Count(), directory);
+            var identity = NativeLinux.GetDirectoryIdentity(directory);
+            Assert.AreEqual(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, identity.Mode);
         }
+
+        Assert.IsTrue(File.Exists(secret), "deployment secrets must survive a CameraAgent state reset");
+        Assert.IsTrue(File.Exists(temporaryPassword), "the owner bootstrap credential must survive the reset");
+        Assert.IsTrue(File.Exists(fixture.Paths.ManifestPath));
+        Assert.IsTrue(File.Exists(fixture.Paths.ApplicationIdentityPath));
+        Assert.IsTrue(Directory.Exists(fixture.Paths.CatalogRoot), "shared catalogs stay outside the boundary");
+        Assert.IsFalse(File.Exists(fixture.Paths.ResultPath), "the completed result is withdrawn for re-seeding");
+
+        await using var stateStream = SafeFileSystem.OpenOwnerFileRead(fixture.Paths.StatePath);
+        var state = await JsonSerializer.DeserializeAsync(
+            stateStream, DeploymentJsonContext.Default.InstallationState, CancellationToken.None);
+        Assert.AreEqual(InstallationPhase.Preflight, state!.Phase);
+        Assert.AreEqual(InstallationStatus.Pending, state.Status);
+        Assert.AreEqual(fixture.InstallationId, state.InstallationId);
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResetStateAsync_RequiresAPreserveByDefaultUninstall()
     {
-        var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
         using var fixture = new PreflightFixture();
-        try
+        fixture.CreateBindSources();
+        await fixture.WriteInstalledStateAsync(InstanceLifecycleCondition.Installed);
+        var request = new CameraAgentStateResetRequest(
+            fixture.InstanceId, fixture.InstanceId, fixture.Root, DryRun: false, Json: false)
         {
-            fixture.CreateBindSources();
-            await fixture.WriteInstalledStateAsync(InstanceLifecycleCondition.Installed);
-            var request = new CameraAgentStateResetRequest(
-                fixture.InstanceId, fixture.InstanceId, fixture.Root, DryRun: false, Json: false);
+            AllowTestProductRoot = true
+        };
 
-            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
-                () => CameraAgentStateResetManager.ExecuteAsync(
-                    request, new AbsentContainerRunner(), RuntimeUid, RuntimeGid, CancellationToken.None));
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => CameraAgentStateResetManager.ExecuteAsync(
+                request, new AbsentContainerRunner(), RuntimeUid, RuntimeGid, CancellationToken.None));
 
-            StringAssert.Contains(exception.Message, "cameraagent uninstall", StringComparison.Ordinal);
-            Assert.IsTrue(Directory.Exists(fixture.Paths.StateRoot));
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previous);
-        }
+        StringAssert.Contains(exception.Message, "cameraagent uninstall", StringComparison.Ordinal);
+        Assert.IsTrue(Directory.Exists(fixture.Paths.StateRoot));
     }
 
     private static CameraAgentStatePreflightReport Evaluate(

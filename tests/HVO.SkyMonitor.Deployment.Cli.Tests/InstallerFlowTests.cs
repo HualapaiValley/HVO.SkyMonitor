@@ -49,11 +49,10 @@ public sealed class InstallerFlowTests
         }
 
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-flow-{Guid.NewGuid():N}");
-        var previousTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
         var imageId = $"sha256:{new string('b', 64)}";
         var request = new InstallRequest
         {
+            AllowTestProductRoot = true,
             InstanceId = Guid.Parse("e8260a29-0717-4730-a9ea-7780b3a8d377"),
             FriendlyName = "Contract Camera",
             OwnerEmail = "owner@example.test",
@@ -200,7 +199,6 @@ public sealed class InstallerFlowTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previousTestRoot);
             if (Directory.Exists(root))
             {
                 SafeFileSystem.MakeTreeOwnerWritable(root);
@@ -227,11 +225,10 @@ public sealed class InstallerFlowTests
         occupiedPortListener.Listen(1);
         var occupiedPort = ((IPEndPoint)occupiedPortListener.LocalEndPoint!).Port;
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-resume-{Guid.NewGuid():N}");
-        var previousTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
         var imageId = $"sha256:{new string('c', 64)}";
         var request = new InstallRequest
         {
+            AllowTestProductRoot = true,
             InstanceId = Guid.Parse("a71e12c8-bef2-4184-8fd4-3548b74a7d89"),
             FriendlyName = "Resume Camera",
             OwnerEmail = "owner@example.test",
@@ -289,7 +286,6 @@ public sealed class InstallerFlowTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previousTestRoot);
             if (Directory.Exists(root))
             {
                 SafeFileSystem.MakeTreeOwnerWritable(root);
@@ -309,13 +305,12 @@ public sealed class InstallerFlowTests
         }
 
         var root = Path.Combine(Path.GetTempPath(), $"hvo-signed-image-{Guid.NewGuid():N}");
-        var previousTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
         var imageId = $"sha256:{new string('b', 64)}";
         using var release = SignedImageReleaseFixture.Create(root, imageId, SignedImageReleaseFixture.ContractLabels);
         var instanceId = Guid.Parse("2b7f6a3c-1d54-4e0a-9c31-6f2b0a5d4e18");
         var request = new InstallRequest
         {
+            AllowTestProductRoot = true,
             InstanceId = instanceId,
             FriendlyName = "Signed Camera",
             OwnerEmail = "owner@example.test",
@@ -356,7 +351,6 @@ public sealed class InstallerFlowTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previousTestRoot);
             if (Directory.Exists(root))
             {
                 SafeFileSystem.MakeTreeOwnerWritable(root);
@@ -376,8 +370,6 @@ public sealed class InstallerFlowTests
         }
 
         var root = Path.Combine(Path.GetTempPath(), $"hvo-signed-image-drift-{Guid.NewGuid():N}");
-        var previousTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
         var imageId = $"sha256:{new string('b', 64)}";
         var drifted = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
         {
@@ -387,6 +379,7 @@ public sealed class InstallerFlowTests
         var instanceId = Guid.Parse("6c1de0b2-3a48-4f7d-8e5b-91c0f2a7d640");
         var request = new InstallRequest
         {
+            AllowTestProductRoot = true,
             InstanceId = instanceId,
             FriendlyName = "Signed Camera",
             OwnerEmail = "owner@example.test",
@@ -412,7 +405,6 @@ public sealed class InstallerFlowTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previousTestRoot);
             if (Directory.Exists(root))
             {
                 SafeFileSystem.MakeTreeOwnerWritable(root);

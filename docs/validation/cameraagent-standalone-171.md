@@ -24,7 +24,7 @@ compression.
 Install the approved catalog package and run:
 
 ```bash
-HVO_CATALOG_PERF_ROOT=/var/lib/hvo/data/catalog \
+HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
   ./scripts/test:cameraagent-standalone-production-smoke
 ```
 

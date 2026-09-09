@@ -103,10 +103,9 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task SameFrozenReplayMatchesInProcessAndLocalRunnerIdentityAndProvenance()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-equivalence-{Guid.NewGuid():N}");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-equivalence");
         var socketPath = FileSystemTestPaths.CreateShortUnixSocketPath();
         const string authorizationKey = "local-replay-equivalence-key-0001";
-        Directory.CreateDirectory(root);
         try
         {
             Guid captureId;
@@ -192,6 +191,15 @@ public sealed class ProcessingGraphOperationsTests
                 var expected = inProcess.Nodes[index];
                 var actual = external.Nodes[index];
                 Assert.AreEqual(expected.NodeId, actual.NodeId);
+                // The two executions are deliberately indistinguishable everywhere else in this comparison,
+                // which is exactly why issue #799 needs a recorded route: it is the only field that separates
+                // them. Both sides are asserted, so a store that hard-coded either value fails here rather
+                // than passing on the one profile it happened to match. The completing attempt carries the
+                // route, since the route is written on completion.
+                Assert.AreEqual(
+                    ProcessingNodeExecutionRoute.InProcess, expected.Attempts[^1].ExecutionRoute, expected.NodeId);
+                Assert.AreEqual(
+                    ProcessingNodeExecutionRoute.LocalRunner, actual.Attempts[^1].ExecutionRoute, actual.NodeId);
                 CollectionAssert.AreEqual(
                     expected.Inputs.Select(InputEvidence).ToArray(),
                     actual.Inputs.Select(InputEvidence).ToArray());
@@ -232,8 +240,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task MissingLocalRunnerDefersDurableReplayWithoutConsumingAttempt()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-runner-missing-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-runner-missing");
         try
         {
             var configuration = CreateConfiguration() with
@@ -321,10 +328,9 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task RunnerCrashAndHostRestartRecoverDurableFrozenReplayExactlyOnce()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-runner-recovery-{Guid.NewGuid():N}");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-runner-recovery");
         var socketPath = FileSystemTestPaths.CreateShortUnixSocketPath();
         const string authorizationKey = "local-replay-recovery-key-000001";
-        Directory.CreateDirectory(root);
         try
         {
             var configuration = CreateConfiguration() with
@@ -458,9 +464,8 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task StaleReplayLeaseCannotPublishOrCompleteAfterHostReclaim()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-stale-{Guid.NewGuid():N}");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-stale");
         var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
-        Directory.CreateDirectory(root);
         try
         {
             var settings = new Dictionary<string, string?>
@@ -568,8 +573,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task LiveAcceptanceAndReplayLifecycleAreDurableAndIsolated()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-executions-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-executions");
         try
         {
             var values = new Dictionary<string, string?>
@@ -698,8 +702,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task NamedRevisionLifecycleUsesOptimisticVersionAndIdempotency()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-registry-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-registry");
         try
         {
             var services = new ServiceCollection();
@@ -774,7 +777,7 @@ public sealed class ProcessingGraphOperationsTests
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query combines fixed internal schema SQL and parameterized inserts only.")]
     public async Task Schema6ConfiguredBasicRevisionWithLegacyIdentityIsSupersededDeterministicallyOnUpgrade()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-upgrade-{Guid.NewGuid():N}");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-upgrade");
         Directory.CreateDirectory(Path.Combine(root, "journal"));
         try
         {
@@ -867,8 +870,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task CentralProposalLifecycleStagesActivatesRollsBackAndSettlesDurably()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-delivery-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-delivery");
         try
         {
             using var provider = CreateProvider(root);
@@ -1113,8 +1115,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task CentralDeliverySettlesRejectedFactsExpiredProposalsStaleAcceptanceAndBlocksRetirement()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-delivery-terminal-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-delivery-terminal");
         try
         {
             using var provider = CreateProvider(root);
@@ -1285,8 +1286,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task CentralStagingDoesNotDeadlockWithCaptureAcceptOrRecoveryAndStillRejectsStaleAcceptance()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-delivery-lockorder-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-delivery-lockorder");
         var bound = TimeSpan.FromSeconds(30);
         try
         {
@@ -1409,8 +1409,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayFreezesTrailingRawWindowAtSubmission()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-window-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-window");
         try
         {
             var services = new ServiceCollection();
@@ -1644,8 +1643,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task PendingLiveExecutionExpiresAtMaximumQueueAge()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-live-queue-expiry-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-live-queue-expiry");
         try
         {
             var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
@@ -1687,8 +1685,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task LiveProcessingDeadlineStartsAtFirstClaimAndSurvivesRetry()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-live-deadline-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-live-deadline");
         try
         {
             var acceptedUtc = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
@@ -1764,8 +1761,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ExpiredLiveExecutionCannotPublishNodeOutputs()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-live-publication-deadline-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-live-publication-deadline");
         try
         {
             var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
@@ -1839,8 +1835,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task LiveCompletionCrossingDeadlineExpiresWithoutPublishing()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-live-completion-deadline-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-live-completion-deadline");
         try
         {
             var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
@@ -1920,8 +1915,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task LivePriorityPreemptionDoesNotConsumeReplayAttempt()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-preemption-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-preemption");
         try
         {
             var barrier = new ReplayBarrierObservation();
@@ -2046,8 +2040,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayOldestAgeUsesImmutableAcceptanceTime()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-oldest-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-oldest");
         try
         {
             var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
@@ -2100,8 +2093,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReconciledRawEvidenceIsBoundToFrozenLiveExecutionBeforeClaim()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-recovery-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-recovery");
         try
         {
             var configuration = CreateConfiguration();
@@ -2162,8 +2154,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayWorkerExecutesNonEmptyGraphWithoutPublishingOrOverwritingLiveProjection()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-worker-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-worker");
         try
         {
             var services = new ServiceCollection();
@@ -2461,8 +2452,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayFreezesCommittedProjectedSceneAfterStageCleanupAndRestart()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-projected-scene");
         try
         {
             var configuration = CreateProjectedSceneConfiguration();
@@ -2547,8 +2537,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayRejectsSubmissionWithoutCommittedProjectedSceneAndWritesNothing()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-none-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-projected-scene-none");
         try
         {
             var configuration = CreateProjectedSceneConfiguration();
@@ -2593,12 +2582,16 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayRejectsAmbiguousProjectedSceneProductsAndWritesNothing()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-ambiguous-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-projected-scene-ambiguous");
         try
         {
             var live = await CompleteProjectedSceneLiveAsync(root, new string('9', 64), new string('F', 64)).ConfigureAwait(false);
-            DuplicateProjectedSceneOutput(root, live.OutputIdentity);
+            // Ambiguity is reachable only between two live-produced candidates (#725), so the duplicate is
+            // associated with the capture's own live execution at the next free ordinal of the same node.
+            var duplicateIdentity = new string('d', 64);
+            DuplicateProjectedSceneOutput(root, live.OutputIdentity, duplicateIdentity);
+            AttachProjectedSceneOutputToExecution(
+                root, ReadExecutionId(root, live.CaptureId, "Live"), duplicateIdentity);
             using var provider = CreateProvider(root);
             await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
@@ -2622,14 +2615,108 @@ public sealed class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
+    public async Task ReplayPinsLiveProjectedSceneProductAndIgnoresReplayProducedOne()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-live-only-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var live = await CompleteProjectedSceneLiveAsync(root, new string('a', 64), new string('4', 64)).ConfigureAwait(false);
+            Guid firstReplayExecutionId;
+            using (var provider = CreateProvider(root))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var first = await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-live-only-first",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false);
+                firstReplayExecutionId = first.Execution.ExecutionId;
+                var detail = await RunReplayToCompletionAsync(provider, firstReplayExecutionId).ConfigureAwait(false);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, detail.Execution.Status);
+            }
+
+            // A future recipe or serializer change makes a replay commit a second available product under a
+            // different identity. It is genuinely replay-produced: its only execution association is the replay
+            // that has just completed. Without the live restriction this row makes every later replay of the
+            // capture ambiguous, which is what #725 records as stranding.
+            var replayProducedIdentity = new string('7', 64);
+            DuplicateProjectedSceneOutput(root, live.OutputIdentity, replayProducedIdentity);
+            AttachProjectedSceneOutputToExecution(root, firstReplayExecutionId, replayProducedIdentity);
+            Assert.HasCount(2, ReadProjectedSceneOutputs(root, live.CaptureId),
+                "the fixture must retain two available projected-scene products, or nothing is being excluded");
+            var associations = ReadProjectedSceneOutputExecutionClasses(root, live.CaptureId);
+            Assert.IsTrue(associations.Contains((live.OutputIdentity, "Live")),
+                "the retained live product must be associated with the capture's live execution");
+            Assert.IsTrue(associations.Contains((replayProducedIdentity, "Replay")),
+                "the excluded product must be associated with a replay execution");
+            Assert.IsFalse(associations.Contains((replayProducedIdentity, "Live")),
+                "the excluded product must never be associated with a live execution");
+
+            using (var provider = CreateProvider(root))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var second = await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-live-only-second",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false);
+                var pins = ReadOutputPins(root, second.Execution.ExecutionId, "projected-scene");
+                Assert.HasCount(1, pins, "a replay-produced product must not make the committed source ambiguous");
+                Assert.AreEqual((1, 0, live.OutputIdentity), pins[0], "the live-produced product is the one pinned");
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayReportsRenamedProjectedSceneNodeRatherThanNothingRetained()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-renamed-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var live = await CompleteProjectedSceneLiveAsync(root, new string('f', 64), new string('5', 64)).ConfigureAwait(false);
+            // The graph revision renamed the projected-scene node after the live commit, so the retained product
+            // belongs to the capture but not to the node id the replay resolves against.
+            RenameProjectedSceneOutputNode(root, live.CaptureId, "projected-scene-v2");
+            using var provider = CreateProvider(root);
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+
+            var exception = await Assert.ThrowsExactlyAsync<ProcessingReplaySourceException>(async () =>
+                await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-renamed",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            StringAssert.Contains(exception.Message, "renamed the node", StringComparison.Ordinal);
+            StringAssert.Contains(exception.Message, "'projected-scene-v2'", StringComparison.Ordinal);
+            Assert.AreEqual(0L, CountRows(root, "replay_executions"));
+            Assert.AreEqual(0L, CountRows(root, "processing_replay_work"));
+            Assert.AreEqual(0L, CountRows(root, "processing_execution_output_input_pins"));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     [DataRow("missing", "processing.missing-projected-scene")]
     [DataRow("tampered", "processing.invalid-projected-scene")]
     [DataRow("sidecar-missing", "processing.missing-projected-scene")]
     [DataRow("sidecar-tampered", "processing.invalid-projected-scene")]
     public async Task ReplayFailsClosedWhenPinnedProjectedSceneBytesAreMissingOrAltered(string fault, string expectedReason)
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-{fault}-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory($"hvo-processing-replay-projected-scene-{fault}");
         try
         {
             var stageKey = new string('a', 64);
@@ -2689,8 +2776,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayRetainsProjectedScenePinAcrossRestartAndIdempotentResubmission()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-retain-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-projected-scene-retain");
         try
         {
             var live = await CompleteProjectedSceneLiveAsync(root, new string('b', 64), new string('2', 64)).ConfigureAwait(false);
@@ -2744,10 +2830,9 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayConsumesFrozenProjectedSceneIdenticallyUnderInProcessAndLocalRunner()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-runner-{Guid.NewGuid():N}");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-projected-scene-runner");
         var socketPath = FileSystemTestPaths.CreateShortUnixSocketPath();
         const string authorizationKey = "projected-scene-replay-key-00001";
-        Directory.CreateDirectory(root);
         try
         {
             var live = await CompleteProjectedSceneLiveAsync(root, new string('c', 64), new string('3', 64)).ConfigureAwait(false);
@@ -2822,6 +2907,12 @@ public sealed class ProcessingGraphOperationsTests
             CollectionAssert.AreEqual(
                 inProcess.Nodes.Single().Inputs.Select(static input => input.OutputIdentitySha256).ToArray(),
                 external.Nodes.Single().Inputs.Select(static input => input.OutputIdentitySha256).ToArray());
+            Assert.AreEqual(
+                ProcessingNodeExecutionRoute.InProcess,
+                inProcess.Nodes.Single(static candidate => candidate.NodeId == "projected-scene").Attempts[^1].ExecutionRoute);
+            Assert.AreEqual(
+                ProcessingNodeExecutionRoute.LocalRunner,
+                external.Nodes.Single(static candidate => candidate.NodeId == "projected-scene").Attempts[^1].ExecutionRoute);
             Assert.HasCount(1, ReadProjectedSceneOutputs(root, live.CaptureId), "both profiles reproduce the single immutable product");
 
             await runnerStopping.CancelAsync().ConfigureAwait(false);
@@ -2866,7 +2957,7 @@ public sealed class ProcessingGraphOperationsTests
             outputs[0].SidecarRelativePath);
     }
 
-    private static void DuplicateProjectedSceneOutput(string root, string outputIdentity)
+    private static void DuplicateProjectedSceneOutput(string root, string outputIdentity, string duplicateIdentity)
     {
         using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
         connection.Open();
@@ -2884,10 +2975,86 @@ public sealed class ProcessingGraphOperationsTests
             DROP TABLE duplicate;
             """;
         command.Parameters.AddWithValue("$identity", outputIdentity);
-        command.Parameters.AddWithValue("$duplicate", new string('d', 64));
+        command.Parameters.AddWithValue("$duplicate", duplicateIdentity);
         command.Parameters.AddWithValue("$artifact", Guid.NewGuid().ToString("N"));
         command.Parameters.AddWithValue("$content", new string('e', 64));
         command.ExecuteNonQuery();
+    }
+
+    private static Guid ReadExecutionId(string root, Guid captureId, string executionClass)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT execution_id FROM processing_executions
+            WHERE capture_id = $capture AND execution_class = $class
+            ORDER BY accepted_unix_ms DESC, execution_id DESC;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$class", executionClass);
+        using var reader = command.ExecuteReader();
+        Assert.IsTrue(reader.Read(), $"the fixture requires a {executionClass} execution for the capture");
+        return Guid.ParseExact(reader.GetString(0), "N");
+    }
+
+    /// <summary>
+    /// Associates an already-committed output with an execution's projected-scene node at the next free ordinal,
+    /// which is how a producing execution records what it committed. Fixtures use it to place a candidate on a
+    /// chosen side of the live/replay boundary without inventing an execution row by hand.
+    /// </summary>
+    private static void AttachProjectedSceneOutputToExecution(string root, Guid executionId, string outputIdentity)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO processing_execution_outputs(
+                execution_id, node_id, output_ordinal, output_identity_sha256, published_flag)
+            SELECT $execution, 'projected-scene', COALESCE(MAX(output_ordinal), -1) + 1, $output, 0
+            FROM processing_execution_outputs
+            WHERE execution_id = $execution AND node_id = 'projected-scene';
+            """;
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$output", outputIdentity);
+        Assert.AreEqual(1, command.ExecuteNonQuery());
+    }
+
+    /// <summary>Renames the node a capture's committed projected-scene products were produced under.</summary>
+    private static void RenameProjectedSceneOutputNode(string root, Guid captureId, string renamedNodeId)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE processing_outputs SET node_id = $renamed
+            WHERE capture_id = $capture AND node_id = 'projected-scene';
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$renamed", renamedNodeId);
+        Assert.AreEqual(1, command.ExecuteNonQuery());
+    }
+
+    private static List<(string OutputIdentity, string ExecutionClass)> ReadProjectedSceneOutputExecutionClasses(
+        string root, Guid captureId)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT DISTINCT output.output_identity_sha256, execution.execution_class
+            FROM processing_outputs output
+            JOIN processing_execution_outputs association
+                ON association.output_identity_sha256 = output.output_identity_sha256
+            JOIN processing_executions execution ON execution.execution_id = association.execution_id
+            WHERE output.capture_id = $capture
+            ORDER BY output.output_identity_sha256, execution.execution_class;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        using var reader = command.ExecuteReader();
+        var rows = new List<(string OutputIdentity, string ExecutionClass)>();
+        while (reader.Read()) rows.Add((reader.GetString(0), reader.GetString(1)));
+        return rows;
     }
 
     private static long CountRows(string root, string table)

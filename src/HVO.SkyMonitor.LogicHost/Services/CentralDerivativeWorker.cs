@@ -153,7 +153,8 @@ internal sealed partial class CentralDerivativeWorker(
 
     /// <summary>
     /// Runs one maintenance duty; returns false when it faulted. Only real database faults degrade database health;
-    /// an activation failure or a duty's own state fault is logged and retried without a misleading dependency label.
+    /// an activation failure, a duty's own state fault, and any fault raised because the worker is stopping are
+    /// logged and retried without a misleading dependency label.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Design",
@@ -174,7 +175,7 @@ internal sealed partial class CentralDerivativeWorker(
         {
             if (CentralProcessingGraphScheduler.IsDatabaseFailure(exception))
             {
-                telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+                RecordDependencyFailureUnlessStopping("database", stoppingToken);
             }
             Log.MaintenanceFailed(logger, exception);
             return false;
@@ -209,7 +210,7 @@ internal sealed partial class CentralDerivativeWorker(
             catch (Exception exception)
             {
                 telemetry.RecordClaim("failed", timeProvider.GetElapsedTime(claimStarted));
-                telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+                RecordDependencyFailureUnlessStopping("database", stoppingToken);
                 Log.ClaimFailed(logger, exception, slot);
                 await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
                 continue;
@@ -264,6 +265,26 @@ internal sealed partial class CentralDerivativeWorker(
         }
     }
 
+    /// <summary>
+    /// Records a dependency failure unless the worker is stopping, and is how every handler that can still run once
+    /// the stopping token is cancelled reports one.
+    /// Stopping cancels each command in flight, and a cancelled command does not always come back as an
+    /// <see cref="OperationCanceledException"/>: SQL Server reports the aborted batch as a provider fault, and an
+    /// object-store request aborted mid-body surfaces as a transport fault that the artifact reader classifies as a
+    /// storage failure. A handler that sees only the fault is right to call it a dependency failure when nobody
+    /// asked for the cancellation, so without this the act of shutting the worker down publishes a dependency
+    /// failure and the health check reads Degraded for a full lease duration after a clean stop. Each call site
+    /// still counts and logs its fault and its control flow is unchanged; only the health signal is withheld, and
+    /// only while the stopping token is already cancelled.
+    /// </summary>
+    private void RecordDependencyFailureUnlessStopping(string dependency, CancellationToken stoppingToken)
+    {
+        if (!stoppingToken.IsCancellationRequested)
+        {
+            telemetry.RecordDependencyFailure(dependency, timeProvider.GetUtcNow());
+        }
+    }
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Design",
         "CA1031:Do not catch general exception types",
@@ -281,7 +302,8 @@ internal sealed partial class CentralDerivativeWorker(
                 {
                     var execution = executionScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
                         .ExecuteAsync(lease, executionCancellation.Token);
-                    var renewal = RenewUntilCanceledAsync(lease, executionCancellation, renewalCancellation.Token);
+                    var renewal = RenewUntilCanceledAsync(
+                        lease, executionCancellation, renewalCancellation.Token, stoppingToken);
                     CentralDerivativeExecutionResult? result = null;
                     Exception? executionFailure = null;
                     try
@@ -356,7 +378,7 @@ internal sealed partial class CentralDerivativeWorker(
             catch (CentralArtifactStorageException exception)
             {
                 telemetry.RecordAttempt(lease.RecipeName, "retryable", "storage", timeProvider.GetUtcNow());
-                telemetry.RecordDependencyFailure("storage", timeProvider.GetUtcNow());
+                RecordDependencyFailureUnlessStopping("storage", stoppingToken);
                 await TryFailAsync(lease, exception.Message, retryable: true, stoppingToken).ConfigureAwait(false);
                 Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
                     "RetryableFailure", "storage.unavailable");
@@ -366,7 +388,7 @@ internal sealed partial class CentralDerivativeWorker(
                 var retryable = !exception.IsTerminal;
                 var outcome = retryable ? "retryable" : "terminal";
                 telemetry.RecordAttempt(lease.RecipeName, outcome, "storage", timeProvider.GetUtcNow());
-                telemetry.RecordDependencyFailure("storage", timeProvider.GetUtcNow());
+                RecordDependencyFailureUnlessStopping("storage", stoppingToken);
                 await TryFailAsync(lease, exception.GetType().Name, retryable, stoppingToken).ConfigureAwait(false);
                 Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
                     retryable ? "RetryableFailure" : "TerminalFailure",
@@ -387,7 +409,7 @@ internal sealed partial class CentralDerivativeWorker(
             catch (DbUpdateException exception)
             {
                 telemetry.RecordAttempt(lease.RecipeName, "retryable", "database", timeProvider.GetUtcNow());
-                telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+                RecordDependencyFailureUnlessStopping("database", stoppingToken);
                 await TryFailAsync(lease, exception.GetType().Name, retryable: true, stoppingToken).ConfigureAwait(false);
                 Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
                     "RetryableFailure", "database.unavailable");
@@ -395,7 +417,7 @@ internal sealed partial class CentralDerivativeWorker(
             catch (DbException exception)
             {
                 telemetry.RecordAttempt(lease.RecipeName, "retryable", "database", timeProvider.GetUtcNow());
-                telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+                RecordDependencyFailureUnlessStopping("database", stoppingToken);
                 await TryFailAsync(lease, exception.GetType().Name, retryable: true, stoppingToken).ConfigureAwait(false);
                 Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
                     "RetryableFailure", "database.unavailable");
@@ -424,7 +446,8 @@ internal sealed partial class CentralDerivativeWorker(
     private async Task<Exception?> RenewUntilCanceledAsync(
         CentralDerivativeJobLease lease,
         CancellationTokenSource executionCancellation,
-        CancellationToken renewalCancellation)
+        CancellationToken renewalCancellation,
+        CancellationToken stoppingToken)
     {
         try
         {
@@ -452,8 +475,16 @@ internal sealed partial class CentralDerivativeWorker(
         }
         catch (Exception exception)
         {
-            telemetry.RecordRenewal("failed", timeProvider.GetUtcNow());
-            telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+            // The renewal token is cancelled whenever the execution finishes, so it cannot tell a stop from an
+            // outage; the worker's own stopping token can. A renewal command aborted by the stop is reported as
+            // cancelled rather than failed, which is what the lease authority's own cancellation is already
+            // reported as, and which leaves the renewal-failure axis alone. That axis matters more than the
+            // dependency one here: it outranks a dependency failure in the health status, so a clean stop that
+            // recorded it would read Status=renewal-failure for a full lease duration. Ownership is still treated
+            // as uncertain, the execution is still cancelled, and the fault is still returned to the caller.
+            var renewalOutcome = stoppingToken.IsCancellationRequested ? "canceled" : "failed";
+            telemetry.RecordRenewal(renewalOutcome, timeProvider.GetUtcNow());
+            RecordDependencyFailureUnlessStopping("database", stoppingToken);
             await executionCancellation.CancelAsync().ConfigureAwait(false);
             return exception;
         }
@@ -486,7 +517,7 @@ internal sealed partial class CentralDerivativeWorker(
         }
         catch (Exception exception)
         {
-            telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+            RecordDependencyFailureUnlessStopping("database", stoppingToken);
             Log.FailurePersistenceFailed(logger, exception, lease.JobId, lease.AttemptCount);
         }
     }

@@ -177,7 +177,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var password = (await File.ReadAllTextAsync(RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE")).ConfigureAwait(false)).Trim();
         Directory.CreateDirectory(evidenceRoot);
 
-        await WaitForHostAsync(baseUri).ConfigureAwait(false);
+        await WaitForHostAsync(baseUri, container).ConfigureAwait(false);
         var containerEnvironment = await ReadContainerExecutionEnvironmentAsync(container).ConfigureAwait(false);
         var serviceImages = await ReadServiceImageProvenanceAsync(container).ConfigureAwait(false);
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
@@ -578,7 +578,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var password = (await File.ReadAllTextAsync(RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE")).ConfigureAwait(false)).Trim();
         Directory.CreateDirectory(evidenceRoot);
 
-        await WaitForHostAsync(baseUri).ConfigureAwait(false);
+        await WaitForHostAsync(baseUri, container).ConfigureAwait(false);
         var containerEnvironment = await ReadContainerExecutionEnvironmentAsync(container).ConfigureAwait(false);
         var serviceImages = await ReadServiceImageProvenanceAsync(container).ConfigureAwait(false);
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
@@ -811,7 +811,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             .ConfigureAwait(false)).Trim();
         Directory.CreateDirectory(evidenceRoot);
 
-        await WaitForHostAsync(baseUri).ConfigureAwait(false);
+        await WaitForHostAsync(baseUri, container).ConfigureAwait(false);
         var declaredProfile = await ReadContainerReplayProfileAsync(container).ConfigureAwait(false);
         Assert.AreEqual(
             profile,
@@ -1262,7 +1262,14 @@ public sealed class StandaloneW6DockerAcceptanceTests
         return declared[0];
     }
 
-    private static async Task WaitForHostAsync(Uri baseUri)
+    /// <summary>
+    /// Waits for the host to serve its login endpoint, and on timeout fails carrying the container's own log.
+    /// A host that never becomes healthy failed for a reason only the container recorded, and the campaign
+    /// script tears its containers down and retains none, so the evidence is captured here or raced for by
+    /// hand while the trial is still waiting. The container is a required argument rather than an optional one
+    /// so that a call site cannot quietly lose the evidence again.
+    /// </summary>
+    private static async Task WaitForHostAsync(Uri baseUri, string container)
     {
         using var client = new HttpClient { BaseAddress = baseUri, Timeout = TimeSpan.FromSeconds(5) };
         var deadline = DateTimeOffset.UtcNow.AddMinutes(5);
@@ -1281,7 +1288,36 @@ public sealed class StandaloneW6DockerAcceptanceTests
             }
             await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
         }
-        Assert.Fail("The W6 CameraAgent did not expose its login endpoint.");
+        var log = await CapturedContainerLogAsync(container).ConfigureAwait(false);
+        Assert.Fail($"The W6 CameraAgent did not expose its login endpoint.{Environment.NewLine}{log}");
+    }
+
+    /// <summary>
+    /// The tail of a container's log, or the reason it could not be read. Reading it must never replace the
+    /// assertion already failing, so every failure here is reported as text rather than thrown.
+    /// </summary>
+    private static async Task<string> CapturedContainerLogAsync(string container)
+    {
+        const int TailLines = 200;
+        try
+        {
+            var log = await ProcessAsync(
+                "docker",
+                ["logs", "--tail", TailLines.ToString(CultureInfo.InvariantCulture), container]).ConfigureAwait(false);
+            return log.Length == 0
+                ? $"The {container} container log is empty."
+                : $"Last {TailLines} lines of the {container} container log:{Environment.NewLine}{log}";
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or InvalidOperationException
+                or OperationCanceledException
+                or System.ComponentModel.Win32Exception)
+        {
+            // Every way running docker can fail: the daemon is gone, the binary is missing, the container was
+            // removed, or the read was cut short. None of them may replace the assertion already failing.
+            return $"The {container} container log could not be read: {exception.Message}";
+        }
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned client owns its handler.")]
@@ -1990,7 +2026,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             await File.WriteAllBytesAsync(clearReferencePath, clearReference).ConfigureAwait(false);
             var restart = Stopwatch.StartNew();
             await ProcessAsync("docker", ["start", container]).ConfigureAwait(false);
-            await WaitForHostAsync(baseUri).ConfigureAwait(false);
+            await WaitForHostAsync(baseUri, container).ConfigureAwait(false);
             await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
             await WaitForDurableConditionAsync(
                 runtimeRoot,
@@ -2086,7 +2122,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
         var recovery = Stopwatch.StartNew();
         await ProcessAsync("docker", ["start", container]).ConfigureAwait(false);
-        await WaitForHostAsync(baseUri).ConfigureAwait(false);
+        await WaitForHostAsync(baseUri, container).ConfigureAwait(false);
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
         await WaitForDurableConditionAsync(
             runtimeRoot,
@@ -3274,7 +3310,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.IsGreaterThanOrEqualTo(TimeSpan.Zero, hitToKill);
         Assert.IsLessThanOrEqualTo(TimeSpan.FromSeconds(30), hitToKill);
         await ProcessAsync("docker", ["start", container]).ConfigureAwait(false);
-        await WaitForHostAsync(baseUri).ConfigureAwait(false);
+        await WaitForHostAsync(baseUri, container).ConfigureAwait(false);
         return hitToKill;
     }
 
@@ -4986,8 +5022,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             await downloadResponse.DisposeAsync().ConfigureAwait(false);
         }
         await page.SetViewportSizeAsync(390, 844).ConfigureAwait(false);
-        Assert.IsTrue(await page.EvaluateAsync<bool>(
-            "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1").ConfigureAwait(false));
+        await AssertNarrowPortraitFitsAsync(page, "capture detail").ConfigureAwait(false);
     }
 
     /// <summary>
@@ -5005,11 +5040,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 for (const element of document.querySelectorAll('*')) {
                     const box = element.getBoundingClientRect();
                     if (box.right > root.clientWidth + 1 && (widest === null || box.right > widest.right)) {
+                        // SVG elements carry an SVGAnimatedString here, which is always truthy and
+                        // stringifies to '[object SVGAnimatedString]', so read the attribute instead.
+                        const classes = (typeof element.className === 'string'
+                            ? element.className
+                            : element.getAttribute('class') || '').trim();
                         widest = {
                             right: Math.round(box.right),
                             width: Math.round(box.width),
                             description: element.tagName.toLowerCase()
-                                + (element.className ? '.' + String(element.className).trim().split(/\s+/).join('.') : '')
+                                + (classes ? '.' + classes.split(/\s+/).join('.') : '')
                         };
                     }
                 }
@@ -5888,7 +5928,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     {
         _ = await ProcessAsync("docker", ["kill", "--signal", "KILL", container]).ConfigureAwait(false);
         _ = await ProcessAsync("docker", ["start", container]).ConfigureAwait(false);
-        await WaitForHostAsync(baseUri).ConfigureAwait(false);
+        await WaitForHostAsync(baseUri, container).ConfigureAwait(false);
     }
 
     private static async Task<ContainerExecutionEnvironment> ReadContainerExecutionEnvironmentAsync(string container)
