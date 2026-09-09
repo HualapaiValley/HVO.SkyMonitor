@@ -119,16 +119,71 @@ deterministic per-card preview failures without retries. The harness proves:
 - exact descending traversal without gaps or duplicate captures;
 - bounded 50-item pages and responses no larger than 512 KiB;
 - pre-cancelled reads terminate within two seconds;
-- p95 remains at or below five seconds and working-set growth remains at or
-  below 256 MiB for every measured scenario;
-- rendered pages remain at or below 1 MiB and cumulative working-set growth
-  remains at or below 32 MiB per browser session;
+- working-set growth remains at or below 256 MiB for every measured scenario;
+- p95 remains at or below five seconds for every measured scenario. A met bound
+  is asserted whatever the host was doing: contention biases a deadline against
+  the pass, so a browser p95 that clears five seconds on a busy host cleared it
+  with less machine available than an idle run had, and is the stronger of the
+  two results. Only a missed browser bound is conditional. When a browser family
+  misses its bound and the one-minute load average sampled before the workload
+  exceeds 0.40 per core, the miss is refused as unattributable rather than
+  reported as a regression, the run reports Inconclusive, and a refusal document
+  is written beside the evidence. Under contention the browser families move by
+  more than 40% while the SQLite and Kestrel families stay flat, so a slow
+  product and a busy host produce the same red and the run cannot tell them
+  apart (see #774 and #785);
+- rendered pages remain at or below 1 MiB;
+- cumulative working-set growth remains at or below 32 MiB per browser session,
+  under the same directional condition as the p95 claim above: a met bound is
+  asserted at any load, and a missed bound above the ceiling is refused together
+  with the p95 rather than adjudicated separately;
 - later-page latency and allocation do not scale linearly with total history;
 - keyset query plans use the expected durable indexes;
 - 20 sequential and 50 concurrent requests for one unchanged preview perform
   one encode and return identical bytes;
 - every preview-failure page contains exactly 50 failed cards and zero retry
   actions before interaction.
+
+Seven of the assertions behind the bounds above compare a measured quantity to a
+fixed limit that contention pushes toward the miss. Fixed is load-bearing: the
+scaling checks compare a median against a multiple of another median plus slack,
+so their bound is computed from a measurement rather than fixed and they are not
+in the seven. Direction is not the reason and would not carry it, because the
+scenarios run in sequence and contention present for the later page but absent
+for the first inflates only the measured side. The condition is not limited to
+elapsed time; working-set bounds meet it too, because memory pressure pushes
+growth toward its own miss the same way. Four are refused when the host is
+contended: the browser render p95 and per-session working set, and the
+preview-failure p95 and per-session working set. Three are not: the read-model
+p95 against the same five-second limit, the 256 MiB working-set growth bound in
+the same measurement, and the two-second pre-cancelled-read bound.
+
+Those three are excluded because of what was measured rather than because of how
+they are written. All three exercise the SQLite gallery, and #785 measured that
+family flat under the same contention that moved the browser families by more
+than 40%. A bound whose measured quantity does not move under load has no
+attribution problem for a ceiling to solve. The rule is therefore not purely
+mechanical; the stability table is a premise it needs, not a corroboration it
+can drop. One asymmetry is recorded rather than resolved: #785 measured latency
+and not memory, so neither the gating of the per-session working-set bound nor
+the exclusion of the 256 MiB bound rests on a measurement of whether working-set
+growth moves under contention. Both follow from which family the enclosing
+measurement belongs to.
+
+Timings that are recorded and compared to nothing are a separate case, and this
+evidence contains ten such fields outside the HTTP measurement: wall and CPU
+from the read-model measurement, and wall, median, maximum and CPU from each of
+the two browser measurements. CPU durations are counted because the condition
+above is not limited to elapsed time. The read-model median is not among them,
+because the scaling checks compare it against a multiple of the first-page
+median. For all ten the pre-workload load is published beside the measurement in
+the environment block rather than used to refuse the run, because host load
+moves the number and moves no verdict, and refusing would discard evidence to
+protect a conclusion nobody drew. The HTTP measurement is the only one here that
+records a timing and asserts none, and its Kestrel p95 is the only recorded p95
+that nothing asserts. A deadline enforced by a
+timeout or a cancellation token rather than by an assertion is the same
+directional shape wearing a different mechanism and is not covered.
 
 The browser-render workload substitutes deterministic valid one-pixel images so
 that its latency and memory numbers isolate server rendering, component state,
