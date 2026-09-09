@@ -147,10 +147,12 @@ deterministic per-card preview failures without retries. The harness proves:
 Seven of the assertions behind the bounds above compare a measured quantity to a
 fixed limit that contention pushes toward the miss. Fixed is load-bearing: the
 scaling checks compare a median against a multiple of another median plus slack,
-which contention inflates on both sides and pushes toward the pass, so they are
-not in the seven. The condition is not limited to elapsed time; working-set
-bounds meet it too, because memory pressure pushes growth toward its own miss
-the same way. Four are refused when the host is
+so their bound is computed from a measurement rather than fixed and they are not
+in the seven. Direction is not the reason and would not carry it, because the
+scenarios run in sequence and contention present for the later page but absent
+for the first inflates only the measured side. The condition is not limited to
+elapsed time; working-set bounds meet it too, because memory pressure pushes
+growth toward its own miss the same way. Four are refused when the host is
 contended: the browser render p95 and per-session working set, and the
 preview-failure p95 and per-session working set. Three are not: the read-model
 p95 against the same five-second limit, the 256 MiB working-set growth bound in

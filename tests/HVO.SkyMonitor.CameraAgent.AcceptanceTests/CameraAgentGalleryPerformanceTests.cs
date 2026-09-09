@@ -47,8 +47,10 @@ public sealed class CameraAgentGalleryPerformanceTests
     // answer. The mechanical condition is that an assertion compares a measured quantity to a FIXED
     // bound that contention pushes toward the miss, and that only the miss is refused. Fixed is
     // load-bearing: AssertScaling compares a median against a multiple of another median plus slack,
-    // which contention inflates on both sides and pushes toward the pass, and dropping the word
-    // would pull it in and make the count eight. It is not limited
+    // so its bound is computed from a measurement rather than fixed, and dropping the word would
+    // pull it in and make the count eight. Direction is not the reason and would not carry it: the
+    // scenarios run in sequence, so contention present for the later page and absent for the first
+    // inflates only the measured side and pushes that check toward the miss. It is not limited
     // to elapsed time, and the per-session working-set bound is gated under it for the same
     // directional reason. Enumerated at this head rather than reasoned about, the condition selects
     // seven assertions. Four are gated: the browser render p95 and per-session working set, and the
