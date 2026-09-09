@@ -122,6 +122,15 @@ internal static class CameraAgentStatePreflight
 {
     public const int SchemaVersion = DeploymentSchemaVersions.StatePreflightReport;
 
+    /// <summary>
+    /// Runs after the main database has been copied for inspection and before its recovery files are. That is
+    /// the only window in which a writer this preflight cannot see can commit and leave the two halves of the
+    /// copy describing different generations, and a race that narrow cannot be won reliably from outside. A
+    /// test installs a commit here to prove such a copy is discarded rather than replayed; production leaves
+    /// it empty and pays one delegate call per inspected database.
+    /// </summary>
+    internal static Action SnapshotCopyBarrier { get; set; } = static () => { };
+
     /// <summary>Deletes and reports nothing; every check is read-only.</summary>
     public static CameraAgentStatePreflightReport Evaluate(
         InstallationPaths paths,
@@ -679,15 +688,16 @@ internal static class CameraAgentStatePreflight
     /// index. A wal-index without its log does not qualify — an in-place open there creates the log — so it falls
     /// to the first case, which is correct because with no log there is no pending content to read.</item>
     /// <item>Recovery state without a usable wal-index: an in-place open would create one. The database and its
-    /// recovery files are read through a private copy, which cannot be torn because no writer holds them, and the
-    /// pending journal replays into the copy rather than here.</item>
+    /// recovery files are read through a private copy, and the pending journal replays into the copy rather than
+    /// here. A writer can hold them while that copy is made, because preflight runs before the drain, so the copy
+    /// is only used when the source is verifiably the same generation on both sides of it.</item>
     /// </list>
     /// A clean shutdown between the probe and the open would leave the third case reading a checkpointed
     /// database; preflight cannot observe a running instance without contacting Docker, which it must not do.
     /// Reading a live WAL database registers a reader in the existing wal-index, which is what every reader of
     /// such a database does, including the instance's own. No file is created and no durable state changes. The
-    /// alternative — copying a database a writer holds — is what this arrangement exists to avoid, because that
-    /// copy can tear and report a busy instance as unreadable.
+    /// alternative — copying a database a writer holds — is what the first two cases exist to avoid, and where
+    /// the third case has no choice but to copy, the copy is checked rather than assumed.
     /// </summary>
     private sealed class ReadOnlyDatabase : IDisposable
     {
@@ -701,6 +711,8 @@ internal static class CameraAgentStatePreflight
 
         public SqliteConnection Connection { get; }
 
+        private const int Attempts = 3;
+
         public static ReadOnlyDatabase Open(string databasePath)
         {
             // The shape can change under an in-flight preflight, which runs before the drain: a running instance
@@ -713,11 +725,27 @@ internal static class CameraAgentStatePreflight
                 {
                     return OpenObservedShape(databasePath);
                 }
-                catch (FileNotFoundException) when (attempt < 3)
+                catch (FileNotFoundException) when (attempt < Attempts)
                 {
                 }
-                catch (DirectoryNotFoundException) when (attempt < 3)
+                catch (DirectoryNotFoundException) when (attempt < Attempts)
                 {
+                }
+                catch (InspectionSnapshotMoved) when (attempt < Attempts)
+                {
+                }
+                catch (InspectionSnapshotMoved exception)
+                {
+                    // Reported as an I/O condition because that is what it is, and because each boundary already
+                    // turns one of those into its own blocking unreadable-database finding. A preflight that
+                    // cannot take a consistent copy has not found an incompatibility; it has failed to look, and
+                    // the operator is told so in the same consolidated report as everything else.
+                    throw new IOException(
+                        "The database kept changing while preflight was copying it, so no consistent snapshot " +
+                        "of it could be taken. A journalled database is read through a private copy because " +
+                        "preflight must not write beside the original, and a copy taken across a commit " +
+                        "describes state that never existed.",
+                        exception);
                 }
             }
         }
@@ -736,21 +764,36 @@ internal static class CameraAgentStatePreflight
                 return new ReadOnlyDatabase(
                     OpenConnection(new Uri(databasePath).AbsoluteUri + "?immutable=1", SqliteOpenMode.ReadOnly), null);
             }
-            // The copy is driven by the same observation that chose this branch, so the two cannot disagree.
+            // The observation that chose this branch fixes which files are copied, not what they hold. Preflight
+            // runs before the drain, so a writer can commit between the copy of the main database and the copy of
+            // its journal; the halves then belong to different generations. A missing file is caught by the retry
+            // above and is the loud half of that race. This is the quiet half: replaying a journal against a main
+            // database it did not come from does not fail, it succeeds and reports state that never existed. So
+            // the generation is recorded on both sides of the copy and a copy that straddled a commit is thrown
+            // away rather than read.
             DirectoryInfo? snapshotRoot = null;
             try
             {
+                var generation = SnapshotGeneration(databasePath, recoveryFiles);
                 snapshotRoot = Directory.CreateTempSubdirectory("hvo-preflight-inspection-");
                 var inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
                 File.Copy(databasePath, inspectionPath);
                 // File.Copy carries the source mode across, and replaying a rollback journal needs a writable
                 // main database, so the private copy is made writable explicitly.
                 File.SetUnixFileMode(inspectionPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                SnapshotCopyBarrier();
                 foreach (var recoveryFile in recoveryFiles)
                 {
                     var copied = inspectionPath + recoveryFile[databasePath.Length..];
                     File.Copy(recoveryFile, copied);
                     File.SetUnixFileMode(copied, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                }
+                if (!string.Equals(
+                        generation,
+                        SnapshotGeneration(databasePath, recoveryFiles),
+                        StringComparison.Ordinal))
+                {
+                    throw new InspectionSnapshotMoved();
                 }
                 return new ReadOnlyDatabase(OpenConnection(inspectionPath, SqliteOpenMode.ReadWrite), snapshotRoot);
             }
@@ -758,6 +801,61 @@ internal static class CameraAgentStatePreflight
             {
                 Discard(snapshotRoot);
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// Describes the generation of a database and its recovery files well enough that a commit landing
+        /// between two reads of it cannot go unnoticed. Length and last-write time catch a file being rewritten.
+        /// The headers catch the case those miss, which a rollback journal makes ordinary rather than exotic: a
+        /// transaction restores the file it started from, so the same length at the same coarse timestamp is a
+        /// normal outcome. The first hundred bytes of a main database carry the file change counter and the
+        /// version-valid-for number, both of which move on every write transaction, and the first thirty-two
+        /// bytes of a log carry the write-ahead salts, which move whenever a checkpoint restarts it.
+        /// </summary>
+        private static string SnapshotGeneration(string databasePath, IReadOnlyList<string> recoveryFiles)
+        {
+            var generation = new StringBuilder();
+            Describe(generation, databasePath, 100);
+            foreach (var recoveryFile in recoveryFiles)
+            {
+                Describe(generation, recoveryFile, 32);
+            }
+            return generation.ToString();
+
+            static void Describe(StringBuilder generation, string path, int headerLength)
+            {
+                var header = new byte[headerLength];
+                // The writer holds these files open and may delete them, so the read shares everything it can;
+                // a file that disappears here raises the same exception the retry above already handles.
+                using var stream = new FileStream(
+                    path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                var read = stream.ReadAtLeast(header, headerLength, throwOnEndOfStream: false);
+                generation.Append(CultureInfo.InvariantCulture, $"{path}|{stream.Length}|");
+                generation.Append(
+                    CultureInfo.InvariantCulture, $"{File.GetLastWriteTimeUtc(path).Ticks}|");
+                generation.Append(Convert.ToHexStringLower(header.AsSpan(0, read))).Append('\n');
+            }
+        }
+
+        /// <summary>
+        /// The copy straddled a commit. It is a retry signal rather than an outcome, so it stays private to this
+        /// class; the outcome an operator sees is the installer exception raised once the retries are spent.
+        /// </summary>
+        private sealed class InspectionSnapshotMoved : Exception
+        {
+            public InspectionSnapshotMoved()
+            {
+            }
+
+            public InspectionSnapshotMoved(string message)
+                : base(message)
+            {
+            }
+
+            public InspectionSnapshotMoved(string message, Exception innerException)
+                : base(message, innerException)
+            {
             }
         }
 

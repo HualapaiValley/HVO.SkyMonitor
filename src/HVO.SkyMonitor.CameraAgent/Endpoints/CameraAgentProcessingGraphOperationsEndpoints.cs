@@ -4,9 +4,11 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Endpoints;
 
@@ -68,7 +70,29 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance)
             .WithName("CancelCameraAgentProcessingReplay");
+        graphs.MapGet("/replay-capacity", GetReplayCapacity)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
+            .WithName("GetCameraAgentReplayCapacity")
+            .Produces<CameraAgentReplayCapacityResponse>(StatusCodes.Status200OK);
         return endpoints;
+    }
+
+    // The replay execution profile selects whether an archived replay dispatches to the local replay
+    // runner or executes in process, and before this route the only machine-readable source was the
+    // container environment variable, which says what the process was started with rather than what it
+    // resolved (#804). Reading it from bound options is the resolved value: validation has already run,
+    // so a profile that failed validation never reaches here. This is a configuration read and never a
+    // runtime probe, so it reports the route replays are configured to take and not that the runner is
+    // reachable. The recorded per-node route on the execution detail answers what actually happened.
+    private static IResult GetReplayCapacity(IOptions<CameraAgentHostOptions> hostOptions)
+    {
+        var graphs = hostOptions.Value.ProcessingGraphs;
+        return Results.Ok(new CameraAgentReplayCapacityResponse(
+            graphs.ReplayProfile.ToString(),
+            graphs.ReplayMaximumConcurrency,
+            graphs.ReplayMaximumPendingCount,
+            graphs.ReplayDeadlineSeconds,
+            graphs.ReplayMaximumQueueAgeSeconds));
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated read boundary returns fixed sanitized failures.")]

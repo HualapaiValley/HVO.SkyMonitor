@@ -723,6 +723,10 @@ internal static class CatalogLifecycleManager
     {
         var synthetic = new InstallRequest
         {
+            // The synthetic request revalidates the same product root the operator's request already carried,
+            // so it inherits that request's admission rather than defaulting to deny and refusing a root the
+            // caller was admitted for.
+            AllowTestProductRoot = request.AllowTestProductRoot,
             FriendlyName = "catalog-lifecycle",
             OwnerEmail = "lifecycle@localhost.invalid",
             ProductRoot = request.ProductRoot,

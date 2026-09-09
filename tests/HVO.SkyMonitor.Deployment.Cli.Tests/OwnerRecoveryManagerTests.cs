@@ -252,7 +252,6 @@ public sealed class OwnerRecoveryManagerTests
 
     private sealed class RecoveryFixture : IDisposable
     {
-        private readonly string? _previousAllowTestRoot;
         private readonly Socket _recoverySocket;
 
         private RecoveryFixture(
@@ -260,15 +259,13 @@ public sealed class OwnerRecoveryManagerTests
             Guid instanceId,
             uint uid,
             uint gid,
-            Socket recoverySocket,
-            string? previousAllowTestRoot)
+            Socket recoverySocket)
         {
             Root = root;
             InstanceId = instanceId;
             Uid = uid;
             Gid = gid;
             _recoverySocket = recoverySocket;
-            _previousAllowTestRoot = previousAllowTestRoot;
         }
 
         internal string Root { get; }
@@ -277,7 +274,10 @@ public sealed class OwnerRecoveryManagerTests
         internal uint Gid { get; }
 
         internal OwnerRecoveryRequest Request(bool resume = false)
-            => new(InstanceId, Root, null, GeneratePassword: true, Resume: resume, Json: false);
+            => new(InstanceId, Root, null, GeneratePassword: true, Resume: resume, Json: false)
+            {
+                AllowTestProductRoot = true
+            };
 
         internal void RemoveRecoverySocket()
         {
@@ -288,8 +288,6 @@ public sealed class OwnerRecoveryManagerTests
 
         internal static async Task<RecoveryFixture> CreateAsync()
         {
-            var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
             var root = Path.Combine(Path.GetTempPath(), $"hvo-or-{Guid.NewGuid():N}"[..15]);
             var instanceId = Guid.NewGuid();
             var paths = InstallationPaths.Create(root, instanceId, ProductionCatalog.CatalogId);
@@ -436,12 +434,11 @@ public sealed class OwnerRecoveryManagerTests
             recoverySocket.Bind(new UnixDomainSocketEndPoint(socketPath));
             recoverySocket.Listen(1);
             File.SetUnixFileMode(socketPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            return new RecoveryFixture(root, instanceId, uid, gid, recoverySocket, previous);
+            return new RecoveryFixture(root, instanceId, uid, gid, recoverySocket);
         }
 
         public void Dispose()
         {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", _previousAllowTestRoot);
             _recoverySocket.Dispose();
             if (Directory.Exists(Root))
             {

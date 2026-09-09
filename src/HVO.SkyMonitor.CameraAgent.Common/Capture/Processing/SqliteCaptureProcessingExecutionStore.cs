@@ -687,6 +687,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         DateTimeOffset completedUtc,
         TimeSpan? duration,
         ProcessingOutcomeStatus? outcome,
+        ProcessingNodeExecutionRoute executionRoute,
         CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -707,6 +708,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             outcome,
             [],
             [],
+            executionRoute,
             cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -724,6 +726,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         ProcessingOutcomeStatus? outcome,
         IReadOnlyList<DurableProcessingOutput> outputs,
         bool[] outputPublication,
+        ProcessingNodeExecutionRoute executionRoute,
         CancellationToken cancellationToken)
     {
         await EnsureExecutionLeaseAsync(connection, transaction, execution, cancellationToken).ConfigureAwait(false);
@@ -737,7 +740,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 WHERE execution_id = $execution AND node_id = $node AND plan_sha256 = $plan;
                 UPDATE processing_node_attempts
                 SET completed_unix_ms = $completed, status = $status, outcome = $outcome,
-                    reason = $reason, duration_ticks = $duration
+                    reason = $reason, duration_ticks = $duration, execution_route = $route
                 WHERE execution_id = $execution AND node_id = $node
                   AND attempt_number = $attempt AND status = 'Running';
                 """;
@@ -750,6 +753,10 @@ internal sealed partial class SqliteCaptureProcessingStore
             update.Parameters.AddWithValue("$plan", node.PlanSha256);
             update.Parameters.AddWithValue("$outcome", outcome?.ToString() ?? (object)DBNull.Value);
             update.Parameters.AddWithValue("$duration", duration?.Ticks ?? (object)DBNull.Value);
+            // The route is written on completion rather than on the attempt insert, because the dispatch
+            // decision is made inside the node's own execution and does not exist when the attempt opens.
+            // A node interrupted before completing therefore keeps 'Unknown', which is the honest value.
+            update.Parameters.AddWithValue("$route", executionRoute.ToString());
             await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         for (var ordinal = 0; ordinal < outputs.Count; ordinal++)
@@ -989,7 +996,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             {
                 attemptCommand.CommandText = """
                     SELECT attempt_number, lease_owner, started_unix_ms, completed_unix_ms,
-                           status, outcome, reason, duration_ticks
+                           status, outcome, reason, duration_ticks, execution_route
                     FROM processing_node_attempts
                     WHERE execution_id = $execution AND node_id = $node
                     ORDER BY attempt_number;
@@ -1010,7 +1017,10 @@ internal sealed partial class SqliteCaptureProcessingStore
                             ? null : Enum.Parse<ProcessingOutcomeStatus>(reader.GetString(5)),
                         await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6),
                         await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
-                            ? null : TimeSpan.FromTicks(reader.GetInt64(7))));
+                            ? null : TimeSpan.FromTicks(reader.GetInt64(7)),
+                        // The column is NOT NULL with a checked value set, so an unparsable value means the
+                        // schema validation that guards initialization did not run or did not hold.
+                        Enum.Parse<ProcessingNodeExecutionRoute>(reader.GetString(8))));
                 }
             }
             var durableOutputs = await ReadExecutionOutputsAsync(

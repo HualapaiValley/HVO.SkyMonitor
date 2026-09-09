@@ -75,6 +75,8 @@ if [[ ! -d "$HVO_CATALOG_PERF_ROOT" ]]; then
     printf 'Production catalog installation root does not exist: %s\n' "$HVO_CATALOG_PERF_ROOT" >&2
     exit 2
 fi
+source "$REPO_ROOT/scripts/lib/catalog-perf-root.sh"
+assert_catalog_perf_root_shape "$HVO_CATALOG_PERF_ROOT" || exit 2
 if [[ "$HVO_OTEL_COLLECTOR_IMAGE" != *@"$COLLECTOR_DIGEST" ]]; then
     printf 'Collector image must use the reviewed digest %s.\n' "$COLLECTOR_DIGEST" >&2
     exit 2

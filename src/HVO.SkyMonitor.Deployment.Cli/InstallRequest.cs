@@ -54,6 +54,16 @@ internal sealed record InstallRequest
     public bool NoDownload { get; init; }
     public CameraAgentReplayProfile ReplayProfile { get; init; } = CameraAgentReplayProfile.InProcess;
 
+    /// <summary>
+    /// Whether this invocation may install below a product root other than <see cref="DefaultProductRoot"/>.
+    /// Deny by default, decided once where the process boundary is crossed, and carried on the request rather
+    /// than reread from process state, so a request validated as admitted stays admitted and one validated as
+    /// refused cannot become admitted by anything that runs afterwards. It is deliberately not serialized: an
+    /// installer configuration file must never be able to grant itself a non-production root.
+    /// </summary>
+    [JsonIgnore]
+    public bool AllowTestProductRoot { get; init; }
+
     public void Validate()
     {
         if (!Enum.IsDefined(ReplayProfile))
@@ -90,11 +100,7 @@ internal sealed record InstallRequest
         }
 
         ValidateAbsolutePath(ProductRoot, "--product-root");
-        if (!string.Equals(ProductRoot, DefaultProductRoot, StringComparison.Ordinal) &&
-            !string.Equals(
-                Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT"),
-                "1",
-                StringComparison.Ordinal))
+        if (!string.Equals(ProductRoot, DefaultProductRoot, StringComparison.Ordinal) && !AllowTestProductRoot)
         {
             throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
         }

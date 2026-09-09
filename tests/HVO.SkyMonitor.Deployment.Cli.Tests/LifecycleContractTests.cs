@@ -500,8 +500,6 @@ public sealed class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogGarbageCollect_InterruptedDeletionRequiresExactResumeRequest()
     {
-        var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
         var root = Path.Combine(Path.GetTempPath(), $"hvo-catalog-gc-{Guid.NewGuid():N}");
         var paths = InstallationPaths.Create(root, Guid.Empty, ProductionCatalog.CatalogId);
         var versionsRoot = Path.Combine(paths.CatalogRoot, "versions");
@@ -523,6 +521,7 @@ public sealed class LifecycleContractTests
         var request = new LifecycleRequest(
             LifecycleOperationKind.CatalogGarbageCollect, null, root, dryRun: false, resume: true, json: false)
         {
+            AllowTestProductRoot = true,
             CatalogVersion = version
         };
         var catalog = new CatalogInstallationIdentity(
@@ -583,7 +582,6 @@ public sealed class LifecycleContractTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previous);
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
@@ -592,13 +590,12 @@ public sealed class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogInstall_ResumeWithoutRetainedOperationIsRejectedBeforeAcquisition()
     {
-        var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
         var root = Path.Combine(Path.GetTempPath(), $"hvo-catalog-install-{Guid.NewGuid():N}");
         var daemon = new DockerDaemonIdentity("daemon", "host", "amd64", "29.7.2");
         var request = new LifecycleRequest(
             LifecycleOperationKind.CatalogInstall, null, root, dryRun: false, resume: true, json: false)
         {
+            AllowTestProductRoot = true,
             CatalogBundle = Path.Combine(root, "missing-bundle")
         };
         try
@@ -609,7 +606,6 @@ public sealed class LifecycleContractTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previous);
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
@@ -1740,8 +1736,6 @@ public sealed class LifecycleContractTests
 
     private sealed class LifecycleFixture : IDisposable
     {
-        private readonly string? previousAllowTestRoot;
-
         private LifecycleFixture(
             string root,
             Guid instanceId,
@@ -1750,8 +1744,7 @@ public sealed class LifecycleContractTests
             InstanceManifest manifest,
             FakeRunner runner,
             uint uid,
-            uint gid,
-            string? previousAllowTestRoot)
+            uint gid)
         {
             Root = root;
             InstanceId = instanceId;
@@ -1761,7 +1754,6 @@ public sealed class LifecycleContractTests
             Runner = runner;
             Uid = uid;
             Gid = gid;
-            this.previousAllowTestRoot = previousAllowTestRoot;
         }
 
         public string Root { get; }
@@ -1784,8 +1776,6 @@ public sealed class LifecycleContractTests
             // installation on this machine would, so host-relative tests stay deterministic on amd64 and arm64
             // runners alike; tests that prove daemon-over-process selection pass a different value explicitly.
             daemonArchitecture ??= DistributionAcquirer.HostImageArchitecture();
-            var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
             var root = Path.Combine(Path.GetTempPath(), $"hvo-lifecycle-{Guid.NewGuid():N}");
             var instanceId = Guid.NewGuid();
             var paths = InstallationPaths.Create(root, instanceId, ProductionCatalog.CatalogId);
@@ -1867,15 +1857,17 @@ public sealed class LifecycleContractTests
                 Path.Combine(paths.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion"), catalog.PackageVersion);
             foreach (var directory in Directory.EnumerateDirectories(paths.InstanceRoot, "*", SearchOption.AllDirectories).Prepend(paths.InstanceRoot))
                 File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            return new LifecycleFixture(root, instanceId, applicationIdentity, paths, manifest, new FakeRunner(daemon, localRunner), uid, gid, previous);
+            return new LifecycleFixture(root, instanceId, applicationIdentity, paths, manifest, new FakeRunner(daemon, localRunner), uid, gid);
         }
 
         public LifecycleRequest Request(LifecycleOperationKind? operation)
-            => new(operation, InstanceId, Root, dryRun: false, resume: false, json: false);
+            => new(operation, InstanceId, Root, dryRun: false, resume: false, json: false)
+            {
+                AllowTestProductRoot = true
+            };
 
         public void Dispose()
         {
-            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", previousAllowTestRoot);
             if (Directory.Exists(Root))
             {
                 SafeFileSystem.MakeTreeOwnerWritable(Root);

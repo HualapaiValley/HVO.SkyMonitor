@@ -507,6 +507,15 @@ internal sealed partial class SqliteCaptureProcessingStore
     /// for the requested capture from the requested raw artifact. No candidate or more than one candidate rejects
     /// the submission; the caller pins the result before any work becomes claimable.
     /// </summary>
+    /// <remarks>
+    /// Candidacy is restricted to products associated with the capture's <c>Live</c> execution (#725). A replay
+    /// reproduces the byte-identical product today, so exactly one row exists either way; after a recipe or
+    /// serializer change a replay would commit a second available row under a different identity, and without this
+    /// restriction every later replay of that capture would be rejected as ambiguous and stranded. The restriction
+    /// is deterministic because <c>ix_processing_executions_live_capture</c> admits at most one <c>Live</c>
+    /// execution per capture, and the association is tested with <c>EXISTS</c> so a candidate is counted once
+    /// however many execution rows reference it.
+    /// </remarks>
     private static async ValueTask<ProcessingFrozenOutputInput> ResolveCommittedProjectedSceneAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -524,6 +533,13 @@ internal sealed partial class SqliteCaptureProcessingStore
             WHERE output.capture_id = $capture AND output.node_id = $node AND output.role = 'Metadata'
               AND output.product_schema_version = $schema AND output.availability_state = 'Available'
               AND source.source_artifact_id = $raw
+              AND EXISTS (
+                  SELECT 1
+                  FROM processing_execution_outputs association
+                  JOIN processing_executions execution ON execution.execution_id = association.execution_id
+                  WHERE association.output_identity_sha256 = output.output_identity_sha256
+                    AND execution.capture_id = output.capture_id
+                    AND execution.execution_class = 'Live')
             ORDER BY output.output_identity_sha256;
             """;
         command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
@@ -536,15 +552,65 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             candidates.Add(new ProcessingFrozenOutputInput(reader.GetString(0), 0, reader.GetString(1)));
         }
-        return candidates.Count switch
+        if (candidates.Count == 1) return candidates[0];
+        if (candidates.Count > 1)
         {
-            1 => candidates[0],
-            0 => throw new ProcessingReplaySourceException(
-                $"Replay of node '{nodeId}' requires the committed projected-scene product of the requested capture, and none is retained."),
-            _ => throw new ProcessingReplaySourceException(
-                $"Replay of node '{nodeId}' found {candidates.Count} retained projected-scene products for the requested capture; the source is ambiguous.")
-        };
+            throw new ProcessingReplaySourceException(
+                $"Replay of node '{nodeId}' found {candidates.Count} retained live projected-scene products for the requested capture; the source is ambiguous.");
+        }
+        var otherNodeIds = await ReadProjectedSceneNodeIdsAsync(
+            connection, transaction, captureId, rawArtifactId, nodeId, cancellationToken).ConfigureAwait(false);
+        throw new ProcessingReplaySourceException(otherNodeIds.Count == 0
+            ? $"Replay of node '{nodeId}' requires the committed projected-scene product of the requested capture, and none is retained."
+            : $"Replay of node '{nodeId}' requires the committed projected-scene product of the requested capture, and none is retained under that node id; " +
+              $"the capture retains a live projected-scene product under {FormatNodeIds(otherNodeIds)}, so the graph revision has renamed the node.");
     }
+
+    /// <summary>
+    /// Reads the node ids, other than the requested one, under which the capture retains a live projected-scene
+    /// product of the requested raw artifact. A graph revision that renames the node otherwise reports only that
+    /// nothing is retained, which reads as data loss rather than as the rename it is (#725).
+    /// </summary>
+    private static async ValueTask<IReadOnlyList<string>> ReadProjectedSceneNodeIdsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid captureId,
+        Guid rawArtifactId,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT DISTINCT output.node_id
+            FROM processing_outputs output
+            JOIN processing_output_sources source ON source.output_identity_sha256 = output.output_identity_sha256
+            WHERE output.capture_id = $capture AND output.node_id <> $node AND output.role = 'Metadata'
+              AND output.product_schema_version = $schema AND output.availability_state = 'Available'
+              AND source.source_artifact_id = $raw
+              AND EXISTS (
+                  SELECT 1
+                  FROM processing_execution_outputs association
+                  JOIN processing_executions execution ON execution.execution_id = association.execution_id
+                  WHERE association.output_identity_sha256 = output.output_identity_sha256
+                    AND execution.capture_id = output.capture_id
+                    AND execution.execution_class = 'Live')
+            ORDER BY output.node_id;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$node", nodeId);
+        command.Parameters.AddWithValue("$schema", ProjectedSceneV1.CurrentSchemaVersion);
+        command.Parameters.AddWithValue("$raw", rawArtifactId.ToString("N"));
+        var nodeIds = new List<string>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            nodeIds.Add(reader.GetString(0));
+        return nodeIds;
+    }
+
+    private static string FormatNodeIds(IReadOnlyList<string> nodeIds)
+        => (nodeIds.Count == 1 ? "node id " : "node ids ") +
+           string.Join(", ", nodeIds.Select(static candidate => $"'{candidate}'"));
 
     private async ValueTask InsertFrozenOutputPinsAsync(
         SqliteConnection connection,

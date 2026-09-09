@@ -207,6 +207,9 @@ internal sealed class CaptureProcessingPersistence(
                 null,
                 [durableOutput],
                 null,
+                // On-demand materialization runs outside any graph execution, so there is no attempt row
+                // to carry a route and no adapter dispatch to record.
+                ProcessingNodeExecutionRoute.Unknown,
                 cancellationToken).ConfigureAwait(false);
             _logger.PresentationMaterializationCompleted(
                 actor, product.OutputIdentitySha256, captureId, artifactId, replayed: false);
@@ -259,9 +262,11 @@ internal sealed class CaptureProcessingPersistence(
         DateTimeOffset completedUtc,
         TimeSpan? duration,
         ProcessingOutcomeStatus? outcome,
+        ProcessingNodeExecutionRoute executionRoute,
         CancellationToken cancellationToken)
         => _store.CompleteOutputlessExecutionNodeAsync(
-            execution, node, status, reason, attempt, completedUtc, duration, outcome, cancellationToken);
+            execution, node, status, reason, attempt, completedUtc, duration, outcome,
+            executionRoute, cancellationToken);
 
     public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
@@ -660,6 +665,7 @@ internal sealed class CaptureProcessingPersistence(
                 leaseToken,
                 outputs,
                 execution,
+                context.CurrentExecutionRoute,
                 cancellationToken).ConfigureAwait(false);
             if (outputs.Count > 0 && _logger.IsEnabled(LogLevel.Debug))
             {

@@ -20,6 +20,8 @@ if [[ ! -d "$HVO_CATALOG_PERF_ROOT" ]]; then
     printf 'Production catalog installation root does not exist: %s\n' "$HVO_CATALOG_PERF_ROOT" >&2
     exit 2
 fi
+source "$REPO_ROOT/scripts/lib/catalog-perf-root.sh"
+assert_catalog_perf_root_shape "$HVO_CATALOG_PERF_ROOT" || exit 2
 for command in awk date dotnet git jq nproc python3 sha256sum sleep stat; do
     command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
 done
