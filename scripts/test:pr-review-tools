@@ -221,7 +221,7 @@ common_args=(
 )
 
 write_pr_fixture "$base" "$initial_head"
-$request_tool "${common_args[@]}" --mode initial --output "$work_root/initial.request"
+"$request_tool" "${common_args[@]}" --mode initial --output "$work_root/initial.request"
 initial_merge_base="$(git merge-base "$base" "$initial_head")"
 grep -Fqx "PR merge-base SHA: $initial_merge_base" "$work_root/initial.request" ||
     fail 'Initial request did not record the computed merge base as the PR merge-base SHA.'
@@ -231,7 +231,7 @@ grep -Fqx "Exact review range: $initial_merge_base..$initial_head (complete merg
 divergent_head="$initial_head"
 divergent_base="$(git merge-base "$divergent_target" "$divergent_head")"
 write_pr_fixture "$divergent_target" "$divergent_head"
-$request_tool "${common_args[@]}" --mode initial --output "$work_root/divergent.request"
+"$request_tool" "${common_args[@]}" --mode initial --output "$work_root/divergent.request"
 grep -Fqx "Target base SHA: $divergent_target" "$work_root/divergent.request" ||
     fail 'Divergent-target request did not record the target branch tip.'
 grep -Fqx "PR merge-base SHA: $divergent_base" "$work_root/divergent.request" ||
@@ -255,8 +255,10 @@ printf '## Initial review completed — verdict: corrections required\nDispatch:
     fail 'The prior-report fixture attests a SHA range, so it no longer pins the case the deleted scrape failed.'
 write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/initial-report.txt"
 initial_request_id="${LEDGER_IDS[0]}"
-$request_tool "${common_args[@]}" --mode correction --round 1 \
+initial_report_id="${LEDGER_IDS[1]}"
+"$request_tool" "${common_args[@]}" --mode correction --round 1 \
     --command-id CMD-REVIEW-002 --previous-command-id CMD-REVIEW-001 \
+    --previous-report-comment "$initial_report_id" \
     --call-sites-file "$work_root/call-sites.txt" --instructions-file "$work_root/instructions.txt" \
     --evidence-pack "$work_root/correction-pack.md" --output "$work_root/correction.request"
 grep -Fqx "Exact review range: $initial_head..$correction_head (correction delta and its concrete interactions)" "$work_root/correction.request" ||
@@ -272,16 +274,34 @@ grep -Fq 'All changed-symbol callers inspected.' "$work_root/correction-pack.md"
 # serves comments by ID, so a tool that ignored --previous-request-comment and fell
 # back to discovery would still produce a right-looking range and a wrong provenance
 # line; the provenance assertion is the half that fails under that mutation.
-$request_tool "${common_args[@]}" --mode correction --round 1 \
+"$request_tool" "${common_args[@]}" --mode correction --round 1 \
     --command-id CMD-REVIEW-002 --previous-command-id CMD-REVIEW-001 \
     --previous-request-comment "$initial_request_id" \
-    --previous-report-comment "${LEDGER_IDS[1]}" \
+    --previous-report-comment "$initial_report_id" \
     --call-sites-file "$work_root/call-sites.txt" --instructions-file "$work_root/instructions.txt" \
     --evidence-pack "$work_root/pinned-pack.md" --output "$work_root/pinned.request"
 grep -Fqx "Exact review range: $initial_head..$correction_head (correction delta and its concrete interactions)" "$work_root/pinned.request" ||
     fail 'Pinned-comment correction request did not carry the delta range.'
-grep -Fqx "Prior report selection: report comment ${LEDGER_IDS[1]} pinned by the caller" "$work_root/pinned.request" ||
-    fail 'Pinned-comment correction request did not record the pinned report.'
+grep -Fqx "Prior report selection: report comment $initial_report_id named by the caller" "$work_root/pinned.request" ||
+    fail 'Pinned-comment correction request did not record the named report.'
+
+# A later comment that merely cites the round is the shape that broke report discovery
+# on this repository's own #801 ledger: a dry-run sync note quoting CMD-REREVIEW-801-263
+# was the last comment containing that string, so a discovery rule keyed on the command
+# ID selected it over the report. Nothing is discovered now, so the decoy must be inert
+# even though it is later, cites the round, and is a plausible report.
+printf '## Dry-run sync report — merge is clean\nCites CMD-REVIEW-001 for context.\nFinding Z9 invented by the decoy.\n' > "$work_root/decoy-report.txt"
+write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" \
+    "$work_root/initial-report.txt" "$work_root/decoy-report.txt"
+"$request_tool" "${common_args[@]}" --mode correction --round 1 \
+    --command-id CMD-REVIEW-002 --previous-command-id CMD-REVIEW-001 \
+    --previous-report-comment "${LEDGER_IDS[1]}" \
+    --call-sites-file "$work_root/call-sites.txt" --instructions-file "$work_root/instructions.txt" \
+    --evidence-pack "$work_root/decoy-pack.md" --output "$work_root/decoy.request"
+grep -Fq 'Finding M1 unresolved.' "$work_root/decoy-pack.md" ||
+    fail 'The named report was not the one read; a later comment citing the round displaced it.'
+! grep -Fq 'Finding Z9 invented by the decoy.' "$work_root/decoy-pack.md" ||
+    fail 'A later comment citing the round was read as the prior report.'
 
 jq -n '[range(0;100) | {id:(1000 + .),body:("filler-" + tostring)}]' > "$work_root/comments-page-1.json"
 jq -n --rawfile request "$work_root/initial.request" --rawfile report "$work_root/initial-report.txt" \
@@ -289,8 +309,10 @@ jq -n --rawfile request "$work_root/initial.request" --rawfile report "$work_roo
 printf '%s\n%s\n' "$(<"$work_root/comments-page-1.json")" "$(<"$work_root/comments-page-2.json")" > "$work_root/comments-pages.json"
 export MOCK_PAGINATED_LEDGER="$work_root/comments-pages.json"
 write_pr_fixture "$base" "$correction_head"
-$request_tool "${common_args[@]}" --mode correction --round 1 \
+cp "$work_root/initial-report.txt" "$MOCK_COMMENT_DIR/5902.txt"
+"$request_tool" "${common_args[@]}" --mode correction --round 1 \
     --command-id CMD-REVIEW-002 --previous-command-id CMD-REVIEW-001 \
+    --previous-report-comment 5902 \
     --call-sites-file "$work_root/call-sites.txt" --instructions-file "$work_root/instructions.txt" \
     --evidence-pack "$work_root/paginated-pack.md" --output "$work_root/paginated.request"
 grep -Fq 'Finding M1 unresolved.' "$work_root/paginated-pack.md" ||
@@ -301,8 +323,9 @@ unset MOCK_PAGINATED_LEDGER
 
 printf '## Correction review completed — verdict: CLEAN\nDispatch: CMD-REVIEW-002\nM1 verified corrected.\n' > "$work_root/correction-report.txt"
 write_pr_fixture "$new_base" "$sync_head" "$work_root/correction.request" "$work_root/correction-report.txt"
-$request_tool "${common_args[@]}" --mode base-sync --round 1 \
-    --command-id CMD-REVIEW-003 --previous-command-id CMD-REVIEW-002 --output "$work_root/base-sync.request"
+"$request_tool" "${common_args[@]}" --mode base-sync --round 1 \
+    --command-id CMD-REVIEW-003 --previous-command-id CMD-REVIEW-002 \
+    --previous-report-comment "${LEDGER_IDS[1]}" --output "$work_root/base-sync.request"
 base_sync_merge_base="$(git merge-base "$divergent_target" "$sync_head")"
 grep -Fqx "Exact review range: merge resolution $correction_head..$sync_head and complete PR diff $base_sync_merge_base..$sync_head" "$work_root/base-sync.request" ||
     fail 'Base-sync request did not carry the merge-resolution and complete-PR-diff ranges.'
@@ -327,7 +350,7 @@ post_sync_merge_base="$(git -C "$fixture_repo" merge-base "$divergent_target" "$
     { printf 'Fixture head is not a merge commit; the identity-function case is not set up.\n' >&2; exit 1; }
 
 write_pr_fixture "$base" "$post_sync_head"
-$request_tool "${common_args[@]}" --mode initial --output "$work_root/post-sync.request"
+"$request_tool" "${common_args[@]}" --mode initial --output "$work_root/post-sync.request"
 grep -Fqx "PR merge-base SHA: $post_sync_merge_base" "$work_root/post-sync.request" ||
     fail 'Post-sync request did not record the recomputed merge base.'
 grep -Fqx "Exact review range: $post_sync_merge_base..$post_sync_head (complete merge-base-to-head PR diff)" "$work_root/post-sync.request" ||
@@ -338,8 +361,9 @@ grep -Fqx "PR-recorded base SHA: $base (baseRefOid; provenance only, never a ran
     { printf 'Initial range was computed from the PR-recorded base.\n' >&2; exit 1; }
 
 write_pr_fixture "$base" "$post_sync_head" "$work_root/correction.request" "$work_root/correction-report.txt"
-$request_tool "${common_args[@]}" --mode base-sync --round 1 \
-    --command-id CMD-REVIEW-003 --previous-command-id CMD-REVIEW-002 --output "$work_root/post-sync-base.request"
+"$request_tool" "${common_args[@]}" --mode base-sync --round 1 \
+    --command-id CMD-REVIEW-003 --previous-command-id CMD-REVIEW-002 \
+    --previous-report-comment "${LEDGER_IDS[1]}" --output "$work_root/post-sync-base.request"
 grep -Fqx "Exact review range: merge resolution $correction_head..$post_sync_head and complete PR diff $post_sync_merge_base..$post_sync_head" "$work_root/post-sync-base.request" ||
     fail 'Post-sync base-sync request did not carry the recomputed complete-PR-diff range.'
 ! grep -Fq "complete PR diff $base..$post_sync_head" "$work_root/post-sync-base.request" ||
@@ -359,8 +383,10 @@ expect_fail() {
         exit 1
     fi
     # Exit status alone is satisfied by failing earlier for an unrelated reason, which
-    # would leave the case unable to fail for the reason it exists for.
-    grep -Fq "$needle" "$work_root/expect-fail.err" ||
+    # would leave the case unable to fail for the reason it exists for. `-e` is not
+    # decoration: a needle quoting an option name begins with `--`, and without it grep
+    # reads the message under test as its own flag and aborts the suite.
+    grep -Fq -e "$needle" "$work_root/expect-fail.err" ||
         { printf '%s: failed for another reason: %s\n' "$label" "$(<"$work_root/expect-fail.err")" >&2; exit 1; }
 }
 
@@ -375,10 +401,11 @@ correction_args=(
 #    would supply it, because a bare abort here reads as the reviewer's fault, which is
 #    the misattribution this whole change is about.
 write_pr_fixture "$base" "$correction_head" "$work_root/initial-report.txt"
+absent_report_id="${LEDGER_IDS[0]}"
 expect_fail 'Absent prior request' \
     'The previous reviewed head has no source.' \
-    $request_tool "${correction_args[@]}" --command-id CMD-REVIEW-002 \
-    --previous-command-id CMD-REVIEW-001 \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-report-comment "$absent_report_id" \
     --evidence-pack "$work_root/absent-pack.md" --output "$work_root/absent.request"
 [[ ! -e "$work_root/absent.request" ]] ||
     fail 'Absent-prior-request case wrote a request file.'
@@ -386,8 +413,9 @@ expect_fail 'Absent prior request' \
 # 2. Same ledger, plus the caller asserting the head. This is the escape hatch for a
 #    round dispatched before this tool recorded one. It must work, and the emitted
 #    request must not let it read like a head recovered from the tool's own record.
-$request_tool "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+"$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
     --previous-command-id CMD-REVIEW-001 --previous-head "$initial_head" \
+    --previous-report-comment "$absent_report_id" \
     --evidence-pack "$work_root/asserted-pack.md" --output "$work_root/asserted.request"
 grep -Fqx "Exact review range: $initial_head..$correction_head (correction delta and its concrete interactions)" "$work_root/asserted.request" ||
     fail 'Caller-asserted previous head did not produce the delta range.'
@@ -405,8 +433,8 @@ printf 'Review mode: initial\nDispatch command ID and target participant ID: CMD
 write_pr_fixture "$base" "$correction_head" "$work_root/malformed-request.txt" "$work_root/initial-report.txt"
 expect_fail 'Malformed prior request' \
     "has no usable 'Current head SHA:' field" \
-    $request_tool "${correction_args[@]}" --command-id CMD-REVIEW-002 \
-    --previous-command-id CMD-REVIEW-001 \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
     --evidence-pack "$work_root/malformed-pack.md" --output "$work_root/malformed.request"
 
 # 4. Selection is by command ID, so a ledger that holds another round's request and
@@ -414,9 +442,10 @@ expect_fail 'Malformed prior request' \
 #    separates selecting from matching everything: the ledger is not empty, and the
 #    comments in it are well-formed requests and reports.
 # The ledger carries a complete round for CMD-REVIEW-001 and a report for
-# CMD-REVIEW-777, so everything CMD-REVIEW-777 needs is present except its own
-# request. Without the report the pinned case below would abort on the missing report
-# instead, and would keep failing with the command-ID check deleted.
+# CMD-REVIEW-777, and both cases name that report, so everything CMD-REVIEW-777 needs
+# is present except its own request. Naming it is what leaves the command-ID check on
+# the request as the only thing that can stop either case; without it both would abort
+# on the report and would keep aborting with that check deleted.
 printf '## Review completed — verdict: CLEAN\nDispatch: CMD-REVIEW-777\nNothing carried forward.\n' > "$work_root/round-777-report.txt"
 write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" \
     "$work_root/initial-report.txt" "$work_root/round-777-report.txt"
@@ -424,8 +453,8 @@ other_round_request_id="${LEDGER_IDS[0]}"
 round_777_report_id="${LEDGER_IDS[2]}"
 expect_fail 'Request for another command ID' \
     'No review request emitted by this tool for CMD-REVIEW-777' \
-    $request_tool "${correction_args[@]}" --command-id CMD-REVIEW-778 \
-    --previous-command-id CMD-REVIEW-777 \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-778 \
+    --previous-command-id CMD-REVIEW-777 --previous-report-comment "$round_777_report_id" \
     --evidence-pack "$work_root/other-cmd-pack.md" --output "$work_root/other-cmd.request"
 
 # Pinning by comment ID does not exempt the comment from that test. Pinning is a
@@ -434,21 +463,35 @@ expect_fail 'Request for another command ID' \
 # that can stop this.
 expect_fail 'Pinned request for another command ID' \
     "records dispatch command ID 'CMD-REVIEW-001', not CMD-REVIEW-777" \
-    $request_tool "${correction_args[@]}" --command-id CMD-REVIEW-778 \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-778 \
     --previous-command-id CMD-REVIEW-777 --previous-request-comment "$other_round_request_id" \
     --previous-report-comment "$round_777_report_id" \
     --evidence-pack "$work_root/pinned-other-pack.md" --output "$work_root/pinned-other.request"
 
-# 5. The request belongs to this round and the only report belongs to another. The
-#    head resolves and the round still has nothing to verify findings against, so this
-#    fails on the report rather than silently reviewing with an empty checklist.
+# 5. The request belongs to this round and the named report belongs to another. Naming
+#    a comment says which comment to read, not which round it belongs to, so the head
+#    resolves and the round still fails rather than verifying this round's findings
+#    against another round's report.
 printf '## Review completed — verdict: CLEAN\nDispatch: CMD-OTHER-999\nNothing carried forward.\n' > "$work_root/other-report.txt"
 write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/other-report.txt"
-expect_fail 'Report for another command ID' \
-    'echoes CMD-REVIEW-001 other than the request this tool emitted' \
-    $request_tool "${correction_args[@]}" --command-id CMD-REVIEW-002 \
-    --previous-command-id CMD-REVIEW-001 \
+expect_fail 'Named report for another command ID' \
+    'does not echo CMD-REVIEW-001; it is not the report for this round' \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
     --evidence-pack "$work_root/other-report-pack.md" --output "$work_root/other-report.request"
+
+# 5b. The report is not named at all. The tool did not write it and cannot recognise
+#     one, so there is no rule it may fall back to. Every rule available to it is a
+#     proxy that this repository's own ledgers defeat, which is why the absence has to
+#     stop the round instead of starting a search.
+write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/initial-report.txt"
+expect_fail 'Unnamed prior report' \
+    '--previous-report-comment is required in correction mode' \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 \
+    --evidence-pack "$work_root/unnamed-pack.md" --output "$work_root/unnamed.request"
+[[ ! -e "$work_root/unnamed.request" ]] ||
+    fail 'Unnamed-prior-report case wrote a request file.'
 
 # 6. "The finding pattern matched no line" and "the prior review recorded no findings"
 #    are opposite states, and the emitted request used to assert the second whenever
@@ -456,8 +499,8 @@ expect_fail 'Report for another command ID' \
 #    clean by a tool that only failed to read it.
 printf '## Initial review completed — verdict: CLEAN\nDispatch: CMD-REVIEW-001\nNothing to report; the range is clean.\n' > "$work_root/silent-report.txt"
 write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/silent-report.txt"
-$request_tool "${correction_args[@]}" --command-id CMD-REVIEW-002 \
-    --previous-command-id CMD-REVIEW-001 \
+"$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
     --evidence-pack "$work_root/silent-pack.md" --output "$work_root/silent.request"
 grep -Fq 'none extracted: the finding pattern matched no line of the prior report' "$work_root/silent.request" ||
     fail 'An unmatched finding pattern was not reported as an extraction failure.'
@@ -472,7 +515,7 @@ grep -Fq 'This is not an attestation that the prior review recorded no findings'
 write_pr_fixture "$base" "$initial_head"
 expect_fail 'Previous-round options in initial mode' \
     'An initial review has no previous round' \
-    $request_tool "${common_args[@]}" --mode initial --previous-head "$initial_head" \
+    "$request_tool" "${common_args[@]}" --mode initial --previous-head "$initial_head" \
     --output "$work_root/initial-with-previous.request"
 
 
@@ -533,7 +576,7 @@ git -C "$fixture_repo" update-ref refs/heads/ahead-holder "$ahead_tip"
 git clone --quiet --bare "$fixture_repo" "$ahead_repo"
 git -C "$ahead_repo" update-ref refs/heads/target "$ahead_tip"
 git -C "$fixture_repo" remote add aheadfork "$ahead_repo"
-$request_tool "${common_args[@]}" --mode initial --remote aheadfork \
+"$request_tool" "${common_args[@]}" --mode initial --remote aheadfork \
     --output "$work_root/ahead.request" ||
     fail 'A remote strictly ahead of the target was rejected.'
 # Both halves are asserted. Acceptance alone would pass with the endpoint taken from

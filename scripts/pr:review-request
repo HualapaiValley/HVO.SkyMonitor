@@ -13,10 +13,9 @@ Usage:
     [--evidence-pack FILE] [--output FILE] [--remote NAME]
 
   Correction and base-sync modes additionally require:
-    --previous-command-id CMD-ID
+    --previous-command-id CMD-ID --previous-report-comment N
   and accept, in decreasing order of authority:
-    [--previous-request-comment N] [--previous-report-comment N]
-    [--previous-head SHA]
+    [--previous-request-comment N] [--previous-head SHA]
 
   scripts/pr:review-request --repo OWNER/REPO --pr N \
     --recorded-comment COMMENT_ID [--output FILE]
@@ -34,6 +33,14 @@ previous round, read back by comment ID or found by its dispatch command ID.
 It is never recovered from the previous reviewer's prose. --previous-head is
 the escape hatch for a round dispatched before this tool recorded one, and the
 emitted request says which of the two produced the value.
+
+The prior report is named by the caller and is never searched for. This tool
+did not write it, so no field in it is under this tool's control, and every
+rule for recognising one -- prose wording, or the command ID appearing anywhere
+in the body -- selects dispatch ledgers, start acknowledgements and later
+comments that merely cite the round. The caller knows which comment is the
+report; --previous-report-comment is that answer, and the tool checks only that
+the named comment echoes the round it claims to belong to.
 EOF
 }
 
@@ -183,8 +190,8 @@ else
         fail "--previous-command-id is required in $mode mode: the previous reviewed head is selected by the dispatch command ID of the round that produced it."
     [[ -z "$previous_request_comment" || "$previous_request_comment" =~ ^[1-9][0-9]*$ ]] ||
         fail "--previous-request-comment must be a comment ID."
-    [[ -z "$previous_report_comment" || "$previous_report_comment" =~ ^[1-9][0-9]*$ ]] ||
-        fail "--previous-report-comment must be a comment ID."
+    [[ "$previous_report_comment" =~ ^[1-9][0-9]*$ ]] ||
+        fail "--previous-report-comment is required in $mode mode: this tool did not write the prior report and cannot recognise one, so the comment carrying it must be named."
     [[ -z "$previous_head_override" || "$previous_head_override" =~ ^[0-9a-f]{40}$ ]] ||
         fail "--previous-head must be a full 40-hex SHA."
 fi
@@ -286,10 +293,14 @@ prior_checklist="none"
 # selects on the shape of a SHA and nothing else: a report that quotes an unrelated
 # range, mentions a reverted head, or lists two ranges in the wrong order yields a
 # well-formed, plausible, wrong left endpoint, and the request that carries it reads
-# exactly like a correct one. Measured against this repository's ledger the scrape is
-# also empty far more often than it is wrong -- the contractual verdict vocabulary
-# matches nothing on #821, #816 or #826 -- so its failure mode in practice was an
-# abort blamed on the reviewer.
+# exactly like a correct one. Replayed against this repository's own merged ledgers the
+# selector that fed it is wrong more often than right: on #806 the verdict vocabulary
+# matched none of the twelve comments, five of which are review reports carrying full
+# SHA ranges, so the tool aborts saying no review exists; on #798 it matched exactly
+# one comment, a base-sync note carrying no range, while the real round-0 report sat
+# unmatched, so the tool aborts naming the reviewer as the cause; on #801 it matched
+# exactly one comment and that one happened to be correct. One of three, and the two
+# failures are reported as facts about the ledger rather than about the selector.
 #
 # Selection now runs in decreasing order of authority, and the emitted request records
 # which rung produced the value, because a caller-asserted head and a head read out of
@@ -341,29 +352,21 @@ if [[ "$mode" != initial ]]; then
         fail "No review request emitted by this tool for $previous_command_id was found on $repo#$pr, and --previous-head was not supplied. The previous reviewed head has no source. Pass --previous-request-comment N to pin the request comment, or --previous-head SHA to assert the head for a round dispatched before this tool recorded one."
     fi
 
-    # The prior report is selected the same way and for the same reason. It is the
-    # round's report because it echoes the round's command ID, not because its prose
-    # happens to contain the word "completed".
-    if [[ -n "$previous_report_comment" ]]; then
-        prior_report="$(gh api "repos/$repo/issues/comments/$previous_report_comment" --jq .body)" ||
-            fail "Cannot read comment $previous_report_comment on $repo; --previous-report-comment names a comment that could not be fetched."
-        grep -Fq "$previous_command_id" <<<"$prior_report" ||
-            fail "Comment $previous_report_comment does not echo $previous_command_id; it is not the report for this round."
-        prior_report_source="report comment $previous_report_comment pinned by the caller"
-    else
-        prior_report_id="$(jq -r --arg cmd "$previous_command_id" '
-            [ .[]
-              | select((.body // "") | contains($cmd))
-              | select(((.body // "") | test("(^|\n)Dispatch command ID and target participant ID:")) | not)
-            ] | last | .id // empty
-        ' <<<"$comments_json")"
-        [[ -n "$prior_report_id" ]] ||
-            fail "No comment on $repo#$pr echoes $previous_command_id other than the request this tool emitted, so the round has no report to verify findings against. Pass --previous-report-comment N if the report is recorded elsewhere."
-        prior_report="$(jq -r --arg id "$prior_report_id" '
-            [.[] | select((.id | tostring) == $id)] | last | .body // empty
-        ' <<<"$comments_json")"
-        prior_report_source="report comment $prior_report_id selected by $previous_command_id"
-    fi
+    # The prior report is named, not searched for. The previous reviewed head above
+    # could be selected because this tool wrote the comment carrying it and controls
+    # its fields. The report is written by the reviewer, so nothing in it is under
+    # this tool's control, and every available rule for recognising one is a proxy
+    # that measurably selects the wrong comment: the old prose pattern matched a
+    # base-sync note carrying no range on #798 and matched nothing at all on #806,
+    # and matching the command ID anywhere in the body selects the dispatch ledger,
+    # the start acknowledgement, and any later comment that cites the round. The
+    # caller knows which comment is the report. The only check left is that the named
+    # comment belongs to the round it is being used for.
+    prior_report="$(gh api "repos/$repo/issues/comments/$previous_report_comment" --jq .body)" ||
+        fail "Cannot read comment $previous_report_comment on $repo; --previous-report-comment names a comment that could not be fetched."
+    grep -Fq "$previous_command_id" <<<"$prior_report" ||
+        fail "Comment $previous_report_comment does not echo $previous_command_id; it is not the report for this round."
+    prior_report_source="report comment $previous_report_comment named by the caller"
 
     # An empty checklist meant two different things and said one. "The pattern matched
     # no line" and "the report recorded no findings" are opposite states -- the second

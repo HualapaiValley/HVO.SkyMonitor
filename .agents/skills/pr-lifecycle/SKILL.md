@@ -87,8 +87,8 @@ Requested model and reasoning effort:
 Actual provider, model, and reasoning effort:
 Tests and failure modes to evaluate:
 Local evidence:
-Prior report selection: (the comment selected by the previous round's dispatch
-  command ID, or the comment the caller pinned)
+Prior report selection: (the comment the dispatcher named as the previous
+  round's report)
 Prior findings and dispositions:
 Prior-finding verification checklist (finding ID/link, expected disposition,
   and evidence location):
@@ -129,6 +129,18 @@ as an input to check rather than as an attested range. If neither is available
 the tool fails and names what was missing, which is correct: a correction review
 whose left endpoint is a guess reviews the wrong commits and says nothing about
 it.
+
+Such a request also requires `--previous-report-comment`, the comment ID of the
+previous round's report. The dispatcher supplies it; the tool never searches for
+it. The head can be selected because the tool wrote the comment carrying it,
+while the report is the reviewer's own comment and carries no field the tool
+controls, so every rule for recognising one is a proxy that this repository's
+ledgers defeat. Replayed against merged pull requests, matching on verdict
+wording found no review at all on #806 and selected a base-sync note over the
+real report on #798, and matching on the command ID anywhere in the body selects
+dispatch ledgers, start acknowledgements, and later comments that merely cite
+the round. The tool checks only that the named comment echoes the round it is
+being used for, and refuses a comment that belongs to another one.
 
 An empty `Prior findings and dispositions:` is not an attestation that the
 previous round was clean. When the tool could not extract a checklist it says
