@@ -409,7 +409,7 @@ internal sealed partial class ArtifactRetrievalController(
 
     private static partial class Log
     {
-        [LoggerMessage(2120, LogLevel.Information,
+        [LoggerMessage(2101, LogLevel.Information,
             "Central artifact retrieval: DevicePublicId={DevicePublicId}, ArtifactId={ArtifactId}, Operation={Operation}, Outcome={Outcome}")]
         public static partial void Terminal(
             ILogger logger,
