@@ -69,7 +69,7 @@ export HVO_ISSUE_107_EVIDENCE_ROOT="$evidence_root"
 # worth having. See #749, and #745 for the original.
 #
 # The assertion is per invocation rather than once at the end because attribution is the point: eleven
-# runs across three projects write TRX files here, and a single check after the loop would say only
+# runs at three sites across two projects write TRX files here, and a single check after the loop would say only
 # that something in the campaign proved nothing.
 dotnet test "$PROJECT" \
     --no-build \
@@ -79,7 +79,7 @@ dotnet test "$PROJECT" \
     --results-directory "$evidence_root" \
     --logger "trx;LogFileName=logichost-ui-107.trx" \
     --logger "console;verbosity=normal"
-trx_assert_executed_and_passed "$evidence_root/logichost-ui-107.trx" "${0##*/} browser acceptance" || exit 1
+trx_assert_executed_and_passed "$evidence_root/logichost-ui-107.trx" "${0##*/} browser and dependency-outage acceptance" || exit 1
 
 export HVO_ISSUE_107_EVIDENCE_SET_ROOT="$evidence_root"
 export HVO_ISSUE_107_BASELINE_ROOT="$baseline_root"
