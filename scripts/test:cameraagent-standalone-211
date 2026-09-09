@@ -48,9 +48,10 @@ readonly LOCAL_GID="$(id -g)"
 
 # Every generated secret whose literal value must never reach retained evidence, named once so a
 # secret added to one scan cannot be missed by another. Each site prefixes "$trial_local/secrets/"
-# and skips a name the current trial did not generate: the replay runner key exists only in the
-# LocalRunner trial, `rg --file` aborts on a missing file, and on an empty file it matches every
-# line, so an unguarded site turns a scan into a non-scan.
+# and skips a name the current trial did not generate. `rg --file` aborts on a missing file, which
+# is the case the guard exists for: the replay runner key exists only in the LocalRunner trial, so
+# an unguarded site would fail every other trial's evidence gate rather than leak anything. A
+# zero-byte file is the quieter half; rg reports no match and the scan silently asserts nothing.
 readonly SECRET_FILE_NAMES=(owner-password replay-runner-auth-key)
 
 prepare_private_root() {
@@ -1484,6 +1485,15 @@ jq -s '{schemaVersion: "issue-211-trial-sanitization-summary-v1", trialCount: le
   "$RESULTS"/*/evidence/runtime/sanitization-scan.json > "$RESULTS/trial-sanitization-summary.json"
 assert_gate "$RESULTS/telemetry-summary.json" 'telemetry summary' '.passed == true'
 assert_gate "$RESULTS/trial-sanitization-summary.json" 'trial sanitization summary' '.passed == true'
+# This root scan searches the whole retained tree for header/cookie patterns and the synthetic owner
+# email, and deliberately not for the two generated secret values. The reason is scope, not content:
+# the per-trial scans above search "$RESULTS/<trial>" for exactly those literals, so the retained
+# tree can certainly contain them. What protects this scan is that by the time it runs both globals
+# were cleared at the end of every trial and $trial_local is local to run_profile_trial, so nothing
+# here holds a secret's value or a path to its file. The owner email is scannable here only because
+# it is a fixed literal known at every scope. The one root-level artifact that could carry a secret
+# is "$RESULTS/failure-$active_project.log", which cleanup() writes only on the abort path and only
+# with the values already substituted out.
 root_scan_matches="$RESULTS/.root-sanitization-matches"
 root_scan_status=0
 rg --text --files-with-matches --null --hidden --ignore-case \

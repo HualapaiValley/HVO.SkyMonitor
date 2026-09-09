@@ -67,9 +67,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     // A node is recipe-backed exactly when its step class reaches
     // `CameraAgentRecipeExecutionAdapter.ExecuteAsync(context, request, ct)`, directly or through the
-    // wrapper at `CaptureProcessingContext.ExecuteAsync(adapter, ...)`, because that overload is the
-    // only one carrying the context whose execution class and configured profile select the
-    // LocalRunner branch. Eleven step classes reach it; seven of them appear in the W6 template.
+    // wrapper at `CaptureDescriptorProcessingContext.ExecuteAsync(adapter, ...)`, because that
+    // overload is the only one carrying the context whose execution class and configured profile
+    // select the LocalRunner branch. Eleven step classes reach it: eight from their own file, plus
+    // the three sealed previews that share the single call site in their abstract base. That base is
+    // never registered and never appears in a template, so counting it as a ninth direct class
+    // yields twelve and is wrong. Seven of the eleven appear in the W6 template.
     private static readonly string[] ReplayRecipeBackedNodeIds =
     [
         "projected-scene", "calibration", "calibrated-preview", "rolling",
