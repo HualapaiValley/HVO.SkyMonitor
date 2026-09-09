@@ -16,7 +16,7 @@
 # Deliberately shape-only: the reviewed-database identity check belongs to the campaign that pins a package
 # version, and a campaign that only mounts the tree must not be made to pin one.
 assert_catalog_perf_root_shape() {
-    local root pointer target resolved databases
+    local root pointer target resolved databases link_component
     # Resolve to a physical absolute path before anything compares against it. Every check below asks whether one
     # path is contained in another, and two separate ways of getting that wrong both turn on the difference between
     # the path as typed and the path on disk: a correct root given relatively or with a trailing slash is not a
@@ -56,6 +56,24 @@ assert_catalog_perf_root_shape() {
             "$root" "$target" >&2
         return 2
     fi
+    # The container applies a stronger rule than containment, and this precondition has to match it rather than
+    # approximate it. ReadPointer calls EnsureDirectoryIsNotLink on the versions directory and again on the
+    # snapshot directory, so no component of the resolved path may be a link, whatever it points at. Containment
+    # alone admits a link whose target stays inside the root: it resolves under the root, both count scopes pass,
+    # and nothing below fires, so this function returns success on a root the container then refuses. That is the
+    # original failure mode intact, an unhandled pointer error surfacing minutes later at an unrelated endpoint,
+    # which is exactly what this file exists to refuse first. Two shapes reach it, a linked version directory and
+    # a linked versions/, and a superset check against the container contract found them and nothing else.
+    #
+    # The "current" pointer is deliberately not checked here. It is a link by design and the container reads it
+    # as one; it is validated above as a pointer, not as a path component.
+    for link_component in "$root/versions" "$root/$target"; do
+        if [[ -L "$link_component" ]]; then
+            printf 'No directory on the resolved catalog path may be a symbolic link, and %s is one. The container refuses this root whatever the link targets, including a target that stays inside the root.\n' \
+                "$link_component" >&2
+            return 2
+        fi
+    done
     resolved="$(cd "$root" 2>/dev/null && cd "$target" 2>/dev/null && pwd -P)" || resolved=''
     if [[ -z "$resolved" || "$resolved" != "$root"/* ]]; then
         printf 'The "current" pointer in %s must resolve to a directory inside the same root; it points at %s.\n' \
