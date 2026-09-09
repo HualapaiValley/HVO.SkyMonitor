@@ -145,9 +145,12 @@ deterministic per-card preview failures without retries. The harness proves:
   actions before interaction.
 
 Seven of the assertions behind the bounds above compare a measured quantity to a
-fixed limit that contention pushes toward the miss. The condition is not limited
-to elapsed time; working-set bounds meet it too, because memory pressure pushes
-growth toward its own miss the same way. Four are refused when the host is
+fixed limit that contention pushes toward the miss. Fixed is load-bearing: the
+scaling checks compare a median against a multiple of another median plus slack,
+which contention inflates on both sides and pushes toward the pass, so they are
+not in the seven. The condition is not limited to elapsed time; working-set
+bounds meet it too, because memory pressure pushes growth toward its own miss
+the same way. Four are refused when the host is
 contended: the browser render p95 and per-session working set, and the
 preview-failure p95 and per-session working set. Three are not: the read-model
 p95 against the same five-second limit, the 256 MiB working-set growth bound in
@@ -166,14 +169,17 @@ growth moves under contention. Both follow from which family the enclosing
 measurement belongs to.
 
 Timings that are recorded and compared to nothing are a separate case, and this
-evidence contains eight such fields outside the HTTP measurement: wall and
-median from the read-model measurement, and wall, median and maximum from each
-of the two browser measurements. For all of them the pre-workload load is
-published beside the measurement in the environment block rather than used to
-refuse the run, because host load moves the number and moves no verdict, and
-refusing would discard evidence to protect a conclusion nobody drew. The HTTP
-measurement is the only one here that asserts no timing at all, and its Kestrel
-p95 is the only recorded p95 that nothing asserts. A deadline enforced by a
+evidence contains ten such fields outside the HTTP measurement: wall and CPU
+from the read-model measurement, and wall, median, maximum and CPU from each of
+the two browser measurements. CPU durations are counted because the condition
+above is not limited to elapsed time. The read-model median is not among them,
+because the scaling checks compare it against a multiple of the first-page
+median. For all ten the pre-workload load is published beside the measurement in
+the environment block rather than used to refuse the run, because host load
+moves the number and moves no verdict, and refusing would discard evidence to
+protect a conclusion nobody drew. The HTTP measurement is the only one here that
+records a timing and asserts none, and its Kestrel p95 is the only recorded p95
+that nothing asserts. A deadline enforced by a
 timeout or a cancellation token rather than by an assertion is the same
 directional shape wearing a different mechanism and is not covered.
 

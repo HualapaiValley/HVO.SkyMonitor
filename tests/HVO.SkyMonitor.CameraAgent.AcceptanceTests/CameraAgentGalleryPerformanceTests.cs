@@ -44,8 +44,11 @@ public sealed class CameraAgentGalleryPerformanceTests
     // bound itself.
     //
     // Where the ceiling applies takes two premises, and the mechanical one alone does not reach the
-    // answer. The mechanical condition is that an assertion compares a measured quantity to a bound
-    // that contention pushes toward the miss, and that only the miss is refused. It is not limited
+    // answer. The mechanical condition is that an assertion compares a measured quantity to a FIXED
+    // bound that contention pushes toward the miss, and that only the miss is refused. Fixed is
+    // load-bearing: AssertScaling compares a median against a multiple of another median plus slack,
+    // which contention inflates on both sides and pushes toward the pass, and dropping the word
+    // would pull it in and make the count eight. It is not limited
     // to elapsed time, and the per-session working-set bound is gated under it for the same
     // directional reason. Enumerated at this head rather than reasoned about, the condition selects
     // seven assertions. Four are gated: the browser render p95 and per-session working set, and the
@@ -87,12 +90,21 @@ public sealed class CameraAgentGalleryPerformanceTests
     // Where a timing is recorded and asserted against nothing, the load belongs BESIDE the number
     // rather than in a refusal: host load moves the number and moves no verdict, so refusing the run
     // would discard evidence to protect a conclusion nobody drew. Most of this file's recorded
-    // timings are in that position, not few. Enumerated, eight timing fields outside
-    // MeasureHttpApiAsync are written to the evidence document and compared to nothing: wall and
-    // median from MeasureAsync, and wall, median and maximum from each of the two browser
-    // measurements. What is true of MeasureHttpApiAsync alone is narrower, and an earlier revision
-    // of this comment overstated it by calling it the only such case: it is the only method here
-    // that asserts no timing at all, and its p95 is the only recorded p95 that nothing asserts.
+    // timings are in that position, not few. Enumerated from the measurement records, ten timing
+    // fields outside MeasureHttpApiAsync are serialised into the evidence document and compared to
+    // nothing: wall and CPU from MeasureAsync, and wall, median, maximum and CPU from each of the
+    // two browser measurements. CPU milliseconds are counted because the condition above is not
+    // limited to elapsed time and uses that generality to pull the working-set bounds in; a
+    // duration in milliseconds cannot then be left out of the same count. MeasureAsync's median is
+    // NOT in the set, because AssertScaling compares it against a multiple of the first-page median
+    // plus slack. Two earlier revisions listed it as unasserted, which is what comes of counting
+    // the methods that assert timings instead of the fields that are asserted.
+    //
+    // What is true of MeasureHttpApiAsync alone is narrower still, and two earlier revisions
+    // overstated it. It is not the only method here that asserts no timing: MeasurePreviewCacheAsync,
+    // CollectPlansAsync and AssertCompletePagingAsync all assert, and none of them asserts a timing.
+    // It is the only method that RECORDS a timing and asserts none, and its p95 is the only recorded
+    // p95 that nothing asserts.
     // Naming a test is never the test: a name that says "responsive" can mean layout across
     // viewports rather than any deadline at all, and keying a refusal on the name would misfire on
     // it.
