@@ -478,9 +478,14 @@ protected CI, or merge.
    At this draft pre-ready gate, use the provider's structural mergeability
    result: for GitHub, require `mergeable: true`, retry a bounded `null` or
    unknown result, and stop on `false` or conflicts. Do not require
-   `mergeable_state: clean` here because the intentionally failing draft
-   `Required CI` placeholder keeps policy state `blocked` until the ready
-   transition starts protected CI.
+   `mergeable_state: clean` here. Two states are ordinary at this gate and they
+   are not the same thing. The intentionally failing draft `Required CI`
+   placeholder keeps policy state `blocked` until the ready transition starts
+   protected CI, and that resolves itself at the ready transition. `behind` has
+   a different cause and a different remedy: the target branch advanced, which
+   is step 2's trigger, and it does not resolve itself. Read the value rather
+   than assuming which one applies. Measured on 2026-09-09 across the four open
+   drafts, three were `blocked` and one was `behind`.
 5. Mark the PR ready only now. This transition starts the authoritative
    classifier-selected protected CI plan.
 6. Hold the lock through CI and merge.

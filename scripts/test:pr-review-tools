@@ -555,12 +555,19 @@ expect_fail 'Named report for a command ID this one is a prefix of' \
 #     line of its own, which is what makes this case discriminate: a quotation that
 #     carries a different command ID is caught by the equality check whether the blocks
 #     were concatenated or not, so it would pass with the defect still present.
+#     The quoted block keeps the request's last field. It omits the dispatch line,
+#     which is what this case turns on, and it keeps the acknowledgement line, which is
+#     what the truncation gate in the reader asks about. Without it this comment reads
+#     as a request cut short at its first inner fence and is refused there instead,
+#     which is a correct refusal for the wrong reason and would stop this case from
+#     reaching the check it exists to exercise.
 stale_head="$(git -C "$fixture_repo" rev-parse "$base")"
 {
     printf 'The request below was superseded. Quoted for the record:\n\n'
     printf '%s\n' '```text'
     printf 'Exact review range: %s..%s\nCurrent head SHA: %s\n' \
         "$base" "$stale_head" "$stale_head"
+    printf 'Start acknowledgement: acknowledge on this PR within 15 minutes.\n'
     printf '%s\n\n' '```'
     printf 'The real request for this round is:\n\n'
     printf '%s\n' '```text'
@@ -650,6 +657,50 @@ grep -Fq 'This is not an attestation that the prior review recorded no findings'
     fail 'The emitted request still attests that the prior report states no findings.'
 ! grep -Fq 'mac-m5' "$work_root/silent.request" ||
     fail 'The attribution footnote was carried into the emitted request as a finding.'
+
+# 6b. The filter that removes the footnote used to remove every line carrying a
+#     participant ID, and a finding whose measured input is a participant ID is an
+#     ordinary finding line. Three findings went out as two with nothing saying one
+#     was dropped, and the truncation notice fires only above forty matches, so the
+#     emitted checklist read as the complete carried set. That is the same inversion
+#     as case 6 one layer out and it runs in the direction a reader cannot see: an
+#     over-reported checklist shows its extra entry, an under-reported one shows
+#     nothing at all.
+#     Two things are pinned here and they need each other. Narrowing the filter to the
+#     footnote's shape keeps the finding line, and counting what the filter removed is
+#     what makes the remaining removal visible; a narrowed filter that still removes
+#     silently fails the next line that happens to be shaped like a footnote.
+{
+    printf '## Initial review completed — verdict: corrections required
+'
+    printf 'Dispatch: CMD-REVIEW-001
+'
+    printf 'H1. The reader accepts a truncated block. Blocking.
+'
+    printf 'M2. The host segment of claude-code:anthropic:mac-m5:af83829f still scores as a severity code. Non-blocking.
+'
+    printf 'L3. Docs wording. Non-blocking.
+'
+    printf '
+---
+'
+    printf '*Findings by claude-code:anthropic:mac-m5:3d3160bc — review agent, CMD-REVIEW-001.*
+'
+} > "$work_root/id-citing-report.txt"
+write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/id-citing-report.txt"
+"$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
+    --evidence-pack "$work_root/id-citing-pack.md" --output "$work_root/id-citing.request"
+grep -Fq 'H1. The reader accepts a truncated block.' "$work_root/id-citing.request" ||
+    fail 'A finding line carrying no participant ID was dropped from the carried checklist.'
+grep -Fq 'M2. The host segment of claude-code:anthropic:mac-m5:af83829f' "$work_root/id-citing.request" ||
+    fail 'A finding line was dropped from the carried checklist because it cites a participant ID.'
+grep -Fq 'L3. Docs wording.' "$work_root/id-citing.request" ||
+    fail 'A finding line carrying no participant ID was dropped from the carried checklist.'
+! grep -Fq '3d3160bc' "$work_root/id-citing.request" ||
+    fail 'The attribution footnote was carried into the emitted request as a finding.'
+grep -Fq 'attribution filter removed 1 line(s) that also matched the finding pattern' "$work_root/id-citing.request" ||
+    fail 'The emitted checklist did not say that the attribution filter removed a matching line.'
 
 # 7. An initial review has no previous round, so the previous-round options are not
 #    quietly ignored. Accepting and discarding them would let a caller believe a head
@@ -771,6 +822,53 @@ grep -Fqx "Current head SHA: $initial_head" "$work_root/replayed-inner-fence.req
     fail 'An unfenced request carrying a fenced block of its own lost the request around it.'
 grep -Fq 'Passed! 1812 passed, 49 skipped, 0 failed' "$work_root/replayed-inner-fence.request" ||
     fail 'An unfenced request carrying a fenced block of its own lost the block.'
+
+# The same content, this time quoted into a three-backtick fence by hand rather than
+# written by the dispatcher. The reader closes on the inner block's fence, which is no
+# shorter than the one that opened, and the request below that line is gone. The field
+# the fallback above asks about survives the cut, because `Exact review range:` is
+# written near the top of a request and the interpolated files that carry inner fences
+# are written near the bottom, so field presence is satisfied by a truncated request
+# and proves nothing on its own. Asking about the last field the writer emits is the
+# same question asked at the end instead of the beginning, and it is the only end of
+# the request that a cut cannot leave intact.
+{
+    printf 'Quoting the request for the record:
+
+'
+    printf '%s
+' '```text'
+    printf 'Exact review range: %s..%s
+' "$base" "$initial_head"
+    printf 'Current head SHA: %s
+' "$initial_head"
+    printf 'Tests and failure modes to evaluate: the output is pasted in:
+
+'
+    printf '%s
+' '```text'
+    printf 'Passed! 1812 passed, 49 skipped, 0 failed
+'
+    printf '%s
+' '```'
+    printf 'Prior findings and dispositions: H1. Verify the reader.
+'
+    printf 'Expected output: exact-range attestation.
+'
+    printf 'Start acknowledgement: acknowledge on this PR within 15 minutes.
+'
+    printf '%s
+' '```'
+} > "$MOCK_COMMENT_BODY"
+if $request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 \
+    --output "$work_root/replayed-truncated.request" 2> "$work_root/replayed-truncated.err"; then
+    printf 'Replay accepted a fenced request truncated at its own inner fence.\n' >&2
+    exit 1
+fi
+grep -Fq 'ends before the request does' "$work_root/replayed-truncated.err" ||
+    { printf 'Replay of a truncated fenced request failed for some other reason.\n' >&2; exit 1; }
+[[ ! -e "$work_root/replayed-truncated.request" ]] ||
+    { printf 'Replay of a truncated fenced request wrote a request file.\n' >&2; exit 1; }
 
 # A comment that is neither is still refused, so the widened reader did not become no
 # reader at all.

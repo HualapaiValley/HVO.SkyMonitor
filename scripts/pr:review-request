@@ -200,6 +200,20 @@ request_block_from_body() {
     if ! grep -Fq 'Exact review range:' <<<"$block" && grep -Fq 'Exact review range:' <<<"$body"; then
         block="$body"
     fi
+    # The decision above asks about the field that defines a request, and that field
+    # cannot detect truncation: `Exact review range:` is written near the top of a
+    # request, above the interpolated tests and evidence files that carry the inner
+    # fences, so a block cut at the first inner fence still carries it. Every
+    # field-presence check you would naturally write has the same problem for the same
+    # reason. Ask about the end of the request instead. `Start acknowledgement:` is the
+    # last field the writer emits, so a block that lost anything after the cut lost that
+    # one, and a body that has it while the block does not is a block that stopped
+    # early. This fails rather than falling back to the body: falling back would
+    # silently substitute a larger, differently shaped input for the request, which is
+    # the quiet substitution this tool exists to stop.
+    if grep -Fq 'Start acknowledgement:' <<<"$body" && ! grep -Fq 'Start acknowledgement:' <<<"$block"; then
+        fail "The fenced block in this comment ends before the request does: the body carries 'Start acknowledgement:' and the extracted block does not, so the block was closed by a fence belonging to the request's own content. Repost the request through scripts/pr:dispatch-review, which opens with a fence longer than anything it encloses."
+    fi
     printf '%s\n' "$block"
 }
 
@@ -364,8 +378,22 @@ comments_json="$(jq -cs '[.[][]]' <<<"$comments_stream")"
 # it -- a channel with no way to say it found nothing, so absence renders as a
 # definite answer. The footnote is recognisable for the same reason the head is: policy
 # requires it to carry a participant ID, which is a field this fleet controls.
+#
+# A participant ID is not the footnote, though, and the first form of this filter
+# removed every line that carried one. A finding whose measured input is a participant
+# ID is an ordinary finding line, and this fleet writes them. Measured across the
+# comments, review comments and reviews of the twelve most recent pull requests, 339
+# lines carry a participant ID and 18 of those also match the finding pattern; 11 are
+# ordinary prose or finding lines and the other 7 are occurrences of a single
+# footnote. Dropping those 11 shortens a carried checklist that says nothing about
+# having been shortened, which presents an incomplete list as a complete one -- the
+# same inversion as above, one layer out, and the direction a reader cannot see. So
+# the filter is narrowed to the footnote's own shape, a wholly italicised line
+# carrying an ID, and what it removes is counted and reported rather than removed
+# silently. On that corpus the narrowed shape keeps all 11 and still removes the
+# footnote.
 finding_pattern='(^|[[:space:]])[HMLS][0-9]+([:.,)]|[[:space:]]|$)|finding|unresolved|verified (corrected|deferred)'
-attribution_pattern='[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[A-Za-z0-9][A-Za-z0-9._-]*'
+attribution_footnote_pattern='^\*[^*].*[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[A-Za-z0-9][A-Za-z0-9._-]*.*\*$'
 
 previous_head="none"
 previous_head_source="not applicable; an initial review has no previous round"
@@ -481,18 +509,32 @@ if [[ "$mode" != initial ]]; then
     # asserted the second whenever the first happened. Report what was measured.
     # Truncation also kept the last 40 matches, which discards the severity-ordered
     # head of a findings list and keeps its tail; keep the first 40 and say so.
-    report_lines="$(printf '%s\n' "$prior_report" | grep -Ev "$attribution_pattern" || true)"
+    report_lines="$(printf '%s\n' "$prior_report" | grep -Ev "$attribution_footnote_pattern" || true)"
+    # What the filter took out, in the only units that change the checklist: lines it
+    # removed that the finding pattern would have matched. Said in the same shape as the
+    # truncation notice below, because it is the same kind of statement -- the emitted
+    # list is not the measured list, and the difference is named rather than left for
+    # the reader to notice.
+    suppressed_matches="$(printf '%s\n' "$prior_report" | grep -E "$attribution_footnote_pattern" | grep -Eci "$finding_pattern" || true)"
+    suppressed_matches="${suppressed_matches//[^0-9]/}"
+    : "${suppressed_matches:=0}"
+    suppressed_notice=""
+    if (( suppressed_matches > 0 )); then
+        suppressed_notice="
+[attribution filter removed $suppressed_matches line(s) that also matched the finding pattern; they are wholly italicised lines carrying a participant ID, and the unfiltered report is reproduced in the evidence pack]"
+    fi
     checklist_matches="$(printf '%s\n' "$report_lines" | grep -Eci "$finding_pattern" || true)"
     checklist_matches="${checklist_matches//[^0-9]/}"
     : "${checklist_matches:=0}"
     if (( checklist_matches == 0 )); then
-        prior_checklist="none extracted: the finding pattern matched no line of the prior report. This is not an attestation that the prior review recorded no findings; read the full report, which is reproduced in the evidence pack."
+        prior_checklist="none extracted: the finding pattern matched no line of the prior report. This is not an attestation that the prior review recorded no findings; read the full report, which is reproduced in the evidence pack.$suppressed_notice"
     else
         prior_checklist="$(printf '%s\n' "$report_lines" | grep -Ei "$finding_pattern" | head -n 40 || true)"
         if (( checklist_matches > 40 )); then
             prior_checklist="$prior_checklist
 [truncated: first 40 of $checklist_matches matching lines; read the full report in the evidence pack]"
         fi
+        prior_checklist="$prior_checklist$suppressed_notice"
     fi
 fi
 
