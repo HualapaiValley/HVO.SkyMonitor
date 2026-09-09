@@ -943,17 +943,119 @@ fi
 # query without asserting that CI answers it checks one half of a contract twice and the other
 # half never, so trimming main out of the push triggers would leave every release unqualifiable
 # with both halves still passing their own tests.
-ci_push_branches="$(sed -n '/^  push:/,/^  [a-z_]*:/p' "$workflow" | grep -m1 -F '    branches:')"
-# Match main as a discrete list entry rather than as a substring. A substring match accepts a push
-# branches list of only 'maintenance/**', which contains the letters but never produces a main-push
-# run, so the guard would pass on exactly the regression it exists to catch. A branches list written
-# as a block sequence leaves no bracket to strip and fails here loudly, which is the safe direction.
-ci_push_entries="$(sed -e 's/[^[]*\[//' -e 's/\].*//' <<< "$ci_push_branches" \
-  | tr ',' '\n' \
-  | sed -e 's/^[[:space:]]*["'"'"']*//' -e 's/["'"'"']*[[:space:]]*$//')"
-grep -Fxq 'main' <<< "$ci_push_entries" || {
-  printf 'CI must run on pushes to main; release qualification requires a main-push run for the release SHA.\n' >&2
-  exit 1
-}
+#
+# Evaluate this structurally rather than by matching text. Two successive text guards were
+# defeated by workflows that are valid and produce no main-push run: a substring match accepted
+# a branches list of only 'maintenance/**', and an exact-entry match was then defeated three
+# more ways in one review pass, by a comment on the key line, by an ordered negation that
+# re-excludes main after including it, and by a comma inside a quoted scalar. Parsing YAML as
+# text keeps producing guards that pass on the regression they exist to catch.
+python3 - "$workflow" <<'CI_PUSH_TRIGGER_PY' || exit 1
+import re
+import sys
+
+try:
+    import yaml
+except ModuleNotFoundError:
+    sys.stderr.write(
+        'PyYAML is required to evaluate the CI push triggers structurally. '
+        'Install it rather than falling back to a text match.\n')
+    raise SystemExit(1)
+
+BRANCH = 'main'
+
+
+def to_regex(pattern):
+    """Translate a GitHub branch filter glob into a regex.
+
+    GitHub's filter syntax is not shell globbing. ``*`` stops at a path
+    separator while ``**`` crosses it, and ``?`` and ``+`` are quantifiers on
+    the preceding element rather than wildcards of their own. Translating ``?``
+    as a single-character wildcard makes ``mai?`` match ``main``, which is a
+    permissive divergence: the guard would pass on a workflow that never runs
+    on main.
+    """
+    atoms = []
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == '*':
+            if pattern[i + 1:i + 2] == '*':
+                atoms.append('(?:.*)')
+                i += 2
+                continue
+            atoms.append('(?:[^/]*)')
+        elif char == '[':
+            close = pattern.find(']', i + 1)
+            if close == -1:
+                atoms.append('(?:' + re.escape(char) + ')')
+            else:
+                body = pattern[i + 1:close]
+                atoms.append('(?:[' + body.replace('\\', '\\\\') + '])')
+                i = close + 1
+                continue
+        elif char in '?+' and atoms:
+            atoms[-1] = atoms[-1] + char
+        else:
+            atoms.append('(?:' + re.escape(char) + ')')
+        i += 1
+    return re.compile('\\A' + ''.join(atoms) + '\\Z')
+
+
+def matches(patterns, branch):
+    """Ordered include/exclude evaluation, last match wins, as GitHub does."""
+    verdict = None
+    for raw in patterns:
+        if not isinstance(raw, str):
+            return None, 'branch filter entry is not a string: %r' % (raw,)
+        negated = raw.startswith('!')
+        pattern = raw[1:] if negated else raw
+        if to_regex(pattern).match(branch):
+            verdict = not negated
+    if verdict is None:
+        # Nothing matched. A list of only exclusions admits everything else; a
+        # list with any inclusion admits only what it names.
+        verdict = all(isinstance(p, str) and p.startswith('!') for p in patterns)
+    return verdict, None
+
+
+def main(path):
+    document = yaml.safe_load(open(path))
+    if not isinstance(document, dict):
+        return 'workflow did not parse as a mapping'
+    # YAML 1.1 reads a bare `on` key as the boolean true, which is what PyYAML
+    # hands back for a GitHub workflow's trigger block.
+    triggers = document.get(True, document.get('on'))
+    if not isinstance(triggers, dict):
+        return 'workflow has no trigger mapping'
+    if 'push' not in triggers:
+        return 'workflow has no push trigger'
+    push = triggers['push']
+    if push is None:
+        return None  # push on every branch
+    if not isinstance(push, dict):
+        return 'push trigger is not a mapping'
+    if 'branches' in push:
+        verdict, error = matches(push['branches'] or [], BRANCH)
+        if error:
+            return error
+        if not verdict:
+            return 'push branches exclude %s' % BRANCH
+    elif 'branches-ignore' in push:
+        verdict, error = matches(push['branches-ignore'] or [], BRANCH)
+        if error:
+            return error
+        if verdict:
+            return 'push branches-ignore excludes %s' % BRANCH
+    return None
+
+
+reason = main(sys.argv[1])
+if reason is not None:
+    sys.stderr.write(
+        'CI must run on pushes to %s; release qualification requires a '
+        'main-push run for the release SHA (%s).\n' % (BRANCH, reason))
+    raise SystemExit(1)
+CI_PUSH_TRIGGER_PY
 
 printf 'CI classification and Required CI contract tests passed.\n'
