@@ -243,7 +243,9 @@ database, Data Protection directory, provisioning state, cookie, AgentId, and
 OTLP file collector. LogicHost and the shared SQL Server, Redis, MinIO, and
 Mailpit services must be absent.
 
-Stop LogicHost, install the approved Production HYG package, and run:
+Stop LogicHost, install the approved Production HYG package, and run.
+`HVO_CATALOG_PERF_ROOT` is the catalog **root** here as well, not a version
+directory below `versions/`:
 
 ```bash
 HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \

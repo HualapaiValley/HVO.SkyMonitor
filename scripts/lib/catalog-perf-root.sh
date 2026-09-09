@@ -11,6 +11,15 @@
 # Deployment CLI installer bundle variable takes the version directory and refuses "current" outright. Passing
 # the version directory here used to satisfy a -d test and then fail five minutes later inside the container,
 # as an unhandled "Catalog current pointer is missing" that surfaced as a login-endpoint timeout.
+#
+# One coupling to know about before pinning a package version. The pointer requirement holds only in the
+# pointer mode. CatalogSnapshotResolver.Resolve reads "current" only when ExpectedPackageVersion is null;
+# set Catalog:RequiredPackageVersion and it takes ReadExactVersion and never looks at the pointer, so a root
+# with no pointer is entirely acceptable to the container while this check refuses it. That is the one
+# direction in which this check can be wrong, and it is unreachable today: nothing under deploy/ sets
+# Catalog__RequiredPackageVersion, and the only code that does is the Deployment CLI, which does not read
+# HVO_CATALOG_PERF_ROOT at all. A future campaign that pins a version has to relax this check rather than
+# satisfy it, because a pointerless root would then be correct rather than a mistake.
 
 # Fails with an exit-2 diagnostic unless the path is the installed catalog root the container can resolve.
 # Deliberately shape-only: the reviewed-database identity check belongs to the campaign that pins a package
