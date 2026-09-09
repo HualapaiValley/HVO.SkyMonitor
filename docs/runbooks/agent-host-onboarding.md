@@ -77,10 +77,19 @@ real invocation with arguments.
 Do not take the form on trust, including from this runbook. The check has to be
 able to fail, which rules out the obvious one: adding a rule and then watching a
 command succeed proves nothing, because a broader rule may already cover it or
-the same command may have been approved earlier in the session. What does
-establish it is a command that was refused before the rule existed succeeding
-after it, in a session started since the change. If you have no refusal to point
-at, record the rule as unverified rather than as working.
+the same command may have been approved earlier in the session. What establishes
+it is the same command refused before the rule existed and succeeding after it,
+in a session started since the change.
+
+On a machine with no history, manufacture the refusal rather than wait for one.
+In a fresh session, before adding the rule, run the exact command and let the
+prompt appear. That is the before measurement, and it costs one denial. Add the
+rule, start a new session, and run it again. No prompt means the rule fired, and
+a prompt at that step still fails the check. Where one denial per rule is more
+than a rule is worth, the weaker fallback is to read the settings file and
+confirm that no other allow rule matches the command, which makes a later
+success attributable without proving it. Record a rule as unverified only when
+neither is available, not as the ordinary outcome of following this section.
 
 Two consequences worth stating, because both cost real time before they were
 understood:
@@ -126,11 +135,12 @@ to decide without seeing the original prompt, and act on his answer yourself.
   the active initiative's epic and cites #89 only as retained virtual-first
   history, but it does not name the active one, so a new session cannot get
   there from the policy alone. If #513 is closed when you read this, ask the
-  operator which epic is live rather than guessing from the issue list. The coordinator's participant identity is
-  not published anywhere and is not derivable: you learn it from the `JOIN ACK`
-  and from the footnote it signs its own comments with. The
-  session stays `UNREGISTERED/WAIT` until the coordinator returns a
-  participant-bound `JOIN ACK` and the session returns `JOINED ACK`. Reading
+  operator which epic is live rather than guessing from the issue list. The
+  coordinator's participant identity is not published anywhere and is not
+  derivable: you learn it from the `JOIN ACK` and from the footnote it signs its
+  own comments with. The session stays `UNREGISTERED/WAIT` until the coordinator
+  returns a participant-bound `JOIN ACK` and the session returns `JOINED ACK`.
+  Reading
   `AGENTS.md` is not enrolment.
 - **Take a slot lease** if the role needs one. Slots are mutable epic comments
   with a sequence number; read the last sequence before writing and acknowledge
@@ -147,10 +157,11 @@ to decide without seeing the original prompt, and act on his answer yourself.
   operator-visible heartbeat, and separately gives fifteen minutes to the
   cross-provider slot writer for its state line. The fifteen-minute figure is
   scoped to that writer and is not a licence to relay to the operator every
-  fifteen minutes; `AGENTS.md` sends the `still running, no change` line to the
-  operator on every wake of the five-minute heartbeat. This fleet has also
-  run a fifteen-minute fallback tick, on the operator's judgement that push
-  messaging carries the events and the tick only catches what push misses. Which
+  fifteen minutes; `AGENTS.md` has the five-minute heartbeat relay every wake to
+  the operator, carrying the literal `still running, no change` when that is
+  what applies. This fleet has also run a fifteen-minute fallback tick, on the
+  operator's judgement that push messaging carries the events and the tick only
+  catches what push misses. Which
   applies is the operator's call, so ask rather than infer, and say in your first
   relay which one you armed.
 - **Prove the job exists on every tick**, because it has silently disappeared
