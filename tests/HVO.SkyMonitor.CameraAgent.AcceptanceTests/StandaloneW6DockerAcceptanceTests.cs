@@ -4986,8 +4986,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             await downloadResponse.DisposeAsync().ConfigureAwait(false);
         }
         await page.SetViewportSizeAsync(390, 844).ConfigureAwait(false);
-        Assert.IsTrue(await page.EvaluateAsync<bool>(
-            "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1").ConfigureAwait(false));
+        await AssertNarrowPortraitFitsAsync(page, "capture detail").ConfigureAwait(false);
     }
 
     /// <summary>
@@ -5005,11 +5004,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 for (const element of document.querySelectorAll('*')) {
                     const box = element.getBoundingClientRect();
                     if (box.right > root.clientWidth + 1 && (widest === null || box.right > widest.right)) {
+                        // SVG elements carry an SVGAnimatedString here, which is always truthy and
+                        // stringifies to '[object SVGAnimatedString]', so read the attribute instead.
+                        const classes = (typeof element.className === 'string'
+                            ? element.className
+                            : element.getAttribute('class') || '').trim();
                         widest = {
                             right: Math.round(box.right),
                             width: Math.round(box.width),
                             description: element.tagName.toLowerCase()
-                                + (element.className ? '.' + String(element.className).trim().split(/\s+/).join('.') : '')
+                                + (classes ? '.' + classes.split(/\s+/).join('.') : '')
                         };
                     }
                 }
