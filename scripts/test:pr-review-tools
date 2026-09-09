@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Every assertion below names itself when it fails. A bare `grep -Fqx` under `set -e`
+# aborts the suite with exit 1 and nothing on stderr, so the reader learns that
+# something broke but not which invariant, and a positive control that trips one of
+# them is pinned by exit status alone. That is a check reporting less than it knows,
+# which is the same shape this pull request removes from the tool itself.
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 request_tool="$repo_root/scripts/pr:review-request"
 dispatch_tool="$repo_root/scripts/pr:dispatch-review"
@@ -179,25 +186,33 @@ common_args=(
 write_pr_fixture "$base" "$initial_head"
 $request_tool "${common_args[@]}" --mode initial --output "$work_root/initial.request"
 initial_merge_base="$(git merge-base "$base" "$initial_head")"
-grep -Fqx "PR merge-base SHA: $initial_merge_base" "$work_root/initial.request"
-grep -Fqx "Exact review range: $initial_merge_base..$initial_head (complete merge-base-to-head PR diff)" "$work_root/initial.request"
+grep -Fqx "PR merge-base SHA: $initial_merge_base" "$work_root/initial.request" ||
+    fail 'Initial request did not record the computed merge base as the PR merge-base SHA.'
+grep -Fqx "Exact review range: $initial_merge_base..$initial_head (complete merge-base-to-head PR diff)" "$work_root/initial.request" ||
+    fail 'Initial request did not carry the merge-base-to-head range.'
 
 divergent_head="$initial_head"
 divergent_base="$(git merge-base "$divergent_target" "$divergent_head")"
 write_pr_fixture "$divergent_target" "$divergent_head"
 $request_tool "${common_args[@]}" --mode initial --output "$work_root/divergent.request"
-grep -Fqx "Target base SHA: $divergent_target" "$work_root/divergent.request"
-grep -Fqx "PR merge-base SHA: $divergent_base" "$work_root/divergent.request"
-grep -Fqx "Exact review range: $divergent_base..$divergent_head (complete merge-base-to-head PR diff)" "$work_root/divergent.request"
+grep -Fqx "Target base SHA: $divergent_target" "$work_root/divergent.request" ||
+    fail 'Divergent-target request did not record the target branch tip.'
+grep -Fqx "PR merge-base SHA: $divergent_base" "$work_root/divergent.request" ||
+    fail 'Divergent-target request did not record the merge base taken against that tip.'
+grep -Fqx "Exact review range: $divergent_base..$divergent_head (complete merge-base-to-head PR diff)" "$work_root/divergent.request" ||
+    fail 'Divergent-target request did not carry the merge-base-to-head range.'
 
 printf '## Initial review completed — verdict: corrections required\nRange attested: %s..%s\nFinding M1 unresolved.\n' "$base" "$initial_head" > "$work_root/initial-report.txt"
 write_pr_fixture "$base" "$correction_head" "$work_root/initial-report.txt"
 $request_tool "${common_args[@]}" --mode correction --round 1 \
     --call-sites-file "$work_root/call-sites.txt" --instructions-file "$work_root/instructions.txt" \
     --evidence-pack "$work_root/correction-pack.md" --output "$work_root/correction.request"
-grep -Fqx "Exact review range: $initial_head..$correction_head (correction delta and its concrete interactions)" "$work_root/correction.request"
-grep -Fq 'Finding M1 unresolved.' "$work_root/correction-pack.md"
-grep -Fq 'All changed-symbol callers inspected.' "$work_root/correction-pack.md"
+grep -Fqx "Exact review range: $initial_head..$correction_head (correction delta and its concrete interactions)" "$work_root/correction.request" ||
+    fail 'Correction request did not carry the previous-head-to-correction-head delta range.'
+grep -Fq 'Finding M1 unresolved.' "$work_root/correction-pack.md" ||
+    fail 'Correction evidence pack did not carry the unresolved finding from the ledger.'
+grep -Fq 'All changed-symbol callers inspected.' "$work_root/correction-pack.md" ||
+    fail 'Correction evidence pack did not carry the call-site input.'
 
 jq -n '[range(0;100) | {body:("filler-" + tostring)}]' > "$work_root/comments-page-1.json"
 jq -n --rawfile body "$work_root/initial-report.txt" '[{body:$body}]' > "$work_root/comments-page-2.json"
@@ -207,14 +222,16 @@ write_pr_fixture "$base" "$correction_head"
 $request_tool "${common_args[@]}" --mode correction --round 1 \
     --call-sites-file "$work_root/call-sites.txt" --instructions-file "$work_root/instructions.txt" \
     --evidence-pack "$work_root/paginated-pack.md" --output "$work_root/paginated.request"
-grep -Fq 'Finding M1 unresolved.' "$work_root/paginated-pack.md"
+grep -Fq 'Finding M1 unresolved.' "$work_root/paginated-pack.md" ||
+    fail 'Paginated ledger read did not reach the unresolved finding on the second page.'
 unset MOCK_PAGINATED_LEDGER
 
 printf '## Correction review completed — verdict: CLEAN\nRange attested: %s..%s\nM1 verified corrected.\n' "$initial_head" "$correction_head" > "$work_root/correction-report.txt"
 write_pr_fixture "$new_base" "$sync_head" "$work_root/correction-report.txt"
 $request_tool "${common_args[@]}" --mode base-sync --round 1 --output "$work_root/base-sync.request"
 base_sync_merge_base="$(git merge-base "$divergent_target" "$sync_head")"
-grep -Fqx "Exact review range: merge resolution $correction_head..$sync_head and complete PR diff $base_sync_merge_base..$sync_head" "$work_root/base-sync.request"
+grep -Fqx "Exact review range: merge resolution $correction_head..$sync_head and complete PR diff $base_sync_merge_base..$sync_head" "$work_root/base-sync.request" ||
+    fail 'Base-sync request did not carry the merge-resolution and complete-PR-diff ranges.'
 
 # The defect this pins is only visible after finalization step 2. Merge the advanced
 # target into the topic branch, leave baseRefOid at its stale recorded value, and
@@ -237,15 +254,19 @@ post_sync_merge_base="$(git -C "$fixture_repo" merge-base "$divergent_target" "$
 
 write_pr_fixture "$base" "$post_sync_head"
 $request_tool "${common_args[@]}" --mode initial --output "$work_root/post-sync.request"
-grep -Fqx "PR merge-base SHA: $post_sync_merge_base" "$work_root/post-sync.request"
-grep -Fqx "Exact review range: $post_sync_merge_base..$post_sync_head (complete merge-base-to-head PR diff)" "$work_root/post-sync.request"
-grep -Fqx "PR-recorded base SHA: $base (baseRefOid; provenance only, never a range endpoint)" "$work_root/post-sync.request"
+grep -Fqx "PR merge-base SHA: $post_sync_merge_base" "$work_root/post-sync.request" ||
+    fail 'Post-sync request did not record the recomputed merge base.'
+grep -Fqx "Exact review range: $post_sync_merge_base..$post_sync_head (complete merge-base-to-head PR diff)" "$work_root/post-sync.request" ||
+    fail 'Post-sync request did not carry the recomputed merge-base-to-head range.'
+grep -Fqx "PR-recorded base SHA: $base (baseRefOid; provenance only, never a range endpoint)" "$work_root/post-sync.request" ||
+    fail 'Post-sync request did not record the stale baseRefOid as provenance only.'
 ! grep -Fq "Exact review range: $base..$post_sync_head" "$work_root/post-sync.request" ||
     { printf 'Initial range was computed from the PR-recorded base.\n' >&2; exit 1; }
 
 write_pr_fixture "$base" "$post_sync_head" "$work_root/correction-report.txt"
 $request_tool "${common_args[@]}" --mode base-sync --round 1 --output "$work_root/post-sync-base.request"
-grep -Fqx "Exact review range: merge resolution $correction_head..$post_sync_head and complete PR diff $post_sync_merge_base..$post_sync_head" "$work_root/post-sync-base.request"
+grep -Fqx "Exact review range: merge resolution $correction_head..$post_sync_head and complete PR diff $post_sync_merge_base..$post_sync_head" "$work_root/post-sync-base.request" ||
+    fail 'Post-sync base-sync request did not carry the recomputed complete-PR-diff range.'
 ! grep -Fq "complete PR diff $base..$post_sync_head" "$work_root/post-sync-base.request" ||
     { printf 'Base-sync complete-PR-diff range was computed from the PR-recorded base.\n' >&2; exit 1; }
 
@@ -302,7 +323,8 @@ grep -Fq 'not a usable git remote name' "$work_root/dash-remote.err" ||
 printf '%s\n%s\n%s\nExact review range: %s..%s\n%s\n%s\n' \
     prefix '```text' 'Review mode: initial' "$base" "$initial_head" '```' suffix > "$MOCK_COMMENT_BODY"
 $request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 --output "$work_root/replayed.request"
-grep -Fqx "Exact review range: $base..$initial_head" "$work_root/replayed.request"
+grep -Fqx "Exact review range: $base..$initial_head" "$work_root/replayed.request" ||
+    fail 'Replayed request did not reproduce the range recorded in the referenced comment.'
 
 jq -n --arg participant "$participant" '{participants:[{id:$participant,status:"ACTIVE",joinState:"JOINED",joinAckId:"JOINACK-REVIEW-001",lease:{generation:1,expiresAt:null}}]}' > "$work_root/registry.json"
 jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-001",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command.json"
@@ -315,9 +337,12 @@ $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
     --reviewer-id "$participant" --resume-session "$resume_session" \
     --dry-run > "$work_root/dry-run.txt"
-[[ ! -s "$MOCK_EVENT_LOG" ]]
-grep -Fq 'DRY-RUN: no comment posted and no reviewer launched.' "$work_root/dry-run.txt"
-grep -Fq 'codex exec resume' "$work_root/dry-run.txt"
+[[ ! -s "$MOCK_EVENT_LOG" ]] ||
+    fail 'Dry run wrote to the event log.'
+grep -Fq 'DRY-RUN: no comment posted and no reviewer launched.' "$work_root/dry-run.txt" ||
+    fail 'Dry run did not report that nothing was posted and no reviewer was launched.'
+grep -Fq 'codex exec resume' "$work_root/dry-run.txt" ||
+    fail 'Dry run did not show the resume invocation it would have run.'
 
 $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
@@ -338,9 +363,11 @@ launch_line="$(grep -n CODEX_LAUNCH "$MOCK_EVENT_LOG" | cut -d: -f1)"
     printf 'Reviewer launch did not follow the durable request and reservation returns.\n' >&2
     exit 1
 }
-jq -e '.requestCommentId == "9001" and .reservationCommentId == "9002" and .launchCommentId == "9003" and .completionCommentId == "9004" and .conclusion == "COMPLETED" and .exitCode == 0' "$work_root/dispatch-result.json" >/dev/null
+jq -e '.requestCommentId == "9001" and .reservationCommentId == "9002" and .launchCommentId == "9003" and .completionCommentId == "9004" and .conclusion == "COMPLETED" and .exitCode == 0' "$work_root/dispatch-result.json" >/dev/null ||
+    fail 'Dispatch result did not carry the four durable comment IDs and a clean completion.'
 complete_line="$(grep -n CODEX_COMPLETE "$MOCK_EVENT_LOG" | cut -d: -f1)"
-[[ -n "$complete_line" && "$launch_line" -lt "$complete_line" ]]
+[[ -n "$complete_line" && "$launch_line" -lt "$complete_line" ]] ||
+    fail 'Reviewer completion was not logged after the launch.'
 
 $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
@@ -348,8 +375,10 @@ $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
     --reviewer-id "$participant" --resume-session "$resume_session" \
     > "$work_root/retry-result.txt"
-grep -Fqx "ALREADY_CONSUMED CMD-REVIEW-001 $participant launch-comment=9003" "$work_root/retry-result.txt"
-[[ "$(<"$MOCK_POST_COUNT")" == 4 ]]
+grep -Fqx "ALREADY_CONSUMED CMD-REVIEW-001 $participant launch-comment=9003" "$work_root/retry-result.txt" ||
+    fail 'Retry did not report the already-consumed command and its recorded launch comment.'
+[[ "$(<"$MOCK_POST_COUNT")" == 4 ]] ||
+    fail 'Retry posted more comments instead of reusing the four already recorded.'
 
 printf '[]\n' > "$MOCK_LEDGER"
 : > "$MOCK_EVENT_LOG"
@@ -386,11 +415,14 @@ if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_r
     printf 'A concurrent dispatcher acquired the same participant/session.\n' >&2
     exit 1
 fi
-grep -Fq "DISPATCH_BUSY CMD-REVIEW-CONCURRENT $participant" "$work_root/concurrent-second.err"
+grep -Fq "DISPATCH_BUSY CMD-REVIEW-CONCURRENT $participant" "$work_root/concurrent-second.err" ||
+    fail 'Concurrent dispatcher did not report DISPATCH_BUSY for the held participant.'
 wait "$first_dispatch_pid"
 unset MOCK_LEDGER_GET_DELAY
-[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]]
-[[ "$(grep -Fc '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER")" == 1 ]]
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]] ||
+    fail 'Serialized dispatch did not launch the reviewer exactly once.'
+[[ "$(grep -Fc '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER")" == 1 ]] ||
+    fail 'Serialized dispatch did not write exactly one durable reservation.'
 
 printf '[]\n' > "$MOCK_LEDGER"
 : > "$MOCK_EVENT_LOG"
@@ -409,8 +441,10 @@ if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_r
     exit 1
 fi
 unset MOCK_REPLACE_LEASE_ON_RESERVATION
-[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG" || true)" == 0 ]]
-grep -Fq '## Review launch — ABORTED' "$MOCK_LEDGER"
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG" || true)" == 0 ]] ||
+    fail 'A replaced lease reached the reviewer launch.'
+grep -Fq '## Review launch — ABORTED' "$MOCK_LEDGER" ||
+    fail 'Replaced lease did not record the aborted launch in the ledger.'
 
 printf '[]\n' > "$MOCK_LEDGER"
 : > "$MOCK_EVENT_LOG"
@@ -429,10 +463,14 @@ if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_r
     exit 1
 fi
 unset MOCK_FAIL_POST_NUMBER
-[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]]
-[[ "$(grep -Fc CODEX_COMPLETE "$MOCK_EVENT_LOG")" == 1 ]]
-grep -Fq '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER"
-grep -Fq '## Review process — ERROR' "$MOCK_LEDGER"
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]] ||
+    fail 'Failed-receipt run did not launch the reviewer exactly once.'
+[[ "$(grep -Fc CODEX_COMPLETE "$MOCK_EVENT_LOG")" == 1 ]] ||
+    fail 'Failed-receipt run did not record exactly one reviewer completion.'
+grep -Fq '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER" ||
+    fail 'Failed-receipt run did not write the durable reservation.'
+grep -Fq '## Review process — ERROR' "$MOCK_LEDGER" ||
+    fail 'Failed-receipt run did not record the review process error.'
 if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/postfail.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/postfail.jsonl" --registry "$MOCK_REGISTRY" \
@@ -441,6 +479,7 @@ if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_r
     printf 'A reserved command retried without recovery.\n' >&2
     exit 1
 fi
-[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]]
+[[ "$(grep -Fc CODEX_LAUNCH "$MOCK_EVENT_LOG")" == 1 ]] ||
+    fail 'Retry after a failed receipt launched the reviewer a second time.'
 
 printf 'Review request merge-base/pagination, evidence-pack/replay, serialized dispatch, reservation, lease-race, failed-receipt, harness-lifetime, and retry tests passed.\n'
