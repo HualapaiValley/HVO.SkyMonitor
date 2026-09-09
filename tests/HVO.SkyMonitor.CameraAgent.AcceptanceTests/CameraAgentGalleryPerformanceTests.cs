@@ -168,6 +168,17 @@ public sealed class CameraAgentGalleryPerformanceTests
                 SqliteVersion = sqliteVersion,
                 PreWorkloadLoadPerCore = contention.LoadPerCore,
                 PostWorkloadLoadPerCore = postWorkloadContention.LoadPerCore,
+                // The note travels with the document because the reason this figure is not
+                // comparable with the ceiling beside it lives in a source comment, and the JSON
+                // outlives the branch and is read by people and scripts that do not have this
+                // file open. Without it a reader sees a post-workload figure several times the
+                // ceiling and concludes the run was contaminated, which is a well-formed and
+                // plausible wrong answer produced from correctly recorded data.
+                PostWorkloadLoadPerCoreNote =
+                    "Recorded, never adjudicated. This sample is dominated by the workload this run "
+                    + "generated, and load1 carries no decomposition that could separate that from "
+                    + "inherited contention, so it is not comparable with ContentionCeilingPerCore. "
+                    + "Only PreWorkloadLoadPerCore gates admissibility.",
                 ContentionCeilingPerCore = MaximumAdmissibleLoadPerCore,
                 ContentionProcessorCount = contention.ProcessorCount,
                 ContentionProcessorCountSource = contention.ProcessorCountSource
@@ -757,6 +768,10 @@ public sealed class CameraAgentGalleryPerformanceTests
         Assert.Inconclusive(reason);
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "A refusal that cannot be written is still a refusal; no failure of this best-effort writer may convert one into a test failure.")]
     private static void WriteRefusalEvidence(
         HostContention contention, double p95, long perSessionGrowthBytes, string scenario, string reason)
     {
@@ -783,13 +798,22 @@ public sealed class CameraAgentGalleryPerformanceTests
                 Path.Combine(directory, RefusalFileName),
                 JsonSerializer.SerializeToUtf8Bytes(refusal, EvidenceJson));
         }
-        catch (IOException)
+        catch (Exception exception)
         {
             // A refusal that cannot be written is still a refusal; never convert this into a failure
-            // that would be read as a latency regression.
-        }
-        catch (UnauthorizedAccessException)
-        {
+            // that would be read as a latency regression. The catch is deliberately total because an
+            // enumerated list was the wrong shape for an absolute promise: it named IOException and
+            // UnauthorizedAccessException while the first statement in the try was GetRepositoryRoot,
+            // which throws InvalidOperationException, and Directory.CreateDirectory can raise
+            // NotSupportedException or ArgumentException. Any of those escaping would have skipped
+            // the Assert.Inconclusive on the caller's next line and reported a correctly refused run
+            // as a hard failure, which is the one outcome this method exists to prevent.
+            //
+            // Only the durable copy is lost. The reason still reaches the operator through
+            // Assert.Inconclusive, and the swallow is announced rather than silent.
+            Console.Error.WriteLine(
+                $"Refusal evidence could not be written ({exception.GetType().Name}: {exception.Message}). "
+                + "The refusal itself is unaffected.");
         }
     }
 
@@ -808,8 +832,21 @@ public sealed class CameraAgentGalleryPerformanceTests
         // host numerator with a container denominator: inside `docker run --cpus=2` on an eight-core
         // host the ratio reads four times high and every run is refused, which is L3 of the #787
         // review. Counting the CPUs the kernel reports online keeps both halves on the same machine.
-        // A container on a genuinely busy host is still refused, and correctly so — the contention is
-        // real and the measurement is contaminated whether or not the quota hides it.
+        // A container on a host-relatively busy host is still refused, and correctly so — the
+        // contention is real and the measurement is contaminated whether or not the quota hides it.
+        //
+        // One band is admitted that should not be, and naming it is cheaper than pretending the
+        // pairing is unconditional. On an eight-core host with the test in `--cpus=2` and external
+        // load1 of 3.0 the gate computes 3.0/8 = 0.375, admits, and then measures browser p95 while
+        // holding two cores against three runnable competitors. The old pairing refused that case at
+        // 3.0/2 = 1.5, correctly but for the wrong reason, so this is not an argument for going back.
+        // Nothing establishes that min(online, quota) is the better denominator either: a quota is
+        // not a cpuset and external load is not pinned away from the test. Measured 2026-09-09,
+        // nothing in this repository runs this class under a CPU quota — it is class-level Manual,
+        // every CI filter carries TestCategory!=Manual, and scripts/test:cameraagent-ui is referenced
+        // only by the manual command in docs/validation/cameraagent-ui-106.md and by CI's `bash -n`
+        // syntax check, which parses without executing. A containerised runner for this suite would
+        // reopen the band, so re-measure rather than trust that sentence.
         var onlineProcessors = ReadOnlineProcessorCount();
         var processorCount = onlineProcessors ?? Environment.ProcessorCount;
         var processorCountSource = onlineProcessors is null
