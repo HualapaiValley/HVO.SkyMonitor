@@ -10,6 +10,7 @@
 #       --argjson measuredCaptureCount 10 \
 #       --argjson expectedTrialLabels '["trial-1","trial-2","trial-3","trial-4","trial-5"]' \
 #       --argjson expectedCaptureRoles '["AnnotatedPreview","Calibrated","Combined","Metadata","Preview","Raw"]' \
+#       --argjson expectedCaptureArtifactRoleCounts '{"AnnotatedPreview":1,"Calibrated":1,"Combined":1,"Metadata":12,"Preview":2,"Raw":1}' \
 #       TestResults/issue-211/<fingerprint>/<run>/trial-*/evidence/issue-211-w6.json
 #
 # The input is the slurped array of documents. The output is the identity summary,
@@ -111,13 +112,39 @@
       # mirroring the roles list, passed it. The standard has to live outside the document, the
       # way the measured capture count now does: a W6 capture carries a known set of artefact
       # roles, and a capture carrying fewer has lost artefact digests whatever it says about
-      # itself. Per-role artefact counts are deliberately not asserted; they vary by role and by
-      # configuration, and the set is the part that is stable across the campaign.
+      # itself.
+      #
+      # Issue #770, correction round 5. The round-4 comment here said per-role artefact counts
+      # were deliberately not asserted because they vary by role and by configuration. That
+      # licensed the same hole one level down. Anchoring the role SET and leaving the
+      # MULTIPLICITY unanchored accepts a capture cut from eighteen artefacts to one per role:
+      # all six roles are still present, so the set check is satisfied, and six hundred of nine
+      # hundred artefact digests are gone. Measured on the campaign's own documents, that cut
+      # reached identityRecorded true with zero problems.
+      #
+      # The claim in that comment was also wrong where it mattered. Per-role counts do differ
+      # from each other, which is what "vary by role" meant and is true. They do not differ
+      # across captures within a configuration: all fifty captures of the five-trial campaign
+      # carry one identical histogram, twelve Metadata, two Preview and one each of the other
+      # four. That measurement is why the histogram can be declared from outside at all, and it
+      # is declared rather than derived because a standard read out of the documents under test
+      # is not a standard.
+      #
+      # Requiring the whole histogram rather than a total is the difference between refusing a
+      # cut and refusing a cut plus a redistribution. A declared total of eighteen accepts a
+      # capture that moves a Preview digest into Metadata and keeps eighteen; the histogram
+      # refuses it. Both were measured.
       ($t.captureProvenance[]? |
         . as $c |
         (($c.artifacts // []) | map(.role | tostring) | unique) as $provenanceRoles |
         (if ($provenanceRoles == ($expectedCaptureRoles | unique)) then empty
          else "trial \($label) capture \($c.captureId): the artefact roles recorded are \($provenanceRoles | tojson) against the \(($expectedCaptureRoles | unique) | tojson) a W6 capture carries" end)),
+      ($t.captureProvenance[]? |
+        . as $c |
+        (($c.artifacts // []) | map(.role | tostring) | group_by(.)
+          | map({ key: .[0], value: length }) | from_entries) as $roleCounts |
+        (if ($roleCounts == $expectedCaptureArtifactRoleCounts) then empty
+         else "trial \($label) capture \($c.captureId): the artefact count per role is \($roleCounts | tojson) against the \($expectedCaptureArtifactRoleCounts | tojson) a W6 capture carries, so artefact digests are missing or redistributed" end)),
       (if ($t.calibrationResiduals.observedCatalogSha256 | is_sha256) then empty
        else "trial \($label): calibrationResiduals.observedCatalogSha256 is not a digest" end),
       (if ($t.calibrationResiduals.observedCatalogSha256 | eqi($t.workload.catalogSha256)) then empty
@@ -154,6 +181,11 @@
     trialLabels: ($recorded_trial_labels | sort),
     trialsIdentified: $trials_identified,
     expectedCaptureArtifactRoles: ($expectedCaptureRoles | unique),
+    expectedCaptureArtifactRoleCounts: $expectedCaptureArtifactRoleCounts,
+    expectedCaptureArtifactCount: ([ $expectedCaptureArtifactRoleCounts | to_entries[] | .value ] | add // 0),
+    captureArtifactRoleCounts:
+      ([ .[] | .captureProvenance[]? | (.artifacts // []) | map(.role | tostring)
+         | group_by(.) | map({ key: .[0], value: length }) | from_entries ] | unique),
     captureIdSetsDisjoint: $capture_ids_disjoint,
     sharedCaptureIds: ($shared_capture_ids | map(.[0].id)),
     distinctCaptureIdCount: ([ $trial_capture_ids[].ids[] ] | unique | length),

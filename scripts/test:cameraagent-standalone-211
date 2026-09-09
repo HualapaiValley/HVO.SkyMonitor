@@ -17,6 +17,7 @@ readonly CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.
 readonly MONO_CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6-mono8.json"
 readonly DEFAULT_RESULTS_BASE="$REPO_ROOT/TestResults/issue-211"
 readonly W6_IDENTITY_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity.jq"
+readonly W6_IDENTITY_GATE_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity-gate.jq"
 readonly BIND_LOCAL_ROOT="$REPO_ROOT/data/agent/issue-211"
 readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6'
 readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
@@ -31,6 +32,13 @@ readonly MEASURED_CAPTURE_COUNT=10
 # artefacts and its roles list from one collection, so a capture that under-reports its artefacts
 # shortens both together and no cross-check inside the document can see it.
 readonly EXPECTED_CAPTURE_ARTIFACT_ROLES='["AnnotatedPreview","Calibrated","Combined","Metadata","Preview","Raw"]'
+# Issue #770, correction round 5. The role set alone anchors which roles a capture presents and
+# not how many artefacts it presents for each, so a capture cut to one artefact per role kept all
+# six roles and lost six hundred of nine hundred artefact digests without the gate objecting.
+# This is the multiplicity, declared here rather than read out of the documents for the same
+# reason MEASURED_CAPTURE_COUNT is. It is the histogram every one of the fifty captures in the
+# five-trial campaign carries. Change it when the processing graph changes what a capture emits.
+readonly EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS='{"AnnotatedPreview":1,"Calibrated":1,"Combined":1,"Metadata":12,"Preview":2,"Raw":1}'
 
 if [[ $# -ne 0 || -z "${HVO_CATALOG_PERF_ROOT:-}" || -z "${HVO_OTEL_COLLECTOR_IMAGE:-}" ]]; then
     printf 'Usage: HVO_CATALOG_PERF_ROOT=INSTALLED_PRODUCTION_CATALOG_ROOT HVO_OTEL_COLLECTOR_IMAGE=IMAGE@sha256:DIGEST %s\n' "${0##*/}" >&2
@@ -1344,21 +1352,14 @@ jq -s -f "$W6_IDENTITY_PROGRAM" \
     --argjson measuredCaptureCount "$MEASURED_CAPTURE_COUNT" \
     --argjson expectedTrialLabels "$EXPECTED_W6_TRIALS" \
     --argjson expectedCaptureRoles "$EXPECTED_CAPTURE_ARTIFACT_ROLES" \
+    --argjson expectedCaptureArtifactRoleCounts "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" \
     "$RESULTS"/trial-*/evidence/issue-211-w6.json > "$RESULTS/w6-identity-summary.json"
 
-jq --exit-status --argjson measuredCaptureCount "$MEASURED_CAPTURE_COUNT" \
+jq --exit-status -f "$W6_IDENTITY_GATE_PROGRAM" \
+    --argjson measuredCaptureCount "$MEASURED_CAPTURE_COUNT" \
     --argjson expectedTrialLabels "$EXPECTED_W6_TRIALS" \
     --argjson expectedCaptureRoles "$EXPECTED_CAPTURE_ARTIFACT_ROLES" \
-    '.identityRecorded == true
-     and .trialsIdentified == true
-     and .captureIdSetsDisjoint == true
-     and .trialCount == ($expectedTrialLabels | length)
-     and .trialLabels == ($expectedTrialLabels | sort)
-     and .expectedMeasuredCaptureCount == $measuredCaptureCount
-     and .recordedCaptureCount == (($expectedTrialLabels | length) * $measuredCaptureCount)
-     and .distinctCaptureIdCount == .recordedCaptureCount
-     and .recordedRoleCount == ($expectedCaptureRoles | unique | length)
-     and .recordedArtifactCount >= .recordedCaptureCount' \
+    --argjson expectedCaptureArtifactRoleCounts "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" \
     "$RESULTS/w6-identity-summary.json" >/dev/null \
     || gate_failed 'W6 evidence identity' "$RESULTS/w6-identity-summary.json"
 
@@ -1489,6 +1490,16 @@ jq -s \
   # minus five under the same schema as the guarded values, with nothing saying it had not been
   # checked. They are event counts and byte totals, unlike the cadence headroom and the storage
   # deltas, which are excluded from this guard because they are legitimately negative.
+  #
+  # Issue #770, correction round 5. That paragraph named an excluded list and left five byte
+  # totals in neither list, so it read as though everything unexcluded was covered when
+  # peakContainerMemoryUsageBytes, maximumObservedLastCollectionLohBytes, processReadBytes,
+  # containerBlockReadBytes and containerBlockWriteBytes were not. They are peaks and cumulative
+  # totals rather than differences, so they are non-negative for the same reason the backlog
+  # figures are, and they now go through the same guard. This closed a false comment and not a
+  # fail-open: none of them is read by any gate, each name appears once in this file, and a
+  # negative value in any of them changed no decision. The remaining unguarded series are the
+  # cadence headroom and the three storage deltas, and the reason is the one given above.
   def counted_stats($what):
     (if all(is_byte_count) then . else
       error("\($what) has a sample that is not a non-negative whole count, so its summary would have reported an impossible backlog") end)
@@ -1524,9 +1535,9 @@ jq -s \
     cpuSeconds: $cpu_seconds,
     peakRssBytes: $peak_rss_bytes,
     allocatedBytes: $allocated_bytes,
-    peakContainerMemoryUsageBytes: (map(.performance.peakContainerMemoryUsageBytes) | stats("peakContainerMemoryUsageBytes")),
+    peakContainerMemoryUsageBytes: (map(.performance.peakContainerMemoryUsageBytes) | counted_stats("peakContainerMemoryUsageBytes")),
     maximumObservedLastCollectionLohBytes:
-      (map(.performance.maximumObservedLastCollectionLohBytes) | stats("maximumObservedLastCollectionLohBytes")),
+      (map(.performance.maximumObservedLastCollectionLohBytes) | counted_stats("maximumObservedLastCollectionLohBytes")),
     operationalCaptureRatePerSecond: (map(.performance.operationalCaptureRatePerSecond) | stats("operationalCaptureRatePerSecond")),
     rawStorageGrowthBytes: (map(.performance.rawStorageGrowthBytes) | stats("rawStorageGrowthBytes")),
     declaredRawBytesPerDay: (map(.performance.declaredRawBytesPerDay) | stats("declaredRawBytesPerDay")),
@@ -1534,10 +1545,10 @@ jq -s \
       (map(.performance.hypotheticalFiveSecondStartIntervalRawBytesPerDay) | stats("hypotheticalFiveSecondStartIntervalRawBytesPerDay")),
     derivativeStorageGrowthBytes: (map(.performance.derivativeStorageGrowthBytes) | stats("derivativeStorageGrowthBytes")),
     sqliteFootprintGrowthBytes: (map(.performance.sqliteFootprintGrowthBytes) | stats("sqliteFootprintGrowthBytes")),
-    processReadBytes: (map(.performance.processReadBytes) | stats("processReadBytes")),
+    processReadBytes: (map(.performance.processReadBytes) | counted_stats("processReadBytes")),
     processWriteBytes: $process_write_bytes,
-    containerBlockReadBytes: (map(.performance.containerBlockReadBytes) | stats("containerBlockReadBytes")),
-    containerBlockWriteBytes: (map(.performance.containerBlockWriteBytes) | stats("containerBlockWriteBytes")),
+    containerBlockReadBytes: (map(.performance.containerBlockReadBytes) | counted_stats("containerBlockReadBytes")),
+    containerBlockWriteBytes: (map(.performance.containerBlockWriteBytes) | counted_stats("containerBlockWriteBytes")),
     maximumBacklogCount:
       (map(.performance.maximumBacklogCount) | counted_stats("maximumBacklogCount")),
     maximumBacklogBytes:
