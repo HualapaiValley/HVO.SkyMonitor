@@ -874,6 +874,15 @@ if [[ "$catalog_condition" != "        if: needs.changes.outputs.mode == 'full'"
   exit 1
 fi
 
+# The smoke test only proves an intentionally invalid fixture is rejected. Building the real
+# HYG v42 bundle is the half that proves the production catalog can still be produced from its
+# declared inputs, and it is a different assertion rather than a more expensive version of the
+# same one, so keeping only the cheap one would narrow the gate while appearing to preserve it.
+grep -Fq './scripts/catalog/prepare-hyg-v42-contracts.sh' <<< "$quality_job" || {
+  printf 'Quality must build the exact production catalog contracts, not only smoke-test a fixture.\n' >&2
+  exit 1
+}
+
 # Phase 14 acceptance is a historical inventory contract, not part of the
 # per-change gate set, so it must stay behind an explicit dispatch.
 phase14_condition="$(grep -A1 -F '      - name: Run historical Phase 14 acceptance inventory contract' <<< "$quality_job" | tail -n 1)"

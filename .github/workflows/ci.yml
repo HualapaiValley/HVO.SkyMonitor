@@ -100,7 +100,9 @@ jobs:
           docker compose --env-file deploy/acceptance/cameraagent-dual-standalone-smoke/compose.validation.env.template -f deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml config --quiet
       - name: Verify catalog contracts
         if: needs.changes.outputs.mode == 'full'
-        run: ./scripts/catalog/smoke-test.sh
+        run: |
+          ./scripts/catalog/smoke-test.sh
+          ./scripts/catalog/prepare-hyg-v42-contracts.sh "$RUNNER_TEMP/hyg-v42-contracts" >/dev/null
       - name: Audit vulnerable and deprecated packages
         if: needs.changes.outputs.mode == 'full'
         run: ./scripts/package:audit
