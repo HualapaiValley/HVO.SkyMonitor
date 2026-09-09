@@ -146,9 +146,11 @@ public sealed class CameraAgentGalleryPerformanceTests
         // from the instantaneous runnable count was 1.454/core against a 0.40 ceiling. It does not
         // follow that this sample can gate anything. By this point the run has driven load well above
         // the ceiling by itself, and load1 cannot separate contention that arrived mid-run from load
-        // this test generated, so comparing it with MaximumAdmissibleLoadPerCore would refuse every
-        // run for the test's own workload. Recording it makes the blindness visible to whoever reads
-        // the evidence instead of pretending it was closed.
+        // this test generated. The ceiling scales with core count, so a gate on this sample would
+        // have its refusal rate governed by the size of the machine rather than by inherited
+        // contention, which is what makes it uninformative rather than merely strict. Recording it
+        // makes the blindness visible to whoever reads the evidence instead of pretending it was
+        // closed.
         var postWorkloadContention = SampleHostContention();
         var evidence = new
         {

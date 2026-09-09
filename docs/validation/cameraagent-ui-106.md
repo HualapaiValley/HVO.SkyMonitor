@@ -128,8 +128,11 @@ deterministic per-card preview failures without retries. The harness proves:
   browser families move by more than 40% while the SQLite and Kestrel families
   stay flat, so a browser p95 measured on a busy host describes the host and not
   the product (see #774 and #785);
-- rendered pages remain at or below 1 MiB and cumulative working-set growth
-  remains at or below 32 MiB per browser session;
+- rendered pages remain at or below 1 MiB;
+- cumulative working-set growth remains at or below 32 MiB per browser session,
+  under the same browser admissibility condition as the p95 claim above: the
+  bound is adjudicated only after the measurement is admitted, so a refused run
+  records the observed growth without judging it;
 - later-page latency and allocation do not scale linearly with total history;
 - keyset query plans use the expected durable indexes;
 - 20 sequential and 50 concurrent requests for one unchanged preview perform
