@@ -80,6 +80,11 @@ must not redefine its policy inconsistently.
   not join or mutate the roadmap epic unless explicitly enrolled. Follow the
   registry, lease, and targeted-command mechanics in section 4 of
   `docs/planning/agent-execution.md`.
+- A session coming online on a new machine, or a machine being pre-staged before
+  any agent runs on it, follows `docs/runbooks/agent-host-onboarding.md`. It is
+  the operational checklist under this policy and the execution protocol, and it
+  covers toolchain, environment, permissions, enrolment, and the role-specific
+  setup for a coordinator and for a worker.
 - Before implementing a roadmap issue, follow `docs/planning/agent-execution.md` and the relevant section of `docs/planning/agent-prompts.md`.
 - Before opening, reviewing, updating, finalizing, or merging any PR, read and
   follow `.agents/skills/pr-lifecycle/SKILL.md`. This instruction is mandatory
