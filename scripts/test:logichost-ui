@@ -6,6 +6,8 @@ export LC_ALL=C
 umask 077
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/trx-evidence.sh
+source "$SCRIPT_DIR/lib/trx-evidence.sh"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"
 readonly PROCESSING_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
@@ -49,6 +51,26 @@ export HVO_ISSUE_107_REVISION="$revision"
 export HVO_ISSUE_107_BRANCH="$(git branch --show-current)"
 export HVO_ISSUE_107_DIRTY_SHA256="$dirty_hash"
 export HVO_ISSUE_107_EVIDENCE_ROOT="$evidence_root"
+
+# ORDERING CONSTRAINT — read this before making the LogicHost UI tests resemble the CameraAgent ones.
+#
+# The CameraAgent acceptance tests guard the pinned browser with Assert.Inconclusive and skip when it
+# is absent. The tests this script runs do not guard at all: LogicHostUiBrowserAcceptanceTests goes
+# straight from Playwright.CreateAsync() to Chromium.LaunchAsync(), so on a host with no usable browser
+# they throw, `set -e` stops here, and the failure carries Playwright's own message naming the cause.
+# That inconsistency is visible and the obvious tidy-up is to make this side match the other.
+#
+# That tidy-up, done on its own, reintroduces the defect this family exists to remove. An
+# Assert.Inconclusive guard turns a hard failure into a skip, and a skipped MSTest exits zero, so the
+# runner would go from failing closed with an accurate cause to reporting success having executed none
+# of its browser cases. That is #745 exactly, recreated here while making the first runner's shape
+# consistent. So the order is a constraint and not a preference: the outcome assertions below must
+# exist first, and only then may a browser guard be added to the tests, if consistency is still judged
+# worth having. See #749, and #745 for the original.
+#
+# The assertion is per invocation rather than once at the end because attribution is the point: eleven
+# runs across three projects write TRX files here, and a single check after the loop would say only
+# that something in the campaign proved nothing.
 dotnet test "$PROJECT" \
     --no-build \
     --no-restore \
@@ -57,6 +79,7 @@ dotnet test "$PROJECT" \
     --results-directory "$evidence_root" \
     --logger "trx;LogFileName=logichost-ui-107.trx" \
     --logger "console;verbosity=normal"
+trx_assert_executed_and_passed "$evidence_root/logichost-ui-107.trx" "${0##*/} browser acceptance" || exit 1
 
 export HVO_ISSUE_107_EVIDENCE_SET_ROOT="$evidence_root"
 export HVO_ISSUE_107_BASELINE_ROOT="$baseline_root"
@@ -83,6 +106,9 @@ for trial in 1 2 3 4 5; do
         --results-directory "$trial_root/encoding" \
         --logger "trx;LogFileName=logichost-ui-107-encoding.trx" \
         --logger "console;verbosity=normal"
+    trx_assert_executed_and_passed \
+        "$trial_root/encoding/logichost-ui-107-encoding.trx" \
+        "${0##*/} encoding trial $trial" || exit 1
     HVO_ISSUE_107_TRIAL="$trial" \
     HVO_ISSUE_107_EVIDENCE_ROOT="$trial_root" \
     dotnet test "$PROJECT" \
@@ -93,6 +119,9 @@ for trial in 1 2 3 4 5; do
         --results-directory "$trial_root" \
         --logger "trx;LogFileName=logichost-ui-107-performance.trx" \
         --logger "console;verbosity=normal"
+    trx_assert_executed_and_passed \
+        "$trial_root/logichost-ui-107-performance.trx" \
+        "${0##*/} performance trial $trial" || exit 1
 done
 
 readonly evidence_files=(
@@ -115,9 +144,10 @@ for trial in 1 2 3 4 5; do
     trial_root="$evidence_root/candidate/trial-$(printf '%02d' "$trial")"
     test -s "$trial_root/performance.json"
     test -s "$trial_root/process.csv"
-    test -s "$trial_root/logichost-ui-107-performance.trx"
     test -s "$trial_root/encoding/processing-performance-W1-encoded-preview-jpeg.json"
-    test -s "$trial_root/encoding/logichost-ui-107-encoding.trx"
+    # The two TRX files these trials write are no longer checked for existence here. Each is now
+    # asserted at its own invocation above, and a non-empty file was the weaker claim of the two: a
+    # TRX recording nothing but skips is non-empty.
 done
 rg -q '"Passed": true' "$evidence_root/cardinality-leak-scan.json"
 performance_files=(
