@@ -11,6 +11,7 @@ readonly SCRIPT_DIR="$(cd "$script_directory" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/issue-211/compose.yml"
+readonly LOCAL_RUNNER_COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/issue-211/compose.local-runner.yml"
 readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/cameraagent-dual-standalone-smoke/otel-collector.yml"
 readonly CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6.json"
 readonly MONO_CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6-mono8.json"
@@ -390,6 +391,10 @@ assert_trial_executed_and_passed() {
 
 active_project=""
 active_env=""
+# The compose files backing the active project. Set with active_project so the EXIT trap tears
+# down exactly what was brought up: a cleanup that omitted the overlay would leave the replay
+# runner running and the socket directory populated, and the next trial would inherit both.
+active_compose_files=("--file" "$COMPOSE_FILE")
 active_client_network=""
 active_owner_email=""
 active_owner_password=""
@@ -404,13 +409,13 @@ cleanup() {
             else
                 printf '%s\n' "$line"
             fi
-        done < <(docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" logs --no-color --tail 20000 2>&1 || true) \
+        done < <(docker compose --env-file "$active_env" --project-name "$active_project" "${active_compose_files[@]}" logs --no-color --tail 20000 2>&1 || true) \
             > "$failure_log"
         if [[ -n "$active_client_network" ]]; then
             docker network disconnect "$active_client_network" "$(hostname)" >/dev/null 2>&1 || true
             active_client_network=""
         fi
-        docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true
+        docker compose --env-file "$active_env" --project-name "$active_project" "${active_compose_files[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
@@ -427,6 +432,9 @@ run_profile_trial() {
     local transient_mode="$9"
     local transient_required="${10}"
     local collect_phase14="${11}"
+    # InProcess unless a trial asks otherwise, so existing trials are unchanged by construction
+    # rather than by a default chosen to look safe.
+    local replay_profile="${12:-InProcess}"
     assert_worktree_unchanged
     local trial_result="$RESULTS/$trial"
     local trial_local="$BIND_LOCAL_ROOT/$trial"
@@ -451,6 +459,18 @@ run_profile_trial() {
     local suffix="${REVISION:0:8}-${trial//[^a-zA-Z0-9]/}-$$"
     active_project="hvo211-$suffix"
     active_env="$trial_local/compose.env"
+    if [[ "$replay_profile" == LocalRunner ]]; then
+        # The runner reaches the agent only over this socket and authenticates with this key, so
+        # both are created per trial and neither is shared between them. 0700 and 0600 are the
+        # installer's modes; a looser mode here would prove a topology nobody deploys.
+        install -d -m 700 "$trial_local/replay-runner"
+        umask 077
+        openssl rand -base64 48 | tr -d '\n' > "$trial_local/secrets/replay-runner-auth-key"
+        chmod 600 "$trial_local/secrets/replay-runner-auth-key"
+        active_compose_files=("--file" "$COMPOSE_FILE" "--file" "$LOCAL_RUNNER_COMPOSE_FILE")
+    else
+        active_compose_files=("--file" "$COMPOSE_FILE")
+    fi
     cat > "$active_env" <<EOF
 CAMERA_AGENT_IMAGE=$CAMERA_AGENT_IMAGE
 CAMERA_AGENT_CONTAINER=hvo211-$suffix-camera
@@ -459,6 +479,10 @@ CAMERA_AGENT_ID=$agent_id
 CAMERA_AGENT_CALIBRATION_REQUIRED=$calibration_required
 CAMERA_AGENT_TRANSIENT_MODE=$transient_mode
 CAMERA_AGENT_TRANSIENT_REQUIRED=$transient_required
+CAMERA_AGENT_REPLAY_PROFILE=$replay_profile
+REPLAY_RUNNER_CONTAINER=hvo211-$suffix-replay
+REPLAY_RUNNER_SOCKET_DIR=$trial_host/replay-runner
+REPLAY_RUNNER_AUTH_KEY_FILE=$trial_host/secrets/replay-runner-auth-key
 ISSUE211_BIND_ADDRESS=$DOCKER_HOST_ADDRESS
 ISSUE211_HTTP_PORT=$HTTP_PORT
 CAMERA_AGENT_RUNTIME_SOURCE=$trial_host/runtime
@@ -476,8 +500,8 @@ CENTRAL_DENY_CONTAINER=hvo211-$suffix-central-deny
 LOCAL_UID=$LOCAL_UID
 LOCAL_GID=$LOCAL_GID
 EOF
-    docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" config --quiet
-    docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" up --detach
+    docker compose --env-file "$active_env" --project-name "$active_project" "${active_compose_files[@]}" config --quiet
+    docker compose --env-file "$active_env" --project-name "$active_project" "${active_compose_files[@]}" up --detach
     local base_uri="http://$DOCKER_HOST_ADDRESS:$HTTP_PORT"
     if [[ -n "$host_workspace" ]]; then
         active_client_network="${active_project}_isolated"
@@ -1083,9 +1107,10 @@ EOF
         docker network disconnect "$active_client_network" "$(hostname)"
         active_client_network=""
     fi
-    docker compose --env-file "$active_env" --project-name "$active_project" --file "$COMPOSE_FILE" down --volumes --remove-orphans
+    docker compose --env-file "$active_env" --project-name "$active_project" "${active_compose_files[@]}" down --volumes --remove-orphans
     active_project=""
     active_env=""
+    active_compose_files=("--file" "$COMPOSE_FILE")
     active_owner_email=""
     active_owner_password=""
     chmod -R u+w "$trial_local" 2>/dev/null || true
