@@ -266,7 +266,8 @@ internal sealed partial class CentralDerivativeWorker(
     }
 
     /// <summary>
-    /// Records a dependency failure unless the worker is stopping, and is how every handler in this worker reports one.
+    /// Records a dependency failure unless the worker is stopping, and is how every handler that can still run once
+    /// the stopping token is cancelled reports one.
     /// Stopping cancels each command in flight, and a cancelled command does not always come back as an
     /// <see cref="OperationCanceledException"/>: SQL Server reports the aborted batch as a provider fault, and an
     /// object-store request aborted mid-body surfaces as a transport fault that the artifact reader classifies as a

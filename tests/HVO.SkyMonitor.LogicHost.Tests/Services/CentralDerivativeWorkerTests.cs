@@ -450,24 +450,48 @@ public sealed class CentralDerivativeWorkerTests
     /// as <see cref="ObjectStoreFailureKind.Canceled"/>. The shutdown handler ahead of these catches none of those
     /// shapes, so each handler saw an outage caused by the stop.
     /// </summary>
-    public static IEnumerable<object[]> ShutdownLeaseFaults()
+    public enum ShutdownLeaseFault
     {
-        yield return ["a canceled query reported as a provider fault",
-            (Exception)new TestDbException("The request failed to run because the batch is aborted.")];
-        yield return ["a canceled save reported as a provider fault",
-            new DbUpdateException(
-                "An error occurred while saving the entity changes.",
-                new TestDbException("The request failed to run because the batch is aborted."))];
-        yield return ["a canceled object-store read wrapped by the artifact reader",
-            new CentralArtifactStorageException(new OperationCanceledException("The read was aborted."))];
-        yield return ["a canceled object-store request reported by the store",
-            new ObjectStoreException(ObjectStoreFailureKind.Canceled, "get-object")];
+        CanceledQueryReportedAsAProviderFault,
+        CanceledSaveReportedAsAProviderFault,
+        CanceledObjectStoreReadWrappedByTheArtifactReader,
+        CanceledObjectStoreRequestReportedByTheStore
     }
 
-    [TestMethod]
-    [DynamicData(nameof(ShutdownLeaseFaults))]
-    public async Task StopDoesNotRecordADependencyFailureForACancelledLeaseAsync(string description, Exception fault)
+    /// <summary>
+    /// Builds the fault for one row of <see cref="StopDoesNotRecordADependencyFailureForACancelledLeaseAsync"/>. The
+    /// rows are named by an enum and listed as <c>DataRow</c> attributes rather than yielded from a
+    /// <c>DynamicData</c> source because the category audit pins the matrix against static discovery, which reports a
+    /// dynamic source once however many rows it yields. None of these faults can be an attribute argument, so the
+    /// discriminator is the argument and the exception is constructed here.
+    /// </summary>
+    private static (string Description, Exception Fault) CreateShutdownLeaseFault(ShutdownLeaseFault fault) => fault switch
     {
+        ShutdownLeaseFault.CanceledQueryReportedAsAProviderFault => (
+            "a canceled query reported as a provider fault",
+            (Exception)new TestDbException("The request failed to run because the batch is aborted.")),
+        ShutdownLeaseFault.CanceledSaveReportedAsAProviderFault => (
+            "a canceled save reported as a provider fault",
+            new DbUpdateException(
+                "An error occurred while saving the entity changes.",
+                new TestDbException("The request failed to run because the batch is aborted."))),
+        ShutdownLeaseFault.CanceledObjectStoreReadWrappedByTheArtifactReader => (
+            "a canceled object-store read wrapped by the artifact reader",
+            new CentralArtifactStorageException(new OperationCanceledException("The read was aborted."))),
+        ShutdownLeaseFault.CanceledObjectStoreRequestReportedByTheStore => (
+            "a canceled object-store request reported by the store",
+            new ObjectStoreException(ObjectStoreFailureKind.Canceled, "get-object")),
+        _ => throw new ArgumentOutOfRangeException(nameof(fault), fault, "Unknown shutdown lease fault.")
+    };
+
+    [TestMethod]
+    [DataRow(ShutdownLeaseFault.CanceledQueryReportedAsAProviderFault)]
+    [DataRow(ShutdownLeaseFault.CanceledSaveReportedAsAProviderFault)]
+    [DataRow(ShutdownLeaseFault.CanceledObjectStoreReadWrappedByTheArtifactReader)]
+    [DataRow(ShutdownLeaseFault.CanceledObjectStoreRequestReportedByTheStore)]
+    public async Task StopDoesNotRecordADependencyFailureForACancelledLeaseAsync(ShutdownLeaseFault shutdownLeaseFault)
+    {
+        var (description, fault) = CreateShutdownLeaseFault(shutdownLeaseFault);
         var lease = CreateLease();
         var jobs = new ScriptedJobService
         {
