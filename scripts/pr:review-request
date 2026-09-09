@@ -6,7 +6,7 @@ usage() {
 Usage:
   scripts/pr:review-request --repo OWNER/REPO --pr N --issue N \
     --mode initial|correction|base-sync --round N --command-id CMD-ID \
-    --participant-id ID --acceptance-file FILE --lens-file FILE \
+    --reviewer-id ID --acceptance-file FILE --lens-file FILE \
     --profile fast|standard|deep --primary PROVIDER --fallback PROVIDER \
     --route TEXT --model MODEL --effort EFFORT --tests-file FILE \
     --evidence-file FILE [--call-sites-file FILE] [--instructions-file FILE] \
@@ -42,7 +42,7 @@ issue=""
 mode=""
 round=""
 command_id=""
-participant_id=""
+reviewer_id=""
 acceptance_file=""
 lens_file=""
 profile=""
@@ -62,7 +62,7 @@ target_remote="origin"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --repo|--pr|--issue|--mode|--round|--command-id|--participant-id|--acceptance-file|--lens-file|--profile|--primary|--fallback|--route|--model|--effort|--tests-file|--evidence-file|--call-sites-file|--instructions-file|--evidence-pack|--output|--recorded-comment|--remote)
+        --repo|--pr|--issue|--mode|--round|--command-id|--reviewer-id|--acceptance-file|--lens-file|--profile|--primary|--fallback|--route|--model|--effort|--tests-file|--evidence-file|--call-sites-file|--instructions-file|--evidence-pack|--output|--recorded-comment|--remote)
             [[ -n "${2:-}" ]] || fail "Missing value for $1."
             case "$1" in
                 --repo) repo="$2" ;;
@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
                 --mode) mode="$2" ;;
                 --round) round="$2" ;;
                 --command-id) command_id="$2" ;;
-                --participant-id) participant_id="$2" ;;
+                --reviewer-id) reviewer_id="$2" ;;
                 --acceptance-file) acceptance_file="$2" ;;
                 --lens-file) lens_file="$2" ;;
                 --profile) profile="$2" ;;
@@ -128,7 +128,7 @@ fi
 [[ "$mode" =~ ^(initial|correction|base-sync)$ ]] || fail "--mode is invalid."
 [[ "$round" =~ ^[0-3]$ ]] || fail "--round must be 0 through 3."
 [[ "$command_id" =~ ^CMD-[A-Z0-9][A-Z0-9-]*$ ]] || fail "--command-id is invalid."
-[[ "$participant_id" =~ ^[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || fail "--participant-id is invalid."
+[[ "$reviewer_id" =~ ^[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || fail "--reviewer-id is invalid."
 [[ "$profile" =~ ^(fast|standard|deep)$ ]] || fail "--profile is invalid."
 [[ "$effort" =~ ^(medium|high|xhigh|max)$ ]] || fail "--effort is invalid for review."
 [[ -n "$primary" && -n "$fallback" && -n "$route" && -n "$model" ]] || fail "Provider, route, model, and effort are required."
@@ -157,6 +157,32 @@ base_ref_name="$(jq -er '.baseRefName' <<<"$pr_json")"
 # the left endpoint from its real tip, and fetch here rather than trusting that a
 # caller already did, because a stale remote-tracking ref reproduces the same defect
 # silently.
+# Freshness is not identity. The fetch above guarantees the tip is current; it says
+# nothing about which branch in which repository produced it, and the emitted line
+# reads as though it settled both. Pointed at a remote whose target branch sits
+# behind, the tool reproduces the pre-fix defect -- left endpoint equal to the
+# recorded base -- under the label "freshly fetched tip". Bind the remote to the PR's
+# repository first. The name is character-class checked because it reaches `git
+# fetch` in option position, where a leading dash becomes an option rather than an
+# abort. Compared as owner/repo and not as a URL, so the regression fixture can use a
+# local remote; that leaves the host unchecked, which is a narrower guarantee than it
+# may read as and is recorded as such rather than silently assumed.
+[[ "$target_remote" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+    fail "--remote is not a usable git remote name."
+remote_url="$(git remote get-url "$target_remote" 2>/dev/null)" ||
+    fail "No such git remote: $target_remote"
+remote_path="${remote_url%.git}"
+remote_path="${remote_path%/}"
+# Never let the URL itself reach the failure text or the request body: a remote
+# configured with an embedded token would publish a credential into a PR comment.
+remote_slug="$(basename "$(dirname "$remote_path")")/$(basename "$remote_path")"
+# `tr` rather than the `${var,,}` expansion, which bash 3.2 does not have and this
+# tool otherwise runs under.
+lower_remote_slug="$(printf '%s' "$remote_slug" | tr '[:upper:]' '[:lower:]')"
+lower_repo="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
+[[ "$lower_remote_slug" == "$lower_repo" ]] ||
+    fail "Remote $target_remote resolves to $remote_slug, not $repo; the range would be computed against another repository's branch."
+
 git fetch --quiet "$target_remote" \
     "+refs/heads/$base_ref_name:refs/remotes/$target_remote/$base_ref_name" ||
     fail "Cannot fetch $target_remote/$base_ref_name; the review range cannot be computed against a branch tip that was not fetched."
@@ -227,7 +253,7 @@ fi
 request="$(printf '%s\n' \
     "Review mode: $mode" \
     "Issue and PR: #$issue / #$pr" \
-    "Dispatch command ID and target participant ID: $command_id / $participant_id" \
+    "Dispatch command ID and assigned reviewer participant ID: $command_id / $reviewer_id" \
     "Acceptance criteria: $(<"$acceptance_file")" \
     "Target base SHA: $target_base" \
     "Target base ref: $target_remote/$base_ref_name (freshly fetched tip; source of the range's left endpoint)" \
