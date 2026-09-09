@@ -1,0 +1,326 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+# Deterministic gate for the issue #535 generation recorder.
+#
+# The validator's gate proves a verdict is correct. This proves publication is
+# correct, which is a different property with different failure modes: a verdict
+# can be right while the thing published is not what was verified, or while a
+# pointer names something that is no longer there.
+#
+# Three claims carry this file, and each is written as a case that must refuse
+# rather than a case that happens to pass:
+#
+#   an uncommitted generation is ignored and cleanable;
+#   a committed generation is immutable, and tampering is detected;
+#   the pointer moves only after revalidation, and never on a refusal.
+#
+# Where a case tampers with a committed document, it first asserts the tamper
+# actually changed the bytes. A corpus that only ever runs green proves its cases
+# are satisfiable, not that they discriminate, and a mutation that silently failed
+# to apply would leave a passing test asserting nothing at all.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly SCRIPT_DIR REPO_ROOT
+readonly RECORD="$SCRIPT_DIR/record:cameraagent-final-head-535"
+readonly FIXTURES="$REPO_ROOT/tests/fixtures/issue-535/final-head"
+readonly HEAD_SHA="428e346ef16c00f6a3257315c95384092b1b3290"
+readonly STAMP="2026-09-09T00:00:00Z"
+readonly INDEX="final-head-acceptance.json"
+readonly ENVELOPE="final-head-acceptance.commit.json"
+readonly POINTER="latest-generation.json"
+
+WORK="$(mktemp -d)"
+# One tamper case needs evidence inside the repository, since the recorder refuses to
+# record an outside path. It lives here rather than in the fixture corpus, and it is
+# removed on any exit rather than only on the path that reaches the end.
+SCRATCH="$REPO_ROOT/TestResults/issue-535-gate.$$"
+trap 'rm -rf "$WORK" "$SCRATCH"' EXIT
+
+failures=0
+cases=0
+
+fail() { failures=$((failures + 1)); printf 'FAIL %s\n' "$*" >&2; }
+
+# A fresh output root per case, so nothing carries state between cases and a case
+# that leaves a root dirty cannot make the next one pass.
+new_root() {
+    local root; root="$(mktemp -d "$WORK/root.XXXXXX")"
+    printf '%s' "$root"
+}
+
+publish() {
+    local root="$1" fixture="$2" campaign="$3" mode="${4:-final}"
+    "$RECORD" publish --evidence "$FIXTURES/$fixture" --bound-head "$HEAD_SHA" \
+        --campaign "$campaign" --mode "$mode" --output-root "$root" --recorded-utc "$STAMP"
+}
+
+campaign_dir() { printf '%s/%s/%s' "$1" "$HEAD_SHA" "$2"; }
+
+expect_success() {
+    local label="$1" status=0; shift
+    cases=$((cases + 1))
+    "$@" >/dev/null 2>&1 || status=$?
+    ((status == 0)) || fail "$label: expected success, got exit $status"
+}
+
+# A refusal is only evidence if it is the refusal the case is about. A case that
+# merely asserts a nonzero exit passes just as happily on a usage error or a typo
+# in the test itself, which is how a corpus quietly stops discriminating. Every
+# refusal here names the message it expects to see.
+expect_refusal() {
+    local label="$1" want="$2" status=0; shift 2
+    cases=$((cases + 1))
+    "$@" >/dev/null 2>"$WORK/stderr.txt" || status=$?
+    if ((status == 0)); then
+        fail "$label: expected refusal, got success"
+        return
+    fi
+    if ! grep -qF -- "$want" "$WORK/stderr.txt"; then
+        fail "$label: refused, but not for the stated reason; wanted [$want], got [$(tr '\n' ' ' < "$WORK/stderr.txt")]"
+    fi
+}
+
+assert_equal() {
+    local label="$1" want="$2" have="$3"
+    cases=$((cases + 1))
+    [[ "$want" == "$have" ]] || fail "$label: expected [$want], got [$have]"
+}
+
+# ---------------------------------------------------------------------------
+# Publication happy path, and the numbering that follows from it.
+# ---------------------------------------------------------------------------
+
+root="$(new_root)"
+assert_equal "first publish is generation 1" "1" "$(publish "$root" green.json CAMP)"
+assert_equal "second publish is generation 2" "2" "$(publish "$root" green.json CAMP)"
+assert_equal "latest reports the newest generation" "2" \
+    "$("$RECORD" latest --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root")"
+expect_success "verify accepts a committed generation" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+
+# The layout is the contract a later reader navigates, so assert it rather than
+# assuming it followed from the exit status.
+dir="$(campaign_dir "$root" CAMP)"
+for required in "generations/1/$INDEX" "generations/1/$ENVELOPE" "generations/2/$INDEX" "generations/2/$ENVELOPE" "$POINTER"; do
+    cases=$((cases + 1))
+    [[ -f "$dir/$required" ]] || fail "layout: $required is absent"
+done
+
+# ---------------------------------------------------------------------------
+# The recorder never derives readiness, and never publishes what the validator
+# refused. Both halves are the same case from opposite directions.
+# ---------------------------------------------------------------------------
+
+# An evidence set carrying its own acceptanceReady is refused by the validator's
+# unknown-section rule, and the recorder therefore publishes nothing. The refusal
+# arrives through the existing enforcement rather than through a second copy of it
+# here; if this case ever starts passing, that enforcement has been weakened
+# somewhere else and this is the file that should notice.
+root="$(new_root)"
+expect_refusal "an evidence set that smuggles a verdict is refused" "validator refused" \
+    publish "$root" evidence-smuggles-verdict.json CAMP
+cases=$((cases + 1))
+[[ ! -d "$(campaign_dir "$root" CAMP)/generations/1" ]] \
+    || fail "a refused publish left a generation behind"
+
+# An ordinary red evidence set: refused, and nothing is left on disk.
+root="$(new_root)"
+expect_refusal "a red evidence set is not published" "validator refused" publish "$root" heads-mixed.json CAMP
+cases=$((cases + 1))
+[[ ! -e "$(campaign_dir "$root" CAMP)/$POINTER" ]] \
+    || fail "a refused publish created a pointer"
+
+# The mode divergence survives publication: admissible locally, refused as final.
+root="$(new_root)"
+expect_success "a local-only evidence set publishes in local mode" \
+    "$RECORD" publish --evidence "$FIXTURES/local-but-not-final.json" --bound-head "$HEAD_SHA" \
+        --campaign CAMP --mode local --output-root "$root" --recorded-utc "$STAMP"
+expect_refusal "the same set is refused in final mode" "validator refused" \
+    publish "$root" local-but-not-final.json CAMP final
+
+# ---------------------------------------------------------------------------
+# A committed generation is immutable, and tampering is detected.
+# ---------------------------------------------------------------------------
+
+root="$(new_root)"
+publish "$root" green.json CAMP >/dev/null
+dir="$(campaign_dir "$root" CAMP)"
+
+# Tamper with the index. Assert the bytes actually moved before asserting that
+# verification notices, so a mutation that failed to apply cannot masquerade as a
+# working detector.
+before="$(sha256sum "$dir/generations/1/$INDEX" | cut -d' ' -f1)"
+jq --sort-keys '.campaign.mode = "local"' "$dir/generations/1/$INDEX" > "$WORK/tampered.json"
+mv "$WORK/tampered.json" "$dir/generations/1/$INDEX"
+after="$(sha256sum "$dir/generations/1/$INDEX" | cut -d' ' -f1)"
+cases=$((cases + 1))
+[[ "$before" != "$after" ]] || fail "index tamper did not change the file, so the next case proves nothing"
+expect_refusal "a tampered index fails verification" "Index digest does not match" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+# And the pointer is not trusted blindly: reading it re-verifies what it names.
+expect_refusal "latest refuses a pointer naming a tampered generation" "Index digest does not match" \
+    "$RECORD" latest --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+
+# Tamper with the envelope instead of the index. The digest disagreement is the
+# same condition reached from the other side, and a check that only ever compared
+# the index against itself would pass this.
+root="$(new_root)"
+publish "$root" green.json CAMP >/dev/null
+dir="$(campaign_dir "$root" CAMP)"
+before="$(sha256sum "$dir/generations/1/$ENVELOPE" | cut -d' ' -f1)"
+jq --sort-keys '.index.sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' \
+    "$dir/generations/1/$ENVELOPE" > "$WORK/tampered.json"
+mv "$WORK/tampered.json" "$dir/generations/1/$ENVELOPE"
+after="$(sha256sum "$dir/generations/1/$ENVELOPE" | cut -d' ' -f1)"
+cases=$((cases + 1))
+[[ "$before" != "$after" ]] || fail "envelope tamper did not change the file"
+expect_refusal "a tampered envelope fails verification" "Index digest does not match" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+
+# Tamper with the evidence set the index names. The generation and its envelope
+# still agree with each other; what has moved is the thing they describe. A gate
+# that stopped at the envelope would call this clean.
+root="$(new_root)"
+mkdir -p "$SCRATCH"
+cp "$FIXTURES/green.json" "$SCRATCH/evidence.json"
+"$RECORD" publish --evidence "$SCRATCH/evidence.json" --bound-head "$HEAD_SHA" \
+    --campaign CAMP --output-root "$root" --recorded-utc "$STAMP" >/dev/null
+before="$(sha256sum "$SCRATCH/evidence.json" | cut -d' ' -f1)"
+jq --sort-keys '.centralTrafficAttempts = 1' "$SCRATCH/evidence.json" > "$WORK/ev.json"
+mv "$WORK/ev.json" "$SCRATCH/evidence.json"
+after="$(sha256sum "$SCRATCH/evidence.json" | cut -d' ' -f1)"
+cases=$((cases + 1))
+[[ "$before" != "$after" ]] || fail "evidence tamper did not change the file"
+expect_refusal "a generation whose evidence set moved fails verification" "Evidence set digest does not match the index" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+rm -rf "$SCRATCH"
+
+# ---------------------------------------------------------------------------
+# An uncommitted generation is ignored, and cleanable.
+# ---------------------------------------------------------------------------
+
+root="$(new_root)"
+publish "$root" green.json CAMP >/dev/null
+dir="$(campaign_dir "$root" CAMP)"
+
+# The shape an interrupted run leaves behind. It must not be counted, so the next
+# publish is generation 2 rather than 6, and the pointer must be unaffected.
+mkdir -p "$dir/generations/.incomplete-5-99999"
+cp "$dir/generations/1/$INDEX" "$dir/generations/.incomplete-5-99999/$INDEX"
+assert_equal "an uncommitted generation is not counted" "2" "$(publish "$root" green.json CAMP)"
+assert_equal "and does not disturb the pointer" "2" \
+    "$("$RECORD" latest --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root")"
+
+# Generation numbering past nine. Directory names sort lexically, so a scheme that
+# takes the last name rather than the largest number starts reusing 2 once 10 exists,
+# and every case above this one is satisfied by such a scheme because none of them
+# ever reaches ten generations.
+root="$(new_root)"
+publish "$root" green.json CAMP >/dev/null
+dir="$(campaign_dir "$root" CAMP)"
+for n in 2 3 4 5 6 7 8 9 10; do
+    cp -r "$dir/generations/1" "$dir/generations/$n"
+done
+assert_equal "numbering continues past nine rather than sorting lexically" "11" \
+    "$(publish "$root" green.json CAMP)"
+
+expect_success "clean removes the uncommitted generation" \
+    "$RECORD" clean --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+cases=$((cases + 1))
+[[ ! -d "$dir/generations/.incomplete-5-99999" ]] || fail "clean left the uncommitted generation in place"
+cases=$((cases + 1))
+[[ -d "$dir/generations/1" && -d "$dir/generations/2" ]] || fail "clean removed a committed generation"
+expect_success "committed generations still verify after a clean" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+
+# A digit-named directory missing its envelope is not a generation this recorder
+# could have produced, since a generation only becomes digit-named by an atomic
+# rename of a complete staging directory. It is corruption, and colliding with it
+# is refused rather than overwritten.
+root="$(new_root)"
+publish "$root" green.json CAMP >/dev/null
+dir="$(campaign_dir "$root" CAMP)"
+mkdir -p "$dir/generations/2"
+cp "$dir/generations/1/$INDEX" "$dir/generations/2/$INDEX"
+expect_refusal "a half-written generation directory is refused, not overwritten" "a committed generation is immutable" \
+    publish "$root" green.json CAMP
+
+# ---------------------------------------------------------------------------
+# The pointer moves last, and only forward past a completed publication.
+# ---------------------------------------------------------------------------
+
+root="$(new_root)"
+publish "$root" green.json CAMP >/dev/null
+publish "$root" green.json CAMP >/dev/null
+dir="$(campaign_dir "$root" CAMP)"
+pointer_before="$(sha256sum "$dir/$POINTER" | cut -d' ' -f1)"
+expect_refusal "a refused publish does not advance the pointer" "validator refused" \
+    publish "$root" heads-mixed.json CAMP
+pointer_after="$(sha256sum "$dir/$POINTER" | cut -d' ' -f1)"
+assert_equal "the pointer is byte-identical after a refusal" "$pointer_before" "$pointer_after"
+assert_equal "and still names generation 2" "2" \
+    "$("$RECORD" latest --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root")"
+
+# A pointer naming a generation that is not present is refused rather than
+# followed, which is the state a partially restored output root would be in.
+root="$(new_root)"
+publish "$root" green.json CAMP >/dev/null
+dir="$(campaign_dir "$root" CAMP)"
+rm -rf "$dir/generations/1"
+expect_refusal "latest refuses a pointer whose generation is gone" "Pointer names a generation that is not present" \
+    "$RECORD" latest --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+
+# ---------------------------------------------------------------------------
+# Determinism, and the argument grammar that keeps a campaign a path segment.
+# ---------------------------------------------------------------------------
+
+# The index is a pure function of its inputs. Two independent roots given the same
+# evidence, head, campaign, generation and stamp must produce the same bytes;
+# otherwise generations cannot be diffed and an unchanged one cannot be shown to be
+# unchanged.
+root_a="$(new_root)"; root_b="$(new_root)"
+publish "$root_a" green.json CAMP >/dev/null
+publish "$root_b" green.json CAMP >/dev/null
+assert_equal "the index is byte-reproducible across roots" \
+    "$(sha256sum "$(campaign_dir "$root_a" CAMP)/generations/1/$INDEX" | cut -d' ' -f1)" \
+    "$(sha256sum "$(campaign_dir "$root_b" CAMP)/generations/1/$INDEX" | cut -d' ' -f1)"
+
+root="$(new_root)"
+expect_refusal "a campaign identifier containing a separator is refused" "not a safe path segment" \
+    "$RECORD" publish --evidence "$FIXTURES/green.json" --bound-head "$HEAD_SHA" \
+        --campaign "a/b" --output-root "$root" --recorded-utc "$STAMP"
+expect_refusal "a campaign identifier containing a traversal is refused" "not a safe path segment" \
+    "$RECORD" publish --evidence "$FIXTURES/green.json" --bound-head "$HEAD_SHA" \
+        --campaign ".." --output-root "$root" --recorded-utc "$STAMP"
+expect_refusal "an abbreviated bound head is refused" "full 40-character commit SHA" \
+    "$RECORD" publish --evidence "$FIXTURES/green.json" --bound-head "428e346e" \
+        --campaign CAMP --output-root "$root" --recorded-utc "$STAMP"
+expect_refusal "a missing evidence set is refused" "Evidence set does not exist" \
+    "$RECORD" publish --evidence "$FIXTURES/does-not-exist.json" --bound-head "$HEAD_SHA" \
+        --campaign CAMP --output-root "$root" --recorded-utc "$STAMP"
+
+# Evidence outside the repository cannot be recorded by relative path, and
+# recording it by absolute path would put a private path into the artefact.
+cp "$FIXTURES/green.json" "$WORK/outside.json"
+expect_refusal "evidence outside the repository is refused" "lives outside the repository" \
+    "$RECORD" publish --evidence "$WORK/outside.json" --bound-head "$HEAD_SHA" \
+        --campaign CAMP --output-root "$root" --recorded-utc "$STAMP"
+
+# Reading state that does not exist is a refusal, not an empty success. This is
+# the same distinction the validator draws about an unread evidence set.
+root="$(new_root)"
+expect_refusal "latest refuses when no generation has been published" "No latest-generation pointer exists" \
+    "$RECORD" latest --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+expect_refusal "verify refuses when no generation has been published" "No committed generation exists" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+expect_refusal "verify refuses a generation number that does not exist" "Generation is missing its index" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --generation 9 --output-root "$root"
+
+if ((failures > 0)); then
+    printf '%s of %s recorder cases failed.\n' "$failures" "$cases" >&2
+    exit 1
+fi
+printf 'All %s recorder cases passed.\n' "$cases"

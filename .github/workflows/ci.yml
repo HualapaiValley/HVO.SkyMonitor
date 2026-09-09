@@ -112,6 +112,8 @@ jobs:
           ./scripts/test:coordination-guard
           ./scripts/test:pr-review-tools
           ./scripts/test:trx-evidence-contract
+          ./scripts/test:cameraagent-final-head-535
+          ./scripts/test:record-cameraagent-final-head-535
           ./scripts/test:ci-shell-syntax
           ./scripts/test:infra
           ./scripts/test:smoke-env

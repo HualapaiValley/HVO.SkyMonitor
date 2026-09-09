@@ -11,13 +11,18 @@ Built and usable:
 
 - `scripts/issue-535-final-head-aggregate.jq` — domain and cross-record predicates.
 - `scripts/validate:cameraagent-final-head-535` — the pure validator.
-- `scripts/test:cameraagent-final-head-535` — the deterministic fixture gate.
-- `tests/fixtures/issue-535/final-head/` — the fixtures that gate exercises.
+- `scripts/record:cameraagent-final-head-535` — the recorder that publishes a
+  validated generation, and verifies one that was published earlier.
+- `scripts/test:cameraagent-final-head-535` — the deterministic validator gate.
+- `scripts/test:record-cameraagent-final-head-535` — the deterministic recorder gate.
+- `tests/fixtures/issue-535/final-head/` — the fixtures both gates exercise.
 
-Not built, and deliberately so: the real aggregate generation. It is blocked by
-#719 and must be produced once, on the unchanged final head, after every #535
-blocker closes. The validator exists so that the generation step has something to
-run against, not so that a generation can be produced early.
+Not built, and deliberately so: the real aggregate content. The machinery that
+records a generation is complete and gated, but the campaign it will record must be
+produced once, on the unchanged final head, after every #535 blocker closes. #719
+governs that run, not this code. The tooling exists so that the generation step has
+something to run against and somewhere to put the result, not so that a real
+generation can be produced early.
 
 ## Running it
 
@@ -25,7 +30,20 @@ run against, not so that a generation can be produced early.
 ./scripts/validate:cameraagent-final-head-535 local --evidence EVIDENCE.json --bound-head <40-char-sha>
 ./scripts/validate:cameraagent-final-head-535 final --evidence EVIDENCE.json --bound-head <40-char-sha>
 ./scripts/test:cameraagent-final-head-535
+./scripts/test:record-cameraagent-final-head-535
 ```
+
+Publishing and re-reading a generation:
+
+```bash
+./scripts/record:cameraagent-final-head-535 publish --evidence EVIDENCE.json \
+    --bound-head <40-char-sha> --campaign <id> [--mode local|final]
+./scripts/record:cameraagent-final-head-535 latest --bound-head <40-char-sha> --campaign <id>
+./scripts/record:cameraagent-final-head-535 verify --bound-head <40-char-sha> --campaign <id>
+./scripts/record:cameraagent-final-head-535 clean  --bound-head <40-char-sha> --campaign <id>
+```
+
+Both gates run in CI, in the Quality job's static and lightweight contract checks.
 
 The validator is pure. It reads, recomputes and writes one canonical JSON result to
 standard output, and mutates nothing — no staging, no publication, no generation.
@@ -41,6 +59,46 @@ the other: a claimability state below the ceiling, a dirty tree, a nonzero comma
 receipt, and a field declared as free text. Two modes that never diverge are one
 check under two names, so each divergence is kept honest by a fixture rather than by
 the description.
+
+## What publication guarantees
+
+The validator owns the verdict; the recorder owns mutation and owns nothing else.
+`publish` runs the validator first and refuses to write anything at all when the
+validator refuses, so a generation that exists on disk is by construction one that
+passed. The verdict is copied into the index as the validator produced it, and
+`verify` recomputes it rather than reading it back.
+
+Three properties carry the layout, and each has a gate case that must refuse rather
+than a happy path that happens to pass.
+
+**An uncommitted generation is ignored.** A run in progress writes into
+`.incomplete-<n>-<pid>`, and a generation becomes visible only through an atomic
+rename into its digit-named directory. Numbering counts only digit-named directories
+holding both the index and the commit envelope, so an interrupted run cannot consume
+a generation number, cannot be read as a result, and is removed by `clean` while its
+committed neighbours survive.
+
+**A committed generation is immutable.** Publishing into an occupied generation
+number is refused rather than retried, because reaching one means discovery and the
+filesystem disagree. `verify` recomputes the index bytes and digest against the
+envelope, recomputes the digest of the evidence set the index names, and re-runs the
+validator against that evidence, comparing the fresh verdict to the recorded one.
+Tampering with the index, with the envelope, or with the evidence set behind them all
+fail, and each is a separate gate case because a check that compared a document only
+against itself would pass two of the three.
+
+**The pointer moves last.** `latest-generation.json` is rewritten only after the
+committed generation has been re-verified in place, so a reader following the pointer
+never reaches a generation that was not complete when the pointer named it. `latest`
+does not trust the pointer either: it re-verifies what the pointer names and compares
+the digest, and refuses when the generation is missing or has moved.
+
+Recorded paths are repository-relative, and evidence outside the repository is
+refused rather than recorded by absolute path, so a generation never carries a
+private path from the machine that produced it. Campaign identifiers must be a single
+safe path segment. With `--recorded-utc` pinned the index is a pure function of its
+inputs, which is what lets two generations be diffed and an unchanged one be shown to
+be unchanged.
 
 ## Rules that are easy to get backwards
 
