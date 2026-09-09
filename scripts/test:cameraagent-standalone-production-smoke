@@ -6,6 +6,8 @@ export LC_ALL=C
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/catalog-perf-root.sh
+source "$SCRIPT_DIR/lib/catalog-perf-root.sh"
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly PROCESSING_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
 readonly CAMERA_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
@@ -16,10 +18,10 @@ if [[ $# -ne 0 || -z "${HVO_CATALOG_PERF_ROOT:-}" ]]; then
     printf 'Usage: HVO_CATALOG_PERF_ROOT=INSTALLED_PRODUCTION_CATALOG_ROOT %s\n' "${0##*/}" >&2
     exit 2
 fi
-if [[ ! -d "$HVO_CATALOG_PERF_ROOT" ]]; then
-    printf 'Production catalog installation root does not exist: %s\n' "$HVO_CATALOG_PERF_ROOT" >&2
-    exit 2
-fi
+# The root must have the shape the container will demand, not merely be a readable
+# directory: the catalog version directory is also readable, and admitting it here is how a
+# startup failure becomes a login-endpoint timeout five minutes later (#735).
+require_catalog_installation_root "$HVO_CATALOG_PERF_ROOT" || exit 2
 for command in awk date dotnet git jq nproc python3 sha256sum sleep stat; do
     command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
 done

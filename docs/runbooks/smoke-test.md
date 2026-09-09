@@ -165,6 +165,18 @@ HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
   ./scripts/test:cameraagent-standalone-production-smoke
 ```
 
+`HVO_CATALOG_PERF_ROOT` and the Deployment CLI `--catalog-bundle` option take
+different levels of the same installed tree, and neither contract implies the
+other when read on its own. `HVO_CATALOG_PERF_ROOT` is the installation root
+that holds `versions/` and the `current` pointer, because the container resolves
+that pointer at startup. `--catalog-bundle` is the catalog version directory one
+level further in, for example
+`/var/lib/hvo/skymonitor/catalogs/hyg-v42-production/versions/hyg-v4.2-p3-s2-r1`,
+and it refuses the `current` link outright. Both levels exist and are readable,
+so passing the version directory to `HVO_CATALOG_PERF_ROOT` used to be admitted
+and then surfaced minutes later as a login-endpoint timeout. The campaign
+runners now refuse the wrong level immediately and name the mistake.
+
 The five-second arrival budget (each module start 4.9-5.5 s after the previous
 one under the minimum-start-interval cadence) is a cadence contract measured as
 wall-clock module-start intervals, so it is only meaningful on a quiescent host.
@@ -232,7 +244,9 @@ database, Data Protection directory, provisioning state, cookie, AgentId, and
 OTLP file collector. LogicHost and the shared SQL Server, Redis, MinIO, and
 Mailpit services must be absent.
 
-Stop LogicHost, install the approved Production HYG package, and run:
+Stop LogicHost, install the approved Production HYG package, and run.
+`HVO_CATALOG_PERF_ROOT` is the installation root here as well, not the catalog
+version directory:
 
 ```bash
 HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
