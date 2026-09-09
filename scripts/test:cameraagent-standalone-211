@@ -1183,6 +1183,51 @@ run_profile_trial \
     'false' \
     'false'
 
+# Issue #719. Two invocations over one durable root, named 'replay-719'. The first establishes the
+# capture and replays it in process and retains the root; the second recreates only CameraAgent
+# against that same root under LocalRunner, reads the first invocation's work out of durable state,
+# and asserts the three-way output identity before deleting the root.
+#
+# The order is load-bearing and the pair is not separable. The second invocation is told nothing
+# about the first: it finds the capture by requiring exactly one prior replay execution in the
+# shared root. Running these in the other order, or either one alone, therefore fails outright
+# rather than reporting a narrower pass.
+#
+# The capture counts are consumed only by the first invocation, which needs six captures to freeze
+# a five-input rolling window. The second captures nothing; it is given the same numbers because
+# the positional signature requires them, not because it uses them.
+run_profile_trial \
+    'replay-inprocess' \
+    "$CONFIG_TEMPLATE" \
+    'cameraagent-standalone-w6-asi676mc' \
+    'true' \
+    'HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.CanonicalArchivedReplayMaintainsLiveCadenceAsync' \
+    'issue-719-replay-inprocess.trx' \
+    1 \
+    6 \
+    'Off' \
+    'false' \
+    'false' \
+    'InProcess' \
+    'replay-719' \
+    'true'
+
+run_profile_trial \
+    'replay-localrunner' \
+    "$CONFIG_TEMPLATE" \
+    'cameraagent-standalone-w6-asi676mc' \
+    'true' \
+    'HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.CanonicalArchivedReplayMaintainsLiveCadenceAsync' \
+    'issue-719-replay-localrunner.trx' \
+    1 \
+    6 \
+    'Off' \
+    'false' \
+    'false' \
+    'LocalRunner' \
+    'replay-719' \
+    'false'
+
 jq -s '
   {
     schemaVersion: "issue-211-final-central-traffic-summary-v1",
