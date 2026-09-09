@@ -949,7 +949,14 @@ fi
 # half never, so trimming main out of the push triggers would leave every release unqualifiable
 # with both halves still passing their own tests.
 ci_push_branches="$(sed -n '/^  push:/,/^  [a-z_]*:/p' "$workflow" | grep -m1 -F '    branches:')"
-grep -Fq 'main' <<< "$ci_push_branches" || {
+# Match main as a discrete list entry rather than as a substring. A substring match accepts a push
+# branches list of only 'maintenance/**', which contains the letters but never produces a main-push
+# run, so the guard would pass on exactly the regression it exists to catch. A branches list written
+# as a block sequence leaves no bracket to strip and fails here loudly, which is the safe direction.
+ci_push_entries="$(sed -e 's/[^[]*\[//' -e 's/\].*//' <<< "$ci_push_branches" \
+  | tr ',' '\n' \
+  | sed -e 's/^[[:space:]]*["'"'"']*//' -e 's/["'"'"']*[[:space:]]*$//')"
+grep -Fxq 'main' <<< "$ci_push_entries" || {
   printf 'CI must run on pushes to main; release qualification requires a main-push run for the release SHA.\n' >&2
   exit 1
 }
