@@ -34,10 +34,16 @@ must not redefine its policy inconsistently.
   its lane. None of those rounds could have found it, because none of them ran
   it. A check that cannot speak until after the finalization lock is taken is a
   check bought at the highest available price.
-- Run them under Bash 5.1 or newer. `scripts/ci:require` and `scripts/ci:classify`
-  use `declare -A`, which the macOS system Bash 3.2 does not have, and
-  `scripts/ci:shell-syntax` refuses to run under it rather than reporting a
-  clean pass it did not perform. On macOS invoke the Homebrew Bash explicitly.
+- Run them under Bash 5.1 or newer. `scripts/ci:require` uses `declare -A`,
+  which the macOS system Bash 3.2 does not have, and `scripts/ci:shell-syntax`
+  refuses to run under 3.2 rather than reporting a clean pass it did not
+  perform. On macOS invoke the Homebrew Bash explicitly.
+- `scripts/test:pr-review-tools` exercises `scripts/pr:dispatch-review`, which
+  requires `flock` to serialize review dispatch. macOS does not ship `flock`, so
+  a stock Mac cannot complete this now-mandatory gate: it exits 1 saying `flock
+  is required for serialized review dispatch`, which reads as a guard failure
+  rather than as a missing tool. Install it with `brew install flock`, alongside
+  `brew install bash` for the floor above.
 - Run the guards again on the base-synced head, in the local candidate gate,
   before requesting the base-sync review. This settles the question PR #740's
   base-sync reviewer recorded rather than answered: a base-sync review verifies
@@ -56,10 +62,16 @@ must not redefine its policy inconsistently.
   protected CI. Do not repeatedly run unchanged long suites or performance
   harnesses.
 - Select the local gate set with `scripts/ci:classify`, not by reading the diff,
-  whenever it reports `complete=true`. Run it on the review range and record its
-  output alongside the gate results; a ledger that lists gates without naming
-  the selector that chose them is incomplete evidence, because a gate that was
-  never selected then shows up as an absence rather than as a silence. The
+  whenever it classifies the range successfully. Run it on the review range and
+  record its output alongside the gate results; a ledger that lists gates
+  without naming the selector that chose them is incomplete evidence, because a
+  gate that was never selected then shows up as an absence rather than as a
+  silence. `complete` is not a condition on using the classifier. It governs one
+  thing, whether the complete solution matrix is required, and `complete=false`
+  is the ordinary result for a change confined to one component's paths, where
+  the lane flags the classifier sets are exactly the selection being asked for.
+  Requiring `complete=true` before trusting it would send agents back to reading
+  the diff in the case the classifier serves best. The
   classifier is the only selector in this repository that is not bounded by the
   diff, and until the ready transition it is the only one available at all: the
   `changes` job is gated on `draft == false`, so through the whole convergence

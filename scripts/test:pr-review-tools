@@ -45,11 +45,25 @@ if [[ "$1" == api && "$*" == *issues/comments/* ]]; then
     # same single body the mock could not tell a pinned comment from any other, so a
     # tool that ignored the ID entirely passed.
     comment_id="${2##*/}"
+    # This endpoint is repository-wide, not per-issue, so the fixture has to be able to
+    # serve a comment that belongs to a different pull request. Every comment gets a PR
+    # number recorded beside its body, defaulting to the fixture PR; without that the
+    # suite had no such thing as a foreign comment and could not catch a tool that read
+    # another pull request's comment into this one's record. The `issue_url` field is
+    # emulated only when the caller's jq expression asks for it, so a caller that still
+    # asks for the body alone keeps working.
+    comment_pr=700
+    [[ ! -f "${MOCK_COMMENT_DIR:-/nonexistent}/$comment_id.pr" ]] ||
+        comment_pr="$(<"$MOCK_COMMENT_DIR/$comment_id.pr")"
     if [[ -f "${MOCK_COMMENT_DIR:-/nonexistent}/$comment_id.txt" ]]; then
-        printf '%s\n' "$(<"$MOCK_COMMENT_DIR/$comment_id.txt")"
-        exit 0
+        comment_body="$(<"$MOCK_COMMENT_DIR/$comment_id.txt")"
+    else
+        comment_body="$(<"$MOCK_COMMENT_BODY")"
     fi
-    printf '%s\n' "$(<"$MOCK_COMMENT_BODY")"
+    if [[ "$*" == *issue_url* ]]; then
+        printf 'https://api.github.com/repos/%s/issues/%s\n' "$MOCK_API_REPO" "$comment_pr"
+    fi
+    printf '%s\n' "$comment_body"
     exit 0
 fi
 if [[ "$1" == api && "$*" == *'--method GET'* && "$*" == *issues/700/comments* ]]; then
@@ -375,6 +389,16 @@ grep -Fqx "Exact review range: merge resolution $correction_head..$post_sync_hea
 # before this change exists in a ledger with no request comment to read back, so
 # "the tool's own request is not there" is the common case and not the exotic one,
 # and what the tool does there has to be demonstrated rather than asserted.
+# A comment is served by the mock as belonging to the fixture pull request unless it
+# is marked otherwise. Marking is what makes a foreign comment expressible at all.
+mark_comment_on_pr() {
+    printf '%s\n' "$2" > "$MOCK_COMMENT_DIR/$1.pr"
+}
+
+unmark_comment() {
+    rm -f "$MOCK_COMMENT_DIR/$1.pr"
+}
+
 expect_fail() {
     local label="$1" needle="$2"
     shift 2
@@ -475,7 +499,7 @@ expect_fail 'Pinned request for another command ID' \
 printf '## Review completed — verdict: CLEAN\nDispatch: CMD-OTHER-999\nNothing carried forward.\n' > "$work_root/other-report.txt"
 write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/other-report.txt"
 expect_fail 'Named report for another command ID' \
-    'does not echo CMD-REVIEW-001; it is not the report for this round' \
+    'does not echo CMD-REVIEW-001 as a whole command ID' \
     "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
     --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
     --evidence-pack "$work_root/other-report-pack.md" --output "$work_root/other-report.request"
@@ -493,11 +517,127 @@ expect_fail 'Unnamed prior report' \
 [[ ! -e "$work_root/unnamed.request" ]] ||
     fail 'Unnamed-prior-report case wrote a request file.'
 
+# 5c. The named report is the round's own dispatch ledger entry. It contains the
+#     round's command ID by construction, because the dispatcher quotes the request
+#     this tool emitted and that request carries the ID, so the echo check passed it as
+#     the report. That is the single comment class naming the report exists to exclude,
+#     arriving through the only check left on it. The tool cannot recognise a report,
+#     but it can recognise its own output, which is the premise the head half already
+#     rests on: refuse a named report carrying the two fields this tool always writes.
+write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/initial.request"
+expect_fail 'Dispatch entry named as the prior report' \
+    'the two fields this tool writes into every request it emits' \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
+    --evidence-pack "$work_root/own-output-pack.md" --output "$work_root/own-output.request"
+
+# 5d. The echo check is on a whole command ID, not a substring. CMD-REVIEW-001 is a
+#     substring of CMD-REVIEW-0010, so a report belonging to a differently named round
+#     passed as this round's report while the round numbers say plainly that it is not.
+printf '## Review completed — verdict: corrections required\nDispatch: CMD-REVIEW-0010\nFinding Q1 unresolved.\n' > "$work_root/prefix-report.txt"
+write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/prefix-report.txt"
+expect_fail 'Named report for a command ID this one is a prefix of' \
+    'does not echo CMD-REVIEW-001 as a whole command ID' \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
+    --evidence-pack "$work_root/prefix-pack.md" --output "$work_root/prefix.request"
+
+# 5e. One comment carrying two fenced blocks. A comment that quotes a stale request
+#     above the real one is an ordinary thing for a human to write. The reader used to
+#     clear its capture flag at a closing fence instead of stopping, so both blocks were
+#     concatenated into one and the first block's fields won. The protection is not the
+#     stopping as such: it is that the block becomes self-consistent, so the dispatch
+#     command ID checked against this round is carried by the same block the head was
+#     read out of, instead of being supplied by a different block concatenated with it.
+#     Under the old reader the quoted block supplied the head and the real block
+#     supplied the matching command ID, so the guard passed on a head the tool had not
+#     written for this round. The quoted block below is an excerpt carrying no dispatch
+#     line of its own, which is what makes this case discriminate: a quotation that
+#     carries a different command ID is caught by the equality check whether the blocks
+#     were concatenated or not, so it would pass with the defect still present.
+stale_head="$(git -C "$fixture_repo" rev-parse "$base")"
+{
+    printf 'The request below was superseded. Quoted for the record:\n\n'
+    printf '%s\n' '```text'
+    printf 'Exact review range: %s..%s\nCurrent head SHA: %s\n' \
+        "$base" "$stale_head" "$stale_head"
+    printf '%s\n\n' '```'
+    printf 'The real request for this round is:\n\n'
+    printf '%s\n' '```text'
+    cat "$work_root/initial.request"
+    printf '%s\n' '```'
+} > "$work_root/two-block-comment.txt"
+write_pr_fixture "$base" "$correction_head" "$work_root/two-block-comment.txt" "$work_root/initial-report.txt"
+expect_fail 'Two fenced blocks in one comment' \
+    "records dispatch command ID 'none', not CMD-REVIEW-001" \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-request-comment "${LEDGER_IDS[0]}" \
+    --previous-report-comment "${LEDGER_IDS[1]}" \
+    --evidence-pack "$work_root/two-block-pack.md" --output "$work_root/two-block.request"
+[[ ! -e "$work_root/two-block.request" ]] ||
+    fail 'A comment carrying two fenced blocks produced a request.'
+! grep -Fq "$stale_head" "$work_root/expect-fail.err" ||
+    fail 'The quoted stale head reached the output at all.'
+
+# 5f. The comment endpoint is repository-wide. A comment on another pull request
+#     fetches cleanly through it and its fields were read into this pull request's
+#     record under a provenance line naming this tool as their source. The head half
+#     rests on the claim that this tool wrote the comment carrying the value for this
+#     round on this PR; until the fetched comment is asked which issue it belongs to,
+#     that claim is an assumption about authorship rather than something checked. All
+#     three caller-named comments read through the same endpoint and had the same hole.
+write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/initial-report.txt"
+mark_comment_on_pr "${LEDGER_IDS[0]}" 824
+expect_fail 'Pinned request comment from another pull request' \
+    "names a comment on another issue or pull request" \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-request-comment "${LEDGER_IDS[0]}" \
+    --previous-report-comment "${LEDGER_IDS[1]}" \
+    --evidence-pack "$work_root/foreign-request-pack.md" --output "$work_root/foreign-request.request"
+grep -Fq "/issues/824" "$work_root/expect-fail.err" ||
+    fail 'The foreign-comment refusal did not name the issue the comment actually belongs to.'
+unmark_comment "${LEDGER_IDS[0]}"
+
+mark_comment_on_pr "${LEDGER_IDS[1]}" 824
+expect_fail 'Named report comment from another pull request' \
+    "names a comment on another issue or pull request" \
+    "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
+    --evidence-pack "$work_root/foreign-report-pack.md" --output "$work_root/foreign-report.request"
+unmark_comment "${LEDGER_IDS[1]}"
+
+# 5g. A caller-asserted head that contradicts the tool's own record. The request
+#     comment outranks the assertion and still supplies the value, which is right, but
+#     discarding the contradiction in silence throws away the one signal that says one
+#     of the two is wrong about which round is being corrected.
+write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/initial-report.txt"
+"$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
+    --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
+    --previous-head "$stale_head" \
+    --evidence-pack "$work_root/contradiction-pack.md" --output "$work_root/contradiction.request" \
+    2> "$work_root/contradiction.err"
+grep -Fqx "Exact review range: $initial_head..$correction_head (correction delta and its concrete interactions)" "$work_root/contradiction.request" ||
+    fail 'A contradicting --previous-head displaced the head recorded by this tool.'
+grep -Fq "warning: --previous-head asserted $stale_head" "$work_root/contradiction.err" ||
+    fail 'A discarded caller-asserted head was dropped without saying so.'
+grep -Fq "records $initial_head" "$work_root/contradiction.err" ||
+    fail 'The discarded-head warning did not name the value that was used instead.'
+
 # 6. "The finding pattern matched no line" and "the prior review recorded no findings"
 #    are opposite states, and the emitted request used to assert the second whenever
 #    the first happened. A reviewer reading that has been told the previous round was
 #    clean by a tool that only failed to read it.
-printf '## Initial review completed — verdict: CLEAN\nDispatch: CMD-REVIEW-001\nNothing to report; the range is clean.\n' > "$work_root/silent-report.txt"
+#    The footnote is the case, not decoration. Every comment in this repository is
+#    required to end with one naming the authoring agent and its participant ID, and
+#    both halves of the finding pattern matched it: the host segment of
+#    `...:mac-m5:...` scored case-insensitively as severity code M5, and the word
+#    `Findings` that opens the footnote matched the `finding` alternative. A clean
+#    prior round could therefore never reach the honest-empty branch, and the footnote
+#    was handed to the next reviewer as the carried-finding checklist.
+#    The two halves are pinned separately. The prose line names a host and carries no
+#    participant ID, so the attribution filter does not reach it and only the anchor
+#    can stop it; the footnote carries a participant ID and only the filter can.
+printf '## Initial review completed — verdict: CLEAN\nDispatch: CMD-REVIEW-001\nNothing to report; the range is clean.\nRan on mac-m5 with a substituted temp root.\n\n---\n*Findings by claude-code:anthropic:mac-m5:3d3160bc — review agent, CMD-REVIEW-001.*\n' > "$work_root/silent-report.txt"
 write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/silent-report.txt"
 "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
     --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
@@ -508,6 +648,8 @@ grep -Fq 'This is not an attestation that the prior review recorded no findings'
     fail 'An unmatched finding pattern was still presented as a clean prior round.'
 ! grep -Fq 'prior report states no findings' "$work_root/silent.request" ||
     fail 'The emitted request still attests that the prior report states no findings.'
+! grep -Fq 'mac-m5' "$work_root/silent.request" ||
+    fail 'The attribution footnote was carried into the emitted request as a finding.'
 
 # 7. An initial review has no previous round, so the previous-round options are not
 #    quietly ignored. Accepting and discarding them would let a caller believe a head
@@ -609,8 +751,44 @@ $request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 900
 grep -Fqx "Current head SHA: $initial_head" "$work_root/replayed-unfenced.request" ||
     fail 'Replay did not reproduce an unfenced request comment.'
 
+# An unfenced request whose own interpolated files contain a ```text block. Deciding
+# fenced-or-not on the presence of a fence hands back the interpolated example and
+# loses the request around it, which is the mirror of the truncation the longer fence
+# fixes on the emit side and reaches the requests already in this repository's
+# ledgers. The fence cannot say which block is the request; the field that defines a
+# request can.
+{
+    printf 'Exact review range: %s..%s\n' "$base" "$initial_head"
+    printf 'Current head SHA: %s\n' "$initial_head"
+    printf 'Tests: the reviewer asked for the output, so it is pasted in:\n\n'
+    printf '%s\n' '```text'
+    printf 'Passed! 1812 passed, 49 skipped, 0 failed\n'
+    printf '%s\n' '```'
+} > "$MOCK_COMMENT_BODY"
+$request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 \
+    --output "$work_root/replayed-inner-fence.request"
+grep -Fqx "Current head SHA: $initial_head" "$work_root/replayed-inner-fence.request" ||
+    fail 'An unfenced request carrying a fenced block of its own lost the request around it.'
+grep -Fq 'Passed! 1812 passed, 49 skipped, 0 failed' "$work_root/replayed-inner-fence.request" ||
+    fail 'An unfenced request carrying a fenced block of its own lost the block.'
+
 # A comment that is neither is still refused, so the widened reader did not become no
 # reader at all.
+# Replay reads through the same repository-wide endpoint as the other two named
+# comments, so it had the same hole: a comment on another pull request replayed
+# cleanly into this one's record.
+cp "$work_root/initial.request" "$MOCK_COMMENT_DIR/9101.txt"
+mark_comment_on_pr 9101 824
+if $request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9101 \
+    --output "$work_root/replayed-foreign.request" 2> "$work_root/replayed-foreign.err"; then
+    printf 'Replay accepted a comment belonging to another pull request.\n' >&2
+    exit 1
+fi
+grep -Fq 'names a comment on another issue or pull request' "$work_root/replayed-foreign.err" ||
+    { printf 'Replay of a foreign comment failed for some other reason.\n' >&2; exit 1; }
+unmark_comment 9101
+rm -f "$MOCK_COMMENT_DIR/9101.txt"
+
 printf 'Looks good to me.\n' > "$MOCK_COMMENT_BODY"
 if $request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 \
     --output "$work_root/replayed-prose.request" 2> "$work_root/replayed-prose.err"; then
@@ -673,6 +851,56 @@ grep -Fqx "ALREADY_CONSUMED CMD-REVIEW-001 $participant launch-comment=9003" "$w
     fail 'Retry did not report the already-consumed command and its recorded launch comment.'
 [[ "$(<"$MOCK_POST_COUNT")" == 4 ]] ||
     fail 'Retry posted more comments instead of reusing the four already recorded.'
+
+# The request is quoted into a fenced block by the dispatcher and read back out of it
+# by the request tool in the round that follows, and the content it quotes is not fence
+# free. Caller-supplied evidence and test files routinely carry pasted command output
+# inside fenced blocks, and those files are interpolated into the request itself. A
+# three-backtick opener is closed by the first fence inside that content, so the
+# request read back was truncated there while still carrying enough fields to look
+# complete. The writer now opens with a fence longer than anything in the content and
+# the reader closes only on one at least that long, which is what fenced-block nesting
+# is for. This case is the round trip end to end: real request, real dispatcher, real
+# reader, one variable that a fence-blind pair cannot survive.
+{
+    printf 'Focused tests passed. Command output pasted in as reviewers ask for:\n\n'
+    printf '%s\n' '```text'
+    printf 'dotnet test --filter TestCategory=Unit\n'
+    printf 'Passed! 1812 passed, 49 skipped, 0 failed\n'
+    printf '%s\n' '```'
+} > "$work_root/nested-tests.txt"
+write_pr_fixture "$base" "$initial_head"
+"$request_tool" "${common_args[@]}" --mode initial --command-id CMD-REVIEW-NESTED \
+    --tests-file "$work_root/nested-tests.txt" --output "$work_root/nested.request"
+grep -Fqx '```' "$work_root/nested.request" ||
+    fail 'The nested-fence request fixture carries no fenced block, so it cannot pin the case.'
+
+jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-NESTED",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command-nested.json"
+# The dispatcher derives the reviewer's result path from the log file, so the mock
+# reviewer has to write where this dispatch will look rather than where the last one did.
+export MOCK_REVIEW_RESULT="$work_root/logs/nested.final.md"
+$dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/nested.request" \
+    --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
+    --log-file "$work_root/logs/nested.jsonl" --registry "$work_root/registry.json" \
+    --command "$work_root/command-nested.json" --receipts "$work_root/receipts.json" \
+    --reviewer-id "$participant" --resume-session "$resume_session" \
+    > "$work_root/nested-dispatch.json"
+
+jq -r '[.[] | select(.body | contains("## Review request — generated dispatch")) | select(.body | contains("CMD-REVIEW-NESTED"))] | last | .body' \
+    "$MOCK_LEDGER" > "$MOCK_COMMENT_DIR/9105.txt"
+grep -Eq '^`{4,}text$' "$MOCK_COMMENT_DIR/9105.txt" ||
+    fail 'The dispatcher opened the quoted request with a fence no longer than the fences inside it.'
+$request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9105 \
+    --output "$work_root/nested-replay.request"
+grep -Fqx "Current head SHA: $initial_head" "$work_root/nested-replay.request" ||
+    fail 'A request quoting fenced content did not survive the round trip: the head field is gone.'
+grep -Fq "Dispatch command ID and target participant ID: CMD-REVIEW-NESTED / $participant" "$work_root/nested-replay.request" ||
+    fail 'A request quoting fenced content did not survive the round trip: the dispatch field is gone.'
+grep -Fq 'Passed! 1812 passed, 49 skipped, 0 failed' "$work_root/nested-replay.request" ||
+    fail 'The fenced block inside the request was not returned as part of it.'
+diff "$work_root/nested.request" "$work_root/nested-replay.request" > /dev/null ||
+    fail 'The replayed request is not byte-identical to the one the dispatcher quoted.'
+rm -f "$MOCK_COMMENT_DIR/9105.txt"
 
 printf '[]\n' > "$MOCK_LEDGER"
 : > "$MOCK_EVENT_LOG"

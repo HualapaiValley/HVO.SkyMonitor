@@ -400,8 +400,11 @@ downgrade a durable or measured-path change to avoid its affected gate.
    invalidated portion; preserve unaffected evidence only when its recorded
    boundary did not change.
    Choose the gate set with `scripts/ci:classify` on the review range, not by
-   reading the diff, whenever it reports `complete=true`, and record which
-   selector produced the set alongside the results. A ledger that lists gate
+   reading the diff, whenever it classifies the range successfully, and record
+   which selector produced the set alongside the results. `complete` is not a
+   condition on using it; it says whether the complete solution matrix is
+   required, and `complete=false` with authoritative lane flags is the ordinary
+   result for a component-scoped change. A ledger that lists gate
    results without naming the selector cannot distinguish a gate that passed
    from one that was never chosen, so a missing gate reads as silence rather
    than as an absence. This matters most exactly where it is least visible: the
@@ -410,8 +413,8 @@ downgrade a durable or measured-path change to avoid its affected gate.
    other view -- the implementer's and the reviewer's lenses alike -- is bounded
    by the diff.
 4. **Review correction:** run the reproducer, focused regression, and full
-   affected gate, with the affected set taken from the classifier when it
-   reports `complete=true`. Review the correction delta before final CI. Let protected CI
+   affected gate, with the affected set taken from the classifier whenever it
+   classifies the delta successfully. Review the correction delta before final CI. Let protected CI
    provide the complete classifier-selected plan unless the
    correction changes shared contracts, migrations, test infrastructure,
    category/coverage logic, or another cross-cutting boundary with uncertain
