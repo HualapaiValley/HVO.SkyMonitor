@@ -556,6 +556,19 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.Inconclusive("Run through scripts/test:cameraagent-standalone-211.");
         }
 
+        // Evaluate the browser precondition before any host interaction. Placed after the
+        // container reads, login and owner bootstrap it used to follow, this skipped only after
+        // starting containers, authenticating and mutating owner provisioning state -- and the
+        // skip is reported as success, so nothing downstream revealed that the run had got that
+        // far. The placement now matches where FullCatalogAsi676StandaloneAsync puts its own
+        // Playwright check; the preconditions as a whole still differ, because that method also
+        // gates on OperatingSystem.IsLinux() and this one never has.
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        if (!File.Exists(playwright.Chromium.ExecutablePath))
+        {
+            Assert.Inconclusive("Install the pinned Playwright Chromium with scripts/test:cameraagent-ui --install-browser.");
+        }
+
         var baseUri = new Uri(baseUriText, UriKind.Absolute);
         var runtimeRoot = RequiredPath("HVO_ISSUE_211_RUNTIME_ROOT");
         var evidenceRoot = RequiredPath("HVO_ISSUE_211_EVIDENCE_ROOT");
@@ -571,11 +584,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
         var ownerPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
             session, password, "Mono8 control").ConfigureAwait(false);
-        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive("Install the pinned Playwright Chromium with scripts/test:cameraagent-ui --install-browser.");
-        }
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
