@@ -2586,7 +2586,12 @@ public sealed class ProcessingGraphOperationsTests
         try
         {
             var live = await CompleteProjectedSceneLiveAsync(root, new string('9', 64), new string('F', 64)).ConfigureAwait(false);
-            DuplicateProjectedSceneOutput(root, live.OutputIdentity);
+            // Ambiguity is reachable only between two live-produced candidates (#725), so the duplicate is
+            // associated with the capture's own live execution at the next free ordinal of the same node.
+            var duplicateIdentity = new string('d', 64);
+            DuplicateProjectedSceneOutput(root, live.OutputIdentity, duplicateIdentity);
+            AttachProjectedSceneOutputToExecution(
+                root, ReadExecutionId(root, live.CaptureId, "Live"), duplicateIdentity);
             using var provider = CreateProvider(root);
             await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
@@ -2598,6 +2603,101 @@ public sealed class ProcessingGraphOperationsTests
                     "owner-test",
                     CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             StringAssert.Contains(exception.Message, "ambiguous", StringComparison.Ordinal);
+            Assert.AreEqual(0L, CountRows(root, "replay_executions"));
+            Assert.AreEqual(0L, CountRows(root, "processing_replay_work"));
+            Assert.AreEqual(0L, CountRows(root, "processing_execution_output_input_pins"));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayPinsLiveProjectedSceneProductAndIgnoresReplayProducedOne()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-live-only-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var live = await CompleteProjectedSceneLiveAsync(root, new string('a', 64), new string('4', 64)).ConfigureAwait(false);
+            Guid firstReplayExecutionId;
+            using (var provider = CreateProvider(root))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var first = await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-live-only-first",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false);
+                firstReplayExecutionId = first.Execution.ExecutionId;
+                var detail = await RunReplayToCompletionAsync(provider, firstReplayExecutionId).ConfigureAwait(false);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, detail.Execution.Status);
+            }
+
+            // A future recipe or serializer change makes a replay commit a second available product under a
+            // different identity. It is genuinely replay-produced: its only execution association is the replay
+            // that has just completed. Without the live restriction this row makes every later replay of the
+            // capture ambiguous, which is what #725 records as stranding.
+            var replayProducedIdentity = new string('7', 64);
+            DuplicateProjectedSceneOutput(root, live.OutputIdentity, replayProducedIdentity);
+            AttachProjectedSceneOutputToExecution(root, firstReplayExecutionId, replayProducedIdentity);
+            Assert.HasCount(2, ReadProjectedSceneOutputs(root, live.CaptureId),
+                "the fixture must retain two available projected-scene products, or nothing is being excluded");
+            var associations = ReadProjectedSceneOutputExecutionClasses(root, live.CaptureId);
+            Assert.IsTrue(associations.Contains((live.OutputIdentity, "Live")),
+                "the retained live product must be associated with the capture's live execution");
+            Assert.IsTrue(associations.Contains((replayProducedIdentity, "Replay")),
+                "the excluded product must be associated with a replay execution");
+            Assert.IsFalse(associations.Contains((replayProducedIdentity, "Live")),
+                "the excluded product must never be associated with a live execution");
+
+            using (var provider = CreateProvider(root))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var second = await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-live-only-second",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false);
+                var pins = ReadOutputPins(root, second.Execution.ExecutionId, "projected-scene");
+                Assert.HasCount(1, pins, "a replay-produced product must not make the committed source ambiguous");
+                Assert.AreEqual((1, 0, live.OutputIdentity), pins[0], "the live-produced product is the one pinned");
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayReportsRenamedProjectedSceneNodeRatherThanNothingRetained()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-renamed-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var live = await CompleteProjectedSceneLiveAsync(root, new string('f', 64), new string('5', 64)).ConfigureAwait(false);
+            // The graph revision renamed the projected-scene node after the live commit, so the retained product
+            // belongs to the capture but not to the node id the replay resolves against.
+            RenameProjectedSceneOutputNode(root, live.CaptureId, "projected-scene-v2");
+            using var provider = CreateProvider(root);
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+
+            var exception = await Assert.ThrowsExactlyAsync<ProcessingReplaySourceException>(async () =>
+                await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(live.CaptureId, live.RevisionId, live.ArtifactId),
+                    "projected-scene-renamed",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            StringAssert.Contains(exception.Message, "renamed the node", StringComparison.Ordinal);
+            StringAssert.Contains(exception.Message, "'projected-scene-v2'", StringComparison.Ordinal);
             Assert.AreEqual(0L, CountRows(root, "replay_executions"));
             Assert.AreEqual(0L, CountRows(root, "processing_replay_work"));
             Assert.AreEqual(0L, CountRows(root, "processing_execution_output_input_pins"));
@@ -2857,7 +2957,7 @@ public sealed class ProcessingGraphOperationsTests
             outputs[0].SidecarRelativePath);
     }
 
-    private static void DuplicateProjectedSceneOutput(string root, string outputIdentity)
+    private static void DuplicateProjectedSceneOutput(string root, string outputIdentity, string duplicateIdentity)
     {
         using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
         connection.Open();
@@ -2875,10 +2975,86 @@ public sealed class ProcessingGraphOperationsTests
             DROP TABLE duplicate;
             """;
         command.Parameters.AddWithValue("$identity", outputIdentity);
-        command.Parameters.AddWithValue("$duplicate", new string('d', 64));
+        command.Parameters.AddWithValue("$duplicate", duplicateIdentity);
         command.Parameters.AddWithValue("$artifact", Guid.NewGuid().ToString("N"));
         command.Parameters.AddWithValue("$content", new string('e', 64));
         command.ExecuteNonQuery();
+    }
+
+    private static Guid ReadExecutionId(string root, Guid captureId, string executionClass)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT execution_id FROM processing_executions
+            WHERE capture_id = $capture AND execution_class = $class
+            ORDER BY accepted_unix_ms DESC, execution_id DESC;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$class", executionClass);
+        using var reader = command.ExecuteReader();
+        Assert.IsTrue(reader.Read(), $"the fixture requires a {executionClass} execution for the capture");
+        return Guid.ParseExact(reader.GetString(0), "N");
+    }
+
+    /// <summary>
+    /// Associates an already-committed output with an execution's projected-scene node at the next free ordinal,
+    /// which is how a producing execution records what it committed. Fixtures use it to place a candidate on a
+    /// chosen side of the live/replay boundary without inventing an execution row by hand.
+    /// </summary>
+    private static void AttachProjectedSceneOutputToExecution(string root, Guid executionId, string outputIdentity)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO processing_execution_outputs(
+                execution_id, node_id, output_ordinal, output_identity_sha256, published_flag)
+            SELECT $execution, 'projected-scene', COALESCE(MAX(output_ordinal), -1) + 1, $output, 0
+            FROM processing_execution_outputs
+            WHERE execution_id = $execution AND node_id = 'projected-scene';
+            """;
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$output", outputIdentity);
+        Assert.AreEqual(1, command.ExecuteNonQuery());
+    }
+
+    /// <summary>Renames the node a capture's committed projected-scene products were produced under.</summary>
+    private static void RenameProjectedSceneOutputNode(string root, Guid captureId, string renamedNodeId)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE processing_outputs SET node_id = $renamed
+            WHERE capture_id = $capture AND node_id = 'projected-scene';
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$renamed", renamedNodeId);
+        Assert.AreEqual(1, command.ExecuteNonQuery());
+    }
+
+    private static List<(string OutputIdentity, string ExecutionClass)> ReadProjectedSceneOutputExecutionClasses(
+        string root, Guid captureId)
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT DISTINCT output.output_identity_sha256, execution.execution_class
+            FROM processing_outputs output
+            JOIN processing_execution_outputs association
+                ON association.output_identity_sha256 = output.output_identity_sha256
+            JOIN processing_executions execution ON execution.execution_id = association.execution_id
+            WHERE output.capture_id = $capture
+            ORDER BY output.output_identity_sha256, execution.execution_class;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        using var reader = command.ExecuteReader();
+        var rows = new List<(string OutputIdentity, string ExecutionClass)>();
+        while (reader.Read()) rows.Add((reader.GetString(0), reader.GetString(1)));
+        return rows;
     }
 
     private static long CountRows(string root, string table)
