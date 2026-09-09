@@ -460,6 +460,7 @@ internal sealed class FrameProcessingWorker
                                 completedUtc,
                                 duration,
                                 outcome?.Status,
+                                context.CurrentExecutionRoute,
                                 cancellationToken).ConfigureAwait(false);
                         }
                         if (item.Execution?.AllowAutomaticPublication != false &&

@@ -109,6 +109,11 @@ public sealed record ReplayExecutionNodeView(
     IReadOnlyList<ReplayExecutionInputView> Inputs,
     IReadOnlyList<ReplayExecutionOutputView> Outputs);
 
+/// <summary>
+/// One attempt as the operator sees it. <c>ExecutionRoute</c> is the recorded route the attempt took, which is
+/// what makes issue #799 answerable from a read: the stored value is useless if every projection drops it. The
+/// route is not lease or process identity, so unlike the lease owner it is safe to surface.
+/// </summary>
 public sealed record ReplayExecutionAttemptView(
     int AttemptNumber,
     string Status,
@@ -116,7 +121,8 @@ public sealed record ReplayExecutionAttemptView(
     string? Reason,
     DateTimeOffset StartedUtc,
     DateTimeOffset? CompletedUtc,
-    TimeSpan? Duration);
+    TimeSpan? Duration,
+    string ExecutionRoute);
 
 public sealed record ReplayExecutionInputView(
     int Ordinal,
@@ -456,7 +462,8 @@ internal sealed class CameraAgentReplayUiService(
                 Sanitize(attempt.Reason),
                 attempt.StartedUtc,
                 attempt.CompletedUtc,
-                attempt.Duration))],
+                attempt.Duration,
+                attempt.ExecutionRoute.ToString()))],
             [.. node.Inputs.Select(static input => new ReplayExecutionInputView(
                 input.Ordinal,
                 input.WindowPosition,

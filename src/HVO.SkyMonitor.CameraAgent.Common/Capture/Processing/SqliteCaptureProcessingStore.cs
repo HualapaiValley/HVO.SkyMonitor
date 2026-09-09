@@ -185,7 +185,7 @@ internal sealed record CaptureProcessingOperationalState(
 
 internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 {
-    internal const int CurrentSchemaVersion = 7;
+    internal const int CurrentSchemaVersion = 8;
     internal const int MaximumGalleryInputsPerNode = 8;
     internal const int MaximumProductQueryCount = 128;
     internal const int MaximumOutputSourceCount = LayeredPresentationJson.MaximumSourceArtifactCount;
@@ -246,12 +246,15 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private static readonly string LegacySchema5Sql = CreateLegacySchema5Sql();
     private static readonly string LegacySchema6Sql = CreateLegacySchema6Sql();
+    private static readonly string LegacySchema7Sql = CreateLegacySchema7Sql();
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(CreateCanonicalSchemaDefinitions);
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema5Definitions =
         new(CreateCanonicalSchema5Definitions);
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema6Definitions =
         new(CreateCanonicalSchema6Definitions);
+    private static readonly Lazy<Dictionary<string, string>> CanonicalSchema7Definitions =
+        new(CreateCanonicalSchema7Definitions);
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
@@ -274,6 +277,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
          MinimumProcessingOutputRetentionCount));
     internal static string LegacySchema5SqlForTests => LegacySchema5Sql;
     internal static string LegacySchema6SqlForTests => LegacySchema6Sql;
+    internal static string LegacySchema7SqlForTests => LegacySchema7Sql;
 
     public SqliteCaptureProcessingStore(
         IOptions<CameraAgentHostOptions> options,
@@ -319,7 +323,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             var initializeSchema = inspection.ProcessingObjectCount == 0;
             var migrateSchema5 = !initializeSchema && inspection.ProcessingVersion == 5;
             var migrateSchema6 = !initializeSchema && inspection.ProcessingVersion == 6;
-            if (!initializeSchema && !migrateSchema5 && !migrateSchema6 &&
+            var migrateSchema7 = !initializeSchema && inspection.ProcessingVersion == 7;
+            if (!initializeSchema && !migrateSchema5 && !migrateSchema6 && !migrateSchema7 &&
                 inspection.ProcessingVersion != CurrentSchemaVersion)
             {
                 var version = inspection.ProcessingVersion ?? 0;
@@ -370,6 +375,16 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 #pragma warning restore CA1849
                 await ValidateSchema6Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await MigrateSchema6Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (migrateSchema7)
+            {
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+                using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+                await ValidateSchema7Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await MigrateSchema7Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -542,7 +557,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         => WriteNodeAsync(
             captureId, node, status, reason, attempt, processingProfileIdentitySha256,
             startedUtc, completedUtc, duration, outcome, inputs, workId, leaseToken,
-            outputs, null, cancellationToken);
+            outputs, null, ProcessingNodeExecutionRoute.Unknown, cancellationToken);
 
     internal async ValueTask WriteNodeAsync(
         Guid captureId,
@@ -560,6 +575,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         string? leaseToken,
         IReadOnlyList<DurableProcessingOutput> outputs,
         ProcessingExecutionContext? execution,
+        ProcessingNodeExecutionRoute executionRoute,
         CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -662,6 +678,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 outcome,
                 outputs,
                 outputPublication,
+                executionRoute,
                 cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -2852,7 +2869,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
             actual.Keys.Any(name => !CanonicalSchemaDefinitions.Value.ContainsKey(name)))
         {
-            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 7 definition.");
+            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 8 definition.");
         }
     }
 
@@ -2879,6 +2896,42 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only schema statements generated from internal constants are executed.")]
+    private static Dictionary<string, string> CreateCanonicalSchema7Definitions()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = LegacySchema7Sql;
+        command.ExecuteNonQuery();
+        return ReadSchemaDefinitions(connection);
+    }
+
+    /// <summary>
+    /// Schema 7 is the current schema without the node attempt execution route, so the legacy definition is derived
+    /// from the canonical constant by removing exactly the column the migration adds. Deriving it keeps a single
+    /// authored copy of every other table; a separately written copy would drift silently.
+    /// </summary>
+    private static string CreateLegacySchema7Sql()
+    {
+        var statements = SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static statement =>
+                statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
+                statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal)
+                    ? statement.Replace("version = 8", "version = 7", StringComparison.Ordinal)
+                        .Replace("VALUES (1, 8)", "VALUES (1, 7)", StringComparison.Ordinal)
+                    : RemoveExecutionRouteColumn(statement));
+        return string.Join(";\n", statements) + ";";
+    }
+
+    private static string RemoveExecutionRouteColumn(string statement) =>
+        statement.StartsWith("CREATE TABLE processing_node_attempts(", StringComparison.Ordinal)
+            ? string.Join(
+                '\n',
+                statement.Split('\n').Where(static line =>
+                    !line.TrimStart().StartsWith("execution_route ", StringComparison.Ordinal)))
+            : statement;
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only schema statements generated from internal constants are executed.")]
     private static Dictionary<string, string> CreateCanonicalSchema6Definitions()
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
@@ -2898,9 +2951,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 !statement.StartsWith("CREATE UNIQUE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal))
             .Select(static statement => statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
                     statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal)
-                ? statement.Replace("version = 7", "version = 6", StringComparison.Ordinal)
-                    .Replace("VALUES (1, 7)", "VALUES (1, 6)", StringComparison.Ordinal)
-                : statement);
+                ? statement.Replace("version = 8", "version = 6", StringComparison.Ordinal)
+                    .Replace("VALUES (1, 8)", "VALUES (1, 6)", StringComparison.Ordinal)
+                : RemoveExecutionRouteColumn(statement));
         return string.Join(";\n", statements) + ";";
     }
 
@@ -2929,8 +2982,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 if (statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
                     statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal))
                 {
-                    return statement.Replace("version = 7", "version = 5", StringComparison.Ordinal)
-                        .Replace("VALUES (1, 7)", "VALUES (1, 5)", StringComparison.Ordinal);
+                    return statement.Replace("version = 8", "version = 5", StringComparison.Ordinal)
+                        .Replace("VALUES (1, 8)", "VALUES (1, 5)", StringComparison.Ordinal);
                 }
                 if (statement.StartsWith("CREATE TABLE processing_outputs(", StringComparison.Ordinal))
                 {
@@ -3054,6 +3107,100 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
     }
 
+    private static async ValueTask ValidateSchema7Async(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var actual = await ReadSchemaDefinitionsAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+        if (CanonicalSchema7Definitions.Value.Any(expected =>
+                !actual.TryGetValue(expected.Key, out var definition) ||
+                !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
+            actual.Keys.Any(name => !CanonicalSchema7Definitions.Value.ContainsKey(name)))
+        {
+            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 7 definition.");
+        }
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only schema statements selected from an internal constant are executed.")]
+    private static async ValueTask MigrateSchema7Async(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using (var dropMarker = connection.CreateCommand())
+        {
+            dropMarker.Transaction = transaction;
+            dropMarker.CommandText = "DROP TABLE capture_processing_schema;";
+            await dropMarker.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await ExecuteSchemaStatementsAsync(
+            connection,
+            transaction,
+            cancellationToken,
+            "CREATE TABLE capture_processing_schema(",
+            "INSERT INTO capture_processing_schema(").ConfigureAwait(false);
+        await RebuildNodeAttemptsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Rebuilds the node attempt table from the canonical schema constant and copies every existing row by explicit
+    /// column, so the added execution route takes its column default rather than a value the historical attempt
+    /// never recorded. The table is rebuilt rather than altered because the store validates the live schema against
+    /// the canonical constant, and SQLite's add-column rewrite appends the column after the table's foreign-key
+    /// clause; matching that would order the canonical constant for the validator instead of for the reader.
+    /// </summary>
+    private static async ValueTask RebuildNodeAttemptsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using (var preserve = connection.CreateCommand())
+        {
+            preserve.Transaction = transaction;
+            preserve.CommandText = """
+                CREATE TEMP TABLE migration_processing_node_attempts AS SELECT * FROM processing_node_attempts;
+                DROP TABLE processing_node_attempts;
+                """;
+            await preserve.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await ExecuteSchemaStatementsAsync(
+            connection,
+            transaction,
+            cancellationToken,
+            "CREATE TABLE processing_node_attempts(",
+            "CREATE INDEX ix_processing_node_attempts_history").ConfigureAwait(false);
+        using var restore = connection.CreateCommand();
+        restore.Transaction = transaction;
+        restore.CommandText = """
+            INSERT INTO processing_node_attempts(
+                execution_id, node_id, attempt_number, lease_owner, lease_token,
+                started_unix_ms, completed_unix_ms, status, outcome, reason, duration_ticks)
+            SELECT execution_id, node_id, attempt_number, lease_owner, lease_token,
+                   started_unix_ms, completed_unix_ms, status, outcome, reason, duration_ticks
+            FROM migration_processing_node_attempts;
+            DROP TABLE migration_processing_node_attempts;
+            """;
+        await restore.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only schema statements selected from an internal constant are executed.")]
+    private static async ValueTask ExecuteSchemaStatementsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken,
+        params string[] prefixes)
+    {
+        foreach (var statement in SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Where(statement => prefixes.Any(prefix => statement.StartsWith(prefix, StringComparison.Ordinal))))
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = statement + ";";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only schema statements selected from an internal constant are executed.")]
     private static async ValueTask MigrateSchema6Async(
         SqliteConnection connection,
@@ -3079,6 +3226,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             command.CommandText = statement + ";";
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+        // A schema 6 database reaches schema 8 in one step, so it needs the attempt-table rebuild schema 7
+        // introduces as well. Without it the marker would advance while the execution route column stayed
+        // absent, and the validation that follows this migration in the same transaction would reject it.
+        await RebuildNodeAttemptsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
     }
 
     private static async ValueTask<Dictionary<string, string>> ReadSchemaDefinitionsAsync(
@@ -3270,9 +3421,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private const string SchemaSql = """
         CREATE TABLE capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 7)
+            version INTEGER NOT NULL CHECK(version = 8)
         ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 7);
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 8);
         CREATE TABLE processing_graph_revisions(
             revision_id TEXT PRIMARY KEY CHECK(length(revision_id) = 64),
             graph_name TEXT NOT NULL CHECK(length(graph_name) BETWEEN 1 AND 128),
@@ -3410,6 +3561,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             outcome TEXT NULL CHECK(outcome IS NULL OR outcome IN ('Produced', 'Skipped', 'RetryableFailure', 'TerminalFailure')),
             reason TEXT NULL CHECK(reason IS NULL OR length(reason) BETWEEN 1 AND 128),
             duration_ticks INTEGER NULL CHECK(duration_ticks IS NULL OR duration_ticks >= 0),
+            execution_route TEXT NOT NULL DEFAULT 'Unknown' CHECK(execution_route IN ('Unknown', 'InProcess', 'LocalRunner')),
             PRIMARY KEY(execution_id, node_id, attempt_number),
             FOREIGN KEY(execution_id, node_id) REFERENCES processing_execution_nodes(execution_id, node_id) ON DELETE CASCADE
         ) STRICT;

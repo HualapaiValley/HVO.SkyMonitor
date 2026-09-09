@@ -102,7 +102,8 @@ internal static class ExecutionEvidenceTestFactory
                     [
                         new(
                             1, "capture-loop", started.AddSeconds(1), started.AddSeconds(3),
-                            "Completed", ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(2))
+                            "Completed", ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(2),
+                            ProcessingNodeExecutionRoute.InProcess)
                     ],
                     [
                         new(

@@ -102,6 +102,17 @@ public sealed record ProcessingGraphExecutionInputState(
     string? PayloadSha256,
     string? OutputIdentitySha256);
 
+/// <summary>
+/// One recorded attempt at one node, including the route the attempt actually took.
+/// <para>
+/// <c>ExecutionRoute</c> answers issue #799: which nodes dispatched to the local replay runner and
+/// which ran in process. It is recorded by the attempt rather than derived from the host's configured
+/// replay profile, because the profile says what the host was started with and the route says what
+/// happened. An attempt that never reached the recipe execution adapter keeps
+/// <see cref="ProcessingNodeExecutionRoute.Unknown"/>, which is how a complementary node is told apart
+/// from a recipe-backed one that ran locally, and which is also what an interrupted attempt keeps.
+/// </para>
+/// </summary>
 public sealed record ProcessingGraphNodeAttemptState(
     int AttemptNumber,
     string LeaseOwner,
@@ -110,7 +121,8 @@ public sealed record ProcessingGraphNodeAttemptState(
     string Status,
     ProcessingOutcomeStatus? Outcome,
     string? Reason,
-    TimeSpan? Duration);
+    TimeSpan? Duration,
+    ProcessingNodeExecutionRoute ExecutionRoute);
 
 public sealed record ProcessingGraphExecutionNodeState(
     string NodeId,

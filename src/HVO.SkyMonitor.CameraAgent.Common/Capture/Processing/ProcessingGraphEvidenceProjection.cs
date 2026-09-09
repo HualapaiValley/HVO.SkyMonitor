@@ -312,6 +312,11 @@ internal static class ProcessingGraphEvidenceProjection
                 null,
                 input.DescriptorSha256));
 
+    // The execution route recorded on the attempt is deliberately not exported here. ExecutionEvidenceAttemptV1
+    // is a versioned durable export contract, so adding a member is a schema-version change with its own
+    // compatibility obligations for existing readers. Issue #799 asks for the route to be observable on the
+    // operations read path, which ReplayExecutionAttemptView and CameraAgentProcessingNodeAttemptView satisfy by
+    // projecting it; widening the durable evidence export is separate work and is not smuggled in here.
     private static ExecutionEvidenceAttemptV1 CreateAttempt(
         ProcessingGraphNodeAttemptState attempt,
         ExecutionEvidenceAttemptStatus status)

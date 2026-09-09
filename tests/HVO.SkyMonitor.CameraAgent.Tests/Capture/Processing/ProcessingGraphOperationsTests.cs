@@ -103,10 +103,9 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task SameFrozenReplayMatchesInProcessAndLocalRunnerIdentityAndProvenance()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-equivalence-{Guid.NewGuid():N}");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-equivalence");
         var socketPath = FileSystemTestPaths.CreateShortUnixSocketPath();
         const string authorizationKey = "local-replay-equivalence-key-0001";
-        Directory.CreateDirectory(root);
         try
         {
             Guid captureId;
@@ -192,6 +191,15 @@ public sealed class ProcessingGraphOperationsTests
                 var expected = inProcess.Nodes[index];
                 var actual = external.Nodes[index];
                 Assert.AreEqual(expected.NodeId, actual.NodeId);
+                // The two executions are deliberately indistinguishable everywhere else in this comparison,
+                // which is exactly why issue #799 needs a recorded route: it is the only field that separates
+                // them. Both sides are asserted, so a store that hard-coded either value fails here rather
+                // than passing on the one profile it happened to match. The completing attempt carries the
+                // route, since the route is written on completion.
+                Assert.AreEqual(
+                    ProcessingNodeExecutionRoute.InProcess, expected.Attempts[^1].ExecutionRoute, expected.NodeId);
+                Assert.AreEqual(
+                    ProcessingNodeExecutionRoute.LocalRunner, actual.Attempts[^1].ExecutionRoute, actual.NodeId);
                 CollectionAssert.AreEqual(
                     expected.Inputs.Select(InputEvidence).ToArray(),
                     actual.Inputs.Select(InputEvidence).ToArray());
@@ -232,8 +240,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task MissingLocalRunnerDefersDurableReplayWithoutConsumingAttempt()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-runner-missing-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-runner-missing");
         try
         {
             var configuration = CreateConfiguration() with
@@ -321,10 +328,9 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task RunnerCrashAndHostRestartRecoverDurableFrozenReplayExactlyOnce()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-runner-recovery-{Guid.NewGuid():N}");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-runner-recovery");
         var socketPath = FileSystemTestPaths.CreateShortUnixSocketPath();
         const string authorizationKey = "local-replay-recovery-key-000001";
-        Directory.CreateDirectory(root);
         try
         {
             var configuration = CreateConfiguration() with
@@ -458,9 +464,8 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task StaleReplayLeaseCannotPublishOrCompleteAfterHostReclaim()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-stale-{Guid.NewGuid():N}");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-stale");
         var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
-        Directory.CreateDirectory(root);
         try
         {
             var settings = new Dictionary<string, string?>
@@ -568,8 +573,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task LiveAcceptanceAndReplayLifecycleAreDurableAndIsolated()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-executions-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-executions");
         try
         {
             var values = new Dictionary<string, string?>
@@ -698,8 +702,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task NamedRevisionLifecycleUsesOptimisticVersionAndIdempotency()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-registry-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-registry");
         try
         {
             var services = new ServiceCollection();
@@ -774,7 +777,7 @@ public sealed class ProcessingGraphOperationsTests
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query combines fixed internal schema SQL and parameterized inserts only.")]
     public async Task Schema6ConfiguredBasicRevisionWithLegacyIdentityIsSupersededDeterministicallyOnUpgrade()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-upgrade-{Guid.NewGuid():N}");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-upgrade");
         Directory.CreateDirectory(Path.Combine(root, "journal"));
         try
         {
@@ -867,8 +870,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task CentralProposalLifecycleStagesActivatesRollsBackAndSettlesDurably()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-delivery-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-delivery");
         try
         {
             using var provider = CreateProvider(root);
@@ -1113,8 +1115,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task CentralDeliverySettlesRejectedFactsExpiredProposalsStaleAcceptanceAndBlocksRetirement()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-delivery-terminal-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-delivery-terminal");
         try
         {
             using var provider = CreateProvider(root);
@@ -1285,8 +1286,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task CentralStagingDoesNotDeadlockWithCaptureAcceptOrRecoveryAndStillRejectsStaleAcceptance()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-delivery-lockorder-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-delivery-lockorder");
         var bound = TimeSpan.FromSeconds(30);
         try
         {
@@ -1409,8 +1409,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayFreezesTrailingRawWindowAtSubmission()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-window-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-window");
         try
         {
             var services = new ServiceCollection();
@@ -1644,8 +1643,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task PendingLiveExecutionExpiresAtMaximumQueueAge()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-live-queue-expiry-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-live-queue-expiry");
         try
         {
             var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
@@ -1687,8 +1685,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task LiveProcessingDeadlineStartsAtFirstClaimAndSurvivesRetry()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-live-deadline-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-live-deadline");
         try
         {
             var acceptedUtc = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
@@ -1764,8 +1761,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ExpiredLiveExecutionCannotPublishNodeOutputs()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-live-publication-deadline-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-live-publication-deadline");
         try
         {
             var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
@@ -1839,8 +1835,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task LiveCompletionCrossingDeadlineExpiresWithoutPublishing()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-live-completion-deadline-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-live-completion-deadline");
         try
         {
             var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
@@ -1920,8 +1915,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task LivePriorityPreemptionDoesNotConsumeReplayAttempt()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-preemption-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-preemption");
         try
         {
             var barrier = new ReplayBarrierObservation();
@@ -2046,8 +2040,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayOldestAgeUsesImmutableAcceptanceTime()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-oldest-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-oldest");
         try
         {
             var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
@@ -2100,8 +2093,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReconciledRawEvidenceIsBoundToFrozenLiveExecutionBeforeClaim()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-recovery-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-recovery");
         try
         {
             var configuration = CreateConfiguration();
@@ -2162,8 +2154,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayWorkerExecutesNonEmptyGraphWithoutPublishingOrOverwritingLiveProjection()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-worker-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-worker");
         try
         {
             var services = new ServiceCollection();
@@ -2461,8 +2452,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayFreezesCommittedProjectedSceneAfterStageCleanupAndRestart()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-projected-scene");
         try
         {
             var configuration = CreateProjectedSceneConfiguration();
@@ -2547,8 +2537,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayRejectsSubmissionWithoutCommittedProjectedSceneAndWritesNothing()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-none-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-projected-scene-none");
         try
         {
             var configuration = CreateProjectedSceneConfiguration();
@@ -2593,8 +2582,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayRejectsAmbiguousProjectedSceneProductsAndWritesNothing()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-ambiguous-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-projected-scene-ambiguous");
         try
         {
             var live = await CompleteProjectedSceneLiveAsync(root, new string('9', 64), new string('F', 64)).ConfigureAwait(false);
@@ -2628,8 +2616,7 @@ public sealed class ProcessingGraphOperationsTests
     [DataRow("sidecar-tampered", "processing.invalid-projected-scene")]
     public async Task ReplayFailsClosedWhenPinnedProjectedSceneBytesAreMissingOrAltered(string fault, string expectedReason)
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-{fault}-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory($"hvo-processing-replay-projected-scene-{fault}");
         try
         {
             var stageKey = new string('a', 64);
@@ -2689,8 +2676,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayRetainsProjectedScenePinAcrossRestartAndIdempotentResubmission()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-retain-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-projected-scene-retain");
         try
         {
             var live = await CompleteProjectedSceneLiveAsync(root, new string('b', 64), new string('2', 64)).ConfigureAwait(false);
@@ -2744,10 +2730,9 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     public async Task ReplayConsumesFrozenProjectedSceneIdenticallyUnderInProcessAndLocalRunner()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-projected-scene-runner-{Guid.NewGuid():N}");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-projected-scene-runner");
         var socketPath = FileSystemTestPaths.CreateShortUnixSocketPath();
         const string authorizationKey = "projected-scene-replay-key-00001";
-        Directory.CreateDirectory(root);
         try
         {
             var live = await CompleteProjectedSceneLiveAsync(root, new string('c', 64), new string('3', 64)).ConfigureAwait(false);
@@ -2822,6 +2807,12 @@ public sealed class ProcessingGraphOperationsTests
             CollectionAssert.AreEqual(
                 inProcess.Nodes.Single().Inputs.Select(static input => input.OutputIdentitySha256).ToArray(),
                 external.Nodes.Single().Inputs.Select(static input => input.OutputIdentitySha256).ToArray());
+            Assert.AreEqual(
+                ProcessingNodeExecutionRoute.InProcess,
+                inProcess.Nodes.Single(static candidate => candidate.NodeId == "projected-scene").Attempts[^1].ExecutionRoute);
+            Assert.AreEqual(
+                ProcessingNodeExecutionRoute.LocalRunner,
+                external.Nodes.Single(static candidate => candidate.NodeId == "projected-scene").Attempts[^1].ExecutionRoute);
             Assert.HasCount(1, ReadProjectedSceneOutputs(root, live.CaptureId), "both profiles reproduce the single immutable product");
 
             await runnerStopping.CancelAsync().ConfigureAwait(false);

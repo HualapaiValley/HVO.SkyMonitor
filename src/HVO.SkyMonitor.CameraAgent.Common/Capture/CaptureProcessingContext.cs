@@ -21,6 +21,7 @@ public sealed class CaptureProcessingContext
     private readonly List<FrameArtifact> _allArtifacts = new();
     private readonly Dictionary<string, List<FrameArtifact>> _artifactsByNode = new(StringComparer.OrdinalIgnoreCase);
     private string? _currentNodeId;
+    private ProcessingNodeExecutionRoute _currentExecutionRoute;
     private IReadOnlyList<string> _currentDependencies = [];
     private IReadOnlyList<string> _currentDeclaredDependencies = [];
     private IReadOnlyList<ProcessingArtifact> _historicalInputs = [];
@@ -195,6 +196,7 @@ public sealed class CaptureProcessingContext
         _currentDependencies = dependencies;
         _currentDeclaredDependencies = declaredDependencies ?? dependencies;
         _currentInputs.Clear();
+        _currentExecutionRoute = ProcessingNodeExecutionRoute.Unknown;
         _frozenAuxiliaryInputs = [];
         _frozenAuxiliaryInputFailure = null;
     }
@@ -270,6 +272,22 @@ public sealed class CaptureProcessingContext
     internal IReadOnlyList<DurableProcessingNodeInput> GetCurrentInputEvidence() => _currentInputs.ToArray();
 
     internal string? CurrentNodeId => _currentNodeId;
+
+    /// <summary>
+    /// The route the current node attempt took, or <see cref="ProcessingNodeExecutionRoute.Unknown"/> until the
+    /// recipe execution adapter records one. A node that is skipped before it executes never records a route.
+    /// </summary>
+    internal ProcessingNodeExecutionRoute CurrentExecutionRoute => _currentExecutionRoute;
+
+    internal void RecordExecutionRoute(ProcessingNodeExecutionRoute route)
+    {
+        if (route == ProcessingNodeExecutionRoute.Unknown)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(route), "An executed node attempt records the route it took, never the absence of one.");
+        }
+        _currentExecutionRoute = route;
+    }
 
     internal void RecordExecutionRequest(ProcessingExecutionRequest request)
     {

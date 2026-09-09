@@ -176,6 +176,30 @@ public sealed class CameraAgentReplayUiServiceTests
         Assert.IsFalse(execution.IsTerminal);
     }
 
+    /// <summary>
+    /// The execution route is three-valued and the projection has to carry all three, because the question
+    /// issue #799 asks is which nodes dispatched to the local replay runner and which ran in process. A
+    /// projection that dropped the route, or that collapsed it to a two-valued dispatched flag, would answer
+    /// with the value the reader assumed rather than the one the attempt recorded, so every member is driven
+    /// through the projection here and not only the default.
+    /// </summary>
+    [TestMethod]
+    [DataRow(ProcessingNodeExecutionRoute.Unknown, "Unknown")]
+    [DataRow(ProcessingNodeExecutionRoute.InProcess, "InProcess")]
+    [DataRow(ProcessingNodeExecutionRoute.LocalRunner, "LocalRunner")]
+    public async Task GetReplayExecutionAsync_ProjectsEveryRecordedExecutionRouteAsync(
+        ProcessingNodeExecutionRoute route,
+        string expected)
+    {
+        var operations = new StubProcessingGraphOperations { AttemptRoute = route };
+        var service = CreateService(operations, new StubGallery(), succeeded: true);
+
+        var result = await service.GetReplayExecutionAsync(ExecutionId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Success, result.Kind);
+        Assert.AreEqual(expected, result.Value!.Nodes.Single().Attempts.Single().ExecutionRoute);
+    }
+
     [TestMethod]
     public async Task CancelReplayAsync_ProjectsTheTerminalStateWithoutLeaseEvidenceAsync()
     {
@@ -261,6 +285,12 @@ public sealed class CameraAgentReplayUiServiceTests
 
         internal List<(string Key, string Actor)> Cancellations { get; } = [];
 
+        /// <summary>
+        /// The route the stubbed attempt recorded. It is settable so a test can drive every member of
+        /// <see cref="ProcessingNodeExecutionRoute"/> through the projection rather than only the default.
+        /// </summary>
+        internal ProcessingNodeExecutionRoute AttemptRoute { get; init; } = ProcessingNodeExecutionRoute.Unknown;
+
         public ValueTask<ProcessingGraphRegistryState> GetRegistryAsync(CancellationToken cancellationToken)
         {
             RegistryReads++;
@@ -324,7 +354,8 @@ public sealed class CameraAgentReplayUiServiceTests
                             "Running",
                             ProcessingOutcomeStatus.Produced,
                             @"C:\hvo\lease\token",
-                            null)],
+                            null,
+                            AttemptRoute)],
                         [new ProcessingGraphExecutionOutputState(
                             0, new string('D', 64), ArtifactId, FrameArtifactRole.Preview, "display",
                             "Available", null)])

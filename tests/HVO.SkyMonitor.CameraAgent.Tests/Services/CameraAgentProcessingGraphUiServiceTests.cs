@@ -47,7 +47,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         var detail = new ProcessingGraphExecutionDetail(execution,
         [
             new ProcessingGraphExecutionNodeState("preview", true, new string('P', 64), "Completed", "/var/lib/secret failed", 1, Now, Now,
-                [], [new ProcessingGraphNodeAttemptState(1, "runner-host-secret-7", Now, Now, "Completed", HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(1))],
+                [], [new ProcessingGraphNodeAttemptState(1, "runner-host-secret-7", Now, Now, "Completed", HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(1),
+                    HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingNodeExecutionRoute.InProcess)],
                 [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Missing", "/var/lib/secret failed")])
         ]);
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
