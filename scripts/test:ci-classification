@@ -866,6 +866,14 @@ for step_name in 'Verify catalog contracts' \
   }
 done
 
+# The catalog contract smoke test ran under a full-mode condition in the job it
+# came from, so the move must not silently widen it to every mode.
+catalog_condition="$(grep -A1 -F '      - name: Verify catalog contracts' <<< "$quality_job" | tail -n 1)"
+if [[ "$catalog_condition" != "        if: needs.changes.outputs.mode == 'full'" ]]; then
+  printf 'The catalog contract smoke test must stay gated on full mode.\n' >&2
+  exit 1
+fi
+
 # Phase 14 acceptance is a historical inventory contract, not part of the
 # per-change gate set, so it must stay behind an explicit dispatch.
 phase14_condition="$(grep -A1 -F '      - name: Run historical Phase 14 acceptance inventory contract' <<< "$quality_job" | tail -n 1)"

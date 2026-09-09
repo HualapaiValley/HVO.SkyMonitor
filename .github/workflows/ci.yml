@@ -99,6 +99,7 @@ jobs:
           HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_CATALOG_ROOT=/srv/hvo/catalog HVO_CONTAINER_NAME=hvo-skymonitor-22222222222242228222222222222222 HVO_PUBLIC_PORT=5130 CAMERAAGENT_IMAGE=example/cameraagent@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb docker compose -f deploy/split-host/compose.cameraagent.yml config --quiet
           docker compose --env-file deploy/acceptance/cameraagent-dual-standalone-smoke/compose.validation.env.template -f deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml config --quiet
       - name: Verify catalog contracts
+        if: needs.changes.outputs.mode == 'full'
         run: ./scripts/catalog/smoke-test.sh
       - name: Audit vulnerable and deprecated packages
         if: needs.changes.outputs.mode == 'full'
