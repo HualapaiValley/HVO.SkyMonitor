@@ -444,9 +444,10 @@ public sealed class VirtualSkyPipelineTests
         // hold nothing beyond the watermark -- so on any run where the producer advanced past the fence, which
         // is the normal case, the assertion below could not fail for the reason it exists. Two disjoint
         // sequence ranges cannot intersect, and that is all it would have been testing.
-        // Bounding the subject makes the local-only claim testable: this preview belongs to a capture the
-        // fence settled, so the outbox has already had its chance to enqueue it, and its absence from
-        // `pending` is then a fact about distribution policy rather than about arithmetic.
+        // Bounding the subject closes one of two independent sources of vacuity: this preview belongs to a
+        // capture the fence settled, so the outbox has already had its chance to enqueue it, and its
+        // absence is a fact about distribution policy rather than about arithmetic. The other source is
+        // role disjointness, and the assertion below closes it by leaving `pending` behind entirely.
         processingCommand.CommandText =
             "SELECT artifact_id FROM processing_outputs WHERE node_id = 'CalibratedPreview' "
                 + "AND capture_sequence <= $watermark ORDER BY capture_sequence DESC LIMIT 1;";
@@ -462,9 +463,58 @@ public sealed class VirtualSkyPipelineTests
         var localOnlyPreviewId = Guid.ParseExact(
             Convert.ToString(localOnlyPreviewRow, System.Globalization.CultureInfo.InvariantCulture)!,
             "N");
-        Assert.IsFalse(
-            pending.Any(item => item.Descriptor.Artifact.ArtifactId == localOnlyPreviewId),
-            "A CalibratedPreview artifact from the settled prefix was queued for upload; the node is local-only.");
+        // `pending` cannot answer this. It is asserted above to contain only `FrameArtifactRole.Raw`
+        // members, and a CalibratedPreview output is emitted as `FrameArtifactRole.Preview`, so once that
+        // assertion passes no member of `pending` can carry this artifact id and the local-only claim would
+        // be entailed by an earlier line rather than tested by this one. Ask the outbox directly, across
+        // every status rather than the pending subset, because the claim is that a local-only artifact is
+        // never enqueued at all -- not that it happens not to be waiting right now. Nothing deletes from
+        // this table, so an absent row is evidence of that stronger claim rather than of a completed upload.
+        using (var localOnlyOutbox = new SqliteConnection(
+            $"Data Source={Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db")}"))
+        {
+            await localOnlyOutbox.OpenAsync().ConfigureAwait(false);
+            using var localOnlyCommand = localOnlyOutbox.CreateCommand();
+            localOnlyCommand.CommandText =
+                "SELECT COUNT(*), COALESCE(GROUP_CONCAT(DISTINCT status), 'none') "
+                    + "FROM artifact_outbox_records WHERE artifact_id = $artifactId;";
+            localOnlyCommand.Parameters.AddWithValue("$artifactId", localOnlyPreviewId.ToString("N"));
+            // A lookup that returns zero because it can never match anything is the same defect one
+            // level in, so prove the query shape finds a row before trusting that it found none. This
+            // control uses an artifact that is in the outbox by construction: `pending` was read from
+            // that table a hundred lines above.
+            localOnlyCommand.Parameters.AddWithValue(
+                "$controlArtifactId",
+                pending[0].Descriptor.Artifact.ArtifactId.ToString("N"));
+            localOnlyCommand.CommandText =
+                "SELECT COUNT(*) FROM artifact_outbox_records WHERE artifact_id = $controlArtifactId;";
+            Assert.IsGreaterThan(
+                0L,
+                Convert.ToInt64(
+                    await localOnlyCommand.ExecuteScalarAsync().ConfigureAwait(false),
+                    System.Globalization.CultureInfo.InvariantCulture),
+                "The outbox lookup found no row for an artifact known to be enqueued, so a zero result "
+                    + "for the local-only preview would not have been evidence of anything.");
+            localOnlyCommand.CommandText =
+                "SELECT COUNT(*), COALESCE(GROUP_CONCAT(DISTINCT status), 'none') "
+                    + "FROM artifact_outbox_records WHERE artifact_id = $artifactId;";
+
+            var localOnlyReader = await localOnlyCommand.ExecuteReaderAsync().ConfigureAwait(false);
+            await using (localOnlyReader.ConfigureAwait(false))
+            {
+                Assert.IsTrue(
+                    await localOnlyReader.ReadAsync().ConfigureAwait(false),
+                    "The outbox lookup for the local-only preview returned no row.");
+                Assert.AreEqual(
+                    0L,
+                    localOnlyReader.GetInt64(0),
+                    string.Create(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        $"CalibratedPreview artifact {localOnlyPreviewId:N} from the settled prefix was "
+                            + $"enqueued for upload; the node is local-only. Outbox statuses: "
+                            + $"{localOnlyReader.GetString(1)}."));
+            }
+        }
 
         var uploadCheckpoint = ReadPendingOutboxCheckpoint();
         var configuredUploadOptions = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
