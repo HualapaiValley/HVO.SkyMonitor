@@ -944,118 +944,275 @@ fi
 # half never, so trimming main out of the push triggers would leave every release unqualifiable
 # with both halves still passing their own tests.
 #
-# Evaluate this structurally rather than by matching text. Two successive text guards were
-# defeated by workflows that are valid and produce no main-push run: a substring match accepted
-# a branches list of only 'maintenance/**', and an exact-entry match was then defeated three
-# more ways in one review pass, by a comment on the key line, by an ordered negation that
-# re-excludes main after including it, and by a comma inside a quoted scalar. Parsing YAML as
-# text keeps producing guards that pass on the regression they exist to catch.
+# This recognizes one workflow shape and refuses every other. It deliberately does not interpret
+# GitHub's filter grammar: four adversarial rounds defeated guards that tried to, each one
+# answering "accepted" for a shape it did not actually understand. Refusing what it cannot
+# recognize means widening the workflow requires widening the guard in the same commit, which is
+# the intended cost.
 python3 - "$workflow" <<'CI_PUSH_TRIGGER_PY' || exit 1
-import re
+"""Assert that the CI workflow runs on pushes to main.
+
+release.yml qualifies a release SHA by looking for a completed CI run produced
+by a push to main. Nothing else can answer that query, so a workflow that does
+not produce such a run leaves every release unqualifiable.
+
+Four adversarial review rounds defeated guards that tried to *interpret*
+GitHub's branch filter grammar: shell-globbing semantics for `?`, escaped
+metacharacters, leading globstar zero-segment matches, YAML 1.1 resolving a
+bare scalar to a boolean, and whole branches of the grammar never examined at
+all. Each fix answered "accepted" for a shape it did not actually understand.
+
+So this does not interpret patterns. It recognizes the one shape this
+repository uses and refuses everything else. Anything unrecognized is "I
+cannot determine that this workflow runs on a main push", which is a red gate
+rather than a green one. Widening the workflow is meant to require widening
+this guard deliberately.
+
+Standard library only. The Quality job installs no Python packages, and the
+step that runs this gate carries no mode condition, so a third-party import
+would fail every Quality run.
+"""
+
 import sys
 
-try:
-    import yaml
-except ModuleNotFoundError:
-    sys.stderr.write(
-        'PyYAML is required to evaluate the CI push triggers structurally. '
-        'Install it rather than falling back to a text match.\n')
-    raise SystemExit(1)
-
 BRANCH = 'main'
+# The only characters that can invert an entry's meaning. `!` negates, and `\`
+# escapes. Either one, in any entry, can suppress the main-push run that
+# another entry appears to provide. Characters like `*` and `[` are not listed:
+# a positive pattern can only add branches to a trigger, never remove main, so
+# refusing them would buy nothing and would reject this repository's own
+# 'release/**' entry.
+INVERTING = ('!', '\\')
+# A push block may name these. Any other key is a part of the grammar this
+# guard has not been taught, so it fails closed.
+KNOWN_PUSH_KEYS = ('branches', 'branches-ignore', 'tags', 'tags-ignore',
+                   'paths', 'paths-ignore')
+# These suppress or narrow the main-push run and must be absent.
+DISQUALIFYING_PUSH_KEYS = ('branches-ignore', 'paths', 'paths-ignore')
 
 
-def to_regex(pattern):
-    """Translate a GitHub branch filter glob into a regex.
+class Unrecognized(Exception):
+    pass
 
-    GitHub's filter syntax is not shell globbing. ``*`` stops at a path
-    separator while ``**`` crosses it, and ``?`` and ``+`` are quantifiers on
-    the preceding element rather than wildcards of their own. Translating ``?``
-    as a single-character wildcard makes ``mai?`` match ``main``, which is a
-    permissive divergence: the guard would pass on a workflow that never runs
-    on main.
+
+def strip_comment(line):
+    """Remove a YAML comment, respecting quotes.
+
+    A `#` inside a quoted scalar is literal, and a `#` not preceded by
+    whitespace is part of the token. Getting this wrong is how a guard reads
+    `branches: # [main]` as a branch list.
     """
-    atoms = []
-    i = 0
-    while i < len(pattern):
-        char = pattern[i]
-        if char == '*':
-            if pattern[i + 1:i + 2] == '*':
-                atoms.append('(?:.*)')
-                i += 2
-                continue
-            atoms.append('(?:[^/]*)')
-        elif char == '[':
-            close = pattern.find(']', i + 1)
-            if close == -1:
-                atoms.append('(?:' + re.escape(char) + ')')
-            else:
-                body = pattern[i + 1:close]
-                atoms.append('(?:[' + body.replace('\\', '\\\\') + '])')
-                i = close + 1
-                continue
-        elif char in '?+' and atoms:
-            atoms[-1] = atoms[-1] + char
+    out = []
+    quote = None
+    for index, char in enumerate(line):
+        if quote:
+            out.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in '"\'':
+            quote = char
+            out.append(char)
+            continue
+        if char == '#' and (index == 0 or line[index - 1] in ' \t'):
+            break
+        out.append(char)
+    if quote:
+        raise Unrecognized('unterminated quote: %s' % line.strip())
+    return ''.join(out).rstrip()
+
+
+def indent_of(line):
+    return len(line) - len(line.lstrip(' '))
+
+
+def unquote(token):
+    token = token.strip()
+    if not token:
+        raise Unrecognized('empty list entry')
+    if token[0] in '"\'':
+        if len(token) < 2 or token[-1] != token[0]:
+            raise Unrecognized('unbalanced quoting in entry: %s' % token)
+        inner = token[1:-1]
+        if token[0] in inner:
+            raise Unrecognized('nested quote in entry: %s' % token)
+        return inner
+    if '"' in token or "'" in token:
+        raise Unrecognized('quote inside a bare entry: %s' % token)
+    return token
+
+
+def split_flow_sequence(text):
+    """Split `[a, 'b, c']` on its top-level commas only.
+
+    Splitting on every comma is how a guard reads `["release,main"]` as an
+    entry named main.
+    """
+    text = text.strip()
+    if not (text.startswith('[') and text.endswith(']')):
+        raise Unrecognized('branch list is not a flow sequence: %s' % text)
+    body = text[1:-1]
+    entries = []
+    current = []
+    quote = None
+    for char in body:
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in '"\'':
+            quote = char
+            current.append(char)
+            continue
+        if char in '[]{}':
+            raise Unrecognized('nested collection in branch list')
+        if char == ',':
+            entries.append(''.join(current))
+            current = []
+            continue
+        current.append(char)
+    if quote:
+        raise Unrecognized('unterminated quote in branch list')
+    tail = ''.join(current)
+    if tail.strip() or entries:
+        entries.append(tail)
+    return [unquote(entry) for entry in entries]
+
+
+def read_block(lines, start, parent_indent):
+    """Collect the lines of a block nested under lines[start]."""
+    block = []
+    index = start + 1
+    while index < len(lines):
+        raw = lines[index]
+        stripped = strip_comment(raw)
+        if not stripped.strip():
+            index += 1
+            continue
+        if indent_of(stripped) <= parent_indent:
+            break
+        block.append(stripped)
+        index += 1
+    return block, index
+
+
+def read_push_block(path):
+    with open(path, encoding='utf-8') as handle:
+        lines = handle.read().splitlines()
+
+    on_index = None
+    for index, raw in enumerate(lines):
+        stripped = strip_comment(raw)
+        if indent_of(stripped) != 0:
+            continue
+        key = stripped.split(':', 1)[0].strip()
+        # YAML 1.1 lets `on` be written bare or quoted; all three spellings are
+        # the same key.
+        if key in ('on', "'on'", '"on"') and stripped.rstrip().endswith(':'):
+            on_index = index
+            break
+    if on_index is None:
+        raise Unrecognized('workflow has no top-level `on:` key')
+
+    on_block, _ = read_block(lines, on_index, 0)
+    if not on_block:
+        raise Unrecognized('`on:` block is empty')
+    on_indent = indent_of(on_block[0])
+
+    for offset, stripped in enumerate(on_block):
+        if indent_of(stripped) != on_indent:
+            continue
+        if stripped.strip().split(':', 1)[0].strip() != 'push':
+            continue
+        remainder = stripped.strip()[len('push'):]
+        if not remainder.startswith(':'):
+            continue
+        if remainder[1:].strip():
+            raise Unrecognized('inline `push:` value is not recognized')
+        block, _ = read_block(on_block, offset, on_indent)
+        return block
+    raise Unrecognized('workflow has no `push:` trigger')
+
+
+def read_branches(push_block):
+    """Return the push block's branch entries, or raise Unrecognized."""
+    if not push_block:
+        raise Unrecognized('`push:` names no filters, so its shape is not the '
+                           'recognized one')
+    key_indent = indent_of(push_block[0])
+    branches = None
+    for offset, stripped in enumerate(push_block):
+        if indent_of(stripped) != key_indent:
+            continue
+        if stripped.strip().startswith('- '):
+            raise Unrecognized('`push:` is a sequence, not a mapping')
+        if ':' not in stripped:
+            raise Unrecognized('unrecognized line in `push:`: %s'
+                               % stripped.strip())
+        key, _, value = stripped.strip().partition(':')
+        key = key.strip()
+        if key not in KNOWN_PUSH_KEYS:
+            raise Unrecognized('unrecognized key in `push:`: %s' % key)
+        if key in DISQUALIFYING_PUSH_KEYS:
+            raise Unrecognized('`push:` defines %s, which can suppress or '
+                               'narrow the main-push run' % key)
+        if key != 'branches':
+            continue
+        if value.strip():
+            branches = split_flow_sequence(value)
         else:
-            atoms.append('(?:' + re.escape(char) + ')')
-        i += 1
-    return re.compile('\\A' + ''.join(atoms) + '\\Z')
+            nested, _ = read_block(push_block, offset, key_indent)
+            entries = []
+            for item in nested:
+                text = item.strip()
+                if not text.startswith('- '):
+                    raise Unrecognized('unrecognized branch list entry: %s'
+                                       % text)
+                entries.append(unquote(text[2:]))
+            branches = entries
+    if branches is None:
+        raise Unrecognized('`push:` does not name `branches`, so no push to a '
+                           'named branch is guaranteed')
+    return branches
 
 
-def matches(patterns, branch):
-    """Ordered include/exclude evaluation, last match wins, as GitHub does."""
-    verdict = None
-    for raw in patterns:
-        if not isinstance(raw, str):
-            return None, 'branch filter entry is not a string: %r' % (raw,)
-        negated = raw.startswith('!')
-        pattern = raw[1:] if negated else raw
-        if to_regex(pattern).match(branch):
-            verdict = not negated
-    if verdict is None:
-        # Nothing matched. A list of only exclusions admits everything else; a
-        # list with any inclusion admits only what it names.
-        verdict = all(isinstance(p, str) and p.startswith('!') for p in patterns)
-    return verdict, None
+def evaluate(path):
+    branches = read_branches(read_push_block(path))
+    if not branches:
+        raise Unrecognized('`branches` is empty')
+    for entry in branches:
+        for char in INVERTING:
+            if char in entry:
+                raise Unrecognized(
+                    'branch entry %r contains %r, which can invert the meaning '
+                    'of another entry' % (entry, char))
+    if BRANCH not in branches:
+        raise Unrecognized('no entry is the literal string %r; entries are %r'
+                           % (BRANCH, branches))
 
 
-def main(path):
-    document = yaml.safe_load(open(path))
-    if not isinstance(document, dict):
-        return 'workflow did not parse as a mapping'
-    # YAML 1.1 reads a bare `on` key as the boolean true, which is what PyYAML
-    # hands back for a GitHub workflow's trigger block.
-    triggers = document.get(True, document.get('on'))
-    if not isinstance(triggers, dict):
-        return 'workflow has no trigger mapping'
-    if 'push' not in triggers:
-        return 'workflow has no push trigger'
-    push = triggers['push']
-    if push is None:
-        return None  # push on every branch
-    if not isinstance(push, dict):
-        return 'push trigger is not a mapping'
-    if 'branches' in push:
-        verdict, error = matches(push['branches'] or [], BRANCH)
-        if error:
-            return error
-        if not verdict:
-            return 'push branches exclude %s' % BRANCH
-    elif 'branches-ignore' in push:
-        verdict, error = matches(push['branches-ignore'] or [], BRANCH)
-        if error:
-            return error
-        if verdict:
-            return 'push branches-ignore excludes %s' % BRANCH
-    return None
+def main(argv):
+    try:
+        evaluate(argv[1])
+    except Unrecognized as error:
+        sys.stderr.write(
+            'CI must run on pushes to %s; release qualification requires a '
+            'main-push run for the release SHA.\n'
+            'This guard recognizes one shape only: a `push:` block naming '
+            '`branches`, containing the bare literal `%s`, with no '
+            '`branches-ignore`, `paths` or `paths-ignore`, and no entry '
+            'containing `!` or a backslash. Anything else is refused because '
+            'it cannot be shown to produce the run.\n'
+            'Reason: %s\n'
+            'If you are widening the workflow deliberately, widen this guard '
+            'in the same commit.\n' % (BRANCH, BRANCH, error))
+        return 1
+    return 0
 
 
-reason = main(sys.argv[1])
-if reason is not None:
-    sys.stderr.write(
-        'CI must run on pushes to %s; release qualification requires a '
-        'main-push run for the release SHA (%s).\n' % (BRANCH, reason))
-    raise SystemExit(1)
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
 CI_PUSH_TRIGGER_PY
 
 printf 'CI classification and Required CI contract tests passed.\n'
