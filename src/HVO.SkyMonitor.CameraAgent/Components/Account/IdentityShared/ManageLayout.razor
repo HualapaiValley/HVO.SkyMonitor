@@ -2,13 +2,13 @@
 @inherits LayoutComponentBase
 @layout HVO.SkyMonitor.CameraAgent.Components.Layout.MainLayout
 
+@* Each page under Manage supplies its own page heading through PageHeader with
+   HeadingId="manage-heading", so the three routes carry distinct programmatic names.
+   The layout no longer emits a heading of its own; "Account settings" survives as the
+   navigation region's name. *@
 <section class="manage-page" aria-labelledby="manage-heading">
-    <header>
-        <p>Local owner</p>
-        <h1 id="manage-heading">Account settings</h1>
-    </header>
     <div class="manage-layout">
-        <nav aria-label="Account navigation">
+        <nav aria-label="Account settings">
             <ManageNavMenu />
         </nav>
         <div class="manage-content">
