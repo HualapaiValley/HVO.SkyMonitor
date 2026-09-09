@@ -879,7 +879,15 @@ EOF
           {name: "raw-ingress", present: any($event_ids[]; . >= 2040 and . <= 2049)},
           {name: "capture-lanes", present: any($event_ids[]; . >= 2050 and . <= 2063)},
           {name: "processing-graph", present: any($event_ids[]; . >= 2064 and . <= 2075)},
-          {name: "transient-worker", present: any($event_ids[]; . >= 2200 and . <= 2201)},
+          # 2250-2251, not 2200-2201. The edge transient worker is
+          # CameraAgent.Common/Transients/TransientWorkerService (2250 information, 2251 error);
+          # 2200-2201 are LogicHost/Services/CentralProcessingRunnerRegistry, and no CameraAgent
+          # code emits them. This campaign runs the standalone agent with its own central-deny
+          # container, and this same scan excuses transient.handoff because "W6 runs the Edge
+          # transient mode without central handoff" -- so the old range demanded central events from
+          # a topology the file elsewhere states has no central. It was unsatisfiable on every head,
+          # and only became visible once #734 stopped the gate exiting silently. See #771.
+          {name: "transient-worker", present: any($event_ids[]; . >= 2250 and . <= 2251)},
           {name: "environmental-acquisition", present: any($event_ids[]; . >= 2520 and . <= 2529)},
           {name: "plan-comparison", present: any($event_ids[]; . >= 2530 and . <= 2539)},
           {name: "calibration", present: any($event_ids[]; . >= 2610 and . <= 2617)},
