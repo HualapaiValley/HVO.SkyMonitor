@@ -46,6 +46,13 @@ done
 readonly LOCAL_UID="$(id -u)"
 readonly LOCAL_GID="$(id -g)"
 
+# Every generated secret whose literal value must never reach retained evidence, named once so a
+# secret added to one scan cannot be missed by another. Each site prefixes "$trial_local/secrets/"
+# and skips a name the current trial did not generate: the replay runner key exists only in the
+# LocalRunner trial, `rg --file` aborts on a missing file, and on an empty file it matches every
+# line, so an unguarded site turns a scan into a non-scan.
+readonly SECRET_FILE_NAMES=(owner-password replay-runner-auth-key)
+
 prepare_private_root() {
     local path="$1"
     local label="$2"
@@ -718,7 +725,9 @@ EOF
         printf 'Unable to scan unsanitized telemetry logs for %s (rg exit %s).\n' "$trial" "$raw_log_scan_status" >&2
         return 1
     fi
-    for sensitive_file in "$trial_local/secrets/owner-password" "$trial_local/secrets/replay-runner-auth-key"; do
+    local secret_name sensitive_file
+    for secret_name in "${SECRET_FILE_NAMES[@]}"; do
+        sensitive_file="$trial_local/secrets/$secret_name"
         [[ -s "$sensitive_file" ]] || continue
         raw_log_scan_status=0
         rg --text --fixed-strings --file "$sensitive_file" "$raw_logs" >/dev/null || raw_log_scan_status=$?
@@ -1061,14 +1070,19 @@ EOF
         printf 'Unable to scan forbidden evidence patterns for %s (rg exit %s).\n' "$trial" "$sanitization_rg_status" >&2
         return 1
     fi
-    sanitization_rg_status=0
-    rg --text --files-with-matches --null --hidden --fixed-strings \
-        --file "$trial_local/secrets/owner-password" \
-        "$trial_result" >> "$sanitization_matches" || sanitization_rg_status=$?
-    if ((sanitization_rg_status > 1)); then
-        printf 'Unable to scan the generated owner password for %s (rg exit %s).\n' "$trial" "$sanitization_rg_status" >&2
-        return 1
-    fi
+    for secret_name in "${SECRET_FILE_NAMES[@]}"; do
+        sensitive_file="$trial_local/secrets/$secret_name"
+        [[ -s "$sensitive_file" ]] || continue
+        sanitization_rg_status=0
+        rg --text --files-with-matches --null --hidden --fixed-strings \
+            --file "$sensitive_file" \
+            "$trial_result" >> "$sanitization_matches" || sanitization_rg_status=$?
+        if ((sanitization_rg_status > 1)); then
+            printf 'Unable to scan generated credentials (%s) for %s (rg exit %s).\n' \
+                "$secret_name" "$trial" "$sanitization_rg_status" >&2
+            return 1
+        fi
+    done
     sanitization_rg_status=0
     rg --text --files-with-matches --null --hidden --fixed-strings "$owner_email" \
         "$trial_result" >> "$sanitization_matches" || sanitization_rg_status=$?
@@ -1124,7 +1138,8 @@ EOF
             "$trial" "$final_trial_scan_status" >&2
         return 1
     fi
-    for sensitive_file in "$trial_local/secrets/owner-password" "$trial_local/secrets/replay-runner-auth-key"; do
+    for secret_name in "${SECRET_FILE_NAMES[@]}"; do
+        sensitive_file="$trial_local/secrets/$secret_name"
         [[ -s "$sensitive_file" ]] || continue
         final_trial_scan_status=0
         rg --text --hidden --fixed-strings --file "$sensitive_file" \
