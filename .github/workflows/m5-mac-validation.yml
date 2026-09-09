@@ -95,13 +95,49 @@ jobs:
             "architecture|0|tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"
             "deployment-cli|134|tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj"
           )
-          test "${#projects[@]}" -eq 15
+
+          # Membership is what goes stale here, not length. #764 came from the repository
+          # growing, and a count pinned below the array only moves when someone edits the
+          # array: a sixteenth test project appearing tomorrow leaves it at 15, passing, with
+          # that project silently unvalidated on this host. The matrix makes the derived form
+          # available, so every project it reports Unit cases for must be either listed above
+          # or named as an exclusion below.
+          #
+          # The exclusions are the central-host unit suite, the Unit tails of the three
+          # Testcontainers-backed assemblies, and the performance harness. This step runs
+          # host-neutral unit suites and the workflow recorded no reason for the original set
+          # when it was added in 9e58f899, so the list below names that set rather than
+          # justifying it. What it buys is that the lane's share of the Unit selection is
+          # written down, and that a new test project has to be placed in one list or the
+          # other before this step passes.
+          excluded_projects=(
+            "tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj"
+            "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"
+            "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj"
+            "tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj"
+            "tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj"
+          )
+
+          covered_projects="$(
+            for entry in "${projects[@]}"; do printf '%s\n' "${entry##*|}"; done
+            printf '%s\n' "${excluded_projects[@]}"
+          )"
+          while IFS= read -r matrix_project; do
+            printf '%s\n' "$covered_projects" | grep -Fqx "$matrix_project" ||
+              { printf 'Unit project %s is in the category matrix but in neither the list above nor its exclusions\n' \
+                  "$matrix_project" >&2; exit 1; }
+          done < <(awk -F'\t' '$1 == "Unit" && $3 > 0 { print $2 }' "$matrix")
+
+          # The other direction. An exclusion naming a project the matrix no longer reports is
+          # a stale entry, and a stale entry silently widens the list it exists to bound.
+          for excluded in "${excluded_projects[@]}"; do
+            awk -F'\t' -v p="$excluded" '$1 == "Unit" && $2 == p { found = 1 } END { exit !found }' "$matrix" ||
+              { printf 'Excluded project %s has no Unit row in the category matrix\n' "$excluded" >&2; exit 1; }
+          done
 
           aggregate_total=0
           aggregate_executed=0
           aggregate_skipped=0
-          expected_aggregate_total=0
-          expected_aggregate_skipped=0
           for entry in "${projects[@]}"; do
             IFS='|' read -r name expected_skipped project <<< "$entry"
             expected_total="$(awk -F'\t' -v p="$project" '$1 == "Unit" && $2 == p { print $3 }' "$matrix")"
@@ -111,8 +147,6 @@ jobs:
               ''|*[!0-9]*) printf 'No Unit total in the category matrix for %s\n' "$project" >&2; exit 1 ;;
             esac
             expected_executed=$((expected_total - expected_skipped))
-            expected_aggregate_total=$((expected_aggregate_total + expected_total))
-            expected_aggregate_skipped=$((expected_aggregate_skipped + expected_skipped))
             project_results="$results_root/$name"
             mkdir -m 700 "$project_results"
             dotnet test "$project" \
@@ -150,12 +184,16 @@ jobs:
             printf '%s: discovered=%s executed=%s skipped=%s\n' "$name" "$total" "$executed" "$skipped"
           done
 
-          # Accumulated from the same per-project numbers, so these guard the loop -- that every
-          # entry ran and contributed -- rather than restating the pins a second time in a form
-          # that can go stale independently, which is what #764 was.
-          test "$aggregate_total" -eq "$expected_aggregate_total"
-          test "$aggregate_executed" -eq $((expected_aggregate_total - expected_aggregate_skipped))
-          test "$aggregate_skipped" -eq "$expected_aggregate_skipped"
+          # The aggregate is a printed record and carries no assertion, because no assertion
+          # placed here could fail. The step has no `shell:` override, so `bash -e` aborts on
+          # the first per-project comparison that fails; every iteration that completes has
+          # therefore already proven its own numbers and moves both a real accumulator and an
+          # expected one by the identical amount, and an iteration that does not complete never
+          # reaches this point. Comparing the two sums is an arithmetic identity, which is the
+          # same shape as the pins this change removes. The per-project comparisons above are
+          # the gate. The one post-loop check kept is reachable: a `projects` array that ran no
+          # iterations at all leaves the total at zero, and that is a state the membership check
+          # above rejects only while the exclusion list stays smaller than the matrix.
           test "$aggregate_total" -gt 0
           printf 'aggregate: discovered=%s executed=%s skipped=%s\n' \
             "$aggregate_total" "$aggregate_executed" "$aggregate_skipped"

@@ -40,6 +40,18 @@ readonly HYG_FIXTURE_DATABASE_LENGTH="16384"
 readonly HYG_FIXTURE_EXPECTED_ROWS="9"
 HYG_VALIDATION_FAILED=0
 
+# Returns 1; it does not exit. It exists for the accumulate-then-check validators below,
+# which reset HYG_VALIDATION_FAILED, run a batch of independent checks so that a caller sees
+# every problem rather than only the first, and end with `[[ "$HYG_VALIDATION_FAILED" == 0 ]]`
+# as their return value.
+#
+# Everywhere else, whether the script stops is a property of where the call sits, not of this
+# function. `cmd || hyg_fail "msg"` terminates under `set -e` because hyg_fail is the command
+# following the final `||`, the one position in an AND-OR list that `set -e` does not exempt.
+# Append `|| true`, put the list inside an `if`, or add a statement after it in a function
+# whose caller tests it, and the script prints what reads as a fatal error and then carries on.
+# So a caller that is not an accumulating validator must place hyg_fail as the last command of
+# its list, or follow it with an explicit `return 1`.
 hyg_fail() {
     HYG_VALIDATION_FAILED=1
     printf 'catalog error: %s\n' "$*" >&2

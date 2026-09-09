@@ -524,11 +524,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.Inconclusive("Run through scripts/test:cameraagent-standalone-211.");
         }
 
-        // Evaluate the browser precondition before any host interaction, matching
-        // FullCatalogAsi676StandaloneAsync. Placed after the container reads, login and owner
-        // bootstrap it used to follow, this skipped only after starting containers,
-        // authenticating and mutating owner provisioning state -- and the skip is reported as
-        // success, so nothing downstream revealed that the run had got that far.
+        // Evaluate the browser precondition before any host interaction. Placed after the
+        // container reads, login and owner bootstrap it used to follow, this skipped only after
+        // starting containers, authenticating and mutating owner provisioning state -- and the
+        // skip is reported as success, so nothing downstream revealed that the run had got that
+        // far. The placement now matches where FullCatalogAsi676StandaloneAsync puts its own
+        // Playwright check; the preconditions as a whole still differ, because that method also
+        // gates on OperatingSystem.IsLinux() and this one never has.
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         if (!File.Exists(playwright.Chromium.ExecutablePath))
         {
