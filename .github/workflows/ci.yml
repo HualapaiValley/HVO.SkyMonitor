@@ -100,9 +100,6 @@ jobs:
           docker compose --env-file deploy/acceptance/cameraagent-dual-standalone-smoke/compose.validation.env.template -f deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml config --quiet
       - name: Verify catalog contracts
         run: ./scripts/catalog/smoke-test.sh
-      - name: Audit behavioral test categories
-        if: needs.changes.outputs.mode == 'full'
-        run: dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
       - name: Audit vulnerable and deprecated packages
         if: needs.changes.outputs.mode == 'full'
         run: ./scripts/package:audit
@@ -137,6 +134,8 @@ jobs:
           dotnet restore HVO.SkyMonitor.v9.slnx
           dotnet clean HVO.SkyMonitor.v9.slnx --configuration Release
           dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+      - name: Audit behavioral test categories
+        run: dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
       - name: Validate architecture unit contracts
         env:
           UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware

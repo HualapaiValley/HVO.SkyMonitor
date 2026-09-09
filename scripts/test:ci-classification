@@ -856,12 +856,12 @@ for job in architecture coverage-policy migrations-cameraagent migrations-logich
 done
 
 # Quality keeps the repository-wide bookkeeping gates that a diff-bounded local
-# run never selects, including the two audits inherited from removed jobs.
+# run never selects and that need no compiled output.
 quality_job="$(extract_workflow_job quality)"
-for step_name in 'Verify catalog contracts' 'Audit behavioral test categories' \
+for step_name in 'Verify catalog contracts' \
   'Audit vulnerable and deprecated packages'; do
   grep -Fq "      - name: $step_name" <<< "$quality_job" || {
-    printf 'Quality must retain the inherited repository-wide gate: %s\n' "$step_name" >&2
+    printf 'Quality must retain the repository-wide gate: %s\n' "$step_name" >&2
     exit 1
   }
 done
@@ -883,6 +883,25 @@ grep -Fq 'tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Te
 }
 grep -Fq 'tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter "TestCategory=Integration&FullyQualifiedName~ArchitectureBoundaryTests"' <<< "$architecture_job" || {
   printf 'Architecture & Publish must run the Architecture Integration selection.\n' >&2
+  exit 1
+}
+
+# The behavioral category audit shells out to `dotnet test --no-build`, so it
+# only produces an answer in a job that has already built the solution in
+# Release. Assert the precondition and not merely the step: a gate placed where
+# its precondition is missing looks identical to a gate that passes.
+grep -Fq '      - name: Audit behavioral test categories' <<< "$architecture_job" || {
+  printf 'Architecture & Publish must run the behavioral test category audit.\n' >&2
+  exit 1
+}
+audit_line="$(grep -n -F '      - name: Audit behavioral test categories' <<< "$architecture_job" | head -n 1 | cut -d: -f1)"
+release_build_line="$(grep -n -F 'dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release' <<< "$architecture_job" | head -n 1 | cut -d: -f1)"
+if [[ -z "$release_build_line" || "$release_build_line" -ge "$audit_line" ]]; then
+  printf 'The behavioral category audit must follow a Release build of the solution.\n' >&2
+  exit 1
+fi
+grep -Fq '      - name: Audit behavioral test categories' <<< "$quality_job" && {
+  printf 'The behavioral category audit must not run in Quality, which never builds.\n' >&2
   exit 1
 }
 

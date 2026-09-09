@@ -7,8 +7,8 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | Check | Enforced behavior |
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
-| **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. It also carries the catalog contract smoke test and the behavioral category audit inherited from the removed Catalog Contracts and Build jobs. Reduced mode does not restore or audit application packages it cannot affect. |
-| **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 15 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
+| **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. It also carries the catalog contract smoke test inherited from the removed Catalog Contracts job. Reduced mode does not restore or audit application packages it cannot affect. |
+| **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 15 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus the behavioral category audit inherited from the removed Build job, which runs here because it discovers tests with `--no-build` and so needs the Release build this job already performs; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
 | **Coverage Policy** | Schema validation of every aggregate and component coverage baseline plus rejection of any pull request that lowers a baseline rate, raises its tolerance, or drops a baseline file floor relative to the merge target. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. Runs for every full-mode head. |
@@ -55,7 +55,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3459`, `Integration=667`, `Manual=103`, `Soak=1`, `External=0`, and `Hardware=1`.
 
-These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project matrix in `scripts/test-categories/Program.cs` and fails when this runbook disagrees with it, while the Build check's category audit proves that matrix matches actual discovery. Update the matrix and this runbook in the same change.
+These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project matrix in `scripts/test-categories/Program.cs` and fails when this runbook disagrees with it, while the Architecture & Publish check's category audit proves that matrix matches actual discovery. Update the matrix and this runbook in the same change.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
@@ -311,9 +311,9 @@ Policy** (baseline non-regression), and both **CameraAgent Migrations** and
 **LogicHost Migrations**. The migration gate is split per host so each failure is
 attributable to one EF context, but neither half is component-selected: a
 delivery-only or documentation-adjacent plan still runs both. **Quality** already
-runs in every mode and keeps the package vulnerability/deprecation audit, the
-catalog contract smoke test, and the behavioral category audit on every full-mode
-head.
+runs in every mode and keeps the package vulnerability/deprecation audit and the
+catalog contract smoke test on every full-mode head. The behavioral category
+audit runs in **Architecture & Publish**, which builds Release before it.
 
 The closed component map is keyed on the exact project directory segment, so
 sibling names such as `HVO.SkyMonitor.CameraAgent.Tests` and
