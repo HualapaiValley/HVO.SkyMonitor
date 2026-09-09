@@ -28,11 +28,20 @@ assert_catalog_perf_root_shape() {
     # call site is written `assert_catalog_perf_root_shape ... || exit 2`, and errexit is suspended inside a function
     # invoked on the left of `||`. A future caller invoking this bare would die on the assignment instead of reading
     # the refusal below, so do not depend on the call-site form.
+    # Guard the argument before it reaches cd, not after. `cd ""` succeeds in bash and stays put, so resolving an
+    # empty argument yields the working directory rather than the empty string: the backstop below is never reached
+    # and a caller whose cwd happens to be a correct root gets success for a root it never named. Called with no
+    # argument at all, an unguarded "$1" dies on nounset before any diagnostic prints, since nounset is fatal
+    # whether or not errexit is suspended.
+    if [[ -z "${1:-}" ]]; then
+        printf 'HVO_CATALOG_PERF_ROOT must name a directory this process can enter, and was empty or unset.\n' >&2
+        return 2
+    fi
     root="$(cd "$1" 2>/dev/null && pwd -P)" || root=''
     if [[ -z "$root" ]]; then
         # A backstop rather than the usual path. Each runner already refuses a non-existent root by name before
-        # sourcing this file, so what reaches here is a directory that exists and cannot be entered, an empty
-        # argument, or a root deleted between that check and this call.
+        # sourcing this file, so what reaches here is a directory that exists and cannot be entered, or a root
+        # deleted between that check and this call. The empty argument is handled above and does not reach here.
         printf 'HVO_CATALOG_PERF_ROOT must name a directory this process can enter: %s\n' "$1" >&2
         return 2
     fi
@@ -51,7 +60,11 @@ assert_catalog_perf_root_shape() {
     # ever writes there. It refuses a pointer into a nested path or into a sibling of versions/, both of which
     # resolve inside the root and so pass the check below. Adopted from the independent implementation on #822,
     # which caught these two and not the one below; the cross-probe recording that is in the PR ledger.
-    if [[ "$target" != versions/?* || "$target" == */*/* ]]; then
+    # The segment must start with a letter or digit, which is what the container's version validator requires. A
+    # bare "?" here admits "versions/.", whose single dot satisfies the pattern, is not a link, resolves to
+    # versions/ inside the root, and counts one database on a single-version root. The container refuses it twice,
+    # in the contained-path check and again in version validation, so this admitted a root the container rejects.
+    if [[ "$target" != versions/[A-Za-z0-9]* || "$target" == */*/* ]]; then
         printf 'The "current" pointer in %s must target versions/PACKAGE_VERSION; it targets %s.\n' \
             "$root" "$target" >&2
         return 2
@@ -81,9 +94,11 @@ assert_catalog_perf_root_shape() {
         return 2
     fi
     # Scoped to the version "current" resolves to, not to the whole root. A root that has taken an upgrade
-    # legitimately holds more than one version: the installer repoints "current" and deletes nothing, collection is a
-    # separate step that refuses to remove a referenced version, and rollback needs the outgoing version still on disk
-    # to have anything to roll back to. Counting across the root rejected every such root, and every root holding a
+    # legitimately holds more than one version, and it does not get there by the pointer moving. The installer does
+    # not repoint "current": EnsureLegacyCurrentPointer returns early when the link already exists and is the only
+    # place in src that creates it, so selection is a configuration write. A second install adds a version directory
+    # and leaves the pointer where it was, collection is a separate step that refuses to remove a referenced version,
+    # and rollback needs the outgoing version still on disk to have anything to roll back to. Counting across the root rejected every such root, and every root holding a
     # ".gc-" tombstone, which is the ordinary state of an installation that has been upgraded once. What this check is
     # for is that the directory the container opens is unambiguous, and that is the resolved version alone.
     # Counted into a variable and compared numerically. BSD wc pads its output to a fixed width, so comparing the
