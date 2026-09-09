@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+# Deterministic gate for scripts/ci:shell-syntax.
+#
+# The defect this checker exists to catch (#775) is not "bash -n was never run". It is that
+# bash -n was run over a hand-written list, passed, and reported a coverage it did not have:
+# a sourced library outside the list kept its syntax error because sourcing does not parse
+# the sourced file until runtime. So this gate asserts the two properties a list cannot
+# assert about itself -- that the checker REJECTS bad syntax, and that discovery reaches the
+# directories the enumeration missed -- rather than only that the checker exits zero.
+
+# Guarded before anything else, and using only constructs Bash 3.2 can parse, so an old
+# interpreter gets this message rather than a confusing cascade. Keep bash-5-only syntax
+# below this point: a construct above it would make the guard unreachable on the very
+# interpreter it exists to turn away.
+if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+    printf '%s requires Bash 5.1 or newer; running under %s (%s).\n' \
+        "${BASH_SOURCE[0]##*/}" "${BASH_VERSION}" "${BASH}" >&2
+    exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly CHECKER="$SCRIPT_DIR/ci:shell-syntax"
+
+# Invoke the checker under THIS interpreter, never through its shebang. Its shebang is
+# `/usr/bin/env bash`, so a bare "$CHECKER" inherits whatever bash PATH resolves; on a host
+# where that is below 5.1 every functional case below receives the version refusal instead of
+# the behaviour it asserts, and a self-test that only ever observes its own refusal reports a
+# red that says nothing about the gate. Pinning the interpreter here is the same fix the
+# checker applies to `bash -n`, one level up: the earlier fix pinned the interpreter that does
+# the work but not the one that runs the checker. Reported from a host whose PATH bash is
+# 3.2.57.
+run_checker() {
+    "$BASH" "$CHECKER" "$@"
+}
+
+WORK="$(mktemp -d)"
+readonly WORK
+trap 'rm -rf "$WORK"' EXIT
+
+failures=0
+cases=0
+
+expect() {
+    local name="$1" want_exit="$2" want_text="$3"
+    shift 3
+    cases=$((cases + 1))
+    local out status
+    set +e
+    out="$(run_checker "$@" 2>&1)"
+    status=$?
+    set -e
+    if [[ "$status" != "$want_exit" ]] || [[ "$out" != *"$want_text"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL %s\n  expected exit=%s containing: %s\n  actual   exit=%s output:\n%s\n' \
+            "$name" "$want_exit" "$want_text" "$status" "$out" >&2
+    fi
+}
+
+printf '#!/usr/bin/env bash\nprintf "ok\\n"\n' >"$WORK/good.sh"
+# An unterminated `if`: valid-looking text that only bash -n rejects.
+# shellcheck disable=SC2016 # The fixture's "$1" is literal script text, not an expansion here.
+printf '#!/usr/bin/env bash\nif [[ -n "$1" ]]; then\n  printf "x\\n"\n' >"$WORK/broken.sh"
+
+# Every result names the interpreter that produced it. `bash -n` outcomes are interpreter-
+# dependent -- `[[ -v VAR ]]` is a syntax error before Bash 4.2 -- so a result that does not
+# say which bash it used cannot be attributed, and a false positive is indistinguishable
+# from a regression.
+expect 'result names the interpreter' 0 "under Bash ${BASH_VERSION}" "$WORK/good.sh"
+expect 'valid file accepted' 0 'passed for 1 file' "$WORK/good.sh"
+expect 'syntax error rejected' 1 'broken.sh' "$WORK/broken.sh"
+# One bad file among good ones must still fail: a per-file loop that stops accumulating is
+# how a batch check silently narrows to its first argument.
+expect 'failure names the interpreter' 1 "under Bash ${BASH_VERSION}" "$WORK/broken.sh"
+expect 'bad file in a batch rejected' 1 'failed for 1 of 3' "$WORK/good.sh" "$WORK/broken.sh" "$WORK/good.sh"
+
+# The shebang predicate decides what discovery selects, and its failure mode is silent
+# exclusion -- the same defect the enumeration had. `--list <paths>` reports the subset the
+# predicate accepts, which is the only way to exercise it: discovery reads `git ls-files` and
+# cannot see a fixture. Fixtures deliberately carry no .sh suffix, or the name would
+# short-circuit the shebang parse and these cases would prove nothing.
+printf '#!/usr/bin/env -S bash -e\ntrue\n' >"$WORK/env-dash-s"
+printf '#!/usr/bin/env -Sbash -e\ntrue\n' >"$WORK/env-dash-s-fused"
+printf '#!/usr/bin/env --split-string=bash -e\ntrue\n' >"$WORK/env-split-string"
+printf '#!/usr/bin/env FOO=1 bash\ntrue\n' >"$WORK/env-assignment"
+printf '#!/bin/bash -e\ntrue\n' >"$WORK/plain-bash-with-arg"
+printf '#!/bin/sh\ntrue\n' >"$WORK/posix-sh"
+printf '#!/usr/bin/env python3\nprint(1)\n' >"$WORK/python-script"
+printf '#!/usr/bin/env -S python3 -u\nprint(1)\n' >"$WORK/python-dash-s"
+printf 'plain text, no shebang\n' >"$WORK/no-shebang"
+
+predicate_case() {
+    local fixture="$1" want="$2"
+    cases=$((cases + 1))
+    local selected
+    selected="$(run_checker --list "$WORK/$fixture")"
+    if [[ "$want" == 'accept' && "$selected" != *"$fixture" ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL shebang predicate excluded %s\n' "$fixture" >&2
+    elif [[ "$want" == 'reject' && "$selected" == *"$fixture" ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL shebang predicate wrongly included %s\n' "$fixture" >&2
+    fi
+}
+
+predicate_case env-dash-s           accept
+predicate_case env-dash-s-fused     accept
+predicate_case env-split-string     accept
+predicate_case env-assignment       accept
+predicate_case plain-bash-with-arg  accept
+predicate_case posix-sh             accept
+predicate_case python-script        reject
+predicate_case python-dash-s        reject
+predicate_case no-shebang           reject
+
+# Discovery must reach the library directory whose omission from the enumerated list is the
+# reported defect, and must not regress to checking nothing.
+discovered="$(run_checker --list)"
+for required in scripts/lib/trx-evidence.sh scripts/lib/registry-blob.sh .devcontainer/install-playwright.sh; do
+    cases=$((cases + 1))
+    if ! grep -qxF "$required" <<<"$discovered"; then
+        failures=$((failures + 1))
+        printf 'FAIL discovery omits %s\n' "$required" >&2
+    fi
+done
+
+# Discovery derives from the repository, so it must cover at least everything the retired
+# enumeration named. A lower bound catches a discovery predicate that quietly stops matching.
+cases=$((cases + 1))
+discovered_count="$(grep -c . <<<"$discovered")"
+if ((discovered_count < 100)); then
+    failures=$((failures + 1))
+    printf 'FAIL discovery found only %s shell files; the enumeration it replaced named ~80\n' \
+        "$discovered_count" >&2
+fi
+
+# Non-shell files that live beside the scripts must not be dragged in: bash -n over a Python
+# or jq file would fail for a reason that has nothing to do with shell syntax.
+for excluded in scripts/lib/atomic-directory-publish.py scripts/lib/component-inventory.jq; do
+    cases=$((cases + 1))
+    if grep -qxF "$excluded" <<<"$discovered"; then
+        failures=$((failures + 1))
+        printf 'FAIL discovery wrongly includes %s\n' "$excluded" >&2
+    fi
+done
+
+# The version refusal is the one case that CANNOT run under a pinned modern interpreter, so
+# it needs a deliberately old one. Look for a real pre-5.1 bash; HVO_LEGACY_BASH overrides the
+# search. Where none exists the case is reported as skipped by name -- an untested guard that
+# announces itself is recoverable, one that silently counts as passed is the failure mode this
+# whole PR is about.
+legacy_bash=''
+for candidate in "${HVO_LEGACY_BASH-}" /bin/bash /usr/bin/bash /bin/sh; do
+    [[ -n "$candidate" && -x "$candidate" ]] || continue
+    if "$candidate" -c '((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1)))' 2>/dev/null; then
+        legacy_bash="$candidate"
+        break
+    fi
+done
+
+if [[ -n "$legacy_bash" ]]; then
+    cases=$((cases + 1))
+    # shellcheck disable=SC2016 # BASH_VERSION must expand in the legacy shell, not this one.
+    legacy_version="$("$legacy_bash" -c 'printf %s "$BASH_VERSION"' 2>/dev/null)"
+    set +e
+    refusal="$("$legacy_bash" "$CHECKER" 2>&1)"
+    refusal_status=$?
+    set -e
+    if ((refusal_status == 0)) || [[ "$refusal" != *'requires Bash 5.1 or newer'* ]] \
+        || [[ "$refusal" != *"$legacy_version"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL version guard under %s (%s)\n  expected non-zero naming the version; got exit=%s:\n%s\n' \
+            "$legacy_bash" "$legacy_version" "$refusal_status" "$refusal" >&2
+    fi
+    skipped_note="version guard executed under $legacy_bash ($legacy_version)"
+else
+    skipped_note='version guard NOT executed: no pre-5.1 bash on this host (set HVO_LEGACY_BASH to cover it)'
+fi
+
+if ((failures > 0)); then
+    printf '%s/%s ci:shell-syntax cases failed.\n' "$failures" "$cases" >&2
+    exit 1
+fi
+
+printf 'ci:shell-syntax contract: %s cases passed (%s files discovered, Bash %s).\n' \
+    "$cases" "$discovered_count" "${BASH_VERSION}"
+printf '  %s\n' "$skipped_note"
