@@ -439,6 +439,143 @@ public sealed class CentralDerivativeWorkerTests
             .Should().BeFalse("stopping the worker is not a database dependency failure");
     }
 
+    /// <summary>
+    /// The four faults a stopped lease can surface, one per handler that reports a dependency failure. Every one of
+    /// them is what an ordinary shutdown produces rather than an outage: stopping the worker cancels the command the
+    /// executor has in flight, and neither dependency reports that cancellation as an
+    /// <see cref="OperationCanceledException"/> reliably. SQL Server aborts the batch and the provider raises a
+    /// <see cref="DbException"/>, a save in progress surfaces as a <see cref="DbUpdateException"/>, the artifact
+    /// reader's classifier counts an <see cref="OperationCanceledException"/> as a storage failure and wraps it on
+    /// the paths that do not rethrow the cancellation first, and the object store reports a cancellation of its own
+    /// as <see cref="ObjectStoreFailureKind.Canceled"/>. The shutdown handler ahead of these catches none of those
+    /// shapes, so each handler saw an outage caused by the stop.
+    /// </summary>
+    public static IEnumerable<object[]> ShutdownLeaseFaults()
+    {
+        yield return ["a canceled query reported as a provider fault",
+            (Exception)new TestDbException("The request failed to run because the batch is aborted.")];
+        yield return ["a canceled save reported as a provider fault",
+            new DbUpdateException(
+                "An error occurred while saving the entity changes.",
+                new TestDbException("The request failed to run because the batch is aborted."))];
+        yield return ["a canceled object-store read wrapped by the artifact reader",
+            new CentralArtifactStorageException(new OperationCanceledException("The read was aborted."))];
+        yield return ["a canceled object-store request reported by the store",
+            new ObjectStoreException(ObjectStoreFailureKind.Canceled, "get-object")];
+    }
+
+    [TestMethod]
+    [DynamicData(nameof(ShutdownLeaseFaults))]
+    public async Task StopDoesNotRecordADependencyFailureForACancelledLeaseAsync(string description, Exception fault)
+    {
+        var lease = CreateLease();
+        var jobs = new ScriptedJobService
+        {
+            Claim = (attempt, _) => Task.FromResult(attempt == 1 ? lease : null)
+        };
+        var executor = new CancellationFaultingExecutor(fault);
+        await using var harness = CreateHarness(
+            jobs, _ => executor, renewalInterval: TimeSpan.FromHours(1));
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        executor.Faulted.Should().BeTrue($"the execution must have thrown {description}");
+        harness.Telemetry.HasRecentDependencyFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse($"stopping the worker is not a dependency failure, and this run forced {description}");
+    }
+
+    /// <summary>
+    /// Persisting a terminal failure is best effort and runs on the same token, so a stop that faults the execution
+    /// also faults the write that records it. That write's own handler reported the second fault as a dependency
+    /// failure even though the first one was already known to be the stop.
+    /// </summary>
+    [TestMethod]
+    public async Task StopDoesNotRecordADependencyFailureWhenPersistingTheFailureIsCancelledAsync()
+    {
+        var lease = CreateLease();
+        var persistFaulted = 0;
+        var jobs = new ScriptedJobService
+        {
+            Claim = (attempt, _) => Task.FromResult(attempt == 1 ? lease : null),
+            Fail = async (_, cancellationToken) =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Swallowed on purpose; the provider fault below is what the aborted write actually surfaces.
+                }
+                Interlocked.Exchange(ref persistFaulted, 1);
+                throw new TestDbException("The request failed to run because the batch is aborted.");
+            }
+        };
+        var executor = new CancellationFaultingExecutor(
+            new InvalidOperationException("The recipe faulted while the host was stopping."));
+        await using var harness = CreateHarness(
+            jobs, _ => executor, renewalInterval: TimeSpan.FromHours(1));
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Volatile.Read(ref persistFaulted).Should().Be(1, "the failure write must have thrown the fault the stop caused");
+        harness.Telemetry.HasRecentDependencyFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse("stopping the worker is not a database dependency failure");
+    }
+
+    /// <summary>
+    /// The renewal loop's own token is canceled whenever the execution finishes, so it cannot tell a stop from an
+    /// outage and the worker's stopping token has to. This matters more than the other sites: a renewal failure
+    /// outranks a dependency failure in the health check, so a renewal command aborted by the stop and recorded as
+    /// failed reports <c>Status=renewal-failure</c> for a full lease duration after a clean stop.
+    /// </summary>
+    [TestMethod]
+    public async Task StopReportsACancelledRenewalAsCanceledRatherThanFailedAsync()
+    {
+        var lease = CreateLease();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var faulted = 0;
+        var jobs = new ScriptedJobService
+        {
+            Claim = (attempt, _) => Task.FromResult(attempt == 1 ? lease : null),
+            Renew = async (_, cancellationToken) =>
+            {
+                entered.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Swallowed on purpose, for the same reason as the claim test: the fault under examination is
+                    // the provider exception the aborted batch raises instead of the cancellation.
+                }
+                Interlocked.Exchange(ref faulted, 1);
+                throw new InvalidOperationException(
+                    "An exception has been raised that is likely due to a transient failure.",
+                    new TestDbException("The request failed to run because the batch is aborted."));
+            }
+        };
+        var gate = new ExecutorGate(waitAfterCancellation: false);
+        using var executor = new GatedExecutor(gate);
+        await using var harness = CreateHarness(
+            jobs, _ => executor, renewalInterval: TimeSpan.FromMilliseconds(10));
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Volatile.Read(ref faulted).Should().Be(1, "the renewal must have thrown the fault the stop caused");
+        harness.Telemetry.HasRecentRenewalFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse("stopping the worker is not a lease renewal failure");
+        harness.Telemetry.HasRecentDependencyFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeFalse("stopping the worker is not a database dependency failure");
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
@@ -620,6 +757,36 @@ public sealed class CentralDerivativeWorkerTests
             CentralDerivativeJobLease lease,
             CancellationToken cancellationToken)
             => Task.FromException<CentralDerivativeExecutionResult>(exception);
+    }
+
+    /// <summary>
+    /// Blocks until the execution token is canceled and then throws <paramref name="fault"/> rather than the
+    /// cancellation, which is what a provider does when it aborts the command the stop canceled.
+    /// </summary>
+    private sealed class CancellationFaultingExecutor(Exception fault) : ICentralDerivativeJobExecutor
+    {
+        private int _faulted;
+
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool Faulted => Volatile.Read(ref _faulted) != 0;
+
+        public async Task<CentralDerivativeExecutionResult> ExecuteAsync(
+            CentralDerivativeJobLease lease,
+            CancellationToken cancellationToken)
+        {
+            Started.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Swallowed on purpose; the fault below is what the aborted command actually surfaces.
+            }
+            Interlocked.Exchange(ref _faulted, 1);
+            throw fault;
+        }
     }
 
     private sealed class GatedExecutor(ExecutorGate gate) : ICentralDerivativeJobExecutor, IDisposable
