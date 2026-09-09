@@ -170,15 +170,7 @@ public sealed class CameraAgentGalleryPerformanceTests
         string? sqliteVersion = null;
         var evidenceLabel = ReadEvidenceLabel();
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
 
         foreach (var captureCount in CaptureCounts)
         {
