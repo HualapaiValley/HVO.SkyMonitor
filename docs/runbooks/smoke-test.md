@@ -158,7 +158,18 @@ already present:
   /var/lib/hvo/catalog-build
 ```
 
-Run the smoke against the installation root, not a bundle or SQLite file:
+Run the smoke against the installation root, not a bundle or SQLite file.
+
+`HVO_CATALOG_PERF_ROOT` and the Deployment CLI installer bundle variable take
+different levels of the same tree, and this is the part no reader guesses.
+`HVO_CATALOG_PERF_ROOT` is the catalog **root**, the directory holding the
+`current` pointer beside `versions/`, because that pointer is what the container
+resolves. The installer bundle variable is a **version** directory below
+`versions/`, and it refuses the `current` entry outright. Both paths exist and
+both are readable directories, so passing the version directory here used to
+satisfy the scripts' checks and then fail inside the container minutes later. The
+three campaign scripts now validate the shape and refuse the version directory by
+name at the point of the mistake.
 
 ```bash
 HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
