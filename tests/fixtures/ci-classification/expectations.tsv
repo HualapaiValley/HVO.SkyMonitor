@@ -28,6 +28,7 @@ jobs-empty-mapping	REFUSE	`jobs` present and a mapping, but declaring nothing
 jobs-not-mapping	REFUSE	`jobs` present but not a mapping
 jobs-null	REFUSE	`jobs` present but empty, which composes as null
 merge-key-root	REFUSE	merge key at the workflow root can inject keys
+merge-key-root-control	ACCEPT	the anchored accepted mapping remains valid when the merge line is removed
 misspelled-on-key	REFUSE	the same shape one level up: a near miss for the `on` key itself
 misspelled-push-beside-real-push	REFUSE	the realistic spelling of the same defect: a typo beside the real key rather than an invented word (expectation reversed in round 5, see the comment above this case)
 misspelled-push-key	REFUSE	a near miss for `push` with a well-formed body and no real push trigger
@@ -49,6 +50,8 @@ spelling-hex-escape	ACCEPT	a double-quoted entry using a hex escape
 spelling-line-continuation	ACCEPT	a double-quoted entry broken by a line continuation
 spelling-literal-entry	ACCEPT	a literal block scalar entry
 spelling-quoted-branches-key	ACCEPT	the `branches` key quoted
+spelling-quoted-on-entry	ACCEPT	a quoted branch spelling remains ordinary text
+spelling-unquoted-on-entry	ACCEPT	an implicit YAML boolean branch spelling is compared as source text
 tab-indent	REFUSE	a tab where the parser expects indentation
 tag-in-pull-request	REFUSE	an explicit tag elsewhere inside the trigger
 tag-in-trigger	REFUSE	an explicit tag on a node the reader consumes

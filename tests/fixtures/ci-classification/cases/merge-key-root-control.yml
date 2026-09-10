@@ -336,5 +336,3 @@ jobs:
             migrations-cameraagent=${{ needs.migrations-cameraagent.result }}
             migrations-logichost=${{ needs.migrations-logichost.result }}
         run: ./scripts/ci:require "$EVENT_NAME" "$PLAN" "$RESULTS"
-
-<<: *d

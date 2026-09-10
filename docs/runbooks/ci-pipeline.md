@@ -74,30 +74,103 @@ dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "
 ```
 
 The two solution-wide commands above do not produce coverage evidence. They
-write no per-slot result directories, so merging straight from them leaves every
-slot below empty. `.github/workflows/ci.yml` no longer carries per-project
-commands to copy either; the jobs that held them were removed. Produce the slots
-with the lane script instead, once per component, and add the architecture
-project by hand because no lane claims it:
+write no per-slot result directories, and `scripts/coverage:component` is a
+consumer: it requires one existing `coverage.cobertura.xml` in every slot it
+owns, merges those reports, and enforces the component baseline. It never runs a
+test. The current workflow removed the jobs that used to hold these producers,
+so reproduce the 22 required reports locally with the exact per-project commands
+below before invoking any coverage consumer. The unit filter excludes every
+non-unit category, and the invalid Docker endpoint proves these unit selections
+do not depend on Docker.
 
 ```bash
 UNIT_FILTER='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware'
+INTEGRATION_FILTER='TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware'
+UNIT_DOCKER_HOST=unix:///tmp/hvo-unit-docker-must-not-exist.sock
+
+run_unit() {
+  DOCKER_HOST="$UNIT_DOCKER_HOST" dotnet test "$1" --no-build --configuration Release \
+    --filter "$UNIT_FILTER" --settings tests/coverage.runsettings \
+    --collect:"XPlat Code Coverage" --results-directory "$2" \
+    --logger "trx;LogFileName=$3"
+}
+run_integration() {
+  dotnet test "$1" --no-build --configuration Release \
+    --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings \
+    --collect:"XPlat Code Coverage" --results-directory "$2" \
+    --logger "trx;LogFileName=$3"
+}
+
+# Unit producers: one command for each required unit slot.
+run_unit tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj \
+  TestResults/unit/astronomy unit-astronomy.trx
+run_unit tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj \
+  TestResults/unit/imaging unit-imaging.trx
+run_unit tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj \
+  TestResults/unit/processing unit-processing.trx
+run_unit tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj \
+  TestResults/unit/catalog-sqlite unit-catalog-sqlite.trx
+run_unit tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj \
+  TestResults/unit/agent-core unit-agent-core.trx
+run_unit tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj \
+  TestResults/unit/common unit-common.trx
+run_unit tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj \
+  TestResults/unit/fleet-contracts unit-fleet-contracts.trx
+run_unit tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj \
+  TestResults/unit/test-support unit-test-support.trx
+run_unit tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj \
+  TestResults/unit/deployment-cli unit-deployment-cli.trx
+run_unit tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj \
+  TestResults/unit/deployment-distribution unit-deployment-distribution.trx
+run_unit tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj \
+  TestResults/unit/architecture unit-architecture.trx
+run_unit tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  TestResults/unit/cameraagent unit-cameraagent.trx
+run_unit tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj \
+  TestResults/unit/cameraagent-acceptance unit-cameraagent-acceptance.trx
+run_unit tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj \
+  TestResults/unit/logichost unit-logichost.trx
+run_unit tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj \
+  TestResults/unit/cameraagent-logichost unit-cameraagent-logichost.trx
+
+# Integration producers: one command for each required integration slot.
+run_integration tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  TestResults/integration/cameraagent-storage integration-cameraagent-storage.trx
+run_integration tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj \
+  TestResults/integration/cameraagent-standalone integration-cameraagent-standalone.trx
+run_integration tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj \
+  TestResults/integration/astronomy integration-astronomy.trx
+run_integration tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj \
+  TestResults/integration/logichost integration-logichost.trx
+run_integration tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj \
+  TestResults/integration/cameraagent integration-cameraagent.trx
+run_integration tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj \
+  TestResults/integration/cameraagent-logichost integration-cameraagent-logichost.trx
+
+# Architecture & Publish supplies the final required architecture slot.
+dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj \
+  --no-build --configuration Release \
+  --filter 'TestCategory=Integration&FullyQualifiedName~ArchitectureBoundaryTests' \
+  --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" \
+  --results-directory TestResults/architecture \
+  --logger "trx;LogFileName=architecture-publish.trx"
+
+# Only now consume the reports. These commands do not produce any reports.
 for component in shared cameraagent logichost combined delivery; do
   ./scripts/coverage:component "$component"
 done
-dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj \
-  --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings \
-  --collect:"XPlat Code Coverage" --results-directory TestResults/unit/architecture \
-  --logger "trx;LogFileName=unit-architecture.trx"
 ```
 
-`TestResults/architecture` is still produced by the Architecture & Publish job's
-own command, which that job retains. Solution-level TRX names are not
-collision-proof, which is why the per-slot directories exist at all.
+The unit `ProcessingRunner` suite is intentionally not one of the 22 coverage
+slots; run it separately when reproducing the complete local candidate gate, but
+discard its coverage report as the component script does. The final architecture
+command produces `TestResults/architecture`, and the explicit aggregate merge
+below consumes it along with the 21 unit/integration slots. Solution-level TRX
+names are not collision-proof, which is why the per-slot directories exist at all.
 
-The exhaustive deployment harness runs on main/release/manual CI and on pull
-requests that change split-host inputs. It defaults to the original serial
-all-contract mode for local validation:
+The exhaustive deployment harness is a local acceptance procedure; the current
+`ci.yml` does not run or upload it as a hosted Deployment Contracts job. It
+defaults to the original serial all-contract mode for local validation:
 
 ```bash
 ./scripts/test:deploy-environment
@@ -107,10 +180,10 @@ Its closed shard inventory is `preflight`, `prepare-images`, `partial-prepare`,
 `existing-catalog-up`, `bootstrap-authority`, `bootstrap-credentials`, `smoke`,
 `measure`, `existing-down`, and `deploy-services`. Inspect it with
 `./scripts/test:deploy-environment --list-shards`, or run one isolated shard with
-`./scripts/test:deploy-environment --shard NAME`. Main/release/manual CI and
-affected pull requests use `./scripts/test:deploy-environment --parallel`; each
-child creates an independent temporary fixture. The coordinator defaults to the
-smaller of the shard count,
+`./scripts/test:deploy-environment --shard NAME`. For local reproduction of the
+former parallel main/release/manual or affected-pull-request acceptance, use
+`./scripts/test:deploy-environment --parallel`; each child creates an independent
+temporary fixture. The coordinator defaults to the smaller of the shard count,
 `nproc`, and eight local child processes. `DEPLOY_TEST_MAX_PARALLEL=1` through
 `8` can lower that bound. Every child runs in its own session. Fail-fast and
 signal cleanup send TERM to the complete process group, wait a bounded grace
@@ -118,12 +191,11 @@ interval, escalate surviving groups to KILL, and reap stopped leaders. Queued
 shards are marked as not started and the complete failed-shard log is printed.
 
 Every coordinator invocation creates a collision-safe directory beneath
-`TestResults/deployment-contracts/`. GitHub directories include run and attempt
-identity; local directories use a local identity, UTC timestamp, coordinator
-PID, and random suffix. Concurrent invocations never clear or share these
-directories. Each contains per-shard `.log`, `.status`, and leader PID evidence. Nothing
-uploads them any more: the Deployment Contracts job that retained every
-invocation directory was removed, so this evidence is local-only.
+`TestResults/deployment-contracts/`. Local directories use a local identity, UTC
+timestamp, coordinator PID, and random suffix; concurrent invocations never
+clear or share these directories. Each contains per-shard `.log`, `.status`, and
+leader PID evidence. No hosted job uploads them: the removed Deployment Contracts
+job used to retain every invocation directory, so this evidence is local-only.
 
 Run the lightweight closed-CLI and injected coordinator-failure contracts
 without executing the nine full shards:
@@ -138,8 +210,9 @@ Manual dispatch retains the historical Phase 14 acceptance inventory contract:
 ./scripts/test:phase14-acceptance
 ```
 
-Deployment-relevant pull requests retain the lightweight coordinator and two
-current deployment orchestration contracts:
+For a deployment-relevant pull request, run the lightweight coordinator and the
+two current deployment orchestration contracts locally; they are not hosted CI
+gates in the current workflow:
 
 ```bash
 ./scripts/test:deployment-logichost-outage-contract
@@ -272,13 +345,16 @@ deployment plan is explicitly `false`, and the plan selects neither the complete
 matrix nor any component lane.
 
 Deployment selection is independent from full/reduced mode and is still computed
-and validated, but it no longer selects a job: the Deployment Contracts gate and
-its exhaustive catalog, shard, and installer suites were removed with the rest of
-the duplicated work. `deployment`, `deployment_catalog`, `deployment_shards`, and
-`deployment_installer` remain classifier outputs that `Required CI` checks for
-internal consistency, and `./scripts/test:deploy-environment --parallel` remains
-the local way to run those suites. Main, `release/**`, and manual runs still
-select all three flags. The closed deployment path map is:
+and validated as classifier output, but it no longer selects a job. The Deployment
+Contracts gate and its exhaustive catalog, shard, and installer suites were
+removed with the duplicated work. `deployment`, `deployment_catalog`,
+`deployment_shards`, and `deployment_installer` remain useful outputs for local
+acceptance planning; `Required CI` validates the deployment plan's event and
+mode constraints but does not expect a Deployment Contracts result. Run the
+retained suites locally with `./scripts/test:deploy-environment --parallel` as
+described above. Main, `release/**`, and manual runs still select all three flags;
+that selection does not claim that the suites ran in hosted CI. The closed
+deployment path map is:
 
 - `.github/workflows/ci.yml`, `.dockerignore`, `.env.template`, `docker-compose.apps.yml`, and `global.json`
 - `scripts/ci:classify`, `scripts/ci:require`, `scripts/test:ci-classification`,
@@ -298,16 +374,17 @@ The classifier emits `mode`, `deployment`, and the three exhaustive-suite output
 with reasons in the step summary. Missing commits, failed or malformed diffs,
 and empty change sets fail closed to every suite. Deletions, renames, type
 changes, and missing or non-regular entries use the affected path to select a
-suite while still forcing `mode=full` and `deployment=true`. `Required CI` requires Deployment
-Contracts to be `success` exactly when deployment is `true`, and `skipped`
-exactly when it is `false`; failed, canceled, missing, or mismatched results are
-rejected in either plan. The same derivation applies to every other gate: a job
-that is `success` when the plan expected `skipped` is rejected exactly like a
-job that is `skipped` when the plan expected `success`, so neither a stale plan
-nor an edited job condition can turn an unselected lane into a silent pass.
+suite while still forcing `mode=full` and `deployment=true`. `Required CI` checks
+that the plan is valid for the event and that its retained gate results match the
+full or reduced mode; it does not consume a Deployment Contracts result because
+that hosted job was removed. A deployment selection of `true` therefore means
+local deployment acceptance is required, not that hosted deployment evidence
+exists.
 
 Pushes to `main` or `release/**` and manual dispatches always use the complete
-solution matrix and exhaustive deployment contracts.
+solution matrix and set all three exhaustive-suite outputs. The current workflow
+still does not run those deployment suites as hosted CI; use the local commands
+above when that acceptance evidence is needed.
 
 ## Component Selection
 
@@ -370,8 +447,9 @@ The classification rules applied to that map are:
   seam rule.
 - A combined fixture change selects `combined` plus both host lanes.
 - A delivery change selects `delivery`; deployment-contract selection stays
-  independent, but it no longer runs anything, because the Deployment Contracts
-  gate was removed.
+  independent and records that local deployment acceptance is required, but it
+  does not select or run a hosted job because the Deployment Contracts gate was
+  removed.
 - CI, coverage, package, architecture, classifier, toolchain, and solution
   inputs select the complete matrix, and so does any path outside every
   component boundary. **The default is the complete matrix**, so a new

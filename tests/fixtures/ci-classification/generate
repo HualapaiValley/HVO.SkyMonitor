@@ -174,8 +174,11 @@ case('unknown-top-key', 'REFUSE',
      build(append='\nbogus_top: 1\n'),
      'undefined top-level workflow key; GitHub refuses to load the workflow')
 case('merge-key-root', 'REFUSE',
-     'x-defaults: &d\n  a: 1\n<<: *d\n' + build(),
+     edit('\nenv:\n', '\nenv: &d\n') + '\n<<: *d\n',
      'merge key at the workflow root can inject keys')
+case('merge-key-root-control', 'ACCEPT',
+     edit('\nenv:\n', '\nenv: &d\n'),
+     'the anchored accepted mapping remains valid when the merge line is removed')
 
 # The three shapes of an absent jobs block. GitHub marks `jobs` required, and a
 # workflow with no jobs produces no completed run for release qualification to
@@ -279,6 +282,12 @@ case('real-workflow', 'ACCEPT', build(),
 # Spellings of the accepted shape. These are the cases that keep the guard from
 # becoming a text matcher: each is a different serialisation of a document the
 # guard must read as the same thing.
+case('spelling-unquoted-on-entry', 'ACCEPT',
+     build(push='  push:\n    branches: [main, on]\n'),
+     'an implicit YAML boolean branch spelling is compared as source text')
+case('spelling-quoted-on-entry', 'ACCEPT',
+     build(push="  push:\n    branches: [main, 'on']\n"),
+     'a quoted branch spelling remains ordinary text')
 case('spelling-flow-mapping', 'ACCEPT',
      build(trigger='on: {workflow_dispatch: , push: {branches: [main]}}\n'),
      'the whole trigger as a flow mapping')

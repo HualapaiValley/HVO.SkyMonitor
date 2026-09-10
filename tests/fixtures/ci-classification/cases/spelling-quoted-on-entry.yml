@@ -3,7 +3,7 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'release/**']
+    branches: [main, 'on']
   pull_request:
     branches: [main, 'release/**']
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
@@ -15,7 +15,7 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env: &d
+env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
@@ -336,5 +336,3 @@ jobs:
             migrations-cameraagent=${{ needs.migrations-cameraagent.result }}
             migrations-logichost=${{ needs.migrations-logichost.result }}
         run: ./scripts/ci:require "$EVENT_NAME" "$PLAN" "$RESULTS"
-
-<<: *d

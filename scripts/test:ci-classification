@@ -1040,6 +1040,7 @@ except ImportError as error:  # pragma: no cover - environment dependent
 BRANCH = 'main'
 TRIGGER = 'on'
 STRING_TAG = 'tag:yaml.org,2002:str'
+BOOLEAN_TAG = 'tag:yaml.org,2002:bool'
 # The only characters that can invert an entry's meaning. `!` negates, and `\`
 # escapes. Either one, in any entry, can suppress the main-push run that
 # another entry appears to provide. Characters like `*` and `?` are not listed:
@@ -1336,20 +1337,22 @@ def require_declared_jobs(root):
 def read_entry(item):
     """Return a branch entry as text, or refuse what is not a pattern.
 
-    The order of these questions is deliberate. An entry that is a string and
-    carries an inverting character keeps the disposition and the reason it has
-    always had; the questions added in front of that one are about whether the
-    entry is a branch pattern, not about what a pattern means.
+    GitHub reads branch names as text, while PyYAML's YAML 1.1-compatible
+    resolver tags plain boolean spellings such as `on` as booleans. The parser
+    event scan has already refused explicit tags, so an implicit boolean tag is
+    safe to normalize to its source text here. The order of these questions is
+    deliberate: the questions added in front of the pattern checks are about
+    whether the entry is a branch pattern, not about what a pattern means.
     """
     if not isinstance(item, yaml.ScalarNode):
         raise Unrecognized('a `branches` entry is not a plain scalar')
     entry = item.value
-    if item.tag != STRING_TAG:
+    if item.tag not in (STRING_TAG, BOOLEAN_TAG):
         raise Unrecognized(
-            'branch entry %r is not a string; the parser reads it as %s, and '
-            'this guard compares entries as the text the parser read, so it '
-            'would be comparing a spelling against a branch name'
-            % (entry, item.tag.rsplit(':', 1)[-1]))
+            'branch entry %r is not a string or an implicit YAML boolean; the '
+            'parser reads it as %s, and this guard compares entries as the text '
+            'the parser read, so it would be comparing a spelling against a '
+            'branch name' % (entry, item.tag.rsplit(':', 1)[-1]))
     for char in INVERTING:
         if char in entry:
             raise Unrecognized(
