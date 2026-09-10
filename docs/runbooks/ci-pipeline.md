@@ -551,22 +551,14 @@ Inspect the exact plan for any two commits without pushing:
 ./scripts/ci:classify pull_request <base-sha> <head-sha>
 ```
 
-Reproduce one lane locally with the same scripts CI runs:
-
-```bash
-dotnet tool restore
-./scripts/ci:component-build cameraagent
-DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
-./scripts/ci:component-publish cameraagent
-./scripts/coverage:component cameraagent
-```
-
-Use the per-project `dotnet test` invocations in the local candidate gate in `AGENTS.md`
-for the remaining slots of the selected lane; `scripts/coverage:component
---list-slots <component>` prints the exact result directories a lane must
-produce, and the lane fails when a slot is missing, duplicated, or borrowed from
-an unselected lane. The split migration checks and the coverage policy have
-direct local equivalents:
+Run the complete producer-before-consumer route in the [Local Validation](#local-validation)
+section; it generates every per-project report required by the selected component
+slots before invoking `scripts/coverage:component`. `scripts/coverage:component
+--list-slots <component>` is inspection-only: it prints the exact result
+directories, but it does not produce reports. Every required slot must contain
+exactly one report before any component consumer is invoked; missing, duplicated,
+or borrowed reports fail the consumer. The split migration checks and the
+coverage policy have direct local equivalents:
 
 ```bash
 ./scripts/ci:canonical-migration cameraagent
