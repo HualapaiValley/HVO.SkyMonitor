@@ -61,12 +61,26 @@ log_tool_version "ShellCheck" shellcheck --version
 
 echo "Running post-create setup..."
 
-for required_command in jq rg shellcheck sqlite3; do
+for required_command in jq python3 rg shellcheck sqlite3; do
 	if ! command_exists "$required_command"; then
 		echo "Required development command '$required_command' is not installed." >&2
 		exit 1
 	fi
 done
+
+# Provision the same pinned YAML parser used by the CI classification gate.
+PYTHON_ENV="$REPO_ROOT/.venv"
+PYTHON_BIN="$PYTHON_ENV/bin/python"
+echo "Provisioning repository-pinned Python dependencies..."
+python3 -m venv "$PYTHON_ENV"
+"$PYTHON_BIN" -m pip install \
+    --disable-pip-version-check --no-input --requirement "$REPO_ROOT/requirements/ci.txt"
+"$PYTHON_BIN" -c \
+    'import yaml; assert yaml.__version__ == "6.0.1"; print("PyYAML " + yaml.__version__)'
+export HVO_CI_PYTHON="$PYTHON_BIN"
+
+echo "Python classification interpreter: $HVO_CI_PYTHON"
+echo
 
 # Fix .dotnet directory ownership
 echo "Fixing .dotnet directory ownership..."

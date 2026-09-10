@@ -61,6 +61,24 @@ These totals are not hand-maintained pins: `./scripts/docs:audit-operations` sum
 
 ## Local Validation
 
+The classification guard uses the pinned PyYAML dependency declared in
+[`requirements/ci.txt`](../../requirements/ci.txt). Provision it in a
+repository-local virtual environment before running the guard; this is the
+native equivalent of the Quality job's setup and does not modify the host
+Python installation:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --disable-pip-version-check --no-input \
+  --requirement requirements/ci.txt
+.venv/bin/python -c \
+  'import yaml; assert yaml.__version__ == "6.0.1"; print("PyYAML " + yaml.__version__)'
+```
+
+Use `HVO_CI_PYTHON="$PWD/.venv/bin/python"` for the classification command
+shown below; the explicit interpreter keeps the guard independent of ambient
+Python packages.
+
 ```bash
 dotnet tool restore
 dotnet restore HVO.SkyMonitor.v9.slnx
@@ -231,7 +249,7 @@ LogicHost-only, combined, delivery, documentation-only, and CI-change diffs,
 matrix:
 
 ```bash
-bash ./scripts/test:ci-classification
+HVO_CI_PYTHON="$PWD/.venv/bin/python" bash ./scripts/test:ci-classification
 ```
 
 Use a fresh result root for every collection. Before merging, require exactly one report from each category/project slot named by `scripts/coverage:component --list-slots`; never merge every historical GUID directory under a reused result root. Merge those explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:

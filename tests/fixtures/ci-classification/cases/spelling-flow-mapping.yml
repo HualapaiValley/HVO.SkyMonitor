@@ -74,7 +74,16 @@ jobs:
           printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' /tmp/actionlint.tar.gz | sha256sum --check
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint .github/workflows/*.yml
+      - name: Provision pinned Python checks
+        run: |
+          python3 -m venv "$RUNNER_TEMP/hvo-ci-python"
+          "$RUNNER_TEMP/hvo-ci-python/bin/python" -m pip install \
+            --disable-pip-version-check --no-input --requirement requirements/ci.txt
+          "$RUNNER_TEMP/hvo-ci-python/bin/python" -c \
+            'import yaml; assert yaml.__version__ == "6.0.1"; print("PyYAML " + yaml.__version__)'
       - name: Run static and lightweight contract checks
+        env:
+          HVO_CI_PYTHON: ${{ runner.temp }}/hvo-ci-python/bin/python
         run: |
           ./scripts/ci:shell-syntax
           ./scripts/docs:audit-operations

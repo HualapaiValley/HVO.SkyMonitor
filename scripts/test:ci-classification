@@ -5,8 +5,13 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 classifier="$repo_root/scripts/ci:classify"
 required="$repo_root/scripts/ci:require"
 workflow="$repo_root/.github/workflows/ci.yml"
+# CI and local callers may pin this to the repository-provisioned interpreter;
+# keep python3 as the explicit fallback for existing direct invocations.
+python_bin="${HVO_CI_PYTHON:-python3}"
 work_root="$(mktemp -d)"
 trap 'rm -rf "$work_root"' EXIT
+
+"$python_bin" --version
 
 git -C "$work_root" init --quiet
 git -C "$work_root" config user.email ci-classification@example.invalid
@@ -1445,7 +1450,7 @@ if __name__ == '__main__':
 CI_PUSH_TRIGGER_PY
 
 # The real workflow, which is the only file this guard exists to decide about.
-python3 "$guard_py" "$workflow" || exit 1
+"$python_bin" "$guard_py" "$workflow" || exit 1
 
 # Everything below runs the same guard over a committed corpus of mutations of that
 # same file. Running the guard against one input that is expected to pass proves the
@@ -1460,7 +1465,7 @@ expectations="$fixtures/expectations.tsv"
 # A corpus derived from a file that has since moved is a corpus that no longer means
 # what its case names say. Regenerating and comparing costs one process and turns
 # that from a silent rot into a failure with instructions.
-python3 "$generator" --check || exit 1
+"$python_bin" "$generator" --check || exit 1
 
 wrong=0
 total=0
@@ -1473,7 +1478,7 @@ while IFS=$'\t' read -r name expect reason; do
     wrong=$((wrong + 1))
     continue
   fi
-  if guard_output="$(python3 "$guard_py" "$fixture" 2>&1)"; then
+  if guard_output="$("$python_bin" "$guard_py" "$fixture" 2>&1)"; then
     actual=ACCEPT
   else
     actual=REFUSE

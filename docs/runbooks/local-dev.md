@@ -9,6 +9,7 @@ toolchain for cloud or isolated workspaces.
 
 - Docker Engine with Compose.
 - Exact .NET SDK from `global.json`.
+- Python 3 with `venv` support for the CI classification guard.
 - `jq` for protected JSON input to .NET User Secrets.
 - Access to development shared-service credentials.
 - An ignored root `.env` based on `.env.template`.
@@ -23,6 +24,18 @@ that host.
 ```bash
 cp .env.template .env
 chmod 600 .env
+
+python3 -m venv .venv
+.venv/bin/python -m pip install --disable-pip-version-check --no-input \
+  --requirement requirements/ci.txt
+```
+
+The repository-local virtual environment pins PyYAML for the CI
+classification guard; it is ignored by git and does not modify the host Python
+installation. Run that gate with the same interpreter:
+
+```bash
+HVO_CI_PYTHON="$PWD/.venv/bin/python" bash ./scripts/test:ci-classification
 ```
 
 Populate every required password in `.env`. In particular,

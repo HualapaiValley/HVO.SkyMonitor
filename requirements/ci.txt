@@ -1,0 +1,2 @@
+# Pinned parser dependency used by the CI classification guard.
+PyYAML==6.0.1

@@ -32,6 +32,7 @@ tooling used on the host.
 - Exact .NET SDK from [`global.json`](global.json)
 - Docker Engine with Compose
 - Git and the Linux/GNU command-line tools used by repository scripts
+- Python 3 with `venv` support for the CI classification guard
 - `jq`, `rg`, `shellcheck`, and `sqlite3`
 
 On Windows, use WSL2 and keep the checkout on its Linux filesystem. Repository
@@ -43,10 +44,21 @@ scripts assume Linux filesystem semantics and GNU tools.
 
 1. Clone the repository on the Linux host.
 2. Install the SDK pinned by `global.json` and the prerequisites above.
-3. Copy `.env.template` to the ignored `.env` and supply local credentials.
-4. Run `dotnet tool restore` and `dotnet restore HVO.SkyMonitor.v9.slnx`.
-5. Open the checkout locally, over SSH, or with VS Code Remote and use the
-   repository commands below.
+3. Create the repository-local Python environment used by the CI classification
+   guard and install its pinned dependency:
+   ```bash
+   python3 -m venv .venv
+   .venv/bin/python -m pip install --disable-pip-version-check --no-input \
+     --requirement requirements/ci.txt
+   ```
+4. Copy `.env.template` to the ignored `.env` and supply local credentials.
+5. Run `dotnet tool restore` and `dotnet restore HVO.SkyMonitor.v9.slnx`.
+6. Open the checkout locally, over SSH, or with VS Code Remote and use the
+   repository commands below. Run the classification gate with the provisioned
+   interpreter:
+   ```bash
+   HVO_CI_PYTHON="$PWD/.venv/bin/python" bash ./scripts/test:ci-classification
+   ```
 
 #### Devcontainer or cloud workspace
 
@@ -152,6 +164,8 @@ install, configure, proxy, or persist any coding-agent runtime.
 
 **Post-create script** (`.devcontainer/post-create.sh`):
 
+- Creates the ignored repository-local `.venv` and installs the pinned PyYAML
+  dependency from `requirements/ci.txt` for the CI classification guard
 - Restores the pinned `dotnet-ef` and ReportGenerator tools from `dotnet-tools.json`
 - Restores `HVO.SkyMonitor.v9.slnx` so a fresh container can build immediately
 - Generates HTTPS developer certificate (`dotnet dev-certs https`)
@@ -169,6 +183,7 @@ The devcontainer configuration includes:
 - **Docker CLI** - Manage host and remote Docker contexts from the dev container
 - **.NET local tools** - Pinned Entity Framework Core and ReportGenerator tooling restored automatically
 - **Command-line tools** - `jq`, `rg`, `shellcheck`, and `sqlite3` are installed in the container image
+- **Python classification environment** - Python 3, `venv`, and the pinned PyYAML dependency are provisioned in `.venv`
 - **C# Dev Kit** - Complete C# development experience with IntelliSense, debugging, and more
 - **GitHub Copilot** - AI-powered code completion and chat
 - **Git & GitHub CLI** - Version control and GitHub integration

@@ -80,6 +80,9 @@
     "DOTNET_ENVIRONMENT": "Development",
     "PLAYWRIGHT_BROWSERS_PATH": "/home/vscode/.cache/ms-playwright"
   },
+  "remoteEnv": {
+    "HVO_CI_PYTHON": "${containerWorkspaceFolder}/.venv/bin/python"
+  },
   "forwardPorts": [
     5000,
     5001,
