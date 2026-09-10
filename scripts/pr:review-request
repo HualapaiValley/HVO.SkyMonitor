@@ -26,7 +26,11 @@ from the freshly fetched target-branch tip (--remote, default origin), never
 from the PR object's recorded baseRefOid, which goes stale the moment the topic
 branch merges the advanced target. Caller-provided files hold
 issue-specific lenses and evidence pointers. The recorded-comment form replays
-an immutable historical request for range-validation dry runs.
+an immutable historical request for range-validation dry runs. Unfenced requests
+are retained in full. A fenced request must end with its Start acknowledgement:
+field and a closing fence; only blank lines, italic attribution lines, --- separators,
+and the dispatcher receipt instruction may follow. Ambiguous wrappers are refused,
+not replayed as truncated requests.
 
 The previous reviewed head comes from the request this tool emitted for the
 previous round, read back by comment ID or found by its dispatch command ID.
@@ -142,78 +146,55 @@ emit() {
     fi
 }
 
-# A request this tool emitted, recovered from a comment body on stdin.
+# Recover either the whole unfenced request or one complete fenced envelope.
+# A review-mode or range field before the first text fence identifies an unfenced
+# request; even acceptance criteria above the range can contain nested examples.
+# Preserve that body in full, including attribution. These fields discriminate the
+# shape only; neither proves that a cut block is whole.
 #
-# Two shapes reach this, and only one of them was ever accepted. A request
-# pasted inside a ```text fence is the shape the recorded-comment replay was
-# written for; a request posted as the whole comment body, which is what every
-# dispatch in this repository's ledger actually looks like, was rejected as
-# "no fenced review request". That is the same defect this tool is being
-# corrected for, one level up: a parser's expectation reported as a property of
-# the comment. Take the fenced block when there is one and the whole body when
-# there is not, and let the field requirements decide whether what came back is
-# a request rather than letting the fence decide it.
-#
-# The block is the first one and it ends at its own closing fence. Clearing the
-# capture flag instead of stopping concatenated every fenced block in the body into
-# one, and `request_field` takes the first match, so a comment that quoted a stale
-# request above the real one supplied the head from the quotation. The protection
-# does not come from stopping as such: it comes from the block becoming
-# self-consistent, so that the dispatch command ID checked below is the one carried
-# by the same block the head was read out of, instead of being supplied by a
-# different block that happened to be concatenated with it.
-#
-# The fence is measured rather than assumed to be three backticks. A request
-# interpolates the caller's acceptance, lens, test and evidence files, and those
-# routinely carry pasted command output inside fenced blocks of their own, so a
-# three-backtick opener is closed by the first fence inside the interpolated content
-# and the request comes back truncated while still looking complete. The writer opens
-# with a fence longer than anything in the content, which is what fenced-block nesting
-# is for; the reader closes only on a fence at least as long as the one that opened,
-# and treats a shorter one as content.
-#
-# Not every request comment is fenced. Every round this repository dispatched before
-# the writer above existed is the request as the whole comment body, and such a body
-# can contain a ```text block of its own from those same interpolated files. Deciding
-# fenced-or-not on the presence of a fence alone hands back the interpolated example
-# instead of the request. The question the fence cannot answer is answered by the
-# field that defines a request: if the fenced block does not carry `Exact review
-# range:` and the whole body does, the body is the request and the fence was content.
+# For a fenced request, measure the opener and require an actual closing fence at
+# least as long. The last nonblank content line must be the acknowledgement field.
+# A substring check is insufficient: interpolated evidence can quote that label.
+# Even a last-line check alone can be fooled by an example immediately before an
+# inner closing fence, so inspect the suffix as well. Only blank lines, an attribution
+# line, a Markdown separator and the dispatcher receipt instruction are wrapper
+# metadata. Other trailing text or a second fenced request is ambiguous: refuse it
+# rather than silently dropping content or combining fields from different blocks.
+# This validates the extraction boundary; callers still validate their own fields.
 request_block_from_body() {
     local body="$1" block
     block="$(awk '
-        !capture && /^```+text[[:space:]]*$/ {
-            match($0, /^`+/)
-            fence = RLENGTH
-            capture = 1
-            found = 1
-            next
+        {
+            lines[NR] = $0
+            if (!opener && (/^Review mode: (initial|correction|base-sync)$/ || /^Exact review range: /)) unfenced = 1
+            if (!opener && /^```+text[[:space:]]*$/) {
+                opener = NR
+                match($0, /^`+/)
+                fence = RLENGTH
+            }
         }
-        capture && /^```+[[:space:]]*$/ {
-            match($0, /^`+/)
-            if (RLENGTH >= fence) exit
+        END {
+            if (!opener || unfenced) {
+                for (i = 1; i <= NR; i++) print lines[i]
+                exit
+            }
+            for (i = opener + 1; i <= NR; i++) {
+                if (lines[i] ~ /^```+[[:space:]]*$/) {
+                    match(lines[i], /^`+/)
+                    if (RLENGTH >= fence) { closer = i; break }
+                }
+                if (lines[i] !~ /^[[:space:]]*$/) last = i
+            }
+            if (!closer || !last || lines[last] !~ /^Start acknowledgement: [^[:space:]]/) exit 1
+            for (i = closer + 1; i <= NR; i++) {
+                if (lines[i] ~ /^[[:space:]]*$/ || lines[i] == "---" ||
+                    lines[i] ~ /^\*[^*].*\*$/ ||
+                    lines[i] == "The dispatcher must receive this comment ID before launching.") continue
+                exit 1
+            }
+            for (i = opener + 1; i < closer; i++) print lines[i]
         }
-        capture { print }
-        END { if (!found) exit 3 }
-    ' <<<"$body")" || block="$body"
-    [[ -n "$block" ]] || block="$body"
-    if ! grep -Fq 'Exact review range:' <<<"$block" && grep -Fq 'Exact review range:' <<<"$body"; then
-        block="$body"
-    fi
-    # The decision above asks about the field that defines a request, and that field
-    # cannot detect truncation: `Exact review range:` is written near the top of a
-    # request, above the interpolated tests and evidence files that carry the inner
-    # fences, so a block cut at the first inner fence still carries it. Every
-    # field-presence check you would naturally write has the same problem for the same
-    # reason. Ask about the end of the request instead. `Start acknowledgement:` is the
-    # last field the writer emits, so a block that lost anything after the cut lost that
-    # one, and a body that has it while the block does not is a block that stopped
-    # early. This fails rather than falling back to the body: falling back would
-    # silently substitute a larger, differently shaped input for the request, which is
-    # the quiet substitution this tool exists to stop.
-    if grep -Fq 'Start acknowledgement:' <<<"$body" && ! grep -Fq 'Start acknowledgement:' <<<"$block"; then
-        fail "The fenced block in this comment ends before the request does: the body carries 'Start acknowledgement:' and the extracted block does not, so the block was closed by a fence belonging to the request's own content. Repost the request through scripts/pr:dispatch-review, which opens with a fence longer than anything it encloses."
-    fi
+    ' <<<"$body")" || fail "The fenced block in this comment is ambiguous or ends before the request does: require a closing fence after the final 'Start acknowledgement:' field and only wrapper metadata after it. Repost the complete request through scripts/pr:dispatch-review, which opens with a fence longer than anything it encloses."
     printf '%s\n' "$block"
 }
 
@@ -379,19 +360,14 @@ comments_json="$(jq -cs '[.[][]]' <<<"$comments_stream")"
 # definite answer. The footnote is recognisable for the same reason the head is: policy
 # requires it to carry a participant ID, which is a field this fleet controls.
 #
-# A participant ID is not the footnote, though, and the first form of this filter
-# removed every line that carried one. A finding whose measured input is a participant
-# ID is an ordinary finding line, and this fleet writes them. Measured across the
-# comments, review comments and reviews of the twelve most recent pull requests, 339
-# lines carry a participant ID and 18 of those also match the finding pattern; 11 are
-# ordinary prose or finding lines and the other 7 are occurrences of a single
-# footnote. Dropping those 11 shortens a carried checklist that says nothing about
-# having been shortened, which presents an incomplete list as a complete one -- the
-# same inversion as above, one layer out, and the direction a reader cannot see. So
-# the filter is narrowed to the footnote's own shape, a wholly italicised line
-# carrying an ID, and what it removes is counted and reported rather than removed
-# silently. On that corpus the narrowed shape keeps all 11 and still removes the
-# footnote.
+# A participant ID alone does not identify an attribution footnote: an ordinary
+# finding can cite an ID as its measured input. Removing every such line silently
+# shortens the carried checklist. Filter the narrower shape of a wholly italicised
+# line carrying an ID instead, preserving ordinary participant-ID finding lines.
+# Only removed lines that also match the finding pattern are counted and reported;
+# this notice measures the effect on the checklist, not every line the filter removes.
+# The evidence pack retains the full unfiltered report so that a finding shaped like
+# an attribution line remains available to the reviewer.
 finding_pattern='(^|[[:space:]])[HMLS][0-9]+([:.,)]|[[:space:]]|$)|finding|unresolved|verified (corrected|deferred)'
 attribution_footnote_pattern='^\*[^*].*[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*:[A-Za-z0-9][A-Za-z0-9._-]*.*\*$'
 

@@ -555,12 +555,10 @@ expect_fail 'Named report for a command ID this one is a prefix of' \
 #     line of its own, which is what makes this case discriminate: a quotation that
 #     carries a different command ID is caught by the equality check whether the blocks
 #     were concatenated or not, so it would pass with the defect still present.
-#     The quoted block keeps the request's last field. It omits the dispatch line,
-#     which is what this case turns on, and it keeps the acknowledgement line, which is
-#     what the truncation gate in the reader asks about. Without it this comment reads
-#     as a request cut short at its first inner fence and is refused there instead,
-#     which is a correct refusal for the wrong reason and would stop this case from
-#     reaching the check it exists to exercise.
+#     The reader now refuses a second block as an ambiguous envelope before field
+#     selection. Keep the original mixed-field fixture: returning or concatenating
+#     it must not supply the stale head. The expected diagnostic deliberately pins
+#     that structural refusal, not the old missing-command-ID check.
 stale_head="$(git -C "$fixture_repo" rev-parse "$base")"
 {
     printf 'The request below was superseded. Quoted for the record:\n\n'
@@ -576,7 +574,7 @@ stale_head="$(git -C "$fixture_repo" rev-parse "$base")"
 } > "$work_root/two-block-comment.txt"
 write_pr_fixture "$base" "$correction_head" "$work_root/two-block-comment.txt" "$work_root/initial-report.txt"
 expect_fail 'Two fenced blocks in one comment' \
-    "records dispatch command ID 'none', not CMD-REVIEW-001" \
+    'is ambiguous or ends before the request does' \
     "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
     --previous-command-id CMD-REVIEW-001 --previous-request-comment "${LEDGER_IDS[0]}" \
     --previous-report-comment "${LEDGER_IDS[1]}" \
@@ -686,6 +684,9 @@ grep -Fq 'This is not an attestation that the prior review recorded no findings'
 '
     printf '*Findings by claude-code:anthropic:mac-m5:3d3160bc — review agent, CMD-REVIEW-001.*
 '
+    # This is also filtered, but does not match the finding pattern. The notice
+    # must still count one, not the total number of attribution lines removed.
+    printf '*Author: claude-code:anthropic:home-dev-01:footnote-only.*\n'
 } > "$work_root/id-citing-report.txt"
 write_pr_fixture "$base" "$correction_head" "$work_root/initial.request" "$work_root/id-citing-report.txt"
 "$request_tool" "${correction_args[@]}" --command-id CMD-REVIEW-002 \
@@ -787,8 +788,10 @@ fi
 grep -Fq 'not a usable git remote name' "$work_root/dash-remote.err" ||
     { printf 'Dash-prefixed remote failed for some other reason.\n' >&2; exit 1; }
 
-printf '%s\n%s\n%s\nExact review range: %s..%s\n%s\n%s\n' \
-    prefix '```text' 'Review mode: initial' "$base" "$initial_head" '```' suffix > "$MOCK_COMMENT_BODY"
+printf '%s\n%s\n%s\nExact review range: %s..%s\n%s\n%s\n%s\n' \
+    prefix '```text' 'Review mode: initial' "$base" "$initial_head" \
+    'Start acknowledgement: acknowledge the request.' '```' \
+    'The dispatcher must receive this comment ID before launching.' > "$MOCK_COMMENT_BODY"
 $request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 --output "$work_root/replayed.request"
 grep -Fqx "Exact review range: $base..$initial_head" "$work_root/replayed.request" ||
     fail 'Replayed request did not reproduce the range recorded in the referenced comment.'
@@ -829,9 +832,9 @@ grep -Fq 'Passed! 1812 passed, 49 skipped, 0 failed' "$work_root/replayed-inner-
 # the fallback above asks about survives the cut, because `Exact review range:` is
 # written near the top of a request and the interpolated files that carry inner fences
 # are written near the bottom, so field presence is satisfied by a truncated request
-# and proves nothing on its own. Asking about the last field the writer emits is the
-# same question asked at the end instead of the beginning, and it is the only end of
-# the request that a cut cannot leave intact.
+# and proves nothing on its own. The boundary check must reject this original case
+# as well as the quoted-acknowledgement cases below; neither a range nor a quoted
+# terminal field establishes completeness.
 {
     printf 'Quoting the request for the record:
 
@@ -870,8 +873,111 @@ grep -Fq 'ends before the request does' "$work_root/replayed-truncated.err" ||
 [[ ! -e "$work_root/replayed-truncated.request" ]] ||
     { printf 'Replay of a truncated fenced request wrote a request file.\n' >&2; exit 1; }
 
-# A comment that is neither is still refused, so the widened reader did not become no
-# reader at all.
+# Quoted labels must not act as completion sentinels. Generate real requests with
+# evidence shapes including an exact duplicate of the genuine last field, and an
+# acceptance-file example fenced before the request reaches its actual range field.
+# Exercise every extraction caller: replay, pinned prior request and discovered
+# prior request, with both correction and base-sync consumers for the latter two.
+for marker in prose anchored duplicate acceptance; do
+    {
+        printf 'Quoted request field example follows:\n'
+        case "$marker" in
+            prose) printf 'Quoted field example: Start acknowledgement:\n' ;;
+            anchored) printf 'Start acknowledgement: this is only an example\n' ;;
+            duplicate) grep '^Start acknowledgement:' "$work_root/initial.request" ;;
+            acceptance) printf '%s\n' '```text' 'Exact review range: quoted example only' \
+                'Start acknowledgement: quoted example only' ;;
+        esac
+        printf '%s\n' '```' 'example test output' '```'
+    } > "$work_root/quoted-tests.txt"
+    write_pr_fixture "$base" "$initial_head"
+    content_option=--tests-file
+    [[ "$marker" != acceptance ]] || content_option=--acceptance-file
+    "$request_tool" "${common_args[@]}" --mode initial \
+        "$content_option" "$work_root/quoted-tests.txt" --output "$work_root/quoted.request"
+    for shape in short long unfenced; do
+        name="$marker-$shape"
+        case "$shape" in
+            short) printf '%s\n%s\n%s\n' '```text' "$(<"$work_root/quoted.request")" '```' ;;
+            long) printf '%s\n%s\n\n%s\n\n%s\n%s\n%s\n' '````text' "$(<"$work_root/quoted.request")" '````' \
+                'The dispatcher must receive this comment ID before launching.' '---' \
+                '*Author: codex-cli:openai:hvo-dev-02:01a0beef.*' ;;
+            unfenced) printf '%s\n\n%s\n' "$(<"$work_root/quoted.request")" \
+                '*Author: codex-cli:openai:hvo-dev-02:01a0beef.*' ;;
+        esac > "$work_root/quoted-comment.txt"
+        cp "$work_root/quoted-comment.txt" "$MOCK_COMMENT_BODY"
+        if [[ "$shape" == short ]]; then
+            expect_fail "Quoted-marker replay $name" 'is ambiguous or ends before the request does' \
+                "$request_tool" --repo "$MOCK_API_REPO" --pr 700 --recorded-comment 9001 \
+                --output "$work_root/replay-$name.request"
+            [[ ! -s "$work_root/expect-fail.out" && ! -e "$work_root/replay-$name.request" ]] ||
+                fail "Refused replay $name emitted a partial request."
+        else
+            "$request_tool" --repo "$MOCK_API_REPO" --pr 700 --recorded-comment 9001 \
+                --output "$work_root/replay-$name.request"
+            if [[ "$shape" == long ]]; then
+                # Include a trailing blank line; the CLI normalizes terminal newlines.
+                printf '%s\n\n' "$(<"$work_root/quoted.request")" > "$work_root/expected-replay.request"
+            else
+                cp "$work_root/quoted-comment.txt" "$work_root/expected-replay.request"
+            fi
+            # Shell command substitution strips trailing newlines in the CLI. Compare
+            # its established normalization, without overlooking any content line.
+            printf '%s\n' "$(<"$work_root/expected-replay.request")" > "$work_root/normalized-replay.request"
+            cmp -s "$work_root/normalized-replay.request" "$work_root/replay-$name.request" ||
+                fail "Replay $name lost or substituted request content."
+        fi
+        for consumer in correction base-sync; do
+            for selection in pinned discovered; do
+                write_pr_fixture "$base" "$correction_head" "$work_root/quoted-comment.txt" "$work_root/initial-report.txt"
+                selection_args=()
+                [[ "$selection" != pinned ]] || selection_args=(--previous-request-comment "${LEDGER_IDS[0]}")
+                output="$work_root/prior-$name-$consumer-$selection"
+                args=("${correction_args[@]}" --mode "$consumer" --command-id CMD-REVIEW-002
+                    --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}"
+                    --previous-head "$initial_head" "${selection_args[@]}"
+                    --evidence-pack "$output.pack" --output "$output.request")
+                if [[ "$shape" == short ]]; then
+                    expect_fail "Prior-request $name $consumer $selection" 'is ambiguous or ends before the request does' \
+                        "$request_tool" "${args[@]}"
+                    [[ ! -s "$work_root/expect-fail.out" && ! -e "$output.request" && ! -e "$output.pack" ]] ||
+                        fail "Refused prior request $name $consumer $selection emitted output or fell back to the asserted head."
+                else
+                    "$request_tool" "${args[@]}"
+                    grep -Fqx "Previous reviewed head SHA: $initial_head" "$output.request" ||
+                        fail "Prior request $name $consumer $selection lost its head."
+                    grep -Fqx "Previous reviewed head selection: request comment ${LEDGER_IDS[0]} emitted by this tool for CMD-REVIEW-001" "$output.request" ||
+                        fail "Prior request $name $consumer $selection lost its provenance."
+                fi
+            done
+        done
+    done
+done
+
+# A range alone is not a complete fenced envelope. Nor may a missing closing fence,
+# text after the terminal field, or unrecognised suffix be silently accepted.
+for malformed in range-only no-close after-terminal extra-block suffix; do
+    {
+        printf '%s\n' '```text'
+        if [[ "$malformed" == range-only ]]; then
+            printf 'Exact review range: %s..%s\n' "$base" "$initial_head"
+        else
+            printf '%s\n' "$(<"$work_root/initial.request")"
+        fi
+        [[ "$malformed" != after-terminal ]] || printf 'unconsumed request content\n'
+        [[ "$malformed" == no-close ]] || printf '%s\n' '```'
+        [[ "$malformed" != extra-block ]] || printf '%s\n%s\n%s\n' '```text' "$(<"$work_root/initial.request")" '```'
+        [[ "$malformed" != suffix ]] || printf 'unrecognised trailing request content\n'
+    } > "$MOCK_COMMENT_BODY"
+    printf 'existing output must remain intact\n' > "$work_root/refused-existing.request"
+    expect_fail "Malformed replay $malformed" 'is ambiguous or ends before the request does' \
+        "$request_tool" --repo "$MOCK_API_REPO" --pr 700 --recorded-comment 9001 \
+        --output "$work_root/refused-existing.request"
+    [[ ! -s "$work_root/expect-fail.out" ]] || fail "Malformed replay $malformed emitted stdout."
+    [[ "$(<"$work_root/refused-existing.request")" == 'existing output must remain intact' ]] ||
+        fail "Malformed replay $malformed overwrote existing output."
+done
+
 # Replay reads through the same repository-wide endpoint as the other two named
 # comments, so it had the same hole: a comment on another pull request replayed
 # cleanly into this one's record.
