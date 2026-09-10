@@ -63,10 +63,25 @@ the description.
 ## What publication guarantees
 
 The validator owns the verdict; the recorder owns mutation and owns nothing else.
-`publish` runs the validator first and refuses to write anything at all when the
-validator refuses, so a generation that exists on disk is by construction one that
-passed. The verdict is copied into the index as the validator produced it, and
-`verify` recomputes it rather than reading it back.
+`publish` reserves the campaign, then runs the validator before staging a generation.
+A validator refusal can leave the campaign directory and its lock file, but creates
+no generation and does not advance the pointer. The verdict is copied into the index
+as the validator produced it, and `verify` recomputes it rather than trusting it.
+
+The recorder targets **Linux with Bash, jq, GNU coreutils and util-linux `flock`**.
+Use an owner-controlled local filesystem with working advisory locks and same-directory
+atomic rename; this is not a Windows reparse-point or distributed-filesystem contract.
+New files/directories use `umask 077`; existing roots and evidence must remain under
+trusted ownership. Path checks reject links already present, not hostile concurrent
+replacement of parent directories or evidence by an independent filesystem writer.
+
+`publish` and `clean` take the same nonblocking campaign reservation. An overlapping
+mutation refuses with `Campaign is busy`, rather than allocating the same generation
+or deleting a live publisher's staging. The `.record.lock` file is persistent and
+must **not** be unlinked: another inode would permit a second independent lock.
+Process exit releases the reservation; abandoned staging can then be cleaned. Readers
+do not take that lock and may refuse if publication changes state during their read;
+retry a read after the publisher completes.
 
 Three properties carry the layout, and each has a gate case that must refuse rather
 than a happy path that happens to pass.
@@ -80,22 +95,34 @@ committed neighbours survive.
 
 **A committed generation is immutable.** Publishing into an occupied generation
 number is refused rather than retried, because reaching one means discovery and the
-filesystem disagree. `verify` recomputes the index bytes and digest against the
-envelope, recomputes the digest of the evidence set the index names, and re-runs the
-validator against that evidence, comparing the fresh verdict to the recorded one.
-Tampering with the index, with the envelope, or with the evidence set behind them all
-fail, and each is a separate gate case because a check that compared a document only
-against itself would pass two of the three.
+filesystem disagree. Rename uses no-target-directory and no-clobber semantics and
+checks that staging actually moved: neither directory nesting nor a silently skipped
+move can produce a success receipt. Failure leaves incomplete staging for `clean` and
+does not advance the pointer.
+
+`verify` binds index and envelope schema, campaign, full head and generation to the
+requested namespace, including the envelope's index filename. Generation numbers are
+canonical positive integers of at most fifteen digits; aliases such as `01` are not
+accepted. It recomputes index bytes and digest against the envelope, evidence bytes
+and digest against the index, and re-runs the validator against that evidence using
+the requested bound head and recorded mode. The fresh verdict must equal the recorded
+one. Copying a valid generation into a different generation/head/campaign namespace
+fails even though its internal hashes still agree.
 
 **The pointer moves last.** `latest-generation.json` is rewritten only after the
 committed generation has been re-verified in place, so a reader following the pointer
 never reaches a generation that was not complete when the pointer named it. `latest`
-does not trust the pointer either: it re-verifies what the pointer names and compares
-the digest, and refuses when the generation is missing or has moved.
+does not trust the pointer either: it binds schema, campaign, head, generation and
+relative generation path to the request, re-verifies the generation and compares both
+index byte count and digest. Missing or mismatched state is refused.
 
-Recorded paths are repository-relative, and evidence outside the repository is
-refused rather than recorded by absolute path, so a generation never carries a
-private path from the machine that produced it. Campaign identifiers must be a single
+Recorded evidence paths are canonical and repository-relative. The recorder rejects
+symlinks in every path component **before** canonicalization, hard-linked files
+(link count other than one), nonregular evidence files, parent traversal and control
+characters. The same checks protect later verification, index/envelope/pointer files
+and output paths; a genuine regular-file copy remains valid. Evidence outside the
+repository is refused rather than recorded by absolute path, so a generation never
+carries a private path from the machine that produced it. Campaign identifiers must be a single
 safe path segment. With `--recorded-utc` pinned the index is a pure function of its
 inputs, which is what lets two generations be diffed and an unchanged one be shown to
 be unchanged.
@@ -310,8 +337,11 @@ complete.** A gate that covers eight classes and says so is more useful than one
 that covers eight and reads as though it covers ten.
 
 *Filesystem and PE facts* — symlink, hard link, ownership, mode, byte length,
-MVID — are not JSON facts. Asserting them here would look like coverage without
-being any, so they belong to the compiled helper.
+MVID — are not JSON facts. The pure validator does not infer them from claims in a
+JSON document. The separate recorder now checks its own input evidence file and
+publication files for actual byte lengths, links and regular-file status as described
+above. That does not verify every nested artifact named inside the evidence set, or
+PE identity, ownership and mode provenance; those remain the compiled helper's job.
 
 *The CI import* is not implemented in this layer, and this is where a deferral
 would quietly become a pass. "Not implemented yet" reads as success to everything
