@@ -6,9 +6,9 @@
 
   <ItemGroup>
     <PackageVersion Include="AngleSharp" Version="1.7.2" />
-    <PackageVersion Include="AWSSDK.Core" Version="4.0.102.3" />
+    <PackageVersion Include="AWSSDK.Core" Version="4.0.102.4" />
     <PackageVersion Include="AWSSDK.S3" Version="4.0.102.5" />
-    <PackageVersion Include="AWSSDK.SecurityToken" Version="4.0.100.12" />
+    <PackageVersion Include="AWSSDK.SecurityToken" Version="4.0.100.13" />
     <PackageVersion Include="Asp.Versioning.Mvc" Version="10.2.1" />
     <PackageVersion Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.2.1" />
     <PackageVersion Include="Asp.Versioning.OpenApi" Version="10.2.3" />
