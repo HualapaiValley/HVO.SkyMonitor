@@ -15,7 +15,7 @@
     <PackageVersion Include="coverlet.collector" Version="10.0.1" />
     <PackageVersion Include="bunit" Version="2.9.0" />
     <PackageVersion Include="CosineKitty.AstronomyEngine" Version="2.1.19" />
-    <PackageVersion Include="FluentAssertions" Version="8.10.0" />
+    <PackageVersion Include="FluentAssertions" Version="8.11.0" />
     <PackageVersion Include="HVO.Core" Version="1.1.2" />
     <PackageVersion Include="HVO.Enterprise.Telemetry" Version="1.0.3" />
     <PackageVersion Include="HVO.Enterprise.Telemetry.OpenTelemetry" Version="1.1.2" />
