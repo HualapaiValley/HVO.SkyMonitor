@@ -163,10 +163,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         }
 
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive("Install the pinned Playwright Chromium with scripts/test:cameraagent-ui --install-browser.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         var baseUri = new Uri(baseUriText, UriKind.Absolute);
         var runtimeRoot = RequiredPath("HVO_ISSUE_211_RUNTIME_ROOT");
@@ -183,7 +180,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
         var ownerPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
             session, password, "W6 standalone").ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = baseUri.ToString(),
@@ -565,10 +562,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         // Playwright check; the preconditions as a whole still differ, because that method also
         // gates on OperatingSystem.IsLinux() and this one never has.
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive("Install the pinned Playwright Chromium with scripts/test:cameraagent-ui --install-browser.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         var baseUri = new Uri(baseUriText, UriKind.Absolute);
         var runtimeRoot = RequiredPath("HVO_ISSUE_211_RUNTIME_ROOT");
@@ -585,7 +579,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
         var ownerPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
             session, password, "Mono8 control").ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = baseUri.ToString(),

@@ -11,13 +11,18 @@ Built and usable:
 
 - `scripts/issue-535-final-head-aggregate.jq` — domain and cross-record predicates.
 - `scripts/validate:cameraagent-final-head-535` — the pure validator.
-- `scripts/test:cameraagent-final-head-535` — the deterministic fixture gate.
-- `tests/fixtures/issue-535/final-head/` — the fixtures that gate exercises.
+- `scripts/record:cameraagent-final-head-535` — the recorder that publishes a
+  validated generation, and verifies one that was published earlier.
+- `scripts/test:cameraagent-final-head-535` — the deterministic validator gate.
+- `scripts/test:record-cameraagent-final-head-535` — the deterministic recorder gate.
+- `tests/fixtures/issue-535/final-head/` — the fixtures both gates exercise.
 
-Not built, and deliberately so: the real aggregate generation. It is blocked by
-#719 and must be produced once, on the unchanged final head, after every #535
-blocker closes. The validator exists so that the generation step has something to
-run against, not so that a generation can be produced early.
+Not built, and deliberately so: the real aggregate content. The machinery that
+records a generation is complete and gated, but the campaign it will record must be
+produced once, on the unchanged final head, after every #535 blocker closes. #719
+governs that run, not this code. The tooling exists so that the generation step has
+something to run against and somewhere to put the result, not so that a real
+generation can be produced early.
 
 ## Running it
 
@@ -25,7 +30,20 @@ run against, not so that a generation can be produced early.
 ./scripts/validate:cameraagent-final-head-535 local --evidence EVIDENCE.json --bound-head <40-char-sha>
 ./scripts/validate:cameraagent-final-head-535 final --evidence EVIDENCE.json --bound-head <40-char-sha>
 ./scripts/test:cameraagent-final-head-535
+./scripts/test:record-cameraagent-final-head-535
 ```
+
+Publishing and re-reading a generation:
+
+```bash
+./scripts/record:cameraagent-final-head-535 publish --evidence EVIDENCE.json \
+    --bound-head <40-char-sha> --campaign <id> [--mode local|final]
+./scripts/record:cameraagent-final-head-535 latest --bound-head <40-char-sha> --campaign <id>
+./scripts/record:cameraagent-final-head-535 verify --bound-head <40-char-sha> --campaign <id>
+./scripts/record:cameraagent-final-head-535 clean  --bound-head <40-char-sha> --campaign <id>
+```
+
+Both gates run in CI, in the Quality job's static and lightweight contract checks.
 
 The validator is pure. It reads, recomputes and writes one canonical JSON result to
 standard output, and mutates nothing — no staging, no publication, no generation.
@@ -41,6 +59,73 @@ the other: a claimability state below the ceiling, a dirty tree, a nonzero comma
 receipt, and a field declared as free text. Two modes that never diverge are one
 check under two names, so each divergence is kept honest by a fixture rather than by
 the description.
+
+## What publication guarantees
+
+The validator owns the verdict; the recorder owns mutation and owns nothing else.
+`publish` reserves the campaign, then runs the validator before staging a generation.
+A validator refusal can leave the campaign directory and its lock file, but creates
+no generation and does not advance the pointer. The verdict is copied into the index
+as the validator produced it, and `verify` recomputes it rather than trusting it.
+
+The recorder targets **Linux with Bash, jq, GNU coreutils and util-linux `flock`**.
+Use an owner-controlled local filesystem with working advisory locks and same-directory
+atomic rename; this is not a Windows reparse-point or distributed-filesystem contract.
+New files/directories use `umask 077`; existing roots and evidence must remain under
+trusted ownership. Path checks reject links already present, not hostile concurrent
+replacement of parent directories or evidence by an independent filesystem writer.
+
+`publish` and `clean` take the same nonblocking campaign reservation. An overlapping
+mutation refuses with `Campaign is busy`, rather than allocating the same generation
+or deleting a live publisher's staging. The `.record.lock` file is persistent and
+must **not** be unlinked: another inode would permit a second independent lock.
+Process exit releases the reservation; abandoned staging can then be cleaned. Readers
+do not take that lock and may refuse if publication changes state during their read;
+retry a read after the publisher completes.
+
+Three properties carry the layout, and each has a gate case that must refuse rather
+than a happy path that happens to pass.
+
+**An uncommitted generation is ignored.** A run in progress writes into
+`.incomplete-<n>-<pid>`, and a generation becomes visible only through an atomic
+rename into its digit-named directory. Numbering counts only digit-named directories
+holding both the index and the commit envelope, so an interrupted run cannot consume
+a generation number, cannot be read as a result, and is removed by `clean` while its
+committed neighbours survive.
+
+**A committed generation is immutable.** Publishing into an occupied generation
+number is refused rather than retried, because reaching one means discovery and the
+filesystem disagree. Rename uses no-target-directory and no-clobber semantics and
+checks that staging actually moved: neither directory nesting nor a silently skipped
+move can produce a success receipt. Failure leaves incomplete staging for `clean` and
+does not advance the pointer.
+
+`verify` binds index and envelope schema, campaign, full head and generation to the
+requested namespace, including the envelope's index filename. Generation numbers are
+canonical positive integers of at most fifteen digits; aliases such as `01` are not
+accepted. It recomputes index bytes and digest against the envelope, evidence bytes
+and digest against the index, and re-runs the validator against that evidence using
+the requested bound head and recorded mode. The fresh verdict must equal the recorded
+one. Copying a valid generation into a different generation/head/campaign namespace
+fails even though its internal hashes still agree.
+
+**The pointer moves last.** `latest-generation.json` is rewritten only after the
+committed generation has been re-verified in place, so a reader following the pointer
+never reaches a generation that was not complete when the pointer named it. `latest`
+does not trust the pointer either: it binds schema, campaign, head, generation and
+relative generation path to the request, re-verifies the generation and compares both
+index byte count and digest. Missing or mismatched state is refused.
+
+Recorded evidence paths are canonical and repository-relative. The recorder rejects
+symlinks in every path component **before** canonicalization, hard-linked files
+(link count other than one), nonregular evidence files, parent traversal and control
+characters. The same checks protect later verification, index/envelope/pointer files
+and output paths; a genuine regular-file copy remains valid. Evidence outside the
+repository is refused rather than recorded by absolute path, so a generation never
+carries a private path from the machine that produced it. Campaign identifiers must be a single
+safe path segment. With `--recorded-utc` pinned the index is a pure function of its
+inputs, which is what lets two generations be diffed and an unchanged one be shown to
+be unchanged.
 
 ## Rules that are easy to get backwards
 
@@ -252,8 +337,11 @@ complete.** A gate that covers eight classes and says so is more useful than one
 that covers eight and reads as though it covers ten.
 
 *Filesystem and PE facts* — symlink, hard link, ownership, mode, byte length,
-MVID — are not JSON facts. Asserting them here would look like coverage without
-being any, so they belong to the compiled helper.
+MVID — are not JSON facts. The pure validator does not infer them from claims in a
+JSON document. The separate recorder now checks its own input evidence file and
+publication files for actual byte lengths, links and regular-file status as described
+above. That does not verify every nested artifact named inside the evidence set, or
+PE identity, ownership and mode provenance; those remain the compiled helper's job.
 
 *The CI import* is not implemented in this layer, and this is where a deferral
 would quietly become a pass. "Not implemented yet" reads as success to everything

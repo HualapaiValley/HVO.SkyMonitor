@@ -11,7 +11,7 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 3459 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
+| **Unit Tests** | 3473 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
 | **Integration Tests** | 667 Integration-category cases across SQLite, filesystem, SQL Server, Redis, S3-compatible object storage, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 15 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
@@ -115,7 +115,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3459`, `Integration=667`, `Manual=103`, `Soak=1`, `External=0`, and `Hardware=1`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3473`, `Integration=667`, `Manual=103`, `Soak=1`, `External=0`, and `Hardware=1`.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project matrix in `scripts/test-categories/Program.cs` and fails when this runbook disagrees with it, while the Build check's category audit proves that matrix matches actual discovery. Update the matrix and this runbook in the same change.
 
@@ -205,6 +205,14 @@ matrix:
 ```bash
 bash ./scripts/test:ci-classification
 ```
+
+That suite, `scripts/test:coordination-guard` and `scripts/test:pr-review-tools`
+are the CI-control guards, and they are part of the local candidate gate in
+`AGENTS.md` rather than protected-CI-only checks. They are Docker-free and need
+no build. Run them on the base-synced head too, before requesting the base-sync
+review: a base-sync review verifies that the merge preserved both sides'
+behaviour, which is the wrong instrument for a classifier lane that each side
+satisfied separately and their union does not.
 
 Use a fresh result root for every collection. Before merging, require exactly one report from each of the 22 category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those 22 explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
@@ -513,6 +521,29 @@ Inspect the exact plan for any two commits without pushing:
 ```bash
 ./scripts/ci:classify pull_request <base-sha> <head-sha>
 ```
+
+Run this on the review range before choosing a local gate set, and use what it
+returns rather than a reading of the diff, whenever it classifies the range
+successfully. `complete` is not a condition on using it: `complete=false` is the
+ordinary result for a change confined to one component's paths, and the lane
+flags set in that state are the selection being asked for. `complete` governs
+whether the complete solution matrix is required, nothing else.
+Record its output next to the gate results; a ledger that lists gates without
+naming the selector that chose them cannot distinguish a gate that passed from
+one that was never selected. The classifier is the only selector here that is
+not bounded by the diff, and on a draft pull request it is the only one
+available at all, because the `changes` job carries `draft == false` and every
+downstream job is gated on its outputs. Measured on PR #756 at head `7f232172`
+it returned `mode=full complete=true deployment=false` over 14 paths and would
+have named Unit Tests, which owns the test-category audit, on the first head
+instead of the eighth.
+
+`scripts/ci:require` uses `declare -A` and needs Bash 4 or newer, and
+`scripts/ci:shell-syntax` requires Bash 5.1 and refuses to run under anything
+older rather than reporting a pass it did not perform. The macOS system Bash is
+3.2, so invoke the Homebrew Bash explicitly there. `scripts/pr:dispatch-review`,
+which `scripts/test:pr-review-tools` exercises, additionally requires `flock`,
+which macOS does not ship; install it with `brew install flock`.
 
 Reproduce one lane locally with the same scripts CI runs:
 

@@ -40,6 +40,17 @@ reviewed head without explicit operator approval.
 2. Use the risk-tiered validation ladder: focused inner-loop tests, then one
    tier-appropriate candidate gate before the first push. Record the commands
    and the commit or worktree fingerprint they validate.
+   Select the candidate gate set by running `scripts/ci:classify` on the review
+   range whenever it classifies the range successfully, not by reading the diff,
+   and record which selector produced the set. `complete=false` is authoritative
+   for component-scoped changes; it does not permit manual gate selection. Until
+   the ready transition the
+   classifier is the only selector that is not bounded by the diff, because the
+   `changes` job is gated on `draft == false`. A ledger that lists gate results
+   without naming the selector cannot distinguish a gate that passed from one
+   that was never chosen. The gate includes the CI-control guards, which are
+   Docker-free and are listed in `AGENTS.md`; run them again on the base-synced
+   head before requesting the base-sync review.
 3. Commit only intended files, push the issue branch, and open a draft PR.
 4. Keep the PR draft while acquiring review, correcting findings, and
    synchronizing the target branch. Draft pushes must not run protected CI.
@@ -63,6 +74,9 @@ Target base ref: (the remote and branch used to transport that tip, verified
 PR-recorded base SHA: (baseRefOid; provenance only, never a range endpoint)
 PR merge-base SHA:
 Previous reviewed head SHA:
+Previous reviewed head selection: (the request comment this tool emitted for
+  the previous round, or a caller assertion marked as unverified; never the
+  previous reviewer's prose)
 Current head SHA:
 Exact review range:
 Correction rereview count: <N>/3
@@ -75,6 +89,8 @@ Requested model and reasoning effort:
 Actual provider, model, and reasoning effort:
 Tests and failure modes to evaluate:
 Local evidence:
+Prior report selection: (the comment the dispatcher named as the previous
+  round's report)
 Prior findings and dispositions:
 Prior-finding verification checklist (finding ID/link, expected disposition,
   and evidence location):
@@ -103,6 +119,60 @@ The participant identity binds the session to one host; migrating it to another
 host requires a new identity and join rather than reuse across host-local locks.
 Do not reconstruct ranges or causal ordering in an ad hoc shell pipeline when
 these scripts support the route.
+
+A correction or base-sync request also requires `--previous-command-id`, the
+dispatch command ID of the round whose reviewed head this round starts from.
+The tool recovers that head from the request it emitted for that round, found by
+its command ID or pinned with `--previous-request-comment`. It never reads a
+range out of a reviewer's report. For a round dispatched before the tool
+recorded a request, assert the head with `--previous-head`; the emitted request
+then records it as caller-asserted and unverified, and a reviewer must treat it
+as an input to check rather than as an attested range. If neither is available
+the tool fails and names what was missing, which is correct: a correction review
+whose left endpoint is a guess reviews the wrong commits and says nothing about
+it.
+
+Such a request also requires `--previous-report-comment`, the comment ID of the
+previous round's report. The dispatcher supplies it; the tool never searches for
+it. The head can be selected because the tool wrote the comment carrying it,
+while the report is the reviewer's own comment and carries no field the tool
+controls, so every rule for recognising one is a proxy that this repository's
+ledgers defeat. Replayed against merged pull requests, matching on verdict
+wording found no review at all on #806 and selected a base-sync note over the
+real report on #798, and matching on the command ID anywhere in the body selects
+dispatch ledgers, start acknowledgements, and later comments that merely cite
+the round. The tool checks that the named comment echoes the round it is being
+used for, as a whole command ID rather than as a substring, and refuses a
+comment that belongs to another one.
+
+It also refuses a named report that carries both `Exact review range:` and
+`Dispatch command ID and target participant ID:`. Those are the two fields the
+tool writes into every request it emits, so a comment carrying both is its own
+output rather than a reviewer's report, and the round's dispatch ledger entry
+quotes the request and therefore echoes the round by construction. The tool
+cannot recognise a report, but it can recognise what it wrote, which is the same
+premise the head half rests on used in the direction it actually holds.
+
+Every comment the caller names is fetched through
+`repos/{owner}/{repo}/issues/comments/{id}`, which is repository-wide rather
+than per-issue, so a comment on another pull request fetches cleanly through it.
+The tool reads `issue_url` alongside the body and refuses any comment that is
+not on the pull request under review. Without that check, the claim that the
+tool wrote the comment carrying the previous reviewed head was an assumption
+about authorship rather than something checked.
+
+`scripts/pr:dispatch-review` quotes the request into a fenced block opened with
+a fence longer than any fence in the request itself, and the reader closes only
+on one at least that long. Requests interpolate caller-supplied test and
+evidence files, which routinely carry pasted command output inside fenced
+blocks; a fixed three-backtick opener is closed by the first of those on
+read-back, and the request comes back truncated while still carrying enough
+fields to look complete.
+
+An empty `Prior findings and dispositions:` is not an attestation that the
+previous round was clean. When the tool could not extract a checklist it says
+so in that field and points at the full report in the evidence pack; verify
+findings against the report itself, not against the summary.
 
 If a resumed CLI reports that its nested read-only sandbox cannot execute, mark
 the attempt `INCOMPLETE` and use an explicitly enrolled collaboration-agent or
@@ -398,15 +468,26 @@ protected CI, or merge.
 3. After an advancing-target merge, resolve conflicts, run affected local gates,
    and obtain a base-sync review. Use `standard` when there was no conflict,
    shared-file/contract overlap, or material changed interaction; use `deep` for
-   any of those conditions.
+   any of those conditions. Run the CI-control guards on the merged head before
+   requesting that review, and do not expect the review to substitute for them:
+   a base-sync review verifies that the merge preserved both sides' behaviour,
+   which it can do correctly while a classifier lane that each side satisfied
+   separately is violated by their union. PR #740 is the case; its base-sync
+   reviewer said so itself rather than letting a CLEAN verdict look wider than
+   it was.
 4. Fetch again and prove the target base and PR head are current, mergeable, and
    reviewed. If either moved, repeat synchronization or review as applicable.
    At this draft pre-ready gate, use the provider's structural mergeability
    result: for GitHub, require `mergeable: true`, retry a bounded `null` or
    unknown result, and stop on `false` or conflicts. Do not require
-   `mergeable_state: clean` here because the intentionally failing draft
-   `Required CI` placeholder keeps policy state `blocked` until the ready
-   transition starts protected CI.
+   `mergeable_state: clean` here. Two states are ordinary at this gate and they
+   are not the same thing. The intentionally failing draft `Required CI`
+   placeholder keeps policy state `blocked` until the ready transition starts
+   protected CI, and that resolves itself at the ready transition. `behind` has
+   a different cause and a different remedy: the target branch advanced, which
+   is step 2's trigger, and it does not resolve itself. Read the value rather
+   than assuming which one applies. Measured on 2026-09-09 across the four open
+   drafts, three were `blocked` and one was `behind`.
 5. Mark the PR ready only now. This transition starts the authoritative
    classifier-selected protected CI plan.
 6. Hold the lock through CI and merge.
