@@ -826,6 +826,38 @@ grep -Fqx "Current head SHA: $initial_head" "$work_root/replayed-inner-fence.req
 grep -Fq 'Passed! 1812 passed, 49 skipped, 0 failed' "$work_root/replayed-inner-fence.request" ||
     fail 'An unfenced request carrying a fenced block of its own lost the block.'
 
+# A stale unfenced excerpt followed by a complete fenced request is not one request.
+# Returning the whole comment lets first-match field extraction take the stale head
+# while command membership comes from the genuine request below it. Refuse this mixed
+# authority shape through replay and through every prior-request selection path.
+{
+    printf 'Exact review range: %s..%s\n' "$base" "$correction_head"
+    printf 'Current head SHA: %s\n\n' "$correction_head"
+    printf '%s\n%s\n%s\n' '```text' "$(<"$work_root/initial.request")" '```'
+} > "$work_root/mixed-request-comment.txt"
+cp "$work_root/mixed-request-comment.txt" "$MOCK_COMMENT_BODY"
+expect_fail 'Mixed-source replay' 'is ambiguous or ends before the request does' \
+    "$request_tool" --repo "$MOCK_API_REPO" --pr 700 --recorded-comment 9001 \
+    --output "$work_root/mixed-replay.request"
+[[ ! -e "$work_root/mixed-replay.request" ]] ||
+    fail 'Mixed-source replay emitted a request.'
+for consumer in correction base-sync; do
+    for selection in pinned discovered; do
+        write_pr_fixture "$base" "$correction_head" "$work_root/mixed-request-comment.txt" "$work_root/initial-report.txt"
+        selection_args=()
+        [[ "$selection" != pinned ]] || selection_args=(--previous-request-comment "${LEDGER_IDS[0]}")
+        output="$work_root/mixed-prior-$consumer-$selection"
+        expect_fail "Mixed-source prior request $consumer $selection" \
+            'is ambiguous or ends before the request does' \
+            "$request_tool" "${correction_args[@]}" --mode "$consumer" --command-id CMD-REVIEW-002 \
+            --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
+            --previous-head "$initial_head" "${selection_args[@]}" \
+            --evidence-pack "$output.pack" --output "$output.request"
+        [[ ! -e "$output.request" && ! -e "$output.pack" ]] ||
+            fail "Mixed-source prior request $consumer $selection emitted output."
+    done
+done
+
 # The same content, this time quoted into a three-backtick fence by hand rather than
 # written by the dispatcher. The reader closes on the inner block's fence, which is no
 # shorter than the one that opened, and the request below that line is gone. The field
