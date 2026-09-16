@@ -1,0 +1,459 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+# Generation recorder for issue #535 final-head release-readiness evidence.
+#
+# `validate:cameraagent-final-head-535` owns the verdict. This owns mutation:
+# it stages a generation, commits it, and moves one pointer. The division is not
+# stylistic. A component that can both decide and publish can publish a decision
+# it made about something other than what it published, and the whole point of
+# this evidence is that a later reader does not have to trust the runner.
+#
+# So this script never derives readiness. It runs the validator, embeds the
+# validator's canonical document verbatim, and refuses to publish anything the
+# validator did not accept. There is deliberately no check here for a caller
+# smuggling `acceptanceReady` into an evidence set: the validator already refuses
+# unknown fields, and a second copy of that rule in a file with no reason to be
+# updated is how the rule drifts apart from itself. The refusal arrives through
+# the existing enforcement, and `evidence-smuggles-verdict.json` is the fixture
+# that keeps it arriving.
+#
+# Layout, per the issue:
+#
+#   <output-root>/<bound-head>/<campaign-id>/
+#     generations/<n>/final-head-acceptance.json
+#     generations/<n>/final-head-acceptance.commit.json
+#     latest-generation.json
+#
+# A directory under generations/ named by digits exists only if it is complete
+# and committed. An interrupted run leaves `.incomplete-<n>-<pid>`, which
+# discovery never counts and `clean` removes. That is what makes "an uncommitted
+# generation is ignored" a property of the layout rather than a promise.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly SCRIPT_DIR REPO_ROOT
+readonly VALIDATE="$SCRIPT_DIR/validate:cameraagent-final-head-535"
+
+readonly INDEX_NAME="final-head-acceptance.json"
+readonly COMMIT_NAME="final-head-acceptance.commit.json"
+readonly POINTER_NAME="latest-generation.json"
+
+readonly INDEX_SCHEMA="issue-535-final-head-acceptance-v1"
+readonly COMMIT_SCHEMA="issue-535-final-head-commit-v1"
+readonly POINTER_SCHEMA="issue-535-final-head-latest-v1"
+
+usage() {
+    cat >&2 <<'USAGE'
+Usage:
+  record:cameraagent-final-head-535 publish --evidence FILE --bound-head SHA \
+      --campaign ID [--mode local|final] [--output-root DIR] [--recorded-utc STAMP]
+  record:cameraagent-final-head-535 verify  --bound-head SHA --campaign ID \
+      [--generation N] [--output-root DIR]
+  record:cameraagent-final-head-535 latest  --bound-head SHA --campaign ID [--output-root DIR]
+  record:cameraagent-final-head-535 clean   --bound-head SHA --campaign ID [--output-root DIR]
+
+Exit status is the contract: 0 only when the requested operation held completely.
+USAGE
+    exit 2
+}
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+sha256_of() { sha256sum -- "$1" | cut -d' ' -f1; }
+bytes_of() { wc -c <"$1" | tr -d ' '; }
+
+# A campaign identifier becomes a path segment. Constraining it by grammar rather
+# than by scanning it for `..` means a form nobody anticipated is refused instead
+# of admitted, which is the direction an unanticipated form should fail.
+valid_campaign() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ && "$1" != *".."* ]]; }
+valid_head() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+# Keep generation arithmetic exact in both Bash and jq, and reject aliases such as 01.
+valid_generation() { [[ "$1" =~ ^[1-9][0-9]{0,14}$ ]]; }
+
+# This recorder targets Linux with GNU coreutils and util-linux flock. Check each
+# component before canonicalization: resolving first would hide a linked ancestor.
+# The output is owner-private; these checks do not authorize hostile concurrent
+# replacement of parent directories by a different filesystem writer.
+reject_symlink_components() {
+    local path="$1" part current=""
+    [[ "$path" == /* ]] || path="$PWD/$path"
+    [[ ! "$path" =~ [[:cntrl:]] ]] || die "Control characters are not allowed in paths"
+    local -a parts
+    IFS='/' read -r -a parts <<< "$path"
+    for part in "${parts[@]}"; do
+        case "$part" in
+            ''|.) continue ;;
+            ..) die "Parent traversal is not allowed: $path" ;;
+        esac
+        current="$current/$part"
+        [[ ! -L "$current" ]] || die "Symlink path is not allowed: $current"
+    done
+}
+
+require_regular_file() {
+    reject_symlink_components "$1"
+    [[ -f "$1" ]] || die "Path must be a regular file: $1"
+    [[ "$(stat -c '%h' -- "$1")" == 1 ]] || die "Hard-linked file is not allowed: $1"
+}
+
+# Never unlink the lock file: replacing its inode would let two holders each own
+# a different lock. clean takes the same reservation as publish, so it cannot
+# remove the live staging directory of a cooperating publisher.
+lock_campaign() {
+    local dir lock
+    dir="$(campaign_dir)"
+    reject_symlink_components "$dir"
+    mkdir -p -- "$dir"
+    lock="$dir/.record.lock"
+    reject_symlink_components "$lock"
+    [[ ! -e "$lock" ]] || require_regular_file "$lock"
+    exec 9>>"$lock"
+    require_regular_file "$lock"
+    flock --exclusive --nonblock 9 || die "Campaign is busy: $campaign at $bound_head"
+}
+
+mode="final"
+evidence=""
+bound_head=""
+campaign=""
+output_root=""
+recorded_utc=""
+generation_arg=""
+
+parse_args() {
+    while (($# > 0)); do
+        case "$1" in
+            --evidence) evidence="${2:-}"; shift 2 || usage ;;
+            --bound-head) bound_head="${2:-}"; shift 2 || usage ;;
+            --campaign) campaign="${2:-}"; shift 2 || usage ;;
+            --mode) mode="${2:-}"; shift 2 || usage ;;
+            --output-root) output_root="${2:-}"; shift 2 || usage ;;
+            --recorded-utc) recorded_utc="${2:-}"; shift 2 || usage ;;
+            --generation) generation_arg="${2:-}"; shift 2 || usage ;;
+            *) usage ;;
+        esac
+    done
+    valid_head "$bound_head" || die "Bound head must be a full 40-character commit SHA: ${bound_head:-<empty>}"
+    valid_campaign "$campaign" || die "Campaign identifier is not a safe path segment: ${campaign:-<empty>}"
+    case "$mode" in local|final) ;; *) die "Mode must be local or final: $mode" ;; esac
+    [[ -n "$output_root" ]] || output_root="$REPO_ROOT/TestResults/issue-535"
+    [[ "$(uname -s)" == Linux ]] || die "Recorder requires Linux, GNU coreutils and util-linux flock"
+    reject_symlink_components "$output_root"
+    output_root="$(realpath -m -- "$output_root")"
+}
+
+campaign_dir() { printf '%s/%s/%s' "$output_root" "$bound_head" "$campaign"; }
+
+# A committed generation is a digit-named directory holding both its index and its
+# commit envelope. Anything else under generations/ is not a generation.
+committed_generations() {
+    local dir
+    dir="$(campaign_dir)/generations"
+    reject_symlink_components "$dir"
+    [[ -d "$dir" ]] || return 0
+    local entry name
+    for entry in "$dir"/*; do
+        name="${entry##*/}"
+        [[ "$name" =~ ^[0-9]+$ ]] || continue
+        valid_generation "$name" || die "Generation must be a canonical positive integer: $name"
+        reject_symlink_components "$entry"
+        [[ -d "$entry" ]] || continue
+        [[ -f "$entry/$INDEX_NAME" && -f "$entry/$COMMIT_NAME" ]] || continue
+        require_regular_file "$entry/$INDEX_NAME"
+        require_regular_file "$entry/$COMMIT_NAME"
+        printf '%s\n' "$name"
+    done
+}
+
+# Directory names sort lexically, so `10` arrives before `2`. Comparing numerically
+# rather than taking the last name is the difference between a scheme that keeps
+# counting past nine and one that quietly starts reusing numbers.
+highest_generation() {
+    local highest=0 n generations
+    generations="$(committed_generations)" || return 1
+    while read -r n; do
+        [[ -n "$n" ]] || continue
+        if ((n > highest)); then
+            highest="$n"
+        fi
+    done <<< "$generations"
+    printf '%s' "$highest"
+}
+
+# Recompute what the envelope claims about the index, and recompute the verdict
+# from the evidence the index names. Both halves matter: the first catches a
+# committed document that was altered after the fact, the second catches one that
+# was consistent with its envelope and never agreed with its evidence.
+verify_generation() {
+    local gen_dir="$1" expected_generation="$2"
+    local index="$gen_dir/$INDEX_NAME" envelope="$gen_dir/$COMMIT_NAME"
+
+    reject_symlink_components "$index"
+    reject_symlink_components "$envelope"
+    [[ -f "$index" ]] || die "Generation is missing its index: $index"
+    [[ -f "$envelope" ]] || die "Generation is missing its commit envelope: $envelope"
+    require_regular_file "$index"
+    require_regular_file "$envelope"
+
+    jq --exit-status 'type == "object"' "$index" >/dev/null 2>&1 || die "Index is not a JSON object: $index"
+    jq --exit-status 'type == "object"' "$envelope" >/dev/null 2>&1 || die "Commit envelope is not a JSON object: $envelope"
+
+    # Bind to the caller's namespace, not to claims read from the files themselves.
+    # Staging has no numeric directory name yet, so its allocated generation is
+    # passed explicitly by publish; public reads pass the requested/discovered one.
+    jq --exit-status --arg schema "$INDEX_SCHEMA" --arg campaign "$campaign" \
+        --arg head "$bound_head" --argjson generation "$expected_generation" \
+        '.schemaVersion == $schema and .campaign.id == $campaign and
+         .campaign.boundHead == $head and .campaign.generation == $generation and
+         (.campaign.mode == "local" or .campaign.mode == "final")' "$index" >/dev/null 2>&1 \
+        || die "Index identity does not match the requested namespace and generation: $index"
+    jq --exit-status --arg schema "$COMMIT_SCHEMA" --arg campaign "$campaign" \
+        --arg head "$bound_head" --argjson generation "$expected_generation" --arg name "$INDEX_NAME" \
+        '.schemaVersion == $schema and .campaignId == $campaign and
+         .boundHead == $head and .generation == $generation and .index.path == $name' "$envelope" >/dev/null 2>&1 \
+        || die "Commit envelope identity does not match the requested namespace and generation: $envelope"
+
+    local want_bytes want_sha have_bytes have_sha
+    want_bytes="$(jq -r '.index.bytes // empty' "$envelope")"
+    want_sha="$(jq -r '.index.sha256 // empty' "$envelope")"
+    [[ -n "$want_bytes" && -n "$want_sha" ]] || die "Commit envelope does not bind the index: $envelope"
+
+    have_bytes="$(bytes_of "$index")"
+    have_sha="$(sha256_of "$index")"
+
+    [[ "$have_bytes" == "$want_bytes" ]] || die "Index byte length does not match its commit envelope: $index (envelope $want_bytes, actual $have_bytes)"
+    [[ "$have_sha" == "$want_sha" ]] || die "Index digest does not match its commit envelope: $index (envelope $want_sha, actual $have_sha)"
+
+    local recorded_evidence recorded_mode evidence_path
+    jq --exit-status '.evidence.path | type == "string" and length > 0 and (explode | all(. >= 32 and . != 127))' \
+        "$index" >/dev/null 2>&1 || die "Index evidence path must be a safe repository-relative path"
+    recorded_evidence="$(jq -r '.evidence.path' "$index")"
+    recorded_mode="$(jq -r '.campaign.mode' "$index")"
+    [[ "$recorded_evidence" != /* ]] || die "Index evidence path must be repository-relative: $recorded_evidence"
+    evidence_path="$REPO_ROOT/$recorded_evidence"
+    reject_symlink_components "$evidence_path"
+    [[ -f "$evidence_path" ]] || die "Index names an evidence set that is not present: $recorded_evidence"
+    require_regular_file "$evidence_path"
+    [[ "$(realpath -e -- "$evidence_path")" == "$evidence_path" ]] \
+        || die "Index evidence path must be canonical and repository-relative: $recorded_evidence"
+
+    local want_ev_sha have_ev_sha
+    want_ev_sha="$(jq -r '.evidence.sha256 // empty' "$index")"
+    have_ev_sha="$(sha256_of "$evidence_path")"
+    [[ "$have_ev_sha" == "$want_ev_sha" ]] || die "Evidence set digest does not match the index: $recorded_evidence (index $want_ev_sha, actual $have_ev_sha)"
+
+    jq --exit-status --argjson bytes "$(bytes_of "$evidence_path")" '.evidence.bytes == $bytes' "$index" >/dev/null 2>&1 \
+        || die "Evidence set byte length does not match the index: $recorded_evidence"
+
+    local recomputed embedded
+    if ! recomputed="$("$VALIDATE" "$recorded_mode" --evidence "$evidence_path" --bound-head "$bound_head" 2>/dev/null)"; then
+        die "The evidence set no longer validates in $recorded_mode mode: $recorded_evidence"
+    fi
+    embedded="$(jq --sort-keys '.verdict' "$index")"
+    [[ "$(printf '%s' "$recomputed" | jq --sort-keys '.')" == "$embedded" ]] \
+        || die "The recomputed verdict differs from the one recorded in the index: $index"
+}
+
+cmd_publish() {
+    [[ -n "$evidence" ]] || die "Publishing requires --evidence"
+    reject_symlink_components "$evidence"
+    [[ -e "$evidence" ]] || die "Evidence set does not exist: $evidence"
+    require_regular_file "$evidence"
+    [[ -s "$evidence" ]] || die "Evidence set is empty: $evidence"
+
+    # Recorded paths are repository-relative so a generation never carries a
+    # private absolute path, which is one of the issue's explicit rejections.
+    local abs_evidence relative_evidence
+    abs_evidence="$(realpath -e -- "$evidence")"
+    case "$abs_evidence" in
+        "$REPO_ROOT"/*) relative_evidence="${abs_evidence#"$REPO_ROOT"/}" ;;
+        *) die "Evidence set lives outside the repository, so it cannot be recorded by relative path: $evidence" ;;
+    esac
+
+    lock_campaign
+
+    # The verdict is the validator's and only the validator's. A refusal here is a
+    # refusal to publish, and the validator's own document is what says why.
+    local verdict
+    if ! verdict="$("$VALIDATE" "$mode" --evidence "$abs_evidence" --bound-head "$bound_head" 2>/dev/null)"; then
+        printf 'The validator refused this evidence set in %s mode; nothing was published.\n' "$mode" >&2
+        "$VALIDATE" "$mode" --evidence "$abs_evidence" --bound-head "$bound_head" >&2 2>/dev/null || true
+        exit 1
+    fi
+
+    [[ -n "$recorded_utc" ]] || recorded_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+    local dir generation staging target highest
+    dir="$(campaign_dir)"
+    reject_symlink_components "$dir/generations"
+    reject_symlink_components "$dir/$POINTER_NAME"
+    [[ ! -e "$dir/$POINTER_NAME" ]] || require_regular_file "$dir/$POINTER_NAME"
+    mkdir -p -- "$dir/generations"
+    highest="$(highest_generation)" || die "Cannot discover committed generations"
+    generation="$((highest + 1))"
+    valid_generation "$generation" || die "Generation number space is exhausted"
+    staging="$dir/generations/.incomplete-$generation-$$"
+    target="$dir/generations/$generation"
+
+    # A committed generation is never rewritten. Reaching an occupied target means
+    # discovery and the filesystem disagree, which is a defect rather than a retry.
+    [[ ! -e "$target" && ! -L "$target" ]] || die "Generation $generation already exists and a committed generation is immutable: $target"
+
+    # Do not erase a pre-existing staging path, even after PID reuse.
+    mkdir -- "$staging"
+
+    printf '%s' "$verdict" | jq --sort-keys \
+        --arg schema "$INDEX_SCHEMA" \
+        --arg campaign "$campaign" \
+        --argjson generation "$generation" \
+        --arg head "$bound_head" \
+        --arg mode "$mode" \
+        --arg recorded "$recorded_utc" \
+        --arg path "$relative_evidence" \
+        --argjson bytes "$(bytes_of "$abs_evidence")" \
+        --arg sha "$(sha256_of "$abs_evidence")" \
+        '{
+            schemaVersion: $schema,
+            campaign: { id: $campaign, generation: $generation, boundHead: $head, mode: $mode, recordedUtc: $recorded },
+            evidence: { path: $path, bytes: $bytes, sha256: $sha },
+            verdict: .
+        }' > "$staging/$INDEX_NAME"
+
+    jq --sort-keys --null-input \
+        --arg schema "$COMMIT_SCHEMA" \
+        --arg campaign "$campaign" \
+        --argjson generation "$generation" \
+        --arg head "$bound_head" \
+        --arg name "$INDEX_NAME" \
+        --argjson bytes "$(bytes_of "$staging/$INDEX_NAME")" \
+        --arg sha "$(sha256_of "$staging/$INDEX_NAME")" \
+        --arg committed "$recorded_utc" \
+        '{
+            schemaVersion: $schema,
+            campaignId: $campaign,
+            generation: $generation,
+            boundHead: $head,
+            committedUtc: $committed,
+            index: { path: $name, bytes: $bytes, sha256: $sha }
+        }' > "$staging/$COMMIT_NAME"
+
+    # Revalidate while it is still staged, so a document that fails here never
+    # becomes a committed generation at all.
+    verify_generation "$staging" "$generation"
+
+    # -T prevents directory nesting; --no-clobber protects even an unexpected
+    # target created after the precheck. GNU mv can report zero on a skipped move,
+    # so success also requires that our staging directory actually disappeared.
+    local move_status=0
+    mv -T --no-clobber -- "$staging" "$target" || move_status=$?
+    [[ ! -e "$staging" ]] || die "Generation publication did not move staging (occupied target or rename failure): $target"
+    ((move_status == 0)) || die "Generation publication failed: $target"
+
+    # And again once it has landed, because what was verified and what was
+    # published are only the same thing if nothing altered it in between.
+    verify_generation "$target" "$generation"
+
+    # The pointer moves last, by rename within the same directory, so a reader
+    # never observes a pointer to a generation that is not fully present.
+    local pointer_tmp pointer_cleanup
+    pointer_tmp="$(mktemp "$dir/.$POINTER_NAME.XXXXXX")"
+    printf -v pointer_cleanup 'rm -f -- %q' "$pointer_tmp"
+    # Capture the quoted path now: the local variable is gone at normal script exit.
+    # shellcheck disable=SC2064
+    trap "$pointer_cleanup" EXIT
+    jq --sort-keys --null-input \
+        --arg schema "$POINTER_SCHEMA" \
+        --arg campaign "$campaign" \
+        --arg head "$bound_head" \
+        --argjson generation "$generation" \
+        --arg path "generations/$generation" \
+        --argjson bytes "$(bytes_of "$target/$INDEX_NAME")" \
+        --arg sha "$(sha256_of "$target/$INDEX_NAME")" \
+        --arg updated "$recorded_utc" \
+        '{
+            schemaVersion: $schema,
+            campaignId: $campaign,
+            boundHead: $head,
+            generation: $generation,
+            generationPath: $path,
+            updatedUtc: $updated,
+            index: { bytes: $bytes, sha256: $sha }
+        }' > "$pointer_tmp"
+    mv -T -- "$pointer_tmp" "$dir/$POINTER_NAME"
+    trap - EXIT
+
+    printf '%s\n' "$generation"
+}
+
+cmd_verify() {
+    local dir gen
+    dir="$(campaign_dir)"
+    if [[ -n "$generation_arg" ]]; then
+        valid_generation "$generation_arg" || die "Generation must be a canonical positive integer: $generation_arg"
+        gen="$generation_arg"
+    else
+        gen="$(highest_generation)"
+        ((gen > 0)) || die "No committed generation exists for campaign $campaign at $bound_head"
+    fi
+    verify_generation "$dir/generations/$gen" "$gen"
+    printf '%s\n' "$gen"
+}
+
+cmd_latest() {
+    local dir pointer
+    dir="$(campaign_dir)"
+    pointer="$dir/$POINTER_NAME"
+    reject_symlink_components "$pointer"
+    [[ -f "$pointer" ]] || die "No latest-generation pointer exists for campaign $campaign at $bound_head"
+    require_regular_file "$pointer"
+
+    local gen gen_path
+    gen="$(jq -r '.generation // empty' "$pointer")"
+    valid_generation "$gen" || die "Pointer does not name a canonical generation number: $pointer"
+    gen_path="generations/$gen"
+    jq --exit-status --arg schema "$POINTER_SCHEMA" --arg campaign "$campaign" \
+        --arg head "$bound_head" --argjson generation "$gen" --arg path "$gen_path" \
+        '.schemaVersion == $schema and .campaignId == $campaign and .boundHead == $head and
+         .generation == $generation and .generationPath == $path' "$pointer" >/dev/null 2>&1 \
+        || die "Pointer binding does not match the requested namespace and generation: $pointer"
+
+    local gen_dir="$dir/$gen_path"
+    reject_symlink_components "$gen_dir"
+    [[ -d "$gen_dir" ]] || die "Pointer names a generation that is not present: $gen_path"
+    verify_generation "$gen_dir" "$gen"
+
+    jq --exit-status --arg sha "$(sha256_of "$gen_dir/$INDEX_NAME")" \
+        --argjson bytes "$(bytes_of "$gen_dir/$INDEX_NAME")" \
+        '.index.sha256 == $sha and .index.bytes == $bytes' "$pointer" >/dev/null 2>&1 \
+        || die "Pointer binding does not match the generation index bytes and digest: $gen_path"
+
+    printf '%s\n' "$gen"
+}
+
+cmd_clean() {
+    lock_campaign
+    local dir
+    dir="$(campaign_dir)/generations"
+    reject_symlink_components "$dir"
+    [[ -d "$dir" ]] || { printf 'Nothing to clean.\n'; return 0; }
+    local removed=0 entry
+    for entry in "$dir"/.incomplete-*; do
+        [[ -e "$entry" ]] || continue
+        rm -rf -- "$entry"
+        printf 'Removed uncommitted generation: %s\n' "${entry##*/}"
+        removed=$((removed + 1))
+    done
+    ((removed > 0)) || printf 'Nothing to clean.\n'
+}
+
+subcommand="${1:-}"; shift || usage
+case "$subcommand" in
+    publish) parse_args "$@"; cmd_publish ;;
+    verify) parse_args "$@"; cmd_verify ;;
+    latest) parse_args "$@"; cmd_latest ;;
+    clean) parse_args "$@"; cmd_clean ;;
+    *) usage ;;
+esac
