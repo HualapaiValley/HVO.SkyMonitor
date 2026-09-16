@@ -30,6 +30,13 @@ grep -Fq 'includes overlap; not billed minutes' <<< "$summary" || fail 'Summary 
 grep -Fq 'Change Classification -> Integration Tests -> Coverage -> Required CI' <<< "$summary" ||
     fail 'Summary lost the observed controlling path.'
 
+jq -e '.classification.plan | has("deploymentCatalog") and has("deploymentShards") and has("deploymentInstaller")' \
+    <<< "$("$tool" --fixture "$fixtures/pr-845")" >/dev/null ||
+    fail 'Deployment suite flags are not represented in schema v1.'
+jq -e '.jobs[] | select(.name == "Required CI") | .dependencyReadyToStartSeconds != null' \
+    <<< "$("$tool" --fixture "$fixtures/pr-845")" >/dev/null ||
+    fail 'Skipped terminal dependencies did not contribute to Required CI readiness.'
+
 work_root="$(mktemp -d)"
 trap 'rm -rf "$work_root"' EXIT
 mkdir -p "$work_root/bin"
@@ -43,5 +50,36 @@ if PATH="$work_root/bin:$PATH" "$tool" --run 123 >"$work_root/out" 2>"$work_root
 fi
 [[ ! -s "$work_root/out" ]] || fail 'Live API failure emitted a partial report.'
 grep -Fq 'Could not read workflow run 123' "$work_root/err" || fail 'Live API failure was not attributed.'
+
+mkdir -p "$work_root/missing"
+cp "$fixtures/component/run.json" "$work_root/missing/run.json"
+cp "$fixtures/component/classification.log" "$work_root/missing/classification.log"
+printf '%s\n' '{"total_count":1,"jobs":[]}' > "$work_root/missing/jobs.json"
+if "$tool" --fixture "$work_root/missing" >"$work_root/missing.out" 2>"$work_root/missing.err"; then
+    fail 'Missing/truncated jobs reported success.'
+fi
+[[ ! -s "$work_root/missing.out" ]] || fail 'Missing jobs emitted a partial report.'
+grep -Fq 'Jobs input is malformed' "$work_root/missing.err" || fail 'Missing jobs were not refused explicitly.'
+
+cat > "$work_root/bin/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *'/actions/runs/456/jobs?'*)
+    printf '%s\n' '[{"jobs":[{"id":61,"name":"Change Classification","status":"completed","conclusion":"success","started_at":"2026-09-16T00:00:00Z","completed_at":"2026-09-16T00:00:01Z","html_url":"x"}],"total_count":2},{"jobs":[{"id":62,"name":"Required CI","status":"completed","conclusion":"success","started_at":"2026-09-16T00:00:02Z","completed_at":"2026-09-16T00:00:03Z","html_url":"y"}],"total_count":2}]'
+    ;;
+  *'/actions/runs/456')
+    printf '%s\n' '{"id":456,"run_number":7,"run_attempt":2,"event":"pull_request","status":"completed","conclusion":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","created_at":"2026-09-16T00:00:00Z","updated_at":"2026-09-16T00:00:03Z","html_url":"z","name":"CI","path":".github/workflows/ci.yml","repository":{"full_name":"owner/repo"}}'
+    ;;
+  'run view --repo owner/repo 456 --job 61 --log')
+    printf '%s\n' 'CI classification: mode=reduced deployment=false complete=false shared=false cameraagent=false logichost=false combined=false delivery=false paths=1'
+    ;;
+  *) exit 24 ;;
+esac
+GH
+chmod +x "$work_root/bin/gh"
+page_report="$(PATH="$work_root/bin:$PATH" "$tool" --run 456 --repo owner/repo)"
+jq -e '.run.attempt == 2 and (.jobs | length) == 2' <<< "$page_report" >/dev/null ||
+    fail 'Pagination/rerun live retrieval was not flattened exactly once.'
 
 printf 'CI timing report fixtures and API failure controls passed.\n'

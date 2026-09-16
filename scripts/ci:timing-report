@@ -63,7 +63,8 @@ fi
 
 jq -e 'type == "object" and (.id | type == "number") and (.run_attempt | type == "number")' "$run_file" >/dev/null ||
     fail 'Run input is malformed.'
-jq -e 'type == "object" and (.jobs | type == "array")' "$jobs_file" >/dev/null ||
+jq -e 'type == "object" and (.jobs | type == "array") and (.total_count | type == "number") and
+       .total_count == (.jobs | length) and .total_count > 0' "$jobs_file" >/dev/null ||
     fail 'Jobs input is malformed.'
 
 classification_line="$(grep -F 'CI classification:' "$classification_file" | tail -n 1 || true)"
@@ -75,7 +76,7 @@ if [[ -n "$classification_line" ]]; then
         key="${token%%=*}"
         value="${token#*=}"
         case "$key" in
-            mode|deployment|complete|shared|cameraagent|logichost|combined|delivery|paths)
+            mode|deployment|deployment_catalog|deployment_shards|deployment_installer|complete|shared|cameraagent|logichost|combined|delivery|paths)
                 plan["$key"]="$value"
                 ;;
         esac
@@ -84,6 +85,9 @@ if [[ -n "$classification_line" ]]; then
         plan_json="$(jq -n \
             --arg mode "${plan[mode]}" \
             --arg deployment "${plan[deployment]:-unknown}" \
+            --arg deployment_catalog "${plan[deployment_catalog]:-unknown}" \
+            --arg deployment_shards "${plan[deployment_shards]:-unknown}" \
+            --arg deployment_installer "${plan[deployment_installer]:-unknown}" \
             --arg complete "${plan[complete]:-unknown}" \
             --arg shared "${plan[shared]:-unknown}" \
             --arg cameraagent "${plan[cameraagent]:-unknown}" \
@@ -91,7 +95,9 @@ if [[ -n "$classification_line" ]]; then
             --arg combined "${plan[combined]:-unknown}" \
             --arg delivery "${plan[delivery]:-unknown}" \
             --arg paths "${plan[paths]:-unknown}" \
-            '{mode:$mode,deployment:$deployment,complete:$complete,shared:$shared,
+            '{mode:$mode,deployment:$deployment,deploymentCatalog:$deployment_catalog,
+              deploymentShards:$deployment_shards,deploymentInstaller:$deployment_installer,
+              complete:$complete,shared:$shared,
               cameraagent:$cameraagent,logichost:$logichost,combined:$combined,
               delivery:$delivery,pathCount:(if ($paths|test("^[0-9]+$")) then ($paths|tonumber) else null end)}')"
     fi
@@ -135,6 +141,8 @@ report="$(jq -n \
   def valid_job($job):
     ($job.status == "completed" and $job.conclusion != "skipped" and
      duration($job.started_at; $job.completed_at) != null);
+  def terminal_job($job):
+    ($job.status == "completed" and epoch($job.completed_at) != null);
   def job_by_name($jobs; $name): [$jobs[] | select(.name == $name)][0] // null;
   ($run[0]) as $r | ($jobPayload[0].jobs) as $jobs |
   ([ $jobs[] | select(.name == "Change Classification") ][0] // null) as $changes |
@@ -146,7 +154,7 @@ report="$(jq -n \
       ($dependencies[$job.name] // null) as $needs |
       (if $needs == null then [] else
          [$needs[] as $need | job_by_name($jobs; $need) |
-          select(. != null and valid_job(.))]
+           select(. != null and terminal_job(.))]
        end) as $readyDeps |
       (if ($needs == null or ($readyDeps|length) != ($needs|length) or epoch($job.started_at) == null)
        then null
