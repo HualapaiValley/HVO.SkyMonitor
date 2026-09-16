@@ -859,7 +859,7 @@ for consumer in correction base-sync; do
 done
 
 {
-    printf 'Exact review range: %s..%s\n' "$base" "$correction_head"
+    printf 'Review mode: initial\n'
     printf 'Current head SHA: %s\n\n' "$correction_head"
     printf '%s\n' "$(<"$work_root/initial.request")"
 } > "$work_root/mixed-unfenced-request-comment.txt"

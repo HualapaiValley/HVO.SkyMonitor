@@ -175,9 +175,12 @@ request_block_from_body() {
         }
         END {
             for (i = 1; i <= NR; i++) {
-                if (!first_mode && lines[i] ~ /^Review mode: (initial|correction|base-sync)$/)
-                    first_mode = i
+                if (lines[i] ~ /^Review mode: (initial|correction|base-sync)$/) {
+                    modes++
+                    if (!first_mode) first_mode = i
+                }
             }
+            if (unfenced && modes > 1) exit 1
             if (unfenced && first_mode) {
                 for (i = 1; i < first_mode; i++) {
                     if (lines[i] ~ /^Dispatch command ID and target participant ID: / ||
