@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+tool="$repo_root/scripts/ci:timing-report"
+fixtures="$repo_root/tests/fixtures/ci-timing-report"
+
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+for fixture in pr-845 pr-826 pr-827 pr-846 draft component canceled unknown; do
+    actual="$("$tool" --fixture "$fixtures/$fixture")"
+    jq -e . <<< "$actual" >/dev/null || fail "$fixture did not emit JSON."
+    diff -u "$fixtures/$fixture/expected.json" <(jq -S . <<< "$actual") ||
+        fail "$fixture report changed."
+done
+
+summary="$("$tool" --fixture "$fixtures/pr-845" --summary)"
+grep -Fq 'includes overlap; not billed minutes' <<< "$summary" || fail 'Summary mislabeled job-duration sum.'
+grep -Fq 'Change Classification -> Integration Tests -> Coverage -> Required CI' <<< "$summary" ||
+    fail 'Summary lost the observed controlling path.'
+
+work_root="$(mktemp -d)"
+trap 'rm -rf "$work_root"' EXIT
+mkdir -p "$work_root/bin"
+cat > "$work_root/bin/gh" <<'GH'
+#!/usr/bin/env bash
+exit 23
+GH
+chmod +x "$work_root/bin/gh"
+if PATH="$work_root/bin:$PATH" "$tool" --run 123 >"$work_root/out" 2>"$work_root/err"; then
+    fail 'Live API failure reported success.'
+fi
+[[ ! -s "$work_root/out" ]] || fail 'Live API failure emitted a partial report.'
+grep -Fq 'Could not read workflow run 123' "$work_root/err" || fail 'Live API failure was not attributed.'
+
+printf 'CI timing report fixtures and API failure controls passed.\n'

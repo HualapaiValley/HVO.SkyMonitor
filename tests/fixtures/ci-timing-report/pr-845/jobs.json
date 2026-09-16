@@ -1,0 +1,1557 @@
+{
+  "jobs": [
+    {
+      "id": 104947711875,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb17_gw",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947711875",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947711875",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:38:18Z",
+      "started_at": "2026-09-16T19:38:21Z",
+      "completed_at": "2026-09-16T19:38:29Z",
+      "name": "Change Classification",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:38:22Z",
+          "completed_at": "2026-09-16T19:38:23Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:38:23Z",
+          "completed_at": "2026-09-16T19:38:26Z"
+        },
+        {
+          "name": "Select full or reduced CI",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:38:26Z",
+          "completed_at": "2026-09-16T19:38:26Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:38:26Z",
+          "completed_at": "2026-09-16T19:38:26Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-16T19:38:26Z",
+          "completed_at": "2026-09-16T19:38:26Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947711875",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000012662,
+      "runner_name": "GitHub Actions 1000012662",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104947773318,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_vhg",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947773318",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947773318",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:39:07Z",
+      "completed_at": "2026-09-16T19:39:24Z",
+      "name": "Catalog Contracts",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:39:09Z",
+          "completed_at": "2026-09-16T19:39:09Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:39:09Z",
+          "completed_at": "2026-09-16T19:39:12Z"
+        },
+        {
+          "name": "Build exact production catalog contracts",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:39:12Z",
+          "completed_at": "2026-09-16T19:39:21Z"
+        },
+        {
+          "name": "Upload exact production catalog contracts",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:39:21Z",
+          "completed_at": "2026-09-16T19:39:23Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-16T19:39:23Z",
+          "completed_at": "2026-09-16T19:39:23Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-16T19:39:23Z",
+          "completed_at": "2026-09-16T19:39:23Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947773318",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000012665,
+      "runner_name": "GitHub Actions 1000012665",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104947773320,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_viA",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947773320",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947773320",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:38:32Z",
+      "completed_at": "2026-09-16T19:44:12Z",
+      "name": "Architecture & Publish",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:38:33Z",
+          "completed_at": "2026-09-16T19:38:35Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:38:35Z",
+          "completed_at": "2026-09-16T19:38:37Z"
+        },
+        {
+          "name": "Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:38:37Z",
+          "completed_at": "2026-09-16T19:38:38Z"
+        },
+        {
+          "name": "Restore and build Release",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:38:38Z",
+          "completed_at": "2026-09-16T19:42:31Z"
+        },
+        {
+          "name": "Validate architecture unit contracts",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-16T19:42:31Z",
+          "completed_at": "2026-09-16T19:43:16Z"
+        },
+        {
+          "name": "Validate architecture graph and publish outputs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:43:16Z",
+          "completed_at": "2026-09-16T19:44:01Z"
+        },
+        {
+          "name": "Create retained publish manifests",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-16T19:44:01Z",
+          "completed_at": "2026-09-16T19:44:02Z"
+        },
+        {
+          "name": "Upload architecture unit evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-16T19:44:02Z",
+          "completed_at": "2026-09-16T19:44:04Z"
+        },
+        {
+          "name": "Upload architecture coverage",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-16T19:44:04Z",
+          "completed_at": "2026-09-16T19:44:05Z"
+        },
+        {
+          "name": "Upload publish evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-16T19:44:05Z",
+          "completed_at": "2026-09-16T19:44:07Z"
+        },
+        {
+          "name": "Post Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-09-16T19:44:07Z",
+          "completed_at": "2026-09-16T19:44:07Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 20,
+          "started_at": "2026-09-16T19:44:07Z",
+          "completed_at": "2026-09-16T19:44:07Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 21,
+          "started_at": "2026-09-16T19:44:07Z",
+          "completed_at": "2026-09-16T19:44:08Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947773320",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": 22,
+      "runner_name": "github-runner-02",
+      "runner_group_id": 1,
+      "runner_group_name": "Default"
+    },
+    {
+      "id": 104947773382,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_vxg",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947773382",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947773382",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:38:32Z",
+      "completed_at": "2026-09-16T19:50:24Z",
+      "name": "Quality",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:38:33Z",
+          "completed_at": "2026-09-16T19:38:34Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:38:34Z",
+          "completed_at": "2026-09-16T19:38:37Z"
+        },
+        {
+          "name": "Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:38:37Z",
+          "completed_at": "2026-09-16T19:38:38Z"
+        },
+        {
+          "name": "Restore dependencies and tools",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:38:38Z",
+          "completed_at": "2026-09-16T19:39:14Z"
+        },
+        {
+          "name": "Verify formatting",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-16T19:39:14Z",
+          "completed_at": "2026-09-16T19:47:06Z"
+        },
+        {
+          "name": "Lint GitHub Actions workflows",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:47:06Z",
+          "completed_at": "2026-09-16T19:47:08Z"
+        },
+        {
+          "name": "Run static and lightweight contract checks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-16T19:47:08Z",
+          "completed_at": "2026-09-16T19:49:10Z"
+        },
+        {
+          "name": "Audit vulnerable and deprecated packages",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-16T19:49:10Z",
+          "completed_at": "2026-09-16T19:50:22Z"
+        },
+        {
+          "name": "Upload package audit",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-16T19:50:22Z",
+          "completed_at": "2026-09-16T19:50:23Z"
+        },
+        {
+          "name": "Run historical Phase 14 acceptance inventory contract",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-16T19:50:23Z",
+          "completed_at": "2026-09-16T19:50:23Z"
+        },
+        {
+          "name": "Post Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-09-16T19:50:23Z",
+          "completed_at": "2026-09-16T19:50:23Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 20,
+          "started_at": "2026-09-16T19:50:23Z",
+          "completed_at": "2026-09-16T19:50:23Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 21,
+          "started_at": "2026-09-16T19:50:23Z",
+          "completed_at": "2026-09-16T19:50:23Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947773382",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000012664,
+      "runner_name": "GitHub Actions 1000012664",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104947773396,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_v1A",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947773396",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947773396",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:44:14Z",
+      "completed_at": "2026-09-16T19:45:14Z",
+      "name": "LogicHost Migrations",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:44:15Z",
+          "completed_at": "2026-09-16T19:44:19Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:44:19Z",
+          "completed_at": "2026-09-16T19:44:21Z"
+        },
+        {
+          "name": "Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:44:21Z",
+          "completed_at": "2026-09-16T19:44:22Z"
+        },
+        {
+          "name": "Restore tools and build the LogicHost project root",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:44:22Z",
+          "completed_at": "2026-09-16T19:45:08Z"
+        },
+        {
+          "name": "Enforce one canonical LogicHost migration",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-16T19:45:08Z",
+          "completed_at": "2026-09-16T19:45:08Z"
+        },
+        {
+          "name": "Reject pending LogicHost model changes",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:45:08Z",
+          "completed_at": "2026-09-16T19:45:11Z"
+        },
+        {
+          "name": "Post Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-16T19:45:11Z",
+          "completed_at": "2026-09-16T19:45:11Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-16T19:45:11Z",
+          "completed_at": "2026-09-16T19:45:11Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-16T19:45:11Z",
+          "completed_at": "2026-09-16T19:45:11Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947773396",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": 22,
+      "runner_name": "github-runner-02",
+      "runner_group_id": 1,
+      "runner_group_name": "Default"
+    },
+    {
+      "id": 104947773410,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_v4g",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947773410",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947773410",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:45:16Z",
+      "completed_at": "2026-09-16T19:46:11Z",
+      "name": "CameraAgent Migrations",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:45:17Z",
+          "completed_at": "2026-09-16T19:45:19Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:45:19Z",
+          "completed_at": "2026-09-16T19:45:21Z"
+        },
+        {
+          "name": "Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:45:21Z",
+          "completed_at": "2026-09-16T19:45:22Z"
+        },
+        {
+          "name": "Restore tools and build the CameraAgent project root",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:45:22Z",
+          "completed_at": "2026-09-16T19:46:06Z"
+        },
+        {
+          "name": "Enforce one canonical CameraAgent migration",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-16T19:46:06Z",
+          "completed_at": "2026-09-16T19:46:06Z"
+        },
+        {
+          "name": "Reject pending CameraAgent model changes",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:46:06Z",
+          "completed_at": "2026-09-16T19:46:08Z"
+        },
+        {
+          "name": "Post Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-16T19:46:08Z",
+          "completed_at": "2026-09-16T19:46:08Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-16T19:46:08Z",
+          "completed_at": "2026-09-16T19:46:08Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-16T19:46:08Z",
+          "completed_at": "2026-09-16T19:46:08Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947773410",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": 22,
+      "runner_name": "github-runner-02",
+      "runner_group_id": 1,
+      "runner_group_name": "Default"
+    },
+    {
+      "id": 104947773422,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_v7g",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947773422",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947773422",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:38:32Z",
+      "completed_at": "2026-09-16T19:45:38Z",
+      "name": "Build",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:38:32Z",
+          "completed_at": "2026-09-16T19:38:35Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:38:35Z",
+          "completed_at": "2026-09-16T19:38:36Z"
+        },
+        {
+          "name": "Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:38:36Z",
+          "completed_at": "2026-09-16T19:38:38Z"
+        },
+        {
+          "name": "Restore",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:38:38Z",
+          "completed_at": "2026-09-16T19:38:48Z"
+        },
+        {
+          "name": "Warning-clean Debug build",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-16T19:38:48Z",
+          "completed_at": "2026-09-16T19:42:28Z"
+        },
+        {
+          "name": "Warning-clean Release build",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:42:28Z",
+          "completed_at": "2026-09-16T19:43:18Z"
+        },
+        {
+          "name": "Audit behavioral test categories",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-16T19:43:18Z",
+          "completed_at": "2026-09-16T19:45:33Z"
+        },
+        {
+          "name": "Post Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-16T19:45:33Z",
+          "completed_at": "2026-09-16T19:45:34Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-16T19:45:34Z",
+          "completed_at": "2026-09-16T19:45:34Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-16T19:45:34Z",
+          "completed_at": "2026-09-16T19:45:34Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947773422",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": 21,
+      "runner_name": "github-runner-01",
+      "runner_group_id": 1,
+      "runner_group_name": "Default"
+    },
+    {
+      "id": 104947773456,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_wEA",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947773456",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947773456",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:38:32Z",
+      "completed_at": "2026-09-16T19:55:47Z",
+      "name": "Integration Tests",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:38:33Z",
+          "completed_at": "2026-09-16T19:38:36Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:38:36Z",
+          "completed_at": "2026-09-16T19:38:37Z"
+        },
+        {
+          "name": "Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:38:37Z",
+          "completed_at": "2026-09-16T19:38:39Z"
+        },
+        {
+          "name": "Restore and build Release",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:38:39Z",
+          "completed_at": "2026-09-16T19:42:25Z"
+        },
+        {
+          "name": "Run Integration suites",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-16T19:42:25Z",
+          "completed_at": "2026-09-16T19:55:25Z"
+        },
+        {
+          "name": "Upload Integration evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:55:25Z",
+          "completed_at": "2026-09-16T19:55:43Z"
+        },
+        {
+          "name": "Post Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-16T19:55:43Z",
+          "completed_at": "2026-09-16T19:55:43Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-16T19:55:43Z",
+          "completed_at": "2026-09-16T19:55:43Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-16T19:55:43Z",
+          "completed_at": "2026-09-16T19:55:43Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947773456",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": 23,
+      "runner_name": "github-runner-03",
+      "runner_group_id": 1,
+      "runner_group_name": "Default"
+    },
+    {
+      "id": 104947773490,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_wMg",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947773490",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947773490",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:38:32Z",
+      "completed_at": "2026-09-16T19:38:39Z",
+      "name": "Coverage Policy",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:38:33Z",
+          "completed_at": "2026-09-16T19:38:34Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:38:34Z",
+          "completed_at": "2026-09-16T19:38:37Z"
+        },
+        {
+          "name": "Reject weakened aggregate or component coverage thresholds",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:38:37Z",
+          "completed_at": "2026-09-16T19:38:37Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:38:37Z",
+          "completed_at": "2026-09-16T19:38:37Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-16T19:38:37Z",
+          "completed_at": "2026-09-16T19:38:37Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947773490",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000012663,
+      "runner_name": "GitHub Actions 1000012663",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104947774595,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_0gw",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947774595",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947774595",
+      "status": "completed",
+      "conclusion": "skipped",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:38:30Z",
+      "completed_at": "2026-09-16T19:38:30Z",
+      "name": "LogicHost Component",
+      "steps": [],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947774595",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": null,
+      "runner_name": null,
+      "runner_group_id": null,
+      "runner_group_name": null
+    },
+    {
+      "id": 104947775066,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_2Wg",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947775066",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947775066",
+      "status": "completed",
+      "conclusion": "skipped",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:38:30Z",
+      "completed_at": "2026-09-16T19:38:30Z",
+      "name": "CameraAgent Component",
+      "steps": [],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947775066",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": null,
+      "runner_name": null,
+      "runner_group_id": null,
+      "runner_group_name": null
+    },
+    {
+      "id": 104947776475,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_72w",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947776475",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947776475",
+      "status": "completed",
+      "conclusion": "skipped",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:38:30Z",
+      "completed_at": "2026-09-16T19:38:30Z",
+      "name": "Shared Libraries",
+      "steps": [],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947776475",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": null,
+      "runner_name": null,
+      "runner_group_id": null,
+      "runner_group_name": null
+    },
+    {
+      "id": 104947776677,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb1_8pQ",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104947776677",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104947776677",
+      "status": "completed",
+      "conclusion": "skipped",
+      "created_at": "2026-09-16T19:38:30Z",
+      "started_at": "2026-09-16T19:38:30Z",
+      "completed_at": "2026-09-16T19:38:30Z",
+      "name": "Combined Protocol & Integration",
+      "steps": [],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104947776677",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": null,
+      "runner_name": null,
+      "runner_group_id": null,
+      "runner_group_name": null
+    },
+    {
+      "id": 104948075497,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb2SL6Q",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104948075497",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104948075497",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:39:24Z",
+      "started_at": "2026-09-16T19:45:39Z",
+      "completed_at": "2026-09-16T19:54:21Z",
+      "name": "Unit Tests",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:45:41Z",
+          "completed_at": "2026-09-16T19:45:46Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:45:46Z",
+          "completed_at": "2026-09-16T19:45:48Z"
+        },
+        {
+          "name": "Download exact production catalog contracts",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:45:48Z",
+          "completed_at": "2026-09-16T19:46:11Z"
+        },
+        {
+          "name": "Restore exact production catalog contract",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:46:11Z",
+          "completed_at": "2026-09-16T19:46:11Z"
+        },
+        {
+          "name": "Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-16T19:46:11Z",
+          "completed_at": "2026-09-16T19:46:12Z"
+        },
+        {
+          "name": "Restore and build Release",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:46:12Z",
+          "completed_at": "2026-09-16T19:47:47Z"
+        },
+        {
+          "name": "Run Docker-disabled Unit suites",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-16T19:47:47Z",
+          "completed_at": "2026-09-16T19:53:46Z"
+        },
+        {
+          "name": "Upload Unit evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-16T19:53:46Z",
+          "completed_at": "2026-09-16T19:54:17Z"
+        },
+        {
+          "name": "Post Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-16T19:54:17Z",
+          "completed_at": "2026-09-16T19:54:18Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-16T19:54:18Z",
+          "completed_at": "2026-09-16T19:54:18Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-09-16T19:54:18Z",
+          "completed_at": "2026-09-16T19:54:18Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104948075497",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": 21,
+      "runner_name": "github-runner-01",
+      "runner_group_id": 1,
+      "runner_group_name": "Default"
+    },
+    {
+      "id": 104948075511,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb2SL9w",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104948075511",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104948075511",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:39:24Z",
+      "started_at": "2026-09-16T19:46:13Z",
+      "completed_at": "2026-09-16T19:53:47Z",
+      "name": "Deployment Contracts",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:46:14Z",
+          "completed_at": "2026-09-16T19:46:18Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:46:18Z",
+          "completed_at": "2026-09-16T19:46:20Z"
+        },
+        {
+          "name": "Download exact production catalog contracts",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:46:20Z",
+          "completed_at": "2026-09-16T19:46:52Z"
+        },
+        {
+          "name": "Restore exact production catalog contracts",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:46:52Z",
+          "completed_at": "2026-09-16T19:46:52Z"
+        },
+        {
+          "name": "Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-16T19:46:52Z",
+          "completed_at": "2026-09-16T19:46:53Z"
+        },
+        {
+          "name": "Verify deployment contract tools",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:46:53Z",
+          "completed_at": "2026-09-16T19:46:53Z"
+        },
+        {
+          "name": "Run exhaustive production catalog lifecycle",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-16T19:46:53Z",
+          "completed_at": "2026-09-16T19:49:45Z"
+        },
+        {
+          "name": "Run lightweight deployment contracts",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-16T19:49:45Z",
+          "completed_at": "2026-09-16T19:50:08Z"
+        },
+        {
+          "name": "Run exhaustive deployment contracts in parallel",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-16T19:50:08Z",
+          "completed_at": "2026-09-16T19:50:08Z"
+        },
+        {
+          "name": "Run exhaustive disposable offline installer contract",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-16T19:50:08Z",
+          "completed_at": "2026-09-16T19:53:43Z"
+        },
+        {
+          "name": "Upload deployment contract logs",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-16T19:53:43Z",
+          "completed_at": "2026-09-16T19:53:43Z"
+        },
+        {
+          "name": "Post Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 21,
+          "started_at": "2026-09-16T19:53:43Z",
+          "completed_at": "2026-09-16T19:53:43Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22,
+          "started_at": "2026-09-16T19:53:43Z",
+          "completed_at": "2026-09-16T19:53:43Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-16T19:53:43Z",
+          "completed_at": "2026-09-16T19:53:43Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104948075511",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": 22,
+      "runner_name": "github-runner-02",
+      "runner_group_id": 1,
+      "runner_group_name": "Default"
+    },
+    {
+      "id": 104948077484,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb2STrA",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104948077484",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104948077484",
+      "status": "completed",
+      "conclusion": "skipped",
+      "created_at": "2026-09-16T19:39:25Z",
+      "started_at": "2026-09-16T19:39:25Z",
+      "completed_at": "2026-09-16T19:39:24Z",
+      "name": "Delivery Component",
+      "steps": [],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104948077484",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": null,
+      "runner_name": null,
+      "runner_group_id": null,
+      "runner_group_name": null
+    },
+    {
+      "id": 104953585243,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb7ieWw",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104953585243",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104953585243",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:55:48Z",
+      "started_at": "2026-09-16T19:55:50Z",
+      "completed_at": "2026-09-16T19:57:15Z",
+      "name": "Coverage",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:55:50Z",
+          "completed_at": "2026-09-16T19:56:00Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-16T19:56:00Z",
+          "completed_at": "2026-09-16T19:56:03Z"
+        },
+        {
+          "name": "Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:56:03Z",
+          "completed_at": "2026-09-16T19:56:05Z"
+        },
+        {
+          "name": "Restore coverage tool",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:56:05Z",
+          "completed_at": "2026-09-16T19:56:05Z"
+        },
+        {
+          "name": "Download Unit evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-16T19:56:05Z",
+          "completed_at": "2026-09-16T19:56:17Z"
+        },
+        {
+          "name": "Download Integration evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-16T19:56:17Z",
+          "completed_at": "2026-09-16T19:56:25Z"
+        },
+        {
+          "name": "Download architecture evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-16T19:56:25Z",
+          "completed_at": "2026-09-16T19:56:26Z"
+        },
+        {
+          "name": "Enforce exact-path coverage baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-16T19:56:26Z",
+          "completed_at": "2026-09-16T19:56:39Z"
+        },
+        {
+          "name": "Read coverage metrics",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-16T19:56:39Z",
+          "completed_at": "2026-09-16T19:56:39Z"
+        },
+        {
+          "name": "Upload merged coverage",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-16T19:56:39Z",
+          "completed_at": "2026-09-16T19:57:12Z"
+        },
+        {
+          "name": "Post Setup .NET from global.json",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-09-16T19:57:12Z",
+          "completed_at": "2026-09-16T19:57:12Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 20,
+          "started_at": "2026-09-16T19:57:12Z",
+          "completed_at": "2026-09-16T19:57:12Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 21,
+          "started_at": "2026-09-16T19:57:12Z",
+          "completed_at": "2026-09-16T19:57:12Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104953585243",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": 21,
+      "runner_name": "github-runner-01",
+      "runner_group_id": 1,
+      "runner_group_name": "Default"
+    },
+    {
+      "id": 104954049895,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb7-1Zw",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104954049895",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104954049895",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-16T19:57:16Z",
+      "started_at": "2026-09-16T19:57:18Z",
+      "completed_at": "2026-09-16T19:57:24Z",
+      "name": "Required CI",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-16T19:57:19Z",
+          "completed_at": "2026-09-16T19:57:19Z"
+        },
+        {
+          "name": "Block merge while review is in progress",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 2,
+          "started_at": "2026-09-16T19:57:19Z",
+          "completed_at": "2026-09-16T19:57:19Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-16T19:57:19Z",
+          "completed_at": "2026-09-16T19:57:22Z"
+        },
+        {
+          "name": "Require every current-head gate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-16T19:57:22Z",
+          "completed_at": "2026-09-16T19:57:22Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-16T19:57:22Z",
+          "completed_at": "2026-09-16T19:57:22Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-16T19:57:22Z",
+          "completed_at": "2026-09-16T19:57:22Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104954049895",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "runner_id": 1000012666,
+      "runner_name": "GitHub Actions 1000012666",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 104954051451,
+      "run_id": 35141755039,
+      "workflow_name": "CI",
+      "head_branch": "chore/844-consolidated-dependencies",
+      "run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOQUc6XM8AAAAYb7-7ew",
+      "head_sha": "db25fd743b94c5607f4dbb5a1650ca93862ea41c",
+      "url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/actions/jobs/104954051451",
+      "html_url": "https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/35141755039/job/104954051451",
+      "status": "completed",
+      "conclusion": "skipped",
+      "created_at": "2026-09-16T19:57:16Z",
+      "started_at": "2026-09-16T19:57:16Z",
+      "completed_at": "2026-09-16T19:57:16Z",
+      "name": "Coverage Badges",
+      "steps": [],
+      "check_run_url": "https://api.github.com/repos/RoySalisbury/HVO.SkyMonitor/check-runs/104954051451",
+      "labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "hvo-skymonitor"
+      ],
+      "runner_id": null,
+      "runner_name": null,
+      "runner_group_id": null,
+      "runner_group_name": null
+    }
+  ],
+  "total_count": 19
+}
