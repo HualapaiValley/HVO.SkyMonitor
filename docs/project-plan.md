@@ -1167,16 +1167,18 @@ definition and current disposition are recorded in
 ```
 
 Parallel work is allowed only when contracts and migration order are stable.
-Independent issues use separate branches and isolated worktrees, with a default
-limit of two active implementation issues plus non-editing research/review
-agents. One roadmap coordinator records claims in the active initiative's owning
-epic and owns global slot accounting. Agents must not implement a downstream
-issue against an unmerged speculative contract unless the issues explicitly
+Independent issues use separate branches and isolated worktrees. Their owners
+record scope and ownership on the issues and check for conflicting work and
+available machine/Docker capacity; there is no global two-issue limit or required
+coordinator-managed queue. Fleet coordination is optional. Agents must not
+implement a downstream issue against an unmerged speculative contract unless the issues explicitly
 coordinate one PR series.
 
 ## 24. PR and Validation Gate
 
-Every issue follows this sequence:
+The individual issue/PR owner runs the full lifecycle by default, without a
+coordinator enrollment prerequisite, unless the operator pauses work or reserves
+a decision. Every issue follows this sequence:
 
 1. Read the master plan, issue, execution protocol, and relevant specifications.
 2. Inspect the current branch, worktree, open PR state, and recent commits.
@@ -1194,31 +1196,41 @@ Every issue follows this sequence:
 8. Inspect logs, metrics, traces, health, and durable state.
 9. Commit only issue files and preserve unrelated worktree changes.
 10. Push and open a draft PR linked to the issue and epic.
-11. Review the full initial PR diff using the bounded Copilot/Codex acquisition
-    and exact-head waiver rules in `.agents/skills/pr-lifecycle/SKILL.md`; an
-    unrecorded local review does not replace that provider sequence.
+11. Obtain independent review of the full initial immutable PR range under the
+    risk-depth, sandbox, bounded acquisition, and exact-range waiver rules in
+    `.agents/skills/pr-lifecycle/SKILL.md`. Human and independent one-shot agent
+    reviews are first-class routes. The owner may record equivalent requests
+    and reports directly on the PR without fleet scripts; use reviewer identity
+    and model/effort `N/A` for humans and truthful launch metadata for agents.
+    Enrollment is required only for the enrolled resumed-session dispatch route,
+    not for ownership or review generally. Self-review or an unrecorded local
+    review does not establish convergence.
 12. Batch and validate corrections. Rereview only each exact correction delta
     and its concrete interactions, and verify every preceding finding
     individually; a finding neither verified fixed nor explicitly deferred to a
     linked issue remains unresolved.
 13. After draft review converges, acquire the repository finalization lock,
     synchronize the target branch, run affected local evidence, obtain base-sync
-    review, and fetch again to prove the base and reviewed head remain current.
+    review if the target advanced (otherwise record unchanged-base proof), and
+    fetch again to prove the base and reviewed head remain current.
     Only then mark the PR ready and run classifier-selected protected CI. Draft
     correction and synchronization pushes intentionally skip protected CI.
 14. If CI requires code changes, return the PR to draft, release the lock, review
     only that correction delta, then re-enter step 13 to reacquire the lock and
-    repeat final synchronization and base-sync review before marking it ready for
-    final current-head CI. Rerun the same SHA only for diagnosed infrastructure
+    repeat final synchronization and any required base-sync review before marking
+    it ready for final current-head CI. Rerun the same SHA only for diagnosed infrastructure
     failures that require no content change.
 15. Reply to and resolve review threads only after correction evidence and delta
     review exist.
-16. Merge only when the current head equals the reviewed head, has green required
-    checks, and has no unresolved actionable review.
-17. Synchronize local `main`, confirm issue closure, and update epic/handoff state.
-18. Unless explicitly paused or blocked, select the highest-priority
-    candidate-ready issue, post its plain-language synopsis and `READY` claim,
-    and begin automatically.
+16. Merge only when the current head equals the reviewed or precisely waived
+    head, has green required checks, and has no unresolved actionable review.
+17. Synchronize local `main`, confirm issue closure, update applicable epic/handoff
+    state, safely clean up merged branches/worktrees, release the finalization
+    lock, and report completion.
+18. Select or start another issue only with explicit operator authorization,
+    including an existing explicit multi-issue assignment. Completion alone does
+    not authorize automatic continuation. Preserve architecture boundaries and
+    technical dependencies while allowing explicitly authorized independent starts.
 
 Every planned base synchronization and conflict resolution happens before
 readiness. If the target branch advances or any planned head change becomes

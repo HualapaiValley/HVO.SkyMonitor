@@ -276,7 +276,8 @@ correction-cap, finalization-lock, and merge procedure is defined by
 `.agents/skills/pr-lifecycle/SKILL.md`.
 
 Open implementation PRs as drafts and keep them draft while review corrections
-converge and the target branch is finally synchronized and integration-reviewed.
+converge and the target branch is finally synchronized, with required base-sync
+review if the target advanced or recorded unchanged-base proof otherwise.
 Draft PR events skip the expensive CI plan and publish an intentionally failing
 `Required CI`, so branch protection remains fail-closed; returning a PR to draft
 also cancels its superseded in-progress run. Only the PR holding the
