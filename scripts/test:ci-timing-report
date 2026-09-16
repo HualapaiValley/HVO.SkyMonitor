@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+tool="$repo_root/scripts/ci:timing-report"
+fixtures="$repo_root/tests/fixtures/ci-timing-report"
+workflow="$repo_root/.github/workflows/ci.yml"
+
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+for contract in \
+    '    needs: changes' \
+    '    needs: [changes, catalog-contracts]' \
+    '    needs: [changes, unit, integration, architecture]' \
+    '    needs: coverage' \
+    '    needs: [changes, quality, catalog-contracts, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, migrations-logichost, unit, integration, coverage, shared-libraries, cameraagent-component, logichost-component, combined-integration, delivery-component]'; do
+    grep -Fqx "$contract" "$workflow" ||
+        fail "CI workflow dependency shape changed; update ci:timing-report and its fixtures: $contract"
+done
+
+for fixture in pr-845 pr-826 pr-827 pr-846 draft component canceled unknown; do
+    actual="$("$tool" --fixture "$fixtures/$fixture")"
+    jq -e . <<< "$actual" >/dev/null || fail "$fixture did not emit JSON."
+    diff -u "$fixtures/$fixture/expected.json" <(jq -cS . <<< "$actual") ||
+        fail "$fixture report changed."
+done
+
+summary="$("$tool" --fixture "$fixtures/pr-845" --summary)"
+grep -Fq 'includes overlap; not billed minutes' <<< "$summary" || fail 'Summary mislabeled job-duration sum.'
+grep -Fq 'Change Classification -> Integration Tests -> Coverage -> Required CI' <<< "$summary" ||
+    fail 'Summary lost the observed controlling path.'
+
+jq -e '.classification.plan | has("deploymentCatalog") and has("deploymentShards") and has("deploymentInstaller")' \
+    <<< "$("$tool" --fixture "$fixtures/pr-845")" >/dev/null ||
+    fail 'Deployment suite flags are not represented in schema v1.'
+jq -e '.jobs[] | select(.name == "Required CI") | .dependencyReadyToStartSeconds != null' \
+    <<< "$("$tool" --fixture "$fixtures/pr-845")" >/dev/null ||
+    fail 'Skipped terminal dependencies did not contribute to Required CI readiness.'
+
+work_root="$(mktemp -d)"
+trap 'rm -rf "$work_root"' EXIT
+mkdir -p "$work_root/bin"
+cat > "$work_root/bin/gh" <<'GH'
+#!/usr/bin/env bash
+exit 23
+GH
+chmod +x "$work_root/bin/gh"
+if PATH="$work_root/bin:$PATH" "$tool" --run 123 >"$work_root/out" 2>"$work_root/err"; then
+    fail 'Live API failure reported success.'
+fi
+[[ ! -s "$work_root/out" ]] || fail 'Live API failure emitted a partial report.'
+grep -Fq 'Could not read workflow run 123' "$work_root/err" || fail 'Live API failure was not attributed.'
+
+mkdir -p "$work_root/missing"
+cp "$fixtures/component/run.json" "$work_root/missing/run.json"
+cp "$fixtures/component/classification.log" "$work_root/missing/classification.log"
+printf '%s\n' '{"total_count":1,"jobs":[]}' > "$work_root/missing/jobs.json"
+if "$tool" --fixture "$work_root/missing" >"$work_root/missing.out" 2>"$work_root/missing.err"; then
+    fail 'Missing/truncated jobs reported success.'
+fi
+[[ ! -s "$work_root/missing.out" ]] || fail 'Missing jobs emitted a partial report.'
+grep -Fq 'Jobs input is malformed' "$work_root/missing.err" || fail 'Missing jobs were not refused explicitly.'
+
+cat > "$work_root/bin/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'api --paginate --slurp repos/owner/repo/actions/runs/456/jobs?filter=latest&per_page=100')
+    printf '%s\n' '[{"jobs":[{"id":61,"name":"Change Classification","status":"completed","conclusion":"success","started_at":"2026-09-16T00:00:00Z","completed_at":"2026-09-16T00:00:01Z","html_url":"x"}],"total_count":2},{"jobs":[{"id":62,"name":"Required CI","status":"completed","conclusion":"success","started_at":"2026-09-16T00:00:02Z","completed_at":"2026-09-16T00:00:03Z","html_url":"y"}],"total_count":2}]'
+    ;;
+  *'/actions/runs/456')
+    printf '%s\n' '{"id":456,"run_number":7,"run_attempt":2,"event":"pull_request","status":"completed","conclusion":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","created_at":"2026-09-16T00:00:00Z","updated_at":"2026-09-16T00:00:03Z","html_url":"z","name":"CI","path":".github/workflows/ci.yml","repository":{"full_name":"owner/repo"}}'
+    ;;
+  'run view --repo owner/repo 456 --job 61 --log')
+    printf '%s\n' 'CI classification: mode=reduced deployment=false complete=false shared=false cameraagent=false logichost=false combined=false delivery=false paths=1'
+    ;;
+  *) exit 24 ;;
+esac
+GH
+chmod +x "$work_root/bin/gh"
+page_report="$(PATH="$work_root/bin:$PATH" "$tool" --run 456 --repo owner/repo)"
+jq -e '.run.attempt == 2 and (.jobs | length) == 2' <<< "$page_report" >/dev/null ||
+    fail 'Pagination/rerun live retrieval was not flattened exactly once.'
+
+cat > "$work_root/bin/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *'/actions/runs/789/jobs?'*)
+    printf '%s\n' '[{"jobs":[{"id":71,"name":"Change Classification"}],"total_count":2}]'
+    ;;
+  *'/actions/runs/789')
+    printf '%s\n' '{"id":789,"run_number":8,"run_attempt":1,"event":"pull_request","status":"completed","conclusion":"success","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","created_at":"2026-09-16T00:00:00Z","updated_at":"2026-09-16T00:00:03Z","html_url":"z","name":"CI","path":".github/workflows/ci.yml","repository":{"full_name":"owner/repo"}}'
+    ;;
+  *) exit 24 ;;
+esac
+GH
+chmod +x "$work_root/bin/gh"
+if PATH="$work_root/bin:$PATH" "$tool" --run 789 --repo owner/repo >"$work_root/truncated.out" 2>"$work_root/truncated.err"; then
+    fail 'Truncated live pagination reported success.'
+fi
+[[ ! -s "$work_root/truncated.out" ]] || fail 'Truncated pagination emitted a partial report.'
+grep -Eq 'Could not read jobs for workflow run 789|Jobs input is malformed' "$work_root/truncated.err" ||
+    fail 'Truncated pagination was not attributed.'
+
+printf 'CI timing report fixtures and API failure controls passed.\n'

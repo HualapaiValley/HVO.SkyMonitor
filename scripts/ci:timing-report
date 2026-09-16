@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+repo="${GH_REPO:-}"
+run_id=""
+fixture=""
+summary=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo) repo="${2:-}"; shift ;;
+        --run) run_id="${2:-}"; shift ;;
+        --fixture) fixture="${2:-}"; shift ;;
+        --summary) summary=true ;;
+        *) fail "Unknown argument: $1" ;;
+    esac
+    shift
+done
+
+[[ -z "$run_id" || -z "$fixture" ]] || fail 'Use either --run or --fixture, not both.'
+[[ -n "$run_id" || -n "$fixture" ]] || fail 'Usage: scripts/ci:timing-report (--run ID [--repo OWNER/REPO] | --fixture DIR) [--summary]'
+
+work_root="$(mktemp -d)"
+trap 'rm -rf "$work_root"' EXIT
+run_file="$work_root/run.json"
+jobs_file="$work_root/jobs.json"
+classification_file="$work_root/classification.log"
+
+if [[ -n "$fixture" ]]; then
+    [[ -f "$fixture/run.json" && -f "$fixture/jobs.json" ]] ||
+        fail "Fixture must contain run.json and jobs.json: $fixture"
+    cp "$fixture/run.json" "$run_file"
+    cp "$fixture/jobs.json" "$jobs_file"
+    if [[ -f "$fixture/classification.log" ]]; then
+        cp "$fixture/classification.log" "$classification_file"
+    else
+        : > "$classification_file"
+    fi
+else
+    [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || fail '--run must be a positive integer.'
+    repo_path='{owner}/{repo}'
+    if [[ -n "$repo" ]]; then
+        [[ "$repo" =~ ^[^/]+/[^/]+$ ]] || fail '--repo must be OWNER/REPO.'
+        repo_path="$repo"
+    fi
+    gh api "repos/$repo_path/actions/runs/$run_id" > "$run_file" ||
+        fail "Could not read workflow run $run_id."
+    gh api --paginate --slurp \
+        "repos/$repo_path/actions/runs/$run_id/jobs?filter=latest&per_page=100" |
+        jq -e '
+          if length == 0 or ([.[].total_count] | unique | length) != 1 then
+            error("job pages disagree on total_count")
+          else {jobs: [.[].jobs[]], total_count: .[0].total_count} end
+        ' > "$jobs_file" ||
+        fail "Could not read jobs for workflow run $run_id."
+    change_job_id="$(jq -r '[.jobs[] | select(.name == "Change Classification")][0].id // empty' "$jobs_file")"
+    if [[ -n "$change_job_id" ]]; then
+        run_repo_args=()
+        [[ -z "$repo" ]] || run_repo_args=(--repo "$repo")
+        gh run view "${run_repo_args[@]}" "$run_id" --job "$change_job_id" --log > "$classification_file" 2>/dev/null || :
+    else
+        : > "$classification_file"
+    fi
+fi
+
+jq -e 'type == "object" and (.id | type == "number") and (.run_attempt | type == "number")' "$run_file" >/dev/null ||
+    fail 'Run input is malformed.'
+jq -e 'type == "object" and (.jobs | type == "array") and (.total_count | type == "number") and
+       .total_count == (.jobs | length) and .total_count > 0' "$jobs_file" >/dev/null ||
+    fail 'Jobs input is malformed.'
+
+classification_line="$(grep -F 'CI classification:' "$classification_file" | tail -n 1 || true)"
+plan_json='null'
+if [[ -n "$classification_line" ]]; then
+    classification="${classification_line#*CI classification: }"
+    declare -A plan=()
+    while IFS= read -r token; do
+        key="${token%%=*}"
+        value="${token#*=}"
+        case "$key" in
+            mode|deployment|deployment_catalog|deployment_shards|deployment_installer|complete|shared|cameraagent|logichost|combined|delivery|paths)
+                plan["$key"]="$value"
+                ;;
+        esac
+    done < <(tr ' ' '\n' <<< "$classification")
+    if [[ -n "${plan[mode]:-}" ]]; then
+        plan_json="$(jq -n \
+            --arg mode "${plan[mode]}" \
+            --arg deployment "${plan[deployment]:-unknown}" \
+            --arg deployment_catalog "${plan[deployment_catalog]:-unknown}" \
+            --arg deployment_shards "${plan[deployment_shards]:-unknown}" \
+            --arg deployment_installer "${plan[deployment_installer]:-unknown}" \
+            --arg complete "${plan[complete]:-unknown}" \
+            --arg shared "${plan[shared]:-unknown}" \
+            --arg cameraagent "${plan[cameraagent]:-unknown}" \
+            --arg logichost "${plan[logichost]:-unknown}" \
+            --arg combined "${plan[combined]:-unknown}" \
+            --arg delivery "${plan[delivery]:-unknown}" \
+            --arg paths "${plan[paths]:-unknown}" \
+            '{mode:$mode,deployment:$deployment,deploymentCatalog:$deployment_catalog,
+              deploymentShards:$deployment_shards,deploymentInstaller:$deployment_installer,
+              complete:$complete,shared:$shared,
+              cameraagent:$cameraagent,logichost:$logichost,combined:$combined,
+              delivery:$delivery,pathCount:(if ($paths|test("^[0-9]+$")) then ($paths|tonumber) else null end)}')"
+    fi
+fi
+
+# Display-name DAG from .github/workflows/ci.yml. This is intentionally explicit:
+# an unknown job is still reported, but no scheduling gap is invented for it.
+dependencies='{
+  "Catalog Contracts":["Change Classification"],
+  "Quality":["Change Classification"],
+  "Deployment Contracts":["Change Classification","Catalog Contracts"],
+  "Build":["Change Classification"],
+  "Unit Tests":["Change Classification","Catalog Contracts"],
+  "Integration Tests":["Change Classification"],
+  "Architecture & Publish":["Change Classification"],
+  "CameraAgent Migrations":["Change Classification"],
+  "LogicHost Migrations":["Change Classification"],
+  "Coverage Policy":["Change Classification"],
+  "Shared Libraries":["Change Classification"],
+  "CameraAgent Component":["Change Classification"],
+  "LogicHost Component":["Change Classification"],
+  "Combined Protocol & Integration":["Change Classification"],
+  "Delivery Component":["Change Classification","Catalog Contracts"],
+  "Coverage":["Change Classification","Unit Tests","Integration Tests","Architecture & Publish"],
+  "Coverage Badges":["Coverage"],
+  "Required CI":["Change Classification","Quality","Catalog Contracts","Deployment Contracts","Build","Architecture & Publish","Coverage Policy","CameraAgent Migrations","LogicHost Migrations","Unit Tests","Integration Tests","Coverage","Shared Libraries","CameraAgent Component","LogicHost Component","Combined Protocol & Integration","Delivery Component"]
+}'
+
+report="$(jq -n \
+    --slurpfile run "$run_file" \
+    --slurpfile jobPayload "$jobs_file" \
+    --argjson plan "$plan_json" \
+    --arg source "$(if [[ -n "$fixture" ]]; then printf fixture; else printf github-actions-read-only; fi)" \
+    --argjson dependencies "$dependencies" '
+  def epoch($value):
+    if ($value == null or $value == "" or $value == "0001-01-01T00:00:00Z") then null
+    else try ($value | fromdateiso8601) catch null end;
+  def duration($start; $end):
+    (epoch($start)) as $s | (epoch($end)) as $e |
+    if ($s == null or $e == null or $e < $s) then null else ($e - $s) end;
+  def valid_job($job):
+    ($job.status == "completed" and $job.conclusion != "skipped" and
+     duration($job.started_at; $job.completed_at) != null);
+  def terminal_job($job):
+    ($job.status == "completed" and epoch($job.completed_at) != null);
+  def job_by_name($jobs; $name): [$jobs[] | select(.name == $name)][0] // null;
+  ($run[0]) as $r | ($jobPayload[0].jobs) as $jobs |
+  ([ $jobs[] | select(.name == "Change Classification") ][0] // null) as $changes |
+  ([ $jobs[] | select(.name == "Required CI") ][0] // null) as $required |
+  (($changes != null and $changes.conclusion == "skipped") and
+   ($required != null and $required.conclusion == "failure")) as $draftBlocked |
+  ([ $jobs[] |
+      . as $job |
+      ($dependencies[$job.name] // null) as $needs |
+      (if $needs == null then [] else
+         [$needs[] as $need | job_by_name($jobs; $need) |
+           select(. != null and terminal_job(.))]
+       end) as $readyDeps |
+      (if ($needs == null or ($readyDeps|length) != ($needs|length) or epoch($job.started_at) == null)
+       then null
+       else ([ $readyDeps[].completed_at | epoch(.) ] | max) as $ready |
+         if $ready == null then null else ([epoch($job.started_at) - $ready, 0] | max) end
+       end) as $gap |
+      {id,name,status,conclusion,startedAt:.started_at,completedAt:.completed_at,
+       durationSeconds:duration(.started_at;.completed_at),
+       dependencies:$needs,dependencyReadyToStartSeconds:$gap,url:.html_url}
+   ]) as $jobRows |
+  ([ $jobRows[] | select(.durationSeconds != null) | .durationSeconds ] | add // 0) as $sum |
+  ([ $jobRows[] | select(.completedAt != null and .completedAt != "0001-01-01T00:00:00Z") ] |
+    sort_by(.completedAt) | last // null) as $lastJob |
+  def controlling($name; $seen):
+    if ($name == null or ($seen|index($name)) != null) then []
+    else (job_by_name($jobs; $name)) as $job |
+      if $job == null then []
+      else ($dependencies[$name] // []) as $needs |
+        ([ $needs[] as $need | job_by_name($jobs; $need) |
+           select(. != null and valid_job(.)) ] | sort_by(.completed_at) | last // null) as $parent |
+        (if $parent == null then [] else controlling($parent.name; $seen + [$name]) end) + [$name]
+      end
+    end;
+  {
+    schemaVersion:"hvo-ci-timing-report-v1",
+    generatedFrom:$source,
+    run:{repository:(($r.repository.full_name // null)),id:$r.id,number:($r.run_number // null),
+         attempt:$r.run_attempt,event:$r.event,name:($r.name // null),workflowPath:($r.path // null),
+         headSha:$r.head_sha,status:$r.status,conclusion:$r.conclusion,
+         createdAt:$r.created_at,updatedAt:$r.updated_at,url:$r.html_url,
+         elapsedSeconds:duration($r.created_at;$r.updated_at)},
+    classification:(if $draftBlocked then {kind:"draft-blocked",plan:null}
+                    elif $plan == null then {kind:"unknown",plan:null}
+                    elif $plan.mode == "reduced" then {kind:"reduced",plan:$plan}
+                    elif $plan.complete == "true" then {kind:"complete",plan:$plan}
+                    else {kind:"component",plan:$plan} end),
+    timing:{sumNonSkippedJobDurationSeconds:$sum,
+            note:"Job-duration sum includes overlap and is not CPU time or billed minutes.",
+            observedControllingPath:(if $lastJob == null then [] else controlling($lastJob.name; []) end)},
+    jobs:$jobRows
+  }')"
+
+if [[ "$summary" == true ]]; then
+    jq -r '
+      def display: if . == null then "unknown" else
+        ((. / 60 | floor | tostring) + "m" + ((. % 60) | tostring) + "s") end;
+      "CI run \(.run.id) attempt \(.run.attempt): \(.classification.kind) / \(.run.conclusion // .run.status)",
+      "Head: \(.run.headSha)",
+      "Workflow elapsed: \(.run.elapsedSeconds | display)",
+      "Sum of non-skipped job durations: \(.timing.sumNonSkippedJobDurationSeconds | display) (includes overlap; not billed minutes)",
+      "Observed controlling path: \(if (.timing.observedControllingPath|length)==0 then "unknown" else (.timing.observedControllingPath|join(" -> ")) end)",
+      "Scheduling waits:",
+      (.jobs[] | select(.dependencyReadyToStartSeconds != null and .dependencyReadyToStartSeconds > 0) |
+       "  \(.name): \(.dependencyReadyToStartSeconds | display)")
+    ' <<< "$report"
+else
+    jq -S . <<< "$report"
+fi
