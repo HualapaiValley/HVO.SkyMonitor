@@ -3361,7 +3361,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
     /// recorded source when the manifest declares no producing step.
     /// </summary>
     private static string DescribeProducer(string schemaVersion, string? producerStepId, string sourceId)
-        => $"{schemaVersion}:{(string.IsNullOrWhiteSpace(producerStepId) ? sourceId : producerStepId)}";
+        => string.IsNullOrWhiteSpace(producerStepId)
+            ? $"{schemaVersion}:source:{sourceId}"
+            : $"{schemaVersion}:step:{producerStepId}";
 
     private static IEnumerable<ManifestObservation> ReadManifests(string root, string agentId = ExpectedAgentId)
     {
