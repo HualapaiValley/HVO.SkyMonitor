@@ -114,6 +114,13 @@ public sealed class PlaywrightChromiumDiagnosisTests
             + "  - <process did exit: exitCode=127, signal=null>"));
 
     [TestMethod]
+    public void AValidLookingTailAfterAnOrdinaryPhraseIsNotClaimedAsAMissingLibrary()
+        => Assert.IsNull(PlaywrightChromium.Describe(
+            "plugin finished loading shared libraries: libnss3.so: "
+            + "cannot open shared object file: No such file or directory\n"
+            + "  - <process did exit: exitCode=127, signal=null>"));
+
+    [TestMethod]
     public void TheLoaderSignatureWithoutItsExitStatusIsNotClaimedAsAMissingLibrary()
         => Assert.IsNull(PlaywrightChromium.Describe(
             "Target page, context or browser has been closed\n"
