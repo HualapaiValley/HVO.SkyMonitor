@@ -128,9 +128,23 @@ public sealed class PlaywrightChromiumDiagnosisTests
             + "  - <process did exit: exitCode=1, signal=null>"));
 
     [TestMethod]
+    public void ExitCodeWith127AsOnlyAPrefixIsNotClaimedAsAMissingLibrary()
+        => Assert.IsNull(PlaywrightChromium.Describe(
+            "chrome-headless-shell: error while loading shared libraries: libnss3.so: "
+            + "cannot open shared object file: No such file or directory\n"
+            + "  - <process did exit: exitCode=1270, signal=null>"));
+
+    [TestMethod]
     public void TheSignatureAndExitStatusWithoutTheMissingFileClauseAreNotClaimedAsAMissingLibrary()
         => Assert.IsNull(PlaywrightChromium.Describe(
             "chrome-headless-shell: error while loading shared libraries: bad\n"
+            + "  - <process did exit: exitCode=127, signal=null>"));
+
+    [TestMethod]
+    public void AnArbitraryMissingFileReasonIsNotClaimedAsAMissingLibrary()
+        => Assert.IsNull(PlaywrightChromium.Describe(
+            "chrome-headless-shell: error while loading shared libraries: libnss3.so: "
+            + "cannot open shared object file: arbitrary\n"
             + "  - <process did exit: exitCode=127, signal=null>"));
 
     [TestMethod]

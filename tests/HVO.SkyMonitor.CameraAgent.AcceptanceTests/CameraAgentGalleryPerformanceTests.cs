@@ -1108,7 +1108,7 @@ public sealed class CameraAgentGalleryPerformanceTests
     private static async Task<IBrowser> LaunchOrWithdrawStaleEvidenceAsync(IPlaywright playwright)
         => await RunOrWithdrawStaleEvidenceAsync(
             playwright.LaunchOrInconclusiveAsync,
-            WithdrawStaleEvidence).ConfigureAwait(false);
+            () => WithdrawStaleEvidence(GetRepositoryRoot())).ConfigureAwait(false);
 
     internal static async Task<T> RunOrWithdrawStaleEvidenceAsync<T>(
         Func<Task<T>> run,
@@ -1132,12 +1132,14 @@ public sealed class CameraAgentGalleryPerformanceTests
         "Design",
         "CA1031:Do not catch general exception types",
         Justification = "A browser that cannot start is still Inconclusive; no failure of this best-effort withdrawal may convert that into a test failure.")]
-    private static void WithdrawStaleEvidence()
+    internal static void WithdrawStaleEvidence(string repositoryRoot)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(repositoryRoot);
+
         try
         {
             File.Delete(Path.Combine(
-                GetRepositoryRoot(), "TestResults", "issue-441", ReadEvidenceLabel(), EvidenceFileName));
+                repositoryRoot, "TestResults", "issue-441", ReadEvidenceLabel(), EvidenceFileName));
         }
         catch (Exception exception)
         {

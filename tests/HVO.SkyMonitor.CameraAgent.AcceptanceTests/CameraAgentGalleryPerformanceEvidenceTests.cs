@@ -10,18 +10,22 @@ public sealed class CameraAgentGalleryPerformanceEvidenceTests
     [TestMethod]
     public async Task InconclusiveLaunchWithdrawsOnlySelectedEvidenceAndRethrows()
     {
-        var directory = Directory.CreateTempSubdirectory("hvo-gallery-evidence-");
+        var root = Directory.CreateTempSubdirectory("hvo-gallery-evidence-");
+        var previousLabel = Environment.GetEnvironmentVariable("HVO_GALLERY_EVIDENCE_LABEL");
         try
         {
-            var selected = Path.Combine(directory.FullName, "selected.json");
-            var opposite = Path.Combine(directory.FullName, "opposite.json");
+            Environment.SetEnvironmentVariable("HVO_GALLERY_EVIDENCE_LABEL", "baseline");
+            var baseline = Directory.CreateDirectory(Path.Combine(root.FullName, "TestResults", "issue-441", "baseline"));
+            var candidate = Directory.CreateDirectory(Path.Combine(root.FullName, "TestResults", "issue-441", "candidate"));
+            var selected = Path.Combine(baseline.FullName, "cameraagent-gallery-performance.json");
+            var opposite = Path.Combine(candidate.FullName, "cameraagent-gallery-performance.json");
             await File.WriteAllTextAsync(selected, "selected").ConfigureAwait(false);
             await File.WriteAllTextAsync(opposite, "opposite").ConfigureAwait(false);
 
             var failure = await Assert.ThrowsExactlyAsync<AssertInconclusiveException>(() =>
                 CameraAgentGalleryPerformanceTests.RunOrWithdrawStaleEvidenceAsync<object>(
                     static () => throw new AssertInconclusiveException("browser unavailable"),
-                    () => File.Delete(selected))).ConfigureAwait(false);
+                    () => CameraAgentGalleryPerformanceTests.WithdrawStaleEvidence(root.FullName))).ConfigureAwait(false);
 
             StringAssert.Contains(failure.Message, "browser unavailable", StringComparison.Ordinal);
             Assert.IsFalse(File.Exists(selected));
@@ -29,7 +33,8 @@ public sealed class CameraAgentGalleryPerformanceEvidenceTests
         }
         finally
         {
-            directory.Delete(recursive: true);
+            Environment.SetEnvironmentVariable("HVO_GALLERY_EVIDENCE_LABEL", previousLabel);
+            root.Delete(recursive: true);
         }
     }
 

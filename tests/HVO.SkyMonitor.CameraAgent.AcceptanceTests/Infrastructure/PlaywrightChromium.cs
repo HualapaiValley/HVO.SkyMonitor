@@ -76,10 +76,12 @@ internal static class PlaywrightChromium
     /// Required alongside the signature so that a child which merely logged the words, and died of
     /// something else, cannot be presented as an environment problem.
     /// </summary>
-    private const string LoaderExitStatusMarker = "<process did exit: exitCode=127";
+    private const string LoaderExitStatusMarker = "<process did exit: exitCode=127,";
 
     /// <summary>Matches Playwright's own refusal when the browser has never been downloaded.</summary>
     private const string MissingExecutableMarker = "executable doesn't exist at ";
+
+    private const string LoaderMissingFileReason = "No such file or directory";
 
     /// <summary>
     /// The ceiling on a single launch. Playwright's default did not fire against a child that
@@ -208,7 +210,10 @@ internal static class PlaywrightChromium
             // before converting the failure to Inconclusive.
             var missingFileStart = loaderError.IndexOf(LoaderMissingFileMarker, StringComparison.Ordinal);
             return missingFileStart > 0
-                && missingFileStart + LoaderMissingFileMarker.Length < loaderError.Length;
+                && string.Equals(
+                    loaderError[(missingFileStart + LoaderMissingFileMarker.Length)..],
+                    LoaderMissingFileReason,
+                    StringComparison.Ordinal);
         }
 
         return false;
