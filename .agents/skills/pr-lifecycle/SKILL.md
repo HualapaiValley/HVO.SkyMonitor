@@ -41,8 +41,10 @@ reviewed head without explicit operator approval.
    tier-appropriate candidate gate before the first push. Record the commands
    and the commit or worktree fingerprint they validate.
    Select the candidate gate set by running `scripts/ci:classify` on the review
-   range whenever it reports `complete=true`, not by reading the diff, and
-   record which selector produced the set. Until the ready transition the
+   range whenever it classifies the range successfully, not by reading the diff,
+   and record which selector produced the set. `complete=false` is authoritative
+   for component-scoped changes; it does not permit manual gate selection. Until
+   the ready transition the
    classifier is the only selector that is not bounded by the diff, because the
    `changes` job is gated on `draft == false`. A ledger that lists gate results
    without naming the selector cannot distinguish a gate that passed from one

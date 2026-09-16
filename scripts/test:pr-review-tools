@@ -13,9 +13,18 @@ fail() { printf '%s\n' "$1" >&2; exit 1; }
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 request_tool="$repo_root/scripts/pr:review-request"
 dispatch_tool="$repo_root/scripts/pr:dispatch-review"
+skill="$repo_root/.agents/skills/pr-lifecycle/SKILL.md"
 work_root="$(mktemp -d)"
 trap 'rm -rf "$work_root"' EXIT
 mkdir -p "$work_root/bin" "$work_root/logs"
+
+grep -Fq 'whenever it classifies the range successfully' "$skill" ||
+    fail 'The PR lifecycle skill does not treat every successful classifier result as authoritative.'
+grep -Fq '`complete=false` is authoritative' "$skill" ||
+    fail 'The PR lifecycle skill does not preserve component-scoped classifier authority.'
+if grep -Fq 'whenever it reports `complete=true`' "$skill"; then
+    fail 'The PR lifecycle skill still conditions classifier authority on complete=true.'
+fi
 
 cat > "$work_root/bin/gh" <<'EOF'
 #!/usr/bin/env bash
