@@ -68,6 +68,9 @@ internal static class PlaywrightChromium
     /// </summary>
     private const string LoaderFailureMarker = "error while loading shared libraries: ";
 
+    /// <summary>The loader's missing-file clause that follows the library name.</summary>
+    private const string LoaderMissingFileMarker = ": cannot open shared object file: ";
+
     /// <summary>
     /// The child exit status a loader failure produces, as Playwright reports it in the call log.
     /// Required alongside the signature so that a child which merely logged the words, and died of
@@ -200,9 +203,12 @@ internal static class PlaywrightChromium
             // with, so there is no prefix left to strip and no strip left to get wrong.
             loaderError = line[(signatureStart + LoaderFailureMarker.Length)..].Trim();
 
-            // A signature with nothing after it would produce a diagnosis quoting an empty string.
-            // Report nothing rather than something empty, and let the launch fail plainly.
-            return loaderError.Length > 0;
+            // The signature and exit status are still child-controlled text. Require the loader's
+            // complete missing-file shape, including a library name and its own missing-file clause,
+            // before converting the failure to Inconclusive.
+            var missingFileStart = loaderError.IndexOf(LoaderMissingFileMarker, StringComparison.Ordinal);
+            return missingFileStart > 0
+                && missingFileStart + LoaderMissingFileMarker.Length < loaderError.Length;
         }
 
         return false;

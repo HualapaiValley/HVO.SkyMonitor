@@ -121,6 +121,19 @@ public sealed class PlaywrightChromiumDiagnosisTests
             + "cannot open shared object file: No such file or directory"));
 
     [TestMethod]
+    public void TheCompleteLoaderSignatureWithTheWrongExitStatusIsNotClaimedAsAMissingLibrary()
+        => Assert.IsNull(PlaywrightChromium.Describe(
+            "chrome-headless-shell: error while loading shared libraries: libnss3.so: "
+            + "cannot open shared object file: No such file or directory\n"
+            + "  - <process did exit: exitCode=1, signal=null>"));
+
+    [TestMethod]
+    public void TheSignatureAndExitStatusWithoutTheMissingFileClauseAreNotClaimedAsAMissingLibrary()
+        => Assert.IsNull(PlaywrightChromium.Describe(
+            "chrome-headless-shell: error while loading shared libraries: bad\n"
+            + "  - <process did exit: exitCode=127, signal=null>"));
+
+    [TestMethod]
     public void AMissingExecutableIsReportedAsAnUninstalledBrowserWithTheInstallCommand()
     {
         var diagnosis = PlaywrightChromium.Describe(MissingExecutableFailure);

@@ -1106,14 +1106,24 @@ public sealed class CameraAgentGalleryPerformanceTests
     /// </para>
     /// </remarks>
     private static async Task<IBrowser> LaunchOrWithdrawStaleEvidenceAsync(IPlaywright playwright)
+        => await RunOrWithdrawStaleEvidenceAsync(
+            playwright.LaunchOrInconclusiveAsync,
+            WithdrawStaleEvidence).ConfigureAwait(false);
+
+    internal static async Task<T> RunOrWithdrawStaleEvidenceAsync<T>(
+        Func<Task<T>> run,
+        Action withdraw)
     {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(withdraw);
+
         try
         {
-            return await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+            return await run().ConfigureAwait(false);
         }
         catch (AssertInconclusiveException)
         {
-            WithdrawStaleEvidence();
+            withdraw();
             throw;
         }
     }
