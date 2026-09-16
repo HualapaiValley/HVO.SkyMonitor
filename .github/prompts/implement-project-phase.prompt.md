@@ -25,7 +25,7 @@ Before editing, read:
 9. [The PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md)
 10. [The relevant agent prompt](../../docs/planning/agent-prompts.md)
 
-Confirm the issue is open, milestone-assigned, and has defined acceptance and
+Confirm the issue is open, has the correct milestone when one is assigned, and has defined acceptance and
 performance evidence and dependencies are ready. Inspect current claims, assign
 yourself on GitHub if possible, apply `workflow:in-progress`, and post a claim
 comment naming a unique person/agent identity, branch/worktree, scope, and next
