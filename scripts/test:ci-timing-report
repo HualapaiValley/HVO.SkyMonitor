@@ -4,8 +4,19 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tool="$repo_root/scripts/ci:timing-report"
 fixtures="$repo_root/tests/fixtures/ci-timing-report"
+workflow="$repo_root/.github/workflows/ci.yml"
 
 fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+for contract in \
+    '    needs: changes' \
+    '    needs: [changes, catalog-contracts]' \
+    '    needs: [changes, unit, integration, architecture]' \
+    '    needs: coverage' \
+    '    needs: [changes, quality, catalog-contracts, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, migrations-logichost, unit, integration, coverage, shared-libraries, cameraagent-component, logichost-component, combined-integration, delivery-component]'; do
+    grep -Fqx "$contract" "$workflow" ||
+        fail "CI workflow dependency shape changed; update ci:timing-report and its fixtures: $contract"
+done
 
 for fixture in pr-845 pr-826 pr-827 pr-846 draft component canceled unknown; do
     actual="$("$tool" --fixture "$fixtures/$fixture")"

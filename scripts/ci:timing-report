@@ -124,6 +124,7 @@ report="$(jq -n \
     --slurpfile run "$run_file" \
     --slurpfile jobPayload "$jobs_file" \
     --argjson plan "$plan_json" \
+    --arg source "$(if [[ -n "$fixture" ]]; then printf fixture; else printf github-actions-read-only; fi)" \
     --argjson dependencies "$dependencies" '
   def epoch($value):
     if ($value == null or $value == "" or $value == "0001-01-01T00:00:00Z") then null
@@ -171,7 +172,7 @@ report="$(jq -n \
     end;
   {
     schemaVersion:"hvo-ci-timing-report-v1",
-    generatedFrom:"github-actions-read-only",
+    generatedFrom:$source,
     run:{repository:(($r.repository.full_name // null)),id:$r.id,number:($r.run_number // null),
          attempt:$r.run_attempt,event:$r.event,name:($r.name // null),workflowPath:($r.path // null),
          headSha:$r.head_sha,status:$r.status,conclusion:$r.conclusion,
