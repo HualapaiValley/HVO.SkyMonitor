@@ -19,10 +19,11 @@ Built and usable:
 
 Not built, and deliberately so: the real aggregate content. The machinery that
 records a generation is complete and gated, but the campaign it will record must be
-produced once, on the unchanged final head, after every #535 blocker closes. #719
-governs that run, not this code. The tooling exists so that the generation step has
-something to run against and somewhere to put the result, not so that a real
-generation can be produced early.
+produced once, on the unchanged final head. PR #806 / issue #719 delivered the
+required InProcess and LocalRunner W6 replay-profile producer. Issue #535 now owns
+the one-time campaign, final validation, and generation publication. The tooling
+exists so that the generation step has something to run against and somewhere to
+put the result, not so that a real generation can be produced early.
 
 ## Running it
 
