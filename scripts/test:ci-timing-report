@@ -10,7 +10,7 @@ fail() { printf '%s\n' "$1" >&2; exit 1; }
 for fixture in pr-845 pr-826 pr-827 pr-846 draft component canceled unknown; do
     actual="$("$tool" --fixture "$fixtures/$fixture")"
     jq -e . <<< "$actual" >/dev/null || fail "$fixture did not emit JSON."
-    diff -u "$fixtures/$fixture/expected.json" <(jq -S . <<< "$actual") ||
+    diff -u "$fixtures/$fixture/expected.json" <(jq -cS . <<< "$actual") ||
         fail "$fixture report changed."
 done
 
