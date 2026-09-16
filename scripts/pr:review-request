@@ -175,12 +175,24 @@ request_block_from_body() {
         }
         END {
             for (i = 1; i <= NR; i++) {
-                if (lines[i] ~ /^```+[[:alnum:]_-]*[[:space:]]*$/) {
-                    match(lines[i], /^`+/)
+                fence_line = lines[i]
+                sub(/^   /, "", fence_line)
+                sub(/^  /, "", fence_line)
+                sub(/^ /, "", fence_line)
+                fence_char = substr(fence_line, 1, 1)
+                if (fence_char == "`") match(fence_line, /^`+/)
+                else if (fence_char == "~") match(fence_line, /^~+/)
+                else RLENGTH = 0
+                if (RLENGTH >= 3) {
+                    fence_suffix = substr(fence_line, RLENGTH + 1)
                     if (!content_fence) {
                         content_fence = RLENGTH
-                    } else if (RLENGTH >= content_fence) {
+                        content_fence_char = fence_char
+                    } else if (fence_char == content_fence_char &&
+                               RLENGTH >= content_fence &&
+                               fence_suffix ~ /^[[:space:]]*$/) {
                         content_fence = 0
+                        content_fence_char = ""
                     }
                     continue
                 }
