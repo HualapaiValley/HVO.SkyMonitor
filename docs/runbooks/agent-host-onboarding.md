@@ -19,6 +19,15 @@ Do this before any agent session starts. None of it requires the agent.
 
 - **Toolchain.** Install the SDK pinned in `global.json`. Confirm
   `dotnet --version` reports it rather than a preview or a newer band.
+- **Shell floor and lock utility, on macOS.** The gate scripts need Bash 5 and
+  `flock`, and macOS ships neither: its system Bash is 3.2 and there is no
+  `flock` at all. Run `brew install bash` and `brew install flock`, then invoke
+  the Homebrew Bash explicitly. Skipping this does not present as a missing tool
+  when the gate runs, which is why it belongs here rather than being discovered.
+  `scripts/ci:shell-syntax` refuses to run under 3.2 rather than reporting a pass
+  it did not perform, and `scripts/test:pr-review-tools` exits 1 saying `flock is
+  required for serialized review dispatch`, which reads as a guard failure on the
+  change under test. `AGENTS.md` carries the reasoning for both.
 - **Git identity.** Set `user.name` and `user.email`. Every commit an agent
   writes is attributed to the operator account, so the `Claude-Session` commit
   trailer is what identifies the authoring session. The GitHub author field

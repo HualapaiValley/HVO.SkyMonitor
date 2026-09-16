@@ -102,9 +102,33 @@ grep -Fq "Requested model and reasoning effort: $model / $effort" "$request_file
     fail "Request model/effort does not match launcher configuration."
 
 request_body="$(<"$request_file")"
+# The fence is chosen to be longer than anything the request contains, and is not
+# assumed to be three backticks. `pr:review-request` reads this request back out of
+# this block in the round that follows, and a request interpolates the caller's
+# acceptance, lens, test and evidence files, which routinely carry pasted command
+# output inside fenced blocks of their own. A three-backtick opener is closed by the
+# first fence inside that interpolated content, so the request read back is truncated
+# at that point while still carrying enough fields to look complete. Opening longer than the content is what fenced-block nesting is for,
+# and it makes the truncation structurally impossible rather than merely reported.
+fence="$(awk '
+    /^`/ { match($0, /^`+/); if (RLENGTH > longest) longest = RLENGTH }
+    END {
+        n = longest + 1
+        if (n < 3) n = 3
+        s = ""
+        while (length(s) < n) s = s "`"
+        print s
+    }
+' <<<"$request_body")"
+# The backstop for the case the rule above cannot cover. It fires only if the request
+# already contains a fence longer than any this can open with, which no assembled
+# request has ever approached; a refusal that never fires is the sign that it is in
+# the right place rather than standing in front of the normal case.
+(( ${#fence} <= 32 )) ||
+    fail "The request contains a code fence of ${#fence} backticks or more, so it cannot be quoted in a comment this tool can read back."
 ledger_body="$(printf '%s\n\nCommand: %s\nTarget participant: %s\n\n%s\n%s\n%s\n\n%s' \
     '## Review request — generated dispatch' "$command_id" "$reviewer_id" \
-    '```text' "$request_body" '```' \
+    "${fence}text" "$request_body" "$fence" \
     'The dispatcher must receive this comment ID before launching.')"
 
 case "$runner" in
