@@ -198,9 +198,10 @@ requirements:
 
 PR #542 delivered the runner implementation, architecture probes, lifecycle and
 fault evidence, and a supplemental LocalRunner W1/W2/W6-sized single-recipe
-campaign. It did not run the canonical 14-node W6 graph under LocalRunner; #535
-owns that remaining release-evidence profile alongside the canonical InProcess
-control. This evidence handoff does not reopen the delivered #425 implementation.
+campaign. PR #806 subsequently delivered the canonical 14-node W6 archived-replay
+producer for both InProcess and LocalRunner. Issue #535 consumes those records in
+the final unchanged-head release-readiness generation. This evidence handoff does
+not reopen the delivered #425 implementation.
 
 The delivered LogicHost self-hosted processing runner protocol
 (`processing-runner-v1`, #428) retains these normative requirements:

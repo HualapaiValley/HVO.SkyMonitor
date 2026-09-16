@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-09-06
+Status date: 2026-09-16
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -47,14 +47,12 @@ an unrelated failure in a broad validation plan is not enough.
 
 | ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
 | --- | --- | --- | --- | --- |
-| `RM-017` | Standalone CameraAgent product completion | Close the remaining edge durability, lifecycle, release-integrity, test-reliability, multi-architecture, and final standalone evidence gaps so CameraAgent is independently installable, operable, recoverable, observable, and releasable. | [Epic #513](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/513); [Standalone CameraAgent Product Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/2) | This is the only active implementation initiative. The delivered product foundation includes #507, #514-#517, #532-#534, #536-#537, #563-#564, #597-#599, #602-#603, #608, and #614. Epic #513 owns the two CameraAgent-only lane orders and native subissues; #535 is formally blocked by every accepted open milestone prerequisite. LogicHost product and LogicHost-only test work are excluded. Existing optional cross-host behavior remains compatibility evidence, never a CameraAgent correctness dependency. |
+| `RM-017` | Standalone CameraAgent product completion | Produce and verify the final unchanged-head standalone acceptance generation now that all accepted implementation children are complete. | [Epic #513](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/513); [Standalone CameraAgent Product Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/2) | This is the only active initiative. All accepted implementation children are closed; #535 owns the remaining real campaign, final validation, immutable generation, and exact-head release evidence. PR #829 delivered the validator and recorder machinery but not the acceptance-ready generation. LogicHost product and LogicHost-only test work remain excluded. |
 
-Both default implementation slots remain inside `RM-017`: one follows release
-integrity and distribution, and one follows runtime stability and focused test
-reliability. If one lane empties, its slot takes the next ready CameraAgent item
-from the other lane or helps prepare #535; it does not advance to LogicHost.
-Live order, claims, delivery state, and blockers stay in epic #513 rather than
-being copied into this portfolio summary.
+No ordinary implementation child remains in `RM-017`. Shared capacity may support
+the one-time #535 campaign, evidence review, and exact-head finalization, but it
+must not advance to LogicHost until #535, epic #513, and milestone 2 close. Live
+campaign state stays in #535 and #513 rather than being copied here.
 
 ## Next
 
@@ -104,6 +102,13 @@ Deferred validation follow-ups [#252](https://github.com/RoySalisbury/HVO.SkyMon
 and [#262](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/262)
 inherit `RM-001`; they validate delivered boundaries and are not separate
 portfolio initiatives.
+
+Deferred celestial-fidelity epic [#520](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/520)
+and children [#518](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/518) and
+[#521](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/521)-[#526](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/526)
+also inherit delivered `RM-001`. They are retained product improvements, not
+approved automatic-start work, and must not interrupt Current `RM-017` or the
+dependency-ordered `RM-005`/`RM-016` queue.
 
 ## Delivered
 
