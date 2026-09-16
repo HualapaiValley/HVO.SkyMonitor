@@ -170,15 +170,7 @@ public sealed class CameraAgentGalleryPerformanceTests
         string? sqliteVersion = null;
         var evidenceLabel = ReadEvidenceLabel();
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await LaunchOrWithdrawStaleEvidenceAsync(playwright).ConfigureAwait(false);
 
         foreach (var captureCount in CaptureCounts)
         {
@@ -1093,6 +1085,73 @@ public sealed class CameraAgentGalleryPerformanceTests
         return fields.Length > 1 && long.TryParse(fields[1], out var pages)
             ? checked(pages * Environment.SystemPageSize)
             : 0;
+    }
+
+    /// <summary>
+    /// Starts the pinned browser for this run, and if the launch is refused as an environment
+    /// problem, withdraws the previous run's evidence document before the Inconclusive unwinds.
+    /// </summary>
+    /// <remarks>
+    /// Without this, a refusal at the launch returns before the writer at the end of the method and
+    /// leaves <c>cameraagent-gallery-performance.json</c> from an earlier admissible run sitting in
+    /// the output directory, where it reads as this run's result. That is the same hazard the
+    /// refusal path already guards against, and its comment there states the reason: the evidence
+    /// document is the file that gets hashed, published and read, while nothing yet consumes the
+    /// refusal, and the runner clears only its own TRX under a different root.
+    /// <para>
+    /// Withdrawing is all this does. It does not synthesise a refusal document, because a run that
+    /// never started a browser has no p95, no scenario and no missed bounds to record, and the
+    /// refusal schema is about an unattributable miss rather than an absent browser. Inventing
+    /// values to fill that shape would be the defect this pull request exists to remove.
+    /// </para>
+    /// </remarks>
+    private static async Task<IBrowser> LaunchOrWithdrawStaleEvidenceAsync(IPlaywright playwright)
+        => await RunOrWithdrawStaleEvidenceAsync(
+            playwright.LaunchOrInconclusiveAsync,
+            () => WithdrawStaleEvidence(GetRepositoryRoot())).ConfigureAwait(false);
+
+    internal static async Task<T> RunOrWithdrawStaleEvidenceAsync<T>(
+        Func<Task<T>> run,
+        Action withdraw)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(withdraw);
+
+        try
+        {
+            return await run().ConfigureAwait(false);
+        }
+        catch (AssertInconclusiveException)
+        {
+            withdraw();
+            throw;
+        }
+    }
+
+    [SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "A browser that cannot start is still Inconclusive; no failure of this best-effort withdrawal may convert that into a test failure.")]
+    internal static void WithdrawStaleEvidence(string repositoryRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(repositoryRoot);
+
+        try
+        {
+            File.Delete(Path.Combine(
+                repositoryRoot, "TestResults", "issue-441", ReadEvidenceLabel(), EvidenceFileName));
+        }
+        catch (Exception exception)
+        {
+            // Total for the same reason the refusal writer's catch is total: GetRepositoryRoot throws
+            // InvalidOperationException and the path helpers throw several more, and any of them
+            // escaping here would convert a correctly refused run into a hard failure. Announced
+            // rather than swallowed silently, because a stale document that survives is exactly the
+            // condition an operator needs told.
+            Console.Error.WriteLine(
+                $"Previous evidence could not be withdrawn ({exception.GetType().Name}: {exception.Message}). "
+                + "A document from an earlier run may remain and must not be read as this run's result.");
+        }
     }
 
     private static string GetRepositoryRoot()

@@ -29,11 +29,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task FirstOwnerLoginRequiresPasswordReplacementAndRevokesStaleSessionAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync(
             requireOwnerPasswordReplacement: true).ConfigureAwait(false);
@@ -48,10 +44,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 StringComparison.Ordinal);
         }
         await host.RestartWithoutPasswordAuthorityAsync().ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var replacingContext = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
@@ -169,18 +162,11 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task LocalOwnerRecoveryRevokesSessionsAndPreservesCaptureContinuityAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await host.RestartWithoutPasswordAuthorityAsync().ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var staleContext = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
@@ -345,17 +331,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task ObservatoryShellAndAccountPagesRemainLocalResponsiveAndKeyboardReachableAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
@@ -522,18 +501,11 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task OwnerOperationsGalleryAndResponsiveAcceptanceAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync(
             enableCentralIntegration: true).ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
 
         await AssertAnonymousAndNonOwnerAuthorizationAsync(browser, host.BaseAddress).ConfigureAwait(false);
 
@@ -582,17 +554,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task OwnerCurrentSkyResponsiveAcceptanceAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await AssertAnonymousAndNonOwnerAuthorizationAsync(browser, host.BaseAddress).ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -647,17 +612,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task OwnerArchivePresentationAcceptanceAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await AssertAnonymousAndNonOwnerAuthorizationAsync(browser, host.BaseAddress).ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -757,17 +715,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task OwnerArchiveCalendarProductsAndCandidatesAcceptanceAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
@@ -858,17 +809,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task OwnerCaptureDetailPresentationAcceptanceAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
@@ -1048,11 +992,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task CalibrationAcquisitionActivationAndRollbackAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync(
             useCalibrationLibrary: true).ConfigureAwait(false);
@@ -1085,10 +1025,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             "browser rollback target",
             CancellationToken.None).ConfigureAwait(false);
 
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = true
-        }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
@@ -1397,15 +1334,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task OwnerObserverCoordinateEditIsConfirmedAndKeyboardCancellableAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(
-            new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
@@ -1459,15 +1391,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task OwnerLocalAutomationSectionRefusesAnUnregisteredTaskTargetAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(
-            new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
@@ -1548,18 +1475,13 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task OwnerLocalAutomationDefinitionIsConfirmedRecordedAndKeyboardCancellableAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         // This test opts into one on-demand-capable environmental source so the closed registry publishes
         // a target and a definition can actually be recorded through the operator's own surface.
         await using var host = await CameraAgentKestrelFixture.CreateAsync(useEnvironmentalAcquisition: true)
             .ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(
-            new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
@@ -2061,14 +1983,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public async Task OwnerGraphEditorIsKeyboardOperableEndToEndAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        if (!File.Exists(playwright.Chromium.ExecutablePath))
-        {
-            Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
-        }
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
