@@ -938,7 +938,7 @@ grep -Fq 'ends before the request does' "$work_root/replayed-truncated.err" ||
 # acceptance-file example fenced before the request reaches its actual range field.
 # Exercise every extraction caller: replay, pinned prior request and discovered
 # prior request, with both correction and base-sync consumers for the latter two.
-for marker in prose anchored duplicate acceptance; do
+for marker in prose anchored duplicate acceptance mode; do
     {
         printf 'Quoted request field example follows:\n'
         case "$marker" in
@@ -947,6 +947,8 @@ for marker in prose anchored duplicate acceptance; do
             duplicate) grep '^Start acknowledgement:' "$work_root/initial.request" ;;
             acceptance) printf '%s\n' '```text' 'Exact review range: quoted example only' \
                 'Start acknowledgement: quoted example only' ;;
+            mode) printf '%s\n' '```text' 'Review mode: initial' \
+                'ordinary nested example text' ;;
         esac
         printf '%s\n' '```' 'example test output' '```'
     } > "$work_root/quoted-tests.txt"

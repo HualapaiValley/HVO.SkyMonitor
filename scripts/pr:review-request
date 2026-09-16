@@ -175,7 +175,16 @@ request_block_from_body() {
         }
         END {
             for (i = 1; i <= NR; i++) {
-                if (lines[i] ~ /^Review mode: (initial|correction|base-sync)$/) {
+                if (lines[i] ~ /^```+[[:alnum:]_-]*[[:space:]]*$/) {
+                    match(lines[i], /^`+/)
+                    if (!content_fence) {
+                        content_fence = RLENGTH
+                    } else if (RLENGTH >= content_fence) {
+                        content_fence = 0
+                    }
+                    continue
+                }
+                if (!content_fence && lines[i] ~ /^Review mode: (initial|correction|base-sync)$/) {
                     modes++
                     if (!first_mode) first_mode = i
                 }
