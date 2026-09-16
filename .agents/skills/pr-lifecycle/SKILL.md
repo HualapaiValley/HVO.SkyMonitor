@@ -14,8 +14,10 @@ PR state.
 
 ## Ownership and State
 
-The implementing agent owns the complete lifecycle unless the operator pauses
-it or reserves a decision:
+The individual issue/PR owner owns the complete lifecycle by default unless the
+operator pauses it or reserves a decision. Coordinator enrollment is not a
+prerequisite for implementation, review acquisition, finalization, or merge.
+Fleet coordination is an opt-in execution route, not the default ownership model:
 
 ```text
 local implementation
@@ -59,49 +61,80 @@ reviewed head without explicit operator approval.
 
 ## Review Request Contract
 
-Every review request must state:
+Every review request must state the following information, adapted to the
+reviewer's route. Human and independent one-shot agent reviews are first-class
+convergence evidence, not exceptions requiring fleet enrollment:
 
 ```text
 Review mode: initial | correction | base-sync
 Issue and PR:
-Dispatch command ID and target participant ID:
+Review request ID and reviewer identity:
+Dispatch command ID and target participant ID: (enrolled resumed-session route only)
 Acceptance criteria:
 Target base SHA: (the tip of the base branch read from the repository by
-  branch name; this is the range's left endpoint, not the base the PR
-  recorded when it was opened)
+  branch name; retained for staleness checks, not the initial range's left
+  endpoint, which is the computed merge base)
 Target base ref: (the remote and branch used to transport that tip, verified
   to contain it; transport only, never the source of the endpoint)
 PR-recorded base SHA: (baseRefOid; provenance only, never a range endpoint)
 PR merge-base SHA:
 Previous reviewed head SHA:
-Previous reviewed head selection: (the request comment this tool emitted for
-  the previous round, or a caller assertion marked as unverified; never the
+Previous reviewed head selection: (the previous round's durable request link,
+  or a caller assertion marked as unverified; never the
   previous reviewer's prose)
 Current head SHA:
 Exact review range:
 Correction rereview count: <N>/3
 Required capability lens:
 Requested capability profile: fast | standard | deep
-Primary provider:
-Fallback provider:
-Execution route: local agent | equivalent exact-range runner | optional PR bot
-Requested model and reasoning effort:
-Actual provider, model, and reasoning effort:
+Primary reviewer/provider:
+Fallback reviewer/provider:
+Execution route: human | independent one-shot agent | enrolled resumed-session agent | equivalent exact-range runner | optional PR bot
+Requested model and reasoning effort: (N/A for humans)
+Actual provider, model, and reasoning effort: (human identity; model/effort N/A for humans)
 Tests and failure modes to evaluate:
 Local evidence:
-Prior report selection: (the comment the dispatcher named as the previous
-  round's report)
+Prior report selection: (explicit link to the previous round's full report)
 Prior findings and dispositions:
 Prior-finding verification checklist (finding ID/link, expected disposition,
   and evidence location):
 Evidence pack:
-Expected output:
-Start acknowledgement: acknowledge on this PR within 15 minutes and identify
-  the execution route, provider, model, effort, and exact range.
+Expected output: (reviewer identity, request link/ID, exact reviewed range,
+  verdict, findings, and individual carried-finding dispositions)
+Start acknowledgement: use the agreed human window or 15 minutes for agents; identify
+  the reviewer identity, execution route, exact range, and actual agent
+  provider/model/effort or human model/effort N/A.
 ```
 
-Generate this block with `scripts/pr:review-request`; inspect it before launch.
-Dispatch it with `scripts/pr:dispatch-review`, which must receive the durable
+### Human and Independent One-Shot Routes
+
+The owner may record an equivalent request and the independent reviewer's report
+directly on the PR without fleet scripts, enrollment, participant leases, or a
+coordinator. Use a durable request ID/link and reviewer identity rather than
+inventing a fleet command or participant ID. An attributed report relayed by the
+owner must retain the reviewer's actual result and evidence, not the owner's
+self-review. Bind all endpoints to immutable Git SHAs and verify them against
+repository history; branch names alone are not review ranges.
+
+For correction and base-sync rounds, explicitly link the prior request and full
+report on this PR, verify the previous reviewed head from the request, and carry
+every prior finding into the checklist. An asserted endpoint remains unverified
+until checked. Do not infer the endpoint from reviewer prose or treat an empty
+summary as a clean prior report. The same range, risk-depth, sandbox, acquisition,
+finding-disposition, and finalization requirements apply to every route.
+
+### Enrolled Resumed-Session Script Route
+
+For this route, generate the request with `scripts/pr:review-request` and inspect
+it before launch. Its existing field names supply the equivalent contract above;
+the dispatch command/participant binding identifies the request and reviewer.
+Do not change generated fields to imply unsupported script modes.
+The existing `scripts/pr:dispatch-review` supports enrolled
+resumed Codex or Claude CLI sessions only; it has no human or unenrolled one-shot
+mode. Enrollment and the dispatch-specific fields and guards below are required
+only when using this route, not for all reviewers or PR owners.
+
+Dispatch with `scripts/pr:dispatch-review`, which must receive the durable
 request comment ID, hold the host-local participant/session dispatch lock, post
 a durable launch reservation, revalidate the current participant lease, and
 only then resume the same previously joined CLI session and append STARTED
@@ -174,24 +207,35 @@ previous round was clean. When the tool could not extract a checklist it says
 so in that field and points at the full report in the evidence pack; verify
 findings against the report itself, not against the summary.
 
-If a resumed CLI reports that its nested read-only sandbox cannot execute, mark
-the attempt `INCOMPLETE` and use an explicitly enrolled collaboration-agent or
-other provider route. Do not bypass the sandbox merely to make the review run;
+### Sandbox Requirements
+
+Agent reviews use a read-only sandbox regardless of enrollment or launch route.
+If a CLI reports that its read-only sandbox cannot execute, mark the attempt
+`INCOMPLETE` and use another supported independent review route, including a
+human or one-shot reviewer. Do not bypass the sandbox merely to make the review
+run;
 any intentionally unsandboxed route requires separately verified external
 isolation and an explicit ledger record.
 
 ## Review Execution and Agent Selection
 
-The canonical exact-range route is a coordinator-launched local review agent,
-or an equivalent runner that can inspect the requested immutable Git range.
-The dispatch configuration, not prose in a PR mention, binds the model and
-reasoning effort. A provider-side PR bot may provide an additional full audit of
+The owner obtains review from an independent human, an independent one-shot
+agent, an enrolled resumed-session agent, or an equivalent runner that can
+inspect the requested immutable Git range. The implementer cannot supply their
+own convergence review; an agent reviewer must be a separate review execution,
+not the implementing session asserting its own work is clean. For agents, the
+actual launch configuration, not prose in a PR mention, binds any supported
+model and reasoning-effort controls. A provider-side PR bot may provide an
+additional full audit of
 the current PR head, but it is not initial, correction, or base-sync convergence
 evidence unless its execution route demonstrably enforces the requested range
 and its report attests that range. Never rerun a bot merely to repair a
 range-less report when a local exact-range reviewer is available.
 
-Choose the capability profile before choosing a provider or model:
+Choose the capability profile before choosing a reviewer, provider, or model.
+The risk and depth criteria apply equally to humans; select a human with the
+relevant expertise and record model and effort as `N/A`. Model-capability and
+effort settings in the table apply only to agents:
 
 | Profile | Use when | Model capability | Reasoning effort |
 | --- | --- | --- | --- |
@@ -213,8 +257,8 @@ concurrency, durability, security, CI-control, or cross-boundary Tier B risk is
 stronger supported effort. Finalization does not create a review round when the
 fresh target SHA is unchanged as described below.
 
-At dispatch, map the profile to a model identifier that the current harness
-actually exposes. Current Codex documentation maps demanding work to `gpt-5.6`,
+For agent review, at dispatch map the profile to a model identifier that the
+current harness actually exposes. Current Codex documentation maps demanding work to `gpt-5.6`,
 balanced read-heavy work to `gpt-5.6-terra`, and narrow repeatable work to
 `gpt-5.6-luna`; use those identifiers or documented successors only where the
 launcher advertises them. A harness may expose a different provider-specific
@@ -226,11 +270,14 @@ only when that fixed capability satisfies the selected profile, and never claim
 that a requested model was enforced. Prefer the other provider when the
 required profile cannot be selected or verified.
 
-The current providers are Copilot and Codex. Provider is independent of
-capability profile: select for required capability first, availability second.
+Agent provider availability depends on the actual execution route; the enrolled
+dispatcher supports Codex and Claude, while other routes may expose other
+providers. Reviewer/provider is independent of capability profile: select for
+required capability first, availability second.
 Record requested profile, requested model/effort, execution route, and actual
-provider/model/effort in the append-only ledger. A missing actual value is
-`unknown`, not an inferred alias.
+provider/model/effort in the append-only ledger. For humans record identity and
+`N/A` model/effort. For agents a missing actual value is `unknown`, not an inferred
+alias or `N/A`; `provider-managed` is appropriate only when that is actually known.
 
 For a narrow test-only or docs-only Tier A/B correction with no carried
 material finding, the least-cost currently advertised standard-capable route
@@ -258,7 +305,7 @@ A completed correction rereview is acceptable only when its report identifies
 the exact requested range and returns the disposition of every item in the
 prior-finding checklist. A generic whole-PR approval or a clean result that
 does not provide that evidence is an incomplete response, not convergence.
-Ask the same provider to correct the report within the active acquisition
+Ask the same reviewer to correct the report within the active acquisition
 window; if it cannot, use the fallback/unavailability path without incrementing
 the correction-round count or changing the head.
 
@@ -276,13 +323,20 @@ than token cost alone.
 
 ## Bounded Review Acquisition
 
-1. Launch the primary local review session with the exact head, range,
-   capability profile, model, and effort. Require it to send the coordinator a
-   structured `STARTED` message before substantive review and post the same
-   acknowledgement on the PR when it can. The coordinator immediately relays
-   the start to the main conversation and starts a fifteen-minute acquisition
-   timer when dispatch is visible.
-2. A written PR acknowledgement is preferred. If the provider cannot post one,
+Human review uses an agreed availability window recorded on the PR, not the
+agent fifteen-minute acquisition or heartbeat deadlines below. If unavailable,
+the owner requests another qualified reviewer; elapsed time is not approval.
+The numbered acquisition, monitoring, and timed provider fallback/waiver steps
+below apply to agent routes only; human review has no timed waiver.
+
+1. The owner sends the primary independent agent reviewer the exact head, range,
+   capability profile, and model/effort. Require
+   a `STARTED` acknowledgement identifying the reviewer and request before
+   substantive review, recorded on the PR directly or by an attributed owner
+   relay. The owner relays the start to the operator and starts a fifteen-minute
+   acquisition timer when dispatch is visible. An opted-in fleet may delegate
+   monitoring to its coordinator without transferring PR ownership.
+2. A written PR acknowledgement is preferred. If the reviewer cannot post one,
    accept a local harness start message or session state that identifies the
    exact head/range and actual model/effort. For an optional provider-side bot,
    accept a provider-generated in-progress check, status, timeline event, or
@@ -301,14 +355,16 @@ than token cost alone.
    append the timeout to the ledger and send the unchanged request to the
    fallback.
 4. Give the fallback fifteen minutes under the same rules. If it also does not
-   start, append `Review waived - providers unavailable` with both provider
+   start, append `Review waived - reviewers unavailable` with both reviewer/provider
    names, request links and times, deadlines, exact SHA/range, and residual
    risk. The waiver completes acquisition for that exact head and mode; it is
    not a passed review and does not waive local evidence or protected CI.
-5. Once a review starts, require agent-to-coordinator and PR-ledger activity at
-   every milestone and at least every thirty minutes. The coordinator relays
-   milestones immediately and continues its independent five-minute
-   main-conversation heartbeat. After thirty minutes without agent activity,
+5. Once a review starts, the owner obtains reviewer status and records PR-ledger
+   activity at every milestone and at least every thirty minutes. The owner
+   relays milestones and blockers immediately and provides interim reports during
+   long reviews. The five-minute operator-visible heartbeat applies only to
+   explicitly opted-in managed fleets; their coordinator may provide it.
+   After thirty minutes without reviewer activity,
    request status. If there is no response for another fifteen minutes, treat
    the provider as unavailable and use the same fallback or waiver path.
 6. When fallback begins, stop waiting for the primary and withdraw its request
@@ -339,7 +395,8 @@ round and do not change the reviewed head to correct them. Before finalization:
 1. Create one issue titled
    `Follow-up: deferred review findings from PR #<number>`.
 2. Record the originating PR and issue, target-base and reviewed-head SHAs,
-   provider/model, source-comment links, reproduction, expected and actual
+   reviewer identity and agent provider/model (human model `N/A`), source-comment
+   links, reproduction, expected and actual
    behavior, severity, affected paths, attempted corrections and reviewed
    ranges, required tests and acceptance criteria, residual risk, and owning
    roadmap epic when applicable.
@@ -511,7 +568,9 @@ retain it for one bounded rerun. Releasing the lock means removing the
   green for that exact head, and actionable conversations are resolved.
 - After merge, confirm issue closure, update the owning roadmap epic when
   applicable, synchronize local `main`, remove merged branches/worktrees when
-  safe, release the finalization lock, and continue according to `AGENTS.md`.
+  safe, release the finalization lock, and report completion. Start or select
+  another issue only with explicit operator authorization, including an existing
+  explicit multi-issue assignment; completing this PR is not that authorization.
 
 ## Required Ledger Entries
 

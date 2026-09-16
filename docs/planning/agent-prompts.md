@@ -27,19 +27,22 @@ provider-managed setting was enforced.
 
 One provider may implement an issue, but performance-sensitive, migration-heavy, or
 cross-host issues should use independent review perspectives before merge.
-The coordinator should launch non-overlapping research, review, failure-analysis,
-and evidence roles concurrently. Independent implementation issues may run in
-parallel only in isolated worktrees with stable merged dependencies; default to
-at most two active implementation issues.
+The issue owner may request non-overlapping research, review, failure-analysis,
+and evidence work concurrently. Independent implementation issues may run in
+parallel in isolated worktrees with stable merged dependencies. Capacity is
+assessed per shared resource (host, Docker, storage, or external service), not
+through a global two-issue slot limit.
 
 ## 2. Universal Implementation Prompt
 
-Before giving this prompt to a session that will join roadmap coordination, use
-the canonical bounded `JOIN REQUEST` template in
-`docs/planning/agent-execution.md`. Wait for the coordinator's participant-bound
-`JOIN ACK`, return `JOINED ACK`, and only then send a separate implementation or
-review command. For unrelated operator-assigned work, name the existing issue/PR
-and keep the session outside the roadmap pool unless enrollment is intentional.
+The default owner is an authorized human or an operator-directed agent, not a
+coordinator-assigned worker. No enrollment, `READY` signal, command receipt, or
+fleet heartbeat is required for the default workflow. `JOIN REQUEST`,
+participant-bound `JOIN ACK`, `JOINED ACK`, targeted commands, slot leases, and
+coordinator heartbeat/relay mechanics apply only to optional legacy managed
+sessions explicitly enrolled by the operator. Their guarded resumed-session
+tools retain the execution protocol's identity and command checks; do not use
+them as an unguarded substitute for a one-shot review.
 
 ```text
 Implement GitHub issue <NUMBER> in HVO.SkyMonitor.
@@ -50,6 +53,19 @@ Use docs/planning/requirements-crosswalk.md to find retained requirements and
 docs/planning/performance-validation.md for canonical workloads and evidence.
 Inspect the current branch, worktree, recent commits, current tests, durable
 formats, and open PR state. Preserve unrelated changes.
+
+Claim the assigned issue before implementation: inspect existing claims, assign
+the GitHub issue to yourself if possible, apply workflow:in-progress, and post a
+claim comment with a unique person/agent identity, branch/worktree, scope, and
+next checkpoint. For agents, use <harness>:<provider>:<host>:<session-short-id>
+without credentials or full session tokens. An assignee alone is insufficient
+when agents share an account. Re-read the issue, labels, assignees, and claim
+comments after posting: these writes are not atomic. Stop on a competing claim
+and resolve ownership explicitly before proceeding. If permissions prevent the
+claim, report the blocker rather than treating it as acquired.
+Keep the claim through review and CI. Release it explicitly with a resumable
+handoff on completion or transfer; age or silence never permits automatic
+takeover. Assess capacity per shared resource, not global implementation slots.
 
 Before implementation, post a plain-language synopsis under 120 words covering
 why this issue is next, the outcome, the practical benefit, what it unlocks, and
@@ -80,46 +96,28 @@ initial diff, and limit rereviews to each correction delta plus verification of
 prior findings. Require each correction report to identify the exact range and
 mark every prior finding `verified corrected`, `verified deferred` with a linked
 issue, or `unresolved`; an omitted or otherwise undispositioned finding remains
-actionable. Use the skill's Copilot/Codex acquisition timeouts, three-round
-correction cap, finalization lock, base-sync review, and final-CI rules. Do not
-repeat long suites when the validated boundary did not change. After a
-merge, the roadmap coordinator automatically selects, claims, and begins the
-next candidate-ready issue after posting its synopsis and `READY` signal, unless
-the operator asked to pause or a real decision/blocker prevents continuation.
-Non-coordinator implementing agents return completion state to the coordinator
-instead of selecting from the queue. Before receiving coordination work, each
-session identifies itself as `<harness>:<provider>:<host>:<session-short-id>`
-and completes the execution protocol's `JOIN REQUEST` -> `JOIN ACK` -> `JOINED
-ACK` handshake. Loading repository instructions is not enrollment. After a
-participant-bound command is received and before substantive work, send the
-coordinator a `STARTED <command-id>` receipt containing the participant ID,
-task, current step, next step, and blocker; for reviews also include the exact
-range and actual provider/model/effort. Repeat at every milestone, at least
-every thirty minutes, on a blocker, and at completion. Also post milestones on
-the issue until the draft PR exists, then in the PR's append-only review ledger,
-using UTC. The
-coordinator relays these events immediately and supplies the independent
-five-minute operator heartbeat. The heartbeat monitor must actively wake or
-message the coordinator on every cadence; buffered output that requires a
-remembered manual poll is insufficient. When no native wake exists, use one
-observer that messages the coordinator, prove it with an immediate baseline,
-and keep the coordinator waiting on that signal path. If no signaling observer
-is available, poll directly. Treat a late signal as monitor failure: report the
-gap, repair or replace the monitor, and poll directly until its replacement
-emits a new immediate baseline. Long gate or review runs get an interim note
-rather than silence. This does not replace the final completion report. If
-blocked, leave the required handoff in the issue and its owning roadmap epic.
-When another active coordinator cannot receive direct harness messages, use the
-execution protocol's two fixed mutable epic slots. Send a compact sequenced
-status every five minutes even for `no work available` or `report status`,
-acknowledge the peer sequence, and keep the full body near or below 500 UTF-8
-bytes. Poll exact slot metadata first and read the body only when it changed;
-keep durable decisions append-only. Explicitly negotiate and record format
-experiments before relying on them. Keep unchanged operator heartbeats to one
-nonduplicative line per active item while retaining current/next/blocker, and
-measure slot bytes read/written plus poll, fetch, durable-comment, transcript,
-and coordinator-time costs. Aggregate time-based costs per active hour and
-durable-comment counts per issue.
+actionable. The PR owner requests independent human or one-shot agent review,
+binding the immutable base/head SHAs and recording reviewer identity, findings,
+and dispositions in the PR ledger. For agent reviews record requested capability
+and actual provider/model/effort; use the skill's acquisition timeouts and
+fallback rules for applicable agent routes. Human reviews record identity and
+use N/A for model/effort. A provider-side current-head audit alone does not
+replace exact-range review. Preserve the three-round correction cap,
+finalization lock, base-sync review or unchanged-base proof, validation, and
+final-CI rules. Do not repeat long suites when the validated boundary did not
+change. Sandbox and permission denials remain binding; never route a denied
+action through another session.
+
+Own this issue through implementation, review corrections, green required CI,
+authorized merge, issue closure verification, local synchronization, and branch/
+worktree cleanup without deleting unrelated work. If merge is reserved or not
+authorized, report that boundary and leave a handoff rather than bypassing it.
+Report milestones and blockers directly to the operator and on the issue until
+the draft PR exists, then in its append-only ledger, using UTC at least every
+thirty minutes during active work. Long gates and reviews get interim notes.
+On completion or a stop, record completed/current/next/blocker state and an
+explicit claim release or retention; update the owning epic for roadmap work.
+Do not select or start another issue unless the user authorized that scope.
 ```
 
 ## 3. Foundation and Contracts Prompt
@@ -273,11 +271,10 @@ multipart ingest, SQL, Redis, the configured S3 service, worker, retrieval, and 
 Inject failures at every commit boundary. Verify checksums, numerical outputs,
 lineage, journal/database/object state, logs, metrics, traces, and health. Keep
 external, soak, Stellarium, and future hardware workflows separately labeled.
-Strengthen CI without hiding failures or weakening coverage. Produce a handoff
-that names the exact next issue and command. If acting as the roadmap coordinator
-and the current issue merges, execute the next claimed handoff automatically
-rather than waiting for an operator `continue` message. Other agents return the
-handoff to the coordinator.
+Strengthen CI without hiding failures or weakening coverage. Complete the
+assigned issue through independent review, green required CI, authorized merge,
+and cleanup. Produce a handoff naming the exact next action and claim state.
+Do not take another issue without user authorization.
 ```
 
 ## 12. Research and Review Subagent Prompt
@@ -289,12 +286,12 @@ every finding under the bounded review protocol.
 
 ```text
 Research only; do not edit. Follow `.agents/skills/pr-lifecycle/SKILL.md`.
-Before substantive work, send the coordinator `STARTED` with the requested
+Before substantive work, notify the requesting issue/PR owner with the requested
 capability profile, actual provider/model/effort, current step, next step, and
 blocker. For a review, include the exact immutable range and append the same
 acknowledgement to the PR ledger. For issue-only research, identify the issue
 and base commit or worktree fingerprint instead, and post on the issue. If the
-harness cannot post, ask the coordinator to add an attributed proxy entry. Use
+harness cannot post, ask the owner to add an attributed proxy entry. Use
 the model and effort pinned by the dispatch. If the actual values do not match,
 or the selected capability cannot be verified, stop and report the mismatch
 rather than silently inheriting defaults. Report an intentionally fixed
@@ -304,10 +301,10 @@ Task mode: <issue-research|initial|correction|base-sync>.
 In issue-research mode, identify the issue plus base commit or worktree
 fingerprint, investigate only the assigned question, and return conclusions,
 evidence, uncertainty, and the recommended next action. Acknowledge on the issue
-and report each milestone to the coordinator and issue ledger. A PR number,
+and report each milestone to the owner and issue ledger. A PR number,
 review range, and PR acknowledgement are not required.
 
-For every review mode, provide Base reviewed SHA: <SHA or merge base> and Head
+For every review mode, provide Base reviewed SHA: <resolved immutable SHA> and Head
 SHA: <SHA>. In initial mode, audit the complete PR diff against current code,
 tests, durable formats, architecture boundaries, performance paths,
 logs/telemetry, and dependent issues. In correction mode, review only Base
@@ -323,7 +320,7 @@ I/O/CPU/memory hot paths, and any plan/issue contradiction. In base-sync mode,
 inspect conflict resolutions and new interactions against the updated target
 base without rereviewing unchanged upstream code. For every review mode,
 acknowledge the start on the PR within fifteen minutes and report each milestone
-to the coordinator and PR ledger, with an interim report at least every thirty
+to the owner and PR ledger, with an interim report at least every thirty
 minutes.
 ```
 
@@ -334,6 +331,8 @@ Stop implementation and write the resumable handoff required by
 docs/planning/agent-execution.md. Include objective, decisions, completed work,
 active branch/PR/files, exact blocker, validation and coverage, output evidence,
 performance evidence, logs/telemetry observations, one exact next action, and
-relevant paths. Update the owning roadmap epic if the issue cannot continue in
-this session.
+relevant paths. Record whether the issue claim remains with this owner or is
+explicitly released for transfer; silence or age is not a release. Update the
+owning roadmap epic for roadmap work if the issue cannot continue in this
+session. Do not claim another issue without user authorization.
 ```

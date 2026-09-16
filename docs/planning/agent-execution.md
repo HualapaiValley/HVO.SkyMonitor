@@ -4,8 +4,8 @@ This protocol applies to every approved issue in `docs/roadmap.md` and its ownin
 roadmap epic or milestone.
 It is designed for continuous roadmap execution: work may stop, hand off, and
 resume without losing decisions, validation state, or the exact next action,
-but a completed issue does not require an operator prompt before the next ready
-issue starts.
+and the assigned issue continues without routine operator prompts. Starting or
+selecting another issue requires explicit assignment or opt-in queue authorization.
 
 ## 1. Authority Order
 
@@ -27,6 +27,21 @@ If sources conflict, stop implementation long enough to resolve the conflict in
 the issue or authoritative plan. Do not silently choose a convenient behavior.
 
 ## 2. Starting an Issue
+
+### Technical Readiness
+
+Use `blocked_by` for a named contract, implementation, qualification result, or
+decision needed by the consumer. Priority and milestone order are not technical
+dependencies. Only explicit maintainer/operator authorization may remove an
+existing scheduling hold; record its reason on both owning issues/epics.
+
+Separate start, integration, and release readiness. Split broad stories into
+independently verifiable outcomes with scope, exclusions, risk tier, accepting
+and rejecting cases, and a named validation gate. Discovery can settle a missing
+contract without enabling a partial production feature. Keep atomic schema,
+transaction, security, and publication changes together. Do not split solely to
+increase the number of developers. Contract owners coordinate shared-file and
+migration changes without becoming a repository-wide coordinator.
 
 Before changing files:
 
@@ -93,7 +108,44 @@ stacked PR series.
 Quality gates are unchanged, but expensive work must not be repeated without a
 reason.
 
-### Coordination
+### Independent Issue Ownership
+
+The assigned person or agent owns implementation, validation, independent review,
+corrections, green CI, authorized merge, and cleanup. No coordinator enrollment
+or global implementation slot is required. Delegation does not transfer ownership.
+
+Before editing, inspect assignees, `workflow:in-progress`, claim comments, and
+linked PRs. Claim an approved unowned issue using an assignee where possible,
+`workflow:in-progress`, and an append-only comment:
+
+```text
+CLAIM
+Owner: <person or unique agent/session; distinguish shared GitHub accounts>
+Branch/worktree: <branch and isolated path>
+Scope: <assigned outcome and exclusions>
+Dependencies/resources: <required inputs and contested resources>
+Next checkpoint: <next verifiable milestone>
+```
+
+Re-read after claiming and before editing. Assignments and labels are visible
+coordination, not atomic locks; resolve competing claims explicitly. Never take
+over an apparently stale claim without release or authorized transfer/handoff.
+Keep `workflow:in-progress` through review and CI. Add `workflow:blocked` with a
+reason/next action when waiting on a dependency or decision; remove it on resume.
+On completion or release, post the outcome/handoff and remove status labels.
+Clear or replace the assignee when releasing/transferring an open issue.
+`workflow:finalizing` is a PR merge reservation, not an issue claim.
+
+Independent issues use separate worktrees. There is no global two-issue limit;
+reserve contested contracts and heavy tests per host, daemon, or hardware.
+Complete the assigned lifecycle without routine prompts. Another issue requires
+explicit assignment or opt-in queue authorization.
+
+### Optional Managed-Fleet Coordination
+
+The enrollment, command, fleet-slot, and epic-control procedures in this
+subsection apply only to explicitly opted-in fleets, never ordinary owners or
+independent human/one-shot reviewers. Fleet limits are local to that fleet.
 
 - The active initiative's owning roadmap epic names one coordinator for the
   execution session. Only that coordinator selects or claims the next issue;
@@ -238,6 +290,13 @@ repeat the work. A `C1.2` body additionally carries exactly one
 cannot render an update.
 
 ### Progress reporting
+
+Independent owners report milestones, blockers, long-running gates, and completion
+to their user and issue/PR ledger. Coordinator monitors and cross-provider epic
+slots below apply only to opted-in managed fleets, not ordinary ownership.
+For independent delegation, every reference below to reporting to a coordinator
+means reporting to the issue/PR owner; command IDs, leases, and fleet heartbeat
+machinery are not required. Human reviewers use their agreed availability window.
 
 Silence reads as a stall. Every agent reports progress while it works, not only
 when it finishes:
@@ -604,7 +663,13 @@ operating procedure; the independently loaded skill retains the non-negotiable
 review request, selection, timeout, correction-cap, finalization-lock, CI,
 merge, and cleanup contracts plus links back here.
 
-Use `scripts/pr:review-request` to derive immutable base/head SHAs, the exact
+The PR owner requests and monitors independent review using the lifecycle skill.
+Human and one-shot agent routes record the immutable range, acceptance, evidence,
+findings, and dispositions directly on the PR without fleet enrollment. Human
+model/effort fields are N/A; agent values must reflect actual execution.
+
+For the optional enrolled resumed-session route, use `scripts/pr:review-request`
+to derive immutable base/head SHAs, the exact
 mode-specific range, prior reviewed head, and carried-finding checklist from PR
 data. Initial range uses the computed merge base while retaining the current
 target tip for staleness checks; prior reports come from the paginated PR ledger,
@@ -681,8 +746,9 @@ If any build, test, runtime, review, or deployment check is not green:
    long suites locally when protected CI will cover them.
 7. For a code correction, return the PR to draft and release the finalization
    lock before pushing. Review the CI-correction delta, then reacquire the lock
-   and repeat final target synchronization and base-sync review before marking
-   the PR ready for new protected CI. If no repository content changed, rerun
+   and repeat final target synchronization, obtaining the required base-sync review
+   if the target advanced or recording unchanged-base proof otherwise, before
+   marking the PR ready for new protected CI. If no repository content changed, rerun
    the same SHA instead of creating a no-op commit under the bounded
    infrastructure-only exception in the lifecycle skill.
 8. Keep the PR open and the issue active until green.
@@ -727,27 +793,15 @@ handoff in the issue or epic:
 The overall epic tracks current phase, completed PRs, active branch/PR, blockers,
 validation state, performance observations, and next exact action.
 
-After a successful merge, the roadmap coordinator must:
-
-1. Confirm issue closure, update the owning roadmap epic, and synchronize `main`.
-2. Recompute the unclaimed candidate-ready queue defined in section 12.
-3. Fill only available implementation slots, up to the global maximum. Select by
-   explicit epic priority first, then dependency critical-path unlocks, roadmap
-   phase order, and finally oldest issue number.
-4. For each selected issue, post its plain-language synopsis and `READY` signal,
-   record its claim in the owning roadmap epic, create its issue branch/worktree,
-   and begin the lifecycle without asking the operator to say `continue`.
-5. Start a second independent issue only when a slot is available and doing so
-   will not compete for the same contracts, migrations, or Docker-heavy gates.
-
-Pause automatic continuation only when the operator explicitly asks, no issue is
-candidate-ready, a product/architecture decision requires operator input, or
-safe execution capacity is exhausted. Context exhaustion requires a handoff to a
-successor, not an operator prompt merely to continue.
+After a successful merge, the issue owner confirms closure, updates the owning
+epic's progress, synchronizes `main`, safely cleans up their branch/worktree,
+records completion, and releases the issue claim. Taking another issue requires
+explicit assignment or opt-in queue authorization. A context or resource limit
+requires a resumable handoff, not silent abandonment of the assigned lifecycle.
 
 ## 12. Ready Signal
 
-An issue is candidate-ready for coordinator selection when:
+An approved issue is candidate-ready for an authorized owner when:
 
 - Its dependencies are merged or explicitly coordinated.
 - Its scope and exclusions are unambiguous.
@@ -757,16 +811,14 @@ An issue is candidate-ready for coordinator selection when:
   requirements crosswalk.
 - No unresolved decision would invalidate implementation.
 - The issue links this protocol and the relevant prompt section.
-- It is not already claimed or active in its owning roadmap epic.
+- It has no competing assignee, active claim/status label, or implementation PR.
 
-After the coordinator selects a candidate-ready issue, post its plain-language
-synopsis and update the issue or epic with:
+The assigned owner verifies these conditions, follows the claim procedure in
+section 4, posts the synopsis, and may record on the issue:
 
 ```text
 READY: <issue number> - dependencies green, acceptance defined, no unresolved blocker.
 ```
 
-The issue becomes ready for an implementation agent only after that update. The
-ready update must include or link the synopsis. Detailed acceptance criteria
-remain authoritative; the synopsis explains why the work is worth doing and
-what it unlocks.
+This is an owner-recorded readiness check, not a coordinator authorization token.
+Detailed acceptance criteria and formal dependencies remain authoritative.

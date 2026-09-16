@@ -109,6 +109,32 @@ must not redefine its policy inconsistently.
 
 ## Roadmap Execution
 
+### Developer Ownership
+
+- The assigned person or agent owns one issue end to end: implementation,
+  validation, independent review, corrections, green CI, authorized merge, and
+  cleanup. No coordinator or enrollment is required for ordinary assigned work.
+- Before editing, inspect the issue assignees, `workflow:in-progress` label,
+  claim comments, and linked open PRs. An existing claim means do not take it,
+  including while its owner waits for review or CI.
+- Claim on the issue using a GitHub assignee where available, the
+  `workflow:in-progress` label, and an append-only comment naming the actual
+  person or unique agent/session, branch/worktree, scope, and next checkpoint.
+  Agents sharing a GitHub account must have distinct claim identities.
+- Re-read the issue after claiming and before editing. Labels and assignments
+  are visible coordination, not atomic locks: competing claims require explicit
+  resolution before either implementation proceeds. Never steal an apparently
+  stale claim; request release or an authorized transfer with a handoff.
+- Keep the claim through review, CI, and merge. On completion or explicit
+  release, record the outcome/handoff and remove `workflow:in-progress`.
+  Use `workflow:blocked` for a retained claim awaiting a dependency or decision;
+  remove it when unblocked. Do not use `workflow:finalizing` as an issue claim.
+- Independent owners may work concurrently in isolated worktrees. There is no
+  repository-wide two-issue limit; reserve only contested resources and shared
+  contract work. Technical dependencies and approved product scope still apply.
+- Complete the assigned issue without routine continuation prompts. Taking
+  another issue requires explicit assignment or opt-in queue authorization.
+
 ### Agent Workspaces
 
 - Run agents from the native host, an SSH session, or remote-agent tooling.
@@ -116,10 +142,13 @@ must not redefine its policy inconsistently.
   appropriate to the selected tool. Do not rely on a devcontainer's writable
   layer for authoritative work or resumable state.
 
-- Use the active initiative's owning roadmap epic for coordination, claims, and
-  handoffs. Epic #89 and the `Virtual-First Platform Completion` milestone retain
+- Use each issue as the authoritative claim and handoff record; use its owning
+  epic as a progress index, not an authorization service. Epic #89 and the
+  `Virtual-First Platform Completion` milestone retain
   the completed virtual-first delivery history.
-- Identify every coordination participant as
+- Only explicitly opted-in managed-fleet sessions use the legacy enrollment
+  protocol below; it is not required for independent developers or reviewers.
+  Identify every managed-fleet participant as
   `<harness>:<provider>:<host>:<session-short-id>`; provider-only names such as
   `Claude` are display labels, not identities. Do not include credentials or a
   complete bearer/session token in the ID. A new session remains
@@ -143,24 +172,21 @@ must not redefine its policy inconsistently.
 - Before implementation, post the protocol's plain-language synopsis explaining
   why the issue is next, its practical outcome and benefit, what it unlocks, and
   the main exclusion.
-- Use concurrent subagents for non-overlapping exploration, review, failure
-  analysis, and evidence. By default, up to two independent ready issues may
-  proceed in isolated worktrees when dependencies are merged and machine/Docker
-  capacity permits; raise that limit only after explicitly verifying capacity.
-  The roadmap coordinator records claims in the owning roadmap epic and never
-  lets agents edit the same worktree.
-- Treat those implementation slots as shared capacity, not per-component
-  reservations. Fill them from the highest-priority Current initiative in
-  `docs/roadmap.md`; do not start a lower-horizon issue while candidate-ready
-  work remains there unless the active epic records a real blocking dependency.
-  Follow the lane and unrelated-component failure rules in section 4 of
-  `docs/planning/agent-execution.md`.
+- The issue owner may delegate non-overlapping research, review, and evidence.
+  Delegation does not transfer accountability. Never share an editing worktree.
+  Bound heavy tests by host/daemon capacity, not the number of contributors.
+- Roadmap priority guides selection, not ownership. This ownership change does
+  not authorize deferred product work. Use formal dependencies for named
+  technical deliverables, not portfolio ordering. Record maintainer-approved
+  removal of scheduling-only holds in the issue and roadmap before claiming.
+  Distinguish start, integration, and release gates; preparation can precede
+  qualification, but supported adoption cannot.
 - Every PR uses a draft-first convergence cycle. Protected CI must not run until
   review has converged and the target branch has been finally synchronized and
   integration-reviewed when synchronization changes the target base. A freshly
   fetched target SHA already covered by the converged review needs a recorded
   unchanged-base proof, not a redundant base-sync review. Use a
-  coordinator-launched local review agent, or an
+   PR-owner-requested independent human or agent reviewer, or an
   equivalent execution route that can bind the requested immutable range and
   record its actual provider, model, and reasoning effort, for convergence
   evidence. Provider-side PR bots may supplement this with a current-head audit
@@ -171,17 +197,19 @@ must not redefine its policy inconsistently.
   rereviews cover only the delta from the previous reviewed head and its concrete
   interactions, and verify every prior finding individually. A finding neither
   verified fixed nor explicitly deferred to a linked issue remains unresolved.
-  If the primary reviewer does not start within fifteen minutes, use
-  the other available provider; if neither Copilot nor Codex starts within its
-  fifteen-minute window, record an exact-head review-unavailability waiver.
+  For agent review, use the lifecycle skill's timed primary/fallback acquisition
+  and exact-head unavailability procedure. Human review uses an agreed window;
+  elapsed time is not approval. Record actual reviewers rather than assuming a
+  particular provider pair.
   Allow at most three correction rereviews per PR before moving remaining
   non-blocking findings to one linked follow-up issue. Security, data-loss,
   acceptance, failing-CI, and material-correctness defects always block.
 - Tier A/B PRs receive one initial exact-range review plus only finding-driven
   correction rereviews. Use `standard` by default and promote Tier B to `deep`
   for concurrency, durability, security, CI-control, or cross-boundary risk.
-  Tier C/M review depth is unchanged. Generate and dispatch review requests with
-  the repository scripts named by the PR lifecycle skill.
+  Tier C/M review depth is unchanged. Follow the PR lifecycle skill's human,
+  one-shot agent, or guarded resumed-session route; fleet scripts apply only to
+  the enrolled resumed-session route they support.
 - Only one PR may hold the repository-wide finalization lock. Acquire it before
   final target synchronization and hold it through any required base-sync
   review, protected CI, and merge. If the target branch advances, return the PR
@@ -197,19 +225,18 @@ must not redefine its policy inconsistently.
 - Performance-sensitive work requires reproducible baseline/after evidence for relevant I/O, CPU, allocations/working set, throughput, latency, and backlog. Unexplained regression blocks merge.
 - Validate produced outputs through checksums, numerical invariants, provenance, lineage, and durable state where applicable. Inspect logs, metrics, traces, and health behavior for host/worker changes.
 - If work stops or blocks, leave the resumable handoff required by the execution protocol and update the owning roadmap epic with the exact next action.
-- After merging a roadmap issue, the roadmap coordinator automatically claims
-  and starts the highest-priority candidate-ready issue after posting its
-  synopsis and `READY` signal. Other implementing agents return completion state
-  to the coordinator. Pause only on explicit operator request, a decision
-  blocker, no candidate-ready work, or exhausted safe capacity; do not require a
-  routine `continue` prompt.
+- After merge, report completion and release the claim. Taking another issue
+  requires explicit assignment or opt-in queue authorization, not a routine
+  prompt between steps of the already assigned issue.
 
 ### Progress Reporting
 
 Progress reporting is mandatory while delegated work, review acquisition, long
 gates, or CI is active. Section 4 of `docs/planning/agent-execution.md` is the
 single canonical source for the complete monitor, heartbeat, ledger, and
-cross-provider channel procedure. These independently loaded invariants remain:
+cross-provider channel procedure. Independent owners report milestones, blockers,
+long-running work, and completion to the user and issue/PR ledger. The following
+coordinator and leased-slot rules apply only to explicitly opted-in managed fleets:
 
 - The coordinator arms exactly one five-minute monitor whose cadence actively
   wakes or messages it, proves that path with an immediate baseline after every

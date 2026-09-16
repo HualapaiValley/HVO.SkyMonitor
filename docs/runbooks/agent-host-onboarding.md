@@ -1,6 +1,6 @@
 # Agent Host Onboarding
 
-How to bring a new coordinating or implementing agent session online against this
+How to bring a developer or operator-directed agent session online against this
 repository, and what to pre-stage on a machine before an agent runs there.
 
 `AGENTS.md` is the policy. Section 4 of `docs/planning/agent-execution.md` is the
@@ -8,10 +8,16 @@ protocol. This runbook is the operational checklist that sits under both: the
 concrete steps, in order, with the failures that actually happen when a step is
 skipped.
 
-Two roles are described. **Coordinator** is the single session that owns the
-queue, the finalization lock, command issuance, and operator reporting.
-**Worker** is any enrolled implementing or measuring session. A machine can host
-several worker sessions; only one coordinator exists at a time.
+The default **issue owner** is an authorized human or operator-directed agent
+responsible for the full assigned issue lifecycle. No coordinator, enrollment,
+`READY` signal, command receipt, or fleet heartbeat is required. Capacity is
+assessed per shared resource (host, Docker, storage, external service), not a
+global two-issue slot limit. The repository-wide finalization lock still
+serializes final synchronization, protected CI, and merge.
+
+**Coordinator** and **worker** below describe only optional legacy managed
+sessions explicitly enrolled by the operator. Their `JOIN`, targeted-command,
+slot, and heartbeat mechanics are not prerequisites for default issue ownership.
 
 ## 1. Pre-stage the machine
 
@@ -29,9 +35,9 @@ Do this before any agent session starts. None of it requires the agent.
   required for serialized review dispatch`, which reads as a guard failure on the
   change under test. `AGENTS.md` carries the reasoning for both.
 - **Git identity.** Set `user.name` and `user.email`. Every commit an agent
-  writes is attributed to the operator account, so the `Claude-Session` commit
-  trailer is what identifies the authoring session. The GitHub author field
-  never does.
+  writes may be attributed to a shared operator account. Record a unique session
+  identity in claims and review evidence; the GitHub author or assignee alone
+  does not distinguish agents sharing that account.
 - **GitHub CLI.** Install `gh` and authenticate it. Confirm with a read that
   costs nothing, such as listing open pull requests.
 - **Docker.** Integration selections start real SQL Server, Redis, MinIO and
@@ -54,6 +60,12 @@ Do this before any agent session starts. None of it requires the agent.
   ever share one.
 
 ## 2. Permissions, and why this is not optional
+
+Verify GitHub permissions with the contributor's own account. Humans need no
+agent permission configuration. Agents use their actual harness's scoped
+permission controls; the Claude-specific configuration and fresh-session
+experiment below apply only to Claude Code. Other harnesses must verify their
+equivalent controls without creating a Claude configuration file.
 
 The permission classifier sits above the tool, not inside it. A session with a
 valid GitHub token will still be refused when it tries to merge a pull request
@@ -120,7 +132,43 @@ attached to one terminal. Never resolve a block by telling him to answer it
 elsewhere. Put the decision in front of him where he already is, complete enough
 to decide without seeing the original prompt, and act on his answer yourself.
 
-## 3. Enrol the session
+## 3. Claim and own the assigned issue
+
+- **Claim before implementation.** Read existing issue claims, assignees, labels,
+  and related PRs. An authorized human or operator-directed agent assigns the
+  issue to themselves if possible, applies `workflow:in-progress`, and posts a
+  claim comment with unique person/agent identity, branch/worktree, scope, and
+  next checkpoint. Agents use `<harness>:<provider>:<host>:<session-short-id>`
+  without credentials or full tokens. An assignee alone is insufficient when
+  agents share an account. If permissions prevent the claim, report the blocker.
+- **Re-read for conflict.** GitHub writes are not an atomic claim operation.
+  Re-read comments, assignees, and labels after posting. Stop on a competing
+  claim and resolve ownership explicitly before proceeding. Silence or age
+  never authorizes automatic takeover.
+- **Retain ownership.** Keep the claim through implementation, review corrections,
+  and CI. Release explicitly with a resumable handoff on completion or transfer;
+  remove `workflow:in-progress` when releasing, without overwriting a competing
+  owner's state. A paused owner records whether the claim is retained or released.
+- **Own review and completion.** The PR owner requests independent human or
+  one-shot agent review bound to immutable base/head SHAs, with reviewer identity,
+  findings, and dispositions recorded in the PR ledger. Agent reviews record
+  requested capability and actual provider/model/effort; human reviews use N/A
+  for model/effort. Follow the PR lifecycle skill's validation, draft convergence,
+  bounded corrections, finalization lock, base-sync review or unchanged-base
+  proof, and green current-head required CI rules. Complete authorized merge,
+  verify issue closure, synchronize local `main`, and clean up merged branches/
+  worktrees without deleting unrelated work. If merge is reserved or unauthorized,
+  report that boundary and leave a handoff. Do not take another issue unless the
+  user authorized that scope.
+- **Report directly.** Send milestones and blockers to the operator and retain
+  UTC evidence on the issue/PR, with interim notes during long gates and reviews.
+  Default ownership does not depend on a coordinator relay or fleet heartbeat.
+
+### Optional legacy managed-session enrollment
+
+Only explicitly enrolled legacy managed sessions follow this subsection and
+section 4's coordinator setup. Existing resumed fleet tools retain all identity,
+enrollment, and targeted-command checks; do not bypass them to obtain a review.
 
 - **Mint the participant identity** as `<harness>:<provider>:<host>:<session-short-id>`.
   Propose a short id from your own session's scratchpad directory name, which
@@ -158,7 +206,7 @@ to decide without seeing the original prompt, and act on his answer yourself.
   issue body and pull request body ends with a footnote naming the writing
   session, because GitHub attributes all of it to the operator's account.
 
-## 4. Coordinator-only setup
+## 4. Optional legacy coordinator setup
 
 - **Arm the heartbeat, and confirm the cadence with the operator.** Two
   different intervals live in the protocol and they are easy to collapse into
@@ -181,18 +229,22 @@ to decide without seeing the original prompt, and act on his answer yourself.
 - **Verify the slot write path once.** A malformed write can leave a two-byte
   body and destroy the sequence counter with no error. Read the slot back after
   the first write.
+- **Keep any per-participant queue within operator-authorized scope.** Completion
+  does not authorize automatically assigning or taking another issue.
+
+## 5. Validation and finalization for every owner
+
 - **Never trust a filtered read for the lock.** The finalization lock is the
   `workflow:finalizing` label on an open pull request. The label search endpoint
   lags and returns empty seconds after a write, which is indistinguishable from
   no holder. Read the pull request objects directly. A filtered enumeration is
   trustworthy only when the returned count is strictly less than the requested
-  limit, and even then not immediately after a write.
+  limit, and even then not immediately after a write. Hold the repository-wide
+  lock from final synchronization through any required base-sync review,
+  protected CI, and merge. If the target advances, return to draft and release
+  the lock before synchronizing and reviewing again under the lifecycle rules.
 - **Clear the label from a merged pull request.** A merged holder does not hold
   the lock, but leaving the label on makes every later read ambiguous.
-- **Keep a per-participant queue.** Nobody idles. A worker with nothing to do is
-  a coordination failure, not a worker failure.
-
-## 5. Worker-only setup
 
 - **Confirm host quiet before any timed or gated run.** Read the load average and
   name any foreign process. A failure produced under contention is unattributable
@@ -232,4 +284,8 @@ was caught by looking harder at the first. Build the second measurement in.
 Leave the resumable handoff the execution protocol requires: what is done, what
 is running, the exact next action, and what would invalidate it. Release any
 lock. Post the state to the owning issue or pull request, not only to the
-operator, because a session's own transcript does not survive it.
+operator, because a session's own transcript does not survive it. Explicitly
+record claim retention or release with a handoff; shutdown alone does not release
+ownership, and a stale claim must not be taken over automatically. On completion,
+release the claim and remove `workflow:in-progress`. Do not start another issue
+without user authorization.
