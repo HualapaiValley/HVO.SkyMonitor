@@ -886,6 +886,40 @@ for consumer in correction base-sync; do
     done
 done
 
+for indent in 4 5 6; do
+    spaces="$(printf '%*s' "$indent" '')"
+    {
+        printf 'Review mode: initial\n'
+        printf '%s```text\n' "$spaces"
+        printf 'Review mode: correction\n'
+        printf '%s```\n\n' "$spaces"
+        printf '%s\n' "$(<"$work_root/initial.request")"
+    } > "$work_root/over-indented-$indent-request-comment.txt"
+    cp "$work_root/over-indented-$indent-request-comment.txt" "$MOCK_COMMENT_BODY"
+    expect_fail "Over-indented $indent-space replay" 'is ambiguous or ends before the request does' \
+        "$request_tool" --repo "$MOCK_API_REPO" --pr 700 --recorded-comment 9001 \
+        --output "$work_root/over-indented-$indent-replay.request"
+    [[ ! -e "$work_root/over-indented-$indent-replay.request" ]] ||
+        fail "Over-indented $indent-space replay emitted a request."
+    for consumer in correction base-sync; do
+        for selection in pinned discovered; do
+            write_pr_fixture "$base" "$correction_head" \
+                "$work_root/over-indented-$indent-request-comment.txt" "$work_root/initial-report.txt"
+            selection_args=()
+            [[ "$selection" != pinned ]] || selection_args=(--previous-request-comment "${LEDGER_IDS[0]}")
+            output="$work_root/over-indented-$indent-$consumer-$selection"
+            expect_fail "Over-indented $indent-space prior request $consumer $selection" \
+                'is ambiguous or ends before the request does' \
+                "$request_tool" "${correction_args[@]}" --mode "$consumer" --command-id CMD-REVIEW-002 \
+                --previous-command-id CMD-REVIEW-001 --previous-report-comment "${LEDGER_IDS[1]}" \
+                --previous-head "$initial_head" "${selection_args[@]}" \
+                --evidence-pack "$output.pack" --output "$output.request"
+            [[ ! -e "$output.request" && ! -e "$output.pack" ]] ||
+                fail "Over-indented $indent-space prior request $consumer $selection emitted output."
+        done
+    done
+done
+
 # The same content, this time quoted into a three-backtick fence by hand rather than
 # written by the dispatcher. The reader closes on the inner block's fence, which is no
 # shorter than the one that opened, and the request below that line is gone. The field

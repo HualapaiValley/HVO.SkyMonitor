@@ -176,9 +176,11 @@ request_block_from_body() {
         END {
             for (i = 1; i <= NR; i++) {
                 fence_line = lines[i]
-                sub(/^   /, "", fence_line)
-                sub(/^  /, "", fence_line)
-                sub(/^ /, "", fence_line)
+                indent = 0
+                while (indent < 3 && substr(fence_line, 1, 1) == " ") {
+                    fence_line = substr(fence_line, 2)
+                    indent++
+                }
                 fence_char = substr(fence_line, 1, 1)
                 if (fence_char == "`") match(fence_line, /^`+/)
                 else if (fence_char == "~") match(fence_line, /^~+/)
