@@ -49,7 +49,11 @@ else
         fail "Could not read workflow run $run_id."
     gh api --paginate --slurp \
         "repos/$repo_path/actions/runs/$run_id/jobs?filter=latest&per_page=100" |
-        jq -e '{jobs: [.[].jobs[]], total_count: ([.[].jobs[]] | length)}' > "$jobs_file" ||
+        jq -e '
+          if length == 0 or ([.[].total_count] | unique | length) != 1 then
+            error("job pages disagree on total_count")
+          else {jobs: [.[].jobs[]], total_count: .[0].total_count} end
+        ' > "$jobs_file" ||
         fail "Could not read jobs for workflow run $run_id."
     change_job_id="$(jq -r '[.jobs[] | select(.name == "Change Classification")][0].id // empty' "$jobs_file")"
     if [[ -n "$change_job_id" ]]; then
