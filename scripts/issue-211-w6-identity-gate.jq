@@ -30,8 +30,8 @@ and .distinctCaptureIdCount == .recordedCaptureCount
 # Both sides are document-derived, unlike every other term here. It is still sound: a
 # legitimate reduction shortens both together, so the equality holds; only reuse — many
 # entries carrying few distinct identifiers — makes distinctArtifactIdCount fall short.
-# This deliberately does not assert digest uniqueness. Digests are validated for lowercase
-# SHA-256 form and declared/computed equality by the identity program, but identical content
+# This deliberately does not assert digest uniqueness. Digests are validated for 64-character
+# hexadecimal SHA-256 form and declared/computed equality by the identity program, but identical content
 # may legitimately have identical digests. Artifact IDs are the identity boundary this term
 # anchors; digest collision or content-distinctness claims require external byte evidence.
 and .distinctArtifactIdCount == .recordedArtifactCount
