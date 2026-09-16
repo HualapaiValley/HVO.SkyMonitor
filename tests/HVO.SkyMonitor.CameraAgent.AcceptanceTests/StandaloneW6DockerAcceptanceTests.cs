@@ -387,7 +387,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.IsLessThanOrEqualTo(boundedTrialFootprintBytes, peakFilesystemBytes);
         var evidence = new
         {
-            schemaVersion = "issue-211-w6-evidence-v2",
+            schemaVersion = "issue-211-w6-evidence-v3",
             trial = Environment.GetEnvironmentVariable("HVO_ISSUE_211_TRIAL") ?? "local",
             revision = new
             {
@@ -488,7 +488,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 resource.MaximumBacklogAgeSeconds,
                 maximumDurableQueues = durableQueueMaxima,
                 declaredDurableQueueBounds = DurableQueueBounds,
-                durableQueuesWithinDeclaredBounds = true,
+                durableQueuesWithinDeclaredBounds =
+                    DurableQueuesWithinDeclaredBounds(durableQueueMaxima),
                 peakFilesystemBytes,
                 retainedFilesystemBytes,
                 resource.SampleCount,
@@ -3344,6 +3345,20 @@ public sealed class StandaloneW6DockerAcceptanceTests
         throw new InvalidOperationException();
     }
 
+    /// <summary>
+    /// Issue #770, correction round 2. <see cref="ReadManifests"/> accepts every valid v2 sidecar
+    /// under the runtime root, including the ones <c>FileSystemFrameStorageService</c> writes for
+    /// artefacts the pipeline's storage step produced, so labelling all of them
+    /// <c>raw-ingress-manifest</c> recorded a producer the run never observed. That is the same
+    /// failure this evidence document exists to remove, one level down. The label is now read off
+    /// the manifest: its schema, and the producer it names, falling back to the artefact's own
+    /// recorded source when the manifest declares no producing step.
+    /// </summary>
+    private static string DescribeProducer(string schemaVersion, string? producerStepId, string sourceId)
+        => string.IsNullOrWhiteSpace(producerStepId)
+            ? $"{schemaVersion}:source:{sourceId}"
+            : $"{schemaVersion}:step:{producerStepId}";
+
     private static IEnumerable<ManifestObservation> ReadManifests(string root, string agentId = ExpectedAgentId)
     {
         var clearReferencePath = Path.Combine(root, "w6", "clear-reference.manifest.json");
@@ -3439,6 +3454,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
         foreach (var capture in captures)
         {
             Assert.HasCount(14, capture.ProcessingNodes);
+            // Issue #770. Every digest this loop recomputes is retained rather than discarded at
+            // the assertion. An assertion that runs and is not recorded proves the property to the
+            // process that ran it and to nobody afterwards, and the artefact outlives the run.
+            var artifactChecksums = new List<CaptureArtifactChecksumEvidence>(capture.Artifacts.Count);
             foreach (var artifact in capture.Artifacts)
             {
                 if (manifests.TryGetValue(artifact.ArtifactId, out var manifest))
@@ -3447,11 +3466,26 @@ public sealed class StandaloneW6DockerAcceptanceTests
                     Assert.AreEqual(ExpectedRigSha256, descriptor.Profiles.Rig.Sha256);
                     Assert.AreEqual(ExpectedProcessingSha256, descriptor.Profiles.Processing.Sha256);
                     var payload = File.ReadAllBytes(Path.Combine(root, manifest.RelativeArtifactPath));
-                    Assert.AreEqual(descriptor.Artifact.ChecksumSha256, Convert.ToHexString(SHA256.HashData(payload)));
+                    var computedSha256 = Convert.ToHexString(SHA256.HashData(payload));
+                    Assert.AreEqual(descriptor.Artifact.ChecksumSha256, computedSha256);
                     Assert.AreEqual(descriptor.Layout.ByteLength, payload.LongLength);
                     CollectionAssert.AreEqual(
                         artifact.SourceArtifactIds.ToArray(),
                         descriptor.Artifact.SourceArtifactIds.ToArray());
+                    artifactChecksums.Add(new CaptureArtifactChecksumEvidence(
+                        artifact.ArtifactId,
+                        descriptor.Artifact.Role.ToString(),
+                        artifact.Variant,
+                        manifest.RelativeArtifactPath,
+                        DescribeProducer(manifest.SchemaVersion, manifest.ProducerStepId, descriptor.Artifact.SourceId),
+                        descriptor.Artifact.ChecksumSha256,
+                        computedSha256,
+                        descriptor.Layout.ByteLength,
+                        payload.LongLength,
+                        artifact.ContentIdentitySha256,
+                        descriptor.Profiles.Rig.Sha256,
+                        descriptor.Profiles.Processing.Sha256,
+                        [.. descriptor.Artifact.SourceArtifactIds]));
                     if (descriptor.Artifact.Role == FrameArtifactRole.Raw && capture == captures[0])
                     {
                         AssertRightAlignedTwelveBit(payload);
@@ -3462,11 +3496,29 @@ public sealed class StandaloneW6DockerAcceptanceTests
                     Assert.IsTrue(productManifests.TryGetValue(artifact.ArtifactId, out var product));
                     Assert.AreEqual(capture.CaptureId, product.Capture.CaptureId);
                     var payload = File.ReadAllBytes(Path.Combine(root, product.RelativeArtifactPath));
-                    Assert.AreEqual(product.Artifact.ChecksumSha256, Convert.ToHexString(SHA256.HashData(payload)));
+                    var computedSha256 = Convert.ToHexString(SHA256.HashData(payload));
+                    Assert.AreEqual(product.Artifact.ChecksumSha256, computedSha256);
                     Assert.AreEqual(product.ByteLength, payload.LongLength);
                     CollectionAssert.AreEqual(
                         artifact.SourceArtifactIds.ToArray(),
                         product.Artifact.SourceArtifactIds.ToArray());
+                    artifactChecksums.Add(new CaptureArtifactChecksumEvidence(
+                        artifact.ArtifactId,
+                        product.Artifact.Role.ToString(),
+                        artifact.Variant,
+                        product.RelativeArtifactPath,
+                        DescribeProducer(product.SchemaVersion, product.ProducerStepId, product.Artifact.SourceId),
+                        product.Artifact.ChecksumSha256,
+                        computedSha256,
+                        product.ByteLength,
+                        payload.LongLength,
+                        product.ContentIdentitySha256,
+                        // A durable processing product manifest carries no rig or processing
+                        // profile; those belong to the raw ingress manifest this product derives
+                        // from, and are recorded on that artefact's entry.
+                        null,
+                        null,
+                        [.. product.Artifact.SourceArtifactIds]));
                     if (product.ProductSchemaVersion == CloudAssessmentV1.CurrentSchemaVersion)
                     {
                         var assessment = CloudAssessmentJson.Parse(payload).Assessment;
@@ -3501,6 +3553,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(expectedDeploymentLocation.Version, admission.DeploymentLocationVersion);
             Assert.AreEqual(expectedDeploymentLocation.ToProvenance(), raw.Descriptor.Location);
             AssertLayeredPresentationLineage(root, capture, productManifests);
+            Assert.HasCount(capture.Artifacts.Count, artifactChecksums);
             provenance.Add(new CaptureProvenanceEvidence(
                 capture.CaptureId,
                 capture.CaptureSequence,
@@ -3509,7 +3562,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 admission.ScheduleRevisionSha256,
                 admission.DeploymentLocationId,
                 admission.DeploymentLocationVersion,
-                raw.Descriptor.Location!));
+                raw.Descriptor.Location!,
+                raw.Descriptor.Profiles.Rig.Sha256,
+                raw.Descriptor.Profiles.Processing.Sha256,
+                artifactChecksums));
         }
         return provenance;
     }
@@ -4506,7 +4562,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(catalogRoot));
         var catalog = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
             catalogRoot!, "hyg-v42-production"));
-        Assert.AreEqual(ExpectedCatalogSha256, catalog.DatabaseSha256, ignoreCase: true);
+        // Issue #770. The resolved digest is retained so the document records what the run read,
+        // not only the constant it was checked against.
+        var observedCatalogSha256 = catalog.DatabaseSha256;
+        Assert.AreEqual(ExpectedCatalogSha256, observedCatalogSha256, ignoreCase: true);
         await using var module = new VirtualSkyCameraModule(
             new FixedUtcTimeProvider(raw.Manifest.Descriptor.Timing.RequestedStartUtc),
             catalog.Catalog,
@@ -4544,6 +4603,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var defectMask = await File.ReadAllBytesAsync(
             Path.Combine(runtimeRoot, defectArtifact.PayloadRelativePath)).ConfigureAwait(false);
         var residuals = CalculateCalibrationResiduals(
+            observedCatalogSha256,
             cleanFrame.Layout!,
             cleanFrame.PixelData.Span,
             rawPayload,
@@ -4567,6 +4627,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     }
 
     private static CalibrationResidualEvidence CalculateCalibrationResiduals(
+        string observedCatalogSha256,
         FrameLayoutDescriptor layout,
         ReadOnlySpan<byte> clean,
         ReadOnlySpan<byte> raw,
@@ -4620,6 +4681,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.IsGreaterThan(0, repairableDefectCount);
         var sampleCount = checked((long)layout.Width * layout.Height);
         return new CalibrationResidualEvidence(
+            observedCatalogSha256,
             sampleCount,
             rawTotal / sampleCount,
             correctedTotal / sampleCount,
@@ -5347,6 +5409,18 @@ public sealed class StandaloneW6DockerAcceptanceTests
             .OrderBy(static queue => queue.Name, StringComparer.Ordinal)
             .ToArray();
 
+    // Issue #770, correction round 4. This boolean was written into the evidence document as the
+    // literal `true`, so it was a claim the producer had never made about anything, and the gate
+    // that read it back could not have rejected any document. It is computed here from the maxima
+    // being written and the bounds they are held to, so the field says what this run observed.
+    private static bool DurableQueuesWithinDeclaredBounds(IReadOnlyList<DurableQueueMaximum> maxima)
+        => maxima.Count == DurableQueueBounds.Count
+            && maxima.All(queue =>
+                DurableQueueBounds.TryGetValue(queue.Name, out var bound)
+                && queue.Count <= bound.Count
+                && queue.Bytes <= bound.Bytes
+                && queue.AgeSeconds <= bound.AgeSeconds);
+
     private static void AssertDurableQueueBounds(IReadOnlyList<DurableQueueMaximum> maxima)
     {
         CollectionAssert.AreEquivalent(
@@ -6051,6 +6125,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
         int UiHistoryCount,
         int UiAttemptCount);
 
+    /// <summary>
+    /// Issue #770. The digest fields are the values the run observed, not the constants it
+    /// compared them against. The pinned constants stay in the document's <c>workload</c>
+    /// section, so a reader holds both sides of every comparison and can re-derive it.
+    /// </summary>
     private sealed record CaptureProvenanceEvidence(
         Guid CaptureId,
         long CaptureSequence,
@@ -6059,7 +6138,31 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string ScheduleRevisionSha256,
         string DeploymentLocationId,
         long DeploymentLocationVersion,
-        CaptureLocationProvenance Location);
+        CaptureLocationProvenance Location,
+        string RigSha256,
+        string ProcessingSha256,
+        IReadOnlyList<CaptureArtifactChecksumEvidence> Artifacts);
+
+    /// <summary>
+    /// Issue #770. One artefact's identity as the run measured it. <c>ComputedSha256</c> is
+    /// re-derived from the bytes on disk; <c>DeclaredSha256</c> is what the manifest claimed.
+    /// Recording both, with the path, is what lets a later reader recompute instead of trusting
+    /// that the comparison happened.
+    /// </summary>
+    private sealed record CaptureArtifactChecksumEvidence(
+        Guid ArtifactId,
+        string Role,
+        string? Variant,
+        string RelativeArtifactPath,
+        string DeclaredBy,
+        string DeclaredSha256,
+        string ComputedSha256,
+        long DeclaredByteLength,
+        long ObservedByteLength,
+        string? ContentIdentitySha256,
+        string? RigSha256,
+        string? ProcessingSha256,
+        IReadOnlyList<Guid> SourceArtifactIds);
 
     private sealed record ScheduleRoundTripEvidence(
         string OriginalProfileHashPrefix,
@@ -6415,6 +6518,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string[] OrderedSourceArtifactIds);
 
     private sealed record CalibrationResidualEvidence(
+        string ObservedCatalogSha256,
         long SampleCount,
         double RawMeanAbsoluteErrorNativeAdu,
         double CorrectedMeanAbsoluteErrorNativeAdu,

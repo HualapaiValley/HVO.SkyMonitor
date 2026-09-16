@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+# Issue #211 / #770 -- the W6 evidence identity gate, exercised against corpora built to be
+# refused.
+#
+# WHAT THIS EXISTS FOR. Correction round 5 closed a hole in scripts/issue-211-w6-identity.jq:
+# the gate anchored WHICH artefact roles a capture presents and not HOW MANY artefacts it
+# presents for each, so a corpus cut from eighteen artefacts per capture to one per role kept
+# all six roles, lost six hundred of nine hundred artefact digests, and reached
+# identityRecorded true with zero problems. The remedy declares the per-role histogram from
+# outside the documents. A fix to an evidence gate that ships with its new discrimination
+# claimed but never exercised is the same defect class as the hole it closes, so the
+# discrimination is exercised here rather than described in a comment.
+#
+# The discharge criterion is a pair, not a single row. The one-per-role corpus must move to
+# REFUSE **and** the control must stay PASS. A correction that refuses the control has
+# over-tightened, and a run that only shows refusals cannot tell the two apart.
+#
+# WHAT IT RUNS. The real scripts/issue-211-w6-identity.jq and the real
+# scripts/issue-211-w6-identity-gate.jq, given the real constants read out of
+# scripts/test:cameraagent-standalone-211. Nothing here is a copy of a gate. A copy of a gate
+# is a gate that can drift away from the one that ships, which is why the outer pass/fail
+# expression became a file in the first place.
+#
+# WHAT IT DOES NOT COVER, stated because a reader will otherwise assume it does:
+#
+#   * It is faithful only to what the gate READS. The generated documents carry the fields
+#     the identity program looks at and nothing else. This is not a producer schema fixture
+#     and it will not notice a producer that stops emitting a field no gate consults.
+#   * It cannot tell you the declared histogram is the true one. The control is built from
+#     the same constant the gate is given, so control PASS is true by construction and proves
+#     the gate does not refuse its own declared shape -- not that the shape matches what a
+#     camera agent emits. Only the live campaign measures that, and it is the campaign's run
+#     that would fail if the processing graph changed what a capture emits without the
+#     constant changing with it.
+#   * The digests are deterministic sixty-four-character hexadecimal values, not content
+#     hashes of anything. The gate requires the digest FORMAT and the declared/recomputed
+#     EQUALITY, and both are what is exercised. No claim is made about any hashing.
+#
+# A mutation that does not change the document proves nothing, so every mutated corpus is
+# first diffed against the control by flattened path-and-value pairs and must differ.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly CAMPAIGN_SCRIPT="$SCRIPT_DIR/test:cameraagent-standalone-211"
+readonly IDENTITY_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity.jq"
+readonly IDENTITY_GATE_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity-gate.jq"
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+
+for required in "$CAMPAIGN_SCRIPT" "$IDENTITY_PROGRAM" "$IDENTITY_GATE_PROGRAM"; do
+    [[ -f "$required" ]] || fail "missing $required"
+done
+command -v jq >/dev/null || fail 'jq is required'
+
+# The constants are READ OUT of the campaign script rather than restated here. Restating them
+# would make this file a second declaration of the campaign's shape, and two declarations of
+# one fact drift. Reading them means a rename or a deletion of a constant fails this gate
+# loudly, and a deliberate change to the declared shape carries the instrument with it.
+campaign_constant() {
+    local name="$1" line value
+    line="$(grep -m1 -E "^readonly ${name}=" "$CAMPAIGN_SCRIPT")" \
+        || fail "scripts/${CAMPAIGN_SCRIPT##*/} no longer declares $name"
+    value="${line#readonly ${name}=}"
+    value="${value%\'}"
+    value="${value#\'}"
+    [[ -n "$value" ]] || fail "$name is declared empty in ${CAMPAIGN_SCRIPT##*/}"
+    printf '%s' "$value"
+}
+
+MEASURED_CAPTURE_COUNT="$(campaign_constant MEASURED_CAPTURE_COUNT)"
+TRIAL_COUNT_EXPRESSION="$(campaign_constant TRIAL_COUNT)"
+EXPECTED_CAPTURE_ARTIFACT_ROLES="$(campaign_constant EXPECTED_CAPTURE_ARTIFACT_ROLES)"
+EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS="$(campaign_constant EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS)"
+readonly MEASURED_CAPTURE_COUNT EXPECTED_CAPTURE_ARTIFACT_ROLES EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS
+# TRIAL_COUNT is declared as a parameter expansion with a default rather than as a literal, so
+# the default is what has to be read out of it. It is read by matching the default position
+# specifically: stripping every non-digit instead collects the issue number out of the variable
+# name and asks for two thousand one hundred and fifteen trials.
+if [[ "$TRIAL_COUNT_EXPRESSION" =~ ^\"?([0-9]+)\"?$ ]]; then
+    TRIAL_COUNT="${BASH_REMATCH[1]}"
+elif [[ "$TRIAL_COUNT_EXPRESSION" =~ :-([0-9]+)\} ]]; then
+    TRIAL_COUNT="${BASH_REMATCH[1]}"
+else
+    fail "could not read a trial count from $TRIAL_COUNT_EXPRESSION"
+fi
+readonly TRIAL_COUNT
+
+# The schema version is written on the campaign's own invocation line rather than as a
+# constant, so it is read from there for the same reason.
+EXPECTED_SCHEMA_VERSION="$(grep -m1 -oE "expectedSchemaVersion '[^']+'" "$CAMPAIGN_SCRIPT" \
+    | sed "s/^expectedSchemaVersion '//; s/'$//")" \
+    || fail 'could not read expectedSchemaVersion from the campaign script'
+readonly EXPECTED_SCHEMA_VERSION
+[[ -n "$EXPECTED_SCHEMA_VERSION" ]] || fail 'expectedSchemaVersion read as empty'
+
+EXPECTED_TRIAL_LABELS="$(jq -nc --argjson trialCount "$TRIAL_COUNT" \
+    '[range(1; $trialCount + 1) | "trial-\(.)"]')"
+readonly EXPECTED_TRIAL_LABELS
+
+# Two constants, one fact. The histogram names a count for every role and the role set names
+# the roles; updating one without the other is a real drift class and nothing else catches it.
+jq -ne --argjson roles "$EXPECTED_CAPTURE_ARTIFACT_ROLES" \
+    --argjson counts "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" \
+    '($counts | keys) == ($roles | unique)' >/dev/null \
+    || fail 'EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS and EXPECTED_CAPTURE_ARTIFACT_ROLES name different roles'
+
+WORK="$(mktemp -d)"
+readonly WORK
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+
+# The document builder. It emits one trial document carrying exactly the fields the identity
+# program reads, with the artefact multiplicity given as a histogram so a mutation is a change
+# to one argument rather than a second copy of the builder.
+readonly BUILD_PROGRAM='
+  def hexdigit($n): [48,49,50,51,52,53,54,55,56,57,97,98,99,100,101,102][$n];
+  # A deterministic sixty-four-character hexadecimal value derived from a seed. It is not a
+  # content hash and nothing here claims it is; the gate checks the digest format and the
+  # equality between the declared and the recomputed value, and both are exercised.
+  def hex64($seed):
+    ($seed | tostring | explode) as $e | ($e | length) as $n | ($e | add) as $sum |
+    [ range(0; 64) | hexdigit(((($e[. % $n]) * 31 + (. * 17) + $sum) % 16)) ] | implode;
+  ([ $roleCounts | to_entries[] as $entry | range(0; $entry.value) | $entry.key ]) as $roles |
+  { rigSha256: hex64("rig"), processingSha256: hex64("processing"),
+    localProfileSha256: hex64("local-profile"), scheduleSha256: hex64("schedule"),
+    catalogSha256: hex64("catalog") } as $workload |
+  ([ range(0; $captureCount) as $c |
+       { captureId: "\($trial)-capture-\($c)",
+         artifacts: [ range(0; ($roles | length)) as $i |
+           hex64("\($trial)-\($c)-\($i)-\($roles[$i])") as $digest |
+           { artifactId: "\($trial)-c\($c)-a\($i)", role: $roles[$i],
+             declaredSha256: $digest, computedSha256: $digest,
+             declaredByteLength: (1024 + $i), observedByteLength: (1024 + $i),
+             relativeArtifactPath: "\($trial)/c\($c)/a\($i).bin",
+             sourceArtifactIds: [] } ] } ]) as $rows |
+  { schemaVersion: $schemaVersion,
+    trial: $trial,
+    workload: ({ measuredCount: $captureCount } + $workload),
+    # The producer builds this list and the provenance artefacts from one collection, which is
+    # why the round-3 cross-check between them could not see a truncation. The builder mirrors
+    # that, so a corpus cut here is cut the way a real under-reporting capture would be.
+    captures: [ $rows[] | { captureId: .captureId, roles: ([ .artifacts[].role ] | unique) } ],
+    captureProvenance: [ $rows[] |
+      { captureId: .captureId,
+        rigSha256: $workload.rigSha256, processingSha256: $workload.processingSha256,
+        localProfileSha256: $workload.localProfileSha256,
+        scheduleRevisionSha256: $workload.scheduleSha256,
+        artifacts: .artifacts } ],
+    calibrationResiduals: { observedCatalogSha256: $workload.catalogSha256 } }
+'
+
+# build_corpus NAME DEFAULT_HISTOGRAM [FIRST_TRIAL_HISTOGRAM]
+# The optional third argument makes the first trial differ from the rest, which is how a
+# non-uniform cut is built.
+build_corpus() {
+    local name="$1" histogram="$2" firstTrialHistogram="${3:-}" label index directory histogramForTrial
+    directory="$WORK/$name"
+    mkdir -p "$directory"
+    for ((index = 1; index <= TRIAL_COUNT; index++)); do
+        label="trial-$index"
+        histogramForTrial="$histogram"
+        if [[ -n "$firstTrialHistogram" && $index -eq 1 ]]; then
+            histogramForTrial="$firstTrialHistogram"
+        fi
+        jq -n --arg schemaVersion "$EXPECTED_SCHEMA_VERSION" \
+            --arg trial "$label" \
+            --argjson captureCount "$MEASURED_CAPTURE_COUNT" \
+            --argjson roleCounts "$histogramForTrial" \
+            "$BUILD_PROGRAM" > "$directory/$label.json"
+    done
+    printf '%s' "$directory"
+}
+
+# Every path-and-value pair in a corpus, sorted, so two corpora can be compared as sets of
+# facts rather than as text. A mutation that changes no pair has not mutated anything.
+corpus_pairs() {
+    jq -S -c 'paths(scalars) as $p | [$p, getpath($p)]' "$1"/*.json | sort
+}
+
+# One run of the two real programs over one corpus. The summary is kept so a failing row can
+# be opened rather than argued about.
+run_gate() {
+    local directory="$1" summary="$1.summary.json"
+    jq -s -f "$IDENTITY_PROGRAM" \
+        --arg expectedSchemaVersion "$EXPECTED_SCHEMA_VERSION" \
+        --argjson measuredCaptureCount "$MEASURED_CAPTURE_COUNT" \
+        --argjson expectedTrialLabels "$EXPECTED_TRIAL_LABELS" \
+        --argjson expectedCaptureRoles "$EXPECTED_CAPTURE_ARTIFACT_ROLES" \
+        --argjson expectedCaptureArtifactRoleCounts "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" \
+        "$directory"/*.json > "$summary"
+    if jq --exit-status -f "$IDENTITY_GATE_PROGRAM" \
+        --argjson measuredCaptureCount "$MEASURED_CAPTURE_COUNT" \
+        --argjson expectedTrialLabels "$EXPECTED_TRIAL_LABELS" \
+        --argjson expectedCaptureRoles "$EXPECTED_CAPTURE_ARTIFACT_ROLES" \
+        --argjson expectedCaptureArtifactRoleCounts "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" \
+        "$summary" >/dev/null; then
+        printf 'PASS'
+    else
+        printf 'REFUSE'
+    fi
+}
+
+ONE_PER_ROLE_HISTOGRAM="$(jq -nc --argjson counts "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" \
+    '$counts | map_values(1)')"
+SINGLE_ARTIFACT_HISTOGRAM="$(jq -nc --argjson counts "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" \
+    '{ ($counts | keys | first): 1 }')"
+# The redistribution keeps the artefact TOTAL and moves one artefact between roles. A declared
+# total accepts it; the declared histogram refuses it. That is the whole difference between the
+# two remedies and it is measured rather than asserted.
+REDISTRIBUTED_HISTOGRAM="$(jq -nc --argjson counts "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" '
+  ($counts | to_entries | sort_by(-.value)) as $ranked |
+  ($ranked | first) as $largest |
+  ([ $ranked[] | select(.key != $largest.key and .value > 1) ] | first) as $donor |
+  if $donor == null then null
+  else $counts
+    | .[$largest.key] = ($largest.value + 1)
+    | .[$donor.key] = ($donor.value - 1)
+  end')"
+readonly ONE_PER_ROLE_HISTOGRAM SINGLE_ARTIFACT_HISTOGRAM REDISTRIBUTED_HISTOGRAM
+
+declare -a CASE_NAMES=() CASE_EXPECTED=() CASE_DIRECTORIES=()
+add_case() {
+    CASE_NAMES+=("$1")
+    CASE_EXPECTED+=("$2")
+    CASE_DIRECTORIES+=("$(build_corpus "$1" "$3" "${4:-}")")
+}
+
+add_case control PASS "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS"
+# The finding. Every declared role still present, the multiplicity gone.
+add_case one-per-role REFUSE "$ONE_PER_ROLE_HISTOGRAM"
+# The coarse cut round 4 already refused, kept so a regression that loses the role-set check
+# while keeping the histogram check is still visible.
+add_case single-artifact REFUSE "$SINGLE_ARTIFACT_HISTOGRAM"
+# The non-uniform cut. Cross-capture uniformity alone refuses this one, which is why it cannot
+# stand in for the histogram: the uniform cut above satisfies uniformity and this does not.
+add_case one-trial-cut REFUSE "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" "$ONE_PER_ROLE_HISTOGRAM"
+if [[ "$REDISTRIBUTED_HISTOGRAM" != null ]]; then
+    add_case redistributed REFUSE "$REDISTRIBUTED_HISTOGRAM"
+else
+    printf 'note: the declared histogram has no second role with a count above one, so the\n'
+    printf '      redistribution case is not constructible and is not being reported as passing.\n'
+fi
+
+# The ID-reuse corpus. Every capture's artifact array is replaced by the first capture's,
+# so nine hundred entries carry eighteen distinct identifiers while recordedArtifactCount
+# is still nine hundred and the histogram, role set, and capture IDs are all unchanged.
+IDREUSE_DIR="$(build_corpus idreuse "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS")"
+for f in "$IDREUSE_DIR"/*.json; do
+    jq '(.captureProvenance[0].artifacts) as $first |
+        .captureProvenance |= [.[] | .artifacts = $first]' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+done
+CASE_NAMES+=("idreuse")
+CASE_EXPECTED+=("REFUSE")
+CASE_DIRECTORIES+=("$IDREUSE_DIR")
+
+readonly CONTROL_DIRECTORY="${CASE_DIRECTORIES[0]}"
+
+printf '%-16s | %-11s | %9s | %8s | %-6s | %s\n' \
+    corpus 'changed pairs' artefacts problems expect actual
+printf -- '-----------------+-------------+-----------+----------+--------+-------\n'
+
+failures=0
+for index in "${!CASE_NAMES[@]}"; do
+    name="${CASE_NAMES[$index]}"
+    expected="${CASE_EXPECTED[$index]}"
+    directory="${CASE_DIRECTORIES[$index]}"
+
+    if [[ "$name" == control ]]; then
+        changed=0
+    else
+        changed="$(comm -3 <(corpus_pairs "$CONTROL_DIRECTORY") <(corpus_pairs "$directory") | wc -l)"
+        if [[ "$changed" -eq 0 ]]; then
+            printf 'FAIL %s: the mutation changed nothing, so its verdict says nothing.\n' "$name" >&2
+            failures=$((failures + 1))
+            continue
+        fi
+    fi
+
+    actual="$(run_gate "$directory")"
+    artefacts="$(jq -r '.recordedArtifactCount' "$directory.summary.json")"
+    problems="$(jq -r '(.problems // []) | length' "$directory.summary.json")"
+    printf '%-16s | %11s | %9s | %8s | %-6s | %s\n' \
+        "$name" "$changed" "$artefacts" "$problems" "$expected" "$actual"
+    if [[ "$actual" != "$expected" ]]; then
+        printf 'FAIL %s: expected %s, got %s. Summary: %s\n' \
+            "$name" "$expected" "$actual" "$directory.summary.json" >&2
+        failures=$((failures + 1))
+    fi
+done
+
+if [[ "$failures" -ne 0 ]]; then
+    printf '\n%d case(s) disagreed with the standard. The W6 identity gate does not discriminate\n' "$failures" >&2
+    printf 'the way scripts/issue-211-w6-identity.jq claims it does.\n' >&2
+    exit 1
+fi
+
+printf '\nW6 evidence identity gate: control accepted, every constructed cut refused.\n'

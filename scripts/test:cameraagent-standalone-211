@@ -16,6 +16,8 @@ readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/cameraagent-dual-standal
 readonly CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6.json"
 readonly MONO_CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6-mono8.json"
 readonly DEFAULT_RESULTS_BASE="$REPO_ROOT/TestResults/issue-211"
+readonly W6_IDENTITY_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity.jq"
+readonly W6_IDENTITY_GATE_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity-gate.jq"
 readonly BIND_LOCAL_ROOT="$REPO_ROOT/data/agent/issue-211"
 readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6'
 readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
@@ -23,6 +25,20 @@ readonly HTTP_PORT="${HVO_ISSUE_211_HTTP_PORT:-52110}"
 readonly TRIAL_COUNT="${HVO_ISSUE_211_TRIAL_COUNT:-5}"
 readonly WARMUP_CAPTURE_COUNT=2
 readonly MEASURED_CAPTURE_COUNT=10
+# Issue #770, correction round 4. Every W6 capture carries the same set of artefact roles, and
+# that set is a property of the campaign rather than of any document the campaign produces. It is
+# declared here so the identity gate can require it from outside each document, the way
+# MEASURED_CAPTURE_COUNT is required from outside. The producer builds a capture's provenance
+# artefacts and its roles list from one collection, so a capture that under-reports its artefacts
+# shortens both together and no cross-check inside the document can see it.
+readonly EXPECTED_CAPTURE_ARTIFACT_ROLES='["AnnotatedPreview","Calibrated","Combined","Metadata","Preview","Raw"]'
+# Issue #770, correction round 5. The role set alone anchors which roles a capture presents and
+# not how many artefacts it presents for each, so a capture cut to one artefact per role kept all
+# six roles and lost six hundred of nine hundred artefact digests without the gate objecting.
+# This is the multiplicity, declared here rather than read out of the documents for the same
+# reason MEASURED_CAPTURE_COUNT is. It is the histogram every one of the fifty captures in the
+# five-trial campaign carries. Change it when the processing graph changes what a capture emits.
+readonly EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS='{"AnnotatedPreview":1,"Calibrated":1,"Combined":1,"Metadata":12,"Preview":2,"Raw":1}'
 
 if [[ $# -ne 0 || -z "${HVO_CATALOG_PERF_ROOT:-}" || -z "${HVO_OTEL_COLLECTOR_IMAGE:-}" ]]; then
     printf 'Usage: HVO_CATALOG_PERF_ROOT=INSTALLED_PRODUCTION_CATALOG_ROOT HVO_OTEL_COLLECTOR_IMAGE=IMAGE@sha256:DIGEST %s\n' "${0##*/}" >&2
@@ -1258,24 +1274,115 @@ run_profile_trial \
     'replay-719' \
     'false'
 
-jq -s '
+# Issue #770, correction round 3. The six central-traffic documents were counted and never
+# identified, so replacing trial 2's document with a copy of trial 1's left the count at six and
+# every gate passing while the summary printed trial 1 twice in its own output. The labels the
+# campaign actually ran are built here, outside any document, and the documents must name exactly
+# that set.
+EXPECTED_W6_TRIALS="$(jq -nc --argjson trialCount "$TRIAL_COUNT" \
+    '[range(1; $trialCount + 1) | "trial-\(.)"]')"
+readonly EXPECTED_W6_TRIALS
+EXPECTED_CENTRAL_TRAFFIC_TRIALS="$(jq -nc --argjson expectedW6Trials "$EXPECTED_W6_TRIALS" \
+    '["mono8-control"] + $expectedW6Trials')"
+readonly EXPECTED_CENTRAL_TRAFFIC_TRIALS
+
+# Issue #770. `add` over a list of nulls is null and `// 0` turned that into a clean zero, so a
+# counter that was never recorded and a counter that was genuinely zero produced the same summary.
+# Each counter is now required to be a number, and the input count is recorded, because `add` and
+# `all` over an empty list also score as a perfect run when the glob matches nothing.
+#
+# Issue #770, correction round 2. Requiring a number is not the same as requiring a valid
+# measurement. Corrupt one trial to a finalDenyHits of 1 and another to -1 and the sum is zero
+# again, so a type check alone lets two corrupted trials cancel each other out and every gate
+# below passes. An event count is a non-negative whole number, and that is now the requirement.
+# `passed` is recomputed here from the five counters the trial derived it from, rather than read
+# back as a flag that a corrupted document keeps after its counters have stopped supporting it.
+jq -s --argjson expectedTrials "$EXPECTED_CENTRAL_TRAFFIC_TRIALS" '
+  def is_count: (type == "number") and (isnan | not) and (isinfinite | not)
+    and (. >= 0) and (. == floor);
+  def require_count($field): if is_count then . else
+    error("a central-traffic-gate.json has \($field) = \(tojson), which is not a non-negative whole count") end;
+  def recomputed_passed:
+    ((.inTestCentralTrafficAttempts | require_count("inTestCentralTrafficAttempts")) == 0)
+    and ((.inTestCentralHandlerAttempts | require_count("inTestCentralHandlerAttempts")) == 0)
+    and ((.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) == 0)
+    and ((.finalCentralHandlerReadyRecords | require_count("finalCentralHandlerReadyRecords")) >= 1)
+    and ((.finalDenyHits | require_count("finalDenyHits")) == 0);
   {
-    schemaVersion: "issue-211-final-central-traffic-summary-v1",
-    trials: sort_by(.trial),
-    centralHandlerAttempts: (map(.inTestCentralHandlerAttempts) | add // 0),
-    finalCentralHandlerAttempts: (map(.finalCentralHandlerAttempts) | add // 0),
-    finalDenyHits: (map(.finalDenyHits) | add // 0),
-    allPassed: all(.passed == true)
+    schemaVersion: "issue-211-final-central-traffic-summary-v4",
+    gateCount: length,
+    trialLabels: ([.[].trial] | sort),
+    expectedTrialLabels: ($expectedTrials | sort),
+    trialsIdentified: (([.[] | .trial | select(type == "string" and length > 0)] | sort)
+      == ($expectedTrials | sort)),
+    trials: (sort_by(.trial) | map(.recordedPassed = .passed | .passed = recomputed_passed)),
+    centralHandlerAttempts:
+      (map(.inTestCentralHandlerAttempts | require_count("inTestCentralHandlerAttempts")) | add // 0),
+    finalCentralHandlerAttempts:
+      (map(.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) | add // 0),
+    finalDenyHits: (map(.finalDenyHits | require_count("finalDenyHits")) | add // 0),
+    recordedFlagsAgreeWithCounters: (length > 0 and all(.passed == recomputed_passed)),
+    allPassed: (length > 0 and all(recomputed_passed))
   }
 ' "$RESULTS"/*/evidence/central-traffic-gate.json > "$RESULTS/final-central-traffic-summary.json"
+
+# Issue #770, correction round 3. The aggregate above established that a recorded flag disagreed
+# with its own counters, wrote the disagreement into the summary, and passed anyway, because
+# nothing read the field. A fail-open with a witness is worse than not having looked, since the
+# document then carries a false assurance that the disagreement was weighed. It is read here, at
+# the point of production, together with the trial identity the same aggregate now records.
+jq --exit-status '.trialsIdentified == true and .recordedFlagsAgreeWithCounters == true' \
+    "$RESULTS/final-central-traffic-summary.json" >/dev/null \
+    || gate_failed 'final central-traffic aggregate' "$RESULTS/final-central-traffic-summary.json"
+
+# Issue #770. The W6 evidence document has to carry the identities the run measured, not only
+# the constants it was checked against, and this gate refuses a document that omits them. It is
+# written as a positive requirement: every field named here must be present and well formed, so a
+# missing field fails the run rather than scoring as clean. The comparison between the declared
+# and the recomputed digest is re-derived here from the record itself, which is the property that
+# lets a later reader stop trusting the runner.
+#
+# Issue #770, correction round 4. The program itself now lives in scripts/issue-211-w6-identity.jq
+# rather than in a string here, so the same standard can be run on its own over a directory of
+# finished documents without rerunning a two-hour campaign. Every standard it checks against is
+# passed in on this command line, which is the point: a gate that reads its standard out of the
+# documents under test cannot reject a document that misstates it.
+jq -s -f "$W6_IDENTITY_PROGRAM" \
+    --arg expectedSchemaVersion 'issue-211-w6-evidence-v3' \
+    --argjson measuredCaptureCount "$MEASURED_CAPTURE_COUNT" \
+    --argjson expectedTrialLabels "$EXPECTED_W6_TRIALS" \
+    --argjson expectedCaptureRoles "$EXPECTED_CAPTURE_ARTIFACT_ROLES" \
+    --argjson expectedCaptureArtifactRoleCounts "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" \
+    "$RESULTS"/trial-*/evidence/issue-211-w6.json > "$RESULTS/w6-identity-summary.json"
+
+jq --exit-status -f "$W6_IDENTITY_GATE_PROGRAM" \
+    --argjson measuredCaptureCount "$MEASURED_CAPTURE_COUNT" \
+    --argjson expectedTrialLabels "$EXPECTED_W6_TRIALS" \
+    --argjson expectedCaptureRoles "$EXPECTED_CAPTURE_ARTIFACT_ROLES" \
+    --argjson expectedCaptureArtifactRoleCounts "$EXPECTED_CAPTURE_ARTIFACT_ROLE_COUNTS" \
+    "$RESULTS/w6-identity-summary.json" >/dev/null \
+    || gate_failed 'W6 evidence identity' "$RESULTS/w6-identity-summary.json"
 
 jq -s \
     --arg fingerprint "$WORKTREE_FINGERPRINT" \
     --argjson declaredBoundedTrialFootprintBytes "$DECLARED_BOUNDED_TRIAL_FOOTPRINT_BYTES" \
     --slurpfile finalCentralTraffic "$RESULTS/final-central-traffic-summary.json" '
   def percent_change($baseline; $candidate): (($candidate / $baseline) - 1) * 100;
-  def stats:
-    sort as $values |
+  # Issue #770. `sort` puts null below every number, so a five-sample list with one absent
+  # field still has a number at the median index: sampleCount still reports 5 while the median
+  # shifts one rank toward the low end, and nothing in the run ever says a sample was missing.
+  # On the four normalized ratios below that shift is optimistic in the candidate direction, so
+  # every sample must now be a number for a summary to be produced at all.
+  # Issue #770, correction round 3. `all` over an empty list is vacuously true, so on an empty
+  # sample list the guard added to name a bad field said nothing at all; the run still failed,
+  # but only because the median arithmetic went on to divide null, and the message named no
+  # field. Emptiness is refused first so the failure names the series it came from.
+  def stats($what):
+    (if (type == "array") and (length > 0) then . else
+      error("\($what) has no samples, so its summary would have been computed over an empty list") end)
+    | (if all(type == "number") then . else
+      error("\($what) has a sample that is not a number, so its median would have been taken over an absent measurement") end)
+    | sort as $values |
     {
       sampleCount: ($values | length),
       minimum: $values[0],
@@ -1283,60 +1390,176 @@ jq -s \
         (($values[(($values | length) / 2 - 1)] + $values[(($values | length) / 2)]) / 2)
       else $values[(($values | length) / 2 | floor)] end),
       p95: (if ($values | length) >= 30 then $values[((($values | length) * 0.95 | ceil) - 1)] else null end),
-       maximum: $values[-1]
-     };
-  ($finalCentralTraffic[0].trials) as $final_central_traffic |
-  (map(.centralTrafficAttempts) | add // 0) as $central_traffic_attempts |
-  ($final_central_traffic | map(.finalDenyHits) | add // 0) as $final_deny_hits |
-  ($final_central_traffic | map(.finalCentralHandlerAttempts) | add // 0) as $central_handler_attempts |
+      maximum: $values[-1]
+    };
+  # Issue #770. Every one of these was `add // 0`, which cannot distinguish an absent counter
+  # from a zero one, and an empty input list summed to a clean zero as well. Each counter must
+  # now be a number and each list must be non-empty for the run to produce a summary at all.
+  def require_number($field): if type == "number" then . else
+    error("an issue-211-w6.json has no numeric \($field)") end;
+  # Issue #770, correction round 2. Event counts and byte totals are non-negative whole numbers.
+  # A type check alone admits a negative or fractional value, which is well typed and impossible,
+  # and lets two corrupted trials cancel to a clean aggregate.
+  def is_byte_count: (type == "number") and (isnan | not) and (isinfinite | not)
+    and (. >= 0) and (. == floor);
+  def require_count($field): if is_byte_count then . else
+    error("an issue-211-w6.json has \($field) = \(tojson), which is not a non-negative whole count") end;
+  def require_present($what): if (type == "array" and length > 0) then . else
+    error("\($what) is empty, so this summary would have been computed over no measurements") end;
+  def is_nonnegative_number: (type == "number") and (isnan | not) and (isinfinite | not) and (. >= 0);
+  # Issue #770, correction round 3. The durable-queue maxima took a maximum over values nothing
+  # had checked, and the gate below then read the producer boolean back instead of
+  # comparing those maxima to a bound. Empty every maxima list and the run reached ready; set a
+  # count to minus five with bytes at a trillion and it reached ready. That is precisely the
+  # read-the-flag-back pattern this pull request abandoned in the central-traffic aggregate, two
+  # fields away in the same document. The bound is now taken from the bounds the trials declare,
+  # every trial must declare the same ones, and the recomputation must cover exactly the queues
+  # those bounds name — so shrinking the maxima list, or fitting the bounds in one document to
+  # the maxima in that same document, is a disagreement rather than a pass.
+  def require_queue_count($queue; $field): if is_byte_count then . else
+    error("durable queue \($queue) has \($field) = \(tojson), which is not a non-negative whole count") end;
+  def require_queue_number($queue; $field): if is_nonnegative_number then . else
+    error("durable queue \($queue) has \($field) = \(tojson), which is not a non-negative finite measurement") end;
+  (length) as $trial_count |
+  ([ .[].performance.declaredDurableQueueBounds ] | unique) as $declared_queue_bound_sets |
+  ($declared_queue_bound_sets | first) as $declared_queue_bounds |
+  ([ .[].performance.maximumDurableQueues[]? ] | group_by(.name) | map(
+    (.[0].name) as $queue |
+    ($declared_queue_bounds[$queue]? // null) as $bound |
+    {
+      name: $queue,
+      sampleCount: length,
+      count: (map(.count | require_queue_count($queue; "count")) | max),
+      bytes: (map(.bytes | require_queue_count($queue; "bytes")) | max),
+      ageSeconds: (map(.ageSeconds | require_queue_number($queue; "ageSeconds")) | max),
+      declaredCount: ($bound.count? // null),
+      declaredBytes: ($bound.bytes? // null),
+      declaredAgeSeconds: ($bound.ageSeconds? // null)
+    }
+    | . as $observed
+    | $observed + {
+        withinDeclaredBound: (
+          ($bound | type) == "object"
+          and ($bound.count | is_byte_count) and ($bound.bytes | is_byte_count)
+          and ($bound.ageSeconds | is_nonnegative_number)
+          and ($observed.count <= $bound.count)
+          and ($observed.bytes <= $bound.bytes)
+          and ($observed.ageSeconds <= $bound.ageSeconds))
+      })) as $durable_queue_maxima |
+  (($declared_queue_bound_sets | length) == 1
+    and ($declared_queue_bounds | type) == "object"
+    and ($declared_queue_bounds | length) > 0
+    and ($durable_queue_maxima | length) > 0
+    and (($durable_queue_maxima | map(.name) | sort) == ($declared_queue_bounds | keys))
+    and ($durable_queue_maxima | all(.sampleCount == $trial_count))
+    and ($durable_queue_maxima | all(.withinDeclaredBound)))
+    as $durable_queues_within_bounds |
+  # Issue #770, correction round 4. This compared the recorded boolean against the recomputation
+  # above and called the comparison an agreement check. It never was one. The producer wrote the
+  # literal true, so there was no recorded value that could differ, and now that the producer
+  # computes the boolean it does so from the same maxima and bounds this document carries, so the
+  # two still cannot disagree. The recomputation is the check. The recorded flag is required to be
+  # true, which refuses a document whose own producer reports its queues out of bounds, and that
+  # is the whole of what it can honestly be asked to decide.
+  (all(.performance.durableQueuesWithinDeclaredBounds == true))
+    as $durable_queues_recorded_within_bounds |
+  ($finalCentralTraffic[0].trials | require_present("the final central-traffic gate list"))
+    as $final_central_traffic |
+  (require_present("the five-trial evidence list")
+    | map(.centralTrafficAttempts | require_count("centralTrafficAttempts")) | add)
+    as $central_traffic_attempts |
+  ($final_central_traffic | map(.finalDenyHits | require_count("finalDenyHits")) | add)
+    as $final_deny_hits |
+  ($final_central_traffic
+    | map(.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) | add)
+    as $central_handler_attempts |
+  # Issue #770, correction round 3. Requiring a value to be a number is not requiring it to be a
+  # measurement. Rewrite three of five allocatedBytes samples to minus one and the median goes
+  # negative, the normalized percent change goes to roughly minus one hundred, and the
+  # fifteen-percent regression guard admits a corpus that carries a real regression.
+  #
+  # The guard belongs on these four series and on no others. cadenceHeadroomMilliseconds is a
+  # cadence interval minus an end-to-end duration and is legitimately negative on any overrun,
+  # and rawStorageGrowthBytes, derivativeStorageGrowthBytes and sqliteFootprintGrowthBytes are
+  # after-minus-before subtractions that go negative whenever retention prunes. A blanket
+  # non-negativity guard on `stats` would have traded this fail-open for a fail-closed on all
+  # four of those. Each of the four is summarized once here, so the guarded value is also the
+  # value the comparison block prints rather than a second computation that could drift from it.
+  # Issue #770, correction round 4. The backlog maxima reached this summary through the bare
+  # statistics helper, so a trial reporting a backlog depth of minus five printed a minimum of
+  # minus five under the same schema as the guarded values, with nothing saying it had not been
+  # checked. They are event counts and byte totals, unlike the cadence headroom and the storage
+  # deltas, which are excluded from this guard because they are legitimately negative.
+  #
+  # Issue #770, correction round 5. That paragraph named an excluded list and left five byte
+  # totals in neither list, so it read as though everything unexcluded was covered when
+  # peakContainerMemoryUsageBytes, maximumObservedLastCollectionLohBytes, processReadBytes,
+  # containerBlockReadBytes and containerBlockWriteBytes were not. They are peaks and cumulative
+  # totals rather than differences, so they are non-negative for the same reason the backlog
+  # figures are, and they now go through the same guard. This closed a false comment and not a
+  # fail-open: none of them is read by any gate, each name appears once in this file, and a
+  # negative value in any of them changed no decision. The remaining unguarded series are the
+  # cadence headroom and the three storage deltas, and the reason is the one given above.
+  def counted_stats($what):
+    (if all(is_byte_count) then . else
+      error("\($what) has a sample that is not a non-negative whole count, so its summary would have reported an impossible backlog") end)
+    | stats($what);
+  def measured_stats($what):
+    (if all((type == "number") and (isnan | not) and (isinfinite | not) and (. >= 0)) then . else
+      error("\($what) has a sample that is not a non-negative finite measurement, so the normalized regression comparison would have rested on an impossible value") end)
+    | stats($what);
+  (map(.performance.cpuSeconds) | measured_stats("cpuSeconds")) as $cpu_seconds |
+  (map(.performance.allocatedBytes) | measured_stats("allocatedBytes")) as $allocated_bytes |
+  (map(.performance.peakRssBytes) | measured_stats("peakRssBytes")) as $peak_rss_bytes |
+  (map(.performance.processWriteBytes) | measured_stats("processWriteBytes")) as $process_write_bytes |
   ([
     percent_change(
       (37.973 / (14 * 4708352 / 1073741824));
-      ((map(.performance.cpuSeconds) | stats).median / (10 * 25233408 / 1073741824))),
+      ($cpu_seconds.median / (10 * 25233408 / 1073741824))),
     percent_change(
       (13320000000 / (14 * 4708352));
-      ((map(.performance.allocatedBytes) | stats).median / (10 * 25233408))),
+      ($allocated_bytes.median / (10 * 25233408))),
     percent_change(
       (1101000000 / 4708352);
-      ((map(.performance.peakRssBytes) | stats).median / 25233408)),
+      ($peak_rss_bytes.median / 25233408)),
     percent_change(
       (2703000000 / (14 * 4708352));
-      ((map(.performance.processWriteBytes) | stats).median / (10 * 25233408)))
+      ($process_write_bytes.median / (10 * 25233408)))
   ]) as $normalized_percent_changes |
   {
     schemaVersion: "issue-211-w6-summary-v1",
     worktreeFingerprint: $fingerprint,
     trialCount: length,
     declaredBoundedTrialFootprintBytes: $declaredBoundedTrialFootprintBytes,
-    elapsedMilliseconds: (map(.performance.elapsedMilliseconds) | stats),
-    cpuSeconds: (map(.performance.cpuSeconds) | stats),
-    peakRssBytes: (map(.performance.peakRssBytes) | stats),
-    allocatedBytes: (map(.performance.allocatedBytes) | stats),
-    peakContainerMemoryUsageBytes: (map(.performance.peakContainerMemoryUsageBytes) | stats),
+    elapsedMilliseconds: (map(.performance.elapsedMilliseconds) | stats("elapsedMilliseconds")),
+    cpuSeconds: $cpu_seconds,
+    peakRssBytes: $peak_rss_bytes,
+    allocatedBytes: $allocated_bytes,
+    peakContainerMemoryUsageBytes: (map(.performance.peakContainerMemoryUsageBytes) | counted_stats("peakContainerMemoryUsageBytes")),
     maximumObservedLastCollectionLohBytes:
-      (map(.performance.maximumObservedLastCollectionLohBytes) | stats),
-    operationalCaptureRatePerSecond: (map(.performance.operationalCaptureRatePerSecond) | stats),
-    rawStorageGrowthBytes: (map(.performance.rawStorageGrowthBytes) | stats),
-    declaredRawBytesPerDay: (map(.performance.declaredRawBytesPerDay) | stats),
+      (map(.performance.maximumObservedLastCollectionLohBytes) | counted_stats("maximumObservedLastCollectionLohBytes")),
+    operationalCaptureRatePerSecond: (map(.performance.operationalCaptureRatePerSecond) | stats("operationalCaptureRatePerSecond")),
+    rawStorageGrowthBytes: (map(.performance.rawStorageGrowthBytes) | stats("rawStorageGrowthBytes")),
+    declaredRawBytesPerDay: (map(.performance.declaredRawBytesPerDay) | stats("declaredRawBytesPerDay")),
     hypotheticalFiveSecondStartIntervalRawBytesPerDay:
-      (map(.performance.hypotheticalFiveSecondStartIntervalRawBytesPerDay) | stats),
-    derivativeStorageGrowthBytes: (map(.performance.derivativeStorageGrowthBytes) | stats),
-    sqliteFootprintGrowthBytes: (map(.performance.sqliteFootprintGrowthBytes) | stats),
-    processReadBytes: (map(.performance.processReadBytes) | stats),
-    processWriteBytes: (map(.performance.processWriteBytes) | stats),
-    containerBlockReadBytes: (map(.performance.containerBlockReadBytes) | stats),
-    containerBlockWriteBytes: (map(.performance.containerBlockWriteBytes) | stats),
-    maximumBacklogCount: (map(.performance.maximumBacklogCount) | stats),
-    maximumBacklogBytes: (map(.performance.maximumBacklogBytes) | stats),
-    maximumBacklogAgeSeconds: (map(.performance.maximumBacklogAgeSeconds) | stats),
-    peakFilesystemBytes: (map(.performance.peakFilesystemBytes) | stats),
-    retainedFilesystemBytes: (map(.performance.retainedFilesystemBytes) | stats),
-    durableQueueMaxima: ([.[].performance.maximumDurableQueues[]] | group_by(.name) | map({
-      name: .[0].name,
-      count: (map(.count) | max),
-      bytes: (map(.bytes) | max),
-      ageSeconds: (map(.ageSeconds) | max)
-    })),
+      (map(.performance.hypotheticalFiveSecondStartIntervalRawBytesPerDay) | stats("hypotheticalFiveSecondStartIntervalRawBytesPerDay")),
+    derivativeStorageGrowthBytes: (map(.performance.derivativeStorageGrowthBytes) | stats("derivativeStorageGrowthBytes")),
+    sqliteFootprintGrowthBytes: (map(.performance.sqliteFootprintGrowthBytes) | stats("sqliteFootprintGrowthBytes")),
+    processReadBytes: (map(.performance.processReadBytes) | counted_stats("processReadBytes")),
+    processWriteBytes: $process_write_bytes,
+    containerBlockReadBytes: (map(.performance.containerBlockReadBytes) | counted_stats("containerBlockReadBytes")),
+    containerBlockWriteBytes: (map(.performance.containerBlockWriteBytes) | counted_stats("containerBlockWriteBytes")),
+    maximumBacklogCount:
+      (map(.performance.maximumBacklogCount) | counted_stats("maximumBacklogCount")),
+    maximumBacklogBytes:
+      (map(.performance.maximumBacklogBytes) | counted_stats("maximumBacklogBytes")),
+    maximumBacklogAgeSeconds:
+      (map(.performance.maximumBacklogAgeSeconds) | measured_stats("maximumBacklogAgeSeconds")),
+    peakFilesystemBytes: (map(.performance.peakFilesystemBytes) | stats("peakFilesystemBytes")),
+    retainedFilesystemBytes: (map(.performance.retainedFilesystemBytes) | stats("retainedFilesystemBytes")),
+    durableQueueMaxima: $durable_queue_maxima,
+    declaredDurableQueueBounds: $declared_queue_bounds,
+    durableQueueBoundSetCount: ($declared_queue_bound_sets | length),
     comparison: {
       baseline: {
         source: "main@42b6dee issue-171 attempted trial-1",
@@ -1356,45 +1579,45 @@ jq -s \
       normalized: {
         cpuSecondsPerRawGiB: {
           baseline: (37.973 / (14 * 4708352 / 1073741824)),
-          candidate: ((map(.performance.cpuSeconds) | stats).median / (10 * 25233408 / 1073741824)),
+          candidate: ($cpu_seconds.median / (10 * 25233408 / 1073741824)),
           percentChange: percent_change(
             (37.973 / (14 * 4708352 / 1073741824));
-            ((map(.performance.cpuSeconds) | stats).median / (10 * 25233408 / 1073741824)))
+            ($cpu_seconds.median / (10 * 25233408 / 1073741824)))
         },
         allocatedBytesPerRawByte: {
           baseline: (13320000000 / (14 * 4708352)),
-          candidate: ((map(.performance.allocatedBytes) | stats).median / (10 * 25233408)),
+          candidate: ($allocated_bytes.median / (10 * 25233408)),
           percentChange: percent_change(
             (13320000000 / (14 * 4708352));
-            ((map(.performance.allocatedBytes) | stats).median / (10 * 25233408)))
+            ($allocated_bytes.median / (10 * 25233408)))
         },
         peakRssBytesPerRawFrameByte: {
           baseline: (1101000000 / 4708352),
-          candidate: ((map(.performance.peakRssBytes) | stats).median / 25233408),
+          candidate: ($peak_rss_bytes.median / 25233408),
           percentChange: percent_change(
             (1101000000 / 4708352);
-            ((map(.performance.peakRssBytes) | stats).median / 25233408))
+            ($peak_rss_bytes.median / 25233408))
         },
         processWriteBytesPerRawByte: {
           baseline: (2703000000 / (14 * 4708352)),
-          candidate: ((map(.performance.processWriteBytes) | stats).median / (10 * 25233408)),
+          candidate: ($process_write_bytes.median / (10 * 25233408)),
           percentChange: percent_change(
             (2703000000 / (14 * 4708352));
-            ((map(.performance.processWriteBytes) | stats).median / (10 * 25233408)))
+            ($process_write_bytes.median / (10 * 25233408)))
         }
       },
       disposition: "Issue #171 and W6 use different cadence, frame size, graph, and measurement boundaries. The normalized values are descriptive, but the conservative <=15% regression guard remains executable."
     },
     pipeline: {
-      moduleDurationMilliseconds: ([.[].performance.pipeline.moduleDurationMilliseconds.samples[]] | stats),
-      moduleOverheadMilliseconds: ([.[].performance.pipeline.moduleOverheadMilliseconds.samples[]] | stats),
-      ingressDurationMilliseconds: ([.[].performance.pipeline.ingressDurationMilliseconds.samples[]] | stats),
-      graphDurationMilliseconds: ([.[].performance.pipeline.graphDurationMilliseconds.samples[]] | stats),
-      endToEndDurationMilliseconds: ([.[].performance.pipeline.endToEndDurationMilliseconds.samples[]] | stats),
-      cadenceHeadroomMilliseconds: ([.[].performance.pipeline.cadenceHeadroomMilliseconds.samples[]] | stats),
+      moduleDurationMilliseconds: ([.[].performance.pipeline.moduleDurationMilliseconds.samples[]] | stats("moduleDurationMilliseconds")),
+      moduleOverheadMilliseconds: ([.[].performance.pipeline.moduleOverheadMilliseconds.samples[]] | stats("moduleOverheadMilliseconds")),
+      ingressDurationMilliseconds: ([.[].performance.pipeline.ingressDurationMilliseconds.samples[]] | stats("ingressDurationMilliseconds")),
+      graphDurationMilliseconds: ([.[].performance.pipeline.graphDurationMilliseconds.samples[]] | stats("graphDurationMilliseconds")),
+      endToEndDurationMilliseconds: ([.[].performance.pipeline.endToEndDurationMilliseconds.samples[]] | stats("endToEndDurationMilliseconds")),
+      cadenceHeadroomMilliseconds: ([.[].performance.pipeline.cadenceHeadroomMilliseconds.samples[]] | stats("cadenceHeadroomMilliseconds")),
       nodes: ([.[].performance.pipeline.nodes[]] | group_by(.nodeId) | map({
         nodeId: .[0].nodeId,
-        durationMilliseconds: ([.[].durationMilliseconds.samples[]] | stats)
+        durationMilliseconds: ([.[].durationMilliseconds.samples[]] | stats("durationMilliseconds"))
       }))
     },
     centralTrafficAttempts: $central_traffic_attempts,
@@ -1403,7 +1626,8 @@ jq -s \
     finalDenyHits: $final_deny_hits,
     allPassed: all(.result.passed),
     retainedFilesystemWithinDeclaredBound:
-      all(.performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes),
+      all((.performance.peakFilesystemBytes | is_byte_count)
+        and .performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes),
     candidateGates: {
       exactlyFiveTrials: (length == 5),
       allFiveTestResultsPassed: (length == 5 and all(.result.passed == true)),
@@ -1412,12 +1636,20 @@ jq -s \
       sixFinalDenyChecksPassed:
         (($final_central_traffic | length) == 6 and all($final_central_traffic[]; .passed == true)),
       zeroFinalDenyHits: ($final_deny_hits == 0),
-      durableQueuesWithinDeclaredBounds:
-        all(.performance.durableQueuesWithinDeclaredBounds == true),
+      durableQueuesWithinDeclaredBounds: $durable_queues_within_bounds,
+      durableQueuesRecordedWithinDeclaredBounds: $durable_queues_recorded_within_bounds,
+      finalDenyGateFlagsAgreeWithCounters:
+        ($finalCentralTraffic[0].recordedFlagsAgreeWithCounters == true),
+      finalDenyGateTrialsIdentified:
+        ($finalCentralTraffic[0].trialsIdentified == true),
       normalizedRegressionWithinFifteenPercent:
         all($normalized_percent_changes[]; . <= 15),
       retainedFilesystemWithinDeclaredBound:
-        all(.performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes)
+        all((.performance.peakFilesystemBytes | is_byte_count)
+          and .performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes),
+      filesystemBytesAreValidMeasurements:
+        all((.performance.peakFilesystemBytes | is_byte_count)
+          and (.performance.retainedFilesystemBytes | is_byte_count))
     },
     w6Ready: (
       length == 5 and
@@ -1427,15 +1659,21 @@ jq -s \
       ($final_central_traffic | length) == 6 and
       all($final_central_traffic[]; .passed == true) and
       $final_deny_hits == 0 and
-      all(.performance.durableQueuesWithinDeclaredBounds == true) and
+      $durable_queues_within_bounds and
+      $durable_queues_recorded_within_bounds and
+      ($finalCentralTraffic[0].recordedFlagsAgreeWithCounters == true) and
+      ($finalCentralTraffic[0].trialsIdentified == true) and
       all($normalized_percent_changes[]; . <= 15) and
-      all(.performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes))
+      all((.performance.peakFilesystemBytes | is_byte_count)
+        and (.performance.retainedFilesystemBytes | is_byte_count)
+        and .performance.peakFilesystemBytes <= $declaredBoundedTrialFootprintBytes))
   }
 ' "$RESULTS"/trial-*/evidence/issue-211-w6.json > "$RESULTS/five-trial-summary.json"
 
 jq --exit-status --argjson declaredBoundedTrialFootprintBytes "$DECLARED_BOUNDED_TRIAL_FOOTPRINT_BYTES" \
     '.trialCount == 5 and
      .declaredBoundedTrialFootprintBytes == $declaredBoundedTrialFootprintBytes and
+     .peakFilesystemBytes.minimum >= 0 and
      .peakFilesystemBytes.maximum <= $declaredBoundedTrialFootprintBytes and
      .centralTrafficAttempts == 0 and .centralHandlerAttempts == 0 and
      .finalDenyGateCount == 6 and .finalDenyHits == 0 and
