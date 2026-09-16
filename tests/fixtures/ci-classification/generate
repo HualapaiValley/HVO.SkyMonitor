@@ -184,7 +184,7 @@ case('merge-key-root-control', 'ACCEPT',
 # workflow with no jobs produces no completed run for release qualification to
 # find even when its trigger is perfect.
 case('jobs-absent', 'REFUSE',
-     ''.join(part for part in [HEAD, TRIGGER, REST.split('\njobs:\n')[0], '\n']),
+     ''.join(part for part in [HEAD, TRIGGER, REST.split('\njobs:\n')[0]]),
      'no `jobs` key at all')
 case('jobs-null', 'REFUSE',
      ''.join([HEAD, TRIGGER, REST.split('\njobs:\n')[0], '\njobs:\n']),
