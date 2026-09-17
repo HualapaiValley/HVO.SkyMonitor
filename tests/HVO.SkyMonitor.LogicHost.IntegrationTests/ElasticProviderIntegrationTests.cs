@@ -456,12 +456,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task BacklogAProvisionedInstanceCouldNotClaimNeverProvisions()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
-        {
-            builder.UseSetting("ProcessingRunners:Enabled", "true");
-            builder.UseSetting($"ProcessingRunners:Placement:{BuiltInProcessingRecipes.EncodedPreview}", "Runner");
-            builder.UseSetting($"ProcessingRunners:Requirements:{BuiltInProcessingRecipes.EncodedPreview}:RequiresGpu", "true");
-        });
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider();
         var autoscaler = CreateScriptedAutoscaler(provider, WarmOptions(minWarm: 0), RunnerOptions(requiresGpu: true));
