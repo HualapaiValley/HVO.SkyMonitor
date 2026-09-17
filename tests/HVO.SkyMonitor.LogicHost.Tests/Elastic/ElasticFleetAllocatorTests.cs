@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.LogicHost.Services.Elastic;
 
@@ -83,6 +84,45 @@ public sealed class ElasticFleetAllocatorTests
 
         StringAssert.Contains(sql, "SELECT TOP (@candidateLimit)");
         StringAssert.Contains(sql, "ORDER BY job.[Id]");
+    }
+
+    [TestMethod]
+    public void RepresentativeFleetIsDeterministicWithinDeclaredResourceBounds()
+    {
+        var recipes = Enumerable.Range(0, 8).Select(index => $"recipe-{index}").ToArray();
+        var jobs = Enumerable.Range(0, 64)
+            .Select(index => Job($"job-{index:D2}", recipes[index % recipes.Length], index, inputBytes: index + 1))
+            .ToArray();
+        var registrations = Enumerable.Range(0, 16)
+            .Select(index => Runner(
+                $"runner-{index:D2}",
+                recipes.Where((_, recipeIndex) => recipeIndex % 4 == index % 4).ToArray(),
+                transfer: 128,
+                concurrency: 4,
+                occupied: index % 2))
+            .ToArray();
+        _ = Allocate(jobs, registrations);
+        using var process = Process.GetCurrentProcess();
+        process.Refresh();
+        var cpuBefore = process.TotalProcessorTime;
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+
+        var first = Allocate(jobs, registrations);
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        var second = Allocate(jobs, registrations.Reverse().ToArray());
+        process.Refresh();
+        var cpu = process.TotalProcessorTime - cpuBefore;
+
+        CollectionAssert.AreEqual(first.MatchedJobIds.ToArray(), second.MatchedJobIds.ToArray());
+        CollectionAssert.AreEqual(first.UnmatchedJobIds.ToArray(), second.UnmatchedJobIds.ToArray());
+        Assert.AreEqual(first.CompatibilityChecks, second.CompatibilityChecks);
+        Assert.IsTrue(first.CompatibilityChecks <= ElasticFleetAllocator.MaximumCompatibilityChecks);
+        Assert.IsTrue(first.Elapsed <= ElasticFleetAllocator.MaximumElapsed);
+        Assert.IsTrue(allocatedBytes < 64 * 1024 * 1024,
+            $"representative allocation stays below the 64 MiB evidence ceiling; observed {allocatedBytes} bytes");
+        Assert.IsTrue(cpu < TimeSpan.FromSeconds(5),
+            $"representative forward/reverse allocations stay below the five-second CPU evidence ceiling; observed {cpu}");
+        Console.WriteLine($"elastic-allocation-evidence jobs={jobs.Length} registrations={registrations.Length} slots={first.AvailableSlots} matched={first.MatchedJobIds.Count} unmatched={first.UnmatchedJobIds.Count} edgeVisits={first.CompatibilityChecks} elapsedMs={first.Elapsed.TotalMilliseconds:F3} cpuMs={cpu.TotalMilliseconds:F3} allocatedBytes={allocatedBytes}");
     }
 
     private static ElasticFleetAllocator.Result Allocate(

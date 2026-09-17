@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
 namespace HVO.SkyMonitor.LogicHost.Services.Elastic;
@@ -26,6 +27,10 @@ internal sealed class ElasticProviderTelemetry : IDisposable
     private readonly Counter<long> _orphans;
     private readonly Counter<long> _rejectedPlacements;
     private readonly Histogram<double> _coldStart;
+    private readonly Histogram<long> _allocationJobs;
+    private readonly Histogram<long> _allocationSlots;
+    private readonly Histogram<long> _allocationEdgeVisits;
+    private readonly Histogram<double> _allocationDuration;
     private readonly ConcurrentDictionary<string, ElasticProviderSnapshot> _snapshots = new(StringComparer.Ordinal);
 
     public ElasticProviderTelemetry()
@@ -35,12 +40,17 @@ internal sealed class ElasticProviderTelemetry : IDisposable
         _orphans = _meter.CreateCounter<long>("skymonitor.central.elastic.orphans_cleaned", "{instance}");
         _rejectedPlacements = _meter.CreateCounter<long>("skymonitor.central.elastic.placements_rejected", "{decision}");
         _coldStart = _meter.CreateHistogram<double>("skymonitor.central.elastic.cold_start", "ms");
+        _allocationJobs = _meter.CreateHistogram<long>("skymonitor.central.elastic.allocation.jobs", "{job}");
+        _allocationSlots = _meter.CreateHistogram<long>("skymonitor.central.elastic.allocation.slots", "{slot}");
+        _allocationEdgeVisits = _meter.CreateHistogram<long>("skymonitor.central.elastic.allocation.edge_visits", "{visit}");
+        _allocationDuration = _meter.CreateHistogram<double>("skymonitor.central.elastic.allocation.duration", "ms");
         _meter.CreateObservableGauge("skymonitor.central.elastic.instances", ObserveInstances, "{instance}");
         _meter.CreateObservableGauge("skymonitor.central.elastic.backlog", ObserveBacklog, "{job}");
         _meter.CreateObservableGauge("skymonitor.central.elastic.instance_minutes_today", ObserveMinutes, "min");
     }
 
-    public void RecordProvision(string provider) => _provisions.Add(1, Tag(provider));
+    public void RecordProvision(string provider, string reason)
+        => _provisions.Add(1, Tag(provider), new KeyValuePair<string, object?>("reason", reason));
 
     public void RecordRetirement(string provider, string reason)
         => _retirements.Add(1, Tag(provider), new KeyValuePair<string, object?>("reason", reason));
@@ -51,6 +61,15 @@ internal sealed class ElasticProviderTelemetry : IDisposable
         => _rejectedPlacements.Add(1, Tag(provider), new KeyValuePair<string, object?>("reason", reason));
 
     public void RecordColdStart(string provider, TimeSpan duration) => _coldStart.Record(duration.TotalMilliseconds, Tag(provider));
+
+    public void RecordAllocation(string provider, string phase, ElasticFleetAllocator.Result result)
+    {
+        var tags = new TagList { Tag(provider), new("phase", phase) };
+        _allocationJobs.Record(result.MatchedJobIds.Count + result.UnmatchedJobIds.Count, tags);
+        _allocationSlots.Record(result.AvailableSlots, tags);
+        _allocationEdgeVisits.Record(result.CompatibilityChecks, tags);
+        _allocationDuration.Record(result.Elapsed.TotalMilliseconds, tags);
+    }
 
     public void UpdateSnapshot(ElasticProviderSnapshot snapshot)
     {

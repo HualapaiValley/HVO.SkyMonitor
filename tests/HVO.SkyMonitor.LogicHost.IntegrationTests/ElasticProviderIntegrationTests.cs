@@ -920,6 +920,15 @@ public sealed class ElasticProviderIntegrationTests
     }
 
     [TestMethod]
+    public async Task HeterogeneousFleetCounterexamplesConvergeTogether()
+    {
+        await CapabilityMatchingReassignsFlexibleCapacityInsteadOfProvisioning().ConfigureAwait(false);
+        await FullyOccupiedRegistrationDoesNotCoverQueuedWork().ConfigureAwait(false);
+        await UnmatchedWorkUsesEachObservatoryRemainingHeadroom().ConfigureAwait(false);
+        await DeadlineUsesYoungUnmatchedWorkInsteadOfOldMatchedWork().ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task AnIncompatibleInstanceAtTheLimitIsReplacedByOneThatCanClaim()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);

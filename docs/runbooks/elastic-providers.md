@@ -110,9 +110,18 @@ processes on the host on demand. Absent and disabled by default.
   the abandonment is denied instead of reviving the retired registration; an
   abandoned runner's heartbeat is refused as well as its re-registration. `SampleInterval` and `RetireGrace` are validated even
   while disabled because that cleanup consumes them.
-- The entitlement bound is each backlogged observatory's remaining headroom
-  (its limit minus its unexpired leases from any worker) plus the work
-  already executing on the instances. Scale-down retires excess instances
+- Existing registrations cover queued work only through their currently free
+  slots. Free slots are matched to queued jobs by exact recipe and transfer
+  limit using deterministic maximum-cardinality matching; occupied slots are
+  reserved from heartbeat and unexpired-lease state. The allocator refuses
+  more than 4096 jobs, 4096 free slots, 100 million compatibility/edge visits,
+  or five seconds of matching work rather than silently truncating demand.
+- Remaining active-job entitlement is applied independently to each unmatched
+  job's observatory. Matched identities remain covered by existing capacity;
+  only provisionable unmatched identities size new capacity and their oldest
+  age controls the cold-start deadline. An exhausted observatory cannot consume
+  another observatory's headroom, and old matched work cannot reject a cold
+  start for younger unmatched work. Scale-down retires excess instances
   before instances kept for the warm minimum, and only instances idle beyond
   `ScaleToZeroAfter` are idle-retirement candidates. The warm designation
   follows the live count of warm instances: a lost warm instance is replaced
@@ -127,9 +136,10 @@ processes on the host on demand. Absent and disabled by default.
 
 Each sample the host reconciles recorded instances with the provider and the
 runner registry (orphans, registration timeouts, measured cold starts, busy
-tracking), measures provider-eligible backlog and the entitlement bound,
-decides with the scaling policy, and provisions or retires. A cold start is
-taken only when it can still serve the oldest backlog within `QueueDeadline`;
+tracking), matches provider-eligible backlog to free registered slots, filters
+the unmatched identities by scoped entitlement headroom, decides with the
+scaling policy, and provisions or retires. A cold start is taken only when it
+can still serve the oldest provisionable unmatched job within `QueueDeadline`;
 otherwise the work stays local and the rejection is counted. Idle instances
 above the warm minimum are retired after `ScaleToZeroAfter`; retirement asks
 the runner to drain and forces it after `RetireGrace`, which the child also
@@ -144,10 +154,11 @@ is retried every five minutes; recipes whose
 requirements the instance cannot satisfy are excluded and logged once as
 event 2242) and includes expired leases the claim would reclaim. Backlog is counted with the claim's own readiness query (recipe filter,
 the probed runner's transfer limit, input and graph-execution readiness),
-so no instance is provisioned for work no runner could claim. Registered
-slots are allocated job by job (largest inputs first) to the registrations
-able to claim each job by recipe and transfer limit; an instance that can
-claim nothing covers nothing, and when such instances fill `MaxInstances`
+so no instance is provisioned for work no runner could claim. Registered free
+slots are maximum-matched to jobs they can claim by exact recipe and transfer
+limit, with constrained jobs, age, stable job id, and stable runner id defining
+the deterministic secondary order. Occupied slots cover no queued work. An
+instance that can claim nothing covers nothing, and when such instances fill `MaxInstances`
 one is retired as `incompatible-replacement` so the next sample can
 provision one that can. Executable jobs no registration can take within its
 slots are an uncovered shortfall that provisions new instances within the
@@ -174,7 +185,11 @@ or with `AllowInsecureHttp`; enabling `ElasticProviders` requires
 
 Meter `HVO.SkyMonitor.LogicHost.ElasticProviders`: instances by state,
 backlog, instance minutes today, provisions, retirements by reason, orphans
-cleaned, rejected placements by reason, cold-start histogram
+cleaned, rejected placements by reason, successful provisions by reason,
+cold-start histogram, and allocation histograms for job count, free-slot count,
+edge visits, and elapsed milliseconds. Allocation metrics carry only `provider`
+and bounded `phase` (`sample` or `locked`) labels; they never carry job, runner,
+recipe, or observatory identities
 (`docs/validation/central-elastic-runtime-signals.json`). Health check
 `elastic-providers` is healthy when disabled, degraded when the daily limit
 retains backlog, when startup cannot meet the deadline past the deadline,
@@ -191,5 +206,16 @@ Log events 2230-2246.
 - Evidence: `ElasticProviderPerformanceEvidenceTests` (Manual) records cold
   and warm start, drain throughput with 1, 2, and 4 instances, scale-to-zero
   timing, and host CPU/memory to `TestResults/elastic-providers/<revision>/`.
+- `HeterogeneousFleetCounterexamplesConvergeTogether` runs the constrained /
+  flexible recipe, occupied-slot, scoped-entitlement, and uncovered-deadline
+  scenarios in one production-path sequence. The representative allocator test
+  records deterministic cardinalities, edge visits, elapsed time, process CPU,
+  and thread allocations for a 64-job, 16-registration heterogeneous fleet.
+- Diagnose retained work with the backlog gauge and snapshot `lastDecision`.
+  `instance-limit` means useful active instances fill the limit;
+  `incompatible-replacement` is a retirement reason that makes room for a
+  compatible template; `entitlement-bound` means unmatched work exists but only
+  the per-observatory provisionable subset can launch; cleanup-driven launches
+  remain `backlog` because cleanup is entitlement-exempt.
 - Provider exit: disable the section; instances scale to zero and no job state
   lives in the provider.
