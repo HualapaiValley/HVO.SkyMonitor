@@ -9,9 +9,13 @@ readonly SHELLCHECK_VERSION='0.9.0'
 readonly SHELLCHECK_ARCHIVE='shellcheck-v0.9.0.linux.x86_64.tar.xz'
 readonly SHELLCHECK_SHA256='700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f'
 readonly SHELLCHECK_URL="https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${SHELLCHECK_ARCHIVE}"
+for command in awk mktemp od realpath tail tr uname; do
+    command -v "$command" >/dev/null 2>&1 || { printf '%s requires %s.\n' "${0##*/}" "$command" >&2; exit 1; }
+done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT="${HVO_SHELLCHECK_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+REPO_ROOT="$(realpath -e -- "$REPO_ROOT")"
 readonly REPO_ROOT
 
 targets_file=''
@@ -39,7 +43,7 @@ if [[ -z "$shellcheck_bin" ]]; then
             "${0##*/}" "$SHELLCHECK_VERSION" >&2
         exit 1
     }
-    for command in awk cp curl mktemp od sha256sum tail tar tr uname; do
+    for command in cp curl sha256sum tar; do
         command -v "$command" >/dev/null 2>&1 || { printf '%s requires %s.\n' "${0##*/}" "$command" >&2; exit 1; }
     done
     cleanup_root="$(mktemp -d)"
@@ -101,18 +105,31 @@ resolved=()
 declare -A seen=()
 for target in "${targets[@]}"; do
     [[ -n "$target" ]] || { printf 'ShellCheck target set contains an empty record.\n' >&2; exit 1; }
-    [[ "$target" != /* && "$target" != *'/../'* && "$target" != '../'* && "$target" != *'/..' && "$target" != '.' ]] || {
+    [[ "$target" != /* ]] || {
         printf 'ShellCheck target must be a normalized repository-relative path: %s\n' "$target" >&2
         exit 1
     }
-    [[ -z "${seen[$target]+x}" ]] || { printf 'ShellCheck target is duplicated: %s\n' "$target" >&2; exit 1; }
-    seen[$target]=1
+    lexical="$(realpath -m -s --relative-to="$REPO_ROOT" -- "$REPO_ROOT/$target")"
+    [[ "$lexical" == "$target" && "$lexical" != '..' && "$lexical" != ../* ]] || {
+        printf 'ShellCheck target must be a normalized repository-relative path: %s\n' "$target" >&2
+        exit 1
+    }
     path="$REPO_ROOT/$target"
     [[ -f "$path" ]] || {
         printf 'ShellCheck target is not a regular file: %s\n' "$target" >&2
         printf 'The target set is therefore incomplete or references a missing worktree path.\n' >&2
         exit 1
     }
+    canonical="$(realpath -e -- "$path")"
+    [[ "$canonical" == "$REPO_ROOT/"* ]] || {
+        printf 'ShellCheck target resolves outside the repository: %s -> %s\n' "$target" "$canonical" >&2
+        exit 1
+    }
+    [[ -z "${seen[$canonical]+x}" ]] || {
+        printf 'ShellCheck target resolves to a duplicate file: %s -> %s\n' "$target" "$canonical" >&2
+        exit 1
+    }
+    seen[$canonical]=1
     resolved+=("$path")
 done
 

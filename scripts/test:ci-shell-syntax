@@ -129,6 +129,25 @@ fi
 ln -s "$WORK/does-not-exist" "$WORK/broken-link.sh"
 expect 'broken shell path rejected' 1 'not a regular file' --list "$WORK/broken-link.sh"
 
+# Discovery in an isolated repository must reject a tracked shell symlink that resolves outside
+# the repository instead of linting content from an untracked external path.
+outside_shell="$(mktemp)"
+printf '#!/usr/bin/env bash\n:\n' > "$outside_shell"
+isolated_repo="$WORK/isolated-repo"
+git -C "$WORK" init --quiet "$isolated_repo"
+ln -s "$outside_shell" "$isolated_repo/external.sh"
+git -C "$isolated_repo" add external.sh
+cases=$((cases + 1))
+set +e
+outside_output="$(HVO_SHELL_SYNTAX_REPO_ROOT="$isolated_repo" run_checker --list0 2>&1)"
+outside_status=$?
+set -e
+rm -f "$outside_shell"
+if ((outside_status == 0)) || [[ "$outside_output" != *'resolves outside the repository'* ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL tracked external shell symlink was accepted:\n%s\n' "$outside_output" >&2
+fi
+
 # Discovery must reach the library directory whose omission from the enumerated list is the
 # reported defect, and must not regress to checking nothing.
 discovered="$(run_checker --list)"
