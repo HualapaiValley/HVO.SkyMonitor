@@ -115,7 +115,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3494`, `Integration=676`, `Manual=103`, `Soak=1`, `External=0`, and `Hardware=1`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3494`, `Integration=676`, `Manual=107`, `Soak=1`, `External=0`, and `Hardware=1`.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project matrix in `scripts/test-categories/Program.cs` and fails when this runbook disagrees with it, while the Build check's category audit proves that matrix matches actual discovery. Update the matrix and this runbook in the same change.
 
