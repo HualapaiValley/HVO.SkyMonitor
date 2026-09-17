@@ -9,7 +9,7 @@ readonly SHELLCHECK_VERSION='0.9.0'
 readonly SHELLCHECK_ARCHIVE='shellcheck-v0.9.0.linux.x86_64.tar.xz'
 readonly SHELLCHECK_SHA256='700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f'
 readonly SHELLCHECK_URL="https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${SHELLCHECK_ARCHIVE}"
-for command in awk mktemp od realpath tail tr uname; do
+for command in awk dirname mktemp od realpath rm tail tr uname; do
     command -v "$command" >/dev/null 2>&1 || { printf '%s requires %s.\n' "${0##*/}" "$command" >&2; exit 1; }
 done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,10 +30,10 @@ fi
 shellcheck_bin="${HVO_SHELLCHECK_BIN-}"
 cleanup_root=''
 selector_output=''
-selector_cleanup=''
+cleanup_files=()
 cleanup() {
     [[ -z "$cleanup_root" ]] || rm -rf "$cleanup_root"
-    [[ -z "$selector_cleanup" ]] || rm -f "$selector_cleanup"
+    ((${#cleanup_files[@]} == 0)) || rm -f -- "${cleanup_files[@]}"
 }
 trap cleanup EXIT
 
@@ -80,7 +80,7 @@ if [[ -n "$targets_file" ]]; then
 else
     selector="${HVO_SHELL_SELECTOR:-$SCRIPT_DIR/ci:shell-syntax}"
     selector_output="$(mktemp)"
-    selector_cleanup="$selector_output"
+    cleanup_files+=("$selector_output")
     if ! "$BASH" "$selector" --list0 > "$selector_output"; then
         printf 'Shell file selector failed; refusing partial output from %s.\n' "$selector" >&2
         exit 1
@@ -103,13 +103,29 @@ fi
 
 resolved=()
 declare -A seen=()
+resolution_output="$(mktemp)"
+cleanup_files+=("$resolution_output")
+resolve_one() {
+    local variable="$1"
+    shift
+    local -a records
+    if ! realpath -z "$@" > "$resolution_output"; then
+        return 1
+    fi
+    mapfile -d '' -t records < "$resolution_output"
+    ((${#records[@]} == 1)) || return 1
+    printf -v "$variable" '%s' "${records[0]}"
+}
 for target in "${targets[@]}"; do
     [[ -n "$target" ]] || { printf 'ShellCheck target set contains an empty record.\n' >&2; exit 1; }
     [[ "$target" != /* ]] || {
         printf 'ShellCheck target must be a normalized repository-relative path: %s\n' "$target" >&2
         exit 1
     }
-    lexical="$(realpath -m -s --relative-to="$REPO_ROOT" -- "$REPO_ROOT/$target")"
+    resolve_one lexical -m -s --relative-to="$REPO_ROOT" -- "$REPO_ROOT/$target" || {
+        printf 'Unable to canonicalize ShellCheck target: %s\n' "$target" >&2
+        exit 1
+    }
     [[ "$lexical" == "$target" && "$lexical" != '..' && "$lexical" != ../* ]] || {
         printf 'ShellCheck target must be a normalized repository-relative path: %s\n' "$target" >&2
         exit 1
@@ -120,7 +136,10 @@ for target in "${targets[@]}"; do
         printf 'The target set is therefore incomplete or references a missing worktree path.\n' >&2
         exit 1
     }
-    canonical="$(realpath -e -- "$path")"
+    resolve_one canonical -e -- "$path" || {
+        printf 'Unable to resolve ShellCheck target: %s\n' "$target" >&2
+        exit 1
+    }
     [[ "$canonical" == "$REPO_ROOT/"* ]] || {
         printf 'ShellCheck target resolves outside the repository: %s -> %s\n' "$target" "$canonical" >&2
         exit 1
