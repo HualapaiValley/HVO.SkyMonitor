@@ -1373,15 +1373,31 @@ public sealed class ElasticProviderIntegrationTests
             // The task outlived the cleanup window: observe whatever it eventually produces so it can never surface
             // later as an unobserved fault, and say so rather than failing silently.
             _ = task.ContinueWith(
-                static abandoned => Console.WriteLine($"elastic-cleanup abandoned task observed: {abandoned.Exception?.GetBaseException().Message ?? "completed"}"),
+                static abandoned => Report($"elastic-cleanup abandoned task observed: status {abandoned.Status}, {abandoned.Exception?.GetBaseException().Message ?? "no fault"}"),
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
-            Console.WriteLine($"elastic-cleanup observation timed out with status {task.Status}; the originating failure remains the reported one.");
+            Report($"elastic-cleanup observation timed out with status {task.Status}; the originating failure remains the reported one.");
         }
         catch (Exception)
         {
             // The cleanup path only guarantees the task finished; its outcome is asserted on the success path.
+        }
+    }
+
+    /// <summary>Writes a cleanup diagnostic without letting the write itself replace the originating test failure.</summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "A diagnostic write on a cleanup path must never propagate; a closed or redirected test-host stdout "
+            + "would otherwise replace the originating test failure or become an unobserved continuation fault.")]
+    private static void Report(string message)
+    {
+        try
+        {
+            Console.WriteLine(message);
+        }
+        catch (Exception)
+        {
+            // Diagnostics are best-effort; the originating failure is the reported one.
         }
     }
 
