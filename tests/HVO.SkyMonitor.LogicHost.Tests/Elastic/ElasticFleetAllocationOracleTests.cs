@@ -93,8 +93,31 @@ public sealed class ElasticFleetAllocationOracleTests
 
         CollectionAssert.AreEqual(new[] { "middle-b", "old-a" }, forward.MatchedJobs.ToArray());
         CollectionAssert.AreEqual(new[] { "young-a" }, forward.UncoveredJobs.ToArray());
-        CollectionAssert.AreEqual(forward.MatchedJobs.ToArray(), reverse.MatchedJobs.ToArray());
-        CollectionAssert.AreEqual(forward.UncoveredJobs.ToArray(), reverse.UncoveredJobs.ToArray());
+        AssertEquivalent(forward, reverse);
+    }
+
+    [TestMethod]
+    public void PriorityTupleIsPinnedIndependently()
+    {
+        var constrained = Allocate(
+            [Job("old-a", "A", age: TimeSpan.FromMinutes(3)),
+             Job("middle-a", "A", age: TimeSpan.FromMinutes(2)),
+             Job("young-b", "B", age: TimeSpan.FromMinutes(1))],
+            [Runner("a-only", ["A"]), Runner("flex", ["A", "B"])]);
+        CollectionAssert.AreEquivalent(new[] { "old-a", "young-b" }, constrained.MatchedJobs.ToArray(),
+            "the B job has fewer compatible slots and is retained before flexible A work despite its younger age");
+
+        var age = Allocate(
+            [Job("young", "A", age: TimeSpan.FromMinutes(1)), Job("old", "A", age: TimeSpan.FromMinutes(2))],
+            [Runner("one", ["A"])]);
+        CollectionAssert.AreEqual(new[] { "old" }, age.MatchedJobs.ToArray(),
+            "age orders jobs with the same compatibility count");
+
+        var stableId = Allocate(
+            [Job("z-job", "A"), Job("a-job", "A")],
+            [Runner("one", ["A"])]);
+        CollectionAssert.AreEqual(new[] { "a-job" }, stableId.MatchedJobs.ToArray(),
+            "ordinal ID is the final deterministic tie-break");
     }
 
     [TestMethod]
@@ -165,4 +188,16 @@ public sealed class ElasticFleetAllocationOracleTests
         int concurrency = 1,
         int occupied = 0)
         => new(id, recipes.ToHashSet(StringComparer.Ordinal), transfer, concurrency, occupied);
+
+    private static void AssertEquivalent(
+        ElasticFleetAllocationOracle.Result expected,
+        ElasticFleetAllocationOracle.Result actual)
+    {
+        CollectionAssert.AreEqual(expected.MatchedJobs.ToArray(), actual.MatchedJobs.ToArray());
+        CollectionAssert.AreEqual(expected.UncoveredJobs.ToArray(), actual.UncoveredJobs.ToArray());
+        CollectionAssert.AreEqual(expected.ProvisionableJobs.ToArray(), actual.ProvisionableJobs.ToArray());
+        Assert.AreEqual(expected.OldestProvisionableAge, actual.OldestProvisionableAge);
+        Assert.AreEqual(expected.RequiredInstances, actual.RequiredInstances);
+        Assert.AreEqual(expected.CompatibilityChecks, actual.CompatibilityChecks);
+    }
 }
