@@ -102,8 +102,10 @@ is_shell_file() {
 }
 
 list_only=0
-if [[ "${1-}" == '--list' ]]; then
+nul_list=0
+if [[ "${1-}" == '--list' || "${1-}" == '--list0' ]]; then
     list_only=1
+    [[ "$1" == '--list0' ]] && nul_list=1
     shift
 fi
 
@@ -111,20 +113,38 @@ targets=()
 if (($# > 0)); then
     if ((list_only == 1)); then
         for path in "$@"; do
+            if [[ "$path" == *.sh && ! -f "$path" ]]; then
+                printf 'Selected shell file is not a regular file: %s\n' "$path" >&2
+                exit 1
+            fi
             [[ -f "$path" ]] || continue
             is_shell_file "$path" || continue
             targets+=("$path")
         done
-        printf '%s\n' "${targets[@]-}"
+        if ((nul_list == 1)); then
+            printf '%s\0' "${targets[@]-}"
+        else
+            printf '%s\n' "${targets[@]-}"
+        fi
         exit 0
     fi
     targets=("$@")
 else
+    tracked_paths="$(mktemp)"
+    trap 'rm -f "$tracked_paths"' EXIT
+    if ! git -C "$REPO_ROOT" ls-files -z > "$tracked_paths"; then
+        printf 'git ls-files failed while deriving the shell-file set.\n' >&2
+        exit 1
+    fi
     while IFS= read -r -d '' path; do
+        if [[ "$path" == *.sh && ! -f "$REPO_ROOT/$path" ]]; then
+            printf 'Tracked shell file is not a regular worktree file: %s\n' "$path" >&2
+            exit 1
+        fi
         [[ -f "$REPO_ROOT/$path" ]] || continue
         is_shell_file "$REPO_ROOT/$path" || continue
         targets+=("$REPO_ROOT/$path")
-    done < <(git -C "$REPO_ROOT" ls-files -z)
+    done < "$tracked_paths"
 fi
 
 if ((${#targets[@]} == 0)); then
@@ -133,7 +153,11 @@ if ((${#targets[@]} == 0)); then
 fi
 
 if ((list_only == 1)); then
-    printf '%s\n' "${targets[@]#"$REPO_ROOT/"}"
+    if ((nul_list == 1)); then
+        printf '%s\0' "${targets[@]#"$REPO_ROOT/"}"
+    else
+        printf '%s\n' "${targets[@]#"$REPO_ROOT/"}"
+    fi
     exit 0
 fi
 

@@ -116,6 +116,19 @@ predicate_case python-script        reject
 predicate_case python-dash-s        reject
 predicate_case no-shebang           reject
 
+# Machine consumers use NUL records so spaces and newlines cannot be confused with separators.
+cases=$((cases + 1))
+mapfile -d '' -t nul_selected < <(run_checker --list0 "$WORK/good.sh" "$WORK/env-dash-s")
+if ((${#nul_selected[@]} != 2)) || [[ "${nul_selected[0]}" != "$WORK/good.sh" ]] \
+    || [[ "${nul_selected[1]}" != "$WORK/env-dash-s" ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL --list0 did not preserve two exact path records.\n' >&2
+fi
+
+# A tracked/explicit *.sh path that is missing or a broken symlink must not disappear silently.
+ln -s "$WORK/does-not-exist" "$WORK/broken-link.sh"
+expect 'broken shell path rejected' 1 'not a regular file' --list "$WORK/broken-link.sh"
+
 # Discovery must reach the library directory whose omission from the enumerated list is the
 # reported defect, and must not regress to checking nothing.
 discovered="$(run_checker --list)"

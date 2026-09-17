@@ -43,13 +43,11 @@ EOF
 printf '%s\n' "$WORK/error.sh" > "$WORK/error.targets"
 expect 'new error-level diagnostic fails enforcement' 1 'SC2218' "$WORK/error.targets"
 
-# The source directive is load-bearing: only the main file is selected, while -x follows the
-# directive into the library and learns that sourced_value is assigned there. Source resolution
-# is a warning-level dataflow property, so this contract observes it directly without widening
-# the repository enforcement above error severity.
+# The source directive is load-bearing: the runtime source expression is dynamic and ShellCheck
+# can resolve it only through the directive.
 printf 'sourced_value=ok\n' > "$WORK/source-library.sh"
-printf '#!/usr/bin/env bash\n# shellcheck source=%s\n. "%s"\n' \
-    "$WORK/source-library.sh" "$WORK/source-library.sh" > "$WORK/source-main.sh"
+printf '#!/usr/bin/env bash\nSCRIPT_DIR=%q\n# shellcheck source=%s\n. "$SCRIPT_DIR/source-library.sh"\n' \
+    "$WORK" "$WORK/source-library.sh" > "$WORK/source-main.sh"
 printf 'printf "%%s\\n" "$sourced_value"\n' >> "$WORK/source-main.sh"
 cases=$((cases + 1))
 set +e
@@ -59,6 +57,81 @@ set -e
 if ((source_status != 0)) || [[ "$source_output" == *'SC2154'* ]]; then
     failures=$((failures + 1))
     printf 'FAIL source directive was not followed:\n%s\n' "$source_output" >&2
+fi
+grep -v '^# shellcheck source=' "$WORK/source-main.sh" > "$WORK/source-without-directive.sh"
+cases=$((cases + 1))
+set +e
+source_mutation="$($shellcheck_bin -x --severity=warning "$WORK/source-without-directive.sh" 2>&1)"
+source_mutation_status=$?
+set -e
+if ((source_mutation_status == 0)) || [[ "$source_mutation" != *'SC2154'* ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL removing the source directive did not expose SC2154:\n%s\n' "$source_mutation" >&2
+fi
+
+# Bind the production argument vector: a wrapper rejects anything except -x --severity=error,
+# then delegates to the actual pinned-version binary.
+cat > "$WORK/arg-check-shellcheck" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1-}" == '--version' ]]; then exec "$shellcheck_bin" --version; fi
+[[ "\${1-}" == '-x' && "\${2-}" == '--severity=error' ]] || { printf 'missing production ShellCheck arguments\\n' >&2; exit 97; }
+exec "$shellcheck_bin" "\$@"
+EOF
+chmod 700 "$WORK/arg-check-shellcheck"
+expect_with_bin() {
+    local name="$1" want_exit="$2" want_text="$3" target_file="$4" bin="$5"
+    cases=$((cases + 1))
+    local out status
+    set +e
+    out="$(HVO_SHELLCHECK_BIN="$bin" "$BASH" "$CHECKER" --targets-from "$target_file" 2>&1)"
+    status=$?
+    set -e
+    if [[ "$status" != "$want_exit" || "$out" != *"$want_text"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL %s\n  expected exit=%s containing: %s\n  actual exit=%s output:\n%s\n' \
+            "$name" "$want_exit" "$want_text" "$status" "$out" >&2
+    fi
+}
+expect_with_bin 'production invocation retains -x and error severity' 0 'passed for 1 derived shell file' \
+    "$WORK/good.targets" "$WORK/arg-check-shellcheck"
+
+# The selector may emit output and then fail. Its non-zero status must win over partial output.
+cat > "$WORK/partial-selector" <<EOF
+#!/usr/bin/env bash
+printf '%s\\0' '$WORK/good file.sh'
+exit 23
+EOF
+chmod 700 "$WORK/partial-selector"
+cases=$((cases + 1))
+set +e
+partial_output="$(HVO_SHELLCHECK_BIN="$shellcheck_bin" HVO_SHELL_SELECTOR="$WORK/partial-selector" \
+    "$BASH" "$CHECKER" 2>&1)"
+partial_status=$?
+set -e
+if ((partial_status == 0)) || [[ "$partial_output" != *'selector failed'* ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL partial selector output was accepted:\n%s\n' "$partial_output" >&2
+fi
+
+# NUL records preserve a newline-bearing path even when both line fragments are also real files.
+newline_path="$WORK/left.sh"$'\n'"right.sh"
+printf '#!/usr/bin/env bash\ncalled_later\ncalled_later() { :; }\n' > "$newline_path"
+printf '#!/usr/bin/env bash\n:\n' > "$WORK/left.sh"
+printf '#!/usr/bin/env bash\n:\n' > "$WORK/right.sh"
+cat > "$WORK/newline-selector" <<EOF
+#!/usr/bin/env bash
+printf '%s\\0' '$WORK/left.sh' '$WORK/right.sh' '$newline_path'
+EOF
+chmod 700 "$WORK/newline-selector"
+cases=$((cases + 1))
+set +e
+newline_output="$(HVO_SHELLCHECK_BIN="$shellcheck_bin" HVO_SHELL_SELECTOR="$WORK/newline-selector" \
+    "$BASH" "$CHECKER" 2>&1)"
+newline_status=$?
+set -e
+if ((newline_status == 0)) || [[ "$newline_output" != *'SC2218'* ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL newline-bearing error path was not linted:\n%s\n' "$newline_output" >&2
 fi
 
 : > "$WORK/empty.targets"

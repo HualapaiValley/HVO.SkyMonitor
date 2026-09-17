@@ -36,7 +36,7 @@ if [[ -z "$shellcheck_bin" ]]; then
             "${0##*/}" "$SHELLCHECK_VERSION" >&2
         exit 1
     }
-    for command in curl mktemp sha256sum tar; do
+    for command in awk cp curl mktemp sha256sum tar uname; do
         command -v "$command" >/dev/null 2>&1 || { printf '%s requires %s.\n' "${0##*/}" "$command" >&2; exit 1; }
     done
     cleanup_root="$(mktemp -d)"
@@ -71,7 +71,14 @@ if [[ -n "$targets_file" ]]; then
     [[ -f "$targets_file" ]] || { printf 'ShellCheck target file does not exist: %s\n' "$targets_file" >&2; exit 1; }
     mapfile -t targets < "$targets_file"
 else
-    mapfile -t targets < <("$BASH" "$SCRIPT_DIR/ci:shell-syntax" --list)
+    selector="${HVO_SHELL_SELECTOR:-$SCRIPT_DIR/ci:shell-syntax}"
+    selector_output="$(mktemp)"
+    if ! "$BASH" "$selector" --list0 > "$selector_output"; then
+        printf 'Shell file selector failed; refusing partial output from %s.\n' "$selector" >&2
+        exit 1
+    fi
+    mapfile -d '' -t targets < "$selector_output"
+    rm -f "$selector_output"
 fi
 
 if ((${#targets[@]} == 0)); then
@@ -89,7 +96,7 @@ for target in "${targets[@]}"; do
     fi
     [[ -f "$path" ]] || {
         printf 'ShellCheck target is not a regular file: %s\n' "$target" >&2
-        printf 'The line-delimited selector contract therefore refuses paths containing newlines.\n' >&2
+        printf 'The target set is therefore incomplete or references a missing worktree path.\n' >&2
         exit 1
     }
     resolved+=("$path")
