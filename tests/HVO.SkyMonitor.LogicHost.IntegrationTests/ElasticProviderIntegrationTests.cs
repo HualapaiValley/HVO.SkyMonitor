@@ -215,12 +215,12 @@ public sealed class ElasticProviderIntegrationTests
     public async Task ALaunchWhoseRecordCannotBeSavedRetiresTheProcessAndClosesItsIntent()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         // Host shutdown lands between the process start and the save of its record.
         using var shutdown = new CancellationTokenSource();
         var provider = new ScriptedProvider(_ => shutdown.Cancel());
-        var autoscaler = CreateAutoscaler(factory.Services, provider, WarmOptions());
+        var autoscaler = CreateScriptedAutoscaler(provider, WarmOptions());
 
         var sample = () => autoscaler.SampleAsync(shutdown.Token);
         await sample.Should().ThrowAsync<OperationCanceledException>().ConfigureAwait(false);
@@ -239,7 +239,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task ReRegistrationIsSerializedBehindAnInFlightAbandonmentAndDenied()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var instanceId = Guid.NewGuid().ToString("N")[..16];
         var runnerId = $"elastic-scripted-{instanceId}";
@@ -297,7 +297,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task WarmReplacementWaitsForAnExcessInstanceWithNoWorkInFlight()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var instanceId = Guid.NewGuid().ToString("N")[..16];
         var runnerId = $"elastic-scripted-{instanceId}";
@@ -311,7 +311,7 @@ public sealed class ElasticProviderIntegrationTests
                 .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId), CancellationToken.None).ConfigureAwait(false);
         }
         await SetAvailableSlotsAsync(factory, runnerId, 0).ConfigureAwait(false);
-        var autoscaler = CreateAutoscaler(factory.Services, provider, WarmOptions());
+        var autoscaler = CreateScriptedAutoscaler(provider, WarmOptions());
 
         var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
         decision.Reason.Should().Be(ElasticScalingPolicy.ReasonWarmMinimum);
@@ -343,7 +343,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task ABlockingDrainKeepsTheOwnerHeartbeatFreshAndStampsTheRealStopTime()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var instanceId = Guid.NewGuid().ToString("N")[..16];
         var runnerId = $"elastic-scripted-{instanceId}";
@@ -353,7 +353,7 @@ public sealed class ElasticProviderIntegrationTests
         await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false, state: nameof(ElasticRunnerInstanceState.Stopping)).ConfigureAwait(false);
         var settings = WarmOptions(minWarm: 0);
         ElasticRunnerAutoscaler.OwnerHeartbeatInterval(settings).Should().Be(TimeSpan.FromMilliseconds(500), "half the one-second retire grace");
-        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var autoscaler = CreateScriptedAutoscaler(provider, settings);
 
         var sampleStarted = DateTimeOffset.UtcNow;
         var sample = autoscaler.SampleAsync(CancellationToken.None);
@@ -375,7 +375,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task AClaimIsRefusedWhileTheInstanceRetirementIsReserved()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var instanceId = Guid.NewGuid().ToString("N")[..16];
         var runnerId = $"elastic-scripted-{instanceId}";
@@ -414,10 +414,10 @@ public sealed class ElasticProviderIntegrationTests
     public async Task AnExpiredRunnerLeaseCountsAsBacklogAndProvisionsAReplacement()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider();
-        var autoscaler = CreateAutoscaler(factory.Services, provider, WarmOptions(minWarm: 0));
+        var autoscaler = CreateScriptedAutoscaler(provider, WarmOptions(minWarm: 0));
         (await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false)).Should().Be(ElasticScalingDecision.Steady);
         // The only runner crashed holding the job: its lease expires, and nothing else would ever provision a runner for it.
         var sourceId = await SeedPreviewJobAsync("elastic-expired-lease").ConfigureAwait(false);
@@ -433,18 +433,20 @@ public sealed class ElasticProviderIntegrationTests
     public async Task OwnerLossCleanupIsReportedInTheHealthSnapshot()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var instanceId = Guid.NewGuid().ToString("N")[..16];
         var runnerId = $"elastic-scripted-{instanceId}";
         await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: "host-that-died", keepWarm: false, ownerHeartbeatAtUtc: DateTimeOffset.UtcNow.AddHours(-7)).ConfigureAwait(false);
         var provider = new ScriptedProvider();
         var settings = WarmOptions(minWarm: 0);
-        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var autoscaler = CreateScriptedAutoscaler(provider, settings);
 
         await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
         (await ScriptedInstanceAsync(factory, instanceId).ConfigureAwait(false)).State.Should().Be(nameof(ElasticRunnerInstanceState.Abandoned));
-        var health = await new CentralElasticProviderHealthCheck(Options.Create(settings), provider, factory.Services.GetRequiredService<ElasticProviderTelemetry>())
+        var health = await new CentralElasticProviderHealthCheck(
+            Options.Create(settings), provider,
+            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<ElasticProviderTelemetry>())
             .CheckHealthAsync(new HealthCheckContext(), CancellationToken.None).ConfigureAwait(false);
         health.Status.Should().Be(HealthStatus.Degraded, "the sample abandoned an instance and retired its registration");
         ((int)health.Data["orphansCleanedLastSample"]).Should().Be(1);
@@ -454,15 +456,10 @@ public sealed class ElasticProviderIntegrationTests
     public async Task BacklogAProvisionedInstanceCouldNotClaimNeverProvisions()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
-        {
-            builder.UseSetting("ProcessingRunners:Enabled", "true");
-            builder.UseSetting($"ProcessingRunners:Placement:{BuiltInProcessingRecipes.EncodedPreview}", "Runner");
-            builder.UseSetting($"ProcessingRunners:Requirements:{BuiltInProcessingRecipes.EncodedPreview}:RequiresGpu", "true");
-        });
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider();
-        var autoscaler = CreateAutoscaler(factory.Services, provider, WarmOptions(minWarm: 0));
+        var autoscaler = CreateScriptedAutoscaler(provider, WarmOptions(minWarm: 0), RunnerOptions(requiresGpu: true));
         await SeedPreviewJobAsync("elastic-gpu-required").ConfigureAwait(false);
 
         var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
@@ -474,7 +471,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task IdleScaleDownKeepsEnoughRegisteredCapacityForTheDemand()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider();
         // Two adopted instances registered with different concurrency (1 and 4 slots) under a 4-slot configuration.
@@ -505,7 +502,7 @@ public sealed class ElasticProviderIntegrationTests
             SampleInterval = settings.SampleInterval,
             RetireGrace = settings.RetireGrace
         };
-        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var autoscaler = CreateScriptedAutoscaler(provider, settings);
 
         var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
         decision.Reason.Should().Be(ElasticScalingPolicy.ReasonIdle, "four queued jobs need one configured instance, so one idle instance may go");
@@ -517,7 +514,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task AnAdoptedInstanceThatCannotClaimTheBacklogDoesNotCoverIt()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider();
         // An adopted ten-slot instance registered without the placed recipe: plenty of slots, none of them usable.
@@ -544,7 +541,7 @@ public sealed class ElasticProviderIntegrationTests
             SampleInterval = TimeSpan.FromHours(1),
             RetireGrace = TimeSpan.FromSeconds(1)
         };
-        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var autoscaler = CreateScriptedAutoscaler(provider, settings);
 
         var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
         decision.Reason.Should().Be(ElasticScalingPolicy.ReasonBacklog);
@@ -556,7 +553,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task AnAdoptedInstanceThatCannotClaimCleanupOrOversizedInputsDoesNotCoverThem()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider();
         var settings = new CentralElasticProviderOptions
@@ -569,7 +566,7 @@ public sealed class ElasticProviderIntegrationTests
             SampleInterval = TimeSpan.FromHours(1),
             RetireGrace = TimeSpan.FromSeconds(1)
         };
-        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var autoscaler = CreateScriptedAutoscaler(provider, settings);
 
         // Cleanup-only demand for a recipe the adopted instance never registered: it needs an instance that can claim it.
         var withoutRecipe = Guid.NewGuid().ToString("N")[..16];
@@ -591,7 +588,7 @@ public sealed class ElasticProviderIntegrationTests
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
         provider = new ScriptedProvider();
-        autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        autoscaler = CreateScriptedAutoscaler(provider, settings);
         var small = Guid.NewGuid().ToString("N")[..16];
         var smallRunner = $"elastic-scripted-{small}";
         provider.MarkAlive(small, smallRunner);
@@ -609,7 +606,7 @@ public sealed class ElasticProviderIntegrationTests
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
         provider = new ScriptedProvider();
-        autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        autoscaler = CreateScriptedAutoscaler(provider, settings);
         var medium = Guid.NewGuid().ToString("N")[..16];
         var mediumRunner = $"elastic-scripted-{medium}";
         provider.MarkAlive(medium, mediumRunner);
@@ -633,7 +630,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task RegisteredSlotsAreAllocatedByWhatEachInstanceCanClaim()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider();
         // A ten-slot instance that takes only small inputs and a one-slot instance that takes anything.
@@ -662,7 +659,7 @@ public sealed class ElasticProviderIntegrationTests
             SampleInterval = TimeSpan.FromHours(1),
             RetireGrace = TimeSpan.FromSeconds(1)
         };
-        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var autoscaler = CreateScriptedAutoscaler(provider, settings);
 
         var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
         decision.Should().Be(new ElasticScalingDecision(3, 0, ElasticScalingPolicy.ReasonBacklog), "eleven aggregate slots do not cover ten large jobs: one fits the one-slot instance, nine are uncovered, three more instances fit the limit");
@@ -673,7 +670,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task AnIncompatibleInstanceAtTheLimitIsReplacedByOneThatCanClaim()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider();
         var instanceId = Guid.NewGuid().ToString("N")[..16];
@@ -696,12 +693,16 @@ public sealed class ElasticProviderIntegrationTests
             SampleInterval = TimeSpan.FromHours(1),
             RetireGrace = TimeSpan.FromSeconds(1)
         };
-        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var autoscaler = CreateScriptedAutoscaler(provider, settings);
+
+        // The manually driven autoscaler owns no dependency from this disposable host.
+        // Disposing it before the sample reproduces the lifetime boundary that failed in #632.
+        await factory.DisposeAsync().ConfigureAwait(false);
 
         var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
         decision.Should().Be(new ElasticScalingDecision(0, 1, ElasticScalingPolicy.ReasonIncompatibleReplacement), "the only instance cannot claim the queued recipe and fills the limit");
         provider.Retired.Should().Equal([instanceId]);
-        var row = await ScriptedInstanceAsync(factory, instanceId).ConfigureAwait(false);
+        var row = await ScriptedInstanceAsync(AssemblyHooks.Fixture.Factory, instanceId).ConfigureAwait(false);
         row.State.Should().Be(nameof(ElasticRunnerInstanceState.Stopped));
         row.Reason.Should().Be(ElasticScalingPolicy.ReasonIncompatibleReplacement);
         decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
@@ -712,7 +713,7 @@ public sealed class ElasticProviderIntegrationTests
     public async Task ConcurrentRetirementsStampTheirOwnStopTimes()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider();
         var quick = Guid.NewGuid().ToString("N")[..16];
@@ -737,7 +738,7 @@ public sealed class ElasticProviderIntegrationTests
             SampleInterval = TimeSpan.FromHours(1),
             RetireGrace = TimeSpan.FromSeconds(10)
         };
-        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var autoscaler = CreateScriptedAutoscaler(provider, settings);
 
         var started = DateTimeOffset.UtcNow;
         var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
@@ -755,18 +756,20 @@ public sealed class ElasticProviderIntegrationTests
     public async Task AProviderThatCannotDescribeAnInstanceProvisionsNothingAndDegradesHealth()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
-        using var factory = RunnerEnabledFactory();
+        using var factory = await RunnerEnabledFactoryAsync().ConfigureAwait(false);
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider { Describable = false };
         var settings = WarmOptions();
-        var autoscaler = CreateAutoscaler(factory.Services, provider, settings);
+        var autoscaler = CreateScriptedAutoscaler(provider, settings);
         await SeedPreviewJobAsync("elastic-undescribed").ConfigureAwait(false);
 
         var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
         decision.Provision.Should().Be(0, "an instance that cannot be described would abort before registration; the warm minimum waits too");
         decision.Reason.Should().Be(ElasticScalingPolicy.ReasonInstanceUndescribed);
         provider.Provisioned.Should().BeEmpty();
-        var health = await new CentralElasticProviderHealthCheck(Options.Create(settings), provider, factory.Services.GetRequiredService<ElasticProviderTelemetry>())
+        var health = await new CentralElasticProviderHealthCheck(
+            Options.Create(settings), provider,
+            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<ElasticProviderTelemetry>())
             .CheckHealthAsync(new HealthCheckContext(), CancellationToken.None).ConfigureAwait(false);
         health.Status.Should().Be(HealthStatus.Degraded);
         ((string)health.Data["lastDecision"]).Should().Be(ElasticScalingPolicy.ReasonInstanceUndescribed);
@@ -802,6 +805,19 @@ public sealed class ElasticProviderIntegrationTests
             builder.UseSetting($"ProcessingRunners:Placement:{BuiltInProcessingRecipes.EncodedPreview}", "Runner");
         });
 
+    private static async Task<WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program>> RunnerEnabledFactoryAsync()
+    {
+        var factory = RunnerEnabledFactory();
+        var hosted = factory.Services.GetServices<IHostedService>().OfType<ElasticRunnerAutoscaler>().ToArray();
+        foreach (var autoscaler in hosted)
+        {
+            await autoscaler.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        hosted.Should().OnlyContain(autoscaler => autoscaler.ExecuteTask != null && autoscaler.ExecuteTask.IsCompleted,
+            "scripted tests must quiesce host-created autoscalers before creating test state");
+        return factory;
+    }
+
     /// <summary>Warm minimum of one within a pool of one: the shape every scripted scenario reasons about.</summary>
     private static CentralElasticProviderOptions WarmOptions(int minWarm = 1) => new()
     {
@@ -828,6 +844,40 @@ public sealed class ElasticProviderIntegrationTests
             services.GetRequiredService<ElasticProviderTelemetry>(),
             TimeProvider.System,
             services.GetRequiredService<ILogger<ElasticRunnerAutoscaler>>());
+
+    private static ElasticRunnerAutoscaler CreateScriptedAutoscaler(
+        IElasticRunnerProvider provider,
+        CentralElasticProviderOptions settings,
+        CentralProcessingRunnerOptions? runnerSettings = null)
+    {
+        var services = AssemblyHooks.Fixture.Factory.Services;
+        return new ElasticRunnerAutoscaler(
+            services.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(settings),
+            Options.Create(runnerSettings ?? RunnerOptions()),
+            services.GetRequiredService<IOptions<CentralProcessingEntitlementOptions>>(),
+            provider,
+            services.GetRequiredService<LocalProcessElasticRunnerProvider>(),
+            services.GetRequiredService<ElasticProviderTelemetry>(),
+            TimeProvider.System,
+            services.GetRequiredService<ILogger<ElasticRunnerAutoscaler>>());
+    }
+
+    private static CentralProcessingRunnerOptions RunnerOptions(bool requiresGpu = false)
+        => new()
+        {
+            Enabled = true,
+            Placement = new Dictionary<string, CentralProcessingRunnerPlacement>(StringComparer.Ordinal)
+            {
+                [BuiltInProcessingRecipes.EncodedPreview] = CentralProcessingRunnerPlacement.Runner
+            },
+            Requirements = requiresGpu
+                ? new Dictionary<string, CentralProcessingRunnerRequirementOptions>(StringComparer.Ordinal)
+                {
+                    [BuiltInProcessingRecipes.EncodedPreview] = new() { RequiresGpu = true }
+                }
+                : new Dictionary<string, CentralProcessingRunnerRequirementOptions>(StringComparer.Ordinal)
+        };
 
     private static ProcessingRunnerRegistrationRequest ScriptedRegistration(string runnerId, int maxConcurrency = 1, string? withoutRecipe = null, long? maxTransferBytes = null)
     {
