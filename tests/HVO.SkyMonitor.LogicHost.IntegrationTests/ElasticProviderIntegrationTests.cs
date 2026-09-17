@@ -689,6 +689,145 @@ public sealed class ElasticProviderIntegrationTests
     }
 
     [TestMethod]
+    public async Task CapabilityMatchingReassignsFlexibleCapacityInsteadOfProvisioning()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        var registrations = new[]
+        {
+            (Id: Guid.NewGuid().ToString("N")[..16], Recipes: new[] { BuiltInProcessingRecipes.EncodedPreview, BuiltInProcessingRecipes.JpegEncoding }, Transfer: 128L),
+            (Id: Guid.NewGuid().ToString("N")[..16], Recipes: new[] { BuiltInProcessingRecipes.EncodedPreview }, Transfer: 256L)
+        };
+        foreach (var registration in registrations)
+        {
+            var runnerId = $"elastic-scripted-{registration.Id}";
+            provider.MarkAlive(registration.Id, runnerId);
+            await SeedScriptedInstanceAsync(factory, registration.Id, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+            await using var scope = factory.Services.CreateAsyncScope();
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId, maxTransferBytes: registration.Transfer), CancellationToken.None).ConfigureAwait(false);
+            await SetEligibleRecipesAsync(factory, runnerId, registration.Recipes).ConfigureAwait(false);
+        }
+        var aSource = await SeedPreviewJobAsync("elastic-augment-a", new byte[100]).ConfigureAwait(false);
+        var bSource = await SeedPreviewJobAsync("elastic-augment-b").ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, aSource, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, bSource, BuiltInProcessingRecipes.JpegEncoding).ConfigureAwait(false);
+        var settings = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 2,
+            MaxConcurrencyPerInstance = 1,
+            ScaleToZeroAfter = TimeSpan.FromHours(2),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        };
+        var runnerSettings = RunnerOptions();
+        runnerSettings.Placement[BuiltInProcessingRecipes.JpegEncoding] = CentralProcessingRunnerPlacement.Runner;
+        var autoscaler = CreateScriptedAutoscaler(provider, settings, runnerSettings);
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+
+        decision.Should().Be(ElasticScalingDecision.Steady,
+            "the large A job moves to the A-only runner so the flexible runner remains available for B");
+        provider.Provisioned.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task FullyOccupiedRegistrationDoesNotCoverQueuedWork()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        var instanceId = Guid.NewGuid().ToString("N")[..16];
+        var runnerId = $"elastic-scripted-{instanceId}";
+        provider.MarkAlive(instanceId, runnerId);
+        await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId), CancellationToken.None).ConfigureAwait(false);
+        }
+        await SetAvailableSlotsAsync(factory, runnerId, 0).ConfigureAwait(false);
+        await SeedPreviewJobAsync("elastic-occupied-backlog").ConfigureAwait(false);
+        var settings = new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 2,
+            MaxConcurrencyPerInstance = 1,
+            ScaleToZeroAfter = TimeSpan.FromMinutes(10),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        };
+        var autoscaler = CreateScriptedAutoscaler(provider, settings);
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+
+        decision.Should().Be(new ElasticScalingDecision(1, 0, ElasticScalingPolicy.ReasonBacklog));
+        provider.Provisioned.Should().ContainSingle("the occupied slot is unavailable to the queued job");
+    }
+
+    [TestMethod]
+    public async Task LockedDecisionRebuildsDemandAfterAConcurrentClaim()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        var runnerId = $"ordinary-runner-{Guid.NewGuid():N}";
+        await using (var registrationScope = factory.Services.CreateAsyncScope())
+        {
+            await registrationScope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId), CancellationToken.None).ConfigureAwait(false);
+        }
+        var sourceId = await SeedPreviewJobAsync("elastic-claim-race").ConfigureAwait(false);
+        var autoscaler = CreateScriptedAutoscaler(provider, new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 2,
+            MaxConcurrencyPerInstance = 1,
+            ScaleToZeroAfter = TimeSpan.FromHours(2),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        });
+        await using var lockScope = factory.Services.CreateAsyncScope();
+        await using var capacityLock = await CentralObjectApplicationLock.AcquireAsync(
+            lockScope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+            $"processing-runner-claim/{runnerId}",
+            CancellationToken.None).ConfigureAwait(false);
+        await using var claimScope = factory.Services.CreateAsyncScope();
+        var claimDb = claimScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var runner = await claimDb.CentralProcessingRunners.SingleAsync(candidate => candidate.RunnerId == runnerId).ConfigureAwait(false);
+        var request = ScriptedRegistration(runnerId);
+        var eligible = factory.Services.GetRequiredService<IOptions<CentralProcessingRunnerOptions>>().Value.ResolveEligibleRecipes(request.Capabilities);
+        using var claimCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var claim = claimScope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerJobService>().ClaimAsync(
+            new CentralProcessingRunnerContext(runner, request.Capabilities, eligible),
+            new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0),
+            claimCancellation.Token);
+        await WaitForClaimBarrierAsync(factory).ConfigureAwait(false);
+
+        var barrierWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        autoscaler.ClaimBarrierWaitStarted = () => barrierWait.TrySetResult();
+        var sample = autoscaler.SampleAsync(CancellationToken.None);
+        await barrierWait.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        sample.IsCompleted.Should().BeFalse("the exclusive fleet snapshot waits for the real ordinary-runner claim");
+        await capacityLock.DisposeAsync().ConfigureAwait(false);
+        (await claim.ConfigureAwait(false)).Should().NotBeNull("the real claim commits the queued job before the fleet snapshot proceeds");
+
+        var decision = await sample.ConfigureAwait(false);
+
+        decision.Should().Be(ElasticScalingDecision.Steady,
+            "the locked rebuild sees the newly leased job instead of treating the stale queued row as uncovered");
+        provider.Provisioned.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task AnIncompatibleInstanceAtTheLimitIsReplacedByOneThatCanClaim()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
@@ -955,6 +1094,60 @@ public sealed class ElasticProviderIntegrationTests
         await db.CentralProcessingRunners.Where(runner => runner.RunnerId == runnerId)
             .ExecuteUpdateAsync(setters => setters.SetProperty(runner => runner.AvailableSlots, availableSlots))
             .ConfigureAwait(false);
+    }
+
+    private static async Task SetEligibleRecipesAsync(
+        WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory,
+        string runnerId,
+        IReadOnlyCollection<string> recipes)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var json = System.Text.Json.JsonSerializer.Serialize(recipes.Order(StringComparer.Ordinal));
+        await db.CentralProcessingRunners.Where(runner => runner.RunnerId == runnerId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(runner => runner.EligibleRecipesJson, json))
+            .ConfigureAwait(false);
+    }
+
+    private static async Task WaitForClaimBarrierAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await using var scope = factory.Services.CreateAsyncScope();
+            var probe = await CentralObjectApplicationLock.TryAcquireAsync(
+                scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+                CentralProcessingRunnerJobService.ClaimBarrier,
+                CancellationToken.None).ConfigureAwait(false);
+            if (probe is null)
+            {
+                return;
+            }
+            await probe.DisposeAsync().ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(25)).ConfigureAwait(false);
+        }
+        Assert.Fail("the real runner claim did not acquire the shared fleet barrier");
+    }
+
+    private static async Task RetainSingleJobAsync(
+        WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory,
+        Guid sourceArtifactId,
+        string recipe)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var jobs = await db.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == sourceArtifactId)
+            .OrderBy(job => job.Id)
+            .ToListAsync()
+            .ConfigureAwait(false);
+        jobs.Should().NotBeEmpty();
+        jobs[0].RecipeName = recipe;
+        foreach (var job in jobs.Skip(1))
+        {
+            job.Status = CentralDerivativeJobStatus.TerminalFailure;
+            job.AvailableAtUtc = null;
+        }
+        await db.SaveChangesAsync().ConfigureAwait(false);
     }
 
     private static async Task SetLeaseAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory, Guid sourceArtifactId, string owner, DateTimeOffset leaseExpiresAtUtc, bool exhausted = false)

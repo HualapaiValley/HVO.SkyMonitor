@@ -55,6 +55,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
     private bool _adopted;
     private string? _lastExcludedRecipes;
     private static readonly string HostName = Environment.MachineName;
+    internal Action? ClaimBarrierWaitStarted { get; set; }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -404,35 +405,33 @@ internal sealed partial class ElasticRunnerAutoscaler(
             => maxTransferBytes >= row.InputBytes && ParseEligibleRecipes(eligibleRecipesJson).Contains(row.RecipeName, StringComparer.Ordinal);
         bool CanClaimBacklog(string eligibleRecipesJson, long maxTransferBytes)
             => relevant.Count == 0 || relevant.Any(row => CanClaim(eligibleRecipesJson, maxTransferBytes, row));
-        // Registered slots are allocated job by job (largest inputs first, the registration with the smallest
-        // transfer limit that fits first), so a ten-slot instance that serves only the small inputs never credits
-        // its slots to the large jobs: what no registration can take within its slots is uncovered executable work.
-        // Terminal cleanup is uncovered when no registration can claim any of it (it needs one instance, not slots).
-        (int Uncovered, bool CleanupUncovered) Allocate(IEnumerable<(string EligibleRecipesJson, long MaxTransferBytes, int MaxConcurrency)> activeRegistrations)
+        // Executable work is allocated by maximum matching over currently available slots. Terminal cleanup remains
+        // instance-level demand: it needs one compatible instance rather than one slot per cleanup row.
+        (ElasticFleetAllocator.Result Executable, bool CleanupUncovered) Allocate(
+            IEnumerable<(string RunnerId, string EligibleRecipesJson, long MaxTransferBytes, int MaxConcurrency, int OccupiedSlots)> activeRegistrations)
         {
-            var slots = activeRegistrations.OrderBy(registration => registration.MaxTransferBytes)
-                .Select(registration => (registration.EligibleRecipesJson, registration.MaxTransferBytes, Remaining: registration.MaxConcurrency)).ToArray();
-            var uncovered = 0;
-            foreach (var row in executable.OrderByDescending(row => row.InputBytes))
-            {
-                var placedAt = Array.FindIndex(slots, slot => slot.Remaining > 0 && CanClaim(slot.EligibleRecipesJson, slot.MaxTransferBytes, row));
-                if (placedAt < 0)
-                {
-                    uncovered++;
-                    continue;
-                }
-                slots[placedAt].Remaining--;
-            }
+            var registrationsForAllocation = activeRegistrations.Select(registration => new ElasticFleetAllocator.Registration(
+                registration.RunnerId,
+                ParseEligibleRecipes(registration.EligibleRecipesJson).ToHashSet(StringComparer.Ordinal),
+                registration.MaxTransferBytes,
+                registration.MaxConcurrency,
+                registration.OccupiedSlots)).ToArray();
+            var allocation = ElasticFleetAllocator.Allocate(
+                executable.Select(row => new ElasticFleetAllocator.Job(row.JobId, row.RecipeName, row.InputBytes, row.AvailableSince)).ToArray(),
+                registrationsForAllocation);
             var cleanupRows = relevant.Where(row => row.IsCleanup).ToList();
-            var cleanupUncovered = cleanupRows.Count != 0 && !cleanupRows.Any(row => slots.Any(slot => CanClaim(slot.EligibleRecipesJson, slot.MaxTransferBytes, row)));
-            return (uncovered, cleanupUncovered);
+            var cleanupUncovered = cleanupRows.Count != 0 && !cleanupRows.Any(row => activeRegistrations.Any(registration => CanClaim(registration.EligibleRecipesJson, registration.MaxTransferBytes, row)));
+            return (allocation, cleanupUncovered);
         }
         var compatibleRunning = registeredRunning.Where(runner => CanClaimBacklog(runner.EligibleRecipesJson, runner.MaxTransferBytes)).ToList();
         var registeredRunningCount = registeredRunning.Count;
         var compatibleRunningCount = compatibleRunning.Count;
         var compatibleRunningConcurrency = compatibleRunning.Sum(runner => runner.MaxConcurrency);
         var incompatibleRunning = registeredRunningCount - compatibleRunningCount;
-        var (uncoveredBacklog, cleanupUncovered) = Allocate(registeredRunning.Select(runner => (runner.EligibleRecipesJson, runner.MaxTransferBytes, runner.MaxConcurrency)));
+        var (allocation, cleanupUncovered) = Allocate(registeredRunning.Select(runner => (
+            runner.RunnerId, runner.EligibleRecipesJson, runner.MaxTransferBytes, runner.MaxConcurrency,
+            Occupied(runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots))));
+        var uncoveredBacklog = allocation.UnmatchedJobIds.Count;
         int? entitled = null;
         if (entitlements is not null && backlogRows.Count != 0)
         {
@@ -487,17 +486,88 @@ internal sealed partial class ElasticRunnerAutoscaler(
             .Where(instance => instance.Provider == provider.Name && instance.State == nameof(ElasticRunnerInstanceState.Running))
             .Select(instance => instance.RunnerId)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var claimBarrierResult = new SqlParameter("@result", System.Data.SqlDbType.Int) { Direction = System.Data.ParameterDirection.Output };
+        await dbContext.Database.ExecuteSqlRawAsync(
+            "EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 0;",
+            [new SqlParameter("@resource", CentralObjectApplicationLock.CreateResource(CentralProcessingRunnerJobService.ClaimBarrier)), claimBarrierResult], cancellationToken).ConfigureAwait(false);
+        if (claimBarrierResult.Value is int { } immediateClaimBarrier && immediateClaimBarrier == -1)
+        {
+            ClaimBarrierWaitStarted?.Invoke();
+            claimBarrierResult = new SqlParameter("@result", System.Data.SqlDbType.Int) { Direction = System.Data.ParameterDirection.Output };
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 5000;",
+                [new SqlParameter("@resource", CentralObjectApplicationLock.CreateResource(CentralProcessingRunnerJobService.ClaimBarrier)), claimBarrierResult], cancellationToken).ConfigureAwait(false);
+        }
+        if (claimBarrierResult.Value is not int claimBarrierAcquired || claimBarrierAcquired < 0)
+        {
+            throw new InvalidOperationException("The processing runner claim barrier was not acquired.");
+        }
+        // Every runner claim is now blocked until this transaction commits. Rebuild every demand fact so queued jobs,
+        // leases, occupied slots, entitlement headroom, and age all describe one coherent decision snapshot.
+        claimable = placed.Count == 0 || template is null
+            ? []
+            : await QueryClaimableAsync(dbContext, placed, template.MaxTransferBytes, now, cancellationToken).ConfigureAwait(false);
+        executable = claimable.Where(row => !row.IsCleanup && IsPoolEligible(settings.Pool, entitlements?.ResolvePool(row.ObservatoryId))).ToList();
+        backlogRows = executable.GroupBy(row => row.ObservatoryId)
+            .Select(group => new { ObservatoryId = group.Key, Count = group.Count(), Oldest = group.Min(row => row.AvailableSince) })
+            .ToList();
+        backlog = backlogRows.Sum(row => row.Count);
+        oldestAge = backlogRows.Count == 0 ? TimeSpan.Zero : now - backlogRows.Min(row => row.Oldest ?? now);
+        cleanupBacklog = claimable.Count(row => row.IsCleanup);
+        cleanupOldest = cleanupBacklog == 0 ? TimeSpan.Zero : now - claimable.Where(row => row.IsCleanup).Min(row => row.AvailableSince ?? now);
+        reportedAge = oldestAge > cleanupOldest ? oldestAge : cleanupOldest;
+        relevant = executable.Concat(claimable.Where(row => row.IsCleanup)).ToList();
         var lockedRegistered = await dbContext.CentralProcessingRunners.AsNoTracking()
             .Where(runner => lockedRunningIds.Contains(runner.RunnerId) && runner.Status == CentralProcessingRunnerStatus.Active)
-            .Select(runner => new { runner.MaxConcurrency, runner.EligibleRecipesJson, runner.MaxTransferBytes })
+            .Select(runner => new { runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots, runner.EligibleRecipesJson, runner.MaxTransferBytes })
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var lockedLeasesByRunner = await dbContext.CentralDerivativeJobs.AsNoTracking()
+            .Where(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc > now && job.LeaseOwner != null && lockedRunningIds.Contains(job.LeaseOwner))
+            .GroupBy(job => job.LeaseOwner!)
+            .Select(group => new { RunnerId = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(item => item.RunnerId, item => item.Count, StringComparer.Ordinal, cancellationToken).ConfigureAwait(false);
+        int LockedOccupied(string runnerId, int maxConcurrency, int availableSlots)
+            => Math.Max(Math.Max(0, maxConcurrency - availableSlots), lockedLeasesByRunner.TryGetValue(runnerId, out var leases) ? leases : 0);
+        inFlight = lockedRegistered.Sum(runner => LockedOccupied(runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots));
+        entitled = null;
+        if (entitlements is not null && backlogRows.Count != 0)
+        {
+            var observatoryIds = backlogRows.Select(row => row.ObservatoryId).ToArray();
+            var activeByObservatory = await dbContext.CentralDerivativeJobs.AsNoTracking()
+                .Where(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc > now
+                    && observatoryIds.Contains(job.SourceArtifact!.Frame!.ObservatoryId))
+                .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
+                .Select(group => new { ObservatoryId = group.Key, Active = group.Count() })
+                .ToDictionaryAsync(item => item.ObservatoryId, item => item.Active, cancellationToken).ConfigureAwait(false);
+            var limits = backlogRows.Select(row => entitlements.ResolveActiveJobs(row.ObservatoryId)).ToArray();
+            entitled = limits.Any(limit => limit <= 0)
+                ? null
+                : backlogRows.Sum(row => Math.Max(0, entitlements.ResolveActiveJobs(row.ObservatoryId) - (activeByObservatory.TryGetValue(row.ObservatoryId, out var active) ? active : 0))) + inFlight;
+        }
         registeredRunningCount = lockedRegistered.Count;
         var lockedCompatible = lockedRegistered.Where(runner => CanClaimBacklog(runner.EligibleRecipesJson, runner.MaxTransferBytes)).ToList();
         compatibleRunningCount = lockedCompatible.Count;
         compatibleRunningConcurrency = lockedCompatible.Sum(runner => runner.MaxConcurrency);
         incompatibleRunning = registeredRunningCount - compatibleRunningCount;
-        (uncoveredBacklog, cleanupUncovered) = Allocate(lockedRegistered.Select(runner => (runner.EligibleRecipesJson, runner.MaxTransferBytes, runner.MaxConcurrency)));
-        input = input with { Running = running, Starting = starting, WarmInstances = warmLive, Capacity = CapacityOf(running, starting), IncompatibleActive = incompatibleRunning, UncoveredBacklog = uncoveredBacklog, CleanupUncovered = cleanupUncovered };
+        (allocation, cleanupUncovered) = Allocate(lockedRegistered.Select(runner => (
+            runner.RunnerId, runner.EligibleRecipesJson, runner.MaxTransferBytes, runner.MaxConcurrency,
+            LockedOccupied(runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots))));
+        uncoveredBacklog = allocation.UnmatchedJobIds.Count;
+        input = input with
+        {
+            Backlog = backlog,
+            OldestBacklogAge = oldestAge,
+            Running = running,
+            Starting = starting,
+            EntitledConcurrency = entitled,
+            InFlight = inFlight,
+            WarmInstances = warmLive,
+            Capacity = CapacityOf(running, starting),
+            CleanupBacklog = cleanupBacklog,
+            IncompatibleActive = incompatibleRunning,
+            UncoveredBacklog = uncoveredBacklog,
+            CleanupUncovered = cleanupUncovered
+        };
         var decision = ElasticScalingPolicy.Decide(settings, input, provider.EstimateStartup());
         if (template is null && decision.Reason != ElasticScalingPolicy.ReasonDailyLimit)
         {
@@ -549,7 +619,6 @@ internal sealed partial class ElasticRunnerAutoscaler(
         // accepted after the sample's snapshot keeps the instance out of this retirement, and once the reservation
         // commits the claim path (which takes the same lock) refuses the instance new work.
         var retiring = new List<(CentralElasticRunnerInstance Row, TimeSpan IdleFor)>();
-        var claimLocks = new List<CentralObjectApplicationLock>();
         // Idle scale-down keeps enough registered capacity for the demand: with heterogeneous adopted instances the
         // policy's count is a lower bound, so a candidate whose registered slots the demand still needs is skipped.
         var remainingCapacity = CapacityOf(running, starting);
@@ -557,50 +626,32 @@ internal sealed partial class ElasticRunnerAutoscaler(
         // A warm-minimum replacement is provisioned at the configured size on the next sample, so its capacity counts
         // toward what may be retired now.
         var capacityFloor = decision.Reason == ElasticScalingPolicy.ReasonWarmMinimum ? demand - perInstance : demand;
-        try
+        foreach (var item in candidates)
         {
-            foreach (var item in candidates)
+            if (retiring.Count == decision.Retire)
             {
-                if (retiring.Count == decision.Retire)
-                {
-                    break;
-                }
-                var candidateConcurrency = registered.TryGetValue(item.Row.RunnerId, out var candidateRegistration) && candidateRegistration.Status == CentralProcessingRunnerStatus.Active
-                    ? (CanClaimBacklog(candidateRegistration.EligibleRecipesJson, candidateRegistration.MaxTransferBytes) ? candidateRegistration.MaxConcurrency : 0)
-                    : perInstance;
-                if (decision.Reason is ElasticScalingPolicy.ReasonIdle or ElasticScalingPolicy.ReasonWarmMinimum
-                    && remainingCapacity - candidateConcurrency < capacityFloor)
-                {
-                    continue;
-                }
-                // The lock is tracked the moment it is acquired, so the finally below releases it on every path,
-                // including a lease query that throws or a sample abandoned by the heartbeat renewal.
-                var claimLock = await CentralObjectApplicationLock.AcquireAsync(dbContext, ClaimLockPrefix + item.Row.RunnerId, cancellationToken).ConfigureAwait(false);
-                claimLocks.Add(claimLock);
-                if (decision.Reason != ElasticScalingPolicy.ReasonDailyLimit
-                    && await dbContext.CentralDerivativeJobs.AsNoTracking()
-                        .AnyAsync(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseOwner == item.Row.RunnerId && job.LeaseExpiresAtUtc > timeProvider.GetUtcNow(), cancellationToken)
-                        .ConfigureAwait(false))
-                {
-                    claimLocks.Remove(claimLock);
-                    await claimLock.DisposeAsync().ConfigureAwait(false);
-                    continue;
-                }
-                item.Row.State = nameof(ElasticRunnerInstanceState.Stopping);
-                item.Row.UpdatedAtUtc = now;
-                retiring.Add(item);
-                remainingCapacity -= candidateConcurrency;
+                break;
             }
-            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            await scaling.CommitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            foreach (var claimLock in claimLocks)
+            var candidateConcurrency = registered.TryGetValue(item.Row.RunnerId, out var candidateRegistration) && candidateRegistration.Status == CentralProcessingRunnerStatus.Active
+                ? (CanClaimBacklog(candidateRegistration.EligibleRecipesJson, candidateRegistration.MaxTransferBytes) ? candidateRegistration.MaxConcurrency : 0)
+                : perInstance;
+            if (decision.Reason is ElasticScalingPolicy.ReasonIdle or ElasticScalingPolicy.ReasonWarmMinimum
+                && remainingCapacity - candidateConcurrency < capacityFloor)
             {
-                await claimLock.DisposeAsync().ConfigureAwait(false);
+                continue;
             }
+            if (decision.Reason != ElasticScalingPolicy.ReasonDailyLimit
+                && lockedLeasesByRunner.TryGetValue(item.Row.RunnerId, out var activeLeases) && activeLeases > 0)
+            {
+                continue;
+            }
+            item.Row.State = nameof(ElasticRunnerInstanceState.Stopping);
+            item.Row.UpdatedAtUtc = now;
+            retiring.Add(item);
+            remainingCapacity -= candidateConcurrency;
         }
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await scaling.CommitAsync(cancellationToken).ConfigureAwait(false);
         await LaunchAllAsync(dbContext, settings, intents, now, cancellationToken).ConfigureAwait(false);
         var retired = 0;
         var idleRetired = 0;
@@ -634,6 +685,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
     /// <summary>One claimable runner-placed job as the claim's own readiness query reports it.</summary>
     internal sealed class ClaimableBacklogRow
     {
+        public Guid JobId { get; init; }
         public Guid ObservatoryId { get; init; }
         public string RecipeName { get; init; } = string.Empty;
         public bool IsCleanup { get; init; }
@@ -644,13 +696,21 @@ internal sealed partial class ElasticRunnerAutoscaler(
 #pragma warning disable CA2100 // The text is the constant CreateClaimableSql template; every runtime value is a SqlParameter.
     private static async Task<List<ClaimableBacklogRow>> QueryClaimableAsync(
         ApplicationDbContext dbContext, IReadOnlySet<string> recipes, long maximumInputBytes, DateTimeOffset now, CancellationToken cancellationToken)
-        => await dbContext.Database.SqlQueryRaw<ClaimableBacklogRow>(
+    {
+        var rows = await dbContext.Database.SqlQueryRaw<ClaimableBacklogRow>(
                 CentralDerivativeJobService.CreateClaimableSql(),
                 new SqlParameter("@now", now),
                 new SqlParameter("@includeRecipes", System.Data.SqlDbType.NVarChar, -1) { Value = string.Join(',', recipes.OrderBy(recipe => recipe, StringComparer.Ordinal)) },
                 new SqlParameter("@excludeRecipes", System.Data.SqlDbType.NVarChar, -1) { Value = string.Empty },
-                new SqlParameter("@maximumInputBytes", maximumInputBytes))
+                new SqlParameter("@maximumInputBytes", maximumInputBytes),
+                new SqlParameter("@candidateLimit", ElasticFleetAllocator.MaximumJobs + 1))
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+        if (rows.Count > ElasticFleetAllocator.MaximumJobs)
+        {
+            throw new InvalidOperationException($"Elastic allocation candidate limit exceeded: more than {ElasticFleetAllocator.MaximumJobs} claimable jobs.");
+        }
+        return rows;
+    }
 #pragma warning restore CA2100
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string[]> EligibleRecipeCache = new(StringComparer.Ordinal);
