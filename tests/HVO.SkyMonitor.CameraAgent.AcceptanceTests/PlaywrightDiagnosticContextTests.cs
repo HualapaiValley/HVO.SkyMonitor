@@ -145,7 +145,7 @@ public sealed class PlaywrightDiagnosticContextTests
     [TestMethod]
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "The collector owns every concurrently created context and is disposed by the race under test.")]
-    public async Task ConcurrentCompletionAndDisposalDoNotCreateFalseFailureBundles()
+    public async Task CompletedCollectorRejectsLateContextsWithoutCreatingFailureBundles()
     {
         var directory = Path.Combine(TestContext.ResultsDirectory ?? Path.GetTempPath(), "playwright-failures");
         if (Directory.Exists(directory))
@@ -161,9 +161,12 @@ public sealed class PlaywrightDiagnosticContextTests
         {
             _ = await context.NewPageAsync().ConfigureAwait(false);
         }
-        await Task.WhenAll(diagnostics.CompleteAsync(), diagnostics.DisposeAsync().AsTask()).ConfigureAwait(false);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => diagnostics.NewContextAsync()).ConfigureAwait(false);
+        await diagnostics.DisposeAsync().ConfigureAwait(false);
         Assert.IsFalse(Directory.Exists(directory) && Directory.GetFiles(directory).Length > 0,
-            "successful collector completion racing disposal must not be classified as a browser failure");
+            "successful completion and late context rejection must not be classified as browser failures");
     }
 
     private static void AssertNoSentinels(string text)
