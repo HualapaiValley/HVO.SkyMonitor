@@ -37,6 +37,8 @@ public sealed class LogicHostUiPerformanceTests
     ];
     private static readonly JsonSerializerOptions EvidenceJsonOptions = new() { WriteIndented = true };
 
+    public TestContext TestContext { get; set; } = null!;
+
     [TestMethod]
     [Timeout(1_800_000)]
     public async Task Issue107_RouteMixesMeetDeclaredConcurrentSessionLatencyAndResourceGates()
@@ -70,7 +72,8 @@ public sealed class LogicHostUiPerformanceTests
             Headless = true,
             Args = ["--disable-dev-shm-usage"]
         }).ConfigureAwait(false);
-        var authenticatedStorageState = await CreateAuthenticatedStorageStateAsync(browser, fixture.BaseAddress)
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        var authenticatedStorageState = await CreateAuthenticatedStorageStateAsync(diagnostics, fixture.BaseAddress)
             .ConfigureAwait(false);
         var results = new List<RouteMixEvidence>();
         var transferResults = new List<TransferEvidence>();
@@ -95,7 +98,7 @@ public sealed class LogicHostUiPerformanceTests
                 {
                     for (var index = 0; index < concurrency; index++)
                     {
-                        var context = await browser.NewContextAsync(new BrowserNewContextOptions
+                        var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
                         {
                             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
                             ServiceWorkers = ServiceWorkerPolicy.Block,
@@ -162,7 +165,7 @@ public sealed class LogicHostUiPerformanceTests
                         $"{mix.Name} at {concurrency} sessions");
                     foreach (var session in sessions)
                     {
-                        await session.Context.DisposeAsync().ConfigureAwait(false);
+                        await diagnostics.ReleaseAsync(session.Context).ConfigureAwait(false);
                     }
                     sessions.Clear();
                 }
@@ -171,7 +174,7 @@ public sealed class LogicHostUiPerformanceTests
                 var workingSetBeforeInteractiveSessions = Process.GetCurrentProcess().WorkingSet64;
                 for (var index = 0; index < concurrency; index++)
                 {
-                    var context = await browser.NewContextAsync(new BrowserNewContextOptions
+                    var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
                     {
                         ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
                         ServiceWorkers = ServiceWorkerPolicy.Block,
@@ -217,11 +220,11 @@ public sealed class LogicHostUiPerformanceTests
             {
                 foreach (var session in sessions)
                 {
-                    await session.Context.DisposeAsync().ConfigureAwait(false);
+                    await diagnostics.ReleaseAsync(session.Context).ConfigureAwait(false);
                 }
                 foreach (var session in interactiveSessions)
                 {
-                    await session.Context.DisposeAsync().ConfigureAwait(false);
+                    await diagnostics.ReleaseAsync(session.Context).ConfigureAwait(false);
                 }
             }
         }
@@ -237,6 +240,7 @@ public sealed class LogicHostUiPerformanceTests
         await WriteEvidenceAsync(
                 browser.Version, dataset, results, transferResults, retrieval, sqlEvidence, resourceResults, processSamples)
             .ConfigureAwait(false);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     private static async Task RunOperationsAsync(
@@ -297,9 +301,9 @@ public sealed class LogicHostUiPerformanceTests
              $"/app/observatories/{dataset.TenThousandObservatoryId:D}/publication"])
     ];
 
-    private static async Task<string> CreateAuthenticatedStorageStateAsync(IBrowser browser, Uri baseAddress)
+    private static async Task<string> CreateAuthenticatedStorageStateAsync(PlaywrightDiagnostics diagnostics, Uri baseAddress)
     {
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
             ServiceWorkers = ServiceWorkerPolicy.Block
@@ -316,7 +320,9 @@ public sealed class LogicHostUiPerformanceTests
         await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync()
             .ConfigureAwait(false);
         await navigation.ConfigureAwait(false);
-        return await context.StorageStateAsync().ConfigureAwait(false);
+        var state = await context.StorageStateAsync().ConfigureAwait(false);
+        await diagnostics.ReleaseAsync(context).ConfigureAwait(false);
+        return state;
     }
 
     private static double Percentile(double[] ordered, double percentile)

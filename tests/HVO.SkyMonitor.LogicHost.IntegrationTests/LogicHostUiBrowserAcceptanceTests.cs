@@ -28,6 +28,8 @@ public sealed class LogicHostUiBrowserAcceptanceTests
         (320, 700)
     ];
 
+    public TestContext TestContext { get; set; } = null!;
+
     [TestMethod]
     public async Task Issue107_PublicAndProtectedJourneysAreResponsiveAccessibleAndLeakFree()
     {
@@ -40,11 +42,12 @@ public sealed class LogicHostUiBrowserAcceptanceTests
         {
             Headless = true
         }).ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
         var pageErrors = new List<string>();
         var responseFailures = new List<string>();
         var routeEvidence = new List<RouteEvidence>();
         var mapRequests = new List<MapRequestEvidence>();
-        await using (var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using (var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
             ColorScheme = ColorScheme.Dark,
@@ -113,7 +116,7 @@ public sealed class LogicHostUiBrowserAcceptanceTests
             }
         }
 
-        await using (var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using (var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
             ColorScheme = ColorScheme.Dark
@@ -191,7 +194,7 @@ public sealed class LogicHostUiBrowserAcceptanceTests
             (TestUsers.Regular.Email, TestUsers.Regular.Password, "Manager")
         })
         {
-            await using var context = await browser.NewContextAsync().ConfigureAwait(false);
+            await using var context = await diagnostics.NewContextAsync().ConfigureAwait(false);
             var page = await context.NewPageAsync().ConfigureAwait(false);
             page.PageError += (_, error) => pageErrors.Add(error);
             await LoginAsync(page, fixture.BaseAddress, identity.Email, identity.Password).ConfigureAwait(false);
@@ -222,7 +225,7 @@ public sealed class LogicHostUiBrowserAcceptanceTests
             }
         }
 
-        await using (var context = await browser.NewContextAsync().ConfigureAwait(false))
+        await using (var context = await diagnostics.NewContextAsync().ConfigureAwait(false))
         {
             var page = await context.NewPageAsync().ConfigureAwait(false);
             page.PageError += (_, error) => pageErrors.Add(error);
@@ -250,6 +253,7 @@ public sealed class LogicHostUiBrowserAcceptanceTests
             rawAudit.MembershipRole.Should().Be(ObservatoryMembershipRole.Viewer);
         }
         await WriteEvidenceAsync(browser.Version, routeEvidence, mapRequests).ConfigureAwait(false);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
         var evidenceRoot = Environment.GetEnvironmentVariable("HVO_ISSUE_107_EVIDENCE_ROOT");
         if (!string.IsNullOrWhiteSpace(evidenceRoot))
         {

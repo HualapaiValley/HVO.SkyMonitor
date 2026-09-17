@@ -181,7 +181,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var ownerPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
             session, password, "W6 standalone").ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = baseUri.ToString(),
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
@@ -542,6 +543,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var evidencePath = Path.Combine(evidenceRoot, "issue-211-w6.json");
         await File.WriteAllTextAsync(evidencePath, JsonSerializer.Serialize(evidence, EvidenceJson)).ConfigureAwait(false);
         TestContext.WriteLine($"Issue #211 W6 evidence: {evidencePath}");
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -580,7 +582,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var ownerPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
             session, password, "Mono8 control").ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = baseUri.ToString(),
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
@@ -745,6 +748,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var evidencePath = Path.Combine(evidenceRoot, "issue-211-mono8.json");
         await File.WriteAllTextAsync(evidencePath, JsonSerializer.Serialize(evidence, EvidenceJson)).ConfigureAwait(false);
         TestContext.WriteLine($"Issue #211 Mono8 evidence: {evidencePath}");
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     /// <summary>

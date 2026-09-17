@@ -25,6 +25,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
     private const float DefaultTimeoutMilliseconds = 45_000;
     private const string OwnerRecoveryAttestationPurpose = "HVO.SkyMonitor.CameraAgent.OwnerRecovery.Attestation.v1";
 
+    public TestContext TestContext { get; set; } = null!;
+
     [TestMethod]
     public async Task FirstOwnerLoginRequiresPasswordReplacementAndRevokesStaleSessionAsync()
     {
@@ -45,11 +47,12 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }
         await host.RestartWithoutPasswordAuthorityAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var replacingContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var replacingContext = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false);
-        await using var staleContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var staleContext = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false);
@@ -125,7 +128,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }
 
         await host.RestartAsync().ConfigureAwait(false);
-        await using var oldCredentialContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var oldCredentialContext = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false);
@@ -144,7 +147,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             "/Account/Login",
             new ViewportSize { Width = 1280, Height = 720 }).ConfigureAwait(false);
 
-        await using var replacementCredentialContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var replacementCredentialContext = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false);
@@ -156,6 +159,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await replacementCredentialPage.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/").ConfigureAwait(false);
         await VisibleAsync(replacementCredentialPage.GetByRole(AriaRole.Heading, new() { Name = "Current sky", Level = 1 }))
             .ConfigureAwait(false);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -167,7 +171,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await host.RestartWithoutPasswordAuthorityAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var staleContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var staleContext = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false);
@@ -182,7 +187,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var staleConfirmation = stalePage.Locator("dialog.confirmation");
         await OpenDialogAsync(staleCaptureAction, staleConfirmation).ConfigureAwait(false);
 
-        await using var staleReadContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var staleReadContext = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false);
@@ -289,7 +294,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.AreEqual(before.CaptureState, after.CaptureState);
         Assert.IsGreaterThan(before.CaptureSequence, after.CaptureSequence);
 
-        await using var oldPasswordContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var oldPasswordContext = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false);
@@ -302,7 +307,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(oldPasswordPage.GetByText("Error: Invalid login attempt.", new() { Exact = true }))
             .ConfigureAwait(false);
 
-        await using var recoveredContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var recoveredContext = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false);
@@ -318,13 +323,14 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await SubmitPasswordReplacementAsync(recoveredPage, recoveredContext).ConfigureAwait(false);
 
         await host.RestartAsync().ConfigureAwait(false);
-        await using var finalContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var finalContext = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false);
         var finalPage = await finalContext.NewPageAsync().ConfigureAwait(false);
         await LoginAsync(finalPage, CameraAgentKestrelFixture.OwnerEmail, finalPassword).ConfigureAwait(false);
         await finalPage.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/").ConfigureAwait(false);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -335,7 +341,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 390, Height = 844 },
@@ -493,6 +500,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.GotoAsync("/").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Current sky", Level = 1 }))
             .ConfigureAwait(false);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -506,10 +514,11 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await using var host = await CameraAgentKestrelFixture.CreateAsync(
             enableCentralIntegration: true).ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
 
-        await AssertAnonymousAndNonOwnerAuthorizationAsync(browser, host.BaseAddress).ConfigureAwait(false);
+        await AssertAnonymousAndNonOwnerAuthorizationAsync(diagnostics, host.BaseAddress).ConfigureAwait(false);
 
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
@@ -548,6 +557,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         Assert.IsEmpty(previewFailures, string.Join(Environment.NewLine, previewFailures));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -558,8 +568,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await AssertAnonymousAndNonOwnerAuthorizationAsync(browser, host.BaseAddress).ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await AssertAnonymousAndNonOwnerAuthorizationAsync(diagnostics, host.BaseAddress).ConfigureAwait(false);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
@@ -606,6 +617,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         Assert.IsEmpty(previewFailures, string.Join(Environment.NewLine, previewFailures));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -616,8 +628,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await AssertAnonymousAndNonOwnerAuthorizationAsync(browser, host.BaseAddress).ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await AssertAnonymousAndNonOwnerAuthorizationAsync(diagnostics, host.BaseAddress).ConfigureAwait(false);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
@@ -709,6 +722,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         Assert.IsEmpty(previewFailures, string.Join(Environment.NewLine, previewFailures));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -719,7 +733,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
@@ -803,6 +818,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -813,7 +829,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
@@ -961,7 +978,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.GotoAsync($"/gallery/{Guid.NewGuid():D}").ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Capture unavailable", new() { Exact = true })).ConfigureAwait(false);
 
-        await using (var anonymous = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using (var anonymous = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false))
@@ -971,7 +988,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             await anonymousPage.WaitForURLAsync(url => url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase) &&
                 url.Contains("returnUrl=", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
         }
-        await using (var nonOwner = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using (var nonOwner = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString()
         }).ConfigureAwait(false))
@@ -986,6 +1003,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         Assert.IsEmpty(previewFailures, string.Join(Environment.NewLine, previewFailures));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -1026,7 +1044,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
             CancellationToken.None).ConfigureAwait(false);
 
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
@@ -1094,11 +1113,12 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         Assert.AreEqual(first.BundleId, (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim());
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
-    private static async Task AssertAnonymousAndNonOwnerAuthorizationAsync(IBrowser browser, Uri baseAddress)
+    private static async Task AssertAnonymousAndNonOwnerAuthorizationAsync(PlaywrightDiagnostics diagnostics, Uri baseAddress)
     {
-        await using (var anonymous = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using (var anonymous = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = baseAddress.ToString()
         }).ConfigureAwait(false))
@@ -1120,7 +1140,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             }
         }
 
-        await using var nonOwner = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var nonOwner = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = baseAddress.ToString()
         }).ConfigureAwait(false);
@@ -1338,7 +1358,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1280, Height = 720 }
@@ -1384,6 +1405,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             await page.Locator("article[aria-labelledby='sky-observer-edit']").InnerTextAsync().ConfigureAwait(false),
             "No manual coordinate change has been recorded",
             StringComparison.Ordinal);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -1395,7 +1417,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1280, Height = 720 }
@@ -1468,6 +1491,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 .ConfigureAwait(false),
             "No automation run has been recorded",
             StringComparison.Ordinal);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -1482,7 +1506,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await using var host = await CameraAgentKestrelFixture.CreateAsync(useEnvironmentalAcquisition: true)
             .ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1280, Height = 720 }
@@ -1554,6 +1579,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 .ConfigureAwait(false),
             "Browser acceptance",
             StringComparison.Ordinal);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     private static async Task LoginAsync(IPage page, string email, string password)
@@ -1987,7 +2013,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = host.BaseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1280, Height = 720 }
@@ -2045,6 +2072,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
         await dialog.WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
         await page.WaitForFunctionAsync("() => (document.activeElement?.id || '').startsWith('graph-VALIDATE-')").ConfigureAwait(false);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     private static async Task TabToAsync(IPage page, string tagName, string? accessibleName)
