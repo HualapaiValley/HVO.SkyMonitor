@@ -20,10 +20,10 @@ var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringCo
     ["tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj"] = Counts(unit: 11),
     ["tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"] = Counts(unit: 15, integration: 7),
     ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 1861, integration: 219, manual: 34, soak: 1, hardware: 1),
-    ["tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"] = Counts(unit: 20, integration: 7, manual: 22),
+    ["tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"] = Counts(unit: 20, integration: 7, manual: 25),
     ["tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj"] = Counts(unit: 4, integration: 21),
     ["tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj"] = Counts(unit: 447),
-    ["tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"] = Counts(unit: 4, integration: 414, manual: 31),
+    ["tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"] = Counts(unit: 4, integration: 414, manual: 32),
     ["tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"] = Counts(unit: 8, manual: 1),
     ["tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj"] = Counts(unit: 4, integration: 6, manual: 3),
 };

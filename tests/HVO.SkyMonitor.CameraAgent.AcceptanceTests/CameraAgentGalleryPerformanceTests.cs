@@ -171,6 +171,7 @@ public sealed class CameraAgentGalleryPerformanceTests
         var evidenceLabel = ReadEvidenceLabel();
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         await using var browser = await LaunchOrWithdrawStaleEvidenceAsync(playwright).ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
 
         foreach (var captureCount in CaptureCounts)
         {
@@ -228,7 +229,7 @@ public sealed class CameraAgentGalleryPerformanceTests
                     ownerClient, captureCount, concurrency).ConfigureAwait(false));
             }
             var browserSessionMeasurements = await MeasureBrowserSessionsAsync(
-                browser, host.BaseAddress, captureCount, evidenceLabel != "baseline", contention).ConfigureAwait(false);
+                diagnostics, host.BaseAddress, captureCount, evidenceLabel != "baseline", contention).ConfigureAwait(false);
             browserMeasurements.AddRange(browserSessionMeasurements.Renders);
             browserPreviewFailureMeasurements.AddRange(browserSessionMeasurements.PreviewFailures);
 
@@ -335,17 +336,18 @@ public sealed class CameraAgentGalleryPerformanceTests
         File.Delete(Path.Combine(outputDirectory, RefusalFileName));
         TestContext.WriteLine($"Issue #441 performance evidence: {outputPath}");
         TestContext.WriteLine($"Issue #441 performance evidence SHA-256: {Convert.ToHexString(SHA256.HashData(evidenceBytes))}");
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Await-using must retain the strongly typed Playwright context for the measured session scope.")]
     private static async Task<BrowserSessionMeasurements> MeasureBrowserSessionsAsync(
-        IBrowser browser,
+        PlaywrightDiagnostics diagnostics,
         Uri baseAddress,
         int captureCount,
         bool measurePreviewFailures,
         HostContention contention)
     {
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
         {
             BaseURL = baseAddress.ToString(),
             ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
@@ -439,7 +441,9 @@ public sealed class CameraAgentGalleryPerformanceTests
             await Task.WhenAll(pages.Select(static page => page.CloseAsync())).ConfigureAwait(false);
             await Task.Delay(250).ConfigureAwait(false);
         }
-        return new BrowserSessionMeasurements(measurements, previewFailureMeasurements);
+        var result = new BrowserSessionMeasurements(measurements, previewFailureMeasurements);
+        await diagnostics.ReleaseAsync(context).ConfigureAwait(false);
+        return result;
     }
 
     private static async Task<BrowserPreviewFailureMeasurement> MeasurePreviewFailuresAsync(
