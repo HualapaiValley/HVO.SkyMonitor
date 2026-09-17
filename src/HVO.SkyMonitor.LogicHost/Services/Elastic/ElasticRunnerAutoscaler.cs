@@ -431,32 +431,40 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var (allocation, cleanupUncovered) = Allocate(registeredRunning.Select(runner => (
             runner.RunnerId, runner.EligibleRecipesJson, runner.MaxTransferBytes, runner.MaxConcurrency,
             Occupied(runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots))));
-        var uncoveredBacklog = allocation.UnmatchedJobIds.Count;
-        int? entitled = null;
-        if (entitlements is not null && backlogRows.Count != 0)
+        async Task<ElasticProvisionableShortfall> ProvisionableAsync(ElasticFleetAllocator.Result currentAllocation)
         {
-            // The bound is what the claim could still admit: each backlogged observatory's remaining headroom
-            // (limit minus its unexpired leases from any worker) plus the work already executing on our instances.
-            var observatoryIds = backlogRows.Select(row => row.ObservatoryId).ToArray();
+            var unmatchedIds = currentAllocation.UnmatchedJobIds.ToHashSet();
+            var unmatched = executable.Where(row => unmatchedIds.Contains(row.JobId))
+                .Select(row => new ElasticProvisionableShortfallSelector.Job(row.JobId, row.ObservatoryId, row.AvailableSince))
+                .ToArray();
+            if (entitlements is null || unmatched.Length == 0)
+            {
+                return ElasticProvisionableShortfallSelector.Select(unmatched, null, now);
+            }
+            var observatoryIds = unmatched.Select(row => row.ObservatoryId).Distinct().ToArray();
             var activeByObservatory = await dbContext.CentralDerivativeJobs.AsNoTracking()
                 .Where(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc > now
                     && observatoryIds.Contains(job.SourceArtifact!.Frame!.ObservatoryId))
                 .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
                 .Select(group => new { ObservatoryId = group.Key, Active = group.Count() })
                 .ToDictionaryAsync(item => item.ObservatoryId, item => item.Active, cancellationToken).ConfigureAwait(false);
-            var limits = backlogRows.Select(row => entitlements.ResolveActiveJobs(row.ObservatoryId)).ToArray();
-            entitled = limits.Any(limit => limit <= 0)
-                ? null
-                : backlogRows.Sum(row => Math.Max(0, entitlements.ResolveActiveJobs(row.ObservatoryId) - (activeByObservatory.TryGetValue(row.ObservatoryId, out var active) ? active : 0))) + inFlight;
+            var remaining = observatoryIds.ToDictionary(observatoryId => observatoryId, observatoryId =>
+            {
+                var limit = entitlements.ResolveActiveJobs(observatoryId);
+                return limit == 0 ? int.MaxValue : Math.Max(0, limit - (activeByObservatory.TryGetValue(observatoryId, out var active) ? active : 0));
+            });
+            return ElasticProvisionableShortfallSelector.Select(unmatched, remaining, now);
         }
+        var provisionable = await ProvisionableAsync(allocation).ConfigureAwait(false);
         var minutesToday = await InstanceMinutesTodayAsync(dbContext, now, cancellationToken).ConfigureAwait(false);
         var perInstance = Math.Max(1, settings.MaxConcurrencyPerInstance);
         // Compatible registered slots, plus the configured size for running instances not yet registered and for
         // starting ones (they register with the probed template); incompatible registered instances count nothing.
         int CapacityOf(int runningCount, int startingCount)
             => compatibleRunningConcurrency + Math.Max(0, runningCount - registeredRunningCount) * perInstance + startingCount * perInstance;
-        var input = new ElasticScalingInput(backlog, oldestAge, running, starting, idle.Count,
-            idle.Count == 0 ? TimeSpan.Zero : idle.Max(item => item.IdleFor), entitled, minutesToday, inFlight, warmLive, CapacityOf(running, starting), cleanupBacklog, incompatibleRunning, uncoveredBacklog, cleanupUncovered);
+        var input = new ElasticScalingInput(backlog, running, starting, idle.Count,
+            idle.Count == 0 ? TimeSpan.Zero : idle.Max(item => item.IdleFor), provisionable, minutesToday, inFlight, warmLive,
+            CapacityOf(running, starting), cleanupBacklog, incompatibleRunning, allocation.MatchedJobIds.Count, cleanupUncovered);
         // Deployment-wide decisions are serialized: the decision and its durable intents commit under one
         // application lock so replicas sampling the same backlog cannot both fill the same shortfall.
         await using var scaling = await dbContext.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -529,21 +537,6 @@ internal sealed partial class ElasticRunnerAutoscaler(
         int LockedOccupied(string runnerId, int maxConcurrency, int availableSlots)
             => Math.Max(Math.Max(0, maxConcurrency - availableSlots), lockedLeasesByRunner.TryGetValue(runnerId, out var leases) ? leases : 0);
         inFlight = lockedRegistered.Sum(runner => LockedOccupied(runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots));
-        entitled = null;
-        if (entitlements is not null && backlogRows.Count != 0)
-        {
-            var observatoryIds = backlogRows.Select(row => row.ObservatoryId).ToArray();
-            var activeByObservatory = await dbContext.CentralDerivativeJobs.AsNoTracking()
-                .Where(job => job.Status == CentralDerivativeJobStatus.Leased && job.LeaseExpiresAtUtc > now
-                    && observatoryIds.Contains(job.SourceArtifact!.Frame!.ObservatoryId))
-                .GroupBy(job => job.SourceArtifact!.Frame!.ObservatoryId)
-                .Select(group => new { ObservatoryId = group.Key, Active = group.Count() })
-                .ToDictionaryAsync(item => item.ObservatoryId, item => item.Active, cancellationToken).ConfigureAwait(false);
-            var limits = backlogRows.Select(row => entitlements.ResolveActiveJobs(row.ObservatoryId)).ToArray();
-            entitled = limits.Any(limit => limit <= 0)
-                ? null
-                : backlogRows.Sum(row => Math.Max(0, entitlements.ResolveActiveJobs(row.ObservatoryId) - (activeByObservatory.TryGetValue(row.ObservatoryId, out var active) ? active : 0))) + inFlight;
-        }
         registeredRunningCount = lockedRegistered.Count;
         var lockedCompatible = lockedRegistered.Where(runner => CanClaimBacklog(runner.EligibleRecipesJson, runner.MaxTransferBytes)).ToList();
         compatibleRunningCount = lockedCompatible.Count;
@@ -552,20 +545,19 @@ internal sealed partial class ElasticRunnerAutoscaler(
         (allocation, cleanupUncovered) = Allocate(lockedRegistered.Select(runner => (
             runner.RunnerId, runner.EligibleRecipesJson, runner.MaxTransferBytes, runner.MaxConcurrency,
             LockedOccupied(runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots))));
-        uncoveredBacklog = allocation.UnmatchedJobIds.Count;
+        provisionable = await ProvisionableAsync(allocation).ConfigureAwait(false);
         input = input with
         {
             Backlog = backlog,
-            OldestBacklogAge = oldestAge,
             Running = running,
             Starting = starting,
-            EntitledConcurrency = entitled,
+            ProvisionableShortfall = provisionable,
             InFlight = inFlight,
             WarmInstances = warmLive,
             Capacity = CapacityOf(running, starting),
             CleanupBacklog = cleanupBacklog,
             IncompatibleActive = incompatibleRunning,
-            UncoveredBacklog = uncoveredBacklog,
+            MatchedBacklog = allocation.MatchedJobIds.Count,
             CleanupUncovered = cleanupUncovered
         };
         var decision = ElasticScalingPolicy.Decide(settings, input, provider.EstimateStartup());
@@ -622,7 +614,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         // Idle scale-down keeps enough registered capacity for the demand: with heterogeneous adopted instances the
         // policy's count is a lower bound, so a candidate whose registered slots the demand still needs is skipped.
         var remainingCapacity = CapacityOf(running, starting);
-        var demand = Math.Max(EffectiveDemand(backlog, inFlight, entitled), cleanupBacklog > 0 ? 1 : 0);
+        var demand = Math.Max(EffectiveDemand(allocation.MatchedJobIds.Count, provisionable.Count, inFlight), cleanupBacklog > 0 ? 1 : 0);
         // A warm-minimum replacement is provisioned at the configured size on the next sample, so its capacity counts
         // toward what may be retired now.
         var capacityFloor = decision.Reason == ElasticScalingPolicy.ReasonWarmMinimum ? demand - perInstance : demand;
@@ -730,10 +722,9 @@ internal sealed partial class ElasticRunnerAutoscaler(
         });
 
     /// <summary>The concurrency the demand can really use: queued plus in-flight work, bounded by the entitlement the policy applied.</summary>
-    internal static int EffectiveDemand(int backlog, int inFlight, int? entitledConcurrency)
+    internal static int EffectiveDemand(int matchedBacklog, int provisionableBacklog, int inFlight)
     {
-        var demand = Math.Max(0, backlog) + Math.Max(0, inFlight);
-        return entitledConcurrency is { } entitled ? Math.Min(demand, Math.Max(0, entitled)) : demand;
+        return Math.Max(0, matchedBacklog) + Math.Max(0, provisionableBacklog) + Math.Max(0, inFlight);
     }
 
     /// <summary>An owner that has not reconciled a row for this long is considered gone.</summary>

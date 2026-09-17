@@ -4,19 +4,18 @@ namespace HVO.SkyMonitor.LogicHost.Services.Elastic;
 
 internal sealed record ElasticScalingInput(
     int Backlog,
-    TimeSpan OldestBacklogAge,
     int Running,
     int Starting,
     int Idle,
     TimeSpan LongestIdle,
-    int? EntitledConcurrency,
+    ElasticProvisionableShortfall ProvisionableShortfall,
     int InstanceMinutesToday,
     int InFlight = 0,
     int WarmInstances = 0,
     int? Capacity = null,
     int CleanupBacklog = 0,
     int IncompatibleActive = 0,
-    int UncoveredBacklog = 0,
+    int MatchedBacklog = 0,
     bool CleanupUncovered = false);
 
 internal sealed record ElasticScalingDecision(int Provision, int Retire, string Reason)
@@ -74,29 +73,17 @@ internal static class ElasticScalingPolicy
         int InstancesFor(int concurrency) => concurrency > capacity
             ? compatibleActive + (int)Math.Ceiling((concurrency - capacity) / (double)perInstance)
             : Math.Min(compatibleActive, (int)Math.Ceiling(concurrency / (double)perInstance));
-        var needed = InstancesFor(input.Backlog + Math.Max(0, input.InFlight));
-        var entitlementBound = false;
-        if (input.EntitledConcurrency is { } entitled)
-        {
-            var byEntitlement = InstancesFor(Math.Max(0, entitled));
-            if (byEntitlement < needed)
-            {
-                needed = byEntitlement;
-                entitlementBound = true;
-            }
-        }
+        var provisionable = input.ProvisionableShortfall;
+        var entitlementBound = input.Backlog > Math.Max(0, input.MatchedBacklog) + provisionable.Count;
+        var needed = InstancesFor(Math.Max(0, input.MatchedBacklog) + provisionable.Count + Math.Max(0, input.InFlight));
         // Executable work no active instance can claim (recipe or input size outside every registration's allocated
         // slots) needs new instances whatever the aggregate capacity; instances still starting register with the
         // template and will cover it. It stays within the entitlement bound: instances that could not claim until
         // headroom returns are never provisioned for it.
-        if (input.UncoveredBacklog > 0)
+        if (provisionable.Count > 0)
         {
-            var uncoveredInstances = Math.Max(0, (int)Math.Ceiling(input.UncoveredBacklog / (double)perInstance) - input.Starting);
+            var uncoveredInstances = Math.Max(0, (int)Math.Ceiling(provisionable.Count / (double)perInstance) - input.Starting);
             var raised = compatibleActive + uncoveredInstances;
-            if (input.EntitledConcurrency is { } entitledForUncovered)
-            {
-                raised = Math.Min(raised, InstancesFor(Math.Max(0, entitledForUncovered)));
-            }
             needed = Math.Max(needed, raised);
         }
         var executableNeeded = needed;
@@ -130,7 +117,8 @@ internal static class ElasticScalingPolicy
             {
                 return new ElasticScalingDecision(0, 0, ReasonDailyLimit);
             }
-            if (input.Backlog > 0 && executableNeeded > compatibleActive && startupEstimate + input.OldestBacklogAge > options.QueueDeadline)
+            if (provisionable.Count > 0 && executableNeeded > compatibleActive
+                && startupEstimate + provisionable.OldestAge > options.QueueDeadline)
             {
                 // Provider startup cannot meet the deadline for the oldest executable work: keep it local, only top up
                 // the warm minimum and the one instance terminal cleanup needs (cleanup is exempt from the deadline).
@@ -149,7 +137,7 @@ internal static class ElasticScalingPolicy
                 var reason = needed > compatibleActive ? (entitlementBound ? ReasonEntitlementBound : ReasonBacklog) : ReasonWarmMinimum;
                 return new ElasticScalingDecision(provision, 0, reason);
             }
-            if ((input.UncoveredBacklog > 0 || cleanupShortfall > 0) && input.Starting == 0 && active <= options.MaxInstances)
+            if ((provisionable.Count > 0 || cleanupShortfall > 0) && input.Starting == 0 && active <= options.MaxInstances)
             {
                 // The limit is full of instances serving other work: the uncovered work is reported, not served by
                 // retiring a useful instance. A fleet above a lowered limit falls through to idle scale-down instead.
@@ -161,7 +149,7 @@ internal static class ElasticScalingPolicy
             var retire = Math.Min(input.Idle, active - desired);
             return retire > 0 ? new ElasticScalingDecision(0, retire, ReasonIdle) : ElasticScalingDecision.Steady;
         }
-        return entitlementBound && input.Backlog > needed * perInstance
+        return entitlementBound
             ? new ElasticScalingDecision(0, 0, ReasonEntitlementBound)
             : ElasticScalingDecision.Steady;
     }

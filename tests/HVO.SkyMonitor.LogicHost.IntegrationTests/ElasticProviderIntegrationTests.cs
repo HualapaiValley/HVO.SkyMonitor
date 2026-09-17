@@ -828,6 +828,96 @@ public sealed class ElasticProviderIntegrationTests
     }
 
     [TestMethod]
+    public async Task UnmatchedWorkUsesEachObservatoryRemainingHeadroom()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var exhaustedDevice = Guid.NewGuid();
+        var eligibleDevice = Guid.NewGuid();
+        var exhaustedSource = await SeedPreviewJobAsync("elastic-entitlement-exhausted", devicePublicId: exhaustedDevice).ConfigureAwait(false);
+        var activeSource = await SeedPreviewJobAsync("elastic-entitlement-active", devicePublicId: exhaustedDevice, sequence: 2).ConfigureAwait(false);
+        var eligibleSource = await SeedPreviewJobAsync("elastic-entitlement-eligible", devicePublicId: eligibleDevice).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, exhaustedSource, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, activeSource, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, eligibleSource, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await SetLeaseAsync(factory, activeSource, "ordinary-active-worker", DateTimeOffset.UtcNow.AddMinutes(5)).ConfigureAwait(false);
+        var exhaustedObservatory = await ObservatoryOfAsync(factory, exhaustedSource).ConfigureAwait(false);
+        var eligibleObservatory = await ObservatoryOfAsync(factory, eligibleSource).ConfigureAwait(false);
+        var entitlements = new CentralProcessingEntitlementOptions
+        {
+            Enabled = true,
+            DefaultActiveJobs = 1,
+            Observatories = new Dictionary<string, ObservatoryEntitlementOptions>(StringComparer.OrdinalIgnoreCase)
+            {
+                [exhaustedObservatory.ToString("D")] = new() { ActiveJobs = 1 },
+                [eligibleObservatory.ToString("D")] = new() { ActiveJobs = 1 }
+            }
+        };
+        var provider = new ScriptedProvider();
+        var autoscaler = CreateScriptedAutoscaler(provider, new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 4,
+            MaxConcurrencyPerInstance = 1,
+            ScaleToZeroAfter = TimeSpan.FromMinutes(10),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        }, entitlementSettings: entitlements);
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+
+        decision.Should().Be(new ElasticScalingDecision(1, 0, ElasticScalingPolicy.ReasonEntitlementBound),
+            "only the eligible observatory contributes provisionable unmatched work");
+        provider.Provisioned.Should().ContainSingle();
+    }
+
+    [TestMethod]
+    public async Task DeadlineUsesYoungUnmatchedWorkInsteadOfOldMatchedWork()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        var instanceId = Guid.NewGuid().ToString("N")[..16];
+        var runnerId = $"elastic-scripted-{instanceId}";
+        provider.MarkAlive(instanceId, runnerId);
+        await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+        await using (var registrationScope = factory.Services.CreateAsyncScope())
+        {
+            await registrationScope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId), CancellationToken.None).ConfigureAwait(false);
+            await SetEligibleRecipesAsync(factory, runnerId, [BuiltInProcessingRecipes.EncodedPreview]).ConfigureAwait(false);
+        }
+        var oldCovered = await SeedPreviewJobAsync("elastic-deadline-covered").ConfigureAwait(false);
+        var youngUnmatched = await SeedPreviewJobAsync("elastic-deadline-unmatched").ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, oldCovered, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, youngUnmatched, BuiltInProcessingRecipes.JpegEncoding).ConfigureAwait(false);
+        await SetAvailableSinceAsync(factory, oldCovered, DateTimeOffset.UtcNow.AddMinutes(-5)).ConfigureAwait(false);
+        await SetAvailableSinceAsync(factory, youngUnmatched, DateTimeOffset.UtcNow.AddSeconds(-10)).ConfigureAwait(false);
+        var runnerSettings = RunnerOptions();
+        runnerSettings.Placement[BuiltInProcessingRecipes.JpegEncoding] = CentralProcessingRunnerPlacement.Runner;
+        var autoscaler = CreateScriptedAutoscaler(provider, new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 2,
+            MaxConcurrencyPerInstance = 1,
+            QueueDeadline = TimeSpan.FromMinutes(1),
+            ScaleToZeroAfter = TimeSpan.FromHours(2),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        }, runnerSettings);
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+
+        decision.Should().Be(new ElasticScalingDecision(1, 0, ElasticScalingPolicy.ReasonBacklog),
+            "the five-minute job is covered and only the ten-second unmatched job sets the cold-start deadline");
+        provider.Provisioned.Should().ContainSingle();
+    }
+
+    [TestMethod]
     public async Task AnIncompatibleInstanceAtTheLimitIsReplacedByOneThatCanClaim()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
@@ -1021,14 +1111,15 @@ public sealed class ElasticProviderIntegrationTests
     private static ElasticRunnerAutoscaler CreateScriptedAutoscaler(
         IElasticRunnerProvider provider,
         CentralElasticProviderOptions settings,
-        CentralProcessingRunnerOptions? runnerSettings = null)
+        CentralProcessingRunnerOptions? runnerSettings = null,
+        CentralProcessingEntitlementOptions? entitlementSettings = null)
     {
         var services = AssemblyHooks.Fixture.Factory.Services;
         return new ElasticRunnerAutoscaler(
             services.GetRequiredService<IServiceScopeFactory>(),
             Options.Create(settings),
             Options.Create(runnerSettings ?? RunnerOptions()),
-            services.GetRequiredService<IOptions<CentralProcessingEntitlementOptions>>(),
+            Options.Create(entitlementSettings ?? services.GetRequiredService<IOptions<CentralProcessingEntitlementOptions>>().Value),
             provider,
             services.GetRequiredService<LocalProcessElasticRunnerProvider>(),
             services.GetRequiredService<ElasticProviderTelemetry>(),
@@ -1150,6 +1241,30 @@ public sealed class ElasticProviderIntegrationTests
         await db.SaveChangesAsync().ConfigureAwait(false);
     }
 
+    private static async Task<Guid> ObservatoryOfAsync(
+        WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory,
+        Guid sourceArtifactId)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.Id == sourceArtifactId)
+            .Select(artifact => artifact.Frame!.ObservatoryId)
+            .SingleAsync()
+            .ConfigureAwait(false);
+    }
+
+    private static async Task SetAvailableSinceAsync(
+        WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory,
+        Guid sourceArtifactId,
+        DateTimeOffset availableSince)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await db.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == sourceArtifactId && job.AvailableAtUtc != null)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.AvailableAtUtc, availableSince))
+            .ConfigureAwait(false);
+    }
+
     private static async Task SetLeaseAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory, Guid sourceArtifactId, string owner, DateTimeOffset leaseExpiresAtUtc, bool exhausted = false)
     {
         await using var scope = factory.Services.CreateAsyncScope();
@@ -1180,11 +1295,11 @@ public sealed class ElasticProviderIntegrationTests
         await db.CentralElasticRunnerInstances.Where(instance => instance.Provider == ScriptedProvider.ProviderName).ExecuteDeleteAsync().ConfigureAwait(false);
     }
 
-    private static async Task<Guid> SeedPreviewJobAsync(string scenario, byte[]? payload = null)
+    private static async Task<Guid> SeedPreviewJobAsync(string scenario, byte[]? payload = null, Guid? devicePublicId = null, long sequence = 1)
     {
         var suffix = Guid.NewGuid().ToString("N")[..8];
         return await CentralDerivativeWindowIntegrationTests.SeedAndScheduleSourceAsync(
-            $"{scenario}-{suffix}", Guid.NewGuid(), 1, DateTimeOffset.UtcNow.AddMinutes(-5), payload ?? SourcePayload, $"{scenario}-profile").ConfigureAwait(false);
+            $"{scenario}-{suffix}", devicePublicId ?? Guid.NewGuid(), sequence, DateTimeOffset.UtcNow.AddMinutes(-5), payload ?? SourcePayload, $"{scenario}-profile").ConfigureAwait(false);
     }
 
     private static async Task DisableClaimableJobsAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory)
