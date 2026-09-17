@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.LogicHost.Services.Elastic;
 
 namespace HVO.SkyMonitor.LogicHost.Tests.Elastic;
@@ -73,6 +74,15 @@ public sealed class ElasticFleetAllocatorTests
         var slotsFailure = Assert.ThrowsExactly<InvalidOperationException>(() => Allocate(
             [], [Runner("too-many-slots", ["A"], concurrency: ElasticFleetAllocator.MaximumSlots + 1)]));
         StringAssert.Contains(slotsFailure.Message, "slots exceeds");
+    }
+
+    [TestMethod]
+    public void ClaimableProjectionBoundsRowsBeforeMaterialization()
+    {
+        var sql = CentralDerivativeJobService.CreateClaimableSql();
+
+        StringAssert.Contains(sql, "SELECT TOP (@candidateLimit)");
+        StringAssert.Contains(sql, "ORDER BY job.[Id]");
     }
 
     private static ElasticFleetAllocator.Result Allocate(

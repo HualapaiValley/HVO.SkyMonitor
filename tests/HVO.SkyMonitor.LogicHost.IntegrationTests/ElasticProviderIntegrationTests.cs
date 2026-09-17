@@ -772,6 +772,52 @@ public sealed class ElasticProviderIntegrationTests
     }
 
     [TestMethod]
+    public async Task LockedDecisionRebuildsDemandAfterAConcurrentClaim()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        var instanceId = Guid.NewGuid().ToString("N")[..16];
+        var runnerId = $"elastic-scripted-{instanceId}";
+        provider.MarkAlive(instanceId, runnerId);
+        await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+        await using (var registrationScope = factory.Services.CreateAsyncScope())
+        {
+            await registrationScope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId), CancellationToken.None).ConfigureAwait(false);
+        }
+        var sourceId = await SeedPreviewJobAsync("elastic-claim-race").ConfigureAwait(false);
+        var autoscaler = CreateScriptedAutoscaler(provider, new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 2,
+            MaxConcurrencyPerInstance = 1,
+            ScaleToZeroAfter = TimeSpan.FromHours(2),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        });
+        await using var lockScope = factory.Services.CreateAsyncScope();
+        await using var claimLock = await CentralObjectApplicationLock.AcquireAsync(
+            lockScope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+            $"processing-runner-claim/{runnerId}",
+            CancellationToken.None).ConfigureAwait(false);
+
+        var sample = autoscaler.SampleAsync(CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+        sample.IsCompleted.Should().BeFalse("the locked decision waits for every live runner claim critical section");
+        await SetLeaseAsync(factory, sourceId, runnerId, DateTimeOffset.UtcNow.AddMinutes(5)).ConfigureAwait(false);
+        await claimLock.DisposeAsync().ConfigureAwait(false);
+
+        var decision = await sample.ConfigureAwait(false);
+
+        decision.Should().Be(ElasticScalingDecision.Steady,
+            "the locked rebuild sees the newly leased job instead of treating the stale queued row as uncovered");
+        provider.Provisioned.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task AnIncompatibleInstanceAtTheLimitIsReplacedByOneThatCanClaim()
     {
         await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
