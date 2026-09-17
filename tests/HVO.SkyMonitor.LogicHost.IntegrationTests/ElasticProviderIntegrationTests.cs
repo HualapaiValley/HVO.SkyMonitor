@@ -835,8 +835,8 @@ public sealed class ElasticProviderIntegrationTests
         {
             // A failure before the awaits above must still unblock and observe both operations, so neither keeps
             // running against a disposing scope nor completes as an unobserved fault after the test returns.
-            await claimCancellation.CancelAsync().ConfigureAwait(false);
-            await capacityLock.DisposeAsync().ConfigureAwait(false);
+            await ReleaseAsync(claimCancellation.CancelAsync).ConfigureAwait(false);
+            await ReleaseAsync(() => capacityLock.DisposeAsync().AsTask()).ConfigureAwait(false);
             await ObserveAsync(claim).ConfigureAwait(false);
             await ObserveAsync(sample).ConfigureAwait(false);
         }
@@ -1368,9 +1368,36 @@ public sealed class ElasticProviderIntegrationTests
         {
             await task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         }
+        catch (TimeoutException)
+        {
+            // The task outlived the cleanup window: observe whatever it eventually produces so it can never surface
+            // later as an unobserved fault, and say so rather than failing silently.
+            _ = task.ContinueWith(
+                static abandoned => Console.WriteLine($"elastic-cleanup abandoned task observed: {abandoned.Exception?.GetBaseException().Message ?? "completed"}"),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            Console.WriteLine($"elastic-cleanup observation timed out with status {task.Status}; the originating failure remains the reported one.");
+        }
         catch (Exception)
         {
             // The cleanup path only guarantees the task finished; its outcome is asserted on the success path.
+        }
+    }
+
+    /// <summary>Runs a cleanup release so its own failure can never replace the originating test failure.</summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Cancellation callbacks and application-lock release surface provider-specific faults; rethrowing them "
+            + "from a cleanup path would replace the originating test failure.")]
+    private static async Task ReleaseAsync(Func<Task> release)
+    {
+        try
+        {
+            await release().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Best-effort release; the remaining cleanup steps still run and the original failure is reported.
         }
     }
 
