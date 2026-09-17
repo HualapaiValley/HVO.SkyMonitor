@@ -209,10 +209,12 @@ Log events 2230-2246.
 - `HeterogeneousFleetCounterexamplesConvergeInOneSample` builds one fleet
   (flexible, recipe-restricted, and fully occupied registrations across two
   observatories with different headroom) and proves in a single production
-  sample that constrained matching, occupied-slot reservation, scoped
-  entitlement and provisionable-shortfall deadline interact as intended, and
-  that the sample emits allocation cardinality for both the `sample` and
-  `locked` phases. The four narrower scenarios remain as isolated regressions.
+  sample that the allocator's free-slot arithmetic, scoped entitlement and the
+  provisionable-shortfall deadline jointly determine the committed decision,
+  and that the sample emits allocation cardinality for both the `sample` and
+  `locked` phases. Recipe compatibility, matching order and the heartbeat/lease
+  occupancy derivation are pinned by the four narrower scenarios and the
+  allocator unit tests, which remain the regressions for those properties.
   The representative allocator test records deterministic cardinalities, edge
   visits, elapsed time and thread allocations for a 64-job, 16-registration
   heterogeneous fleet.
