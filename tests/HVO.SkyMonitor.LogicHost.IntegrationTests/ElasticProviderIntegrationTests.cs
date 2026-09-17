@@ -778,10 +778,7 @@ public sealed class ElasticProviderIntegrationTests
         using var factory = RunnerEnabledFactory();
         await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
         var provider = new ScriptedProvider();
-        var instanceId = Guid.NewGuid().ToString("N")[..16];
-        var runnerId = $"elastic-scripted-{instanceId}";
-        provider.MarkAlive(instanceId, runnerId);
-        await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+        var runnerId = $"ordinary-runner-{Guid.NewGuid():N}";
         await using (var registrationScope = factory.Services.CreateAsyncScope())
         {
             await registrationScope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
@@ -799,16 +796,16 @@ public sealed class ElasticProviderIntegrationTests
             RetireGrace = TimeSpan.FromSeconds(1)
         });
         await using var lockScope = factory.Services.CreateAsyncScope();
-        await using var claimLock = await CentralObjectApplicationLock.AcquireAsync(
+        await using var claimBarrier = await CentralObjectApplicationLock.AcquireSharedAsync(
             lockScope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
-            $"processing-runner-claim/{runnerId}",
+            CentralProcessingRunnerJobService.ClaimBarrier,
             CancellationToken.None).ConfigureAwait(false);
 
         var sample = autoscaler.SampleAsync(CancellationToken.None);
         await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
-        sample.IsCompleted.Should().BeFalse("the locked decision waits for every live runner claim critical section");
+        sample.IsCompleted.Should().BeFalse("the locked decision waits for claims from runners outside its provider instances");
         await SetLeaseAsync(factory, sourceId, runnerId, DateTimeOffset.UtcNow.AddMinutes(5)).ConfigureAwait(false);
-        await claimLock.DisposeAsync().ConfigureAwait(false);
+        await claimBarrier.DisposeAsync().ConfigureAwait(false);
 
         var decision = await sample.ConfigureAwait(false);
 

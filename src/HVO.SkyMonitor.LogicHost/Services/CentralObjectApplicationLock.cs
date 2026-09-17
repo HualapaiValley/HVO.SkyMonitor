@@ -27,18 +27,27 @@ internal sealed class CentralObjectApplicationLock : IAsyncDisposable
         string canonicalStorageReference,
         CancellationToken cancellationToken)
         => await AcquireCoreAsync(
-            dbContext, canonicalStorageReference, AcquisitionTimeout, cancellationToken).ConfigureAwait(false)
+            dbContext, canonicalStorageReference, "Exclusive", AcquisitionTimeout, cancellationToken).ConfigureAwait(false)
+           ?? throw new InvalidOperationException("The central object application lock was not acquired.");
+
+    public static async Task<CentralObjectApplicationLock> AcquireSharedAsync(
+        ApplicationDbContext dbContext,
+        string canonicalStorageReference,
+        CancellationToken cancellationToken)
+        => await AcquireCoreAsync(
+            dbContext, canonicalStorageReference, "Shared", AcquisitionTimeout, cancellationToken).ConfigureAwait(false)
            ?? throw new InvalidOperationException("The central object application lock was not acquired.");
 
     public static Task<CentralObjectApplicationLock?> TryAcquireAsync(
         ApplicationDbContext dbContext,
         string canonicalStorageReference,
         CancellationToken cancellationToken)
-        => AcquireCoreAsync(dbContext, canonicalStorageReference, TimeSpan.Zero, cancellationToken);
+        => AcquireCoreAsync(dbContext, canonicalStorageReference, "Exclusive", TimeSpan.Zero, cancellationToken);
 
     private static async Task<CentralObjectApplicationLock?> AcquireCoreAsync(
         ApplicationDbContext dbContext,
         string canonicalStorageReference,
+        string lockMode,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
@@ -58,7 +67,7 @@ internal sealed class CentralObjectApplicationLock : IAsyncDisposable
                 CommandTimeout = checked((int)Math.Ceiling(timeout.TotalSeconds) + 5)
             };
             _ = command.Parameters.AddWithValue("@Resource", resource);
-            _ = command.Parameters.AddWithValue("@LockMode", "Exclusive");
+            _ = command.Parameters.AddWithValue("@LockMode", lockMode);
             _ = command.Parameters.AddWithValue("@LockOwner", "Session");
             _ = command.Parameters.AddWithValue("@LockTimeout", (int)timeout.TotalMilliseconds);
             var result = command.Parameters.Add("@RETURN_VALUE", SqlDbType.Int);

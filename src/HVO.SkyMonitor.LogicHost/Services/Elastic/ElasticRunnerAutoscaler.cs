@@ -485,24 +485,15 @@ internal sealed partial class ElasticRunnerAutoscaler(
             .Where(instance => instance.Provider == provider.Name && instance.State == nameof(ElasticRunnerInstanceState.Running))
             .Select(instance => instance.RunnerId)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
-        var lockedClaimRunnerIds = await dbContext.CentralElasticRunnerInstances.AsNoTracking()
-            .Where(instance => instance.Provider == provider.Name && liveStates.Contains(instance.State))
-            .Select(instance => instance.RunnerId)
-            .Distinct()
-            .OrderBy(runnerId => runnerId)
-            .ToListAsync(cancellationToken).ConfigureAwait(false);
-        foreach (var runnerId in lockedClaimRunnerIds)
+        var claimBarrierResult = new SqlParameter("@result", System.Data.SqlDbType.Int) { Direction = System.Data.ParameterDirection.Output };
+        await dbContext.Database.ExecuteSqlRawAsync(
+            "EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 5000;",
+            [new SqlParameter("@resource", CentralObjectApplicationLock.CreateResource(CentralProcessingRunnerJobService.ClaimBarrier)), claimBarrierResult], cancellationToken).ConfigureAwait(false);
+        if (claimBarrierResult.Value is not int claimBarrierAcquired || claimBarrierAcquired < 0)
         {
-            var claimLockResult = new SqlParameter("@result", System.Data.SqlDbType.Int) { Direction = System.Data.ParameterDirection.Output };
-            await dbContext.Database.ExecuteSqlRawAsync(
-                "EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 5000;",
-                [new SqlParameter("@resource", CentralObjectApplicationLock.CreateResource(ClaimLockPrefix + runnerId)), claimLockResult], cancellationToken).ConfigureAwait(false);
-            if (claimLockResult.Value is not int claimLockAcquired || claimLockAcquired < 0)
-            {
-                throw new InvalidOperationException($"The processing runner claim lock for '{runnerId}' was not acquired.");
-            }
+            throw new InvalidOperationException("The processing runner claim barrier was not acquired.");
         }
-        // Runner claims are now blocked until this transaction commits. Rebuild every demand fact so queued jobs,
+        // Every runner claim is now blocked until this transaction commits. Rebuild every demand fact so queued jobs,
         // leases, occupied slots, entitlement headroom, and age all describe one coherent decision snapshot.
         claimable = placed.Count == 0 || template is null
             ? []

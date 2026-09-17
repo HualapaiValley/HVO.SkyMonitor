@@ -55,6 +55,7 @@ internal sealed partial class CentralProcessingRunnerJobService(
     TimeProvider timeProvider,
     ILogger<CentralProcessingRunnerJobService> logger) : ICentralProcessingRunnerJobService
 {
+    internal const string ClaimBarrier = "processing-runner-claims";
     private readonly CentralProcessingRunnerOptions _options = options.Value;
 
     public async Task<ProcessingRunnerClaim?> ClaimAsync(
@@ -90,6 +91,11 @@ internal sealed partial class CentralProcessingRunnerJobService(
         var (pool, poolMode) = ResolvePool(runner.Capabilities.Labels);
         var scope = CentralDerivativeClaimScope.Only(
             runner.EligibleRecipes, runner.Capabilities.MaxTransferBytes, pool, poolMode);
+        // Claims remain concurrent with one another through a shared barrier. The elastic allocator takes the same
+        // resource exclusively while rebuilding and committing its fleet decision, so no claimant can cross that
+        // snapshot regardless of whether it belongs to this provider, another provider, or no elastic instance.
+        await using var claimBarrier = await CentralObjectApplicationLock.AcquireSharedAsync(
+            dbContext, ClaimBarrier, cancellationToken).ConfigureAwait(false);
         // A session lock per runner id makes the advertised concurrency an atomic bound across concurrent claim
         // requests, including two processes that reuse one runner id.
         await using var capacityLock = await CentralObjectApplicationLock.AcquireAsync(
