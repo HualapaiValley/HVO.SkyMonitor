@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
 using FluentAssertions;
 using HVO.SkyMonitor.LogicHost.Configuration;
@@ -811,21 +812,34 @@ public sealed class ElasticProviderIntegrationTests
             new CentralProcessingRunnerContext(runner, request.Capabilities, eligible),
             new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0),
             claimCancellation.Token);
-        await WaitForClaimBarrierAsync(factory).ConfigureAwait(false);
+        Task<ElasticScalingDecision>? sample = null;
+        try
+        {
+            await WaitForClaimBarrierAsync(factory).ConfigureAwait(false);
 
-        var barrierWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        autoscaler.ClaimBarrierWaitStarted = () => barrierWait.TrySetResult();
-        var sample = autoscaler.SampleAsync(CancellationToken.None);
-        await barrierWait.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        sample.IsCompleted.Should().BeFalse("the exclusive fleet snapshot waits for the real ordinary-runner claim");
-        await capacityLock.DisposeAsync().ConfigureAwait(false);
-        (await claim.ConfigureAwait(false)).Should().NotBeNull("the real claim commits the queued job before the fleet snapshot proceeds");
+            var barrierWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            autoscaler.ClaimBarrierWaitStarted = () => barrierWait.TrySetResult();
+            sample = autoscaler.SampleAsync(CancellationToken.None);
+            await barrierWait.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            sample.IsCompleted.Should().BeFalse("the exclusive fleet snapshot waits for the real ordinary-runner claim");
+            await capacityLock.DisposeAsync().ConfigureAwait(false);
+            (await claim.ConfigureAwait(false)).Should().NotBeNull("the real claim commits the queued job before the fleet snapshot proceeds");
 
-        var decision = await sample.ConfigureAwait(false);
+            var decision = await sample.ConfigureAwait(false);
 
-        decision.Should().Be(ElasticScalingDecision.Steady,
-            "the locked rebuild sees the newly leased job instead of treating the stale queued row as uncovered");
-        provider.Provisioned.Should().BeEmpty();
+            decision.Should().Be(ElasticScalingDecision.Steady,
+                "the locked rebuild sees the newly leased job instead of treating the stale queued row as uncovered");
+            provider.Provisioned.Should().BeEmpty();
+        }
+        finally
+        {
+            // A failure before the awaits above must still unblock and observe both operations, so neither keeps
+            // running against a disposing scope nor completes as an unobserved fault after the test returns.
+            await ReleaseAsync(claimCancellation.CancelAsync).ConfigureAwait(false);
+            await ReleaseAsync(() => capacityLock.DisposeAsync().AsTask()).ConfigureAwait(false);
+            await ObserveAsync(claim).ConfigureAwait(false);
+            await ObserveAsync(sample).ConfigureAwait(false);
+        }
     }
 
     [TestMethod]
@@ -1335,6 +1349,72 @@ public sealed class ElasticProviderIntegrationTests
             await Task.Delay(TimeSpan.FromMilliseconds(25)).ConfigureAwait(false);
         }
         Assert.Fail("the real runner claim did not acquire the shared fleet barrier");
+    }
+
+    /// <summary>
+    /// Awaits an outstanding coordination task on a cleanup path so it can never resume against a disposing scope or
+    /// complete as an unobserved fault; the original failure stays the reported one.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Cleanup only guarantees the task finished. Cancelling an in-flight claim surfaces provider-specific faults "
+            + "(for example SqlException for a cancelled command); rethrowing any of them would replace the originating test failure.")]
+    private static async Task ObserveAsync(Task? task)
+    {
+        if (task is null)
+        {
+            return;
+        }
+        try
+        {
+            await task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // The task outlived the cleanup window: observe whatever it eventually produces so it can never surface
+            // later as an unobserved fault, and say so rather than failing silently.
+            _ = task.ContinueWith(
+                static abandoned => Report($"elastic-cleanup abandoned task observed: status {abandoned.Status}, {abandoned.Exception?.GetBaseException().Message ?? "no fault"}"),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            Report($"elastic-cleanup observation timed out with status {task.Status}; the originating failure remains the reported one.");
+        }
+        catch (Exception)
+        {
+            // The cleanup path only guarantees the task finished; its outcome is asserted on the success path.
+        }
+    }
+
+    /// <summary>Writes a cleanup diagnostic without letting the write itself replace the originating test failure.</summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "A diagnostic write on a cleanup path must never propagate; a closed or redirected test-host stdout "
+            + "would otherwise replace the originating test failure or become an unobserved continuation fault.")]
+    private static void Report(string message)
+    {
+        try
+        {
+            Console.WriteLine(message);
+        }
+        catch (Exception)
+        {
+            // Diagnostics are best-effort; the originating failure is the reported one.
+        }
+    }
+
+    /// <summary>Runs a cleanup release so its own failure can never replace the originating test failure.</summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Cancellation callbacks and application-lock release surface provider-specific faults; rethrowing them "
+            + "from a cleanup path would replace the originating test failure.")]
+    private static async Task ReleaseAsync(Func<Task> release)
+    {
+        try
+        {
+            await release().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Best-effort release; the remaining cleanup steps still run and the original failure is reported.
+        }
     }
 
     private static async Task RetainSingleJobAsync(
