@@ -246,6 +246,8 @@ public sealed class CentralElasticProviderOptionsTests
         Assert.AreEqual(ElasticScalingDecision.Steady, covered, "an adopted ten-slot instance covers five jobs whatever the new configured size is");
         var cleanup = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, 0, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, CleanupBacklog: 1), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanup.Provision, cleanup.Reason), "an expired lease with exhausted attempts needs one instance to terminalize it, whatever the entitlement or pool");
+        var cleanupBesideBlocked = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(1, 0, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, CleanupBacklog: 1, CleanupUncovered: true), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanupBesideBlocked.Provision, cleanupBesideBlocked.Reason), "cleanup drives the provision and remains entitlement-exempt when executable work is blocked");
         var cleanupCovered = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, 1, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, CleanupBacklog: 1), startup);
         Assert.AreEqual(ElasticScalingDecision.Steady, cleanupCovered, "an existing instance performs the cleanup");
         var incompatibleAtLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 1, perInstance: 1), new ElasticScalingInput(5, 1, 0, 0, TimeSpan.Zero, Shortfall(5), 0, Capacity: 0, IncompatibleActive: 1), startup);

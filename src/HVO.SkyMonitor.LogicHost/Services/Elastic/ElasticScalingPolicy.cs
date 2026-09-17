@@ -134,7 +134,9 @@ internal static class ElasticScalingPolicy
             }
             if (provision > 0)
             {
-                var reason = needed > compatibleActive ? (entitlementBound ? ReasonEntitlementBound : ReasonBacklog) : ReasonWarmMinimum;
+                var reason = cleanupShortfall > 0 && needed > executableNeeded
+                    ? ReasonBacklog
+                    : needed > compatibleActive ? (entitlementBound ? ReasonEntitlementBound : ReasonBacklog) : ReasonWarmMinimum;
                 return new ElasticScalingDecision(provision, 0, reason);
             }
             if ((provisionable.Count > 0 || cleanupShortfall > 0) && input.Starting == 0 && active <= options.MaxInstances)

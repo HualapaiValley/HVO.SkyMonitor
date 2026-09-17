@@ -713,7 +713,7 @@ public sealed class ElasticProviderIntegrationTests
         var aSource = await SeedPreviewJobAsync("elastic-augment-a", new byte[100]).ConfigureAwait(false);
         var bSource = await SeedPreviewJobAsync("elastic-augment-b").ConfigureAwait(false);
         await RetainSingleJobAsync(factory, aSource, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
-        await RetainSingleJobAsync(factory, bSource, BuiltInProcessingRecipes.JpegEncoding).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, bSource, BuiltInProcessingRecipes.JpegEncoding, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
         var settings = new CentralElasticProviderOptions
         {
             Enabled = true,
@@ -844,6 +844,8 @@ public sealed class ElasticProviderIntegrationTests
         await SetLeaseAsync(factory, activeSource, "ordinary-active-worker", DateTimeOffset.UtcNow.AddMinutes(5)).ConfigureAwait(false);
         var exhaustedObservatory = await ObservatoryOfAsync(factory, exhaustedSource).ConfigureAwait(false);
         var eligibleObservatory = await ObservatoryOfAsync(factory, eligibleSource).ConfigureAwait(false);
+        exhaustedObservatory.Should().NotBe(eligibleObservatory);
+        await AssertPendingJobsAsync(factory, [exhaustedSource, eligibleSource], BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
         var entitlements = new CentralProcessingEntitlementOptions
         {
             Enabled = true,
@@ -893,7 +895,7 @@ public sealed class ElasticProviderIntegrationTests
         var oldCovered = await SeedPreviewJobAsync("elastic-deadline-covered").ConfigureAwait(false);
         var youngUnmatched = await SeedPreviewJobAsync("elastic-deadline-unmatched").ConfigureAwait(false);
         await RetainSingleJobAsync(factory, oldCovered, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
-        await RetainSingleJobAsync(factory, youngUnmatched, BuiltInProcessingRecipes.JpegEncoding).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, youngUnmatched, BuiltInProcessingRecipes.JpegEncoding, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
         await SetAvailableSinceAsync(factory, oldCovered, DateTimeOffset.UtcNow.AddMinutes(-5)).ConfigureAwait(false);
         await SetAvailableSinceAsync(factory, youngUnmatched, DateTimeOffset.UtcNow.AddSeconds(-10)).ConfigureAwait(false);
         var runnerSettings = RunnerOptions();
@@ -1223,22 +1225,41 @@ public sealed class ElasticProviderIntegrationTests
     private static async Task RetainSingleJobAsync(
         WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory,
         Guid sourceArtifactId,
-        string recipe)
+        string recipe,
+        string? sourceRecipe = null)
     {
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var jobs = await db.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == sourceArtifactId)
-            .OrderBy(job => job.Id)
             .ToListAsync()
             .ConfigureAwait(false);
         jobs.Should().NotBeEmpty();
-        jobs[0].RecipeName = recipe;
-        foreach (var job in jobs.Skip(1))
+        var retained = jobs.SingleOrDefault(job => job.RecipeName == (sourceRecipe ?? recipe));
+        retained.Should().NotBeNull($"the scheduled graph must contain recipe {sourceRecipe ?? recipe}");
+        retained!.RecipeName = recipe;
+        foreach (var job in jobs.Where(job => job != retained))
         {
             job.Status = CentralDerivativeJobStatus.TerminalFailure;
             job.AvailableAtUtc = null;
         }
         await db.SaveChangesAsync().ConfigureAwait(false);
+    }
+
+    private static async Task AssertPendingJobsAsync(
+        WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory,
+        IReadOnlyCollection<Guid> sourceArtifactIds,
+        string recipe)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var jobs = await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralDerivativeJobs.AsNoTracking()
+            .Where(job => sourceArtifactIds.Contains(job.SourceCentralArtifactId) && job.RecipeName == recipe
+                && job.Status == CentralDerivativeJobStatus.Pending && job.AvailableAtUtc != null)
+            .Select(job => new { job.SourceCentralArtifactId, ObservatoryId = job.SourceArtifact!.Frame!.ObservatoryId })
+            .ToListAsync()
+            .ConfigureAwait(false);
+        jobs.Should().HaveCount(sourceArtifactIds.Count);
+        jobs.Select(job => job.SourceCentralArtifactId).Should().BeEquivalentTo(sourceArtifactIds);
+        jobs.Select(job => job.ObservatoryId).Distinct().Should().HaveCount(sourceArtifactIds.Count);
     }
 
     private static async Task<Guid> ObservatoryOfAsync(
