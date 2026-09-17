@@ -203,8 +203,8 @@ public sealed class CentralElasticProviderOptionsTests
     {
         var options = Enabled(maxInstances: 3, perInstance: 2);
         var startup = TimeSpan.FromSeconds(20);
-        var backlog = new ElasticScalingInput(5, TimeSpan.FromSeconds(30), 0, 0, 0, TimeSpan.Zero, null, 0);
-        var occupied = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(1, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, InFlight: 1), startup);
+        var backlog = new ElasticScalingInput(5, 0, 0, 0, TimeSpan.Zero, Shortfall(5, TimeSpan.FromSeconds(30)), 0);
+        var occupied = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(1, 1, 0, 0, TimeSpan.Zero, Shortfall(1), 0, InFlight: 1), startup);
         Assert.AreEqual(1, occupied.Provision, "a busy single-slot instance plus one queued job needs a second instance");
         var decision = ElasticScalingPolicy.Decide(options, backlog, startup);
         Assert.AreEqual((3, 0, ElasticScalingPolicy.ReasonBacklog), (decision.Provision, decision.Retire, decision.Reason), "ceil(5/2) = 3 instances");
@@ -212,19 +212,19 @@ public sealed class CentralElasticProviderOptionsTests
         var capped = ElasticScalingPolicy.Decide(options, backlog with { Backlog = 50 }, startup);
         Assert.AreEqual(3, capped.Provision, "bounded by MaxInstances");
 
-        var entitled = ElasticScalingPolicy.Decide(options, backlog with { Backlog = 50, EntitledConcurrency = 2 }, startup);
+        var entitled = ElasticScalingPolicy.Decide(options, backlog with { Backlog = 50, ProvisionableShortfall = Shortfall(2) }, startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonEntitlementBound), (entitled.Provision, entitled.Reason), "entitlements bound the useful concurrency");
 
         var alreadyRunning = ElasticScalingPolicy.Decide(options, backlog with { Running = 2, Starting = 1 }, startup);
         Assert.AreEqual(ElasticScalingDecision.Steady, alreadyRunning);
 
-        var warm = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, minWarm: 1), new ElasticScalingInput(0, TimeSpan.Zero, 0, 0, 0, TimeSpan.Zero, null, 0), startup);
+        var warm = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, minWarm: 1), new ElasticScalingInput(0, 0, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonWarmMinimum), (warm.Provision, warm.Reason));
-        var lostWarm = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, minWarm: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, InFlight: 0, WarmInstances: 0), startup);
+        var lostWarm = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, minWarm: 1), new ElasticScalingInput(0, 1, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, InFlight: 0, WarmInstances: 0), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonWarmMinimum), (lostWarm.Provision, lostWarm.Reason), "an excess instance does not satisfy the warm minimum; a warm replacement is provisioned");
-        var warmSatisfied = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, minWarm: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, InFlight: 0, WarmInstances: 1), startup);
+        var warmSatisfied = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, minWarm: 1), new ElasticScalingInput(0, 1, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, InFlight: 0, WarmInstances: 1), startup);
         Assert.AreEqual(ElasticScalingDecision.Steady, warmSatisfied);
-        var atCapacity = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, minWarm: 2), new ElasticScalingInput(0, TimeSpan.Zero, 2, 0, 0, TimeSpan.Zero, null, 0, InFlight: 0, WarmInstances: 1), startup);
+        var atCapacity = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, minWarm: 2), new ElasticScalingInput(0, 2, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, InFlight: 0, WarmInstances: 1), startup);
         Assert.AreEqual((0, 1, ElasticScalingPolicy.ReasonWarmMinimum), (atCapacity.Provision, atCapacity.Retire, atCapacity.Reason), "at capacity an excess instance is replaced by a warm one");
 
         var daily = ElasticScalingPolicy.Decide(Enabled(dailyLimit: 60), backlog with { InstanceMinutesToday = 60 }, startup);
@@ -236,37 +236,39 @@ public sealed class CentralElasticProviderOptionsTests
 
         // Sizing follows the concurrency the running instances actually registered, not the configured value alone:
         // an adopted single-slot instance under a four-slot configuration does not absorb three queued jobs.
-        var adopted = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(3, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 1), startup);
+        var adopted = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(3, 1, 0, 0, TimeSpan.Zero, Shortfall(2), 0, Capacity: 1, MatchedBacklog: 1), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (adopted.Provision, adopted.Reason), "one more four-slot instance covers the two jobs the single-slot instance cannot");
-        var matched = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(3, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 4), startup);
+        var matched = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(3, 1, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, Capacity: 4, MatchedBacklog: 3), startup);
         Assert.AreEqual(ElasticScalingDecision.Steady, matched, "a registered four-slot instance holds three jobs");
-        var entitledCapacity = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(9, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, EntitledConcurrency: 2, 0, Capacity: 1), startup);
+        var entitledCapacity = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 4), new ElasticScalingInput(9, 1, 0, 0, TimeSpan.Zero, Shortfall(1), 0, Capacity: 1, MatchedBacklog: 1), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonEntitlementBound), (entitledCapacity.Provision, entitledCapacity.Reason), "the entitlement bound is applied against registered capacity too");
-        var covered = ElasticScalingPolicy.Decide(Enabled(maxInstances: 5, perInstance: 1), new ElasticScalingInput(5, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 10), startup);
+        var covered = ElasticScalingPolicy.Decide(Enabled(maxInstances: 5, perInstance: 1), new ElasticScalingInput(5, 1, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, Capacity: 10, MatchedBacklog: 5), startup);
         Assert.AreEqual(ElasticScalingDecision.Steady, covered, "an adopted ten-slot instance covers five jobs whatever the new configured size is");
-        var cleanup = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 0, 0, 0, TimeSpan.Zero, EntitledConcurrency: 0, 0, CleanupBacklog: 1), startup);
+        var cleanup = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, 0, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, CleanupBacklog: 1), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanup.Provision, cleanup.Reason), "an expired lease with exhausted attempts needs one instance to terminalize it, whatever the entitlement or pool");
-        var cleanupCovered = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, CleanupBacklog: 1), startup);
+        var cleanupBesideBlocked = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(1, 0, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, CleanupBacklog: 1, CleanupUncovered: true), startup);
+        Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanupBesideBlocked.Provision, cleanupBesideBlocked.Reason), "cleanup drives the provision and remains entitlement-exempt when executable work is blocked");
+        var cleanupCovered = ElasticScalingPolicy.Decide(Enabled(maxInstances: 3, perInstance: 1), new ElasticScalingInput(0, 1, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, CleanupBacklog: 1), startup);
         Assert.AreEqual(ElasticScalingDecision.Steady, cleanupCovered, "an existing instance performs the cleanup");
-        var incompatibleAtLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 1, perInstance: 1), new ElasticScalingInput(5, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 0, IncompatibleActive: 1), startup);
+        var incompatibleAtLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 1, perInstance: 1), new ElasticScalingInput(5, 1, 0, 0, TimeSpan.Zero, Shortfall(5), 0, Capacity: 0, IncompatibleActive: 1), startup);
         Assert.AreEqual((0, 1, ElasticScalingPolicy.ReasonIncompatibleReplacement), (incompatibleAtLimit.Provision, incompatibleAtLimit.Retire, incompatibleAtLimit.Reason), "an instance unable to claim the queued recipe fills the limit: it is replaced");
-        var incompatibleWithRoom = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(5, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 0, IncompatibleActive: 1), startup);
+        var incompatibleWithRoom = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(5, 1, 0, 0, TimeSpan.Zero, Shortfall(5), 0, Capacity: 0, IncompatibleActive: 1), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (incompatibleWithRoom.Provision, incompatibleWithRoom.Reason), "with room, a compatible instance is provisioned beside the incompatible one");
-        var cleanupIncompatible = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 0, CleanupBacklog: 1, IncompatibleActive: 1), startup);
+        var cleanupIncompatible = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(0, 1, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, Capacity: 0, CleanupBacklog: 1, IncompatibleActive: 1), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (cleanupIncompatible.Provision, cleanupIncompatible.Reason), "cleanup needs a compatible instance; an incompatible one does not count");
-        var uncoveredWithRoom = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(6, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 10, UncoveredBacklog: 1), startup);
+        var uncoveredWithRoom = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(6, 1, 0, 0, TimeSpan.Zero, Shortfall(1), 0, Capacity: 10, MatchedBacklog: 5), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (uncoveredWithRoom.Provision, uncoveredWithRoom.Reason), "a useful ten-slot instance keeps its capacity for the small jobs; the one job it cannot claim provisions a new instance");
-        var uncoveredAtLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 1, perInstance: 1), new ElasticScalingInput(6, TimeSpan.FromSeconds(5), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 10, UncoveredBacklog: 1), startup);
+        var uncoveredAtLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 1, perInstance: 1), new ElasticScalingInput(6, 1, 0, 0, TimeSpan.Zero, Shortfall(1), 0, Capacity: 10, MatchedBacklog: 5), startup);
         Assert.AreEqual((0, 0, ElasticScalingPolicy.ReasonInstanceLimit), (uncoveredAtLimit.Provision, uncoveredAtLimit.Retire, uncoveredAtLimit.Reason), "at the limit a useful instance is not retired for one job it cannot claim; the uncovered work is reported");
-        var uncoveredStarting = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(6, TimeSpan.FromSeconds(5), 1, 1, 0, TimeSpan.Zero, null, 0, Capacity: 11, UncoveredBacklog: 1), startup);
+        var uncoveredStarting = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1), new ElasticScalingInput(6, 1, 1, 0, TimeSpan.Zero, Shortfall(1), 0, Capacity: 11, MatchedBacklog: 5), startup);
         Assert.AreEqual(ElasticScalingDecision.Steady, uncoveredStarting, "an instance still starting registers with the template and will cover the job");
-        var uncoveredEntitled = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1), new ElasticScalingInput(10, TimeSpan.FromSeconds(5), 0, 0, 0, TimeSpan.Zero, EntitledConcurrency: 0, 0, UncoveredBacklog: 10), startup);
+        var uncoveredEntitled = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1), new ElasticScalingInput(10, 0, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0), startup);
         Assert.AreEqual((0, 0), (uncoveredEntitled.Provision, uncoveredEntitled.Retire), "uncovered executable work stays within the entitlement bound: no instance is provisioned for work it could not claim");
-        var manyCleanup = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1), new ElasticScalingInput(0, TimeSpan.Zero, 0, 0, 0, TimeSpan.Zero, null, 0, CleanupBacklog: 100, CleanupUncovered: true), startup);
+        var manyCleanup = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1), new ElasticScalingInput(0, 0, 0, 0, TimeSpan.Zero, ElasticProvisionableShortfall.Empty, 0, CleanupBacklog: 100, CleanupUncovered: true), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonBacklog), (manyCleanup.Provision, manyCleanup.Reason), "a hundred exhausted leases need one instance, never the whole limit");
-        var cleanupBesideDeadline = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1, queueDeadline: TimeSpan.FromSeconds(1)), new ElasticScalingInput(50, TimeSpan.FromHours(1), 1, 0, 0, TimeSpan.Zero, null, 0, Capacity: 1, CleanupBacklog: 1, CleanupUncovered: true), startup);
+        var cleanupBesideDeadline = ElasticScalingPolicy.Decide(Enabled(maxInstances: 4, perInstance: 1, queueDeadline: TimeSpan.FromSeconds(1)), new ElasticScalingInput(50, 1, 0, 0, TimeSpan.Zero, Shortfall(49, TimeSpan.FromHours(1)), 0, Capacity: 1, CleanupBacklog: 1, MatchedBacklog: 1, CleanupUncovered: true), startup);
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonColdStartExceedsDeadline), (cleanupBesideDeadline.Provision, cleanupBesideDeadline.Reason), "old executable backlog stays local past the deadline, but the one instance cleanup needs is still provisioned");
-        var loweredLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1, scaleToZero: TimeSpan.FromSeconds(1)), new ElasticScalingInput(3, TimeSpan.FromSeconds(5), 5, 0, 2, TimeSpan.FromMinutes(1), null, 0, Capacity: 3, IncompatibleActive: 2, UncoveredBacklog: 1), startup);
+        var loweredLimit = ElasticScalingPolicy.Decide(Enabled(maxInstances: 2, perInstance: 1, scaleToZero: TimeSpan.FromSeconds(1)), new ElasticScalingInput(3, 5, 0, 2, TimeSpan.FromMinutes(1), Shortfall(1), 0, Capacity: 3, IncompatibleActive: 2, MatchedBacklog: 2), startup);
         Assert.AreEqual((0, 2, ElasticScalingPolicy.ReasonIdle), (loweredLimit.Provision, loweredLimit.Retire, loweredLimit.Reason), "a fleet above a lowered maximum retires its idle excess (two idle here) instead of reporting the limit forever");
     }
 
@@ -275,14 +277,14 @@ public sealed class CentralElasticProviderOptionsTests
     public void PlacementPolicyRetainsWorkLocallyWhenColdStartCannotMeetTheDeadlineAndScalesToZeroWhenIdle()
     {
         var options = Enabled(maxInstances: 2, minWarm: 1, queueDeadline: TimeSpan.FromMinutes(1), scaleToZero: TimeSpan.FromMinutes(2));
-        var lateBacklog = new ElasticScalingInput(4, TimeSpan.FromSeconds(50), 0, 0, 0, TimeSpan.Zero, null, 0);
+        var lateBacklog = new ElasticScalingInput(4, 0, 0, 0, TimeSpan.Zero, Shortfall(4, TimeSpan.FromSeconds(50)), 0);
         var rejected = ElasticScalingPolicy.Decide(options, lateBacklog, TimeSpan.FromSeconds(20));
         Assert.AreEqual((1, ElasticScalingPolicy.ReasonColdStartExceedsDeadline), (rejected.Provision, rejected.Reason),
             "the oldest work cannot be served within the deadline after a cold start, so only the warm minimum is provisioned");
-        var accepted = ElasticScalingPolicy.Decide(options, lateBacklog with { OldestBacklogAge = TimeSpan.FromSeconds(10) }, TimeSpan.FromSeconds(20));
+        var accepted = ElasticScalingPolicy.Decide(options, lateBacklog with { ProvisionableShortfall = Shortfall(4, TimeSpan.FromSeconds(10)) }, TimeSpan.FromSeconds(20));
         Assert.AreEqual(2, accepted.Provision);
 
-        var idle = new ElasticScalingInput(0, TimeSpan.Zero, 2, 0, 2, TimeSpan.FromMinutes(3), null, 0, InFlight: 0, WarmInstances: 1);
+        var idle = new ElasticScalingInput(0, 2, 0, 2, TimeSpan.FromMinutes(3), ElasticProvisionableShortfall.Empty, 0, InFlight: 0, WarmInstances: 1);
         var retire = ElasticScalingPolicy.Decide(options, idle, TimeSpan.FromSeconds(20));
         Assert.AreEqual((0, 1, ElasticScalingPolicy.ReasonIdle), (retire.Provision, retire.Retire, retire.Reason), "scale down to the warm minimum only");
         var notYet = ElasticScalingPolicy.Decide(options, idle with { LongestIdle = TimeSpan.FromMinutes(1) }, TimeSpan.FromSeconds(20));
@@ -372,11 +374,14 @@ public sealed class CentralElasticProviderOptionsTests
     [TestCategory("Unit")]
     public void ScaleDownGuardUsesTheEntitlementBoundedDemand()
     {
-        Assert.AreEqual(101, ElasticRunnerAutoscaler.EffectiveDemand(100, 1, null));
-        Assert.AreEqual(2, ElasticRunnerAutoscaler.EffectiveDemand(100, 1, 2), "entitlements bound the concurrency the queue can use, so idle instances above that bound may retire");
-        Assert.AreEqual(3, ElasticRunnerAutoscaler.EffectiveDemand(2, 1, 10));
-        Assert.AreEqual(0, ElasticRunnerAutoscaler.EffectiveDemand(5, 0, -1));
+        Assert.AreEqual(101, ElasticRunnerAutoscaler.EffectiveDemand(100, 0, 1));
+        Assert.AreEqual(2, ElasticRunnerAutoscaler.EffectiveDemand(1, 1, 0), "matched and provisionable work are the queue concurrency the fleet can use");
+        Assert.AreEqual(3, ElasticRunnerAutoscaler.EffectiveDemand(2, 0, 1));
+        Assert.AreEqual(0, ElasticRunnerAutoscaler.EffectiveDemand(-1, -1, -1));
     }
+
+    private static ElasticProvisionableShortfall Shortfall(int count, TimeSpan? oldestAge = null)
+        => new(Enumerable.Range(0, count).Select(_ => Guid.NewGuid()).ToArray(), oldestAge ?? TimeSpan.FromSeconds(5));
 
     [TestMethod]
     [TestCategory("Unit")]
