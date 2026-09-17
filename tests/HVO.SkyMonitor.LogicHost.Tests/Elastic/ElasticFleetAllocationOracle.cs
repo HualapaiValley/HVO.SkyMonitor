@@ -7,7 +7,7 @@ namespace HVO.SkyMonitor.LogicHost.Tests.Elastic;
 /// </summary>
 internal static class ElasticFleetAllocationOracle
 {
-    internal sealed record Job(string Id, string Recipe, long InputBytes, TimeSpan Age);
+    internal sealed record Job(string Id, string EntitlementScope, string Recipe, long InputBytes, TimeSpan Age);
 
     internal sealed record Registration(
         string Id,
@@ -27,21 +27,27 @@ internal static class ElasticFleetAllocationOracle
     internal static Result Allocate(
         IReadOnlyList<Job> jobs,
         IReadOnlyList<Registration> registrations,
-        int? remainingEntitlementConcurrency,
+        IReadOnlyDictionary<string, int>? remainingEntitlementConcurrency,
         int templateConcurrency)
     {
         ArgumentNullException.ThrowIfNull(jobs);
         ArgumentNullException.ThrowIfNull(registrations);
         ArgumentOutOfRangeException.ThrowIfLessThan(templateConcurrency, 1);
-        if (remainingEntitlementConcurrency is < 0)
+        if (remainingEntitlementConcurrency?.Any(pair => string.IsNullOrWhiteSpace(pair.Key) || pair.Value < 0) == true)
         {
             throw new ArgumentOutOfRangeException(nameof(remainingEntitlementConcurrency));
         }
-        if (jobs.Any(job => string.IsNullOrWhiteSpace(job.Id) || string.IsNullOrWhiteSpace(job.Recipe)
+        if (jobs.Any(job => string.IsNullOrWhiteSpace(job.Id) || string.IsNullOrWhiteSpace(job.EntitlementScope)
+                            || string.IsNullOrWhiteSpace(job.Recipe)
                             || job.InputBytes < 0 || job.Age < TimeSpan.Zero)
             || jobs.Select(job => job.Id).Distinct(StringComparer.Ordinal).Count() != jobs.Count)
         {
             throw new ArgumentException("Jobs require unique nonempty IDs, recipes, non-negative bytes, and non-negative ages.", nameof(jobs));
+        }
+        if (remainingEntitlementConcurrency is not null
+            && jobs.Any(job => !remainingEntitlementConcurrency.ContainsKey(job.EntitlementScope)))
+        {
+            throw new ArgumentException("Every job entitlement scope requires an explicit headroom value.", nameof(remainingEntitlementConcurrency));
         }
         if (registrations.Any(registration => string.IsNullOrWhiteSpace(registration.Id)
                                               || registration.MaxTransferBytes < 0
@@ -94,7 +100,7 @@ internal static class ElasticFleetAllocationOracle
             .Select((job, index) => new
             {
                 Index = index,
-                CompatibleSlots = slots.Count(slot => slot.MaxTransferBytes >= job.InputBytes && slot.Recipes.Contains(job.Recipe)),
+                CompatibleSlots = slots.Count(slot => CanClaim(slot, job)),
                 job.Age,
                 job.Id
             })
@@ -113,8 +119,21 @@ internal static class ElasticFleetAllocationOracle
             .OrderByDescending(job => job.Age)
             .ThenBy(job => job.Id, StringComparer.Ordinal)
             .ToArray();
-        var headroom = remainingEntitlementConcurrency ?? int.MaxValue;
-        var provisionable = uncovered.Take(headroom).ToArray();
+        var remainingByScope = remainingEntitlementConcurrency?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        var provisionable = uncovered.Where(job =>
+        {
+            if (remainingByScope is null)
+            {
+                return true;
+            }
+            var remaining = remainingByScope[job.EntitlementScope];
+            if (remaining == 0)
+            {
+                return false;
+            }
+            remainingByScope[job.EntitlementScope] = remaining - 1;
+            return true;
+        }).ToArray();
         return new Result(
             matched,
             uncovered.Select(job => job.Id).ToArray(),

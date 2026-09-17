@@ -1,6 +1,6 @@
 # Heterogeneous Elastic Fleet Allocation Model
 
-Decision date: 2026-09-17  
+Decision date: 2026-09-17
 Issues: #854 discovery for #613
 
 ## Status
@@ -45,10 +45,12 @@ capability without pretending that a busy slot is free.
    matching, not ordering, establishes correctness.
 4. Matched jobs are covered by existing registered capacity. Unmatched jobs are
    the executable shortfall.
-5. Apply remaining entitlement headroom to the unmatched set, without crediting
-   matched capacity that cannot claim those jobs. The resulting provisionable
-   set determines required template instances by ceiling division over template
-   concurrency, minus starting template capacity when production adopts it.
+5. Apply remaining entitlement headroom independently for each unmatched job's
+   observatory scope, without crediting matched capacity that cannot claim those
+   jobs or allowing an exhausted observatory to consume another observatory's
+   headroom. The resulting provisionable set determines required template
+   instances by ceiling division over template concurrency, minus starting
+   template capacity when production adopts it.
 6. Apply the cold-start deadline to the oldest job in the provisionable unmatched
    set. Old work already covered by existing registrations does not reject a
    cold start for younger uncovered work.
@@ -59,12 +61,14 @@ capability without pretending that a busy slot is free.
 
 | #613 finding | Oracle evidence |
 | --- | --- |
-| Flexible A+B slot consumes A and strands B while an A-only slot is idle | Maximum matching reassigns A to A-only and B to A+B. |
+| Greedy assignment consumes constrained capacity and strands later work | A three-job A/B fixture requires an augmenting-path reassignment to fill all slots. |
 | Busy B-only runner is credited with queued B capacity | Occupied slots are removed before matching; a fully occupied registration covers zero queued jobs. |
-| Partial entitlement headroom disappears behind aggregate compatible capacity | Entitlement limits only the unmatched jobs; two B jobs remain provisionable inside headroom two even when ten A slots cover nine A jobs. |
+| Partial entitlement headroom disappears behind aggregate compatible capacity | Headroom is enforced per observatory; an older unmatched job from an exhausted observatory cannot displace a younger eligible job from another observatory. |
 | Old covered work rejects a cold start for young uncovered work | Deadline age is the oldest provisionable unmatched job, not queue-wide oldest age. |
 
-The oracle also runs a deterministic representative case with 64 jobs, 16
+The transfer-limit fixture separately proves that recipe compatibility is not
+enough and that a larger job is reassigned to a registration that admits its
+complete input bytes. The oracle also runs a deterministic representative case with 64 jobs, 16
 heterogeneous registrations, eight recipes, four slots per registration, mixed
 occupancy, transfer limits, and bounded entitlement.
 
@@ -73,7 +77,9 @@ occupancy, transfer limits, and bounded entitlement.
 Let `J` be claimable queued jobs and `S` available registered slots after
 occupancy reservation. Compatibility construction is `O(J*S)`. The bounded
 augmenting-path oracle is polynomial; the straightforward implementation is
-`O(J^2*S)` in the worst case and stores `O(J+S)` matching state. Current claim
+`O(J^2*S)` in the worst case and stores `O(J+S)` matching state. The oracle's
+compatibility counter includes adjacency ordering and augmenting-path searches.
+Current claim
 and candidate bounds make this acceptable for the proof model. Production should
 precompute adjacency and record job, slot, edge-visit, and elapsed metrics. It
 must keep an explicit candidate cap and fail visibly rather than silently

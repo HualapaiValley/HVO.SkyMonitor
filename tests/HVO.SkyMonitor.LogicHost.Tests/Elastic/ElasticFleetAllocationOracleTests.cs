@@ -11,10 +11,10 @@ public sealed class ElasticFleetAllocationOracleTests
     public void ConstrainedRecipeIsNotStrandedBehindFlexibleCapacity()
     {
         var result = Allocate(
-            [Job("a", "A"), Job("b", "B")],
-            [Runner("a-only", ["A"]), Runner("flex", ["A", "B"])]);
+            [Job("a-1", "A", age: TimeSpan.FromMinutes(3)), Job("b", "B", age: TimeSpan.FromMinutes(2)), Job("a-2", "A", age: TimeSpan.FromMinutes(1))],
+            [Runner("a-only", ["A"]), Runner("flex", ["A", "B"]), Runner("b-only", ["B"])]);
 
-        CollectionAssert.AreEquivalent(new[] { "a", "b" }, result.MatchedJobs.ToArray());
+        CollectionAssert.AreEquivalent(new[] { "a-1", "a-2", "b" }, result.MatchedJobs.ToArray());
         Assert.AreEqual(0, result.UncoveredJobs.Count);
     }
 
@@ -33,13 +33,21 @@ public sealed class ElasticFleetAllocationOracleTests
     [TestMethod]
     public void ClassSpecificShortfallUsesRemainingEntitlementHeadroom()
     {
-        var jobs = Enumerable.Range(0, 9).Select(index => Job($"a-{index}", "A"))
-            .Concat([Job("b-1", "B"), Job("b-2", "B")])
+        var jobs = Enumerable.Range(0, 9).Select(index => Job($"a-{index}", "A", scope: "observatory-a"))
+            .Concat([Job("blocked-a", "B", scope: "observatory-a", age: TimeSpan.FromMinutes(2)),
+                     Job("eligible-b", "B", scope: "observatory-b", age: TimeSpan.FromMinutes(1))])
             .ToArray();
-        var result = Allocate(jobs, [Runner("a-capacity", ["A"], concurrency: 10)], entitlement: 2);
+        var result = Allocate(
+            jobs,
+            [Runner("a-capacity", ["A"], concurrency: 10)],
+            entitlement: new Dictionary<string, int>(StringComparer.Ordinal)
+            {
+                ["observatory-a"] = 0,
+                ["observatory-b"] = 1
+            });
 
-        CollectionAssert.AreEquivalent(new[] { "b-1", "b-2" }, result.ProvisionableJobs.ToArray());
-        Assert.AreEqual(2, result.RequiredInstances);
+        CollectionAssert.AreEqual(new[] { "eligible-b" }, result.ProvisionableJobs.ToArray());
+        Assert.AreEqual(1, result.RequiredInstances);
     }
 
     [TestMethod]
@@ -51,6 +59,18 @@ public sealed class ElasticFleetAllocationOracleTests
 
         CollectionAssert.AreEqual(new[] { "young-b" }, result.ProvisionableJobs.ToArray());
         Assert.AreEqual(TimeSpan.FromSeconds(10), result.OldestProvisionableAge);
+    }
+
+    [TestMethod]
+    public void TransferLimitParticipatesInMatchingAndReassignment()
+    {
+        var result = Allocate(
+            [Job("small", "A", input: 8, age: TimeSpan.FromMinutes(2)),
+             Job("large", "A", input: 64, age: TimeSpan.FromMinutes(1))],
+            [Runner("small-only", ["A"], transfer: 16), Runner("large-capable", ["A"], transfer: 128)]);
+
+        CollectionAssert.AreEquivalent(new[] { "small", "large" }, result.MatchedJobs.ToArray());
+        Assert.AreEqual(0, result.UncoveredJobs.Count);
     }
 
     [TestMethod]
@@ -69,8 +89,10 @@ public sealed class ElasticFleetAllocationOracleTests
                 occupied: index % 2))
             .ToArray();
 
-        var first = ElasticFleetAllocationOracle.Allocate(jobs, runners, remainingEntitlementConcurrency: 12, templateConcurrency: 4);
-        var second = ElasticFleetAllocationOracle.Allocate(jobs, runners, remainingEntitlementConcurrency: 12, templateConcurrency: 4);
+        var headroom = jobs.Select(job => job.EntitlementScope).Distinct(StringComparer.Ordinal)
+            .ToDictionary(scope => scope, _ => 12, StringComparer.Ordinal);
+        var first = ElasticFleetAllocationOracle.Allocate(jobs, runners, headroom, templateConcurrency: 4);
+        var second = ElasticFleetAllocationOracle.Allocate(jobs, runners, headroom, templateConcurrency: 4);
 
         CollectionAssert.AreEqual(first.MatchedJobs.ToArray(), second.MatchedJobs.ToArray());
         CollectionAssert.AreEqual(first.UncoveredJobs.ToArray(), second.UncoveredJobs.ToArray());
@@ -94,22 +116,23 @@ public sealed class ElasticFleetAllocationOracleTests
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => ElasticFleetAllocationOracle.Allocate(
             [Job("job", "A")],
             [Runner("runner", ["A"])],
-            remainingEntitlementConcurrency: -1,
+            remainingEntitlementConcurrency: new Dictionary<string, int> { ["observatory"] = -1 },
             templateConcurrency: 1));
     }
 
     private static ElasticFleetAllocationOracle.Result Allocate(
         IReadOnlyList<ElasticFleetAllocationOracle.Job> jobs,
         IReadOnlyList<ElasticFleetAllocationOracle.Registration> runners,
-        int? entitlement = null)
+        IReadOnlyDictionary<string, int>? entitlement = null)
         => ElasticFleetAllocationOracle.Allocate(jobs, runners, entitlement, templateConcurrency: 1);
 
     private static ElasticFleetAllocationOracle.Job Job(
         string id,
         string recipe,
         long input = 1,
-        TimeSpan? age = null)
-        => new(id, recipe, input, age ?? TimeSpan.FromMinutes(1));
+        TimeSpan? age = null,
+        string scope = "observatory")
+        => new(id, scope, recipe, input, age ?? TimeSpan.FromMinutes(1));
 
     private static ElasticFleetAllocationOracle.Registration Runner(
         string id,
