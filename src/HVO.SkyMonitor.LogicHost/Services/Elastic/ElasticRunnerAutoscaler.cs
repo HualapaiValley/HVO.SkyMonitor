@@ -431,7 +431,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var (allocation, cleanupUncovered) = Allocate(registeredRunning.Select(runner => (
             runner.RunnerId, runner.EligibleRecipesJson, runner.MaxTransferBytes, runner.MaxConcurrency,
             Occupied(runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots))));
-        telemetry.RecordAllocation(provider.Name, "sample", allocation);
+        telemetry.RecordAllocation(provider.Name, ElasticProviderTelemetry.SamplePhase, allocation);
         async Task<ElasticProvisionableShortfall> ProvisionableAsync(ElasticFleetAllocator.Result currentAllocation)
         {
             var unmatchedIds = currentAllocation.UnmatchedJobIds.ToHashSet();
@@ -546,7 +546,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         (allocation, cleanupUncovered) = Allocate(lockedRegistered.Select(runner => (
             runner.RunnerId, runner.EligibleRecipesJson, runner.MaxTransferBytes, runner.MaxConcurrency,
             LockedOccupied(runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots))));
-        telemetry.RecordAllocation(provider.Name, "locked", allocation);
+        telemetry.RecordAllocation(provider.Name, ElasticProviderTelemetry.LockedPhase, allocation);
         provisionable = await ProvisionableAsync(allocation).ConfigureAwait(false);
         input = input with
         {

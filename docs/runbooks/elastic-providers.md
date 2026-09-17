@@ -206,16 +206,27 @@ Log events 2230-2246.
 - Evidence: `ElasticProviderPerformanceEvidenceTests` (Manual) records cold
   and warm start, drain throughput with 1, 2, and 4 instances, scale-to-zero
   timing, and host CPU/memory to `TestResults/elastic-providers/<revision>/`.
-- `HeterogeneousFleetCounterexamplesConvergeTogether` runs the constrained /
-  flexible recipe, occupied-slot, scoped-entitlement, and uncovered-deadline
-  scenarios in one production-path sequence. The representative allocator test
-  records deterministic cardinalities, edge visits, elapsed time, process CPU,
-  and thread allocations for a 64-job, 16-registration heterogeneous fleet.
+- `HeterogeneousFleetCounterexamplesConvergeInOneSample` builds one fleet
+  (flexible, recipe-restricted, and fully occupied registrations across two
+  observatories with different headroom) and proves in a single production
+  sample that constrained matching, occupied-slot reservation, scoped
+  entitlement and provisionable-shortfall deadline interact as intended, and
+  that the sample emits allocation cardinality for both the `sample` and
+  `locked` phases. The four narrower scenarios remain as isolated regressions.
+  The representative allocator test records deterministic cardinalities, edge
+  visits, elapsed time and thread allocations for a 64-job, 16-registration
+  heterogeneous fleet.
 - Diagnose retained work with the backlog gauge and snapshot `lastDecision`.
   `instance-limit` means useful active instances fill the limit;
   `incompatible-replacement` is a retirement reason that makes room for a
   compatible template; `entitlement-bound` means unmatched work exists but only
   the per-observatory provisionable subset can launch; cleanup-driven launches
   remain `backlog` because cleanup is entitlement-exempt.
+- `skymonitor.central.elastic.provisions` now carries a `reason` dimension, so
+  dashboards aggregating the previously untagged counter must be re-pointed.
+  `cold-start-exceeds-deadline` appears there when the warm minimum or the one
+  cleanup instance is topped up while executable work stays local. Allocation
+  histograms record twice per sample (`sample` and `locked`); use the `locked`
+  phase for the values the committed decision used.
 - Provider exit: disable the section; instances scale to zero and no job state
   lives in the provider.

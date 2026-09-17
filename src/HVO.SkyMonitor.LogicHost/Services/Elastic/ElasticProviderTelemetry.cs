@@ -21,6 +21,10 @@ internal sealed record ElasticProviderSnapshot(
 internal sealed class ElasticProviderTelemetry : IDisposable
 {
     public const string MeterName = "HVO.SkyMonitor.LogicHost.ElasticProviders";
+    /// <summary>Allocation observed from the pre-lock sample snapshot.</summary>
+    public const string SamplePhase = "sample";
+    /// <summary>Allocation the committed decision used, rebuilt under the scaling and claim locks.</summary>
+    public const string LockedPhase = "locked";
     private readonly Meter _meter = new(MeterName);
     private readonly Counter<long> _provisions;
     private readonly Counter<long> _retirements;

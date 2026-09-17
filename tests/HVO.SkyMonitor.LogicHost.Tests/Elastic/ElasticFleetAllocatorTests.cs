@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Diagnostics;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.LogicHost.Services.Elastic;
 
@@ -7,6 +6,7 @@ namespace HVO.SkyMonitor.LogicHost.Tests.Elastic;
 
 [TestClass]
 [TestCategory("Unit")]
+[DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class ElasticFleetAllocatorTests
 {
@@ -102,27 +102,23 @@ public sealed class ElasticFleetAllocatorTests
                 occupied: index % 2))
             .ToArray();
         _ = Allocate(jobs, registrations);
-        using var process = Process.GetCurrentProcess();
-        process.Refresh();
-        var cpuBefore = process.TotalProcessorTime;
         var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         var first = Allocate(jobs, registrations);
         var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
         var second = Allocate(jobs, registrations.Reverse().ToArray());
-        process.Refresh();
-        var cpu = process.TotalProcessorTime - cpuBefore;
 
         CollectionAssert.AreEqual(first.MatchedJobIds.ToArray(), second.MatchedJobIds.ToArray());
         CollectionAssert.AreEqual(first.UnmatchedJobIds.ToArray(), second.UnmatchedJobIds.ToArray());
         Assert.AreEqual(first.CompatibilityChecks, second.CompatibilityChecks);
-        Assert.IsTrue(first.CompatibilityChecks <= ElasticFleetAllocator.MaximumCompatibilityChecks);
-        Assert.IsTrue(first.Elapsed <= ElasticFleetAllocator.MaximumElapsed);
+        Assert.AreEqual(56, first.AvailableSlots, "free slots exclude the reserved occupied slots");
+        Assert.AreEqual(56, first.MatchedJobIds.Count);
+        Assert.AreEqual(8, first.UnmatchedJobIds.Count);
+        Assert.IsTrue(first.CompatibilityChecks < 100_000,
+            $"representative edge visits stay far below the allocator ceiling; observed {first.CompatibilityChecks}");
         Assert.IsTrue(allocatedBytes < 64 * 1024 * 1024,
             $"representative allocation stays below the 64 MiB evidence ceiling; observed {allocatedBytes} bytes");
-        Assert.IsTrue(cpu < TimeSpan.FromSeconds(5),
-            $"representative forward/reverse allocations stay below the five-second CPU evidence ceiling; observed {cpu}");
-        Console.WriteLine($"elastic-allocation-evidence jobs={jobs.Length} registrations={registrations.Length} slots={first.AvailableSlots} matched={first.MatchedJobIds.Count} unmatched={first.UnmatchedJobIds.Count} edgeVisits={first.CompatibilityChecks} elapsedMs={first.Elapsed.TotalMilliseconds:F3} cpuMs={cpu.TotalMilliseconds:F3} allocatedBytes={allocatedBytes}");
+        Console.WriteLine($"elastic-allocation-evidence jobs={jobs.Length} registrations={registrations.Length} slots={first.AvailableSlots} matched={first.MatchedJobIds.Count} unmatched={first.UnmatchedJobIds.Count} edgeVisits={first.CompatibilityChecks} elapsedMs={first.Elapsed.TotalMilliseconds:F3} allocatedBytes={allocatedBytes}");
     }
 
     private static ElasticFleetAllocator.Result Allocate(

@@ -31,7 +31,7 @@ public sealed class ElasticProviderTelemetryTests
         listener.Start();
         using var telemetry = new ElasticProviderTelemetry();
         telemetry.RecordProvision("local-process", ElasticScalingPolicy.ReasonEntitlementBound);
-        telemetry.RecordAllocation("local-process", "locked", new ElasticFleetAllocator.Result(
+        telemetry.RecordAllocation("local-process", ElasticProviderTelemetry.LockedPhase, new ElasticFleetAllocator.Result(
             [Guid.NewGuid()], [Guid.NewGuid()], 3, 12, TimeSpan.FromMilliseconds(2)));
 
         observations.Select(item => item.Name).Should().Contain([
@@ -78,7 +78,13 @@ public sealed class ElasticProviderTelemetryTests
             .GetProperty("labels").GetProperty("reason").EnumerateArray().Select(reason => reason.GetString()).Should().BeEquivalentTo([
                 ElasticScalingPolicy.ReasonBacklog,
                 ElasticScalingPolicy.ReasonEntitlementBound,
-                ElasticScalingPolicy.ReasonWarmMinimum
+                ElasticScalingPolicy.ReasonWarmMinimum,
+                ElasticScalingPolicy.ReasonColdStartExceedsDeadline
             ]);
+        foreach (var metric in allocation)
+        {
+            metric.GetProperty("labels").GetProperty("phase").EnumerateArray().Select(phase => phase.GetString())
+                .Should().BeEquivalentTo(new[] { ElasticProviderTelemetry.SamplePhase, ElasticProviderTelemetry.LockedPhase });
+        }
     }
 }
