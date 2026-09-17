@@ -27,9 +27,23 @@ source "$SCRIPT_DIR/lib/trx-evidence.sh"
 failures=0
 cases=0
 
+# A mistyped fixture name refuses for the file being missing, which is a real refusal with real
+# output and is therefore indistinguishable from the case the author meant to write. Every
+# fixture is required to exist, except the one whose whole point is that it does not.
+require_fixture() {
+    local fixture="$1"
+    [[ "$fixture" == 'does-not-exist.trx' ]] && return 0
+    if [[ ! -e "$FIXTURES/$fixture" ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL(fixture) %s is named by a case but does not exist.\n' "$fixture" >&2
+        return 1
+    fi
+}
+
 expect() {
     local fixture="$1" want_exit="$2" want_text="$3"
     cases=$((cases + 1))
+    require_fixture "$fixture" || return 0
     local out status
     set +e
     out="$(trx_assert_executed_and_passed "$FIXTURES/$fixture" 'gate' 2>&1)"
@@ -38,6 +52,49 @@ expect() {
     if [[ "$status" != "$want_exit" ]] || [[ "$out" != *"$want_text"* ]]; then
         failures=$((failures + 1))
         printf 'FAIL %s\n  expected exit=%s containing: %s\n  actual   exit=%s output:\n%s\n' \
+            "$fixture" "$want_exit" "$want_text" "$status" "$out" >&2
+    fi
+}
+
+# Some properties are about what the output must NOT contain -- a cap is only a cap if the
+# ninth item is absent. A positive substring cannot express that.
+#
+# A negative assertion is worthless if it can be satisfied by producing nothing, so this does not
+# only check absence: it requires the refusal to have happened and to have said something. Without
+# that, a mistyped fixture name or an assertion that returned early would pass silently, which is
+# the same class of defect as the ungated copy this issue exists to remove.
+expect_absent() {
+    local fixture="$1" unwanted="$2"
+    cases=$((cases + 1))
+    require_fixture "$fixture" || return 0
+    local out status
+    set +e
+    out="$(trx_assert_executed_and_passed "$FIXTURES/$fixture" 'gate' 2>&1)"
+    status=$?
+    set -e
+    if [[ "$status" != 1 || -z "$out" || "$out" == *"$unwanted"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL(absent) %s\n  expected exit=1 and non-empty output not containing: %s\n  actual   exit=%s output:\n%s\n' \
+            "$fixture" "$unwanted" "$status" "$out" >&2
+    fi
+}
+
+# The counters assertion, stated the same way. Separate from expect() because it exercises a
+# different function rather than a different fixture: the two assertions promise different
+# things, and a gate that conflated them would let either one's regression hide behind the
+# other's verdict.
+expect_counters() {
+    local fixture="$1" want_exit="$2" want_text="$3"
+    cases=$((cases + 1))
+    require_fixture "$fixture" || return 0
+    local out status
+    set +e
+    out="$(trx_assert_counters_executed_and_passed "$FIXTURES/$fixture" 'gate' 2>&1)"
+    status=$?
+    set -e
+    if [[ "$status" != "$want_exit" ]] || [[ "$out" != *"$want_text"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL(counters) %s\n  expected exit=%s containing: %s\n  actual   exit=%s output:\n%s\n' \
             "$fixture" "$want_exit" "$want_text" "$status" "$out" >&2
     fi
 }
@@ -97,6 +154,72 @@ expect does-not-exist.trx         1 'no results file was written'
 # Only the per-result outcome distinguishes it.
 expect skipped-run.trx            1 'A: NotExecuted'
 expect skipped-run.trx            1 'Reasons recorded by the tests themselves'
+
+# The per-result dump is capped at eight so a trial recording thousands of NotExecuted results
+# cannot bury the line naming the failure, and the uncapped total is printed beside it so the
+# cap costs no information about scale. Twelve results, eight named, one total.
+expect many-unpassed.trx          1 'T08: NotExecuted'
+expect many-unpassed.trx          1 '12 results are not Passed'
+# The ninth must NOT appear: this is what pins the cap itself rather than merely the count.
+expect_absent many-unpassed.trx   'T09: NotExecuted'
+# Singular, because "1 results" is the kind of wrong that survives forever once shipped.
+expect_absent skipped-run.trx     'results are not Passed'
+expect skipped-run.trx            1 '1 result is not Passed'
+
+# COUNTERS (#803)
+#
+# This assertion used to live only in scripts/test:cameraagent-standalone-211, a runner no
+# workflow invokes, so nothing would have noticed it drifting. The accepting direction is
+# pinned as deliberately as the refusing one: a gate that only ever refuses proves no more than
+# one that only ever accepts.
+expect_counters expanded-all-passed.trx   0 'counters verified, executed=2 passed=2'
+expect_counters collapsed-all-passed.trx  0 'counters verified, executed=2 passed=2'
+expect_counters crlf-all-passed.trx       0 'counters verified, executed=2 passed=2'
+expect_counters single-line-document.trx  0 'counters verified, executed=2 passed=2'
+
+# The defect the element-anchored read fixed, in its own direction: a genuine pass whose StdOut
+# quotes executed="0" must still be accepted. A line-based read refused it, which is a
+# fail-closed defect in a guard whose whole purpose is to be trusted.
+expect_counters counters-stdout-quotes-zero.trx 0 'counters verified, executed=1 passed=1'
+# The OTHER direction of the same decision, and the one that actually pins the parse. The pair
+# above sits on separate lines, so a whole-line read still sees only the real element and stays
+# green -- which means it cannot detect a line-based regression at all. Here the quoted text
+# shares its line with a zero-executed Counters, exactly as a collapsed TRX serialises it, so a
+# line read reports executed=3 passed=3 and ACCEPTS a skipped run. Element-anchored refuses.
+expect_counters counters-collapsed-stdout-quotes.trx 1 'executed=0 passed=0'
+
+# The skipped run the whole family exists for, read through the totals rather than the outcomes.
+expect_counters skipped-run.trx           1 'executed=0'
+expect_counters counters-not-executed.trx 1 'executed=0'
+
+# Executed but not all passing, and the missing-attribute case. Absent is refused rather than
+# read as zero: an unreadable total is not evidence of a pass.
+expect_counters counters-passed-below-executed.trx  1 'executed=2 passed=1'
+expect_counters counters-missing-passed-attribute.trx 1 'passed=<absent>'
+expect_counters counters-absent.trx       1 'exactly one Counters element'
+
+# Limit 1 at the top of the library, pinned. This assertion reads a singleton, so a CDATA-quoted
+# phantom would change WHICH value is read rather than merely inflating an advisory count. The
+# real Counters here says executed=1 passed=1; the phantom says zero. Refusing the ambiguous
+# file is the only safe reading, and this is the fixture that stops anyone relaxing the
+# exactly-one requirement as defensive tidiness.
+expect_counters cdata-phantom-counters.trx 1 'exactly one Counters element'
+
+# The phantom alone. Exactly-one is satisfied by a quoted tag when the real element is absent,
+# so the count cannot see this: the phantom is not competing with a real reading, it IS the
+# reading. Without the CDATA-stripped cross-check this file is accepted as executed=7 passed=7
+# by a run whose ResultSummary records no totals whatsoever.
+expect_counters counters-phantom-only.trx 1 'quoted inside CDATA'
+
+# Bash reads a leading-zero operand as octal and ABORTS the arithmetic on an invalid digit.
+# Inside an `if` condition that abort is a false result, so an unvalidated executed="008" fell
+# through to acceptance. Values past 2^64 wrap instead. Both are refused before any arithmetic.
+expect_counters counters-leading-zero.trx 1 'not readable as plain decimal totals'
+expect_counters counters-overflow.trx     1 'not readable as plain decimal totals'
+
+# Nothing to read at all.
+expect_counters empty.trx                 1 'no results file was written'
+expect_counters does-not-exist.trx        1 'no results file was written'
 
 if ((failures > 0)); then
     printf '%s of %s TRX evidence contract cases failed.\n' "$failures" "$cases" >&2

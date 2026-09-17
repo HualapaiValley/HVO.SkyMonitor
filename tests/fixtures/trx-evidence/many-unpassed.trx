@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Results>
+    <UnitTestResult testName="T01" outcome="NotExecuted"/>
+    <UnitTestResult testName="T02" outcome="NotExecuted"/>
+    <UnitTestResult testName="T03" outcome="NotExecuted"/>
+    <UnitTestResult testName="T04" outcome="NotExecuted"/>
+    <UnitTestResult testName="T05" outcome="NotExecuted"/>
+    <UnitTestResult testName="T06" outcome="NotExecuted"/>
+    <UnitTestResult testName="T07" outcome="NotExecuted"/>
+    <UnitTestResult testName="T08" outcome="NotExecuted"/>
+    <UnitTestResult testName="T09" outcome="NotExecuted"/>
+    <UnitTestResult testName="T10" outcome="NotExecuted"/>
+    <UnitTestResult testName="T11" outcome="NotExecuted"/>
+    <UnitTestResult testName="T12" outcome="NotExecuted"/>
+  </Results>
+  <ResultSummary outcome="Completed"><Counters total="12" executed="0" passed="0" /></ResultSummary>
+</TestRun>

@@ -38,26 +38,90 @@
 #      free, though, and the earlier wording that a Passed phantom "changes nothing" was wrong:
 #      it inflates the reported result count, which is the line a human reads. So the escaping
 #      argument is not load-bearing for the verdict, and the count is advisory rather than
-#      authoritative whenever a file contains CDATA. It WOULD be load-bearing for anything that reads a
+#      authoritative whenever a file contains CDATA. It IS load-bearing for anything that reads a
 #      singleton element such as <Counters>, where a phantom match changes which value is
-#      read. If a counters assertion is ever added here, it must require exactly one such
-#      element and must not treat that requirement as defensive tidiness.
+#      read. trx_assert_counters_executed_and_passed therefore requires exactly one such
+#      element, and that requirement is not defensive tidiness: it is the only thing standing
+#      between a CDATA-quoted counters tag and a silently substituted total WHEN THE REAL
+#      ELEMENT IS PRESENT. When it is absent the count alone is not enough, because the phantom
+#      is then the only match and so satisfies exactly-one by itself: it is not substituted for
+#      the reading, it IS the reading. So the assertion also compares that count against the
+#      count taken with CDATA stripped, and refuses when they disagree. The
+#      cdata-phantom-counters and counters-phantom-only fixtures pin the two cases separately;
+#      neither alone would have caught the other.
 #   2. XML requires escaping "<" and "&" inside an attribute value but permits ">". A raw ">"
 #      in a testName truncates [^>]* before outcome=, and the truncated element is then
 #      refused for having no readable outcome. Fail-closed, and deliberate: an element this
 #      cannot parse is not evidence that it passed.
 #
-# WHAT IS DELIBERATELY NOT HERE
+# THE TWO ASSERTIONS, AND WHY THEY ARE SEPARATE
 #
-# ResultSummary/Counters verification. The runners that source this file assert a non-empty
-# selection and an all-Passed set; adding a counters assertion would change what they promise
-# rather than fix what they get wrong, and issue #769 is scoped to the latter.
-# scripts/test:cameraagent-standalone-211 does assert counters and keeps its own copy; folding
-# it into this helper is a follow-up, not part of the correction.
+# trx_assert_executed_and_passed reads the per-result outcomes. trx_assert_counters_executed_and_passed
+# reads the run's own totals. They are separate because they promise different things and most
+# callers want only the first: the per-result check is what distinguishes a skipped run from a
+# real one, while the counters check cross-examines that verdict against the totals the runner
+# recorded for itself. Callers that want both call both, which is what
+# scripts/test:cameraagent-standalone-211 does.
+#
+# The counters assertion arrived here under issue #803. It previously lived as a second copy
+# inside that runner, asserted by nothing, in a runner no workflow invokes. Two copies of one
+# contract do not drift loudly; they drift silently, and the ungated copy reads as
+# authoritative as the gated one. There is now one implementation, and scripts/test:trx-evidence-contract
+# covers it in both the refusing and the accepting direction.
 
 # Print every <UnitTestResult> start-tag in the file, one per line.
 trx_result_elements() {
     grep -o '<UnitTestResult [^>]*' "$1" || true
+}
+
+# Print every <Counters> start-tag in the file, one per line, including any that a CDATA section
+# merely quotes. Separating this from the assertion is what lets the assertion compare the raw
+# reading against the CDATA-stripped one; see trx_assert_counters_executed_and_passed.
+trx_counters_elements() {
+    grep -o '<Counters [^>]*' "$1" || true
+}
+
+# The same, with every <![CDATA[ ... ]]> span removed first, so only real markup survives.
+#
+# A CDATA span may open and close on one line or run across many, and more than one may share a
+# line, so this consumes them as a stream rather than matching a line or a sed range. The output
+# is deliberately only used for COUNTING against the raw reading: a file where the two disagree
+# is a file whose totals cannot be read unambiguously, and this refuses it rather than choosing.
+#
+# TWO LIMITS, RECORDED FOR THE SAME REASON AS THE TWO AT THE TOP OF THIS FILE
+#
+#   1. This is a stripper, not a parser, so it does not know that markup inside an XML COMMENT
+#      is not markup. A comment containing a literal "<![CDATA[" before the real <Counters>
+#      opens a span that never closes, the real element is stripped, the counts disagree and the
+#      file is refused. Fail-closed, and unreachable for a TRX: MSTest emits no comments.
+#   2. An unterminated CDATA span swallows the rest of the file, with the same fail-closed
+#      result and the same reasoning.
+#
+# The direction that would matter is the opposite one, and it is why the values are read from
+# the RAW list while the stripped list is used only to count. Reading values from the stripped
+# text would mean trusting this function's output; counting with it means a disagreement can
+# only ever cause a refusal.
+trx_counters_elements_outside_cdata() {
+    awk '
+        {
+            line = $0
+            out = ""
+            while (length(line) > 0) {
+                if (incdata) {
+                    pos = index(line, "]]>")
+                    if (pos == 0) { line = ""; break }
+                    incdata = 0
+                    line = substr(line, pos + 3)
+                } else {
+                    pos = index(line, "<![CDATA[")
+                    if (pos == 0) { out = out line; line = ""; break }
+                    out = out substr(line, 1, pos - 1)
+                    incdata = 1
+                    line = substr(line, pos + 9)
+                }
+            }
+            print out
+        }' "$1" | grep -o '<Counters [^>]*' || true
 }
 
 # Refuse unless the TRX records at least one result and every result is Passed.
@@ -66,7 +130,7 @@ trx_result_elements() {
 trx_assert_executed_and_passed() {
     local trx="$1"
     local label="$2"
-    local results unpassed reasons
+    local results unpassed reasons unpassed_count
 
     if [[ ! -s "$trx" ]]; then
         printf '%s: no results file was written to %s.\n' "$label" "$trx" >&2
@@ -85,13 +149,30 @@ trx_assert_executed_and_passed() {
         printf '%s: the evidence contains a result that is not Passed, so this run proved nothing.\n' "$label" >&2
         # awk rather than sed: BSD sed rejects a bare `t` branch, and this must run on the
         # operator's macOS host as well as the Linux runners.
+        # Capped: a campaign trial can record thousands of NotExecuted results, and a diagnostic
+        # that floods the log buries the line naming the failure. The count below is uncapped and
+        # reports the true total, so the cap costs no information about scale.
+        #
+        # The cap is applied INSIDE awk rather than by piping into `head`. A downstream `head`
+        # exits once it has its eight lines, awk then dies on SIGPIPE, and under `set -o pipefail`
+        # the pipeline returns 141; in a bare call that aborts this function at this line and
+        # discards the count, the closing sentence and the recorded reasons below -- losing
+        # exactly the diagnostics the cap exists to preserve. Every current caller is in a `||`
+        # context that masks it, which is what would have made this a trap for the next one.
         printf '%s\n' "$unpassed" | awk '{
             name = ""; outcome = ""
+            if (NR > 8) { next }
             if (match($0, /testName="[^"]*"/)) { name = substr($0, RSTART + 10, RLENGTH - 11) }
             if (match($0, /outcome="[^"]*"/)) { outcome = substr($0, RSTART + 9, RLENGTH - 10) }
             if (name != "" && outcome != "") { print "  " name ": " outcome }
             else { print "  unparseable result: " $0 }
         }' >&2
+        unpassed_count="$(printf '%s\n' "$unpassed" | wc -l | tr -d ' ')"
+        if ((unpassed_count == 1)); then
+            printf '  1 result is not Passed.\n' >&2
+        else
+            printf '  %s results are not Passed.\n' "$unpassed_count" >&2
+        fi
         printf '  A skipped or inconclusive result is not a reduced pass; it is no result at all.\n' >&2
         reasons="$(trx_recorded_reasons "$trx")" || reasons=''
         if [[ -n "${reasons//[[:space:]]/}" ]]; then
@@ -104,6 +185,71 @@ trx_assert_executed_and_passed() {
     # $results is already one element per line, so counting its lines counts results. Counting
     # lines of the TRX itself is the defect this file exists to remove; do not reintroduce it.
     printf '%s: %s results, every one Passed.\n' "$label" "$(printf '%s\n' "$results" | wc -l | tr -d ' ')"
+}
+
+# Refuse unless the run's own ResultSummary/Counters totals show every selected test executing
+# and passing. This cross-examines the per-result verdict against the totals the runner recorded
+# for itself; it does not replace trx_assert_executed_and_passed, which reads the outcomes.
+# Returns 0 on success, 1 on refusal; the caller decides whether that is an exit or a `fail`.
+trx_assert_counters_executed_and_passed() {
+    local trx="$1"
+    local label="$2"
+    local counters executed passed
+
+    if [[ ! -s "$trx" ]]; then
+        printf '%s: no results file was written to %s.\n' "$label" "$trx" >&2
+        return 1
+    fi
+
+    # Read the counters out of the Counters element itself, not out of the first line that
+    # happens to contain the attribute name. A genuine pass whose StdOut quotes ' executed="0"'
+    # was refused by the line-based read, which is a fail-closed defect in a guard whose whole
+    # purpose is to be trusted. The element anchor is load-bearing here in a way the line read
+    # cannot approximate: a collapsed TRX puts StdOut on the SAME line as the real element, so a
+    # whole-line read of a zero-executed run can pick up quoted non-zero totals from the output
+    # beside it and report a skipped run as a pass. counters-collapsed-stdout-quotes.trx pins it.
+    counters="$(trx_counters_elements "$trx")"
+    # Exactly one, for the reason recorded in limit 1 at the top of this file: this reads a
+    # singleton, so a CDATA-quoted phantom would change which value is read rather than merely
+    # inflating an advisory count. Refusing an ambiguous file is the only safe reading.
+    if [[ "$(printf '%s\n' "$counters" | grep -c '<Counters ')" != 1 ]]; then
+        printf '%s: the evidence does not contain exactly one Counters element, so its totals cannot be read.\n' "$label" >&2
+        return 1
+    fi
+
+    # Exactly one match is not yet exactly one ELEMENT: a file whose only match is quoted inside
+    # CDATA satisfies the count above while containing no real totals at all, and would then be
+    # read as the run's own. That is a fail-open the count cannot see, because the phantom is not
+    # competing with a real element, it IS the reading. So the raw count must also agree with the
+    # count taken after CDATA is stripped. Disagreement means the one match is quoted output.
+    if [[ "$(trx_counters_elements_outside_cdata "$trx" | grep -c '<Counters ')" != 1 ]]; then
+        printf '%s: the only Counters element is quoted inside CDATA, so the run recorded no totals of its own.\n' "$label" >&2
+        return 1
+    fi
+
+    executed="$(printf '%s' "$counters" | sed -n 's/.*[[:space:]]executed="\([0-9]*\)".*/\1/p')"
+    passed="$(printf '%s' "$counters" | sed -n 's/.*[[:space:]]passed="\([0-9]*\)".*/\1/p')"
+    # Validate before arithmetic. Bash reads a leading-zero operand as octal, so executed="008"
+    # is not merely wrong, it ABORTS the arithmetic; inside an `if` condition that abort is a
+    # false result, the || chain falls through, and a skipped run is accepted. Values above 2^64
+    # wrap silently instead. Both are fail-open, so an operand that is not a plain bounded
+    # decimal is refused before it ever reaches (( )).
+    #
+    # A bare "0" is legal and must stay legal: it is what a skipped run records, and it has to
+    # reach the executed==0 refusal below so that run is refused for the reason that is true of
+    # it. Only a LEADING zero is rejected, which is why this is not simply [0-9]{1,9}.
+    if [[ ! "$executed" =~ ^(0|[1-9][0-9]{0,8})$ || ! "$passed" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+        printf '%s: the TRX counters are not readable as plain decimal totals: executed=%s passed=%s\n' \
+            "$label" "${executed:-<absent>}" "${passed:-<absent>}" >&2
+        return 1
+    fi
+    if ((executed == 0)) || ((passed != executed)); then
+        printf '%s: the TRX counters do not show every selected test executing and passing: executed=%s passed=%s\n' \
+            "$label" "${executed:-<absent>}" "${passed:-<absent>}" >&2
+        return 1
+    fi
+
+    printf '%s: counters verified, executed=%s passed=%s.\n' "$label" "$executed" "$passed"
 }
 
 # Extract the <Message> bodies the tests recorded, for the diagnostic above.
