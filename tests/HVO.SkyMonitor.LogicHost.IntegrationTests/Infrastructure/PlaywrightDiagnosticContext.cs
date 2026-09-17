@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -17,7 +18,9 @@ internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testCo
 {
     private readonly List<PlaywrightDiagnosticContext> sessions = [];
     private readonly Dictionary<IBrowserContext, PlaywrightDiagnosticContext> leases = [];
+    private readonly object ownershipLock = new();
     private bool completed;
+    private bool disposed;
     private int nextOrdinal;
 
     public async Task<IBrowserContext> NewContextAsync(BrowserNewContextOptions? options = null)
@@ -27,22 +30,47 @@ internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testCo
             options,
             testContext,
             Interlocked.Increment(ref nextOrdinal)).ConfigureAwait(false);
-        sessions.Add(session);
         var lease = BrowserContextLease.Create(session.Context);
-        leases.Add(lease, session);
+        try
+        {
+            lock (ownershipLock)
+            {
+                ObjectDisposedException.ThrowIf(disposed, this);
+                sessions.Add(session);
+                leases.Add(lease, session);
+            }
+        }
+        catch
+        {
+            await session.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
         return lease;
     }
 
     public async Task ReleaseAsync(IBrowserContext lease)
     {
-        if (!leases.TryGetValue(lease, out var session))
+        PlaywrightDiagnosticContext? session;
+        lock (ownershipLock)
         {
-            return;
+            if (!leases.TryGetValue(lease, out session))
+            {
+                return;
+            }
         }
-        await session.CompleteAsync().ConfigureAwait(false);
-        await session.DisposeAsync().ConfigureAwait(false);
-        leases.Remove(lease);
-        sessions.Remove(session);
+        try
+        {
+            await session.CompleteAsync().ConfigureAwait(false);
+            await session.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (ownershipLock)
+            {
+                leases.Remove(lease);
+                sessions.Remove(session);
+            }
+        }
     }
 
     public async Task CompleteAsync()
@@ -51,8 +79,17 @@ internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testCo
         {
             return;
         }
-        completed = true;
-        foreach (var session in sessions)
+        PlaywrightDiagnosticContext[] snapshot;
+        lock (ownershipLock)
+        {
+            if (completed)
+            {
+                return;
+            }
+            completed = true;
+            snapshot = sessions.ToArray();
+        }
+        foreach (var session in snapshot)
         {
             await session.CompleteAsync().ConfigureAwait(false);
         }
@@ -62,11 +99,23 @@ internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testCo
         Justification = "The collector runs during assertion unwinding; one context's diagnostic failure must not prevent the remaining contexts from capture or replace the original assertion.")]
     public async ValueTask DisposeAsync()
     {
-        for (var index = sessions.Count - 1; index >= 0; index--)
+        PlaywrightDiagnosticContext[] snapshot;
+        lock (ownershipLock)
+        {
+            if (disposed)
+            {
+                return;
+            }
+            disposed = true;
+            snapshot = sessions.ToArray();
+            sessions.Clear();
+            leases.Clear();
+        }
+        for (var index = snapshot.Length - 1; index >= 0; index--)
         {
             try
             {
-                await sessions[index].DisposeAsync().ConfigureAwait(false);
+                await snapshot[index].DisposeAsync().ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -227,16 +276,20 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         var evidence = pages.GetOrAdd(
             page,
             _ => new PageEvidence(Interlocked.Increment(ref nextPageOrdinal)));
-        page.Console += (_, message) => evidence.Console.Enqueue($"{message.Type}: {message.Text}");
-        page.PageError += (_, error) => evidence.PageErrors.Enqueue(error);
+        if (!evidence.TryObserve())
+        {
+            return;
+        }
+        page.Console += (_, message) => evidence.Console.Enqueue($"type={message.Type} sha256={Hash(message.Text)}");
+        page.PageError += (_, error) => evidence.PageErrors.Enqueue($"sha256={Hash(error)}");
         page.RequestFailed += (_, request) => evidence.Network.Enqueue(
-            $"request-failed {request.Method} {request.ResourceType} {SanitizeUrl(request.Url)} {request.Failure}");
+            $"request-failed method={request.Method} resource={request.ResourceType} {SafeNetworkTarget(request.Url)} failure-sha256={Hash(request.Failure)}");
         page.Response += (_, response) =>
         {
             if (response.Status >= 400)
             {
                 evidence.Network.Enqueue(
-                    $"response {response.Status} {response.Request.Method} {response.Request.ResourceType} {SanitizeUrl(response.Url)}");
+                    $"response status={response.Status} method={response.Request.Method} resource={response.Request.ResourceType} {SafeNetworkTarget(response.Url)}");
             }
         };
     }
@@ -249,8 +302,17 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
             Path.Combine(directory, $"{artifactPrefix}.trace.zip"),
             async path =>
             {
-                await context.Tracing.StopAsync(new() { Path = path }).ConfigureAwait(false);
-                SanitizeTrace(path);
+                var rawPath = Path.Combine(Path.GetTempPath(), $"hvo-playwright-{Guid.NewGuid():N}.zip");
+                try
+                {
+                    await context.Tracing.StopAsync(new() { Path = rawPath }).ConfigureAwait(false);
+                    BuildSafeTrace(path, pages.Values);
+                }
+                finally
+                {
+                    File.Delete(rawPath);
+                    File.Delete($"{path}.tmp");
+                }
             }).ConfigureAwait(false);
         var pageOrdinal = 0;
         foreach (var pair in pages.OrderBy(pair => pair.Value.Ordinal))
@@ -263,6 +325,7 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
                 {
                     Path = path,
                     FullPage = true,
+                    Style = "* { color: transparent !important; text-shadow: none !important; caret-color: transparent !important; } img, video, canvas, svg, iframe { visibility: hidden !important; } * { background-image: none !important; }",
                     Mask =
                     [
                         pair.Key.Locator("input"),
@@ -323,25 +386,12 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         () => {
           const root = document.documentElement.cloneNode(true);
           root.querySelectorAll('script').forEach(element => element.remove());
-          root.querySelectorAll('input').forEach(element => {
-            if (element.hasAttribute('value') || !['checkbox', 'radio'].includes((element.getAttribute('type') || '').toLowerCase())) {
-              element.setAttribute('value', '[REDACTED]');
-            }
-            element.removeAttribute('checked');
-          });
-          root.querySelectorAll('textarea').forEach(element => { element.textContent = '[REDACTED]'; });
-          root.querySelectorAll('option').forEach(element => element.removeAttribute('selected'));
-          root.querySelectorAll('[href], [src], [action]').forEach(element => {
-            for (const name of ['href', 'src', 'action']) {
-              const value = element.getAttribute(name);
-              if (!value) continue;
-              try {
-                const url = new URL(value, document.baseURI);
-                url.search = '';
-                url.hash = '';
-                element.setAttribute(name, url.toString());
-              } catch { element.setAttribute(name, '[REDACTED-URL]'); }
-            }
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
+          const remove = [];
+          while (walker.nextNode()) remove.push(walker.currentNode);
+          remove.forEach(node => node.remove());
+          root.querySelectorAll('*').forEach(element => {
+            for (const attribute of [...element.attributes]) element.setAttribute(attribute.name, '[PRESENT]');
           });
           return '<!DOCTYPE html>\n' + root.outerHTML;
         }
@@ -356,115 +406,57 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         return UnixPathRegex().Replace(sanitized, "[PRIVATE-PATH]");
     }
 
-    internal static void SanitizeTrace(string path)
+    private static void BuildSafeTrace(string path, IEnumerable<PageEvidence> pages)
     {
-        var temporaryPath = $"{path}.sanitized";
-        using (var source = ZipFile.OpenRead(path))
-        using (var target = ZipFile.Open(temporaryPath, ZipArchiveMode.Create))
+        var temporaryPath = $"{path}.tmp";
+        try
         {
-            foreach (var entry in source.Entries)
+            using (var archive = ZipFile.Open(temporaryPath, ZipArchiveMode.Create))
             {
-                if (entry.FullName.StartsWith("resources/", StringComparison.Ordinal))
+                var entry = archive.CreateEntry("trace.json", CompressionLevel.SmallestSize);
+                using var stream = entry.Open();
+                using var writer = new Utf8JsonWriter(stream, new() { Indented = true });
+                writer.WriteStartObject();
+                writer.WriteString("schema", "hvo-playwright-failure-trace-v1");
+                writer.WriteString("capturedAtUtc", DateTimeOffset.UtcNow);
+                writer.WriteStartArray("pages");
+                foreach (var page in pages.OrderBy(page => page.Ordinal))
                 {
-                    continue;
+                    writer.WriteStartObject();
+                    writer.WriteNumber("ordinal", page.Ordinal);
+                    writer.WriteNumber("consoleEvents", page.Console.Count);
+                    writer.WriteNumber("pageErrors", page.PageErrors.Count);
+                    writer.WriteNumber("networkFailures", page.Network.Count);
+                    writer.WriteEndObject();
                 }
-                var output = target.CreateEntry(entry.FullName, CompressionLevel.SmallestSize);
-                using var inputStream = entry.Open();
-                using var reader = new StreamReader(inputStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-                using var outputStream = output.Open();
-                using var writer = new StreamWriter(outputStream, new UTF8Encoding(false));
-                writer.Write(SanitizeTraceText(reader.ReadToEnd()));
+                writer.WriteEndArray();
+                writer.WriteEndObject();
             }
+            File.Move(temporaryPath, path, overwrite: true);
         }
-        File.Move(temporaryPath, path, overwrite: true);
-    }
-
-    private static string SanitizeTraceText(string value)
-    {
-        var output = new StringBuilder(value.Length);
-        using var reader = new StringReader(value);
-        while (reader.ReadLine() is { } line)
+        finally
         {
-            try
-            {
-                var node = JsonNode.Parse(line);
-                if (node is null)
-                {
-                    output.AppendLine();
-                    continue;
-                }
-                if (node["type"]?.GetValue<string>() is "frame-snapshot" or "screencast-frame")
-                {
-                    continue;
-                }
-                SanitizeJson(node);
-                output.AppendLine(node.ToJsonString());
-            }
-            catch (JsonException)
-            {
-                output.AppendLine(Sanitize(line));
-            }
-        }
-        return output.ToString();
-    }
-
-    private static void SanitizeJson(JsonNode node)
-    {
-        if (node is JsonObject objectNode)
-        {
-            foreach (var property in objectNode.ToArray())
-            {
-                if (property.Key is "headers" or "cookies")
-                {
-                    objectNode[property.Key] = new JsonArray();
-                    continue;
-                }
-                if (property.Key is "params" or "result" or "postData" or "body" or "html"
-                    || property.Key == "text" && objectNode.ContainsKey("mimeType"))
-                {
-                    objectNode[property.Key] = "[REDACTED]";
-                    continue;
-                }
-                if (SensitivePropertyNameRegex().IsMatch(property.Key))
-                {
-                    objectNode[property.Key] = "[REDACTED]";
-                    continue;
-                }
-                if (property.Key == "queryString" && property.Value is JsonArray query)
-                {
-                    foreach (var item in query.OfType<JsonObject>())
-                    {
-                        item["value"] = "[REDACTED]";
-                    }
-                    continue;
-                }
-                if (property.Value is JsonValue scalar && scalar.TryGetValue<string>(out var text))
-                {
-                    objectNode[property.Key] = Sanitize(text);
-                }
-                else if (property.Value is not null)
-                {
-                    SanitizeJson(property.Value);
-                }
-            }
-        }
-        else if (node is JsonArray array)
-        {
-            foreach (var item in array.Where(item => item is not null))
-            {
-                SanitizeJson(item!);
-            }
+            File.Delete(temporaryPath);
         }
     }
 
-    internal static string SanitizeUrl(string value)
+    private static (string Origin, string PathSha256) SafeNetworkTargetParts(string? value)
     {
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
         {
-            return "[INVALID-URL]";
+            return ("invalid", Hash(value));
         }
-        return $"{uri.Scheme}://{uri.Host}{(uri.IsDefaultPort ? string.Empty : $":{uri.Port}")}{uri.AbsolutePath}";
+        return ($"{uri.Scheme}://{uri.Host}{(uri.IsDefaultPort ? string.Empty : $":{uri.Port}")}", Hash(uri.AbsolutePath));
     }
+
+    private static string SafeNetworkTarget(string? value)
+    {
+        var target = SafeNetworkTargetParts(value);
+        return $"origin={target.Origin} path-sha256={target.PathSha256}";
+    }
+
+    private static string Hash(string? value)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty)));
 
     internal static string SafeName(string? value)
     {
@@ -486,9 +478,6 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
     [GeneratedRegex("([?&][^=&#\\s]+)=[^&#\\s\"'<>]+")]
     private static partial Regex QueryValueRegex();
 
-    [GeneratedRegex("(?i)password|token|secret|authorization|cookie|antiforgery")]
-    private static partial Regex SensitivePropertyNameRegex();
-
     [GeneratedRegex(@"[A-Za-z]:\\(?:[^\\\r\n]+\\)*[^\\\r\n]*")]
     private static partial Regex WindowsPathRegex();
 
@@ -497,9 +486,11 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
 
     private sealed class PageEvidence(int ordinal)
     {
+        private int observed;
         public int Ordinal { get; } = ordinal;
         public ConcurrentQueue<string> Console { get; } = new();
         public ConcurrentQueue<string> PageErrors { get; } = new();
         public ConcurrentQueue<string> Network { get; } = new();
+        public bool TryObserve() => Interlocked.Exchange(ref observed, 1) == 0;
     }
 }

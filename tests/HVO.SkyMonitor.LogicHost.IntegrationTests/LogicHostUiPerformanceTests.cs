@@ -90,6 +90,7 @@ public sealed class LogicHostUiPerformanceTests
         {
             var sessions = new List<(IBrowserContext Context, IPage Page)>(concurrency);
             var interactiveSessions = new List<(IBrowserContext Context, IPage Page)>(concurrency);
+            var workloadCompleted = false;
             try
             {
                 foreach (var mix in CreateRouteMixes(dataset).Where(mix =>
@@ -215,16 +216,20 @@ public sealed class LogicHostUiPerformanceTests
                     workingSetBeforeInteractiveSessions,
                     maximumWorkingSet,
                     maximumWorkingSet - workingSetBeforeInteractiveSessions));
+                workloadCompleted = true;
             }
             finally
             {
-                foreach (var session in sessions)
+                if (workloadCompleted)
                 {
-                    await diagnostics.ReleaseAsync(session.Context).ConfigureAwait(false);
-                }
-                foreach (var session in interactiveSessions)
-                {
-                    await diagnostics.ReleaseAsync(session.Context).ConfigureAwait(false);
+                    foreach (var session in sessions)
+                    {
+                        await diagnostics.ReleaseAsync(session.Context).ConfigureAwait(false);
+                    }
+                    foreach (var session in interactiveSessions)
+                    {
+                        await diagnostics.ReleaseAsync(session.Context).ConfigureAwait(false);
+                    }
                 }
             }
         }

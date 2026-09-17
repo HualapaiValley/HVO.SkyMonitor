@@ -253,7 +253,6 @@ public sealed class LogicHostUiBrowserAcceptanceTests
             rawAudit.MembershipRole.Should().Be(ObservatoryMembershipRole.Viewer);
         }
         await WriteEvidenceAsync(browser.Version, routeEvidence, mapRequests).ConfigureAwait(false);
-        await diagnostics.CompleteAsync().ConfigureAwait(false);
         var evidenceRoot = Environment.GetEnvironmentVariable("HVO_ISSUE_107_EVIDENCE_ROOT");
         if (!string.IsNullOrWhiteSpace(evidenceRoot))
         {
@@ -272,6 +271,7 @@ public sealed class LogicHostUiBrowserAcceptanceTests
                     SteadyState = health
                 }).ConfigureAwait(false);
         }
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
     private static async Task PrepareSteadyStateHealthAsync(IServiceProvider services)
