@@ -3,6 +3,7 @@ using Microsoft.Playwright;
 using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 using System.Text.Json;
+using System.Text;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 
@@ -36,7 +37,7 @@ public sealed class PlaywrightDiagnosticContextTests
             {
                 Status = 200,
                 ContentType = "text/html",
-                Body = "<main><div>DOM_FREE_TEXT_7f91</div><div>VISIBLE_SCREENSHOT_7f91</div><input type='password' value='diagnostic-secret'><textarea>TEXTAREA_7f91</textarea><select><option selected>OPTION_VALUE_7f91</option></select></main>"
+                Body = "<style>#leak, #leak::before { color: rgb(255,0,0) !important; background: rgb(255,0,0) !important; content: 'PSEUDO_SECRET_7f91' !important; }</style><main><div id='leak'>VISIBLE_SCREENSHOT_7f91</div><div>DOM_FREE_TEXT_7f91</div><input type='password' value='diagnostic-secret'><textarea>TEXTAREA_7f91</textarea><select><option selected>OPTION_VALUE_7f91</option></select></main>"
             })).ConfigureAwait(false);
             await failurePage.GotoAsync("https://diagnostics.invalid/").ConfigureAwait(false);
             await failurePage.EvaluateAsync("localStorage.setItem('opaque', 'LOCAL_STORAGE_7f91'); sessionStorage.setItem('opaque', 'SESSION_STORAGE_7f91'); document.cookie='opaque=COOKIE_VALUE_7f91'; console.error('CONSOLE_FREE_TEXT_7f91'); setTimeout(() => { throw new Error('PAGE_ERROR_FREE_TEXT_7f91'); }); fetch('http://127.0.0.1:1/private?opaque=QUERY_VALUE_7f91', { method: 'POST', headers: { 'X-Opaque': 'HEADER_VALUE_7f91' }, body: 'POST_BODY_7f91' }).catch(() => {});")
@@ -56,6 +57,9 @@ public sealed class PlaywrightDiagnosticContextTests
         Assert.IsTrue(retained.Any(path => path.EndsWith(".console.log", StringComparison.Ordinal)));
         Assert.IsTrue(retained.Any(path => path.EndsWith(".page-errors.log", StringComparison.Ordinal)));
         Assert.IsTrue(retained.Any(path => path.EndsWith(".network.log", StringComparison.Ordinal)));
+        var screenshot = await File.ReadAllBytesAsync(
+            retained.Single(path => path.EndsWith(".screenshot.png", StringComparison.Ordinal))).ConfigureAwait(false);
+        Assert.IsFalse(Encoding.ASCII.GetString(screenshot).Contains("PSEUDO_SECRET_7f91", StringComparison.Ordinal));
         foreach (var textPath in retained.Where(path => !path.EndsWith(".zip", StringComparison.Ordinal)
                                                         && !path.EndsWith(".png", StringComparison.Ordinal)))
         {
@@ -86,12 +90,30 @@ public sealed class PlaywrightDiagnosticContextTests
         {
             var page = await success.Context.NewPageAsync().ConfigureAwait(false);
             await page.SetContentAsync("<main>passing control</main>").ConfigureAwait(false);
+            var redPixels = await page.EvaluateAsync<int>("""
+                async base64 => {
+                  const image = new Image();
+                  image.src = `data:image/png;base64,${base64}`;
+                  await image.decode();
+                  const canvas = document.createElement('canvas');
+                  canvas.width = image.width; canvas.height = image.height;
+                  const context = canvas.getContext('2d');
+                  context.drawImage(image, 0, 0);
+                  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+                  let red = 0;
+                  for (let i = 0; i < pixels.length; i += 4) if (pixels[i] > 200 && pixels[i + 1] < 80 && pixels[i + 2] < 80 && pixels[i + 3] > 0) red++;
+                  return red;
+                }
+                """, Convert.ToBase64String(screenshot)).ConfigureAwait(false);
+            Assert.AreEqual(0, redPixels, "layout screenshots must contain only the project-owned gray box rendering");
             await success.CompleteAsync().ConfigureAwait(false);
         }
         Assert.AreEqual(retainedCount, Directory.GetFiles(directory).Length);
     }
 
     [TestMethod]
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
+        Justification = "Both concurrently created leases are immediately transferred to await-using declarations and the owning collector is disposed in finally.")]
     public async Task ConcurrentContextsUseDistinctArtifactNames()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
@@ -122,7 +144,7 @@ public sealed class PlaywrightDiagnosticContextTests
     {
         foreach (var sentinel in new[]
         {
-            "diagnostic-secret", "DOM_FREE_TEXT_7f91", "VISIBLE_SCREENSHOT_7f91", "TEXTAREA_7f91",
+            "diagnostic-secret", "DOM_FREE_TEXT_7f91", "VISIBLE_SCREENSHOT_7f91", "PSEUDO_SECRET_7f91", "TEXTAREA_7f91",
             "OPTION_VALUE_7f91", "LOCAL_STORAGE_7f91", "SESSION_STORAGE_7f91", "COOKIE_VALUE_7f91",
             "CONSOLE_FREE_TEXT_7f91", "PAGE_ERROR_FREE_TEXT_7f91", "QUERY_VALUE_7f91", "HEADER_VALUE_7f91",
             "POST_BODY_7f91"

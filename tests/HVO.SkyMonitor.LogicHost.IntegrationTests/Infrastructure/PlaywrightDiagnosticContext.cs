@@ -23,6 +23,8 @@ internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testCo
     private bool disposed;
     private int nextOrdinal;
 
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
+        Justification = "The created session is transferred into the collector's owned session list before the lease is returned.")]
     public async Task<IBrowserContext> NewContextAsync(BrowserNewContextOptions? options = null)
     {
         var session = await PlaywrightDiagnosticContext.CreateAsync(
@@ -36,6 +38,10 @@ internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testCo
             lock (ownershipLock)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
+                if (completed)
+                {
+                    throw new InvalidOperationException("Browser diagnostics have already completed.");
+                }
                 sessions.Add(session);
                 leases.Add(lease, session);
             }
@@ -57,20 +63,11 @@ internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testCo
             {
                 return;
             }
+            leases.Remove(lease);
+            sessions.Remove(session);
         }
-        try
-        {
-            await session.CompleteAsync().ConfigureAwait(false);
-            await session.DisposeAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            lock (ownershipLock)
-            {
-                leases.Remove(lease);
-                sessions.Remove(session);
-            }
-        }
+        await session.CompleteAsync().ConfigureAwait(false);
+        await session.DisposeAsync().ConfigureAwait(false);
     }
 
     public async Task CompleteAsync()
@@ -172,9 +169,10 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
     private readonly TestContext testContext;
     private readonly string artifactPrefix;
     private readonly ConcurrentDictionary<IPage, PageEvidence> pages = new();
+    private readonly object lifecycleLock = new();
     private int nextPageOrdinal;
-    private bool completed;
     private bool disposed;
+    private Task? completionTask;
 
     private PlaywrightDiagnosticContext(IBrowserContext context, TestContext testContext, string artifactPrefix)
     {
@@ -224,11 +222,23 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         Justification = "Discarding successful-run tracing is test infrastructure and must not turn a passing product assertion into a failure.")]
     public async Task CompleteAsync()
     {
-        if (completed)
+        Task task;
+        lock (lifecycleLock)
         {
-            return;
+            if (disposed)
+            {
+                return;
+            }
+            completionTask ??= CompleteCoreAsync();
+            task = completionTask;
         }
-        completed = true;
+        await task.ConfigureAwait(false);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Discarding successful-run tracing is best-effort test infrastructure and must not fail a passing product test.")]
+    private async Task CompleteCoreAsync()
+    {
         try
         {
             await context.Tracing.StopAsync().ConfigureAwait(false);
@@ -243,12 +253,17 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         Justification = "Failure-path context disposal must never replace the browser assertion that triggered capture.")]
     public async ValueTask DisposeAsync()
     {
-        if (disposed)
+        Task? successfulCompletion;
+        lock (lifecycleLock)
         {
-            return;
+            if (disposed)
+            {
+                return;
+            }
+            disposed = true;
+            successfulCompletion = completionTask;
         }
-        disposed = true;
-        if (!completed)
+        if (successfulCompletion is null)
         {
             try
             {
@@ -268,6 +283,7 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
             }
             return;
         }
+        await successfulCompletion.ConfigureAwait(false);
         await context.DisposeAsync().ConfigureAwait(false);
     }
 
@@ -280,16 +296,18 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         {
             return;
         }
-        page.Console += (_, message) => evidence.Console.Enqueue($"type={message.Type} sha256={Hash(message.Text)}");
-        page.PageError += (_, error) => evidence.PageErrors.Enqueue($"sha256={Hash(error)}");
-        page.RequestFailed += (_, request) => evidence.Network.Enqueue(
-            $"request-failed method={request.Method} resource={request.ResourceType} {SafeNetworkTarget(request.Url)} failure-sha256={Hash(request.Failure)}");
+        page.Console += (_, message) => evidence.Record("console", $"type={BoundedConsoleType(message.Type)}");
+        page.PageError += (_, _) => evidence.Record("page-error", string.Empty);
+        page.RequestFailed += (_, request) => evidence.Record(
+            "request-failed",
+            $"method={BoundedMethod(request.Method)} resource={BoundedResourceType(request.ResourceType)}");
         page.Response += (_, response) =>
         {
             if (response.Status >= 400)
             {
-                evidence.Network.Enqueue(
-                    $"response status={response.Status} method={response.Request.Method} resource={response.Request.ResourceType} {SafeNetworkTarget(response.Url)}");
+                evidence.Record(
+                    "response-failure",
+                    $"status={response.Status} method={BoundedMethod(response.Request.Method)} resource={BoundedResourceType(response.Request.ResourceType)}");
             }
         };
     }
@@ -319,22 +337,19 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         {
             pageOrdinal++;
             var pagePrefix = Path.Combine(directory, $"{artifactPrefix}.page-{pageOrdinal:D3}");
-            await CaptureAsync(
-                $"{pagePrefix}.screenshot.png",
-                path => pair.Key.ScreenshotAsync(new()
-                {
-                    Path = path,
-                    FullPage = true,
-                    Style = "* { color: transparent !important; text-shadow: none !important; caret-color: transparent !important; } img, video, canvas, svg, iframe { visibility: hidden !important; } * { background-image: none !important; }",
-                    Mask =
-                    [
-                        pair.Key.Locator("input"),
-                        pair.Key.Locator("textarea"),
-                        pair.Key.Locator("[data-sensitive]")
-                    ]
-                })).ConfigureAwait(false);
             await CaptureTextAsync($"{pagePrefix}.dom.html", () => CaptureSanitizedDomAsync(pair.Key))
                 .ConfigureAwait(false);
+            await CaptureAsync(
+                $"{pagePrefix}.screenshot.png",
+                async path =>
+                {
+                    await PrepareLayoutScreenshotAsync(pair.Key).ConfigureAwait(false);
+                    await pair.Key.ScreenshotAsync(new()
+                    {
+                        Path = path,
+                        FullPage = true
+                    }).ConfigureAwait(false);
+                }).ConfigureAwait(false);
             await CaptureTextAsync($"{pagePrefix}.console.log", () => Task.FromResult(string.Join('\n', pair.Value.Console)))
                 .ConfigureAwait(false);
             await CaptureTextAsync($"{pagePrefix}.page-errors.log", () => Task.FromResult(string.Join('\n', pair.Value.PageErrors)))
@@ -384,16 +399,34 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
 
     private static Task<string> CaptureSanitizedDomAsync(IPage page) => page.EvaluateAsync<string>("""
         () => {
-          const root = document.documentElement.cloneNode(true);
-          root.querySelectorAll('script').forEach(element => element.remove());
-          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
-          const remove = [];
-          while (walker.nextNode()) remove.push(walker.currentNode);
-          remove.forEach(node => node.remove());
-          root.querySelectorAll('*').forEach(element => {
-            for (const attribute of [...element.attributes]) element.setAttribute(attribute.name, '[PRESENT]');
-          });
-          return '<!DOCTYPE html>\n' + root.outerHTML;
+          const build = (element, depth) => {
+            const node = document.createElement('node');
+            node.setAttribute('depth', String(depth));
+            node.setAttribute('children', String(element.children.length));
+            node.setAttribute('attributes', String(element.attributes.length));
+            for (const child of element.children) node.append(build(child, depth + 1));
+            return node;
+          };
+          return '<!DOCTYPE html>\n' + build(document.documentElement, 0).outerHTML;
+        }
+        """);
+
+    private static Task<JsonElement?> PrepareLayoutScreenshotAsync(IPage page) => page.EvaluateAsync<JsonElement?>("""
+        () => {
+          const rects = [...document.querySelectorAll('body *')]
+            .map(element => element.getBoundingClientRect())
+            .filter(rect => rect.width > 1 && rect.height > 1)
+            .slice(0, 5000)
+            .map(rect => ({ left: rect.left + scrollX, top: rect.top + scrollY, width: rect.width, height: rect.height }));
+          const width = Math.max(document.documentElement.scrollWidth, innerWidth);
+          const height = Math.max(document.documentElement.scrollHeight, innerHeight);
+          document.documentElement.innerHTML = '<head></head><body></body>';
+          Object.assign(document.body.style, { margin: '0', width: `${width}px`, height: `${height}px`, background: '#111' });
+          for (const rect of rects) {
+            const box = document.createElement('div');
+            Object.assign(box.style, { position: 'absolute', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`, boxSizing: 'border-box', border: '1px solid #777', background: '#333' });
+            document.body.append(box);
+          }
         }
         """);
 
@@ -418,7 +451,6 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
                 using var writer = new Utf8JsonWriter(stream, new() { Indented = true });
                 writer.WriteStartObject();
                 writer.WriteString("schema", "hvo-playwright-failure-trace-v1");
-                writer.WriteString("capturedAtUtc", DateTimeOffset.UtcNow);
                 writer.WriteStartArray("pages");
                 foreach (var page in pages.OrderBy(page => page.Ordinal))
                 {
@@ -427,6 +459,16 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
                     writer.WriteNumber("consoleEvents", page.Console.Count);
                     writer.WriteNumber("pageErrors", page.PageErrors.Count);
                     writer.WriteNumber("networkFailures", page.Network.Count);
+                    writer.WriteStartArray("timeline");
+                    foreach (var item in page.Timeline.OrderBy(item => item.Sequence))
+                    {
+                        writer.WriteStartObject();
+                        writer.WriteNumber("sequence", item.Sequence);
+                        writer.WriteString("kind", item.Kind);
+                        writer.WriteString("detail", item.Detail);
+                        writer.WriteEndObject();
+                    }
+                    writer.WriteEndArray();
                     writer.WriteEndObject();
                 }
                 writer.WriteEndArray();
@@ -440,23 +482,26 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         }
     }
 
-    private static (string Origin, string PathSha256) SafeNetworkTargetParts(string? value)
+    private static string BoundedMethod(string value) => value.ToUpperInvariant() switch
     {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
-        {
-            return ("invalid", Hash(value));
-        }
-        return ($"{uri.Scheme}://{uri.Host}{(uri.IsDefaultPort ? string.Empty : $":{uri.Port}")}", Hash(uri.AbsolutePath));
-    }
+        "GET" or "POST" or "PUT" or "PATCH" or "DELETE" or "HEAD" or "OPTIONS" => value.ToUpperInvariant(),
+        _ => "OTHER"
+    };
 
-    private static string SafeNetworkTarget(string? value)
+    private static string BoundedResourceType(string value) => value.ToUpperInvariant() switch
     {
-        var target = SafeNetworkTargetParts(value);
-        return $"origin={target.Origin} path-sha256={target.PathSha256}";
-    }
+        "DOCUMENT" or "STYLESHEET" or "IMAGE" or "MEDIA" or "FONT" or "SCRIPT" or "TEXTTRACK" or
+        "XHR" or "FETCH" or "EVENTSOURCE" or "WEBSOCKET" or "MANIFEST" or "OTHER" => value.ToUpperInvariant(),
+        _ => "OTHER"
+    };
 
-    private static string Hash(string? value)
-        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty)));
+    private static string BoundedConsoleType(string value) => value.ToUpperInvariant() switch
+    {
+        "LOG" or "DEBUG" or "INFO" or "ERROR" or "WARNING" or "DIR" or "DIRXML" or "TABLE" or
+        "TRACE" or "CLEAR" or "STARTGROUP" or "STARTGROUPCOLLAPSED" or "ENDGROUP" or "ASSERT" or
+        "PROFILE" or "PROFILEEND" or "COUNT" or "TIMEEND" => value.ToUpperInvariant(),
+        _ => "OTHER"
+    };
 
     internal static string SafeName(string? value)
     {
@@ -487,10 +532,22 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
     private sealed class PageEvidence(int ordinal)
     {
         private int observed;
+        private long sequence;
         public int Ordinal { get; } = ordinal;
         public ConcurrentQueue<string> Console { get; } = new();
         public ConcurrentQueue<string> PageErrors { get; } = new();
         public ConcurrentQueue<string> Network { get; } = new();
+        public ConcurrentQueue<TraceEvent> Timeline { get; } = new();
         public bool TryObserve() => Interlocked.Exchange(ref observed, 1) == 0;
+        public void Record(string kind, string detail)
+        {
+            var item = new TraceEvent(Interlocked.Increment(ref sequence), kind, detail);
+            Timeline.Enqueue(item);
+            if (kind == "console") Console.Enqueue(detail);
+            else if (kind == "page-error") PageErrors.Enqueue(detail);
+            else Network.Enqueue(detail);
+        }
     }
+
+    private sealed record TraceEvent(long Sequence, string Kind, string Detail);
 }
