@@ -38,6 +38,8 @@ public sealed class PlaywrightDiagnosticContextTests
                 Body = "<style>#leak, #leak::before { color: rgb(255,0,0) !important; background: rgb(255,0,0) !important; content: 'PSEUDO_SECRET_7f91' !important; }</style><main><div id='leak'>VISIBLE_SCREENSHOT_7f91</div><div>DOM_FREE_TEXT_7f91</div><input type='password' value='diagnostic-secret'><textarea>TEXTAREA_7f91</textarea><select><option selected>OPTION_VALUE_7f91</option></select></main>"
             })).ConfigureAwait(false);
             await page.GotoAsync("https://diagnostics.invalid/").ConfigureAwait(false);
+            await page.EvaluateAsync("new MutationObserver(() => { document.body.innerHTML = '<div style=\"position:fixed;inset:0;background:red !important;color:red !important\">ACTIVE_SCRIPT_SECRET_7f91</div>'; }).observe(document.documentElement, { childList: true, subtree: true });")
+                .ConfigureAwait(false);
             await page.EvaluateAsync("localStorage.setItem('opaque', 'LOCAL_STORAGE_7f91'); sessionStorage.setItem('opaque', 'SESSION_STORAGE_7f91'); document.cookie='opaque=COOKIE_VALUE_7f91'; console.error('CONSOLE_FREE_TEXT_7f91'); setTimeout(() => { throw new Error('PAGE_ERROR_FREE_TEXT_7f91'); }); fetch('http://127.0.0.1:1/private?opaque=QUERY_VALUE_7f91', { method: 'POST', headers: { 'X-Opaque': 'HEADER_VALUE_7f91' }, body: 'POST_BODY_7f91' }).catch(() => {});")
                 .ConfigureAwait(false);
             await page.WaitForTimeoutAsync(100).ConfigureAwait(false);
@@ -109,7 +111,7 @@ public sealed class PlaywrightDiagnosticContextTests
         {
             "diagnostic-secret", "DOM_FREE_TEXT_7f91", "VISIBLE_SCREENSHOT_7f91", "PSEUDO_SECRET_7f91", "TEXTAREA_7f91", "OPTION_VALUE_7f91",
             "LOCAL_STORAGE_7f91", "SESSION_STORAGE_7f91", "COOKIE_VALUE_7f91", "CONSOLE_FREE_TEXT_7f91",
-            "PAGE_ERROR_FREE_TEXT_7f91", "QUERY_VALUE_7f91", "HEADER_VALUE_7f91", "POST_BODY_7f91"
+            "PAGE_ERROR_FREE_TEXT_7f91", "QUERY_VALUE_7f91", "HEADER_VALUE_7f91", "POST_BODY_7f91", "ACTIVE_SCRIPT_SECRET_7f91"
         })
         {
             Assert.DoesNotContain(sentinel, text, StringComparison.Ordinal);

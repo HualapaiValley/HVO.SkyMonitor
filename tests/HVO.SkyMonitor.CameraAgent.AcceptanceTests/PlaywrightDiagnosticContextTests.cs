@@ -40,6 +40,8 @@ public sealed class PlaywrightDiagnosticContextTests
                 Body = "<style>#leak, #leak::before { color: rgb(255,0,0) !important; background: rgb(255,0,0) !important; content: 'PSEUDO_SECRET_7f91' !important; }</style><main><div id='leak'>VISIBLE_SCREENSHOT_7f91</div><div>DOM_FREE_TEXT_7f91</div><input type='password' value='diagnostic-secret'><textarea>TEXTAREA_7f91</textarea><select><option selected>OPTION_VALUE_7f91</option></select></main>"
             })).ConfigureAwait(false);
             await failurePage.GotoAsync("https://diagnostics.invalid/").ConfigureAwait(false);
+            await failurePage.EvaluateAsync("new MutationObserver(() => { document.body.innerHTML = '<div style=\"position:fixed;inset:0;background:red !important;color:red !important\">ACTIVE_SCRIPT_SECRET_7f91</div>'; }).observe(document.documentElement, { childList: true, subtree: true });")
+                .ConfigureAwait(false);
             await failurePage.EvaluateAsync("localStorage.setItem('opaque', 'LOCAL_STORAGE_7f91'); sessionStorage.setItem('opaque', 'SESSION_STORAGE_7f91'); document.cookie='opaque=COOKIE_VALUE_7f91'; console.error('CONSOLE_FREE_TEXT_7f91'); setTimeout(() => { throw new Error('PAGE_ERROR_FREE_TEXT_7f91'); }); fetch('http://127.0.0.1:1/private?opaque=QUERY_VALUE_7f91', { method: 'POST', headers: { 'X-Opaque': 'HEADER_VALUE_7f91' }, body: 'POST_BODY_7f91' }).catch(() => {});")
                 .ConfigureAwait(false);
             await failurePage.WaitForTimeoutAsync(100).ConfigureAwait(false);
@@ -140,6 +142,30 @@ public sealed class PlaywrightDiagnosticContextTests
         Assert.AreEqual(2, traces.Select(Path.GetFileName).Distinct(StringComparer.Ordinal).Count());
     }
 
+    [TestMethod]
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
+        Justification = "The collector owns every concurrently created context and is disposed by the race under test.")]
+    public async Task ConcurrentCompletionAndDisposalDoNotCreateFalseFailureBundles()
+    {
+        var directory = Path.Combine(TestContext.ResultsDirectory ?? Path.GetTempPath(), "playwright-failures");
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        var contexts = await Task.WhenAll(Enumerable.Range(0, 12).Select(_ => diagnostics.NewContextAsync())).ConfigureAwait(false);
+        foreach (var context in contexts)
+        {
+            _ = await context.NewPageAsync().ConfigureAwait(false);
+        }
+        await Task.WhenAll(diagnostics.CompleteAsync(), diagnostics.DisposeAsync().AsTask()).ConfigureAwait(false);
+        Assert.IsFalse(Directory.Exists(directory) && Directory.GetFiles(directory).Length > 0,
+            "successful collector completion racing disposal must not be classified as a browser failure");
+    }
+
     private static void AssertNoSentinels(string text)
     {
         foreach (var sentinel in new[]
@@ -147,7 +173,7 @@ public sealed class PlaywrightDiagnosticContextTests
             "diagnostic-secret", "DOM_FREE_TEXT_7f91", "VISIBLE_SCREENSHOT_7f91", "PSEUDO_SECRET_7f91", "TEXTAREA_7f91",
             "OPTION_VALUE_7f91", "LOCAL_STORAGE_7f91", "SESSION_STORAGE_7f91", "COOKIE_VALUE_7f91",
             "CONSOLE_FREE_TEXT_7f91", "PAGE_ERROR_FREE_TEXT_7f91", "QUERY_VALUE_7f91", "HEADER_VALUE_7f91",
-            "POST_BODY_7f91"
+            "POST_BODY_7f91", "ACTIVE_SCRIPT_SECRET_7f91"
         })
         {
             Assert.DoesNotContain(sentinel, text, StringComparison.Ordinal);

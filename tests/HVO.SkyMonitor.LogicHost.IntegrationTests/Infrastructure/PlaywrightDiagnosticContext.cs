@@ -33,21 +33,31 @@ internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testCo
             testContext,
             Interlocked.Increment(ref nextOrdinal)).ConfigureAwait(false);
         var lease = BrowserContextLease.Create(session.Context);
+        var accepted = false;
         try
         {
             lock (ownershipLock)
             {
-                ObjectDisposedException.ThrowIf(disposed, this);
-                if (completed)
+                if (!disposed && !completed)
                 {
-                    throw new InvalidOperationException("Browser diagnostics have already completed.");
+                    sessions.Add(session);
+                    leases.Add(lease, session);
+                    accepted = true;
                 }
-                sessions.Add(session);
-                leases.Add(lease, session);
+            }
+            if (!accepted)
+            {
+                throw new InvalidOperationException("Browser diagnostics have already completed or disposed.");
             }
         }
         catch
         {
+            lock (ownershipLock)
+            {
+                sessions.Remove(session);
+                leases.Remove(lease);
+            }
+            await session.CompleteAsync().ConfigureAwait(false);
             await session.DisposeAsync().ConfigureAwait(false);
             throw;
         }
@@ -83,8 +93,12 @@ internal sealed class PlaywrightDiagnostics(IBrowser browser, TestContext testCo
             {
                 return;
             }
-            completed = true;
             snapshot = sessions.ToArray();
+            foreach (var session in snapshot)
+            {
+                session.BeginSuccessfulCompletion();
+            }
+            completed = true;
         }
         foreach (var session in snapshot)
         {
@@ -222,17 +236,20 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         Justification = "Discarding successful-run tracing is test infrastructure and must not turn a passing product assertion into a failure.")]
     public async Task CompleteAsync()
     {
-        Task task;
+        await BeginSuccessfulCompletion().ConfigureAwait(false);
+    }
+
+    internal Task BeginSuccessfulCompletion()
+    {
         lock (lifecycleLock)
         {
             if (disposed)
             {
-                return;
+                return Task.CompletedTask;
             }
             completionTask ??= CompleteCoreAsync();
-            task = completionTask;
+            return completionTask;
         }
-        await task.ConfigureAwait(false);
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -333,7 +350,7 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
                 }
             }).ConfigureAwait(false);
         var pageOrdinal = 0;
-        foreach (var pair in pages.OrderBy(pair => pair.Value.Ordinal))
+        foreach (var pair in pages.ToArray().OrderBy(pair => pair.Value.Ordinal))
         {
             pageOrdinal++;
             var pagePrefix = Path.Combine(directory, $"{artifactPrefix}.page-{pageOrdinal:D3}");
@@ -341,15 +358,7 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
                 .ConfigureAwait(false);
             await CaptureAsync(
                 $"{pagePrefix}.screenshot.png",
-                async path =>
-                {
-                    await PrepareLayoutScreenshotAsync(pair.Key).ConfigureAwait(false);
-                    await pair.Key.ScreenshotAsync(new()
-                    {
-                        Path = path,
-                        FullPage = true
-                    }).ConfigureAwait(false);
-                }).ConfigureAwait(false);
+                path => CaptureLayoutScreenshotAsync(pair.Key, path)).ConfigureAwait(false);
             await CaptureTextAsync($"{pagePrefix}.console.log", () => Task.FromResult(string.Join('\n', pair.Value.Console)))
                 .ConfigureAwait(false);
             await CaptureTextAsync($"{pagePrefix}.page-errors.log", () => Task.FromResult(string.Join('\n', pair.Value.PageErrors)))
@@ -411,24 +420,42 @@ internal sealed partial class PlaywrightDiagnosticContext : IAsyncDisposable
         }
         """);
 
-    private static Task<JsonElement?> PrepareLayoutScreenshotAsync(IPage page) => page.EvaluateAsync<JsonElement?>("""
+    private async Task CaptureLayoutScreenshotAsync(IPage source, string path)
+    {
+        var layout = await source.EvaluateAsync<JsonElement>("""
         () => {
+          const quantize = value => Math.max(0, Math.min(16384, Math.round(value / 16) * 16));
           const rects = [...document.querySelectorAll('body *')]
             .map(element => element.getBoundingClientRect())
             .filter(rect => rect.width > 1 && rect.height > 1)
             .slice(0, 5000)
-            .map(rect => ({ left: rect.left + scrollX, top: rect.top + scrollY, width: rect.width, height: rect.height }));
-          const width = Math.max(document.documentElement.scrollWidth, innerWidth);
-          const height = Math.max(document.documentElement.scrollHeight, innerHeight);
-          document.documentElement.innerHTML = '<head></head><body></body>';
-          Object.assign(document.body.style, { margin: '0', width: `${width}px`, height: `${height}px`, background: '#111' });
-          for (const rect of rects) {
-            const box = document.createElement('div');
-            Object.assign(box.style, { position: 'absolute', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`, boxSizing: 'border-box', border: '1px solid #777', background: '#333' });
-            document.body.append(box);
-          }
+            .map(rect => ({ left: quantize(rect.left + scrollX), top: quantize(rect.top + scrollY), width: quantize(rect.width), height: quantize(rect.height) }));
+          return { width: quantize(Math.max(document.documentElement.scrollWidth, innerWidth)), height: quantize(Math.max(document.documentElement.scrollHeight, innerHeight)), rects };
         }
-        """);
+        """).ConfigureAwait(false);
+        var html = new StringBuilder("<!DOCTYPE html><html><body style=\"margin:0;background:#111;position:relative;");
+        html.Append("width:").Append(layout.GetProperty("width").GetInt32()).Append("px;height:")
+            .Append(layout.GetProperty("height").GetInt32()).Append("px\">");
+        foreach (var rect in layout.GetProperty("rects").EnumerateArray())
+        {
+            html.Append("<div style=\"position:absolute;background:#333;border:1px solid #777;box-sizing:border-box;left:")
+                .Append(rect.GetProperty("left").GetInt32()).Append("px;top:")
+                .Append(rect.GetProperty("top").GetInt32()).Append("px;width:")
+                .Append(rect.GetProperty("width").GetInt32()).Append("px;height:")
+                .Append(rect.GetProperty("height").GetInt32()).Append("px\"></div>");
+        }
+        html.Append("</body></html>");
+        var screenshotPage = await context.NewPageAsync().ConfigureAwait(false);
+        try
+        {
+            await screenshotPage.SetContentAsync(html.ToString()).ConfigureAwait(false);
+            await screenshotPage.ScreenshotAsync(new() { Path = path, FullPage = true }).ConfigureAwait(false);
+        }
+        finally
+        {
+            await screenshotPage.CloseAsync().ConfigureAwait(false);
+        }
+    }
 
     internal static string Sanitize(string value)
     {
