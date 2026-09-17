@@ -62,17 +62,27 @@ long-running, native, or GPU recipes.
 
 The autoscaler samples provider-eligible runner-placed backlog (recipes
 filtered through the capabilities a provisioned instance registers; pending,
-retryable, and expired-lease work the claim would reclaim) and decides
-with a pure policy (`ElasticScalingPolicy`): desired instances follow
-backlog plus in-flight work, sized against the concurrency the running
-instances actually registered and the configured per-instance value for new
-ones, bounded by the
-remaining entitlement headroom of the backlogged observatories (#429),
-`MaxInstances` counted across every LogicHost replica,
-`MinWarmInstances`, and `MaxInstanceMinutesPerDay`. A cold start is taken
-only when `startup estimate + oldest backlog age <= QueueDeadline`; otherwise
-the work is retained locally as backlog (rejected placements are counted and
-logged). Idle instances above the warm minimum are retired after
+retryable, and expired-lease work the claim would reclaim). It subtracts
+heartbeat- and lease-derived occupied slots, then computes deterministic
+maximum-cardinality matching between queued jobs and the free slots that admit
+their exact recipe and complete input bytes. Jobs are ordered by fewest
+compatible slots, oldest availability, then stable job id; registrations are
+ordered by stable runner id, so registration enumeration does not change the
+result. Candidate collection and matching fail visibly at the documented job,
+slot, edge-visit, or elapsed bounds rather than truncating shortfall.
+
+For unmatched jobs, remaining active-job entitlement is applied independently
+per observatory. The resulting stable provisionable identities, count, and
+oldest age are one atomic policy fact. `ElasticScalingPolicy` combines matched,
+provisionable, and in-flight demand; existing registered capacity uses its real
+concurrency while new and starting instances use configured template
+concurrency. Provisioning remains bounded by `MaxInstances` across every
+LogicHost replica, `MinWarmInstances`, and `MaxInstanceMinutesPerDay`. A cold
+start is taken only when `startup estimate + oldest provisionable unmatched age
+<= QueueDeadline`; old work already covered by a registration cannot reject a
+cold start for younger uncovered work. Terminal cleanup remains separately
+entitlement- and deadline-exempt. Rejected placements are counted and logged.
+Idle instances above the warm minimum are retired after
 `ScaleToZeroAfter`. Instances whose process is gone are marked orphaned and
 their registration retired; instances whose registration went stale or never
 arrived within `RegistrationTimeout` are retired. Instances recorded by a

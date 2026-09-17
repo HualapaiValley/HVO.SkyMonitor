@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using FluentAssertions;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -917,6 +918,120 @@ public sealed class ElasticProviderIntegrationTests
         decision.Should().Be(new ElasticScalingDecision(1, 0, ElasticScalingPolicy.ReasonBacklog),
             "the five-minute job is covered and only the ten-second unmatched job sets the cold-start deadline");
         provider.Provisioned.Should().ContainSingle();
+    }
+
+    [TestMethod]
+    public async Task HeterogeneousFleetCounterexamplesConvergeInOneSample()
+    {
+        await DisableClaimableJobsAsync(AssemblyHooks.Fixture.Factory).ConfigureAwait(false);
+        using var factory = RunnerEnabledFactory();
+        await ClearScriptedRowsAsync(factory).ConfigureAwait(false);
+        var provider = new ScriptedProvider();
+        // One heterogeneous fleet: a flexible A+B runner, an A-only runner, and a fully occupied A runner.
+        var registrations = new[]
+        {
+            (Suffix: "flex", Recipes: new[] { BuiltInProcessingRecipes.EncodedPreview, BuiltInProcessingRecipes.JpegEncoding }, Occupied: false),
+            (Suffix: "a-only", Recipes: new[] { BuiltInProcessingRecipes.EncodedPreview }, Occupied: false),
+            (Suffix: "busy", Recipes: new[] { BuiltInProcessingRecipes.EncodedPreview }, Occupied: true)
+        };
+        foreach (var registration in registrations)
+        {
+            var instanceId = Guid.NewGuid().ToString("N")[..16];
+            var runnerId = $"elastic-scripted-{instanceId}";
+            provider.MarkAlive(instanceId, runnerId);
+            await SeedScriptedInstanceAsync(factory, instanceId, runnerId, hostName: Environment.MachineName, keepWarm: false).ConfigureAwait(false);
+            await using (var scope = factory.Services.CreateAsyncScope())
+            {
+                await scope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerRegistry>()
+                    .RegisterAsync(ScriptedSubject, ScriptedRegistration(runnerId), CancellationToken.None).ConfigureAwait(false);
+            }
+            await SetEligibleRecipesAsync(factory, runnerId, registration.Recipes).ConfigureAwait(false);
+            if (registration.Occupied)
+            {
+                await SetAvailableSlotsAsync(factory, runnerId, 0).ConfigureAwait(false);
+            }
+        }
+        // Observatory A keeps headroom; observatory B is exhausted by an unexpired lease from another worker.
+        var eligibleDevice = Guid.NewGuid();
+        var exhaustedDevice = Guid.NewGuid();
+        var oldMatched = await SeedPreviewJobAsync("elastic-converge-old-matched", devicePublicId: eligibleDevice).ConfigureAwait(false);
+        var occupancyProbe = await SeedPreviewJobAsync("elastic-converge-occupancy-probe", devicePublicId: exhaustedDevice, sequence: 4).ConfigureAwait(false);
+        var youngUnmatched = await SeedPreviewJobAsync("elastic-converge-young-unmatched", devicePublicId: eligibleDevice, sequence: 2).ConfigureAwait(false);
+        var flexibleMatched = await SeedPreviewJobAsync("elastic-converge-flex-matched", devicePublicId: eligibleDevice, sequence: 3).ConfigureAwait(false);
+        var blockedUnmatched = await SeedPreviewJobAsync("elastic-converge-blocked", devicePublicId: exhaustedDevice).ConfigureAwait(false);
+        var exhaustingLease = await SeedPreviewJobAsync("elastic-converge-exhausting", devicePublicId: exhaustedDevice, sequence: 2).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, oldMatched, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, occupancyProbe, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, youngUnmatched, BuiltInProcessingRecipes.JpegEncoding, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, flexibleMatched, BuiltInProcessingRecipes.JpegEncoding, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, blockedUnmatched, BuiltInProcessingRecipes.JpegEncoding, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await RetainSingleJobAsync(factory, exhaustingLease, BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
+        await SetLeaseAsync(factory, exhaustingLease, "ordinary-active-worker", DateTimeOffset.UtcNow.AddMinutes(5)).ConfigureAwait(false);
+        await SetAvailableSinceAsync(factory, oldMatched, DateTimeOffset.UtcNow.AddMinutes(-40)).ConfigureAwait(false);
+        // Occupancy probe: this A job belongs to the exhausted observatory, so honoring the busy runner's reserved slot
+        // leaves it unmatched and entitlement-filtered. Ignoring occupancy would match it on the busy slot, raising
+        // matched demand and the committed provision count.
+        await SetAvailableSinceAsync(factory, occupancyProbe, DateTimeOffset.UtcNow.AddSeconds(-4)).ConfigureAwait(false);
+        await SetAvailableSinceAsync(factory, flexibleMatched, DateTimeOffset.UtcNow.AddMinutes(-30)).ConfigureAwait(false);
+        await SetAvailableSinceAsync(factory, youngUnmatched, DateTimeOffset.UtcNow.AddSeconds(-5)).ConfigureAwait(false);
+        await SetAvailableSinceAsync(factory, blockedUnmatched, DateTimeOffset.UtcNow.AddMinutes(-20)).ConfigureAwait(false);
+        var eligibleObservatory = await ObservatoryOfAsync(factory, oldMatched).ConfigureAwait(false);
+        var exhaustedObservatory = await ObservatoryOfAsync(factory, blockedUnmatched).ConfigureAwait(false);
+        eligibleObservatory.Should().NotBe(exhaustedObservatory);
+        var runnerSettings = RunnerOptions();
+        runnerSettings.Placement[BuiltInProcessingRecipes.JpegEncoding] = CentralProcessingRunnerPlacement.Runner;
+        var autoscaler = CreateScriptedAutoscaler(provider, new CentralElasticProviderOptions
+        {
+            Enabled = true,
+            Provider = CentralElasticProviderKind.LocalProcess,
+            MaxInstances = 6,
+            MaxConcurrencyPerInstance = 1,
+            QueueDeadline = TimeSpan.FromMinutes(1),
+            ScaleToZeroAfter = TimeSpan.FromHours(2),
+            SampleInterval = TimeSpan.FromHours(1),
+            RetireGrace = TimeSpan.FromSeconds(1)
+        }, runnerSettings, new CentralProcessingEntitlementOptions
+        {
+            Enabled = true,
+            DefaultActiveJobs = 1,
+            Observatories = new Dictionary<string, ObservatoryEntitlementOptions>(StringComparer.OrdinalIgnoreCase)
+            {
+                [eligibleObservatory.ToString("D")] = new() { ActiveJobs = 2 },
+                [exhaustedObservatory.ToString("D")] = new() { ActiveJobs = 1 }
+            }
+        });
+        var allocationPhases = new List<string>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == ElasticProviderTelemetry.MeterName && instrument.Name == "skymonitor.central.elastic.allocation.jobs")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+        {
+            var phase = tags.ToArray().SingleOrDefault(tag => tag.Key == "phase").Value?.ToString();
+            if (phase is not null)
+            {
+                lock (allocationPhases)
+                {
+                    allocationPhases.Add(phase);
+                }
+            }
+        });
+        listener.Start();
+
+        var decision = await autoscaler.SampleAsync(CancellationToken.None).ConfigureAwait(false);
+
+        decision.Should().Be(new ElasticScalingDecision(1, 0, ElasticScalingPolicy.ReasonEntitlementBound),
+            "the A-only runner takes the oldest A job and the flexible runner takes the oldest B job, the busy runner's reserved slot "
+            + "matches nothing so the exhausted observatory's probe stays unmatched and entitlement-filtered, and only the young eligible "
+            + "B job is provisioned because its own age still meets the cold-start deadline");
+        provider.Provisioned.Should().ContainSingle(
+            "ignoring the occupied slot would match the exhausted observatory's probe and raise the committed provision count");
+        allocationPhases.Should().Contain([ElasticProviderTelemetry.SamplePhase, ElasticProviderTelemetry.LockedPhase],
+            "the production sample emits allocation cardinality for both the pre-lock and locked decisions");
     }
 
     [TestMethod]

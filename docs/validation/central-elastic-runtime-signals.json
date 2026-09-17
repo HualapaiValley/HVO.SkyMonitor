@@ -27,11 +27,15 @@
     { "name": "skymonitor.central.elastic.instances", "unit": "{instance}", "labels": { "provider": ["local-process"], "state": ["starting", "running", "idle"] } },
     { "name": "skymonitor.central.elastic.backlog", "unit": "{job}", "labels": { "provider": ["local-process"] } },
     { "name": "skymonitor.central.elastic.instance_minutes_today", "unit": "min", "labels": { "provider": ["local-process"] } },
-    { "name": "skymonitor.central.elastic.provisions", "unit": "{instance}", "labels": { "provider": ["local-process"] } },
+    { "name": "skymonitor.central.elastic.provisions", "unit": "{instance}", "labels": { "provider": ["local-process"], "reason": ["backlog", "entitlement-bound", "warm-minimum", "cold-start-exceeds-deadline"] } },
     { "name": "skymonitor.central.elastic.retirements", "unit": "{instance}", "labels": { "provider": ["local-process"], "reason": ["idle", "daily-limit", "warm-minimum", "incompatible-replacement", "registration-timeout", "registry-lost", "retirement-resumed"] } },
     { "name": "skymonitor.central.elastic.orphans_cleaned", "unit": "{instance}", "labels": { "provider": ["local-process"] } },
     { "name": "skymonitor.central.elastic.placements_rejected", "unit": "{decision}", "labels": { "provider": ["local-process"], "reason": ["daily-limit", "cold-start-exceeds-deadline", "entitlement-bound", "instance-capabilities-unknown", "instance-limit"] } },
-    { "name": "skymonitor.central.elastic.cold_start", "unit": "ms", "labels": { "provider": ["local-process"] } }
+    { "name": "skymonitor.central.elastic.cold_start", "unit": "ms", "labels": { "provider": ["local-process"] } },
+    { "name": "skymonitor.central.elastic.allocation.jobs", "unit": "{job}", "labels": { "provider": ["local-process"], "phase": ["sample", "locked"] } },
+    { "name": "skymonitor.central.elastic.allocation.slots", "unit": "{slot}", "labels": { "provider": ["local-process"], "phase": ["sample", "locked"] } },
+    { "name": "skymonitor.central.elastic.allocation.edge_visits", "unit": "{visit}", "labels": { "provider": ["local-process"], "phase": ["sample", "locked"] } },
+    { "name": "skymonitor.central.elastic.allocation.duration", "unit": "ms", "labels": { "provider": ["local-process"], "phase": ["sample", "locked"] } }
   ],
   "healthChecks": [
     { "name": "elastic-providers", "tags": ["worker"], "data": ["enabled", "provider", "maxInstances", "starting", "running", "idle", "backlog", "oldestBacklogSeconds", "instanceMinutesToday", "lastDecision", "orphansCleanedLastSample", "consecutiveSampleFailures"] }

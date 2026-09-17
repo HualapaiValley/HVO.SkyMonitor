@@ -431,6 +431,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         var (allocation, cleanupUncovered) = Allocate(registeredRunning.Select(runner => (
             runner.RunnerId, runner.EligibleRecipesJson, runner.MaxTransferBytes, runner.MaxConcurrency,
             Occupied(runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots))));
+        telemetry.RecordAllocation(provider.Name, ElasticProviderTelemetry.SamplePhase, allocation);
         async Task<ElasticProvisionableShortfall> ProvisionableAsync(ElasticFleetAllocator.Result currentAllocation)
         {
             var unmatchedIds = currentAllocation.UnmatchedJobIds.ToHashSet();
@@ -545,6 +546,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         (allocation, cleanupUncovered) = Allocate(lockedRegistered.Select(runner => (
             runner.RunnerId, runner.EligibleRecipesJson, runner.MaxTransferBytes, runner.MaxConcurrency,
             LockedOccupied(runner.RunnerId, runner.MaxConcurrency, runner.AvailableSlots))));
+        telemetry.RecordAllocation(provider.Name, ElasticProviderTelemetry.LockedPhase, allocation);
         provisionable = await ProvisionableAsync(allocation).ConfigureAwait(false);
         input = input with
         {
@@ -644,7 +646,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
         }
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await scaling.CommitAsync(cancellationToken).ConfigureAwait(false);
-        await LaunchAllAsync(dbContext, settings, intents, now, cancellationToken).ConfigureAwait(false);
+        await LaunchAllAsync(dbContext, settings, intents, now, decision.Reason, cancellationToken).ConfigureAwait(false);
         var retired = 0;
         var idleRetired = 0;
         // Every drain request goes out at once and each instance is stamped the moment its own drain completes, so an
@@ -805,13 +807,13 @@ internal sealed partial class ElasticRunnerAutoscaler(
     /// </summary>
     private async Task LaunchAllAsync(
         ApplicationDbContext dbContext, CentralElasticProviderOptions settings,
-        List<(CentralElasticRunnerInstance Row, ElasticRunnerProvisionRequest Request)> intents, DateTimeOffset now, CancellationToken cancellationToken)
+        List<(CentralElasticRunnerInstance Row, ElasticRunnerProvisionRequest Request)> intents, DateTimeOffset now, string reason, CancellationToken cancellationToken)
     {
         for (var i = 0; i < intents.Count; i++)
         {
             try
             {
-                await LaunchAsync(dbContext, settings, intents[i].Row, intents[i].Request, now, cancellationToken).ConfigureAwait(false);
+                await LaunchAsync(dbContext, settings, intents[i].Row, intents[i].Request, now, reason, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception)
             {
@@ -827,7 +829,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
     /// <summary>Launches a recorded intent; a failed or cancelled launch closes the intent, and a failed record retires the process and closes the intent too.</summary>
     private async Task LaunchAsync(
         ApplicationDbContext dbContext, CentralElasticProviderOptions settings, CentralElasticRunnerInstance row, ElasticRunnerProvisionRequest request,
-        DateTimeOffset now, CancellationToken cancellationToken)
+        DateTimeOffset now, string reason, CancellationToken cancellationToken)
     {
         ElasticRunnerInstance instance;
         try
@@ -854,7 +856,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
             await StopAsync(dbContext, row, ElasticRunnerInstanceState.Stopped, "launch-aborted", CancellationToken.None).ConfigureAwait(false);
             throw;
         }
-        telemetry.RecordProvision(provider.Name);
+        telemetry.RecordProvision(provider.Name, reason);
     }
 
     /// <summary>

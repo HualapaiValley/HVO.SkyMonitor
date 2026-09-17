@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.LogicHost.Tests.Elastic;
 
 [TestClass]
 [TestCategory("Unit")]
+[DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class ElasticFleetAllocatorTests
 {
@@ -83,6 +84,41 @@ public sealed class ElasticFleetAllocatorTests
 
         StringAssert.Contains(sql, "SELECT TOP (@candidateLimit)");
         StringAssert.Contains(sql, "ORDER BY job.[Id]");
+    }
+
+    [TestMethod]
+    public void RepresentativeFleetIsDeterministicWithinDeclaredResourceBounds()
+    {
+        var recipes = Enumerable.Range(0, 8).Select(index => $"recipe-{index}").ToArray();
+        var jobs = Enumerable.Range(0, 64)
+            .Select(index => Job($"job-{index:D2}", recipes[index % recipes.Length], index, inputBytes: index + 1))
+            .ToArray();
+        var registrations = Enumerable.Range(0, 16)
+            .Select(index => Runner(
+                $"runner-{index:D2}",
+                recipes.Where((_, recipeIndex) => recipeIndex % 4 == index % 4).ToArray(),
+                transfer: 128,
+                concurrency: 4,
+                occupied: index % 2))
+            .ToArray();
+        _ = Allocate(jobs, registrations);
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+
+        var first = Allocate(jobs, registrations);
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        var second = Allocate(jobs, registrations.Reverse().ToArray());
+
+        CollectionAssert.AreEqual(first.MatchedJobIds.ToArray(), second.MatchedJobIds.ToArray());
+        CollectionAssert.AreEqual(first.UnmatchedJobIds.ToArray(), second.UnmatchedJobIds.ToArray());
+        Assert.AreEqual(first.CompatibilityChecks, second.CompatibilityChecks);
+        Assert.AreEqual(56, first.AvailableSlots, "free slots exclude the reserved occupied slots");
+        Assert.AreEqual(56, first.MatchedJobIds.Count);
+        Assert.AreEqual(8, first.UnmatchedJobIds.Count);
+        Assert.IsTrue(first.CompatibilityChecks < 100_000,
+            $"representative edge visits stay far below the allocator ceiling; observed {first.CompatibilityChecks}");
+        Assert.IsTrue(allocatedBytes < 64 * 1024 * 1024,
+            $"representative allocation stays below the 64 MiB evidence ceiling; observed {allocatedBytes} bytes");
+        Console.WriteLine($"elastic-allocation-evidence jobs={jobs.Length} registrations={registrations.Length} slots={first.AvailableSlots} matched={first.MatchedJobIds.Count} unmatched={first.UnmatchedJobIds.Count} edgeVisits={first.CompatibilityChecks} elapsedMs={first.Elapsed.TotalMilliseconds:F3} allocatedBytes={allocatedBytes}");
     }
 
     private static ElasticFleetAllocator.Result Allocate(

@@ -26,6 +26,7 @@
     <None Include="..\..\docs\validation\central-transient-runtime-signals.json" Link="Validation\central-transient-runtime-signals.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\docs\validation\transient-review-runtime-signals.json" Link="Validation\transient-review-runtime-signals.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\docs\validation\logichost-ui-runtime-signals.json" Link="Validation\logichost-ui-runtime-signals.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\validation\central-elastic-runtime-signals.json" Link="Validation\central-elastic-runtime-signals.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <PropertyGroup>
     <NoWarn>$(NoWarn);CA1515;CA1707;CA2007;CA1861;CA1307;CA1859</NoWarn>
