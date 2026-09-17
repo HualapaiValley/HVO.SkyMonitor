@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly CHECKER="$SCRIPT_DIR/ci:shellcheck"
+
+WORK="$(mktemp -d)"
+readonly WORK
+trap 'rm -rf "$WORK"' EXIT
+
+shellcheck_bin="${HVO_SHELLCHECK_BIN:-$(command -v shellcheck || true)}"
+[[ -n "$shellcheck_bin" ]] || { printf 'ShellCheck 0.9.0 is required for the contract test.\n' >&2; exit 1; }
+
+failures=0
+cases=0
+expect() {
+    local name="$1" want_exit="$2" want_text="$3" target_file="$4"
+    cases=$((cases + 1))
+    local out status
+    set +e
+    out="$(HVO_SHELLCHECK_BIN="$shellcheck_bin" "$BASH" "$CHECKER" --targets-from "$target_file" 2>&1)"
+    status=$?
+    set -e
+    if [[ "$status" != "$want_exit" || "$out" != *"$want_text"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL %s\n  expected exit=%s containing: %s\n  actual exit=%s output:\n%s\n' \
+            "$name" "$want_exit" "$want_text" "$status" "$out" >&2
+    fi
+}
+
+printf '#!/usr/bin/env bash\nprintf "ok\\n"\n' > "$WORK/good file.sh"
+printf '%s\n' "$WORK/good file.sh" > "$WORK/good.targets"
+expect 'path containing spaces is preserved' 0 'passed for 1 derived shell file' "$WORK/good.targets"
+
+# SC2218 is error severity in ShellCheck 0.9.0 and is deterministic without executing the file.
+cat > "$WORK/error.sh" <<'EOF'
+#!/usr/bin/env bash
+called_later
+called_later() { :; }
+EOF
+printf '%s\n' "$WORK/error.sh" > "$WORK/error.targets"
+expect 'new error-level diagnostic fails enforcement' 1 'SC2218' "$WORK/error.targets"
+
+# The source directive is load-bearing: only the main file is selected, while -x follows the
+# directive into the library and learns that sourced_value is assigned there. Source resolution
+# is a warning-level dataflow property, so this contract observes it directly without widening
+# the repository enforcement above error severity.
+printf 'sourced_value=ok\n' > "$WORK/source-library.sh"
+printf '#!/usr/bin/env bash\n# shellcheck source=%s\n. "%s"\n' \
+    "$WORK/source-library.sh" "$WORK/source-library.sh" > "$WORK/source-main.sh"
+printf 'printf "%%s\\n" "$sourced_value"\n' >> "$WORK/source-main.sh"
+cases=$((cases + 1))
+set +e
+source_output="$($shellcheck_bin -x --severity=warning "$WORK/source-main.sh" 2>&1)"
+source_status=$?
+set -e
+if ((source_status != 0)) || [[ "$source_output" == *'SC2154'* ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL source directive was not followed:\n%s\n' "$source_output" >&2
+fi
+
+: > "$WORK/empty.targets"
+expect 'empty derived set fails closed' 1 'No shell files selected' "$WORK/empty.targets"
+
+# A newline-bearing path is split by the authoritative line-delimited selector contract. The
+# checker must refuse the nonexistent records rather than lint a silently narrowed set.
+printf '%s\n' "$WORK/not" "a-real-file.sh" > "$WORK/newline.targets"
+expect 'newline path contract fails closed' 1 'not a regular file' "$WORK/newline.targets"
+
+cat > "$WORK/fake-shellcheck" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1-}" == '--version' ]]; then printf 'version: 9.9.9\n'; exit 0; fi
+exit 0
+EOF
+chmod 700 "$WORK/fake-shellcheck"
+cases=$((cases + 1))
+set +e
+wrong_version="$(HVO_SHELLCHECK_BIN="$WORK/fake-shellcheck" "$BASH" "$CHECKER" --targets-from "$WORK/good.targets" 2>&1)"
+wrong_status=$?
+set -e
+if ((wrong_status == 0)) || [[ "$wrong_version" != *'Expected ShellCheck 0.9.0'* ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL wrong tool version was accepted:\n%s\n' "$wrong_version" >&2
+fi
+
+printf 'not the pinned release archive\n' > "$WORK/corrupt.tar.xz"
+cases=$((cases + 1))
+set +e
+checksum_failure="$(HVO_SHELLCHECK_ARCHIVE_PATH="$WORK/corrupt.tar.xz" HVO_SHELLCHECK_BIN='' \
+    "$BASH" "$CHECKER" --targets-from "$WORK/good.targets" 2>&1)"
+checksum_status=$?
+set -e
+if ((checksum_status == 0)) || [[ "$checksum_failure" != *'checksum verification failed'* ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL corrupt pinned archive was accepted:\n%s\n' "$checksum_failure" >&2
+fi
+
+if ((failures > 0)); then
+    printf '%s/%s ci:shellcheck cases failed.\n' "$failures" "$cases" >&2
+    exit 1
+fi
+printf 'ci:shellcheck contract: %s cases passed with ShellCheck 0.9.0.\n' "$cases"
