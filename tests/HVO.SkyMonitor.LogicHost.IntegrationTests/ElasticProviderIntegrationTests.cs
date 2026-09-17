@@ -796,16 +796,26 @@ public sealed class ElasticProviderIntegrationTests
             RetireGrace = TimeSpan.FromSeconds(1)
         });
         await using var lockScope = factory.Services.CreateAsyncScope();
-        await using var claimBarrier = await CentralObjectApplicationLock.AcquireSharedAsync(
+        var capacityLock = await CentralObjectApplicationLock.AcquireAsync(
             lockScope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
-            CentralProcessingRunnerJobService.ClaimBarrier,
+            $"processing-runner-claim/{runnerId}",
             CancellationToken.None).ConfigureAwait(false);
+        await using var claimScope = factory.Services.CreateAsyncScope();
+        var claimDb = claimScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var runner = await claimDb.CentralProcessingRunners.SingleAsync(candidate => candidate.RunnerId == runnerId).ConfigureAwait(false);
+        var request = ScriptedRegistration(runnerId);
+        var eligible = factory.Services.GetRequiredService<IOptions<CentralProcessingRunnerOptions>>().Value.ResolveEligibleRecipes(request.Capabilities);
+        var claim = claimScope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerJobService>().ClaimAsync(
+            new CentralProcessingRunnerContext(runner, request.Capabilities, eligible),
+            new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0),
+            CancellationToken.None);
+        await WaitForClaimBarrierAsync(factory).ConfigureAwait(false);
 
         var sample = autoscaler.SampleAsync(CancellationToken.None);
-        await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
-        sample.IsCompleted.Should().BeFalse("the locked decision waits for claims from runners outside its provider instances");
-        await SetLeaseAsync(factory, sourceId, runnerId, DateTimeOffset.UtcNow.AddMinutes(5)).ConfigureAwait(false);
-        await claimBarrier.DisposeAsync().ConfigureAwait(false);
+        await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+        sample.IsCompleted.Should().BeFalse("the exclusive fleet snapshot waits for the real ordinary-runner claim");
+        await capacityLock.DisposeAsync().ConfigureAwait(false);
+        (await claim.ConfigureAwait(false)).Should().NotBeNull("the real claim commits the queued job before the fleet snapshot proceeds");
 
         var decision = await sample.ConfigureAwait(false);
 
@@ -1094,6 +1104,26 @@ public sealed class ElasticProviderIntegrationTests
         await db.CentralProcessingRunners.Where(runner => runner.RunnerId == runnerId)
             .ExecuteUpdateAsync(setters => setters.SetProperty(runner => runner.EligibleRecipesJson, json))
             .ConfigureAwait(false);
+    }
+
+    private static async Task WaitForClaimBarrierAsync(WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> factory)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await using var scope = factory.Services.CreateAsyncScope();
+            var probe = await CentralObjectApplicationLock.TryAcquireAsync(
+                scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+                CentralProcessingRunnerJobService.ClaimBarrier,
+                CancellationToken.None).ConfigureAwait(false);
+            if (probe is null)
+            {
+                return;
+            }
+            await probe.DisposeAsync().ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(25)).ConfigureAwait(false);
+        }
+        Assert.Fail("the real runner claim did not acquire the shared fleet barrier");
     }
 
     private static async Task RetainSingleJobAsync(
