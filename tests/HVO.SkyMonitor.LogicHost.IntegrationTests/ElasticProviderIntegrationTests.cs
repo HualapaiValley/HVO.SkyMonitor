@@ -796,7 +796,7 @@ public sealed class ElasticProviderIntegrationTests
             RetireGrace = TimeSpan.FromSeconds(1)
         });
         await using var lockScope = factory.Services.CreateAsyncScope();
-        var capacityLock = await CentralObjectApplicationLock.AcquireAsync(
+        await using var capacityLock = await CentralObjectApplicationLock.AcquireAsync(
             lockScope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
             $"processing-runner-claim/{runnerId}",
             CancellationToken.None).ConfigureAwait(false);
@@ -805,14 +805,17 @@ public sealed class ElasticProviderIntegrationTests
         var runner = await claimDb.CentralProcessingRunners.SingleAsync(candidate => candidate.RunnerId == runnerId).ConfigureAwait(false);
         var request = ScriptedRegistration(runnerId);
         var eligible = factory.Services.GetRequiredService<IOptions<CentralProcessingRunnerOptions>>().Value.ResolveEligibleRecipes(request.Capabilities);
+        using var claimCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var claim = claimScope.ServiceProvider.GetRequiredService<ICentralProcessingRunnerJobService>().ClaimAsync(
             new CentralProcessingRunnerContext(runner, request.Capabilities, eligible),
             new ProcessingRunnerClaimRequest(ProcessingRunnerJobClass.CentralRecipe, 0),
-            CancellationToken.None);
+            claimCancellation.Token);
         await WaitForClaimBarrierAsync(factory).ConfigureAwait(false);
 
+        var barrierWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        autoscaler.ClaimBarrierWaitStarted = () => barrierWait.TrySetResult();
         var sample = autoscaler.SampleAsync(CancellationToken.None);
-        await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+        await barrierWait.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         sample.IsCompleted.Should().BeFalse("the exclusive fleet snapshot waits for the real ordinary-runner claim");
         await capacityLock.DisposeAsync().ConfigureAwait(false);
         (await claim.ConfigureAwait(false)).Should().NotBeNull("the real claim commits the queued job before the fleet snapshot proceeds");

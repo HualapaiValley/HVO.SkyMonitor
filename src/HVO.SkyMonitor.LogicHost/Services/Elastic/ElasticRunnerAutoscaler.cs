@@ -55,6 +55,7 @@ internal sealed partial class ElasticRunnerAutoscaler(
     private bool _adopted;
     private string? _lastExcludedRecipes;
     private static readonly string HostName = Environment.MachineName;
+    internal Action? ClaimBarrierWaitStarted { get; set; }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -487,8 +488,16 @@ internal sealed partial class ElasticRunnerAutoscaler(
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var claimBarrierResult = new SqlParameter("@result", System.Data.SqlDbType.Int) { Direction = System.Data.ParameterDirection.Output };
         await dbContext.Database.ExecuteSqlRawAsync(
-            "EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 5000;",
+            "EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 0;",
             [new SqlParameter("@resource", CentralObjectApplicationLock.CreateResource(CentralProcessingRunnerJobService.ClaimBarrier)), claimBarrierResult], cancellationToken).ConfigureAwait(false);
+        if (claimBarrierResult.Value is int { } immediateClaimBarrier && immediateClaimBarrier == -1)
+        {
+            ClaimBarrierWaitStarted?.Invoke();
+            claimBarrierResult = new SqlParameter("@result", System.Data.SqlDbType.Int) { Direction = System.Data.ParameterDirection.Output };
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 5000;",
+                [new SqlParameter("@resource", CentralObjectApplicationLock.CreateResource(CentralProcessingRunnerJobService.ClaimBarrier)), claimBarrierResult], cancellationToken).ConfigureAwait(false);
+        }
         if (claimBarrierResult.Value is not int claimBarrierAcquired || claimBarrierAcquired < 0)
         {
             throw new InvalidOperationException("The processing runner claim barrier was not acquired.");
