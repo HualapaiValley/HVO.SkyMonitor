@@ -226,7 +226,9 @@ Log events 2230-2246.
   dashboards aggregating the previously untagged counter must be re-pointed.
   `cold-start-exceeds-deadline` appears there when the warm minimum or the one
   cleanup instance is topped up while executable work stays local. Allocation
-  histograms record twice per sample (`sample` and `locked`); use the `locked`
-  phase for the values the committed decision used.
+  histograms normally record twice per sample (`sample` and `locked`); a sample
+  that loses the scaling application lock emits only `sample`, so the two phases
+  are not a fixed ratio. Use the `locked` phase for the values the committed
+  decision used.
 - Provider exit: disable the section; instances scale to zero and no job state
   lives in the provider.
