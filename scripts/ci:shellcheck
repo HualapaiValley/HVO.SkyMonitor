@@ -11,22 +11,25 @@ readonly SHELLCHECK_SHA256='700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630f
 readonly SHELLCHECK_URL="https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${SHELLCHECK_ARCHIVE}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="${HVO_SHELLCHECK_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 readonly REPO_ROOT
 
 targets_file=''
-if [[ "${1-}" == '--targets-from' ]]; then
-    (($# == 2)) || { printf 'Usage: %s [--targets-from FILE]\n' "${0##*/}" >&2; exit 2; }
+if [[ "${1-}" == '--targets-from0' ]]; then
+    (($# == 2)) || { printf 'Usage: %s [--targets-from0 FILE]\n' "${0##*/}" >&2; exit 2; }
     targets_file="$2"
 elif (($# > 0)); then
-    printf 'Usage: %s [--targets-from FILE]\n' "${0##*/}" >&2
+    printf 'Usage: %s [--targets-from0 FILE]\n' "${0##*/}" >&2
     exit 2
 fi
 
 shellcheck_bin="${HVO_SHELLCHECK_BIN-}"
 cleanup_root=''
+selector_output=''
+selector_cleanup=''
 cleanup() {
     [[ -z "$cleanup_root" ]] || rm -rf "$cleanup_root"
+    [[ -z "$selector_cleanup" ]] || rm -f "$selector_cleanup"
 }
 trap cleanup EXIT
 
@@ -36,7 +39,7 @@ if [[ -z "$shellcheck_bin" ]]; then
             "${0##*/}" "$SHELLCHECK_VERSION" >&2
         exit 1
     }
-    for command in awk cp curl mktemp sha256sum tar uname; do
+    for command in awk cp curl mktemp od sha256sum tail tar tr uname; do
         command -v "$command" >/dev/null 2>&1 || { printf '%s requires %s.\n' "${0##*/}" "$command" >&2; exit 1; }
     done
     cleanup_root="$(mktemp -d)"
@@ -69,17 +72,25 @@ fi
 targets=()
 if [[ -n "$targets_file" ]]; then
     [[ -f "$targets_file" ]] || { printf 'ShellCheck target file does not exist: %s\n' "$targets_file" >&2; exit 1; }
-    mapfile -t targets < "$targets_file"
+    selector_output="$targets_file"
 else
     selector="${HVO_SHELL_SELECTOR:-$SCRIPT_DIR/ci:shell-syntax}"
     selector_output="$(mktemp)"
+    selector_cleanup="$selector_output"
     if ! "$BASH" "$selector" --list0 > "$selector_output"; then
         printf 'Shell file selector failed; refusing partial output from %s.\n' "$selector" >&2
         exit 1
     fi
-    mapfile -d '' -t targets < "$selector_output"
-    rm -f "$selector_output"
 fi
+
+if [[ -s "$selector_output" ]]; then
+    final_byte="$(tail -c 1 "$selector_output" | od -An -tu1 | tr -d '[:space:]')"
+    [[ "$final_byte" == 0 ]] || {
+        printf 'Shell file selector output is not terminated by a NUL record delimiter.\n' >&2
+        exit 1
+    }
+fi
+mapfile -d '' -t targets < "$selector_output"
 
 if ((${#targets[@]} == 0)); then
     printf 'No shell files selected for ShellCheck.\n' >&2
@@ -87,13 +98,16 @@ if ((${#targets[@]} == 0)); then
 fi
 
 resolved=()
+declare -A seen=()
 for target in "${targets[@]}"; do
     [[ -n "$target" ]] || { printf 'ShellCheck target set contains an empty record.\n' >&2; exit 1; }
-    if [[ "$target" == /* ]]; then
-        path="$target"
-    else
-        path="$REPO_ROOT/$target"
-    fi
+    [[ "$target" != /* && "$target" != *'/../'* && "$target" != '../'* && "$target" != *'/..' && "$target" != '.' ]] || {
+        printf 'ShellCheck target must be a normalized repository-relative path: %s\n' "$target" >&2
+        exit 1
+    }
+    [[ -z "${seen[$target]+x}" ]] || { printf 'ShellCheck target is duplicated: %s\n' "$target" >&2; exit 1; }
+    seen[$target]=1
+    path="$REPO_ROOT/$target"
     [[ -f "$path" ]] || {
         printf 'ShellCheck target is not a regular file: %s\n' "$target" >&2
         printf 'The target set is therefore incomplete or references a missing worktree path.\n' >&2
