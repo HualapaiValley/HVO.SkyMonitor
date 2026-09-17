@@ -71,6 +71,30 @@ public sealed class ElasticFleetAllocationOracleTests
 
         CollectionAssert.AreEquivalent(new[] { "small", "large" }, result.MatchedJobs.ToArray());
         Assert.AreEqual(0, result.UncoveredJobs.Count);
+
+        var oversized = Allocate(
+            [Job("too-large", "A", input: 64)],
+            [Runner("small-only", ["A"], transfer: 16)]);
+        CollectionAssert.AreEqual(new[] { "too-large" }, oversized.UncoveredJobs.ToArray());
+        Assert.AreEqual(1, oversized.RequiredInstances);
+    }
+
+    [TestMethod]
+    public void PriorityAndUncoveredIdentityAreStableAcrossRegistrationOrder()
+    {
+        var jobs = new[]
+        {
+            Job("old-a", "A", age: TimeSpan.FromMinutes(3)),
+            Job("middle-b", "B", age: TimeSpan.FromMinutes(2)),
+            Job("young-a", "A", age: TimeSpan.FromMinutes(1))
+        };
+        var forward = Allocate(jobs, [Runner("a-only", ["A"]), Runner("flex", ["A", "B"])]);
+        var reverse = Allocate(jobs, [Runner("flex", ["A", "B"]), Runner("a-only", ["A"])]);
+
+        CollectionAssert.AreEqual(new[] { "middle-b", "old-a" }, forward.MatchedJobs.ToArray());
+        CollectionAssert.AreEqual(new[] { "young-a" }, forward.UncoveredJobs.ToArray());
+        CollectionAssert.AreEqual(forward.MatchedJobs.ToArray(), reverse.MatchedJobs.ToArray());
+        CollectionAssert.AreEqual(forward.UncoveredJobs.ToArray(), reverse.UncoveredJobs.ToArray());
     }
 
     [TestMethod]

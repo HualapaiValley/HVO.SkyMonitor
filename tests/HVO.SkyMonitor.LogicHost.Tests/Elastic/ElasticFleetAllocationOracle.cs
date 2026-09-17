@@ -59,7 +59,7 @@ internal static class ElasticFleetAllocationOracle
             throw new ArgumentException("Registrations require unique nonempty IDs and non-negative capacity values.", nameof(registrations));
         }
 
-        var slots = registrations
+        var slots = registrations.OrderBy(registration => registration.Id, StringComparer.Ordinal)
             .SelectMany(registration => Enumerable.Range(
                     0,
                     Math.Max(0, registration.MaxConcurrency - Math.Clamp(

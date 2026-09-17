@@ -40,9 +40,12 @@ capability without pretending that a busy slot is free.
 2. Connect a queued job to a slot only when the registration advertises the
    exact recipe and its transfer limit admits the job's complete inputs.
 3. Compute a maximum-cardinality bipartite matching. Process jobs with the fewest
-   compatible slots first, then oldest age and stable ID, but permit augmenting
-   paths to reassign earlier matches. The heuristic reduces work; maximum
-   matching, not ordering, establishes correctness.
+   compatible slots first, then oldest age and stable ID. Earlier matched jobs
+   remain matched: an augmenting path may move them between slots but succeeds
+   only when every displaced earlier job is reassigned. Canonically sort slots by
+   registration ID. This yields a maximum-cardinality result with a stable
+   lexicographic secondary objective over job priority, independent of registration
+   enumeration order.
 4. Matched jobs are covered by existing registered capacity. Unmatched jobs are
    the executable shortfall.
 5. Apply remaining entitlement headroom independently for each unmatched job's
@@ -95,9 +98,11 @@ These slices preserve one invariant per merge and remain children/follow-ups of
    exact registration capabilities, replace the greedy allocator with maximum
    matching, and add the A+B/A-only plus busy-B integration cases. No entitlement
    or deadline behavior changes in this slice.
-2. **Unmatched-work policy.** Carry unmatched count and oldest unmatched age into
-   `ElasticScalingInput`; apply remaining entitlement headroom and queue deadline
-   to that set. Add focused policy tests for partial headroom and covered-old /
+2. **Scoped unmatched-work policy.** Apply per-observatory remaining entitlement
+   to the unmatched job identities before constructing policy input. Carry the
+   resulting provisionable shortfall count and oldest provisionable age together
+   into `ElasticScalingInput`; they are one atomic policy fact. Add focused policy
+   tests for mixed exhausted/eligible observatories and covered-old /
    uncovered-young work.
 3. **Integrated fleet evidence and signals.** Run all four scripted-provider
    scenarios together, add bounded complexity/elapsed signals and reason-code
