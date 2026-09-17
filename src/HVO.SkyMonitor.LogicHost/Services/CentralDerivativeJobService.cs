@@ -1414,7 +1414,7 @@ internal sealed partial class CentralDerivativeJobService(
     /// cleanup, and the age key. Used by the elastic autoscaler so it never provisions for work no runner could claim.
     /// </summary>
     internal static string CreateClaimableSql() => $"""
-        SELECT sourceFrame.[ObservatoryId] AS [ObservatoryId], job.[RecipeName] AS [RecipeName],
+        SELECT job.[Id] AS [JobId], sourceFrame.[ObservatoryId] AS [ObservatoryId], job.[RecipeName] AS [RecipeName],
             CASE WHEN job.[Status] = N'Leased' AND job.[AttemptCount] >= job.[MaxAttempts] THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS [IsCleanup],
             CASE WHEN job.[Status] = N'Leased' THEN job.[LeaseExpiresAtUtc] ELSE job.[AvailableAtUtc] END AS [AvailableSince],
             (SELECT COALESCE(SUM(sized.[ByteLength]), 0)
