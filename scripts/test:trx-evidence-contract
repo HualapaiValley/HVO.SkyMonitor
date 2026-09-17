@@ -42,6 +42,25 @@ expect() {
     fi
 }
 
+# The counters assertion, stated the same way. Separate from expect() because it exercises a
+# different function rather than a different fixture: the two assertions promise different
+# things, and a gate that conflated them would let either one's regression hide behind the
+# other's verdict.
+expect_counters() {
+    local fixture="$1" want_exit="$2" want_text="$3"
+    cases=$((cases + 1))
+    local out status
+    set +e
+    out="$(trx_assert_counters_executed_and_passed "$FIXTURES/$fixture" 'gate' 2>&1)"
+    status=$?
+    set -e
+    if [[ "$status" != "$want_exit" ]] || [[ "$out" != *"$want_text"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL(counters) %s\n  expected exit=%s containing: %s\n  actual   exit=%s output:\n%s\n' \
+            "$fixture" "$want_exit" "$want_text" "$status" "$out" >&2
+    fi
+}
+
 # The same two passing results in three serialisations. All three must be accepted AND must
 # report two results: a line-based count reports one for the collapsed forms.
 expect expanded-all-passed.trx    0 '2 results, every one Passed'
@@ -97,6 +116,42 @@ expect does-not-exist.trx         1 'no results file was written'
 # Only the per-result outcome distinguishes it.
 expect skipped-run.trx            1 'A: NotExecuted'
 expect skipped-run.trx            1 'Reasons recorded by the tests themselves'
+
+# COUNTERS (#803)
+#
+# This assertion used to live only in scripts/test:cameraagent-standalone-211, a runner no
+# workflow invokes, so nothing would have noticed it drifting. The accepting direction is
+# pinned as deliberately as the refusing one: a gate that only ever refuses proves no more than
+# one that only ever accepts.
+expect_counters expanded-all-passed.trx   0 'counters verified, executed=2 passed=2'
+expect_counters collapsed-all-passed.trx  0 'counters verified, executed=2 passed=2'
+expect_counters crlf-all-passed.trx       0 'counters verified, executed=2 passed=2'
+
+# The defect the element-anchored read fixed, in its own direction: a genuine pass whose StdOut
+# quotes executed="0" must still be accepted. A line-based read refused it, which is a
+# fail-closed defect in a guard whose whole purpose is to be trusted.
+expect_counters counters-stdout-quotes-zero.trx 0 'counters verified, executed=1 passed=1'
+
+# The skipped run the whole family exists for, read through the totals rather than the outcomes.
+expect_counters skipped-run.trx           1 'executed=0'
+expect_counters counters-not-executed.trx 1 'executed=0'
+
+# Executed but not all passing, and the missing-attribute case. Absent is refused rather than
+# read as zero: an unreadable total is not evidence of a pass.
+expect_counters counters-passed-below-executed.trx  1 'executed=2 passed=1'
+expect_counters counters-missing-passed-attribute.trx 1 'passed=<absent>'
+expect_counters counters-absent.trx       1 'exactly one Counters element'
+
+# Limit 1 at the top of the library, pinned. This assertion reads a singleton, so a CDATA-quoted
+# phantom would change WHICH value is read rather than merely inflating an advisory count. The
+# real Counters here says executed=1 passed=1; the phantom says zero. Refusing the ambiguous
+# file is the only safe reading, and this is the fixture that stops anyone relaxing the
+# exactly-one requirement as defensive tidiness.
+expect_counters cdata-phantom-counters.trx 1 'exactly one Counters element'
+
+# Nothing to read at all.
+expect_counters empty.trx                 1 'no results file was written'
+expect_counters does-not-exist.trx        1 'no results file was written'
 
 if ((failures > 0)); then
     printf '%s of %s TRX evidence contract cases failed.\n' "$failures" "$cases" >&2

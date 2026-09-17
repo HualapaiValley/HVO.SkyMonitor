@@ -38,22 +38,31 @@
 #      free, though, and the earlier wording that a Passed phantom "changes nothing" was wrong:
 #      it inflates the reported result count, which is the line a human reads. So the escaping
 #      argument is not load-bearing for the verdict, and the count is advisory rather than
-#      authoritative whenever a file contains CDATA. It WOULD be load-bearing for anything that reads a
+#      authoritative whenever a file contains CDATA. It IS load-bearing for anything that reads a
 #      singleton element such as <Counters>, where a phantom match changes which value is
-#      read. If a counters assertion is ever added here, it must require exactly one such
-#      element and must not treat that requirement as defensive tidiness.
+#      read. trx_assert_counters_executed_and_passed therefore requires exactly one such
+#      element, and that requirement is not defensive tidiness: it is the only thing standing
+#      between a CDATA-quoted counters tag and a silently substituted total. The
+#      cdata-phantom-counters fixture pins it.
 #   2. XML requires escaping "<" and "&" inside an attribute value but permits ">". A raw ">"
 #      in a testName truncates [^>]* before outcome=, and the truncated element is then
 #      refused for having no readable outcome. Fail-closed, and deliberate: an element this
 #      cannot parse is not evidence that it passed.
 #
-# WHAT IS DELIBERATELY NOT HERE
+# THE TWO ASSERTIONS, AND WHY THEY ARE SEPARATE
 #
-# ResultSummary/Counters verification. The runners that source this file assert a non-empty
-# selection and an all-Passed set; adding a counters assertion would change what they promise
-# rather than fix what they get wrong, and issue #769 is scoped to the latter.
-# scripts/test:cameraagent-standalone-211 does assert counters and keeps its own copy; folding
-# it into this helper is a follow-up, not part of the correction.
+# trx_assert_executed_and_passed reads the per-result outcomes. trx_assert_counters_executed_and_passed
+# reads the run's own totals. They are separate because they promise different things and most
+# callers want only the first: the per-result check is what distinguishes a skipped run from a
+# real one, while the counters check cross-examines that verdict against the totals the runner
+# recorded for itself. Callers that want both call both, which is what
+# scripts/test:cameraagent-standalone-211 does.
+#
+# The counters assertion arrived here under issue #803. It previously lived as a second copy
+# inside that runner, asserted by nothing, in a runner no workflow invokes. Two copies of one
+# contract do not drift loudly; they drift silently, and the ungated copy reads as
+# authoritative as the gated one. There is now one implementation, and scripts/test:trx-evidence-contract
+# covers it in both the refusing and the accepting direction.
 
 # Print every <UnitTestResult> start-tag in the file, one per line.
 trx_result_elements() {
@@ -104,6 +113,44 @@ trx_assert_executed_and_passed() {
     # $results is already one element per line, so counting its lines counts results. Counting
     # lines of the TRX itself is the defect this file exists to remove; do not reintroduce it.
     printf '%s: %s results, every one Passed.\n' "$label" "$(printf '%s\n' "$results" | wc -l | tr -d ' ')"
+}
+
+# Refuse unless the run's own ResultSummary/Counters totals show every selected test executing
+# and passing. This cross-examines the per-result verdict against the totals the runner recorded
+# for itself; it does not replace trx_assert_executed_and_passed, which reads the outcomes.
+# Returns 0 on success, 1 on refusal; the caller decides whether that is an exit or a `fail`.
+trx_assert_counters_executed_and_passed() {
+    local trx="$1"
+    local label="$2"
+    local counters executed passed
+
+    if [[ ! -s "$trx" ]]; then
+        printf '%s: no results file was written to %s.\n' "$label" "$trx" >&2
+        return 1
+    fi
+
+    # Read the counters out of the Counters element itself, not out of the first line that
+    # happens to contain the attribute name. A genuine pass whose StdOut quotes ' executed="0"'
+    # was refused by the line-based read, which is a fail-closed defect in a guard whose whole
+    # purpose is to be trusted.
+    counters="$(grep -o '<Counters [^>]*' "$trx" || true)"
+    # Exactly one, for the reason recorded in limit 1 at the top of this file: this reads a
+    # singleton, so a CDATA-quoted phantom would change which value is read rather than merely
+    # inflating an advisory count. Refusing an ambiguous file is the only safe reading.
+    if [[ "$(printf '%s\n' "$counters" | grep -c '<Counters ')" != 1 ]]; then
+        printf '%s: the evidence does not contain exactly one Counters element, so its totals cannot be read.\n' "$label" >&2
+        return 1
+    fi
+
+    executed="$(printf '%s' "$counters" | sed -n 's/.*[[:space:]]executed="\([0-9]*\)".*/\1/p')"
+    passed="$(printf '%s' "$counters" | sed -n 's/.*[[:space:]]passed="\([0-9]*\)".*/\1/p')"
+    if [[ -z "$executed" || -z "$passed" ]] || ((executed == 0)) || ((passed != executed)); then
+        printf '%s: the TRX counters do not show every selected test executing and passing: executed=%s passed=%s\n' \
+            "$label" "${executed:-<absent>}" "${passed:-<absent>}" >&2
+        return 1
+    fi
+
+    printf '%s: counters verified, executed=%s passed=%s.\n' "$label" "$executed" "$passed"
 }
 
 # Extract the <Message> bodies the tests recorded, for the diagnostic above.
