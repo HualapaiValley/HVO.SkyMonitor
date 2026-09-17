@@ -87,6 +87,20 @@ trx_counters_elements() {
 # line, so this consumes them as a stream rather than matching a line or a sed range. The output
 # is deliberately only used for COUNTING against the raw reading: a file where the two disagree
 # is a file whose totals cannot be read unambiguously, and this refuses it rather than choosing.
+#
+# TWO LIMITS, RECORDED FOR THE SAME REASON AS THE TWO AT THE TOP OF THIS FILE
+#
+#   1. This is a stripper, not a parser, so it does not know that markup inside an XML COMMENT
+#      is not markup. A comment containing a literal "<![CDATA[" before the real <Counters>
+#      opens a span that never closes, the real element is stripped, the counts disagree and the
+#      file is refused. Fail-closed, and unreachable for a TRX: MSTest emits no comments.
+#   2. An unterminated CDATA span swallows the rest of the file, with the same fail-closed
+#      result and the same reasoning.
+#
+# The direction that would matter is the opposite one, and it is why the values are read from
+# the RAW list while the stripped list is used only to count. Reading values from the stripped
+# text would mean trusting this function's output; counting with it means a disagreement can
+# only ever cause a refusal.
 trx_counters_elements_outside_cdata() {
     awk '
         {
@@ -116,7 +130,7 @@ trx_counters_elements_outside_cdata() {
 trx_assert_executed_and_passed() {
     local trx="$1"
     local label="$2"
-    local results unpassed reasons
+    local results unpassed reasons unpassed_count
 
     if [[ ! -s "$trx" ]]; then
         printf '%s: no results file was written to %s.\n' "$label" "$trx" >&2
@@ -138,14 +152,27 @@ trx_assert_executed_and_passed() {
         # Capped: a campaign trial can record thousands of NotExecuted results, and a diagnostic
         # that floods the log buries the line naming the failure. The count below is uncapped and
         # reports the true total, so the cap costs no information about scale.
+        #
+        # The cap is applied INSIDE awk rather than by piping into `head`. A downstream `head`
+        # exits once it has its eight lines, awk then dies on SIGPIPE, and under `set -o pipefail`
+        # the pipeline returns 141; in a bare call that aborts this function at this line and
+        # discards the count, the closing sentence and the recorded reasons below -- losing
+        # exactly the diagnostics the cap exists to preserve. Every current caller is in a `||`
+        # context that masks it, which is what would have made this a trap for the next one.
         printf '%s\n' "$unpassed" | awk '{
             name = ""; outcome = ""
+            if (NR > 8) { next }
             if (match($0, /testName="[^"]*"/)) { name = substr($0, RSTART + 10, RLENGTH - 11) }
             if (match($0, /outcome="[^"]*"/)) { outcome = substr($0, RSTART + 9, RLENGTH - 10) }
             if (name != "" && outcome != "") { print "  " name ": " outcome }
             else { print "  unparseable result: " $0 }
-        }' | head -n 8 >&2
-        printf '  %s results are not Passed.\n' "$(printf '%s\n' "$unpassed" | wc -l | tr -d ' ')" >&2
+        }' >&2
+        unpassed_count="$(printf '%s\n' "$unpassed" | wc -l | tr -d ' ')"
+        if ((unpassed_count == 1)); then
+            printf '  1 result is not Passed.\n' >&2
+        else
+            printf '  %s results are not Passed.\n' "$unpassed_count" >&2
+        fi
         printf '  A skipped or inconclusive result is not a reduced pass; it is no result at all.\n' >&2
         reasons="$(trx_recorded_reasons "$trx")" || reasons=''
         if [[ -n "${reasons//[[:space:]]/}" ]]; then

@@ -42,6 +42,22 @@ expect() {
     fi
 }
 
+# Some properties are about what the output must NOT contain -- a cap is only a cap if the
+# ninth item is absent. A positive substring cannot express that.
+expect_absent() {
+    local fixture="$1" unwanted="$2"
+    cases=$((cases + 1))
+    local out
+    set +e
+    out="$(trx_assert_executed_and_passed "$FIXTURES/$fixture" 'gate' 2>&1)"
+    set -e
+    if [[ "$out" == *"$unwanted"* ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL(absent) %s\n  output must not contain: %s\n  actual output:\n%s\n' \
+            "$fixture" "$unwanted" "$out" >&2
+    fi
+}
+
 # The counters assertion, stated the same way. Separate from expect() because it exercises a
 # different function rather than a different fixture: the two assertions promise different
 # things, and a gate that conflated them would let either one's regression hide behind the
@@ -116,6 +132,17 @@ expect does-not-exist.trx         1 'no results file was written'
 # Only the per-result outcome distinguishes it.
 expect skipped-run.trx            1 'A: NotExecuted'
 expect skipped-run.trx            1 'Reasons recorded by the tests themselves'
+
+# The per-result dump is capped at eight so a trial recording thousands of NotExecuted results
+# cannot bury the line naming the failure, and the uncapped total is printed beside it so the
+# cap costs no information about scale. Twelve results, eight named, one total.
+expect many-unpassed.trx          1 'T08: NotExecuted'
+expect many-unpassed.trx          1 '12 results are not Passed'
+# The ninth must NOT appear: this is what pins the cap itself rather than merely the count.
+expect_absent many-unpassed.trx   'T09: NotExecuted'
+# Singular, because "1 results" is the kind of wrong that survives forever once shipped.
+expect_absent skipped-run.trx     'results are not Passed'
+expect skipped-run.trx            1 '1 result is not Passed'
 
 # COUNTERS (#803)
 #
