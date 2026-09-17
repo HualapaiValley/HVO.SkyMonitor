@@ -27,9 +27,23 @@ source "$SCRIPT_DIR/lib/trx-evidence.sh"
 failures=0
 cases=0
 
+# A mistyped fixture name refuses for the file being missing, which is a real refusal with real
+# output and is therefore indistinguishable from the case the author meant to write. Every
+# fixture is required to exist, except the one whose whole point is that it does not.
+require_fixture() {
+    local fixture="$1"
+    [[ "$fixture" == 'does-not-exist.trx' ]] && return 0
+    if [[ ! -e "$FIXTURES/$fixture" ]]; then
+        failures=$((failures + 1))
+        printf 'FAIL(fixture) %s is named by a case but does not exist.\n' "$fixture" >&2
+        return 1
+    fi
+}
+
 expect() {
     local fixture="$1" want_exit="$2" want_text="$3"
     cases=$((cases + 1))
+    require_fixture "$fixture" || return 0
     local out status
     set +e
     out="$(trx_assert_executed_and_passed "$FIXTURES/$fixture" 'gate' 2>&1)"
@@ -44,17 +58,24 @@ expect() {
 
 # Some properties are about what the output must NOT contain -- a cap is only a cap if the
 # ninth item is absent. A positive substring cannot express that.
+#
+# A negative assertion is worthless if it can be satisfied by producing nothing, so this does not
+# only check absence: it requires the refusal to have happened and to have said something. Without
+# that, a mistyped fixture name or an assertion that returned early would pass silently, which is
+# the same class of defect as the ungated copy this issue exists to remove.
 expect_absent() {
     local fixture="$1" unwanted="$2"
     cases=$((cases + 1))
-    local out
+    require_fixture "$fixture" || return 0
+    local out status
     set +e
     out="$(trx_assert_executed_and_passed "$FIXTURES/$fixture" 'gate' 2>&1)"
+    status=$?
     set -e
-    if [[ "$out" == *"$unwanted"* ]]; then
+    if [[ "$status" != 1 || -z "$out" || "$out" == *"$unwanted"* ]]; then
         failures=$((failures + 1))
-        printf 'FAIL(absent) %s\n  output must not contain: %s\n  actual output:\n%s\n' \
-            "$fixture" "$unwanted" "$out" >&2
+        printf 'FAIL(absent) %s\n  expected exit=1 and non-empty output not containing: %s\n  actual   exit=%s output:\n%s\n' \
+            "$fixture" "$unwanted" "$status" "$out" >&2
     fi
 }
 
@@ -65,6 +86,7 @@ expect_absent() {
 expect_counters() {
     local fixture="$1" want_exit="$2" want_text="$3"
     cases=$((cases + 1))
+    require_fixture "$fixture" || return 0
     local out status
     set +e
     out="$(trx_assert_counters_executed_and_passed "$FIXTURES/$fixture" 'gate' 2>&1)"
