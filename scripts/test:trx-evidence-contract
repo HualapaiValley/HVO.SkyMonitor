@@ -126,11 +126,18 @@ expect skipped-run.trx            1 'Reasons recorded by the tests themselves'
 expect_counters expanded-all-passed.trx   0 'counters verified, executed=2 passed=2'
 expect_counters collapsed-all-passed.trx  0 'counters verified, executed=2 passed=2'
 expect_counters crlf-all-passed.trx       0 'counters verified, executed=2 passed=2'
+expect_counters single-line-document.trx  0 'counters verified, executed=2 passed=2'
 
 # The defect the element-anchored read fixed, in its own direction: a genuine pass whose StdOut
 # quotes executed="0" must still be accepted. A line-based read refused it, which is a
 # fail-closed defect in a guard whose whole purpose is to be trusted.
 expect_counters counters-stdout-quotes-zero.trx 0 'counters verified, executed=1 passed=1'
+# The OTHER direction of the same decision, and the one that actually pins the parse. The pair
+# above sits on separate lines, so a whole-line read still sees only the real element and stays
+# green -- which means it cannot detect a line-based regression at all. Here the quoted text
+# shares its line with a zero-executed Counters, exactly as a collapsed TRX serialises it, so a
+# line read reports executed=3 passed=3 and ACCEPTS a skipped run. Element-anchored refuses.
+expect_counters counters-collapsed-stdout-quotes.trx 1 'executed=0 passed=0'
 
 # The skipped run the whole family exists for, read through the totals rather than the outcomes.
 expect_counters skipped-run.trx           1 'executed=0'
@@ -148,6 +155,18 @@ expect_counters counters-absent.trx       1 'exactly one Counters element'
 # file is the only safe reading, and this is the fixture that stops anyone relaxing the
 # exactly-one requirement as defensive tidiness.
 expect_counters cdata-phantom-counters.trx 1 'exactly one Counters element'
+
+# The phantom alone. Exactly-one is satisfied by a quoted tag when the real element is absent,
+# so the count cannot see this: the phantom is not competing with a real reading, it IS the
+# reading. Without the CDATA-stripped cross-check this file is accepted as executed=7 passed=7
+# by a run whose ResultSummary records no totals whatsoever.
+expect_counters counters-phantom-only.trx 1 'quoted inside CDATA'
+
+# Bash reads a leading-zero operand as octal and ABORTS the arithmetic on an invalid digit.
+# Inside an `if` condition that abort is a false result, so an unvalidated executed="008" fell
+# through to acceptance. Values past 2^64 wrap instead. Both are refused before any arithmetic.
+expect_counters counters-leading-zero.trx 1 'not readable as plain decimal totals'
+expect_counters counters-overflow.trx     1 'not readable as plain decimal totals'
 
 # Nothing to read at all.
 expect_counters empty.trx                 1 'no results file was written'
