@@ -27,6 +27,12 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [DoNotParallelize]
 public sealed class ProcessingGraphOperationsTests
 {
+    [TestMethod]
+    public void LocalPolicyVocabularyMatchesRegisteredProcessingAliases()
+    {
+        Assert.AreEqual("Storage and Telemetry", ProcessingGraphOperationsCoordinator.LocalPolicyNodeDescription);
+    }
+
     private static readonly string[] PreemptionAttemptStatuses = ["Interrupted", "Completed"];
 
     [TestMethod]

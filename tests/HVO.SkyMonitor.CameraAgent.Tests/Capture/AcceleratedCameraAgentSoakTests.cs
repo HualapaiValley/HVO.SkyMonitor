@@ -130,7 +130,7 @@ public sealed class AcceleratedCameraAgentSoakTests
                     DrawLabels = false, DrawConstellationLines = false, DrawImageCircle = true
                 }),
                 Step("Storage", 100,
-                    new NoOpFileStorageProcessingStepOptions
+                    new FileStorageCaptureProcessingStepOptions
                     {
                         StorageRoot = root, RetentionDays = 1, QueueForUpload = false, UpdateLatestFrame = false
                     }),

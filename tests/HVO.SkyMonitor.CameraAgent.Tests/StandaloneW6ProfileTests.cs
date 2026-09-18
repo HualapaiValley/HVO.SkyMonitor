@@ -344,7 +344,7 @@ public sealed class StandaloneW6ProfileTests
                 ? step with
                 {
                     Options = System.Text.Json.JsonSerializer.SerializeToElement(
-                        new NoOpFileStorageProcessingStepOptions
+                        new FileStorageCaptureProcessingStepOptions
                         {
                             StorageRoot = "/var/lib/hvo/data/agent",
                             RetentionDays = 1,
