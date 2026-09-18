@@ -22,6 +22,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private static readonly HashSet<string> LocalPolicyStepAliases = new(
         ["Storage", "Telemetry"],
         StringComparer.OrdinalIgnoreCase);
+    internal static string LocalPolicyNodeDescription => string.Join(
+        " and ",
+        LocalPolicyStepAliases.Order(StringComparer.OrdinalIgnoreCase));
     private readonly ICaptureProcessingPipelineFactory _pipelineFactory;
     private readonly SqliteCaptureProcessingStore _store;
     private readonly ProcessingGraphExecutionOptions _options;
@@ -634,7 +637,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                     !string.Equals(incoming.StepAlias, step.Type, StringComparison.OrdinalIgnoreCase))))
         {
             throw new InvalidDataException(
-                "The delivered graph must preserve every required local storage, upload, and telemetry node.");
+                $"The delivered graph must preserve every required local {LocalPolicyNodeDescription} node.");
         }
         var steps = definition.Nodes.Select(node =>
         {
@@ -646,7 +649,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                 if (!matchesLocalType || local!.Enabled == false)
                 {
                     throw new InvalidDataException(
-                        "The delivered graph cannot add or replace local storage, upload, or telemetry policy.");
+                        $"The delivered graph cannot add or replace local {LocalPolicyNodeDescription} policy.");
                 }
                 return local;
             }
