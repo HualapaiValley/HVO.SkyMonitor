@@ -18,10 +18,14 @@ jobs:
     steps:
       - name: Record experiment start
         run: |
+          started_at_epoch="$(date +%s)"
           evidence_root="$RUNNER_TEMP/ci-v2-baseline"
           mkdir -p "$evidence_root/timing" "$evidence_root/unit"
-          printf 'CI_V2_EVIDENCE_ROOT=%s\n' "$evidence_root" >> "$GITHUB_ENV"
-          printf 'CI_V2_STARTED_AT_EPOCH=%s\n' "$(date +%s)" >> "$GITHUB_ENV"
+          {
+            printf 'CI_V2_EVIDENCE_ROOT=%s\n' "$evidence_root"
+            printf 'CI_V2_STARTED_AT_EPOCH=%s\n' "$started_at_epoch"
+            printf 'CI_V2_WORKLOAD_DEADLINE_EPOCH=%s\n' "$((started_at_epoch + 660))"
+          } >> "$GITHUB_ENV"
 
       - name: Checkout exact commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,15 +40,19 @@ jobs:
       - name: Restore solution
         id: restore
         run: |
+          remaining_seconds="$((CI_V2_WORKLOAD_DEADLINE_EPOCH - $(date +%s)))"
+          ((remaining_seconds > 0)) || { printf 'CI v2 cumulative workload budget was exhausted before restore.\n' >&2; exit 124; }
           /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/restore.time" \
-            timeout --signal=TERM --kill-after=30s 11m \
+            timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
             dotnet restore HVO.SkyMonitor.v9.slnx
 
       - name: Build warning-clean Release solution
         id: build
         run: |
+          remaining_seconds="$((CI_V2_WORKLOAD_DEADLINE_EPOCH - $(date +%s)))"
+          ((remaining_seconds > 0)) || { printf 'CI v2 cumulative workload budget was exhausted before build.\n' >&2; exit 124; }
           /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/build.time" \
-            timeout --signal=TERM --kill-after=30s 11m \
+            timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
             dotnet build HVO.SkyMonitor.v9.slnx \
               --no-restore \
               --configuration Release \
@@ -55,8 +63,10 @@ jobs:
         env:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
         run: |
+          remaining_seconds="$((CI_V2_WORKLOAD_DEADLINE_EPOCH - $(date +%s)))"
+          ((remaining_seconds > 0)) || { printf 'CI v2 cumulative workload budget was exhausted before Unit tests.\n' >&2; exit 124; }
           /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/unit.time" \
-            timeout --signal=TERM --kill-after=30s 11m \
+            timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
             dotnet test HVO.SkyMonitor.v9.slnx \
               --no-build \
               --configuration Release \
@@ -118,7 +128,7 @@ jobs:
             --argjson restore "$(timing_json restore "$RESTORE_OUTCOME")" \
             --argjson build "$(timing_json build "$BUILD_OUTCOME")" \
             --argjson unit "$(timing_json unit "$UNIT_OUTCOME")" \
-            '{schema:$schema,repository:$repository,event:$event,headSha:$headSha,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),runner:{name:$runnerName,os:$runnerOs,arch:$runnerArch,image:$runnerImage},sdkVersion:$sdkVersion,runnerElapsedThroughManifestStartSeconds:$runnerElapsedThroughManifestStartSeconds,targetJobElapsedSeconds:600,commandBudgetSeconds:660,hardTimeoutSeconds:1200,unitTrxCount:$trxCount,evidenceBytesBeforeUpload:$evidenceBytes,memoryMetric:"GNU time ru_maxrss: largest single process, not aggregate process-tree RSS",stages:[$restore,$build,$unit]}' \
+            '{schema:$schema,repository:$repository,event:$event,headSha:$headSha,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),runner:{name:$runnerName,os:$runnerOs,arch:$runnerArch,image:$runnerImage},sdkVersion:$sdkVersion,runnerElapsedThroughManifestStartSeconds:$runnerElapsedThroughManifestStartSeconds,targetJobElapsedSeconds:600,cumulativeWorkloadBudgetSeconds:660,terminationGraceSeconds:30,hardTimeoutSeconds:1200,unitTrxCount:$trxCount,evidenceBytesBeforeUpload:$evidenceBytes,memoryMetric:"GNU time ru_maxrss: largest single process, not aggregate process-tree RSS",stages:[$restore,$build,$unit]}' \
             > "$CI_V2_EVIDENCE_ROOT/manifest.json"
 
           find "$CI_V2_EVIDENCE_ROOT" -type f -printf '%P %s bytes\n' 2>/dev/null | sort
