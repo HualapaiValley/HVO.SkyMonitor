@@ -2,10 +2,12 @@
 set -euo pipefail
 umask 077
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 # shellcheck source=scripts/catalog/catalog-common.sh
 source "$SCRIPT_DIR/catalog-common.sh"
-readonly TEMPORARY_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/hvo-catalog-install-test.XXXXXX")"
+TEMPORARY_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/hvo-catalog-install-test.XXXXXX")"
+readonly TEMPORARY_DIRECTORY
 
 cleanup() {
     local status=$?
@@ -23,7 +25,8 @@ if [[ $# -ne 1 ]]; then
     exit 2
 fi
 
-readonly SOURCE_BUNDLE="$(realpath "$1")"
+SOURCE_BUNDLE="$(realpath "$1")"
+readonly SOURCE_BUNDLE
 readonly INSTALL_ROOT="$TEMPORARY_DIRECTORY/install"
 
 # A lineage publisher invoked in a conditional cannot continue after its held lock descriptor is replaced.

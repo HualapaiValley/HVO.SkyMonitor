@@ -120,7 +120,7 @@ deploy_run_acceptance_campaign() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6" tree="$7" scenario_id="$8"
     local state_dir evidence_dir runtime_root render_root private_root now target name target_root target_remote response cookies device profile
     local logic logic_root logic_remote central_headers logic_context logic_project logic_env start_sequence expected_baseline measured_start deadline interval facts baseline_facts
-    local operations status pending pending_bytes outage_started outage_started_elapsed outage_ended outage_seconds recovery_started recovery_seconds drain_rate
+    local operations status pending pending_bytes outage_started outage_started_elapsed outage_seconds recovery_started recovery_seconds drain_rate
     local artifact_input artifact_json artifact_length artifact_sha acceptance_ledger scenario completed runtime_status runtime_logic_state recover_runtime=false
     [[ "$scenario_id" == logichost-network-outage ]] || { deploy_fail acceptance-campaign scenario unsupported; return 1; }
     [[ "$worktree" == clean ]] || { deploy_fail acceptance-campaign source dirty-worktree-rejected; return 1; }
@@ -139,6 +139,7 @@ deploy_run_acceptance_campaign() {
     DEPLOY_MEASURE_LEDGER="$runtime_root/ledger.json"; DEPLOY_MEASURE_MANIFEST="$runtime_root/manifest.json"
     DEPLOY_MEASURE_EVIDENCE="$runtime_root/evidence.json"; DEPLOY_MEASURE_COMMIT="$runtime_root/commit.json"
     DEPLOY_CAMPAIGN_PRIVATE_ROOT="$private_root"; DEPLOY_CAMPAIGN_RENDER_ROOT="$render_root"; DEPLOY_CAMPAIGN_RUN_ID="$run_id"
+    # shellcheck disable=SC2034 # Shared phase state read by scripts/deploy/bootstrap.sh.
     DEPLOY_IMAGES_PREFLIGHT_JSON="$(jq -c . "$DEPLOY_MANIFEST")"
     logic="$(jq -c '.logicHost' "$inventory")"; logic_root="$(jq -r '.runtimeRoot' <<< "$logic")"; logic_remote="$logic_root/.hvo-deploy/campaign-$run_id"
     target="$(jq -c '.cameraAgents[0]' "$inventory")"; name="$(jq -r '.name' <<< "$target")"; target_root="$(jq -r '.runtimeRoot' <<< "$target")"
@@ -211,7 +212,7 @@ deploy_run_acceptance_campaign() {
     deploy_acceptance_campaign_runtime_publish || return 1
     deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$run_id" campaign-outage \
       "$start_sequence" 10 "$deadline" "$interval" || return 1
-    outage_ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; outage_seconds=$(( SECONDS - outage_started_elapsed ))
+    outage_seconds=$(( SECONDS - outage_started_elapsed ))
     status="$(deploy_bootstrap_request "$target" GET "$(jq -r '.internalEndpoint' <<< "$target")/api/v1/operations/summary" "" "" "$cookies" \
       "$target_remote/outage-operations.json" "$private_root/$name-outage-operations.json")" || return 1
     [[ "$status" == 200 ]] || return 1

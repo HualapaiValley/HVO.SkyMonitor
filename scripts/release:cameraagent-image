@@ -191,6 +191,9 @@ describe() {
     IFS=$'\t' read -r "${2}" "${3}" _ _ <"$destination"
 }
 
+# `describe` assigns its second and third arguments by name through `read -r`, which
+# static analysis cannot see; declaring them here makes the data flow explicit.
+amd64_manifest="" amd64_image_id="" arm64_manifest="" arm64_image_id=""
 describe amd64 amd64_manifest amd64_image_id
 describe arm64 arm64_manifest arm64_image_id
 for value in "$amd64_manifest" "$amd64_image_id" "$arm64_manifest" "$arm64_image_id"; do

@@ -88,7 +88,7 @@ reset_smoke_fixture() {
 }
 
 run_measure_signal() {
-    local signal="$1" expected="$2" marker="$3" log="$4" pid_file progress_file= ledger pid status
+    local signal="$1" expected="$2" marker="$3" log="$4" pid_file progress_file="" ledger pid status
     pid_file="$TEMP_DIR/measure-signal-${signal,,}.pid"
     shift 4
     deploy_test_checkpoint "measure:signal-${signal,,}:waiting"
@@ -300,6 +300,9 @@ prepare_lifecycle_fixture() {
   chmod 700 "$TEMP_DIR/remote/$deploy_case-skymonitor" "$TEMP_DIR/remote/$deploy_case-skymonitor/logichosts" "$TEMP_DIR/remote/$deploy_case-skymonitor/cameraagents" "$TEMP_DIR/remote/$deploy_case-skymonitor/catalogs"
 }
 
+# Assigns the lifecycle globals the shard bodies under scripts/deploy-contracts/ read after
+# they are sourced into the same shell; the readers are in other files.
+# shellcheck disable=SC2034
 set_lifecycle_paths() {
   lifecycle_logic_root="$(jq -r '.logicHost.runtimeRoot' "$INVENTORY")"
   lifecycle_east_root="$(jq -r '.cameraAgents[0].runtimeRoot' "$INVENTORY")"

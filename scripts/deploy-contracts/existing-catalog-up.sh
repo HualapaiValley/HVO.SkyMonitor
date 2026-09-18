@@ -5,6 +5,11 @@
 # every global it reads and writes has the same value and the same scope as
 # before. It runs nothing on its own and refuses direct execution.
 
+# This body is sourced into the harness shell after scripts/lib/deploy-test-lifecycle.sh,
+# whose staging functions (set_lifecycle_paths, prepare_lifecycle_fixture) assign the
+# globals it reads: catalog_sha, lifecycle_east_root, lifecycle_logic_root, lifecycle_west_root. ShellCheck cannot see
+# across that source boundary, so SC2154 is suppressed for this file with that fact recorded.
+# shellcheck disable=SC2154
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     printf '%s is a shard body sourced by scripts/test:deploy-environment; do not run it directly.\n' "${BASH_SOURCE[0]}" >&2
     exit 2
@@ -23,7 +28,7 @@ catalog_transport_external="$TEMP_DIR/catalog-transport-external"
 mkdir -m 700 "$catalog_transport_external"
 for target_root in "$lifecycle_logic_root" "$lifecycle_east_root" "$lifecycle_west_root"; do
   stale_stage="$target_root/.hvo-deploy/catalog-$deploy_case-test-fixture"
-  mkdir -m 700 -p "$stale_stage/bundle" "$stale_stage/scripts/catalog" "$stale_stage/scripts/infra"
+  make_private_tree "$stale_stage/bundle" "$stale_stage/scripts/catalog" "$stale_stage/scripts/infra"
   for relative in bundle/manifest.json bundle/hyg_v42.sqlite bundle/LICENSE-HYG.md bundle/ATTRIBUTION-HYG.md \
     scripts/catalog/catalog-common.sh scripts/catalog/install-hyg-v42.sh scripts/infra:operation-lock; do
     external_name="$(printf '%s/%s-%s' "$catalog_transport_external" "${target_root##*/}" "${relative//\//-}")"
@@ -260,7 +265,7 @@ rm -rf "$install_root"
 install_fixture_test_version() {
   local target_root="$1" package_version="$2" destination
   destination="$target_root/versions/$package_version"
-  mkdir -m 700 -p "$destination"
+  make_private_tree "$destination"
   cp "$bundle/hyg_v42.sqlite" "$destination/hyg_v42.sqlite"
   jq --arg version "$package_version" '.package.version=$version' "$TEMP_DIR/fixture-manifest.valid" > "$destination/manifest.json"
   chmod 444 "$destination/manifest.json" "$destination/hyg_v42.sqlite"
@@ -330,7 +335,7 @@ done
 
 make_fixture_transport_stage() {
   local stage_root="$1" package_version="$2"
-  mkdir -m 700 -p "$stage_root/bundle" "$stage_root/scripts/catalog"
+  make_private_tree "$stage_root/bundle" "$stage_root/scripts/catalog"
   cp "$bundle/hyg_v42.sqlite" "$stage_root/bundle/hyg_v42.sqlite"
   jq --arg version "$package_version" '.package.version=$version' "$TEMP_DIR/fixture-manifest.valid" > "$stage_root/bundle/manifest.json"
   cp "$REPO_ROOT/scripts/catalog/catalog-common.sh" "$stage_root/scripts/catalog/catalog-common.sh"
@@ -353,7 +358,7 @@ transport_cleanup_saved="$transport_cleanup_stage.saved"
 transport_cleanup_external="$TEMP_DIR/catalog-cleanup-external"
 transport_cleanup_marker="$TEMP_DIR/catalog-cleanup-directory-swap.marker"
 mkdir -m 700 "$transport_cleanup_parent"
-mkdir -m 700 -p "$transport_cleanup_stage/nested" "$transport_cleanup_external/nested"
+make_private_tree "$transport_cleanup_stage/nested" "$transport_cleanup_external/nested"
 printf 'stage\n' > "$transport_cleanup_stage/nested/payload"
 printf 'external-preserved\n' > "$transport_cleanup_external/nested/payload"
 chmod 0750 "$transport_cleanup_external" "$transport_cleanup_external/nested"
@@ -394,7 +399,7 @@ transport_remnant_saved="$transport_remnant.saved"
 transport_remnant_external="$TEMP_DIR/catalog-remnant-external"
 transport_remnant_marker="$TEMP_DIR/catalog-remnant-directory-swap.marker"
 mkdir -m 700 "$transport_remnant_parent"
-mkdir -m 700 -p "$transport_remnant/nested" "$transport_remnant_external/nested"
+make_private_tree "$transport_remnant/nested" "$transport_remnant_external/nested"
 printf 'remnant\n' > "$transport_remnant/nested/payload"
 printf 'remnant-external-preserved\n' > "$transport_remnant_external/nested/payload"
 chmod 0750 "$transport_remnant_external" "$transport_remnant_external/nested"
@@ -823,7 +828,6 @@ test -f "$logic_config/initializer-secrets/DatabaseSeed__ApiKeys__0__RawKey"
 test ! -e "$logic_config/runtime-secrets/DatabaseSeed__ApiKeys__0__RawKey"
 grep -Fq "HVO_CATALOG_ROOT=$install_root" "$TEMP_DIR/output/$deploy_case-state/up-rendered/logic.env"
 east_root="$(jq -r '.cameraAgents[0].runtimeRoot' "$INVENTORY")"
-west_root="$(jq -r '.cameraAgents[1].runtimeRoot' "$INVENTORY")"
 test ! -e "$east_root/config/secrets/ConnectionStrings__skymonitordb"
 east_config="$east_root/config"
 test "$(<"$east_config/secrets/LocalIdentity__AdminPasswordFile")" = /run/hvo-private/owner-password

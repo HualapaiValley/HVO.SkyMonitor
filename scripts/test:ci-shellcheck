@@ -47,6 +47,15 @@ expect 'new error-level diagnostic fails enforcement' 1 'SC2218' "$WORK/error.ta
 printf '%s\0%s\0%s\0' 'good file.sh' 'error.sh' 'good-two.sh' > "$WORK/mixed.targets"
 expect 'bad file in a mixed batch is rejected' 1 'failed for 1 of 3' "$WORK/mixed.targets"
 
+# Warning severity is enforced (#873): SC2034 (unused variable) is warning level in 0.9.0 and
+# deterministic. Info and style stay unenforced, so an info-only file must pass.
+printf '#!/usr/bin/env bash\nnever_read=1\nprintf "ok\\n"\n' > "$WORK/warning.sh"
+printf '%s\0' 'warning.sh' > "$WORK/warning.targets"
+expect 'new warning-level diagnostic fails enforcement' 1 'SC2034' "$WORK/warning.targets"
+printf '#!/usr/bin/env bash\nvalue=1\nprintf "%%s\\n" $value\n' > "$WORK/info-only.sh"
+printf '%s\0' 'info-only.sh' > "$WORK/info.targets"
+expect 'info-level diagnostics are not enforced' 0 'passed for 1 derived shell file' "$WORK/info.targets"
+
 # The source directive is load-bearing: the runtime source expression is dynamic and ShellCheck
 # can resolve it only through the directive.
 printf 'sourced_value=ok\n' > "$WORK/source-library.sh"
@@ -73,12 +82,12 @@ if ((source_mutation_status == 0)) || [[ "$source_mutation" != *'SC2154'* ]]; th
     printf 'FAIL removing the source directive did not expose SC2154:\n%s\n' "$source_mutation" >&2
 fi
 
-# Bind the production argument vector: a wrapper rejects anything except -x --severity=error,
+# Bind the production argument vector: a wrapper rejects anything except -x --severity=warning,
 # then delegates to the actual pinned-version binary.
 cat > "$WORK/arg-check-shellcheck" <<EOF
 #!/usr/bin/env bash
 if [[ "\${1-}" == '--version' ]]; then exec "$shellcheck_bin" --version; fi
-[[ "\${1-}" == '-x' && "\${2-}" == '--severity=error' ]] || { printf 'missing production ShellCheck arguments\\n' >&2; exit 97; }
+[[ "\${1-}" == '-x' && "\${2-}" == '--severity=warning' ]] || { printf 'missing production ShellCheck arguments\\n' >&2; exit 97; }
 exec "$shellcheck_bin" "\$@"
 EOF
 chmod 700 "$WORK/arg-check-shellcheck"

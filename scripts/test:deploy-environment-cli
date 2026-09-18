@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 readonly HARNESS="$SCRIPT_DIR/test:deploy-environment"
 WORK_ROOT="$(mktemp -d -t hvo-deploy-cli-test.XXXXXX)"
 readonly WORK_ROOT

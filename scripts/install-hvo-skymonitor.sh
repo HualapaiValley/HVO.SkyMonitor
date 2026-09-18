@@ -59,6 +59,7 @@ trap cleanup EXIT
 
 cache_root="${HVO_INSTALLER_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/hvo/skymonitor/bootstrap}"
 [[ ! -L "$cache_root" ]] || { printf 'Bootstrap cache root must not be a symbolic link.\n' >&2; exit 1; }
+# shellcheck disable=SC2174 # Only the leaf is owner-private by design; the XDG cache parents keep their own modes, and the stat below asserts the leaf.
 mkdir -p -m 700 "$cache_root"
 [[ "$(stat -c '%u' "$cache_root")" == "$(id -u)" && "$(stat -c '%a' "$cache_root")" == 700 ]] || {
     printf 'Bootstrap cache root must be owner-owned mode 0700.\n' >&2

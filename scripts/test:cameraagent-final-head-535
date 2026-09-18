@@ -10,8 +10,10 @@ export LC_ALL=C
 # validator that will pass for the wrong reason later, and an exit code alone
 # cannot tell those apart.
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 readonly VALIDATE="$SCRIPT_DIR/validate:cameraagent-final-head-535"
 readonly FIXTURES="$REPO_ROOT/tests/fixtures/issue-535/final-head"
 readonly BOUND_HEAD="428e346ef16c00f6a3257315c95384092b1b3290"

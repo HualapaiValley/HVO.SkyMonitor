@@ -5,6 +5,11 @@
 # every global it reads and writes has the same value and the same scope as
 # before. It runs nothing on its own and refuses direct execution.
 
+# This body is sourced into the harness shell after scripts/lib/deploy-test-lifecycle.sh,
+# whose staging functions (set_lifecycle_paths, prepare_lifecycle_fixture) assign the
+# globals it reads: deploy_case. ShellCheck cannot see
+# across that source boundary, so SC2154 is suppressed for this file with that fact recorded.
+# shellcheck disable=SC2154
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     printf '%s is a shard body sourced by scripts/test:deploy-environment; do not run it directly.\n' "${BASH_SOURCE[0]}" >&2
     exit 2

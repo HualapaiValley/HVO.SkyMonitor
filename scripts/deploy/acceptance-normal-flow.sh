@@ -121,6 +121,7 @@ deploy_acceptance_normal_run_measure() {
             return
         fi
     fi
+    # shellcheck disable=SC2034 # Shared phase state read by scripts/deploy/acceptance-campaign.sh.
     DEPLOY_MEASURE_JSON=""
     if ! deploy_run_measure "$inventory" "$run_id" "$mode" "$hash" "$revision" "$worktree" "$workload" "normal-flow-$workload"; then
         deploy_acceptance_normal_mark_failed 1 >/dev/null 2>&1 || true
