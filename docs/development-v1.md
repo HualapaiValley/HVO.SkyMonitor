@@ -41,8 +41,21 @@ The target controlling path is under ten minutes. Recent bootstrap and pilot run
 
 Mechanical, Standard, and Deep review levels use one parent review with one resolvable child thread per finding. Author resolutions and independent reviewer verification remain in the finding thread. A pull request is marked ready only after the current head is reviewed, every finding has a verified terminal disposition, and every review thread is resolved.
 
-## Promotion And Deployment
+## Promotion To main
 
-Promotion from `development/v1` to `main` is a separate future qualification process. Work may remain on this branch indefinitely.
+`main` moves only by promotion from `development/v1`. Every night at 02:00
+America/Phoenix, `.github/workflows/promote-main.yml` compares the two branches
+and, when `development/v1` is ahead, opens or refreshes one promotion pull
+request as `hvo-agentcontrol[bot]`. It refuses to promote a head whose own
+Development v1 push run is not green, and it halts if `main` has commits that
+`development/v1` lacks, because that means the branch model was bypassed.
+
+The legacy pipeline on `main` (`Required CI`) is the qualification gate for the
+promotion pull request. Merging is the operator's decision, taken with a merge
+commit so every `development/v1` commit keeps its SHA on `main`. The workflow
+never pushes to `main` and never merges; its token is pull-requests write only.
+It can be run on demand with `gh workflow run promote-main.yml`.
+
+## Deployment
 
 Supported deployment operations use `HVO.SkyMonitor.Deployment.Cli`. Development v1 CI does not perform deployment, release packaging, complete integration qualification, coverage aggregation, or production mutation.
