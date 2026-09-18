@@ -57,6 +57,7 @@ manifest_probe bad-name '{"schemaVersion": 1, "shards": [{"name": "Preflight"}]}
 manifest_probe duplicate '{"schemaVersion": 1, "shards": [{"name": "preflight"}, {"name": "preflight"}]}' 'must be unique'
 manifest_probe unknown-shard "$(jq -c '.shards += [{"name": "phantom"}]' "$SCRIPT_DIR/deploy/shards.json")" 'manifest and shard bodies disagree'
 manifest_probe dropped-shard "$(jq -c 'del(.shards[0])' "$SCRIPT_DIR/deploy/shards.json")" 'manifest and shard bodies disagree'
+manifest_probe reordered "$(jq -c '.shards |= reverse' "$SCRIPT_DIR/deploy/shards.json")" 'order matters'
 
 
 # No arguments must stay in-process with SELECTED_SHARD=all rather than entering the shard coordinator.

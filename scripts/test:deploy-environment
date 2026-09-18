@@ -35,9 +35,14 @@ load_deploy_contract_shards() {
         exit 2
     }
     mapfile -t DEPLOY_CONTRACT_SHARDS <<< "$names"
-    declared_bodies="$(grep -oE '^if shard_enabled [a-z][a-z0-9-]*; then$' "${BASH_SOURCE[0]}" | awk '{print $3}' | tr -d ';' | sort -u)"
-    if [[ "$(printf '%s\n' "${DEPLOY_CONTRACT_SHARDS[@]}" | sort -u)" != "$declared_bodies" ]]; then
-        printf 'Deployment contract shard manifest and shard bodies disagree.\nmanifest: %s\nbodies:   %s\n' \
+    # Order-sensitive on purpose. Serial execution follows the order of the shard
+    # bodies in this file, and later bodies consume staging that earlier bodies
+    # define, so that order is load-bearing; parallel dispatch follows the manifest.
+    # Requiring the two orders to be identical keeps one contract, and makes a
+    # reordering edit to either side fail here rather than change scheduling.
+    declared_bodies="$(grep -oE '^if shard_enabled [a-z][a-z0-9-]*; then$' "${BASH_SOURCE[0]}" | awk '{print $3}' | tr -d ';' | awk '!seen[$0]++')"
+    if [[ "$(printf '%s\n' "${DEPLOY_CONTRACT_SHARDS[@]}")" != "$declared_bodies" ]]; then
+        printf 'Deployment contract shard manifest and shard bodies disagree (order matters).\nmanifest: %s\nbodies:   %s\n' \
             "$(printf '%s ' "${DEPLOY_CONTRACT_SHARDS[@]}")" "$(printf '%s ' $declared_bodies)" >&2
         exit 2
     fi
