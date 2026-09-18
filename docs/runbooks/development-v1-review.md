@@ -35,6 +35,29 @@ Medium findings block by default. The issue owner may explicitly approve deferra
 
 An exceptional focused review is allowed for a CI-discovered code defect, a late security/data-loss defect, or a material base-sync interaction. The reason must be recorded.
 
+## Reviewer Identity
+
+The independent reviewer posts as `hvo-agentcontrol[bot]`, the HualapaiValley-owned
+GitHub App, so that review records are attributable to an identity distinct from
+the implementer even when both are driven from the same operator account. A local
+agent cannot act as the App directly; it dispatches the `AgentControl` workflow
+(`.github/workflows/agentcontrol.yml`), which holds the App's private key as an
+organization secret and performs three operations, each with a token narrowed to
+the permission that operation needs:
+
+| Operation | Token permissions | What it does |
+| --- | --- | --- |
+| `verify-identity` | metadata, contents read | Proves the key mints an installation token that sees exactly this repository |
+| `post-review` | + pull-requests write | Posts a review body committed under `.agentcontrol/reviews/` on the PR head as the bot, appending who dispatched it and the reviewed head |
+| `resolve-thread` | + pull-requests write | Resolves one finding thread, only if it belongs to the named PR and its last comment is a `VERIFIED_*` disposition |
+
+Merge authority is not delegated to the App. The workflow runs only on manual
+dispatch by a collaborator with write access; it has no push or pull-request
+trigger and no `contents: write` token. Every posted comment carries the run URL.
+
+Reviews posted before this identity existed were attributed in-text under the
+shared operator account and remain valid records.
+
 ## Review Parent And Child Findings
 
 Each round posts one parent review summary. Every finding from that review is one resolvable child review thread. The parent indexes the child IDs and links; it does not duplicate all evidence.
