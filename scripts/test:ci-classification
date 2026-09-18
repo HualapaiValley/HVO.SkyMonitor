@@ -525,6 +525,8 @@ deployment_paths=(
   "scripts/install-hvo-skymonitor.sh"
   "scripts/deploy/common.sh"
   "scripts/test:deploy-environment"
+  "scripts/deploy-contracts/smoke.sh"
+  "scripts/lib/deploy-test-lifecycle.sh"
   "scripts/test:deploy-environment-cli"
   "scripts/test:deployment-installer"
   "scripts/test:deployment-installer-qualification"
@@ -572,6 +574,9 @@ verify_targeted_suites "scripts/infra:operation-lock" true true false
 verify_targeted_suites "scripts/deploy/common.sh" false true false
 verify_targeted_suites "scripts/deploy/product-layout.sh" false true false
 verify_targeted_suites "scripts/test:deploy-environment" false true false
+# A shard body extracted from the harness (#875 stage 2) is the same contract input.
+verify_targeted_suites "scripts/deploy-contracts/smoke.sh" false true false
+verify_targeted_suites "scripts/lib/deploy-test-lifecycle.sh" false true true
 verify_targeted_suites "scripts/test:deployment-installer" false false true
 verify_targeted_suites "scripts/test:deployment-installer-qualification" false false true
 verify_targeted_suites "scripts/test:deployment-normal-flow-contract" false false false
