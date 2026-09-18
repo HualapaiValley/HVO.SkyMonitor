@@ -155,20 +155,26 @@ Rollback at every stage is reverting the adapter to the legacy selector, because
 
 ## 6. Requirements Crosswalk
 
-No current protected behavior may disappear by omission. Each current gate maps to a target owner:
+No current protected behavior may disappear by omission. Every one of the eighteen current jobs is listed individually below, with no grouped rows, so that coverage can be checked mechanically against the job names in `.github/workflows/ci.yml`. This table is also the input to the Required CI aggregation contract: a gate that is not named here is not aggregated there.
 
-| Current gate | Target owner | Run class |
+| Current job | Target owner | Run class |
 | --- | --- | --- |
 | Change Classification | gate graph selector | all |
 | Quality | preflight and policy gates | PR integration |
 | Catalog Contracts | immutable artifact producer | PR integration |
 | Build | immutable build producer | PR integration |
 | Unit Tests | unit gate | PR integration |
-| Component lanes | component selectors | PR integration |
+| Shared Libraries | component gate, `shared` selector | PR integration |
+| CameraAgent Component | component gate, `cameraagent` selector | PR integration |
+| LogicHost Component | component gate, `logichost` selector | PR integration |
+| Combined Protocol & Integration | component gate, `combined` selector | PR integration |
+| Delivery Component | component gate, `delivery` selector | PR integration |
 | Integration Tests | integration gate | full qualification |
 | Architecture & Publish | architecture gate | full qualification |
-| Migrations (both) | migration gates | full qualification |
-| Coverage Policy, Coverage | coverage gates | full qualification |
+| CameraAgent Migrations | migration gate, CameraAgent | full qualification |
+| LogicHost Migrations | migration gate, LogicHost | full qualification |
+| Coverage Policy | coverage policy gate | full qualification |
+| Coverage | coverage aggregation gate | full qualification |
 | Deployment Contracts | typed deployment shards | deployment qualification |
 | Coverage Badges | release publication | release qualification |
 | Required CI | derived aggregation contract | all |

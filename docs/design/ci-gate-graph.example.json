@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "Non-authoritative worked example of the target gate graph for issue #877. No adapter consumes this file.",
+  "description": "Non-authoritative worked example of the target gate graph for issue #877. No adapter consumes this file. This is a representative extract, not the complete gate set; the complete per-job mapping is the crosswalk in docs/design/ci-deployment-target-architecture.md.",
   "runClasses": {
     "pr-integration": { "trigger": "pull_request_ready", "targetWallSeconds": 600 },
     "full-qualification": { "trigger": "schedule|pre-promotion", "targetWallSeconds": null },
@@ -63,6 +63,25 @@
       "budget": { "wallSeconds": 1200, "peakRssKilobytes": 16000000 },
       "required": true,
       "notes": "Measured 15.9m controlling path on run 35300523583; removed from pr-integration by design."
+    },
+    {
+      "id": "cameraagent-component",
+      "name": "CameraAgent Component",
+      "command": "dotnet test --no-build --filter TestCategory=Unit&Component=CameraAgent",
+      "runner": "self-hosted-x64",
+      "runClasses": ["pr-integration"],
+      "selectors": {
+        "completeMatrix": false,
+        "components": ["cameraagent"],
+        "note": "Selected only when the complete matrix is not selected and the cameraagent component is touched, matching the legacy complete == false && cameraagent condition."
+      },
+      "needs": ["build"],
+      "consumes": [{ "artifact": "release-build", "immutable": true }],
+      "produces": [
+        { "artifact": "cameraagent-component-evidence", "immutable": true, "retentionDays": 14, "privacy": "content-free" }
+      ],
+      "budget": { "wallSeconds": 480, "peakRssKilobytes": 8000000 },
+      "required": true
     },
     {
       "id": "deployment-shards",
