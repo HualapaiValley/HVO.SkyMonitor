@@ -190,6 +190,13 @@ verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/Module.cs"    
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Replay/Transport.cs"             full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.ReplayRunner/Program.cs"         full false false false true  false false false
 verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.Tests/CaptureTests.cs"         full false false false true  false false false
+# A project's own category inventory is owned by that project (#853): a count
+# change selects the owning lane, not the complete matrix that editing the audit
+# engine in scripts/test-categories/Program.cs still selects.
+verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.Tests/test-categories.json"    full false false false true  false false false
+verify_component_plan "tests/HVO.SkyMonitor.LogicHost.Tests/test-categories.json"      full false false false false true  false false
+verify_component_plan "tests/HVO.SkyMonitor.Astronomy.Tests/test-categories.json"      full false false true  true  true  true  true
+verify_component_plan "tests/HVO.SkyMonitor.Deployment.Cli.Tests/test-categories.json" full true  false false false false false true
 verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Smoke.cs"      full false false false true  false false false
 verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/Ingress.cs"   full false false false true  false false false
 
