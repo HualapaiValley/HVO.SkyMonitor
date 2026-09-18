@@ -119,6 +119,7 @@ deploy_smoke_capture_control() {
 }
 
 deploy_smoke_activate_profile() {
+    # shellcheck disable=SC2034 # $6 is the rendered profile path in the shared activate-profile positional contract; this phase activates by target and does not read it.
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" rendered="$6" run_id="$7"
     local name endpoint state status pending pending_sha version body request_headers response verification
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"

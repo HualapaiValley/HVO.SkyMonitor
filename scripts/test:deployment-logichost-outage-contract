@@ -18,7 +18,10 @@ fail() { printf '%s\n' "$1" >&2; exit 1; }
 CALL_LOG="$TEMP_DIR/calls.log"
 state="$TEMP_DIR/state"; evidence="$TEMP_DIR/evidence"
 install -d -m 700 "$state" "$evidence"
-DEPLOY_MANIFEST="$state/manifest.json"; DEPLOY_EVIDENCE="$evidence/preflight.json"
+# shellcheck disable=SC2034 # DEPLOY_* is the sourced phase libraries' shared-state contract (scripts/deploy/acceptance-campaign.sh, acceptance-normal-flow.sh read these); the readers are in other files.
+DEPLOY_MANIFEST="$state/manifest.json"
+# shellcheck disable=SC2034 # Read by scripts/deploy/acceptance-campaign.sh after sourcing.
+DEPLOY_EVIDENCE="$evidence/preflight.json"
 DEPLOY_PRIVATE_UPLOAD_REGISTRY="$state/private-upload-registry.json"
 printf '[]\n' > "$DEPLOY_PRIVATE_UPLOAD_REGISTRY"; chmod 600 "$DEPLOY_PRIVATE_UPLOAD_REGISTRY"
 run_id=deployment-logichost-outage; mode=isolated; hash="$(printf 'a%.0s' {1..64})"; revision="$(printf 'b%.0s' {1..40})"; tree="$(printf 'c%.0s' {1..40})"
@@ -120,7 +123,6 @@ for call in capture-pause-campaign-initial-pause wait-baseline logic-stop-logich
 done
 
 logic_mutations_before="$(grep -c '^logic-' "$CALL_LOG")"
-FAIL_RECORD=true
 deploy_run_acceptance_record() { printf 'acceptance-record-failed\n' >> "$CALL_LOG"; return 1; }
 if deploy_run_acceptance_campaign "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" logichost-network-outage; then
     fail 'Injected recorder retry failure unexpectedly passed.'

@@ -16,7 +16,10 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 state="$TEMP_DIR/state"; evidence="$TEMP_DIR/evidence"; install -d -m 700 "$state" "$evidence" "$evidence/acceptance-support"
 # shellcheck disable=SC2034 # Consumed by sourced deployment helpers.
-DEPLOY_MANIFEST="$state/manifest.json"; DEPLOY_EVIDENCE="$evidence/preflight.json"
+# shellcheck disable=SC2034 # DEPLOY_* is the sourced phase libraries' shared-state contract (scripts/deploy/acceptance-campaign.sh, acceptance-normal-flow.sh read these); the readers are in other files.
+DEPLOY_MANIFEST="$state/manifest.json"
+# shellcheck disable=SC2034 # Read by scripts/deploy/acceptance-campaign.sh after sourcing.
+DEPLOY_EVIDENCE="$evidence/preflight.json"
 run_id=deployment-normal-flow; mode=isolated; hash="$(printf 'a%.0s' {1..64})"; revision="$(printf 'b%.0s' {1..40})"; tree="$(printf 'c%.0s' {1..40})"
 inventory="$TEMP_DIR/inventory.json"
 jq -n --arg revision "$revision" '{source:{revision:$revision},cameraAgents:[{name:"east",runtimeRoot:"/runtime/east",sshHost:"east"}]}' > "$inventory"; chmod 600 "$inventory"
@@ -187,8 +190,10 @@ after_sha="$(sha256sum "$w1")"; after_sha="${after_sha%% *}"
 [[ "$before_sha" == "$after_sha" ]] || fail 'Early W2 failure mutated completed W1 evidence.'
 
 : > "$CALL_LOG"
+# shellcheck disable=SC2034 # DEPLOY_MEASURE_* is read by scripts/deploy/measure.sh and acceptance-campaign.sh after sourcing.
 DEPLOY_MEASURE_INVENTORY="$inventory"; DEPLOY_MEASURE_RENDER_ROOT="$TEMP_DIR/render"; DEPLOY_MEASURE_PRIVATE_ROOT="$TEMP_DIR/private"
 install -d -m 700 "$DEPLOY_MEASURE_RENDER_ROOT" "$DEPLOY_MEASURE_PRIVATE_ROOT"
+# shellcheck disable=SC2034 # Read by scripts/deploy/acceptance-campaign.sh after sourcing.
 DEPLOY_MEASURE_JSON='{"runId":"deployment-normal-flow","executionRunId":"deployment-normal-flow-w2","targets":[{"target":"east","restoration":{"status":"pending","configuration":"pending","schedule":"pending","capture":"pending"},"failureCleanup":{"status":"not-required"}}]}'
 deploy_measure_publish() { return 0; }
 deploy_transport_remote_directories() { return 0; }

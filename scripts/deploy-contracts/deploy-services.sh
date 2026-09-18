@@ -208,7 +208,7 @@ printf 'REDIS_IMAGE=%s\n' "$runtime_helper_image" > "$runtime_helper_env"; chmod
 make_runtime_contract_root() {
   local root=$1 digest=$2
   rm -rf -- "$root"
-  mkdir -m 700 -p "$root/.hvo-deploy" "$root/application/content"
+  make_private_tree "$root/.hvo-deploy" "$root/application/content"
   chmod 700 "$root" "$root/.hvo-deploy"
   printf 'HVO-DEPLOY-ROOT\t1\nmarker\t%s\n' "$digest" > "$root/.hvo-deploy/ownership"
   chmod 600 "$root/.hvo-deploy/ownership"
@@ -323,7 +323,7 @@ done
 # Partial helper cleanup may leave only an inaccessible empty UID-0 directory; the next intent delegates again and converges.
 partial_root="$TEMP_DIR/remote/shared/partial-helper-retry"
 make_runtime_contract_root "$partial_root" "$mixed_contract_digest"
-mkdir -m 700 -p "$partial_root/application/root-nested/leaf"
+make_private_tree "$partial_root/application/root-nested/leaf"
 printf 'nested\n' > "$partial_root/application/root-nested/leaf/state"
 map_runtime_contract_tree "$partial_root" "$FAKE_RUNTIME_UID"
 set_runtime_contract_uid "$partial_root/application" 0
@@ -339,7 +339,7 @@ test ! -e "$partial_root"
 # Depth-first helper cleanup removes nested mode-0700 UID-0 directories through both BusyBox and GNU-compatible find ordering.
 nested_root="$TEMP_DIR/remote/shared/nested-root-owned"
 make_runtime_contract_root "$nested_root" "$mixed_contract_digest"
-mkdir -m 700 -p "$nested_root/application/one/two/three"
+make_private_tree "$nested_root/application/one/two/three"
 printf 'nested\n' > "$nested_root/application/one/two/three/state"
 map_runtime_contract_tree "$nested_root" "$FAKE_RUNTIME_UID"
 for nested_path in "$nested_root/application" "$nested_root/application/one" "$nested_root/application/one/two" "$nested_root/application/one/two/three"; do

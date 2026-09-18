@@ -67,6 +67,7 @@ hvo_prepare_runtime_parent() {
             fi
         done
     fi
+    # shellcheck disable=SC2034 # Output of this library: scripts/infra:restore-app-state reads it after sourcing.
     HVO_RUNTIME_PARENT="$parent"
     HVO_APPLICATION_LOCK_PATH="$parent/.hvo-application-state.lock"
     HVO_RESTORE_MARKER_PATH="$parent/.hvo-application-state-restore.transaction"

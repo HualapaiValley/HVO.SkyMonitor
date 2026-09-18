@@ -2,8 +2,10 @@
 set -euo pipefail
 umask 022
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+readonly REPO_ROOT
 # shellcheck source=scripts/catalog/catalog-common.sh
 source "$SCRIPT_DIR/catalog-common.sh"
 
@@ -19,9 +21,12 @@ fi
 hyg_require_commands mv realpath sha256sum sqlite3 sync wc
 hyg_check_sqlite_version
 
-readonly DATABASE="$(realpath "$1")"
-readonly OUTPUT="$(realpath -m "$2")"
-readonly OUTPUT_PARENT="$(dirname "$OUTPUT")"
+DATABASE="$(realpath "$1")"
+readonly DATABASE
+OUTPUT="$(realpath -m "$2")"
+readonly OUTPUT
+OUTPUT_PARENT="$(dirname "$OUTPUT")"
+readonly OUTPUT_PARENT
 readonly LICENSE_SOURCE="$REPO_ROOT/docs/catalog/hyg-v42-license.md"
 readonly ATTRIBUTION_SOURCE="$REPO_ROOT/docs/catalog/hyg-v42-attribution.md"
 readonly TOPOLOGY_SOURCE="$REPO_ROOT/src/HVO.SkyMonitor.Astronomy/Data/d3-celestial-v0.7.32-topology.tsv"

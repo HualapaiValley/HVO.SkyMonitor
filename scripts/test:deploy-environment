@@ -84,9 +84,9 @@ run_deploy_contract_shards() {
     local -A progress_at_by_pid=()
 
     leader_stopped() {
-        local leader_pid="$1" ignored state ignored_rest
+        local leader_pid="$1" state
         [[ ! -r "/proc/$leader_pid/stat" ]] && return 0
-        read -r ignored ignored state ignored_rest < "/proc/$leader_pid/stat" || return 0
+        read -r _ _ state _ < "/proc/$leader_pid/stat" || return 0
         [[ "$state" == Z ]]
     }
 
@@ -388,6 +388,33 @@ shard_enabled() {
     [[ "$SELECTED_SHARD" == all || "$SELECTED_SHARD" == "$1" ]]
 }
 
+# `mkdir -m MODE -p a/b/c` applies MODE to the leaf only; intermediates get the umask
+# (ShellCheck SC2174). Fixture trees that are meant to be owner-private at every level
+# use this instead. Every level it creates is 0700. A level that already exists is set
+# to 0700 only when it lies inside TEMP_DIR, which this harness owns; ancestors outside
+# it (the system temp root, a caller-supplied parent) are left exactly as found.
+make_private_tree() {
+    local path level remainder component
+    for path in "$@"; do
+        level=''
+        remainder="$path"
+        while [[ -n "$remainder" ]]; do
+            component="${remainder%%/*}"
+            if [[ "$remainder" == */* ]]; then remainder="${remainder#*/}"; else remainder=''; fi
+            if [[ -z "$component" ]]; then
+                [[ -n "$level" ]] || level='/'
+                continue
+            fi
+            if [[ "$level" == '' || "$level" == '/' ]]; then level="$level$component"; else level="$level/$component"; fi
+            if [[ -d "$level" ]]; then
+                [[ "$level" != "$TEMP_DIR" && "$level" != "$TEMP_DIR/"* ]] || chmod 700 "$level"
+            else
+                mkdir -m 700 "$level"
+            fi
+        done
+    done
+}
+
 TEMP_DIR="$(mktemp -d -t hvo-deploy-test.XXXXXX)"
 readonly TEMP_DIR
 readonly BIN="$TEMP_DIR/bin"
@@ -417,16 +444,16 @@ cleanup() {
     [[ -z "$FIXTURE_REPLACEMENT_STOPPED_PID" ]] || kill -CONT "$FIXTURE_REPLACEMENT_STOPPED_PID" 2>/dev/null || true
     [[ -z "$FIXTURE_REPLACEMENT_PID" ]] || kill "$FIXTURE_REPLACEMENT_PID" 2>/dev/null || true
     if [[ -n "$SERVER_PID" ]]; then
-        local cleanup_poll ignored state ignored_rest
+        local cleanup_poll state
         kill "$SERVER_PID" 2>/dev/null || true
         for ((cleanup_poll=0; cleanup_poll<20; cleanup_poll++)); do
             [[ -r "/proc/$SERVER_PID/stat" ]] || break
-            read -r ignored ignored state ignored_rest < "/proc/$SERVER_PID/stat" || break
+            read -r _ _ state _ < "/proc/$SERVER_PID/stat" || break
             [[ "$state" == Z ]] && break
             sleep 0.1
         done
         if [[ -r "/proc/$SERVER_PID/stat" ]]; then
-            read -r ignored ignored state ignored_rest < "/proc/$SERVER_PID/stat" || state=''
+            read -r _ _ state _ < "/proc/$SERVER_PID/stat" || state=''
             [[ "$state" == Z ]] || kill -KILL "$SERVER_PID" 2>/dev/null || true
         fi
         wait "$SERVER_PID" 2>/dev/null || true
@@ -473,6 +500,7 @@ for _ in {1..100}; do
     sleep 0.1
 done
 [[ "$listener_ready" == true ]] || fail 'Local connectivity fixture did not start with the pinned .NET SDK.'
+# shellcheck disable=SC2034 # UNREACHABLE_PORT is read by scripts/deploy-contracts/preflight-3.sh, sourced into this shell.
 readonly HTTP_PORT UNREACHABLE_PORT
 readonly EAST_PORT=5130
 readonly WEST_PORT=5131

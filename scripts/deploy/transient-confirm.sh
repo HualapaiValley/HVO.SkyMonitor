@@ -106,6 +106,7 @@ deploy_run_transient_confirm() {
     deploy_transient_confirm_validate_allowlist "$allowlist" "$run_id" || return 1
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/bootstrap-manifest.json" transient-confirm "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
+    # shellcheck disable=SC2034 # Shared phase state read by scripts/deploy/bootstrap.sh.
     DEPLOY_IMAGES_PREFLIGHT_JSON="$(jq -c . "$DEPLOY_MANIFEST")"
     state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"
     runtime_root="$state_dir/transient-confirm"; render_root="$runtime_root/rendered"; private_root="$runtime_root/private"

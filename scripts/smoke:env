@@ -44,8 +44,10 @@ for startup_name in ${!SMOKETEST_@}; do
 done
 unset startup_name
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 readonly TEMPLATE_FILE="$REPO_ROOT/.env.smoketest.template"
 readonly ENV_FILE="${smoketest_env_file_override:-$REPO_ROOT/.env.smoketest}"
 readonly BASE_ENV_FILE="${smoketest_base_env_file_override:-$REPO_ROOT/.env}"
@@ -296,7 +298,7 @@ require_safe_existing_ancestors() {
 }
 
 reject_symlink_components() {
-    local base="$1" relative="$2" current="$1" component
+    local relative="$2" current="$1" component
     IFS='/' read -r -a components <<< "$relative"
     for component in "${components[@]}"; do
         current="$current/$component"
@@ -495,8 +497,8 @@ preflight() {
     local daemon_name
     daemon_name="$(docker info --format '{{.Name}}' 2>/dev/null)" || fail "Docker daemon is unreachable"
     [[ "$daemon_name" == "$SMOKETEST_DOCKER_HOST_NAME" ]] || fail "active Docker daemon does not match SMOKETEST_DOCKER_HOST_NAME"
-    local resolved=false address ignored
-    while read -r address ignored; do
+    local resolved=false address
+    while read -r address _; do
         if [[ "$address" == "$SMOKETEST_DOCKER_HOST_ADDRESS" ]]; then
             resolved=true
             break

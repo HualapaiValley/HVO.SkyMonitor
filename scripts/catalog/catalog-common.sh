@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Constants library sourced by scripts/catalog/*.sh, scripts/test:phase14-source-import and the
+# deployment shards; the readers are in other files, which ShellCheck cannot see from here.
+# shellcheck disable=SC2034
 
 readonly HYG_CATALOG_NAME="HYG 4.2"
 readonly HYG_CATALOG_ID="hyg-v42-production"
@@ -491,9 +494,9 @@ hyg_fixture_replace_pointer() {
     local install_root="$1"
     local pointer="$2"
     local target="$3"
-    local temporary attempt
+    local temporary
     hyg_catalog_revalidate_root_lock "$install_root" || return 1
-    for attempt in {1..16}; do
+    for _ in {1..16}; do
         temporary="$install_root/.${pointer}.tmp.$$.$RANDOM"
         if ln -s -- "$target" "$temporary" 2>/dev/null; then
             if [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" == "after-$pointer-pointer-temporary" ]]; then

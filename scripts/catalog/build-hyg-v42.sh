@@ -2,7 +2,8 @@
 set -euo pipefail
 umask 022
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 # shellcheck source=scripts/catalog/catalog-common.sh
 source "$SCRIPT_DIR/catalog-common.sh"
 
@@ -70,8 +71,10 @@ fi
 if [[ -n "$source_file" ]]; then
     source_file="$(realpath "$source_file")"
 fi
-readonly OUTPUT="$(realpath -m "$output_argument")"
-readonly OUTPUT_PARENT="$(dirname "$OUTPUT")"
+OUTPUT="$(realpath -m "$output_argument")"
+readonly OUTPUT
+OUTPUT_PARENT="$(dirname "$OUTPUT")"
+readonly OUTPUT_PARENT
 readonly BUNDLE_NAME="$HYG_PACKAGE_VERSION.bundle"
 
 [[ "$OUTPUT" != "/" ]] || hyg_fail "refusing root as the output directory"

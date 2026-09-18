@@ -125,7 +125,7 @@ PATH="$lock_bin:$PATH" deploy_acceptance_component_verify_trx "$TEMP_DIR/child-t
 exec 201>&-
 
 write_source_evidence() {
-    local destination="$1" dependency
+    local destination="$1"
     jq -n --arg revision "$revision" '
       {Schema:"hvo-logichost-dependency-outages-v2",Source:{RequestedRevision:$revision,Head:$revision,Branch:"fixture",
        Dirty:false,DirtyDiffSha256:("A" * 64),OutputDirectoryName:$revision,
@@ -174,7 +174,10 @@ prepare_fixture() {
     local label="$1" scenario
     FIXTURE_STATE="$TEMP_DIR/$label/state"; FIXTURE_EVIDENCE="$TEMP_DIR/$label/evidence"
     install -d -m 700 "$FIXTURE_STATE" "$FIXTURE_EVIDENCE"
-    DEPLOY_MANIFEST="$FIXTURE_STATE/manifest.json"; DEPLOY_EVIDENCE="$FIXTURE_EVIDENCE/preflight.json"
+    # shellcheck disable=SC2034 # DEPLOY_* is the sourced phase libraries' shared-state contract (scripts/deploy/acceptance-campaign.sh, acceptance-normal-flow.sh read these); the readers are in other files.
+DEPLOY_MANIFEST="$FIXTURE_STATE/manifest.json"
+# shellcheck disable=SC2034 # Read by scripts/deploy/acceptance-campaign.sh after sourcing.
+DEPLOY_EVIDENCE="$FIXTURE_EVIDENCE/preflight.json"
     printf '{}\n' > "$DEPLOY_MANIFEST"; chmod 600 "$DEPLOY_MANIFEST"
     jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg tree "$tree" \
       --slurpfile campaign "$SOURCE_REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json" '

@@ -3,14 +3,17 @@
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 readonly FIXTURES="$REPO_ROOT/tests/fixtures/stellarium"
 readonly DOCKERFILE="$REPO_ROOT/docker/stellarium/Dockerfile"
 readonly WRAPPER="$REPO_ROOT/scripts/validate:stellarium-container"
 readonly TOPOLOGY="$REPO_ROOT/src/HVO.SkyMonitor.Astronomy/Data/d3-celestial-v0.7.32-topology.tsv"
 readonly ENDPOINT_SOURCE="$FIXTURES/SIMBAD_ENDPOINTS.md"
-readonly TEMP_DIR="$(mktemp -d -t hvo-stellarium-contract.XXXXXX)"
+TEMP_DIR="$(mktemp -d -t hvo-stellarium-contract.XXXXXX)"
+readonly TEMP_DIR
 
 cleanup() {
     rm -rf "$TEMP_DIR"
