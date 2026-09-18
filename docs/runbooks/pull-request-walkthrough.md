@@ -219,7 +219,7 @@ merge commit. That is the only way `main` moves.
 | Step | What happened |
 | --- | --- |
 | Claim | #908 assigned, `workflow:in-progress`, `review:standard` |
-| Implement | 9 Dependabot bumps, SDK 10.0.401 in 14 places, 6 further packages; 2 commits |
+| Implement | 9 Dependabot bumps, SDK 10.0.401 in 14 places, 6 further packages; 2 implementation commits (7 on the PR once review-body and correction commits are counted) |
 | Local gates | restore clean, both builds warning-clean, format clean, category audit unchanged, Unit 3496/3496, Integration 676/676 across six assemblies |
 | Draft | body listed every version, the CA2025 re-probe, and the Redis release-notes summary |
 | R0 | verified digests against MCR, action SHAs against tag objects, Redis API surface against the source; no findings on the diff; **posted by the bot** |
