@@ -1,6 +1,6 @@
 # Development v1
 
-[![Development v1 CI](https://github.com/RoySalisbury/HVO.SkyMonitor/actions/workflows/development-v1.yml/badge.svg?branch=development%2Fv1)](https://github.com/RoySalisbury/HVO.SkyMonitor/actions/workflows/development-v1.yml?query=branch%3Adevelopment%2Fv1)
+[![Development v1 CI](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/workflows/development-v1.yml/badge.svg?branch=development%2Fv1)](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/workflows/development-v1.yml?query=branch%3Adevelopment%2Fv1)
 
 `development/v1` is the daily integration branch for the next development line. It is independent from `main` and does not imply promotion to the stable line.
 
