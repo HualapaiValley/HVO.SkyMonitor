@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "description": "Non-authoritative worked example of the target gate graph for issue #877. No adapter consumes this file. This is a representative extract, not the complete gate set; the complete per-job mapping is the crosswalk in docs/design/ci-deployment-target-architecture.md.",
+  "runClasses": {
+    "pr-integration": { "trigger": "pull_request_ready", "targetWallSeconds": 600 },
+    "full-qualification": { "trigger": "schedule|pre-promotion", "targetWallSeconds": null },
+    "release-qualification": { "trigger": "release_branch|tag", "targetWallSeconds": null },
+    "deployment-qualification": { "trigger": "manual|pre-release", "targetWallSeconds": null }
+  },
+  "gates": [
+    {
+      "id": "preflight",
+      "name": "Preflight",
+      "command": "scripts/ci:preflight",
+      "runner": "hosted-ubuntu-24.04",
+      "runClasses": ["pr-integration", "full-qualification", "release-qualification"],
+      "needs": [],
+      "consumes": [],
+      "produces": [],
+      "budget": { "wallSeconds": 120, "peakRssKilobytes": 2000000 },
+      "required": true
+    },
+    {
+      "id": "build",
+      "name": "Build",
+      "command": "dotnet build HVO.SkyMonitor.v9.slnx --configuration Release -warnaserror",
+      "runner": "self-hosted-x64",
+      "runClasses": ["pr-integration", "full-qualification", "release-qualification"],
+      "needs": ["preflight"],
+      "consumes": [],
+      "produces": [
+        { "artifact": "release-build", "immutable": true, "identity": "content-digest", "retentionDays": 7, "privacy": "internal" }
+      ],
+      "budget": { "wallSeconds": 420, "peakRssKilobytes": 12000000 },
+      "required": true
+    },
+    {
+      "id": "unit",
+      "name": "Unit Tests",
+      "command": "dotnet test --no-build --filter TestCategory=Unit",
+      "runner": "self-hosted-x64",
+      "runClasses": ["pr-integration", "full-qualification", "release-qualification"],
+      "selectors": { "components": ["shared", "cameraagent", "logichost", "combined", "delivery"] },
+      "needs": ["build"],
+      "consumes": [{ "artifact": "release-build", "immutable": true }],
+      "produces": [
+        { "artifact": "unit-trx", "immutable": true, "retentionDays": 14, "privacy": "content-free" }
+      ],
+      "budget": { "wallSeconds": 600, "peakRssKilobytes": 8000000 },
+      "required": true
+    },
+    {
+      "id": "integration",
+      "name": "Integration Tests",
+      "command": "dotnet test --no-build --filter TestCategory=Integration",
+      "runner": "self-hosted-x64-docker",
+      "runClasses": ["full-qualification", "release-qualification"],
+      "needs": ["build"],
+      "consumes": [{ "artifact": "release-build", "immutable": true }],
+      "produces": [
+        { "artifact": "integration-trx", "immutable": true, "retentionDays": 14, "privacy": "content-free" }
+      ],
+      "budget": { "wallSeconds": 1200, "peakRssKilobytes": 16000000 },
+      "required": true,
+      "notes": "Measured 15.9m controlling path on run 35300523583; removed from pr-integration by design."
+    },
+    {
+      "id": "cameraagent-component",
+      "name": "CameraAgent Component",
+      "command": "dotnet test --no-build --filter TestCategory=Unit&Component=CameraAgent",
+      "runner": "self-hosted-x64",
+      "runClasses": ["pr-integration"],
+      "selectors": {
+        "completeMatrix": false,
+        "components": ["cameraagent"],
+        "note": "Selected only when the complete matrix is not selected and the cameraagent component is touched, matching the legacy complete == false && cameraagent condition."
+      },
+      "needs": ["build"],
+      "consumes": [{ "artifact": "release-build", "immutable": true }],
+      "produces": [
+        { "artifact": "cameraagent-component-evidence", "immutable": true, "retentionDays": 14, "privacy": "content-free" }
+      ],
+      "budget": { "wallSeconds": 480, "peakRssKilobytes": 8000000 },
+      "required": true
+    },
+    {
+      "id": "deployment-shards",
+      "name": "Deployment Shards",
+      "command": "HVO.SkyMonitor.Deployment.Cli qualify --disposable-target",
+      "runner": "self-hosted-x64-docker",
+      "runClasses": ["deployment-qualification"],
+      "needs": ["build"],
+      "consumes": [{ "artifact": "release-build", "immutable": true }],
+      "produces": [
+        { "artifact": "deployment-evidence", "immutable": true, "retentionDays": 30, "privacy": "content-free" }
+      ],
+      "budget": { "wallSeconds": 2400, "peakRssKilobytes": 16000000 },
+      "required": true,
+      "shards": [
+        "preflight",
+        "prepare-images",
+        "partial-prepare",
+        "existing-catalog-up",
+        "bootstrap-authority",
+        "bootstrap-credentials",
+        "smoke",
+        "measure",
+        "existing-down",
+        "deploy-services"
+      ]
+    }
+  ],
+  "aggregation": {
+    "id": "required",
+    "rule": "every gate selected for this run class reported its expected result, and every unselected gate names the selector rule that excluded it"
+  }
+}
