@@ -1,0 +1,92 @@
+name: Build reuse pilot (852)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  producer:
+    name: Producer
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 20
+    outputs:
+      manifest: ${{ steps.manifest.outputs.json }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore and build Release
+        run: |
+          s=$(date +%s); dotnet restore HVO.SkyMonitor.v9.slnx; echo "restore=$(( $(date +%s) - s ))" >> "$RUNNER_TEMP/t"
+          s=$(date +%s); dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror; echo "build=$(( $(date +%s) - s ))" >> "$RUNNER_TEMP/t"
+      - name: Pack Release outputs (linux-x64 runtimes only, no playwright)
+        id: manifest
+        run: |
+          s=$(date +%s)
+          find src tests tools -path '*/bin/Release/*' -type f -not -path '*/.playwright/*' \
+            \( -not -path '*/runtimes/*' -o -path '*/runtimes/linux-x64/*' -o -path '*/runtimes/linux/*' -o -path '*/runtimes/unix/*' \) \
+            | sort > "$RUNNER_TEMP/artifact.list"
+          find src tests tools -path '*/obj/Release/*' -type f | sort >> "$RUNNER_TEMP/artifact.list"
+          find src tests tools -path '*/obj/*' -maxdepth 4 -name 'project.assets.json' | sort >> "$RUNNER_TEMP/artifact.list"
+          tar --zstd -cf "$RUNNER_TEMP/release-build.tar.zst" -T "$RUNNER_TEMP/artifact.list"
+          echo "pack=$(( $(date +%s) - s ))" >> "$RUNNER_TEMP/t"
+          digest=$(sha256sum "$RUNNER_TEMP/release-build.tar.zst" | cut -d' ' -f1)
+          jq -n --arg sha "$GITHUB_SHA" --arg sdk "$(dotnet --version)" --arg cfg Release --arg rid linux-x64 --arg attempt "$GITHUB_RUN_ATTEMPT" --arg digest "$digest" --argjson files "$(wc -l < "$RUNNER_TEMP/artifact.list")" --argjson bytes "$(stat -c %s "$RUNNER_TEMP/release-build.tar.zst")" \
+            '{headSha:$sha,sdkVersion:$sdk,configuration:$cfg,platform:$rid,runAttempt:$attempt,archiveSha256:$digest,fileCount:$files,archiveBytes:$bytes}' > "$RUNNER_TEMP/release-build.manifest.json"
+          echo "json=$(jq -c . "$RUNNER_TEMP/release-build.manifest.json")" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/t"; cat "$RUNNER_TEMP/release-build.manifest.json"
+      - name: Upload
+        run: |
+          s=$(date +%s); echo "upload_start=$s" >> "$RUNNER_TEMP/t"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/release-build.tar.zst
+            ${{ runner.temp }}/release-build.manifest.json
+          compression-level: 0
+          retention-days: 1
+      - name: Upload timing
+        run: echo "upload=$(( $(date +%s) - $(grep upload_start "$RUNNER_TEMP/t" | cut -d= -f2) ))"; cat "$RUNNER_TEMP/t"
+  consumer:
+    name: Consumer (Unit from artifact)
+    needs: producer
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Download start
+        run: echo "dl_start=$(date +%s)" >> "$RUNNER_TEMP/t"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/in
+      - name: Verify binding and unpack
+        env:
+          EXPECTED: ${{ needs.producer.outputs.manifest }}
+        run: |
+          echo "download=$(( $(date +%s) - $(grep dl_start "$RUNNER_TEMP/t" | cut -d= -f2) ))" >> "$RUNNER_TEMP/t"
+          m="$RUNNER_TEMP/in/release-build.manifest.json"
+          [[ "$(jq -r .headSha "$m")" == "$GITHUB_SHA" ]] || { echo "SHA mismatch"; exit 1; }
+          [[ "$(jq -r .sdkVersion "$m")" == "$(dotnet --version)" ]] || { echo "SDK mismatch"; exit 1; }
+          [[ "$(jq -r .runAttempt "$m")" == "$GITHUB_RUN_ATTEMPT" ]] || { echo "attempt mismatch"; exit 1; }
+          [[ "$(jq -r .configuration "$m")" == "Release" && "$(jq -r .platform "$m")" == "linux-x64" ]] || exit 1
+          [[ "$(sha256sum "$RUNNER_TEMP/in/release-build.tar.zst" | cut -d' ' -f1)" == "$(jq -r .archiveSha256 "$m")" ]] || { echo "digest mismatch"; exit 1; }
+          [[ "$(jq -c . "$m")" == "$EXPECTED" ]] || { echo "manifest differs from producer output"; exit 1; }
+          s=$(date +%s); tar --zstd -xf "$RUNNER_TEMP/in/release-build.tar.zst"; echo "unpack=$(( $(date +%s) - s ))" >> "$RUNNER_TEMP/t"
+      - name: Unit from artifact (no restore, no build)
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
+        run: |
+          s=$(date +%s)
+          dotnet test HVO.SkyMonitor.v9.slnx --no-build --no-restore --configuration Release --filter "TestCategory=Unit" --results-directory "$RUNNER_TEMP/unit" --logger trx
+          echo "unit=$(( $(date +%s) - s ))" >> "$RUNNER_TEMP/t"
+          echo "trx=$(find "$RUNNER_TEMP/unit" -name '*.trx' | wc -l)" >> "$RUNNER_TEMP/t"
+          cat "$RUNNER_TEMP/t"
