@@ -66,17 +66,12 @@ jobs:
           ACTOR: ${{ github.actor }}
           REPOSITORY: ${{ github.repository }}
         run: |
-          # shellcheck disable=SC2016 # The backticks are literal Markdown for the step summary.
           repos="$(gh api installation/repositories --jq '[.repositories[].full_name]|join(",")')"
           rate="$(gh api rate_limit --jq .resources.core.limit)"
-          {
-            printf '### AgentControl identity\n\n'
-            printf -- '- app slug: `%s`\n' "$APP_SLUG"
-            printf -- '- installation id: `%s`\n' "$INSTALLATION_ID"
-            printf -- '- token sees: `%s`\n' "$repos"
-            printf -- '- core rate limit: `%s` (installation tokens get 5000+; a PAT would show the user limit)\n' "$rate"
-            printf -- '- dispatched by: `%s`\n' "$ACTOR"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          # The backticks are literal Markdown for the step summary; the values are printf arguments.
+          # shellcheck disable=SC2016
+          printf -- '### AgentControl identity\n\n- app slug: `%s`\n- installation id: `%s`\n- token sees: `%s`\n- core rate limit: `%s` (installation tokens get 5000+; a PAT would show the user limit)\n- dispatched by: `%s`\n' \
+            "$APP_SLUG" "$INSTALLATION_ID" "$repos" "$rate" "$ACTOR" | tee -a "$GITHUB_STEP_SUMMARY"
           [[ "$repos" == "$REPOSITORY" ]] || { echo "token sees an unexpected repository set: $repos" >&2; exit 1; }
 
   post-review:
@@ -127,11 +122,10 @@ jobs:
           HEAD: ${{ steps.body.outputs.head }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          # shellcheck disable=SC2016 # The backticks are literal Markdown in the posted comment.
-          {
-            cat "$RUNNER_TEMP/review.md"
-            printf '\n\n<sub>Posted by `hvo-agentcontrol[bot]` on dispatch by `%s`; head `%s`; run %s</sub>\n' "$ACTOR" "$HEAD" "$RUN_URL"
-          } > "$RUNNER_TEMP/final.md"
+          cp "$RUNNER_TEMP/review.md" "$RUNNER_TEMP/final.md"
+          # The backticks are literal Markdown in the posted comment; the values are printf arguments.
+          # shellcheck disable=SC2016
+          printf '\n\n<sub>Posted by `hvo-agentcontrol[bot]` on dispatch by `%s`; head `%s`; run %s</sub>\n' "$ACTOR" "$HEAD" "$RUN_URL" >> "$RUNNER_TEMP/final.md"
           gh api "repos/$REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/final.md" --jq .html_url | tee -a "$GITHUB_STEP_SUMMARY"
 
   resolve-thread:
@@ -170,4 +164,5 @@ jobs:
           last="$(jq -r '.data.node.comments.nodes[0].body' "$RUNNER_TEMP/thread.json")"
           [[ "$number" == "$PR" ]] || { echo "thread belongs to PR #$number, not #$PR" >&2; exit 2; }
           [[ "$last" == VERIFIED_* ]] || { echo "last comment in the thread is not a VERIFIED_* disposition; refusing to resolve" >&2; exit 2; }
+          # shellcheck disable=SC2016 # $id is a GraphQL variable, bound with -f, not a shell expansion.
           gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$THREAD_ID" --jq '.data.resolveReviewThread.thread.isResolved' | tee -a "$GITHUB_STEP_SUMMARY"
