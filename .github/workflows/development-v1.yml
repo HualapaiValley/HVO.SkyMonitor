@@ -108,6 +108,15 @@ jobs:
         run: |
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
           ((remaining > 0)) || exit 124
+          # One pinned, checksum-verified binary for both the gate and its contract test,
+          # so neither depends on a system ShellCheck and the archive is fetched once.
+          curl -fsSL -o "$RUNNER_TEMP/shellcheck.tar.xz" \
+            https://github.com/koalaman/shellcheck/releases/download/v0.9.0/shellcheck-v0.9.0.linux.x86_64.tar.xz
+          printf '%s  %s\n' \
+            '700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f' \
+            "$RUNNER_TEMP/shellcheck.tar.xz" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          export HVO_SHELLCHECK_BIN="$RUNNER_TEMP/shellcheck-v0.9.0/shellcheck"
           /usr/bin/time -v -o "$DEV_V1_EVIDENCE_ROOT/timing/shellcheck.time" \
             timeout --signal=TERM --kill-after=30s "${remaining}s" \
             bash -c './scripts/ci:shellcheck && ./scripts/test:ci-shellcheck'

@@ -108,6 +108,13 @@ jobs:
       - name: Run static and lightweight contract checks
         run: |
           ./scripts/ci:shell-syntax
+          curl -fsSL -o "$RUNNER_TEMP/shellcheck.tar.xz" \
+            https://github.com/koalaman/shellcheck/releases/download/v0.9.0/shellcheck-v0.9.0.linux.x86_64.tar.xz
+          printf '%s  %s\n' \
+            '700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f' \
+            "$RUNNER_TEMP/shellcheck.tar.xz" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          export HVO_SHELLCHECK_BIN="$RUNNER_TEMP/shellcheck-v0.9.0/shellcheck"
           ./scripts/ci:shellcheck
           ./scripts/docs:audit-operations
           ./scripts/test:coordination-guard
