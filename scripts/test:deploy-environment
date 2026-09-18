@@ -390,19 +390,27 @@ shard_enabled() {
 
 # `mkdir -m MODE -p a/b/c` applies MODE to the leaf only; intermediates get the umask
 # (ShellCheck SC2174). Fixture trees that are meant to be owner-private at every level
-# use this instead, so the mode the shard asserts is the mode every level was created with.
+# use this instead. Every level it creates is 0700. A level that already exists is set
+# to 0700 only when it lies inside TEMP_DIR, which this harness owns; ancestors outside
+# it (the system temp root, a caller-supplied parent) are left exactly as found.
 make_private_tree() {
-    local path level
+    local path level remainder component
     for path in "$@"; do
         level=''
-        local IFS='/'
-        local -a parts
-        read -r -a parts <<< "$path"
-        unset IFS
-        for part in "${parts[@]}"; do
-            [[ -n "$part" ]] || { level="$level/"; continue; }
-            level="${level:+$level/}$part"
-            [[ -d "$level" ]] || mkdir -m 700 "$level"
+        remainder="$path"
+        while [[ -n "$remainder" ]]; do
+            component="${remainder%%/*}"
+            if [[ "$remainder" == */* ]]; then remainder="${remainder#*/}"; else remainder=''; fi
+            if [[ -z "$component" ]]; then
+                [[ -n "$level" ]] || level='/'
+                continue
+            fi
+            if [[ "$level" == '' || "$level" == '/' ]]; then level="$level$component"; else level="$level/$component"; fi
+            if [[ -d "$level" ]]; then
+                [[ "$level" != "$TEMP_DIR" && "$level" != "$TEMP_DIR/"* ]] || chmod 700 "$level"
+            else
+                mkdir -m 700 "$level"
+            fi
         done
     done
 }
