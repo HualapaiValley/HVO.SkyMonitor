@@ -546,6 +546,17 @@ older rather than reporting a pass it did not perform. The macOS system Bash is
 which `scripts/test:pr-review-tools` exercises, additionally requires `flock`,
 which macOS does not ship; install it with `brew install flock`.
 
+`scripts/ci:shellcheck` enforces ShellCheck 0.9.0 `--severity=error` over exactly
+the set `scripts/ci:shell-syntax --list0` derives, downloading and
+checksum-verifying the pinned Linux x86_64 release unless `HVO_SHELLCHECK_BIN`
+names a verified 0.9.0 binary. It runs one process per file with `-x`, except
+`scripts/test:deploy-environment`, which is linted without `-x` because it
+sources the lifecycle library and twelve shard bodies and analyzing that union
+in one process measured 16.8 GB; every file it sources is a derived target in
+its own right and is linted with `-x` on its own. Peak per-process RSS is about
+2.9 GB and the whole gate about 80s. Warnings are a recorded backlog under #873,
+not enforced. `scripts/test:ci-shellcheck` is its contract test.
+
 Reproduce one lane locally with the same scripts CI runs:
 
 ```bash
