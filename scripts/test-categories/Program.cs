@@ -2,39 +2,31 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
+// This engine owns no counts. Every test project owns its own expected category inventory in a
+// test-categories.json beside its project file (#853), so a count change is a change inside the
+// owning project's directory and selects that project's component lane rather than the complete
+// solution matrix that editing this file selects. The engine still discovers every project under
+// tests/ and compares every actual case against every inventory, so ownership moved without any
+// narrowing of what is audited: a missing, malformed, duplicate, unknown, or stale inventory fails.
 var root = FindRepositoryRoot();
 var categories = new[] { "Unit", "Integration", "Manual", "Soak", "External", "Hardware" };
-var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal)
-{
-    ["tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj"] = Counts(unit: 174, integration: 2),
-    ["tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj"] = Counts(unit: 192, manual: 2),
-    ["tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"] = Counts(unit: 202, manual: 7),
-    ["tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj"] = Counts(unit: 29),
-    ["tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"] = Counts(unit: 85),
-    ["tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj"] = Counts(unit: 243),
-    ["tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj"] = Counts(unit: 86),
-    ["tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj"] = Counts(unit: 4, manual: 3),
-    ["tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj"] = Counts(unit: 67),
-    ["tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj"] = Counts(unit: 27),
-    ["tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj"] = Counts(unit: 11),
-    ["tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj"] = Counts(unit: 11),
-    ["tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj"] = Counts(unit: 15, integration: 7),
-    ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 1862, integration: 219, manual: 34, soak: 1, hardware: 1),
-    ["tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"] = Counts(unit: 20, integration: 7, manual: 25),
-    ["tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj"] = Counts(unit: 4, integration: 21),
-    ["tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj"] = Counts(unit: 447),
-    ["tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"] = Counts(unit: 4, integration: 414, manual: 32),
-    ["tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj"] = Counts(unit: 8, manual: 1),
-    ["tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj"] = Counts(unit: 4, integration: 6, manual: 3),
-};
+var failures = new List<string>();
+var expected = LoadInventories(root, categories, failures);
+
 // The M5 macOS validation workflow pinned its own per-project expected Unit totals by hand, and
 // they went stale the moment a repository-wide compile item added test methods to every project
 // (#764). Two sources describing the same thing, and only one of them moved. Emitting this matrix
 // lets that workflow read the numbers this audit already validates against a real discovery run,
 // so the two cannot drift apart again. Tab-separated rather than JSON so the consumer needs only
-// awk, which is present wherever the workflow runs.
+// awk, which is present wherever the workflow runs. A structurally invalid inventory fails here
+// too: a matrix emitted from a half-loaded inventory would be exactly the stale pin this replaces.
 if (args.Contains("--emit-matrix", StringComparer.Ordinal))
 {
+    if (failures.Count > 0)
+    {
+        return ReportFailures(failures);
+    }
+
     foreach (var (relativeProject, counts) in expected.OrderBy(static entry => entry.Key, StringComparer.Ordinal))
     {
         foreach (var category in categories)
@@ -47,19 +39,6 @@ if (args.Contains("--emit-matrix", StringComparer.Ordinal))
 }
 
 var totals = categories.ToDictionary(static category => category, static _ => 0, StringComparer.Ordinal);
-var failures = new List<string>();
-var discoveredProjects = Directory.EnumerateFiles(Path.Combine(root, "tests"), "*.csproj", SearchOption.AllDirectories)
-    .Select(path => Path.GetRelativePath(root, path).Replace('\\', '/'))
-    .Where(static path => !path.EndsWith("/HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj", StringComparison.Ordinal))
-    .ToHashSet(StringComparer.Ordinal);
-foreach (var project in discoveredProjects.Except(expected.Keys, StringComparer.Ordinal))
-{
-    failures.Add($"test project is missing from the category matrix: {project}");
-}
-foreach (var project in expected.Keys.Except(discoveredProjects, StringComparer.Ordinal))
-{
-    failures.Add($"category matrix project does not exist: {project}");
-}
 
 foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "tests"), "*.cs", SearchOption.AllDirectories)
              .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
@@ -139,34 +118,143 @@ foreach (var (relativeProject, expectedCounts) in expected)
 
 if (failures.Count > 0)
 {
-    await Console.Error.WriteLineAsync("Test category audit failed:").ConfigureAwait(false);
-    foreach (var failure in failures.Order(StringComparer.Ordinal))
-    {
-        await Console.Error.WriteLineAsync($"- {failure}").ConfigureAwait(false);
-    }
-
-    return 1;
+    return ReportFailures(failures);
 }
 
 Console.WriteLine($"Test category audit passed: {string.Join(", ", categories.Select(category => $"{category}={totals[category]}"))}.");
 return 0;
 
-static IReadOnlyDictionary<string, int> Counts(
-    int unit = 0,
-    int integration = 0,
-    int manual = 0,
-    int soak = 0,
-    int external = 0,
-    int hardware = 0)
-    => new Dictionary<string, int>(StringComparer.Ordinal)
+static int ReportFailures(List<string> failures)
+{
+    Console.Error.WriteLine("Test category audit failed:");
+    foreach (var failure in failures.Order(StringComparer.Ordinal))
     {
-        ["Unit"] = unit,
-        ["Integration"] = integration,
-        ["Manual"] = manual,
-        ["Soak"] = soak,
-        ["External"] = external,
-        ["Hardware"] = hardware
-    };
+        Console.Error.WriteLine($"- {failure}");
+    }
+
+    return 1;
+}
+
+// Every project directory under tests/ that contains a project file must contain exactly one
+// inventory, and every inventory must sit beside exactly one project file, so a project cannot
+// be added without a count and an inventory cannot outlive its project. The file is a flat JSON
+// object with one non-negative integer per known category, every category present, nothing else.
+// Anything looser is rejected rather than defaulted: a category that defaults to zero is a pin
+// that silently stops pinning the moment a case is recategorized.
+static Dictionary<string, IReadOnlyDictionary<string, int>> LoadInventories(string root, string[] categories, List<string> failures)
+{
+    const string inventoryFileName = "test-categories.json";
+    var inventories = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal);
+    var testsRoot = Path.Combine(root, "tests");
+    var projectFiles = Directory.EnumerateFiles(testsRoot, "*.csproj", SearchOption.AllDirectories)
+        .Where(static path => !path.EndsWith("/HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj", StringComparison.Ordinal))
+        .ToArray();
+    var projectsByDirectory = projectFiles
+        .GroupBy(static path => Path.GetDirectoryName(path)!, StringComparer.Ordinal)
+        .ToDictionary(static group => group.Key, static group => group.ToArray(), StringComparer.Ordinal);
+    var inventoryFiles = Directory.EnumerateFiles(testsRoot, inventoryFileName, SearchOption.AllDirectories)
+        .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
+            !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+        .ToArray();
+
+    foreach (var inventoryFile in inventoryFiles)
+    {
+        var directory = Path.GetDirectoryName(inventoryFile)!;
+        if (!projectsByDirectory.ContainsKey(directory))
+        {
+            failures.Add($"category inventory has no test project beside it: {Relative(root, inventoryFile)}");
+        }
+    }
+
+    foreach (var (directory, projects) in projectsByDirectory)
+    {
+        if (projects.Length != 1)
+        {
+            failures.Add($"category inventory ownership is ambiguous; {projects.Length} project files share {Relative(root, directory)}");
+            continue;
+        }
+
+        var relativeProject = Relative(root, projects[0]);
+        var inventoryFile = Path.Combine(directory, inventoryFileName);
+        if (!File.Exists(inventoryFile))
+        {
+            failures.Add($"test project is missing its category inventory {inventoryFileName}: {relativeProject}");
+            continue;
+        }
+
+        var counts = ParseInventory(root, inventoryFile, categories, failures);
+        if (counts is not null)
+        {
+            inventories[relativeProject] = counts;
+        }
+    }
+
+    return inventories;
+}
+
+static IReadOnlyDictionary<string, int>? ParseInventory(string root, string inventoryFile, string[] categories, List<string> failures)
+{
+    var relativeInventory = Relative(root, inventoryFile);
+    JsonDocument document;
+    try
+    {
+        document = JsonDocument.Parse(File.ReadAllText(inventoryFile), new JsonDocumentOptions { AllowTrailingCommas = false, CommentHandling = JsonCommentHandling.Disallow });
+    }
+    catch (JsonException exception)
+    {
+        failures.Add($"malformed category inventory {relativeInventory}: {exception.Message}");
+        return null;
+    }
+
+    using (document)
+    {
+        if (document.RootElement.ValueKind is not JsonValueKind.Object)
+        {
+            failures.Add($"category inventory must be a JSON object: {relativeInventory}");
+            return null;
+        }
+
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var valid = true;
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (!categories.Contains(property.Name, StringComparer.Ordinal))
+            {
+                failures.Add($"unknown category '{property.Name}' in {relativeInventory}");
+                valid = false;
+                continue;
+            }
+
+            if (counts.ContainsKey(property.Name))
+            {
+                failures.Add($"duplicate category '{property.Name}' in {relativeInventory}");
+                valid = false;
+                continue;
+            }
+
+            if (property.Value.ValueKind is not JsonValueKind.Number || !property.Value.TryGetInt32(out var count) || count < 0)
+            {
+                failures.Add($"category '{property.Name}' must be a non-negative integer in {relativeInventory}");
+                valid = false;
+                // Record the category as present so the value failure is reported once, not also as missing.
+                counts[property.Name] = 0;
+                continue;
+            }
+
+            counts[property.Name] = count;
+        }
+
+        foreach (var category in categories.Where(category => !counts.ContainsKey(category)))
+        {
+            failures.Add($"category '{category}' is missing from {relativeInventory}");
+            valid = false;
+        }
+
+        return valid ? counts : null;
+    }
+}
+
+static string Relative(string root, string path) => Path.GetRelativePath(root, path).Replace('\\', '/');
 
 static async Task<IReadOnlyDictionary<Guid, string>> DiscoverAsync(string root, string project, string? filter)
 {

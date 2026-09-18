@@ -281,150 +281,59 @@ if [[ ! "$coverage_report_count" =~ ^[1-9][0-9]*$ ]]; then
     exit 1
 fi
 
-# The runbook's category totals are derived from the category matrix rather than
-# pinned as literals, so editing the matrix without the runbook fails here.
-# Block and line comments are removed first, then each dictionary entry is
-# collected from its ["tests/….csproj"] key to its closing parenthesis, all
-# whitespace is dropped, and the entry must then be exactly
-# ["tests/….csproj"]=Counts(name:N,…), with recognized, non-repeating category
-# names and the comma separator after every entry, the final one included.
-category_matrix=scripts/test-categories/Program.cs
+# The runbook's category totals are derived from the per-project category
+# inventories rather than pinned as literals, so editing an inventory without the
+# runbook fails here. Each test project owns tests/<project>/test-categories.json
+# (#853): a flat JSON object with exactly the six known categories, each a
+# non-negative integer. The audit engine validates the same shape against real
+# discovery; this reads the same files so the two totals cannot disagree.
 architecture_project=tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj
-if ! category_totals="$(awk -v target_project="$architecture_project" '
-    function fail(message) {
-        print message > "/dev/stderr"
-        failed = 1
+architecture_inventory="$(dirname "$architecture_project")/test-categories.json"
+category_rows=0
+category_unit=0; category_integration=0; category_manual=0; category_soak=0; category_external=0; category_hardware=0
+architecture_unit=0; architecture_integration=0
+while IFS= read -r inventory; do
+    [[ -n "$inventory" ]] || continue
+    if ! jq --exit-status '
+        type == "object"
+        and (keys | sort) == ["External", "Hardware", "Integration", "Manual", "Soak", "Unit"]
+        and all(.[]; type == "number" and . == floor and . >= 0)' "$inventory" > /dev/null 2>&1; then
+        printf 'Malformed category inventory: %s\n' "$inventory" >&2
         exit 1
-    }
-    function strip_comments(line,    kept, open_at, line_at, close_at, rest) {
-        kept = ""
-        while (1) {
-            if (in_block_comment) {
-                close_at = index(line, "*/")
-                if (close_at == 0) {
-                    return kept
-                }
-                # A comment is a token boundary, so it becomes a space, never nothing.
-                line = " " substr(line, close_at + 2)
-                in_block_comment = 0
-            }
-            # Lexically, whichever comment opener comes first owns the rest.
-            open_at = index(line, "/*")
-            line_at = index(line, "//")
-            if (line_at > 0 && (open_at == 0 || line_at < open_at)) {
-                return kept substr(line, 1, line_at - 1) " "
-            }
-            if (open_at == 0) {
-                return kept line
-            }
-            kept = kept substr(line, 1, open_at - 1) " "
-            rest = substr(line, open_at + 2)
-            close_at = index(rest, "*/")
-            if (close_at == 0) {
-                in_block_comment = 1
-                return kept
-            }
-            line = substr(rest, close_at + 2)
-        }
-    }
-    function process_entry(entry,    pairs, pair, parts, position, seen) {
-        # Whitespace runs collapse to one space between tokens; a token itself may
-        # not contain whitespace, so "1 70" or "1/*x*/70" is never read as 170.
-        gsub(/[[:space:]]+/, " ", entry)
-        sub(/^ /, "", entry)
-        sub(/ $/, "", entry)
-        if (entry !~ /^\[ ?"tests\/[^"]+\.csproj" ?\] ?= ?Counts ?\( ?[a-z]+ ?: ?[0-9]+( ?, ?[a-z]+ ?: ?[0-9]+)* ?\) ?,?$/) {
-            fail("unrecognized category matrix row: " entry)
-        }
-        gsub(/ /, "", entry)
-        row_project = entry
-        sub(/^\["/, "", row_project)
-        sub(/"\].*$/, "", row_project)
-        rows++
-        # Every entry, including the final one, ends with the comma separator this
-        # matrix uses. The comma may also stand alone on the next line, which the
-        # main loop accepts before anything else follows.
-        separator_pending = (entry !~ /,$/)
-        sub(/^.*Counts\(/, "", entry)
-        sub(/\).*$/, "", entry)
-        pairs = split(entry, pair, ",")
-        for (position = 1; position <= pairs; position++) {
-            split(pair[position], parts, ":")
-            if (parts[1] !~ /^(unit|integration|manual|soak|external|hardware)$/) {
-                fail("unrecognized category in matrix row " rows ": " pair[position])
-            }
-            if (parts[1] in seen) {
-                fail("duplicate category in matrix row " rows ": " parts[1])
-            }
-            seen[parts[1]] = 1
-            totals[parts[1]] += parts[2]
-            if (row_project == target_project) {
-                target_totals[parts[1]] += parts[2]
-                target_seen = 1
-            }
-        }
-    }
-    {
-        line = strip_comments($0)
-        if (line ~ /^[[:space:]]*$/) {
-            next
-        }
-        if (!collecting) {
-            if (separator_pending && line ~ /^[[:space:]]*,[[:space:]]*$/) {
-                separator_pending = 0
-                next
-            }
-            if (separator_pending) {
-                fail("missing entry separator after a matrix row, before: " line)
-            }
-            # An entry starts at its dictionary key; whitespace after [ is legal,
-            # and the key may follow [ on the next line.
-            if (line !~ /\[[[:space:]]*"tests\// && line !~ /\[[[:space:]]*$/) {
-                # Only the Counts(...) factory declaration may invoke Counts outside an entry.
-                if (line ~ /(^|[^A-Za-z0-9_])Counts[[:space:]]*(\(|$)/ && line !~ /^[[:space:]]*static .*Counts[[:space:]]*\(?[[:space:]]*$/) {
-                    fail("unrecognized category matrix row: " line)
-                }
-                next
-            }
-            collecting = 1
-            entry = ""
-        }
-        entry = entry " " line
-        if (entry ~ /\)/) {
-            collecting = 0
-            process_entry(entry)
-        }
-    }
-    END {
-        if (failed) {
-            exit 1
-        }
-        if (in_block_comment) {
-            fail("unterminated block comment in the category matrix")
-        }
-        if (collecting) {
-            fail("unterminated category matrix row: " entry)
-        }
-        if (separator_pending) {
-            fail("the final category matrix row is missing its entry separator")
-        }
-        if (rows == 0) {
-            fail("no category matrix rows were found")
-        }
-        # A missing project would otherwise hand the architecture assertions an empty
-        # expected value, which every document trivially contains.
-        if (!target_seen) {
-            fail("the category matrix has no row for " target_project)
-        }
-        printf "%d %d %d %d %d %d %d %d %d\n", rows, totals["unit"], totals["integration"], totals["manual"], totals["soak"], totals["external"], totals["hardware"], target_totals["unit"], target_totals["integration"]
-    }' "$category_matrix")"; then
-    printf 'Could not derive the test category totals from %s.\n' "$category_matrix" >&2
+    fi
+    if ! ls "$(dirname "$inventory")"/*.csproj > /dev/null 2>&1; then
+        printf 'Category inventory has no test project beside it: %s\n' "$inventory" >&2
+        exit 1
+    fi
+    read -r unit integration manual soak external hardware < <(jq -r '[.Unit, .Integration, .Manual, .Soak, .External, .Hardware] | @sh' "$inventory" | tr -d "'")
+    category_rows=$((category_rows + 1))
+    category_unit=$((category_unit + unit)); category_integration=$((category_integration + integration))
+    category_manual=$((category_manual + manual)); category_soak=$((category_soak + soak))
+    category_external=$((category_external + external)); category_hardware=$((category_hardware + hardware))
+    if [[ "$inventory" == "$architecture_inventory" ]]; then
+        architecture_unit=$unit; architecture_integration=$integration; architecture_seen=1
+    fi
+done < <(find tests -name test-categories.json -not -path '*/bin/*' -not -path '*/obj/*' | sort)
+# A missing project would otherwise hand the architecture assertions an empty
+# expected value, which every document trivially contains.
+if [[ -z "${architecture_seen:-}" ]]; then
+    printf 'No category inventory was found for %s.\n' "$architecture_project" >&2
     exit 1
 fi
+# Every test project must own an inventory; a project added without one would
+# otherwise drop out of the runbook totals silently.
+while IFS= read -r csproj; do
+    [[ "$csproj" != */HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj ]] || continue
+    if [[ ! -f "$(dirname "$csproj")/test-categories.json" ]]; then
+        printf 'Test project is missing its category inventory: %s\n' "$csproj" >&2
+        exit 1
+    fi
+done < <(find tests -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' | sort)
+category_totals="$category_rows $category_unit $category_integration $category_manual $category_soak $category_external $category_hardware $architecture_unit $architecture_integration"
 read -r category_rows category_unit category_integration category_manual category_soak category_external category_hardware architecture_unit architecture_integration <<< "$category_totals"
 if [[ ! "$category_rows" =~ ^[1-9][0-9]*$ || ! "$category_unit" =~ ^[1-9][0-9]*$ || ! "$category_integration" =~ ^[1-9][0-9]*$ ||
       ! "$architecture_unit" =~ ^[1-9][0-9]*$ || ! "$architecture_integration" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'Derived implausible test category totals from %s: %s\n' "$category_matrix" "$category_totals" >&2
+    printf 'Derived implausible test category totals from the category inventories: %s\n' "$category_totals" >&2
     exit 1
 fi
 
