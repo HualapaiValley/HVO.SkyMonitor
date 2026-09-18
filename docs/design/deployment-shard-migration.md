@@ -96,14 +96,17 @@ replacement has matched it.
 | --- | --- | --- | --- |
 | 0 (this slice) | shard manifest `scripts/deploy/shards.json`; coordinator reads it; `--list-shards` and the CLI contract test derive from it | no | manifest parity with the in-file list |
 | 1 (done) | deploy runners, recovery exercisers, prepare-case helpers and lifecycle staging (341 lines) extracted unchanged to `scripts/lib/deploy-test-lifecycle.sh`, sourced by the harness | no | all ten shards pass unchanged: local `--parallel` 844s, same completion order as the CI baseline |
-| 2 | each shard body extracted to `scripts/deploy-contracts/<shard>.sh`, sourced by name from the manifest | no | per-shard logs byte-comparable to before |
+| 2 (done) | each shard body extracted verbatim to `scripts/deploy-contracts/<shard>.sh` (twelve files; `preflight` is three parts because shared fixture code sits between its blocks), sourced from a dispatch line the manifest is checked against; harness 5,702 -> 1,749 lines; classifier learns the directory | no | all ten shards pass: local `--parallel` 857s, same completion order; ShellCheck on the harness 4.9 GB -> 141 MB, largest body 458 MB |
 | 3 | `DeploymentFakeHost` fixture in `Deployment.Cli.Tests` proven against one shard (`partial-prepare`, smallest and Docker-light) | yes, one shard | shell shard and MSTest shard both green for one full cycle |
 | 4 | remaining shards converted in wall-time order: `existing-down` first because it sets the lane wall | yes | each conversion green beside its shell twin before the shell twin is deleted |
 | 5 | coordinator retired; manifest becomes the MSTest test-list source; retained shell adapters ShellCheck-clean | authority | #782 unblocked; #873 rescoped |
 
-Stages 0-2 are pure restructuring and give #782 most of what it needs: after
-stage 2 the largest single file is the shared fixture (~1,300 lines), which
-ShellCheck handles at a fraction of the 15.4 GB the monolith costs.
+Stages 0-2 are pure restructuring and give #782 most of what it needs. Measured
+after stage 2 with ShellCheck 0.9.0 without `-x`: the monolith took 4.9 GB peak
+RSS and 8.7s; the harness now takes 141 MB and 0.4s, the largest shard body
+(`existing-catalog-up`, 1,032 lines) 458 MB and 1.0s, the lifecycle library 54 MB.
+The `-x` source-following cost that drove the 15.4 GB figure is now bounded by
+the largest single sourced file rather than by the whole harness.
 
 ## 4. Resource baseline
 

@@ -101,6 +101,9 @@ is_deployment_path() {
     scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract)
       return 0
       ;;
+    scripts/deploy-contracts/*)
+      return 0
+      ;;
     scripts/catalog:* | scripts/catalog/* | scripts/infra:operation-lock)
       return 0
       ;;
@@ -162,7 +165,7 @@ select_deployment_suites() {
       deployment_shards="true"
       deployment_installer="true"
       ;;
-    .env.template | docker-compose.apps.yml | scripts/deploy:environment | scripts/deploy/* | scripts/test:deploy-environment | deploy/* | src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json)
+    .env.template | docker-compose.apps.yml | scripts/deploy:environment | scripts/deploy/* | scripts/test:deploy-environment | scripts/deploy-contracts/* | deploy/* | src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json)
       deployment_shards="true"
       ;;
   esac
