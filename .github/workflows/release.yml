@@ -108,7 +108,7 @@ jobs:
           fi
       - name: Set up QEMU for multi-architecture image builds
         if: inputs.train == 'image'
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       # buildx and BuildKit are pinned for the same reason the Trivy scanner is pinned by tag and digest: the
       # SLSA predicate version BuildKit emits into the image attestations depends on this version, and that
       # check runs after the immutable registry push, so a silent toolchain change would abort a release that
