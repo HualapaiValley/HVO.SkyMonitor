@@ -154,6 +154,13 @@ select_deployment_suites() {
     scripts/deploy/common.sh | scripts/deploy/product-layout.sh)
       deployment_shards="true"
       ;;
+    scripts/lib/deploy-test-lifecycle.sh)
+      # Every shard body calls the runners and staging in this library (#875), so a
+      # change here can break all ten shards without touching a file that names them.
+      # scripts/lib/* below still adds the installer suite it always selected.
+      deployment_shards="true"
+      deployment_installer="true"
+      ;;
     .github/workflows/release.yml)
       deployment_catalog="true"
       deployment_installer="true"
