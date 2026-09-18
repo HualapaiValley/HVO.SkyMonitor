@@ -577,7 +577,7 @@ public sealed class Issue433LayeredPresentationPerformanceTests
         var receipt = JsonSerializer.Deserialize<BuildReceipt>(File.ReadAllBytes(path), JsonOptions);
         Assert.IsNotNull(receipt);
         Assert.AreEqual("issue-433-build-receipt-v1", receipt.SchemaVersion);
-        Assert.AreEqual("10.0.400", receipt.SdkVersion);
+        Assert.AreEqual("10.0.401", receipt.SdkVersion);
         Assert.AreEqual(ReadProcess(root, "dotnet", "--version"), receipt.SdkVersion);
         var evidenceHead = ReadGit(root, "rev-parse", "HEAD");
         var evidenceHeadTree = ReadGit(root, "rev-parse", "HEAD^{tree}");
@@ -841,7 +841,7 @@ public sealed class Issue433LayeredPresentationPerformanceHarnessTests
         StringAssert.Contains(source, "var sourceInventory = SourceInventory(root);", StringComparison.Ordinal);
         StringAssert.Contains(source, "VerifyLegacyBlobProofs(root, receipt.LegacyBlobProofs", StringComparison.Ordinal);
         StringAssert.Contains(source, "CollectionAssert.AreEquivalent(LegacySourcePaths", StringComparison.Ordinal);
-        StringAssert.Contains(source, "Assert.AreEqual(\"10.0.400\", receipt.SdkVersion)", StringComparison.Ordinal);
+        StringAssert.Contains(source, "Assert.AreEqual(\"10.0.401\", receipt.SdkVersion)", StringComparison.Ordinal);
         StringAssert.Contains(source, "ReadProcess(root, \"dotnet\", \"--version\")", StringComparison.Ordinal);
         StringAssert.Contains(source, "Production source is pinned to candidateProductCommit", StringComparison.Ordinal);
         StringAssert.Contains(source, "receipt.EvidenceHeadTree", StringComparison.Ordinal);

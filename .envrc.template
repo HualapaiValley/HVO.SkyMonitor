@@ -1,0 +1,8 @@
+export ASPNETCORE_ENVIRONMENT=Development
+export DOTNET_ENVIRONMENT=Development
+export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright/skymonitor"
+export HVO_AGENT_WORKTREE_ROOT="$HOME/development-state/HVO.SkyMonitor/opencode-worktrees"
+export HVO_AGENT_STATE_ROOT="$HOME/development-state/HVO.SkyMonitor/agent-state"
+
+# Keep secrets in .env (mode 0600), .NET User Secrets, or Key Vault.
+dotenv_if_exists .env

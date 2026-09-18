@@ -49,7 +49,13 @@ the permission that operation needs:
 | --- | --- | --- |
 | `verify-identity` | metadata, contents read | Proves the key mints an installation token that sees exactly this repository |
 | `post-review` | + pull-requests write | Posts a review body committed under `.agentcontrol/reviews/` on the PR head as the bot, appending who dispatched it and the reviewed head |
-| `resolve-thread` | + pull-requests write | Resolves one finding thread, only if it belongs to the named PR and its last comment is a `VERIFIED_*` disposition |
+
+Resolving a finding thread is not an App operation: GitHub refuses the
+`resolveReviewThread` mutation for installation tokens even on a thread the App
+authored (proven on PR #909). The reviewer's judgement is the `VERIFIED_*`
+comment, which is posted as the bot; the operator resolves the thread once that
+comment is present. Branch protection's conversation-resolution gate is satisfied
+either way.
 
 Merge authority is not delegated to the App. The workflow runs only on manual
 dispatch by a collaborator with write access; it has no push or pull-request
@@ -81,7 +87,7 @@ OPEN -> NON_ACTIONABLE -> VERIFIED_NON_ACTIONABLE -> resolved thread
 OPEN -> SUPERSEDED -> VERIFIED_SUPERSEDED -> resolved thread
 ```
 
-The implementer posts `CORRECTED`, `DEFERRED`, `NON_ACTIONABLE`, or `SUPERSEDED` in the finding thread. Only the independent reviewer posts the verified disposition and resolves the thread.
+The implementer posts `CORRECTED`, `DEFERRED`, `NON_ACTIONABLE`, or `SUPERSEDED` in the finding thread. Only the independent reviewer posts the verified disposition; the operator resolves the thread after it.
 
 ## Parent Review Format
 

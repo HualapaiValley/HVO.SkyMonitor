@@ -122,7 +122,7 @@ dotnet_diagnostic.CA1707.severity = none
 dotnet_diagnostic.CA2000.severity = none
 dotnet_diagnostic.CA2007.severity = none
 dotnet_diagnostic.CA1812.severity = none
-# SDK 10.0.400's CA2025 analyzer crashes while scanning this assembly (roslyn-analyzers#7652).
+# The CA2025 analyzer crashes (AD0001 NullReferenceException) while scanning this assembly on SDK 10.0.400 and still on 10.0.401 (roslyn-analyzers#7652); re-probed at each SDK bump.
 # File-scoped suppression still executes the analyzer and reports AD0001; remove after the pinned SDK contains the fix.
 dotnet_diagnostic.CA2025.severity = none
 dotnet_diagnostic.MSTEST0001.severity = none
@@ -145,7 +145,7 @@ dotnet_diagnostic.CA1812.severity = none
 dotnet_diagnostic.CA1515.severity = none
 dotnet_diagnostic.CA1707.severity = none
 dotnet_diagnostic.CA2000.severity = none
-# SDK 10.0.400's CA2025 analyzer also crashes while scanning this assembly (roslyn-analyzers#7652).
+# The CA2025 analyzer also crashes (AD0001) while scanning this assembly on SDK 10.0.400 and still on 10.0.401 (roslyn-analyzers#7652); re-probed at each SDK bump.
 # File-scoped suppression still executes the analyzer and reports AD0001; remove after the pinned SDK contains the fix.
 dotnet_diagnostic.CA2025.severity = none
 dotnet_diagnostic.MSTEST0037.severity = none
