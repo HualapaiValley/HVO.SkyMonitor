@@ -453,6 +453,33 @@ public sealed class CaptureProcessingGraphTests
     }
 
     [TestMethod]
+    public void CreateGraph_RejectsObsoleteStorageImplementationNamesWithStableAliasGuidance()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var factory = CreateFactory(services, telemetry);
+        var obsoleteNames = new[]
+        {
+            "NoOpFileStorageProcessingStep",
+            "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep",
+            "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common"
+        };
+
+        foreach (var obsoleteName in obsoleteNames)
+        {
+            var explicitException = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(
+                CreateExplicitConfig(new CaptureProcessingStepConfig(obsoleteName, "storage", DependsOn: ["$raw"]))));
+            var legacyException = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(
+                CreateLegacyConfig(new CaptureProcessingStepConfig(obsoleteName, "storage", DependsOn: []))));
+
+            StringAssert.Contains(explicitException.Message, "is obsolete", StringComparison.Ordinal);
+            StringAssert.Contains(explicitException.Message, "stable alias 'Storage'", StringComparison.Ordinal);
+            StringAssert.Contains(legacyException.Message, "is obsolete", StringComparison.Ordinal);
+            StringAssert.Contains(legacyException.Message, "stable alias 'Storage'", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
     public void CreateGraph_RejectsDynamicAliasesAndReservedRawIdentifier()
     {
         using var telemetry = new CaptureProcessingTelemetry();
@@ -667,6 +694,8 @@ public sealed class CaptureProcessingGraphTests
         using var provider = services.BuildServiceProvider();
         var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
         var registrations = provider.GetServices<CaptureProcessingStepRegistration>().ToArray();
+        CollectionAssert.Contains(factory.StableStepAliases.ToArray(), FileStorageCaptureProcessingStep.StableAlias);
+        CollectionAssert.DoesNotContain(factory.StableStepAliases.ToArray(), "Upload");
         var baseline = CreateConfig();
         var config = CreateExplicitConfig(
             new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"]),
@@ -721,7 +750,7 @@ public sealed class CaptureProcessingGraphTests
             preview.EffectiveNodes.Single(static node => node.Alias == "WeatherCloudOverlay").OutputRole);
         Assert.HasCount(10, preview.EffectiveNodes);
         Assert.IsFalse(quality.Options!.Value.TryGetProperty("enabled", out _));
-        Assert.HasCount(20, registrations);
+        Assert.HasCount(19, registrations);
         Assert.IsNull(preview.EffectiveNodes.Single(static node => node.Alias == "Storage").OutputRole);
         Assert.IsNull(preview.EffectiveNodes.Single(static node => node.Alias == "Telemetry").OutputRole);
         Assert.AreEqual(
@@ -764,7 +793,7 @@ public sealed class CaptureProcessingGraphTests
             "Storage",
             "storage",
             DependsOn: ["$raw"],
-            Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+            Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
             {
                 Policies = [new ArtifactStoragePolicyOptions { Role = FrameArtifactRole.Raw, RetentionDays = 60 }]
             }))));
@@ -773,7 +802,7 @@ public sealed class CaptureProcessingGraphTests
                 "Storage",
                 "storage",
                 DependsOn: ["$raw"],
-                Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                 {
                     Policies = [new ArtifactStoragePolicyOptions { StepId = "$raw", Role = FrameArtifactRole.Raw }]
                 })))));

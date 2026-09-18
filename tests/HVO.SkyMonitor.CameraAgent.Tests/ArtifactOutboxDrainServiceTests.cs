@@ -78,8 +78,8 @@ public sealed class ArtifactOutboxDrainServiceTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
             new CapturePipelineConfig([new CaptureProcessingStepConfig(
-                NoOpFileStorageProcessingStep.StableAlias,
-                Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                FileStorageCaptureProcessingStep.StableAlias,
+                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                 {
                     StorageRoot = root,
                     QueueForUpload = false,
@@ -107,8 +107,8 @@ public sealed class ArtifactOutboxDrainServiceTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
             new CapturePipelineConfig([new CaptureProcessingStepConfig(
-                NoOpFileStorageProcessingStep.StableAlias,
-                Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                FileStorageCaptureProcessingStep.StableAlias,
+                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                 {
                     StorageRoot = archiveRoot,
                     QueueForUpload = false
@@ -133,7 +133,7 @@ public sealed class ArtifactOutboxDrainServiceTests
         var defaulted = config with
         {
             Pipeline = new CapturePipelineConfig(
-                [new CaptureProcessingStepConfig(NoOpFileStorageProcessingStep.StableAlias)])
+                [new CaptureProcessingStepConfig(FileStorageCaptureProcessingStep.StableAlias)])
         };
         var defaultRoots = ArtifactOutboxDrainService.ResolveLocalStorageRoots(defaulted, options);
         Assert.HasCount(2, defaultRoots);
@@ -141,7 +141,7 @@ public sealed class ArtifactOutboxDrainServiceTests
         var disabled = defaulted with
         {
             Pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig(
-                NoOpFileStorageProcessingStep.StableAlias,
+                FileStorageCaptureProcessingStep.StableAlias,
                 Enabled: false)])
         };
         Assert.HasCount(1, ArtifactOutboxDrainService.ResolveLocalStorageRoots(disabled, options));

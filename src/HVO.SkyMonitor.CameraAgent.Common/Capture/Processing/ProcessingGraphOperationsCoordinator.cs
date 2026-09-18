@@ -20,7 +20,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 {
     private const string ConfiguredGraphName = "configured-basic";
     private static readonly HashSet<string> LocalPolicyStepAliases = new(
-        ["Storage", "Upload", "Telemetry"],
+        ["Storage", "Telemetry"],
         StringComparer.OrdinalIgnoreCase);
     private readonly ICaptureProcessingPipelineFactory _pipelineFactory;
     private readonly SqliteCaptureProcessingStore _store;

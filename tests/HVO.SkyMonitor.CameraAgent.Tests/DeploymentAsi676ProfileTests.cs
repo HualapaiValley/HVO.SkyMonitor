@@ -198,7 +198,7 @@ public sealed class DeploymentAsi676ProfileTests
             Assert.IsTrue(jpegSteps.All(step =>
                 step.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal));
             var storage = pipeline.Steps.Single(step => step.Id == "storage");
-            var storageOptions = storage.Options!.Value.Deserialize<NoOpFileStorageProcessingStepOptions>(StrictJsonOptions)!;
+            var storageOptions = storage.Options!.Value.Deserialize<FileStorageCaptureProcessingStepOptions>(StrictJsonOptions)!;
             Assert.IsFalse(storageOptions.QueueForUpload);
             CollectionAssert.AreEquivalent(
                 ExpectedStorageDependencies,
@@ -227,7 +227,7 @@ public sealed class DeploymentAsi676ProfileTests
             var steps = configuration.Pipeline!.Steps.Select(step => step.Id == "storage"
                 ? step with
                 {
-                    Options = JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                    Options = JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                     {
                         StorageRoot = "/app/data/raw",
                         RetentionDays = 1,

@@ -367,22 +367,23 @@ public sealed class ArtifactOutboxDrainService(
         return roots;
     }
 
-    private static bool IsUploadEnabled(NoOpFileStorageProcessingStepOptions options)
+    private static bool IsUploadEnabled(FileStorageCaptureProcessingStepOptions options)
         => options.QueueForUpload || (options.Policies ?? []).Any(static policy => policy.QueueForUpload == true);
 
     private static bool IsStorageStep(string typeName)
-        => string.Equals(typeName, NoOpFileStorageProcessingStep.StableAlias, StringComparison.OrdinalIgnoreCase) ||
-            typeName.Contains(nameof(NoOpFileStorageProcessingStep), StringComparison.OrdinalIgnoreCase);
+        => string.Equals(typeName, FileStorageCaptureProcessingStep.StableAlias, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(typeName.Split(',', 2)[0].Trim(), nameof(FileStorageCaptureProcessingStep), StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(typeName.Split(',', 2)[0].Trim(), typeof(FileStorageCaptureProcessingStep).FullName, StringComparison.OrdinalIgnoreCase);
 
-    private static NoOpFileStorageProcessingStepOptions? ParseStorageOptions(System.Text.Json.JsonElement? options)
+    private static FileStorageCaptureProcessingStepOptions? ParseStorageOptions(System.Text.Json.JsonElement? options)
     {
         if (options is null)
         {
-            return new NoOpFileStorageProcessingStepOptions();
+            return new FileStorageCaptureProcessingStepOptions();
         }
         try
         {
-            return System.Text.Json.JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(
+            return System.Text.Json.JsonSerializer.Deserialize<FileStorageCaptureProcessingStepOptions>(
                 options.Value.GetRawText(), SerializerOptions);
         }
         catch (System.Text.Json.JsonException)

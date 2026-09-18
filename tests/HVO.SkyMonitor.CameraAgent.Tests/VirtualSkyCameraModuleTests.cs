@@ -63,6 +63,7 @@ public sealed class VirtualSkyCameraModuleTests
         var rig = document.RootElement.GetProperty("rig");
         var sensor = rig.GetProperty("sensor");
         var optics = rig.GetProperty("optics");
+        var steps = document.RootElement.GetProperty("pipeline").GetProperty("steps").EnumerateArray().ToArray();
 
         Assert.AreEqual(484, sensor.GetProperty("widthPixels").GetInt32());
         Assert.AreEqual(304, sensor.GetProperty("heightPixels").GetInt32());
@@ -71,6 +72,12 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(152d, optics.GetProperty("principalPointY").GetDouble());
         Assert.AreEqual(148.96, optics.GetProperty("imageCircleRadiusPixels").GetDouble(), 1e-12);
         Assert.IsFalse(optics.GetProperty("horizontalFlip").GetBoolean());
+        Assert.IsFalse(steps.Any(static step =>
+            step.GetProperty("id").GetString() == "Upload" || step.GetProperty("type").GetString() == "Upload"));
+        Assert.AreEqual(2, steps.Count(static step => step.GetProperty("type").GetString() == "Storage"));
+        var telemetryDependencies = steps.Single(static step => step.GetProperty("id").GetString() == "Telemetry")
+            .GetProperty("dependsOn").EnumerateArray().Select(static dependency => dependency.GetString()).ToArray();
+        CollectionAssert.DoesNotContain(telemetryDependencies, "Upload");
     }
 
     [TestMethod]

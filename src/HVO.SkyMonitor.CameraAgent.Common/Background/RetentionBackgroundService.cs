@@ -57,8 +57,8 @@ public sealed class RetentionBackgroundService(
             new System.Text.Json.Serialization.JsonStringEnumConverter()
         }
     };
-    private static readonly string FileStorageStepName = typeof(NoOpFileStorageProcessingStep).Name;
-    private static readonly string? FileStorageStepFullName = typeof(NoOpFileStorageProcessingStep).FullName;
+    private static readonly string FileStorageStepName = typeof(FileStorageCaptureProcessingStep).Name;
+    private static readonly string? FileStorageStepFullName = typeof(FileStorageCaptureProcessingStep).FullName;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Retention sweeps must continue even when deleting files fails.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -220,8 +220,8 @@ public sealed class RetentionBackgroundService(
             try
             {
                 var options = step.Options is { } configuredOptions
-                    ? JsonSerializer.Deserialize<NoOpFileStorageProcessingStepOptions>(configuredOptions.GetRawText(), StepSerializerOptions)
-                    : new NoOpFileStorageProcessingStepOptions();
+                    ? JsonSerializer.Deserialize<FileStorageCaptureProcessingStepOptions>(configuredOptions.GetRawText(), StepSerializerOptions)
+                    : new FileStorageCaptureProcessingStepOptions();
                 if (options is null)
                 {
                     continue;
@@ -304,7 +304,7 @@ public sealed class RetentionBackgroundService(
         }
 
         var implementationName = typeName.Split(',', 2)[0].Trim();
-        return implementationName.Equals(NoOpFileStorageProcessingStep.StableAlias, StringComparison.OrdinalIgnoreCase)
+        return implementationName.Equals(FileStorageCaptureProcessingStep.StableAlias, StringComparison.OrdinalIgnoreCase)
             || implementationName.Equals(FileStorageStepName, StringComparison.OrdinalIgnoreCase)
             || (FileStorageStepFullName is not null && implementationName.Equals(FileStorageStepFullName, StringComparison.OrdinalIgnoreCase))
             || implementationName.EndsWith(FileStorageStepName, StringComparison.OrdinalIgnoreCase);

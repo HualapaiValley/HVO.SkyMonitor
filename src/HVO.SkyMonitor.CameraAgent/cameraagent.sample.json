@@ -182,22 +182,10 @@
             }
         },
         {
-            "id": "Upload",
-            "type": "Upload",
-            "order": 500,
-            "dependsOn": ["LocalStorage"],
-            "options": {
-                "uploadAllFrames": false,
-                "batchSize": 3,
-                "warmupSeconds": 5,
-                "endpoint": "https://example.invalid/api/upload"
-            }
-        },
-        {
             "id": "Telemetry",
             "type": "Telemetry",
             "order": 1000,
-            "dependsOn": ["Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "ArchiveStorage", "Upload"]
+            "dependsOn": ["Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "ArchiveStorage"]
         }]
     },
     "schedule": {
