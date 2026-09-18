@@ -11,8 +11,8 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 3494 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
-| **Integration Tests** | 676 Integration-category cases across SQLite, filesystem, SQL Server, Redis, S3-compatible object storage, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
+| **Unit Tests** | 3496 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
+| **Integration Tests** | 676 Integration-category cases across SQLite, filesystem, SQL Server, Redis, S3-compatible object storage, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 15 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
@@ -115,9 +115,9 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3494`, `Integration=676`, `Manual=107`, `Soak=1`, `External=0`, and `Hardware=1`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=3496`, `Integration=676`, `Manual=107`, `Soak=1`, `External=0`, and `Hardware=1`.
 
-These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project matrix in `scripts/test-categories/Program.cs` and fails when this runbook disagrees with it, while the Build check's category audit proves that matrix matches actual discovery. Update the matrix and this runbook in the same change.
+These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
@@ -151,7 +151,7 @@ all-contract mode for local validation:
 Its closed shard inventory is `preflight`, `prepare-images`, `partial-prepare`,
 `existing-catalog-up`, `bootstrap-authority`, `bootstrap-credentials`, `smoke`,
 `measure`, `existing-down`, and `deploy-services`. Inspect it with
-`./scripts/test:deploy-environment --list-shards`, or run one isolated shard with
+`./scripts/test:deploy-environment --list-shards` (read from the closed inventory in `scripts/deploy/shards.json`, which the harness validates against its shard bodies under `scripts/deploy-contracts/` before dispatch), or run one isolated shard with
 `./scripts/test:deploy-environment --shard NAME`. Main/release/manual CI and
 affected pull requests use `./scripts/test:deploy-environment --parallel`; each
 child creates an independent temporary fixture. The coordinator defaults to the
@@ -545,6 +545,21 @@ older rather than reporting a pass it did not perform. The macOS system Bash is
 3.2, so invoke the Homebrew Bash explicitly there. `scripts/pr:dispatch-review`,
 which `scripts/test:pr-review-tools` exercises, additionally requires `flock`,
 which macOS does not ship; install it with `brew install flock`.
+
+`scripts/ci:shellcheck` enforces ShellCheck 0.9.0 `--severity=warning` over exactly
+the set `scripts/ci:shell-syntax --list0` derives, downloading and
+checksum-verifying the pinned Linux x86_64 release unless `HVO_SHELLCHECK_BIN`
+names a verified 0.9.0 binary. It runs one process per file with `-x`, except
+`scripts/test:deploy-environment`, which is linted without `-x` because it
+sources the lifecycle library and twelve shard bodies and analyzing that union
+in one process measured 16.8 GB; every file it sources is a derived target in
+its own right and is linted with `-x` on its own. Peak per-process RSS is about
+2.9 GB and the whole gate about 80s. Info and style diagnostics are deliberately
+not enforced (273 info, 3 style at the time #873 raised severity to warning); every
+retained `disable` directive states the fact that makes it correct at its site, and
+file-scope directives are used only for libraries whose readers are other files.
+`scripts/test:ci-shellcheck` is its contract test and proves a new warning fails and
+an info-only file passes.
 
 Reproduce one lane locally with the same scripts CI runs:
 

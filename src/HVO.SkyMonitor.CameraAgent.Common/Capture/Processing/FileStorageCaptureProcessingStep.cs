@@ -15,15 +15,15 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-internal sealed class NoOpFileStorageProcessingStep(
+internal sealed class FileStorageCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
-    NoOpFileStorageProcessingStepOptions options,
+    FileStorageCaptureProcessingStepOptions options,
     ILatestFrameAccessor latestFrameAccessor,
     IFrameStorageService frameStorageService,
     IArtifactOutbox artifactOutbox,
     IOptions<CameraAgentHostOptions> hostOptions,
-    ILogger<NoOpFileStorageProcessingStep> logger,
-    CaptureProcessingPersistence? processingPersistence = null) : ConfigurableCaptureProcessingStep<NoOpFileStorageProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer
+    ILogger<FileStorageCaptureProcessingStep> logger,
+    CaptureProcessingPersistence? processingPersistence = null) : ConfigurableCaptureProcessingStep<FileStorageCaptureProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer
 {
     internal const string StableAlias = "Storage";
 
@@ -32,10 +32,10 @@ internal sealed class NoOpFileStorageProcessingStep(
     private readonly IArtifactOutbox _artifactOutbox = artifactOutbox;
     private readonly bool _centralIntegrationEnabled =
         hostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Enabled;
-    private readonly ILogger<NoOpFileStorageProcessingStep> _logger = logger;
+    private readonly ILogger<FileStorageCaptureProcessingStep> _logger = logger;
     private readonly CaptureProcessingPersistence? _processingPersistence = processingPersistence;
 
-    internal NoOpFileStorageProcessingStepOptions ConfiguredOptions => Options;
+    internal FileStorageCaptureProcessingStepOptions ConfiguredOptions => Options;
 
     public IReadOnlySet<FrameArtifactRole> AcceptedDependencyRoles { get; } = new HashSet<FrameArtifactRole>
     {
@@ -55,12 +55,12 @@ internal sealed class NoOpFileStorageProcessingStep(
         var artifacts = context.Artifacts;
         if (artifacts is null)
         {
-            _logger.NoOpStorageSkipped(Name);
+            _logger.FileStorageSkipped(Name);
             context.AddProcessingOutcome(ProcessingOutcome.Skipped(ProcessingReasonCodes.MissingInput));
             return;
         }
 
-        _logger.NoOpStoragePlanned(Name, artifacts.Raw.Frame.TimestampUtc, Options.StorageRoot, Options.RetentionDays);
+        _logger.FileStorageStarted(Name, artifacts.Raw.Frame.TimestampUtc, Options.StorageRoot, Options.RetentionDays);
         var durableGraphOwnsStorage = !_centralIntegrationEnabled && context.RawCapture is { } durableRaw &&
             IsStoredUnderRoot(durableRaw.StoredFrame, Options.StorageRoot);
         var metadataAlreadyStoredUnderRoot = context.RawCapture is { } metadataRaw &&
@@ -316,7 +316,7 @@ internal sealed class NoOpFileStorageProcessingStep(
 
 }
 
-public sealed class NoOpFileStorageProcessingStepOptions : IValidatableObject
+public sealed class FileStorageCaptureProcessingStepOptions : IValidatableObject
 {
     [Required(AllowEmptyStrings = false)]
     public string StorageRoot { get; init; } = "/tmp/camera";

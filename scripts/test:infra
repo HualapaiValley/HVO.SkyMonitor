@@ -5,11 +5,15 @@ set -euo pipefail
 export LC_ALL=C
 umask 022
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-readonly TEMP_DIR="$(mktemp -d -t hvo-infra-test.XXXXXX)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+TEMP_DIR="$(mktemp -d -t hvo-infra-test.XXXXXX)"
+readonly TEMP_DIR
 readonly RUNTIME_ROOT="$TEMP_DIR/runtime-data"
-readonly LONG_COMPONENT="$(printf 'l%.0s' {1..180})"
+LONG_COMPONENT="$(printf 'l%.0s' {1..180})"
+readonly LONG_COMPONENT
 readonly SUPPORTED_PATHS=(
     logichost/dataprotection
     logichost/home

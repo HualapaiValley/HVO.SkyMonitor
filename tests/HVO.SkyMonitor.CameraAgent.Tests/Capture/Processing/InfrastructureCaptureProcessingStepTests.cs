@@ -104,14 +104,14 @@ public sealed class InfrastructureCaptureProcessingStepTests
         var latest = new Mock<ILatestFrameAccessor>(MockBehavior.Strict);
         latest.Setup(accessor => accessor.Update(annotation));
         var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
-        var step = new NoOpFileStorageProcessingStep(
+        var step = new FileStorageCaptureProcessingStep(
             new CaptureProcessingStepMetadata("storage", "Storage", 100),
-            new NoOpFileStorageProcessingStepOptions { UpdateLatestFrame = true },
+            new FileStorageCaptureProcessingStepOptions { UpdateLatestFrame = true },
             latest.Object,
             storage.Object,
             Mock.Of<IArtifactOutbox>(),
             Options.Create(new CameraAgentHostOptions()),
-            NullLogger<NoOpFileStorageProcessingStep>.Instance);
+            NullLogger<FileStorageCaptureProcessingStep>.Instance);
 
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
@@ -129,14 +129,14 @@ public sealed class InfrastructureCaptureProcessingStepTests
         var excluded = context.AddDerivative(FrameArtifactRole.AnnotatedPreview, CreateFrame(2), "annotation-v1");
         context.BeginNode("storage", ["included"]);
         var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
-        var step = new NoOpFileStorageProcessingStep(
+        var step = new FileStorageCaptureProcessingStep(
             new CaptureProcessingStepMetadata("storage", "Storage", 100),
-            new NoOpFileStorageProcessingStepOptions { UpdateLatestFrame = false },
+            new FileStorageCaptureProcessingStepOptions { UpdateLatestFrame = false },
             Mock.Of<ILatestFrameAccessor>(),
             storage.Object,
             Mock.Of<IArtifactOutbox>(),
             Options.Create(new CameraAgentHostOptions()),
-            NullLogger<NoOpFileStorageProcessingStep>.Instance);
+            NullLogger<FileStorageCaptureProcessingStep>.Instance);
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
             await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
@@ -159,9 +159,9 @@ public sealed class InfrastructureCaptureProcessingStepTests
         context.BeginNode("storage", [], ["$raw"]);
         var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
         var latest = new Mock<ILatestFrameAccessor>(MockBehavior.Strict);
-        var step = new NoOpFileStorageProcessingStep(
+        var step = new FileStorageCaptureProcessingStep(
             new CaptureProcessingStepMetadata("storage", "Storage", 100),
-            new NoOpFileStorageProcessingStepOptions
+            new FileStorageCaptureProcessingStepOptions
             {
                 UpdateLatestFrame = true,
                 Policies = [new ArtifactStoragePolicyOptions { Role = FrameArtifactRole.Raw, RetentionDays = 60 }]
@@ -170,7 +170,7 @@ public sealed class InfrastructureCaptureProcessingStepTests
             storage.Object,
             Mock.Of<IArtifactOutbox>(),
             Options.Create(new CameraAgentHostOptions()),
-            NullLogger<NoOpFileStorageProcessingStep>.Instance);
+            NullLogger<FileStorageCaptureProcessingStep>.Instance);
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
             await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
@@ -239,9 +239,9 @@ public sealed class InfrastructureCaptureProcessingStepTests
                 .Callback((string _, FrameArtifact _, ReconstructionDescriptor descriptor, string _, CancellationToken _) => captured = descriptor)
                 .ReturnsAsync(new StoredFrameReference(
                     "preview.bin", "/tmp/camera/preview.bin", artifact.Frame.TimestampUtc, artifact.Role));
-            var step = new NoOpFileStorageProcessingStep(
+            var step = new FileStorageCaptureProcessingStep(
                 new CaptureProcessingStepMetadata("storage", "Storage", 100),
-                new NoOpFileStorageProcessingStepOptions
+                new FileStorageCaptureProcessingStepOptions
                 {
                     StorageRoot = "/tmp/camera",
                     UpdateLatestFrame = false,
@@ -253,7 +253,7 @@ public sealed class InfrastructureCaptureProcessingStepTests
                 storage.Object,
                 Mock.Of<IArtifactOutbox>(),
                 Options.Create(new CameraAgentHostOptions()),
-                NullLogger<NoOpFileStorageProcessingStep>.Instance);
+                NullLogger<FileStorageCaptureProcessingStep>.Instance);
 
             await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
             return captured!;
@@ -331,9 +331,9 @@ public sealed class InfrastructureCaptureProcessingStepTests
                 storage.Object,
                 telemetry,
                 NullLogger<CaptureProcessingPersistence>.Instance);
-            var step = new NoOpFileStorageProcessingStep(
+            var step = new FileStorageCaptureProcessingStep(
                 new CaptureProcessingStepMetadata("storage", "Storage", 100),
-                new NoOpFileStorageProcessingStepOptions
+                new FileStorageCaptureProcessingStepOptions
                 {
                     StorageRoot = archiveRoot,
                     QueueForUpload = true,
@@ -343,7 +343,7 @@ public sealed class InfrastructureCaptureProcessingStepTests
                 storage.Object,
                 outbox.Object,
                 hostOptions,
-                NullLogger<NoOpFileStorageProcessingStep>.Instance,
+                NullLogger<FileStorageCaptureProcessingStep>.Instance,
                 persistence);
 
             await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
@@ -406,9 +406,9 @@ public sealed class InfrastructureCaptureProcessingStepTests
                 NullLogger<CaptureProcessingPersistence>.Instance);
             using (var outbox = new SqliteArtifactOutbox())
             {
-                var step = new NoOpFileStorageProcessingStep(
+                var step = new FileStorageCaptureProcessingStep(
                     new CaptureProcessingStepMetadata("storage", "Storage", 100),
-                    new NoOpFileStorageProcessingStepOptions
+                    new FileStorageCaptureProcessingStepOptions
                     {
                         StorageRoot = root,
                         QueueForUpload = true,
@@ -418,7 +418,7 @@ public sealed class InfrastructureCaptureProcessingStepTests
                     frameStorage.Object,
                     outbox,
                     hostOptions,
-                    NullLogger<NoOpFileStorageProcessingStep>.Instance,
+                    NullLogger<FileStorageCaptureProcessingStep>.Instance,
                     persistence);
 
                 await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);

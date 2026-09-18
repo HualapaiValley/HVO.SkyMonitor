@@ -741,9 +741,9 @@ public sealed class RetentionBackgroundServiceTests
                                 CaptureProcessingPersistenceMode.DurableLocal)),
                         new CaptureProcessingStepConfig("Telemetry", "telemetry", DependsOn: ["final-jpeg"]),
                         new CaptureProcessingStepConfig(
-                            NoOpFileStorageProcessingStep.StableAlias,
+                            FileStorageCaptureProcessingStep.StableAlias,
                             "storage",
-                            Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                            Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                             {
                                 StorageRoot = storageRoot,
                                 RetentionDays = 1
@@ -780,9 +780,9 @@ public sealed class RetentionBackgroundServiceTests
             await File.WriteAllBytesAsync(retained, [0xFF, 0xD8, 0xFF, 0xD9]).ConfigureAwait(false);
             File.SetLastWriteTimeUtc(retained, new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
             CaptureProcessingStepConfig Storage(string id, string root, int days) => new(
-                NoOpFileStorageProcessingStep.StableAlias,
+                FileStorageCaptureProcessingStep.StableAlias,
                 id,
-                Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                 {
                     StorageRoot = root,
                     RetentionDays = days
@@ -878,8 +878,8 @@ public sealed class RetentionBackgroundServiceTests
                 Pipeline = new CapturePipelineConfig(
                 [
                     new CaptureProcessingStepConfig(
-                        NoOpFileStorageProcessingStep.StableAlias,
-                        Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                        FileStorageCaptureProcessingStep.StableAlias,
+                        Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                         {
                             StorageRoot = root,
                             RetentionDays = 1,
@@ -893,8 +893,8 @@ public sealed class RetentionBackgroundServiceTests
                             ]
                         })),
                     new CaptureProcessingStepConfig(
-                        NoOpFileStorageProcessingStep.StableAlias,
-                        Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                        FileStorageCaptureProcessingStep.StableAlias,
+                        Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                         {
                             StorageRoot = root,
                             RetentionDays = 1,
@@ -936,7 +936,7 @@ public sealed class RetentionBackgroundServiceTests
                 new OpticsProfile("EquidistantFisheye", 1, 180, 0), new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
             new CapturePipelineConfig(roots.Select(root => new CaptureProcessingStepConfig(
-                NoOpFileStorageProcessingStep.StableAlias,
+                FileStorageCaptureProcessingStep.StableAlias,
                 Options: System.Text.Json.JsonSerializer.SerializeToElement(new { storageRoot = root, retentionDays = 7 }))).ToArray()));
     }
 
@@ -951,7 +951,7 @@ public sealed class RetentionBackgroundServiceTests
                 new PipelineExposureProfile(
                     TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
             new CapturePipelineConfig([new CaptureProcessingStepConfig(
-                NoOpFileStorageProcessingStep.StableAlias,
+                FileStorageCaptureProcessingStep.StableAlias,
                 Options: JsonSerializer.SerializeToElement(new
                 {
                     storageRoot = root,

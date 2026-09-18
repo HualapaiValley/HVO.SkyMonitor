@@ -113,17 +113,11 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2031, Level = LogLevel.Error, Message = "Storage capacity probe failed for {StorageRoot}")]
     public static partial void StorageCapacityProbeFailed(this ILogger logger, string storageRoot, Exception exception);
 
-    [LoggerMessage(EventId = 2020, Level = LogLevel.Information, Message = "NoOp storage step {Step} skipped because no frame was captured")]
-    public static partial void NoOpStorageSkipped(this ILogger logger, string Step);
+    [LoggerMessage(EventId = 2020, Level = LogLevel.Information, Message = "File storage step {Step} skipped because no frame was captured")]
+    public static partial void FileStorageSkipped(this ILogger logger, string Step);
 
-    [LoggerMessage(EventId = 2021, Level = LogLevel.Information, Message = "NoOp storage step {Step} would store frame captured at {TimestampUtc} to {Root} with retention {RetentionDays} days")]
-    public static partial void NoOpStoragePlanned(this ILogger logger, string Step, DateTimeOffset TimestampUtc, string Root, int RetentionDays);
-
-    [LoggerMessage(EventId = 2022, Level = LogLevel.Debug, Message = "NoOp upload step {Step} skipped upload (Immediate={Immediate}, UploadAll={UploadAll})")]
-    public static partial void NoOpUploadSkipped(this ILogger logger, string Step, bool Immediate, bool UploadAll);
-
-    [LoggerMessage(EventId = 2023, Level = LogLevel.Information, Message = "NoOp upload step {Step} would upload frame captured at {TimestampUtc} to {Endpoint} with batch size {BatchSize} after warmup {WarmupSeconds}s")]
-    public static partial void NoOpUploadPlanned(this ILogger logger, string Step, DateTimeOffset TimestampUtc, string Endpoint, int BatchSize, int WarmupSeconds);
+    [LoggerMessage(EventId = 2021, Level = LogLevel.Information, Message = "File storage step {Step} storing frame captured at {TimestampUtc} to {Root} with retention {RetentionDays} days")]
+    public static partial void FileStorageStarted(this ILogger logger, string Step, DateTimeOffset TimestampUtc, string Root, int RetentionDays);
 
     [LoggerMessage(EventId = 2024, Level = LogLevel.Debug, Message = "Calibration step {Step} applying {Strategy} strategy with {Passes} passes and max {MaxSeconds}s window")]
     public static partial void CalibrationApplying(this ILogger logger, string Step, string Strategy, int Passes, int MaxSeconds);

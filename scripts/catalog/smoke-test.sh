@@ -2,7 +2,8 @@
 set -euo pipefail
 umask 077
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/hvo-catalog-smoke.XXXXXX")"
 cleanup() {
     local status=$?

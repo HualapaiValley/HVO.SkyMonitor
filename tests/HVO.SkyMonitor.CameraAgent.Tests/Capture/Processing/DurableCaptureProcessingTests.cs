@@ -908,9 +908,9 @@ public sealed partial class DurableCaptureProcessingTests
             var frameStorage = new Mock<IFrameStorageService>(MockBehavior.Strict);
             using var outbox = new SqliteArtifactOutbox();
             var latest = new LatestFrameAccessor();
-            var storageStep = new NoOpFileStorageProcessingStep(
+            var storageStep = new FileStorageCaptureProcessingStep(
                 new CaptureProcessingStepMetadata("storage", "Storage", 90),
-                new NoOpFileStorageProcessingStepOptions
+                new FileStorageCaptureProcessingStepOptions
                 {
                     StorageRoot = root,
                     RetentionDays = 1,
@@ -925,7 +925,7 @@ public sealed partial class DurableCaptureProcessingTests
                     RawIngressRoot = root,
                     CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
                 }),
-                NullLogger<NoOpFileStorageProcessingStep>.Instance);
+                NullLogger<FileStorageCaptureProcessingStep>.Instance);
             var graph = new CaptureProcessingGraph([
                 new CaptureProcessingGraphNode(
                     "annotation", annotation, [], true, annotation.RecipeName,
@@ -2591,7 +2591,7 @@ public sealed partial class DurableCaptureProcessingTests
 
     private static CameraModuleConfig CreateRetentionConfig(string root)
     {
-        var storageOptions = new NoOpFileStorageProcessingStepOptions
+        var storageOptions = new FileStorageCaptureProcessingStepOptions
         {
             StorageRoot = root,
             RetentionDays = 1

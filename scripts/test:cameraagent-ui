@@ -4,10 +4,12 @@
 set -euo pipefail
 export LC_ALL=C
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 # shellcheck source=lib/trx-evidence.sh
 source "$SCRIPT_DIR/lib/trx-evidence.sh"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly CONFIGURATION="Release"
 readonly OUTPUT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/$CONFIGURATION/net10.0"

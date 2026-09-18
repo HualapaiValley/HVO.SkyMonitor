@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "description": "Closed inventory of deployment contract shards. scripts/test:deploy-environment reads this list and requires it to match the order of the shard bodies in that file exactly; that shared order is the serial execution order and the parallel dispatch order. Adding, removing, renaming or reordering a shard is a change to the protected deployment contract and requires the same change to the shard bodies in the harness.",
+  "shards": [
+    { "name": "preflight", "proves": "inventory schema, split-host preflight rejection matrix, tampered-registry rejection, production script syntax" },
+    { "name": "prepare-images", "proves": "image staging, registry digest binding, isolated and cross-case prepare failures" },
+    { "name": "partial-prepare", "proves": "no-container recovery after a failed prepare, lock and state cleanup" },
+    { "name": "existing-catalog-up", "proves": "production catalog bundle install, lock blocking, resume failure, fixture transport" },
+    { "name": "bootstrap-authority", "proves": "registry publication as the hard barrier for bootstrap, registry-failure recovery" },
+    { "name": "bootstrap-credentials", "proves": "credential destination rejection, orphan rejection, incomplete-phase marking" },
+    { "name": "smoke", "proves": "hybrid transient smoke over the HTTP boundary" },
+    { "name": "measure", "proves": "measure ledger, private-upload registry, strict entry cleanup, runtime-hash staleness" },
+    { "name": "existing-down", "proves": "same-host lifecycle down, remote private artifact absence, Docker context teardown" },
+    { "name": "deploy-services", "proves": "services up, compose rendering, up-phase failpoints" }
+  ]
+}

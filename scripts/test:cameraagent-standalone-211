@@ -7,8 +7,10 @@ export LC_ALL=C
 
 script_directory="${BASH_SOURCE[0]%/*}"
 [[ "$script_directory" != "${BASH_SOURCE[0]}" ]] || script_directory='.'
-readonly SCRIPT_DIR="$(cd "$script_directory" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$script_directory" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 # shellcheck source=lib/trx-evidence.sh
 source "$SCRIPT_DIR/lib/trx-evidence.sh"
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
@@ -63,8 +65,10 @@ fi
 for command in cat chmod cp curl date dirname docker dotnet env flock git hostname id jq mkdir mv openssl realpath rg rm sha256sum stat tr; do
     command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
 done
-readonly LOCAL_UID="$(id -u)"
-readonly LOCAL_GID="$(id -g)"
+LOCAL_UID="$(id -u)"
+readonly LOCAL_UID
+LOCAL_GID="$(id -g)"
+readonly LOCAL_GID
 
 # Every generated secret whose literal value must never reach retained evidence, named once so a
 # secret added to one scan cannot be missed by another. Each site prefixes "$trial_local/secrets/"
@@ -158,14 +162,20 @@ compute_dirty_sha256() {
     } | sha256sum | { read -r hash _; printf '%s' "$hash"; }
 }
 
-readonly REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-readonly BRANCH="$(git -C "$REPO_ROOT" branch --show-current)"
-readonly DIRTY_SHA256="$(compute_dirty_sha256)"
+REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+readonly REVISION
+BRANCH="$(git -C "$REPO_ROOT" branch --show-current)"
+readonly BRANCH
+DIRTY_SHA256="$(compute_dirty_sha256)"
+readonly DIRTY_SHA256
 readonly WORKTREE_FINGERPRINT="${REVISION:0:12}-${DIRTY_SHA256:0:12}"
-readonly RUN_ID="$(date -u +'%Y%m%dT%H%M%SZ')-$$"
+RUN_ID="$(date -u +'%Y%m%dT%H%M%SZ')-$$"
+readonly RUN_ID
 readonly RESULTS="$RESULTS_BASE/$WORKTREE_FINGERPRINT/$RUN_ID"
-readonly DOTNET_SDK_VERSION="$(dotnet --version)"
-readonly DOCKER_SERVER_VERSION="$(docker version --format '{{.Server.Version}}')"
+DOTNET_SDK_VERSION="$(dotnet --version)"
+readonly DOTNET_SDK_VERSION
+DOCKER_SERVER_VERSION="$(docker version --format '{{.Server.Version}}')"
+readonly DOCKER_SERVER_VERSION
 
 assert_worktree_unchanged() {
     local current_revision current_dirty_sha256
@@ -272,7 +282,8 @@ image_iid_file="$RESULTS/cameraagent-image-id"
 assert_worktree_unchanged
 docker build --iidfile "$image_iid_file" -f "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" 8>&-
 assert_worktree_unchanged
-readonly CAMERA_AGENT_IMAGE="$(<"$image_iid_file")"
+CAMERA_AGENT_IMAGE="$(<"$image_iid_file")"
+readonly CAMERA_AGENT_IMAGE
 [[ "$CAMERA_AGENT_IMAGE" == sha256:* ]] || { printf 'CameraAgent image is not content addressed.\n' >&2; exit 1; }
 assert_worktree_unchanged
 path_map=()
@@ -282,7 +293,8 @@ fi
 dotnet build "$PROJECT" --no-restore --no-incremental --configuration Release -warnaserror "${path_map[@]}" 8>&-
 assert_worktree_unchanged
 readonly TEST_ASSEMBLY="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll"
-readonly TEST_ASSEMBLY_SHA256="$(sha256sum "$TEST_ASSEMBLY" | cut -d' ' -f1)"
+TEST_ASSEMBLY_SHA256="$(sha256sum "$TEST_ASSEMBLY" | cut -d' ' -f1)"
+readonly TEST_ASSEMBLY_SHA256
 readonly TEST_OUTPUT_DIR="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0"
 
 # The browser evidence is gated inside the test by an Assert.Inconclusive, and a skipped MSTest returns

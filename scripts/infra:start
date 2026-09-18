@@ -26,14 +26,17 @@ if [[ "$runtime_root_was_set" == true ]]; then
 fi
 
 readonly APP_SERVICES=(logichost cameraagent)
-readonly RUNTIME_DATA_ROOT="$(realpath -ms "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
+RUNTIME_DATA_ROOT="$(realpath -ms "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
+readonly RUNTIME_DATA_ROOT
 if [[ -z "$RUNTIME_DATA_ROOT" || "$RUNTIME_DATA_ROOT" == "/" ]]; then
     printf 'Refusing unsafe runtime data root: %s\n' "$RUNTIME_DATA_ROOT" >&2
     exit 1
 fi
 export HVO_RUNTIME_DATA_ROOT="$RUNTIME_DATA_ROOT"
-export LOCAL_UID="$(id -u)"
-export LOCAL_GID="$(id -g)"
+LOCAL_UID="$(id -u)"
+export LOCAL_UID
+LOCAL_GID="$(id -g)"
+export LOCAL_GID
 hvo_acquire_application_state_lock "$RUNTIME_DATA_ROOT"
 hvo_require_restore_marker_access start
 

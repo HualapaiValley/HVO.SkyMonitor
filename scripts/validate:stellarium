@@ -3,8 +3,10 @@
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 readonly MANIFEST="$REPO_ROOT/tests/fixtures/stellarium/hualapai-fisheye-v1.json"
 readonly VALIDATOR="$REPO_ROOT/tests/fixtures/stellarium/validate.jq"
 readonly PARSER="$REPO_ROOT/tests/fixtures/stellarium/parse-output.jq"

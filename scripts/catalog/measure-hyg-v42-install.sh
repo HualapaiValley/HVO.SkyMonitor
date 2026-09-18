@@ -2,16 +2,20 @@
 set -euo pipefail
 export LC_ALL=C
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 
 if [[ $# -ne 2 ]]; then
     printf 'Usage: %s VERIFIED_PRODUCTION_BUNDLE OUTPUT_JSON\n' "$0" >&2
     exit 2
 fi
 
-readonly BUNDLE="$(realpath "$1")"
-readonly OUTPUT="$(realpath -m "$2")"
-readonly WORK="$(mktemp -d "${TMPDIR:-/tmp}/hvo-catalog-install-measure.XXXXXX")"
+BUNDLE="$(realpath "$1")"
+readonly BUNDLE
+OUTPUT="$(realpath -m "$2")"
+readonly OUTPUT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/hvo-catalog-install-measure.XXXXXX")"
+readonly WORK
 
 cleanup() {
     local status=$?

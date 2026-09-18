@@ -302,6 +302,7 @@ deploy_measure_capture_control() {
 }
 
 deploy_measure_activate_profile() {
+    # shellcheck disable=SC2034 # $6 is the rendered profile path in the shared activate-profile positional contract; this phase activates by target and does not read it.
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" rendered="$6" workload="$7" run_id="$8"
     local expected_revision="${9:-}"
     local name endpoint state status pending pending_sha version activate_body activate_headers activate_response
@@ -765,6 +766,7 @@ deploy_run_measure() {
             canonicalWorkloadConfigured:true,workload:$selected,phaseStatus:"running",startedAt:$now,updatedAt:$now,targets:[]} |
           if $executionRun == $run then . else .executionRunId=$executionRun end')"
     fi
+    # shellcheck disable=SC2034 # Shared phase state read by scripts/deploy/acceptance-normal-flow.sh.
     [[ -z "$scope" ]] || DEPLOY_NORMAL_MEASURE_ACTIVE=true
     deploy_measure_publish || return 1
     if jq -e 'any(.targets[]; .restoration.status != "pending" and .restoration.status != "completed")' <<< "$DEPLOY_MEASURE_JSON" >/dev/null; then

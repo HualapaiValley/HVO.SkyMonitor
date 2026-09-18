@@ -2,7 +2,8 @@
 set -euo pipefail
 umask 022
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 # shellcheck source=scripts/catalog/catalog-common.sh
 source "$SCRIPT_DIR/catalog-common.sh"
 # shellcheck source=scripts/infra:operation-lock
@@ -52,7 +53,7 @@ test_fail_at() {
 }
 
 remove_authenticated_staging_tree() (
-    local path="$1" boundary="${2:-}" entry parent root_device mode identity paths_file directory_fd
+    local path="$1" boundary="${2:-}" entry parent root_device mode paths_file directory_fd
     local root_identity
     local -A identities=()
     local -a entries=() directories=()
@@ -170,14 +171,14 @@ validate_pointer_target() {
 commit_pointer_state() {
     local current_target="$1"
     local previous_target="${2:--}"
-    local temporary='' transaction_fd attempt
+    local temporary='' transaction_fd
 
     validate_pointer_target "$current_target"
     if [[ "$previous_target" != "-" ]]; then
         validate_pointer_target "$previous_target"
     fi
     catalog_lock_barrier || return 1
-    for attempt in {1..16}; do
+    for _ in {1..16}; do
         temporary="$INSTALL_ROOT/.pointer-transaction.tmp.$$.$RANDOM"
         if (set -o noclobber; umask 077; printf '%s\n%s\n' "$current_target" "$previous_target" > "$temporary") 2>/dev/null; then
             break
@@ -249,7 +250,8 @@ prepare_root() {
     local owner
     local mode
     local permissions
-    local current_uid="$(id -u)"
+    local current_uid
+    current_uid="$(id -u)"
     INSTALL_ROOT="$(realpath -ms "$requested_root")"
     [[ -n "$INSTALL_ROOT" && "$INSTALL_ROOT" != "/" ]] || { hyg_fail "refusing unsafe install root: $INSTALL_ROOT"; return 1; }
     IFS='/' read -r -a components <<< "${INSTALL_ROOT#/}"

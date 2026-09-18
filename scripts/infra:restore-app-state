@@ -5,8 +5,10 @@ set -euo pipefail
 umask 077
 export LC_ALL=C
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 # shellcheck source=scripts/infra:operation-lock
 source "$SCRIPT_DIR/infra:operation-lock"
 cd "$REPO_ROOT"
@@ -31,10 +33,11 @@ if [[ "$runtime_root_was_set" == true ]]; then
     HVO_RUNTIME_DATA_ROOT="$runtime_root_override"
 fi
 
-readonly RUNTIME_DATA_ROOT="$(realpath -ms "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
-readonly SELECTED_ARCHIVE="$(realpath -m "$1")"
+RUNTIME_DATA_ROOT="$(realpath -ms "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
+readonly RUNTIME_DATA_ROOT
+SELECTED_ARCHIVE="$(realpath -m "$1")"
+readonly SELECTED_ARCHIVE
 readonly SELECTED_CHECKSUM="$SELECTED_ARCHIVE.sha256"
-readonly INVENTORY_NAME=".hvo-application-state-inventory"
 readonly SUPPORTED_PATHS=(
     logichost/dataprotection
     logichost/home

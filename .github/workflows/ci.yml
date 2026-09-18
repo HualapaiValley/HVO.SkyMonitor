@@ -108,6 +108,14 @@ jobs:
       - name: Run static and lightweight contract checks
         run: |
           ./scripts/ci:shell-syntax
+          curl -fsSL -o "$RUNNER_TEMP/shellcheck.tar.xz" \
+            https://github.com/koalaman/shellcheck/releases/download/v0.9.0/shellcheck-v0.9.0.linux.x86_64.tar.xz
+          printf '%s  %s\n' \
+            '700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f' \
+            "$RUNNER_TEMP/shellcheck.tar.xz" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          export HVO_SHELLCHECK_BIN="$RUNNER_TEMP/shellcheck-v0.9.0/shellcheck"
+          ./scripts/ci:shellcheck
           ./scripts/docs:audit-operations
           ./scripts/test:coordination-guard
           ./scripts/test:pr-review-tools
@@ -116,6 +124,7 @@ jobs:
           ./scripts/test:cameraagent-final-head-535
           ./scripts/test:record-cameraagent-final-head-535
           ./scripts/test:ci-shell-syntax
+          ./scripts/test:ci-shellcheck
           ./scripts/test:infra
           ./scripts/test:smoke-env
           ./scripts/test:devcontainer
@@ -325,14 +334,41 @@ jobs:
         run: |
           dotnet restore HVO.SkyMonitor.v9.slnx
           dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+      # The LogicHost assembly is 506s of a 724s serial total (#850, run 35300523583); the
+      # other five assemblies sum to 218s. Running LogicHost alone beside the other five
+      # takes the step from 729s to 506s (pilot run 35320849748, 669/669 passing, 16-CPU
+      # runner at load 0.46) with the identical per-assembly commands, results directories
+      # and TRX names, so coverage slots and evidence consumers are unchanged. Each lane
+      # keeps its own log; a failure in either lane fails the step after both finish.
       - name: Run Integration suites
         run: |
-          dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx"
-          dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-standalone --logger "trx;LogFileName=integration-cameraagent-standalone.trx"
-          dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/astronomy --logger "trx;LogFileName=integration-astronomy.trx"
-          dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx"
-          dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent --logger "trx;LogFileName=integration-cameraagent.trx"
-          dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-logichost --logger "trx;LogFileName=integration-cameraagent-logichost.trx"
+          mkdir -p TestResults/integration
+          # Each lane runs every one of its assemblies even after one fails, so a failing
+          # run still produces the complete TRX and coverage set the evidence consumers
+          # expect; the lane exit code is the accumulated result.
+          logichost_lane() {
+            local lane_failed=0
+            dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx" || lane_failed=1
+            return "$lane_failed"
+          }
+          other_lane() {
+            local lane_failed=0
+            dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx" || lane_failed=1
+            dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-standalone --logger "trx;LogFileName=integration-cameraagent-standalone.trx" || lane_failed=1
+            dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/astronomy --logger "trx;LogFileName=integration-astronomy.trx" || lane_failed=1
+            dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent --logger "trx;LogFileName=integration-cameraagent.trx" || lane_failed=1
+            dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-logichost --logger "trx;LogFileName=integration-cameraagent-logichost.trx" || lane_failed=1
+            return "$lane_failed"
+          }
+          logichost_lane > TestResults/integration/lane-logichost.log 2>&1 &
+          logichost_pid=$!
+          other_lane > TestResults/integration/lane-other.log 2>&1 &
+          other_pid=$!
+          failed=0
+          wait "$logichost_pid" || failed=1
+          wait "$other_pid" || failed=1
+          cat TestResults/integration/lane-logichost.log TestResults/integration/lane-other.log
+          exit "$failed"
       - name: Upload Integration evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

@@ -489,7 +489,7 @@ running_cameraagents="$(docker ps --format '{{.Names}} {{.Image}}' | rg -i 'came
 
 DOTNET_SDK_VERSION="$(dotnet --version)"
 readonly DOTNET_SDK_VERSION
-[[ "$DOTNET_SDK_VERSION" == '10.0.400' ]] || { printf 'Pinned .NET SDK 10.0.400 is required.\n' >&2; exit 2; }
+[[ "$DOTNET_SDK_VERSION" == '10.0.401' ]] || { printf 'Pinned .NET SDK 10.0.401 is required.\n' >&2; exit 2; }
 DOCKER_VERSION="$(docker version --format '{{.Server.Version}}')"
 [[ "$DOCKER_VERSION" == '29.6.2' && "$DOCKER_ROOT" == /var/lib/docker ]] || {
     printf 'Docker 29.6.2 with root /var/lib/docker is required.\n' >&2

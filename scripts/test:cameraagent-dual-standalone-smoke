@@ -5,8 +5,10 @@ set -euo pipefail
 umask 077
 export LC_ALL=C
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml"
 readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/cameraagent-dual-standalone-smoke/otel-collector.yml"
@@ -15,9 +17,10 @@ readonly SITING_FIXTURE="$REPO_ROOT/tests/fixtures/locations/siding-spring-synth
 readonly RESULTS="$REPO_ROOT/TestResults/issue-197/dual-agent"
 readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6'
 readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
-readonly EXPECTED_CATALOG_SHA256='B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2'
-readonly LOCAL_UID="$(id -u)"
-readonly LOCAL_GID="$(id -g)"
+LOCAL_UID="$(id -u)"
+readonly LOCAL_UID
+LOCAL_GID="$(id -g)"
+readonly LOCAL_GID
 readonly HUALAPAI_PORT="${HVO_CAMERAAGENT_DUAL_STANDALONE_HUALAPAI_PORT:-51971}"
 readonly SIDING_PORT="${HVO_CAMERAAGENT_DUAL_STANDALONE_SIDING_PORT:-51972}"
 readonly TRIAL_COUNT="${HVO_CAMERAAGENT_DUAL_STANDALONE_TRIAL_COUNT:-5}"
@@ -153,14 +156,18 @@ fi
 mkdir -p "$BIND_LOCAL_ROOT"
 printf '%s\n' 'hvo-issue-197-owned-v1' > "$BIND_LOCAL_ROOT/.hvo-issue-197-owned"
 
-readonly REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-readonly BRANCH="$(git -C "$REPO_ROOT" branch --show-current)"
-readonly DIRTY_SHA256="$({
+REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+readonly REVISION
+BRANCH="$(git -C "$REPO_ROOT" branch --show-current)"
+readonly BRANCH
+DIRTY_SHA256="$({
     git -C "$REPO_ROOT" status --porcelain=v1
     git -C "$REPO_ROOT" diff --binary
     while IFS= read -r path; do sha256sum "$REPO_ROOT/$path"; done < <(git -C "$REPO_ROOT" ls-files --others --exclude-standard)
 } | sha256sum | { read -r hash _; printf '%s' "$hash"; })"
-readonly TREE_CLEAN="$([[ -z "$(git -C "$REPO_ROOT" status --porcelain=v1)" ]] && printf true || printf false)"
+readonly DIRTY_SHA256
+TREE_CLEAN="$([[ -z "$(git -C "$REPO_ROOT" status --porcelain=v1)" ]] && printf true || printf false)"
+readonly TREE_CLEAN
 
 collector_config="$RESULTS/docker-config"
 mkdir -p "$collector_config"
@@ -184,7 +191,8 @@ if [[ -n "${HVO_CAMERAAGENT_SMOKE_IMAGE:-}" ]]; then
 else
     docker build --iidfile "$image_iid_file" -f "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" 8>&-
 fi
-readonly CAMERA_AGENT_IMAGE="$(<"$image_iid_file")"
+CAMERA_AGENT_IMAGE="$(<"$image_iid_file")"
+readonly CAMERA_AGENT_IMAGE
 if [[ "$CAMERA_AGENT_IMAGE" != sha256:* ]]; then
     printf 'CameraAgent build did not produce a content-addressed image ID: %s\n' "$CAMERA_AGENT_IMAGE" >&2
     exit 1
@@ -260,7 +268,6 @@ write_agent_env() {
     local agent="$3"
     local port="$4"
     local host_root="$5"
-    local local_root="$6"
     local runtime_target="$7"
     local latitude="$8"
     local longitude="$9"

@@ -152,7 +152,7 @@ public sealed class RetentionBackgroundServiceTimeZoneTests
                 new PipelineExposureProfile(
                     TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
             new CapturePipelineConfig([new CaptureProcessingStepConfig(
-                NoOpFileStorageProcessingStep.StableAlias,
+                FileStorageCaptureProcessingStep.StableAlias,
                 Options: JsonSerializer.SerializeToElement(new { storageRoot = root, retentionDays = 7 }))]));
 
     private static string CreateRoot()

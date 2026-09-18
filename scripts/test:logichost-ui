@@ -5,10 +5,12 @@ set -euo pipefail
 export LC_ALL=C
 umask 077
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 # shellcheck source=lib/trx-evidence.sh
 source "$SCRIPT_DIR/lib/trx-evidence.sh"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"
 readonly PROCESSING_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
 readonly CONFIGURATION="Release"
@@ -30,10 +32,13 @@ for argument in "$@"; do
 done
 
 cd "$REPO_ROOT"
-readonly revision="$(git rev-parse HEAD)"
-readonly dirty_hash="$({ git status --porcelain=v1; git diff --no-ext-diff --binary; git ls-files --others --exclude-standard -z | xargs -0 -r sha256sum; } | sha256sum | cut -d' ' -f1)"
+revision="$(git rev-parse HEAD)"
+readonly revision
+dirty_hash="$({ git status --porcelain=v1; git diff --no-ext-diff --binary; git ls-files --others --exclude-standard -z | xargs -0 -r sha256sum; } | sha256sum | cut -d' ' -f1)"
+readonly dirty_hash
 readonly fingerprint="${revision:0:12}-${dirty_hash:0:12}"
-readonly run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+readonly run_id
 readonly evidence_root="$REPO_ROOT/TestResults/issue-107/$fingerprint/$run_id"
 mkdir -p "$evidence_root"
 
@@ -48,7 +53,8 @@ if [[ "$install_browser" == true ]]; then
 fi
 
 export HVO_ISSUE_107_REVISION="$revision"
-export HVO_ISSUE_107_BRANCH="$(git branch --show-current)"
+HVO_ISSUE_107_BRANCH="$(git branch --show-current)"
+export HVO_ISSUE_107_BRANCH
 export HVO_ISSUE_107_DIRTY_SHA256="$dirty_hash"
 export HVO_ISSUE_107_EVIDENCE_ROOT="$evidence_root"
 

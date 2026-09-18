@@ -283,6 +283,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         var byId = new Dictionary<string, CaptureProcessingStepConfig>(StringComparer.OrdinalIgnoreCase);
         foreach (var step in configuredSteps)
         {
+            ThrowIfObsoleteStorageType(step.Type);
             if (string.IsNullOrWhiteSpace(step.Type) ||
                 step.Enabled != false && !_registrationsByCanonicalAlias.ContainsKey(step.Type))
             {
@@ -353,14 +354,14 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
         if (configured.Any(static item =>
                 item.Config.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal) &&
-            !configured.Any(static item => item.Step is NoOpFileStorageProcessingStep))
+            !configured.Any(static item => item.Step is FileStorageCaptureProcessingStep))
         {
             throw new InvalidOperationException(
                 "Durable processing outputs require an enabled Storage step to define retention ownership.");
         }
-        foreach (var storage in configured.Where(static item => item.Step is NoOpFileStorageProcessingStep))
+        foreach (var storage in configured.Where(static item => item.Step is FileStorageCaptureProcessingStep))
         {
-            var options = ((NoOpFileStorageProcessingStep)storage.Step).ConfiguredOptions;
+            var options = ((FileStorageCaptureProcessingStep)storage.Step).ConfiguredOptions;
             var dependencyIds = storage.Config.DependsOn ?? [];
             var producerDependencies = dependencyIds
                 .Where(nodesById.ContainsKey)
@@ -1309,6 +1310,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             throw new InvalidOperationException("Capture processing step type is required.");
         }
 
+        ThrowIfObsoleteStorageType(typeName);
+
         var registrations = aliasesOnly ? _registrationsByCanonicalAlias : _registrationsByAlias;
         if (registrations.TryGetValue(typeName, out var registration))
         {
@@ -1337,6 +1340,23 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         RegisterStep(registration);
         _registrationsByAlias[typeName] = registration;
         return registration;
+    }
+
+    private static void ThrowIfObsoleteStorageType(string? typeName)
+    {
+        if (string.IsNullOrWhiteSpace(typeName))
+        {
+            return;
+        }
+        var implementationName = typeName.Split(',', 2)[0].Trim();
+        if (implementationName.Equals("NoOpFileStorageProcessingStep", StringComparison.OrdinalIgnoreCase) ||
+            implementationName.Equals(
+                "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Capture processing step type '{implementationName}' is obsolete. Configure the stable alias 'Storage'; class-name compatibility is not supported.");
+        }
     }
 
     private static object CreateOptionsInstance(JsonElement? element, Type optionsType)

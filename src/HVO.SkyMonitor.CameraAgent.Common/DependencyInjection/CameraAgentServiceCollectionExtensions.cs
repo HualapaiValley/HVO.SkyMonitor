@@ -342,11 +342,8 @@ public static class CameraAgentServiceCollectionExtensions
             "ImageQuality", typeof(ImageQualityCaptureProcessingStep),
             typeof(ImageQualityProcessingStepOptions), 70, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
-            "Storage", typeof(NoOpFileStorageProcessingStep),
-            typeof(NoOpFileStorageProcessingStepOptions), 100, AutoInclude: false));
-        services.AddSingleton(new CaptureProcessingStepRegistration(
-            "Upload", typeof(NoOpUploadProcessingStep),
-            typeof(NoOpUploadProcessingStepOptions), 110, AutoInclude: false));
+            "Storage", typeof(FileStorageCaptureProcessingStep),
+            typeof(FileStorageCaptureProcessingStepOptions), 100, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "Telemetry", typeof(TelemetryCaptureProcessingStep),
             typeof(TelemetryProcessingStepOptions), 200, AutoInclude: false));
