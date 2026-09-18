@@ -151,7 +151,7 @@ all-contract mode for local validation:
 Its closed shard inventory is `preflight`, `prepare-images`, `partial-prepare`,
 `existing-catalog-up`, `bootstrap-authority`, `bootstrap-credentials`, `smoke`,
 `measure`, `existing-down`, and `deploy-services`. Inspect it with
-`./scripts/test:deploy-environment --list-shards`, or run one isolated shard with
+`./scripts/test:deploy-environment --list-shards` (read from the closed inventory in `scripts/deploy/shards.json`, which the harness validates against its shard bodies before dispatch), or run one isolated shard with
 `./scripts/test:deploy-environment --shard NAME`. Main/release/manual CI and
 affected pull requests use `./scripts/test:deploy-environment --parallel`; each
 child creates an independent temporary fixture. The coordinator defaults to the
