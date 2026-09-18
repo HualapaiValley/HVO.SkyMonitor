@@ -95,7 +95,7 @@ replacement has matched it.
 | Stage | Deliverable | Moves behaviour | Gate |
 | --- | --- | --- | --- |
 | 0 (this slice) | shard manifest `scripts/deploy/shards.json`; coordinator reads it; `--list-shards` and the CLI contract test derive from it | no | manifest parity with the in-file list |
-| 1 | lifecycle staging (`stage_lifecycle_*`, `prepare_lifecycle_fixture`) extracted to `scripts/lib/deploy-test-lifecycle.sh`, sourced by the harness | no | all ten shards pass unchanged |
+| 1 (done) | deploy runners, recovery exercisers, prepare-case helpers and lifecycle staging (341 lines) extracted unchanged to `scripts/lib/deploy-test-lifecycle.sh`, sourced by the harness | no | all ten shards pass unchanged: local `--parallel` 844s, same completion order as the CI baseline |
 | 2 | each shard body extracted to `scripts/deploy-contracts/<shard>.sh`, sourced by name from the manifest | no | per-shard logs byte-comparable to before |
 | 3 | `DeploymentFakeHost` fixture in `Deployment.Cli.Tests` proven against one shard (`partial-prepare`, smallest and Docker-light) | yes, one shard | shell shard and MSTest shard both green for one full cycle |
 | 4 | remaining shards converted in wall-time order: `existing-down` first because it sets the lane wall | yes | each conversion green beside its shell twin before the shell twin is deleted |
