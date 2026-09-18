@@ -14,10 +14,13 @@ jobs:
   hosted-baseline:
     name: Hosted restore, build, and Unit baseline
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Record experiment start
         run: |
+          evidence_root="$RUNNER_TEMP/ci-v2-baseline"
+          mkdir -p "$evidence_root/timing" "$evidence_root/unit"
+          printf 'CI_V2_EVIDENCE_ROOT=%s\n' "$evidence_root" >> "$GITHUB_ENV"
           printf 'CI_V2_STARTED_AT_EPOCH=%s\n' "$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Checkout exact commit
@@ -30,19 +33,16 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Prepare evidence directories
-        run: mkdir -p TestResults/ci-v2-baseline/timing TestResults/ci-v2-baseline/unit
-
       - name: Restore solution
         id: restore
         run: |
-          /usr/bin/time -v -o TestResults/ci-v2-baseline/timing/restore.time \
+          /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/restore.time" \
             dotnet restore HVO.SkyMonitor.v9.slnx
 
       - name: Build warning-clean Release solution
         id: build
         run: |
-          /usr/bin/time -v -o TestResults/ci-v2-baseline/timing/build.time \
+          /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/build.time" \
             dotnet build HVO.SkyMonitor.v9.slnx \
               --no-restore \
               --configuration Release \
@@ -53,12 +53,12 @@ jobs:
         env:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
         run: |
-          /usr/bin/time -v -o TestResults/ci-v2-baseline/timing/unit.time \
+          /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/unit.time" \
             dotnet test HVO.SkyMonitor.v9.slnx \
               --no-build \
               --configuration Release \
               --filter "TestCategory=Unit" \
-              --results-directory TestResults/ci-v2-baseline/unit \
+              --results-directory "$CI_V2_EVIDENCE_ROOT/unit" \
               --logger trx
 
       - name: Write timing manifest
@@ -81,7 +81,7 @@ jobs:
           }
 
           timing_json() {
-            local stage="$1" outcome="$2" file="TestResults/ci-v2-baseline/timing/$1.time"
+            local stage="$1" outcome="$2" file="$CI_V2_EVIDENCE_ROOT/timing/$1.time"
             jq -n \
               --arg stage "$stage" \
               --arg outcome "$outcome" \
@@ -89,13 +89,14 @@ jobs:
               --arg user "$(read_metric "$file" 'User time \(seconds\)')" \
               --arg system "$(read_metric "$file" 'System time \(seconds\)')" \
               --arg rss "$(read_metric "$file" 'Maximum resident set size \(kbytes\)')" \
-              '{stage:$stage,outcome:$outcome,elapsed:$elapsed,userSeconds:$user,systemSeconds:$system,peakRssKilobytes:($rss | if length == 0 then null else tonumber end)}'
+              '{stage:$stage,outcome:$outcome,elapsed:$elapsed,userSeconds:$user,systemSeconds:$system,largestProcessRssKilobytes:($rss | if length == 0 then null else tonumber end)}'
           }
 
           completed_at_epoch="$(date +%s)"
           sdk_version="$(dotnet --version 2>/dev/null || true)"
-          trx_count="$(find TestResults/ci-v2-baseline/unit -type f -name '*.trx' | wc -l)"
-          evidence_bytes="$(find TestResults/ci-v2-baseline -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')"
+          mkdir -p "$CI_V2_EVIDENCE_ROOT/timing" "$CI_V2_EVIDENCE_ROOT/unit"
+          trx_count="$(find "$CI_V2_EVIDENCE_ROOT/unit" -type f -name '*.trx' 2>/dev/null | wc -l)"
+          evidence_bytes="$(find "$CI_V2_EVIDENCE_ROOT" -type f -printf '%s\n' 2>/dev/null | awk '{ total += $1 } END { print total + 0 }')"
           jq -n \
             --arg schema 'hvo-ci-v2-baseline-v1' \
             --arg repository "$GITHUB_REPOSITORY" \
@@ -108,24 +109,24 @@ jobs:
             --arg runnerArch "$RUNNER_ARCH" \
             --arg runnerImage "${ImageOS-unknown}" \
             --arg sdkVersion "$sdk_version" \
-            --argjson totalElapsedSeconds "$((completed_at_epoch - CI_V2_STARTED_AT_EPOCH))" \
+            --argjson runnerElapsedThroughManifestStartSeconds "$((completed_at_epoch - CI_V2_STARTED_AT_EPOCH))" \
             --argjson trxCount "$trx_count" \
             --argjson evidenceBytes "$evidence_bytes" \
             --argjson restore "$(timing_json restore "$RESTORE_OUTCOME")" \
             --argjson build "$(timing_json build "$BUILD_OUTCOME")" \
             --argjson unit "$(timing_json unit "$UNIT_OUTCOME")" \
-            '{schema:$schema,repository:$repository,event:$event,headSha:$headSha,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),runner:{name:$runnerName,os:$runnerOs,arch:$runnerArch,image:$runnerImage},sdkVersion:$sdkVersion,totalElapsedSeconds:$totalElapsedSeconds,targetElapsedSeconds:600,unitTrxCount:$trxCount,evidenceBytesBeforeUpload:$evidenceBytes,stages:[$restore,$build,$unit]}' \
-            > TestResults/ci-v2-baseline/manifest.json
+            '{schema:$schema,repository:$repository,event:$event,headSha:$headSha,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),runner:{name:$runnerName,os:$runnerOs,arch:$runnerArch,image:$runnerImage},sdkVersion:$sdkVersion,runnerElapsedThroughManifestStartSeconds:$runnerElapsedThroughManifestStartSeconds,targetJobElapsedSeconds:600,hardTimeoutSeconds:1200,unitTrxCount:$trxCount,evidenceBytesBeforeUpload:$evidenceBytes,memoryMetric:"GNU time ru_maxrss: largest single process, not aggregate process-tree RSS",stages:[$restore,$build,$unit]}' \
+            > "$CI_V2_EVIDENCE_ROOT/manifest.json"
 
-          find TestResults/ci-v2-baseline -type f -printf '%P %s bytes\n' | sort
-          jq . TestResults/ci-v2-baseline/manifest.json
+          find "$CI_V2_EVIDENCE_ROOT" -type f -printf '%P %s bytes\n' 2>/dev/null | sort
+          jq . "$CI_V2_EVIDENCE_ROOT/manifest.json"
 
       - name: Upload baseline evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ci-v2-baseline-${{ github.run_id }}-${{ github.run_attempt }}
-          path: TestResults/ci-v2-baseline/
+          path: ${{ runner.temp }}/ci-v2-baseline/
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
