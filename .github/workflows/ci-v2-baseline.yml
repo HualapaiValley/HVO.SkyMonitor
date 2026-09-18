@@ -1,0 +1,145 @@
+name: CI v2 Baseline
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  hosted-baseline:
+    name: Hosted restore, build, and Unit baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Record experiment start
+        run: |
+          started_at_epoch="$(date +%s)"
+          evidence_root="$RUNNER_TEMP/ci-v2-baseline"
+          mkdir -p "$evidence_root/timing" "$evidence_root/unit"
+          {
+            printf 'CI_V2_EVIDENCE_ROOT=%s\n' "$evidence_root"
+            printf 'CI_V2_STARTED_AT_EPOCH=%s\n' "$started_at_epoch"
+            printf 'CI_V2_WORKLOAD_DEADLINE_EPOCH=%s\n' "$((started_at_epoch + 660))"
+          } >> "$GITHUB_ENV"
+
+      - name: Checkout exact commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Restore solution
+        id: restore
+        run: |
+          remaining_seconds="$((CI_V2_WORKLOAD_DEADLINE_EPOCH - $(date +%s)))"
+          ((remaining_seconds > 0)) || { printf 'CI v2 cumulative workload budget was exhausted before restore.\n' >&2; exit 124; }
+          /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/restore.time" \
+            timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
+            dotnet restore HVO.SkyMonitor.v9.slnx
+
+      - name: Build warning-clean Release solution
+        id: build
+        run: |
+          remaining_seconds="$((CI_V2_WORKLOAD_DEADLINE_EPOCH - $(date +%s)))"
+          ((remaining_seconds > 0)) || { printf 'CI v2 cumulative workload budget was exhausted before build.\n' >&2; exit 124; }
+          /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/build.time" \
+            timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
+            dotnet build HVO.SkyMonitor.v9.slnx \
+              --no-restore \
+              --configuration Release \
+              -warnaserror
+
+      - name: Run Docker-disabled Unit selection
+        id: unit
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
+        run: |
+          remaining_seconds="$((CI_V2_WORKLOAD_DEADLINE_EPOCH - $(date +%s)))"
+          ((remaining_seconds > 0)) || { printf 'CI v2 cumulative workload budget was exhausted before Unit tests.\n' >&2; exit 124; }
+          /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/unit.time" \
+            timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
+            dotnet test HVO.SkyMonitor.v9.slnx \
+              --no-build \
+              --configuration Release \
+              --filter "TestCategory=Unit" \
+              --results-directory "$CI_V2_EVIDENCE_ROOT/unit" \
+              --logger trx
+
+      - name: Write timing manifest
+        if: always()
+        env:
+          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          UNIT_OUTCOME: ${{ steps.unit.outcome }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUNNER_NAME: ${{ runner.name }}
+          RUNNER_OS: ${{ runner.os }}
+          RUNNER_ARCH: ${{ runner.arch }}
+        run: |
+          read_metric() {
+            local file="$1" label="$2"
+            [[ -f "$file" ]] || return 0
+            awk -F ': ' -v label="$label" '$1 ~ label { print $2; exit }' "$file"
+          }
+
+          timing_json() {
+            local stage="$1" outcome="$2" file="$CI_V2_EVIDENCE_ROOT/timing/$1.time"
+            jq -n \
+              --arg stage "$stage" \
+              --arg outcome "$outcome" \
+              --arg elapsed "$(read_metric "$file" 'Elapsed \(wall clock\) time')" \
+              --arg user "$(read_metric "$file" 'User time \(seconds\)')" \
+              --arg system "$(read_metric "$file" 'System time \(seconds\)')" \
+              --arg rss "$(read_metric "$file" 'Maximum resident set size \(kbytes\)')" \
+              '{stage:$stage,outcome:$outcome,elapsed:$elapsed,userSeconds:$user,systemSeconds:$system,largestProcessRssKilobytes:($rss | if length == 0 then null else tonumber end)}'
+          }
+
+          completed_at_epoch="$(date +%s)"
+          sdk_version="$(dotnet --version 2>/dev/null || true)"
+          mkdir -p "$CI_V2_EVIDENCE_ROOT/timing" "$CI_V2_EVIDENCE_ROOT/unit"
+          trx_count="$(find "$CI_V2_EVIDENCE_ROOT/unit" -type f -name '*.trx' 2>/dev/null | wc -l)"
+          evidence_bytes="$(find "$CI_V2_EVIDENCE_ROOT" -type f -printf '%s\n' 2>/dev/null | awk '{ total += $1 } END { print total + 0 }')"
+          jq -n \
+            --arg schema 'hvo-ci-v2-baseline-v1' \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg headSha "$HEAD_SHA" \
+            --arg runId "$RUN_ID" \
+            --arg runAttempt "$RUN_ATTEMPT" \
+            --arg runnerName "$RUNNER_NAME" \
+            --arg runnerOs "$RUNNER_OS" \
+            --arg runnerArch "$RUNNER_ARCH" \
+            --arg runnerImage "${ImageOS-unknown}" \
+            --arg sdkVersion "$sdk_version" \
+            --argjson runnerElapsedThroughManifestStartSeconds "$((completed_at_epoch - CI_V2_STARTED_AT_EPOCH))" \
+            --argjson trxCount "$trx_count" \
+            --argjson evidenceBytes "$evidence_bytes" \
+            --argjson restore "$(timing_json restore "$RESTORE_OUTCOME")" \
+            --argjson build "$(timing_json build "$BUILD_OUTCOME")" \
+            --argjson unit "$(timing_json unit "$UNIT_OUTCOME")" \
+            '{schema:$schema,repository:$repository,event:$event,headSha:$headSha,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),runner:{name:$runnerName,os:$runnerOs,arch:$runnerArch,image:$runnerImage},sdkVersion:$sdkVersion,runnerElapsedThroughManifestStartSeconds:$runnerElapsedThroughManifestStartSeconds,targetJobElapsedSeconds:600,cumulativeWorkloadBudgetSeconds:660,terminationGraceSeconds:30,hardTimeoutSeconds:1200,unitTrxCount:$trxCount,evidenceBytesBeforeUpload:$evidenceBytes,memoryMetric:"GNU time ru_maxrss: largest single process, not aggregate process-tree RSS",stages:[$restore,$build,$unit]}' \
+            > "$CI_V2_EVIDENCE_ROOT/manifest.json"
+
+          find "$CI_V2_EVIDENCE_ROOT" -type f -printf '%P %s bytes\n' 2>/dev/null | sort
+          jq . "$CI_V2_EVIDENCE_ROOT/manifest.json"
+
+      - name: Upload baseline evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-v2-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-v2-baseline/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
