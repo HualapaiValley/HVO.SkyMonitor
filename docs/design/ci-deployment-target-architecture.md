@@ -188,3 +188,21 @@ Open decisions for the maintainer:
 1. Confirm that Integration moves off the per-pull-request path to qualification, since this is the only change that meets the ten-minute target without reducing coverage.
 2. Confirm the four run classes and their triggers.
 3. Confirm the #851 supersede and the #782 blocked-until-#875 sequencing.
+
+## 8. Immutable Build Reuse Pilot Result (#852)
+
+Two runs of a one-producer, one-consumer pilot on self-hosted x64, artifact bound to head SHA, SDK version, configuration, platform, run attempt and archive digest, consumer rejecting any mismatch and failing on zero TRX.
+
+| Measure | Run 35315462035 | Run 35317175461 |
+| --- | --- | --- |
+| Producer restore + Release build | 93s | 97s |
+| Pack (zstd, linux-x64 runtimes only, no Playwright) | 5s | 4s |
+| Archive | 527 MB, 9410 files | 527 MB |
+| Upload via `actions/upload-artifact` | 439s | 398s |
+| Download via `actions/download-artifact` | 709s | 545s |
+| Verify binding + unpack | 2s | 2s |
+| Consumer Unit (`--no-build --no-restore`) | not executed (missing restore state) | 126s, 3490 cases, 20 TRX |
+
+Repository facts behind the size: `bin/Release` across 43 projects is 10.8 GB on disk because each test project copies its full transitive closure, including 9.5 GB of `runtimes/` for every RID and 264 MB of bundled Playwright Node. Restricting to linux-x64 leaves 1.44 GB raw, 281 MB unique by content, 527 MB packed.
+
+Decision: **not adopted**. Transport through the GitHub artifact service costs 8 to 12 minutes per hop against a 97s rebuild on the same runner class. The build is not the cost; the artifact service is. Reuse becomes viable only with a runner-local or LAN-local store (shared volume, local registry, or content-addressed cache on the self-hosted fleet), which is a runner-infrastructure decision belonging with the capacity model in section 3.5 and issue #849, not a workflow change. The binding contract (SHA, SDK, configuration, platform, attempt, digest) and the zero-TRX guard are proven and carry forward unchanged into that design.
