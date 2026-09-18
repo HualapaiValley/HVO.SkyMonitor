@@ -334,21 +334,30 @@ jobs:
       - name: Run Integration suites
         run: |
           mkdir -p TestResults/integration
-          (
-            dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx"
-          ) > TestResults/integration/lane-logichost.log 2>&1 &
-          logichost_lane=$!
-          (
-            dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx"
-            dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-standalone --logger "trx;LogFileName=integration-cameraagent-standalone.trx"
-            dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/astronomy --logger "trx;LogFileName=integration-astronomy.trx"
-            dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent --logger "trx;LogFileName=integration-cameraagent.trx"
-            dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-logichost --logger "trx;LogFileName=integration-cameraagent-logichost.trx"
-          ) > TestResults/integration/lane-other.log 2>&1 &
-          other_lane=$!
+          # Each lane runs every one of its assemblies even after one fails, so a failing
+          # run still produces the complete TRX and coverage set the evidence consumers
+          # expect; the lane exit code is the accumulated result.
+          logichost_lane() {
+            local lane_failed=0
+            dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx" || lane_failed=1
+            return "$lane_failed"
+          }
+          other_lane() {
+            local lane_failed=0
+            dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx" || lane_failed=1
+            dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-standalone --logger "trx;LogFileName=integration-cameraagent-standalone.trx" || lane_failed=1
+            dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/astronomy --logger "trx;LogFileName=integration-astronomy.trx" || lane_failed=1
+            dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent --logger "trx;LogFileName=integration-cameraagent.trx" || lane_failed=1
+            dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-logichost --logger "trx;LogFileName=integration-cameraagent-logichost.trx" || lane_failed=1
+            return "$lane_failed"
+          }
+          logichost_lane > TestResults/integration/lane-logichost.log 2>&1 &
+          logichost_pid=$!
+          other_lane > TestResults/integration/lane-other.log 2>&1 &
+          other_pid=$!
           failed=0
-          wait "$logichost_lane" || failed=1
-          wait "$other_lane" || failed=1
+          wait "$logichost_pid" || failed=1
+          wait "$other_pid" || failed=1
           cat TestResults/integration/lane-logichost.log TestResults/integration/lane-other.log
           exit "$failed"
       - name: Upload Integration evidence
