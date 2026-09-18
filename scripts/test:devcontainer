@@ -45,7 +45,7 @@ fi
 
 jq --exit-status \
     '.configuration.remoteUser == "vscode" and
-     (.configuration.features["ghcr.io/devcontainers/features/dotnet:2"].version == "10.0.400") and
+     (.configuration.features["ghcr.io/devcontainers/features/dotnet:2"].version == "10.0.401") and
      (.configuration.features["ghcr.io/devcontainers/features/docker-outside-of-docker:1"].version == "29.7.2")' \
     "$TEMP_ROOT/resolved.json" >/dev/null
 
