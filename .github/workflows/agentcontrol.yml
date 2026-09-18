@@ -66,6 +66,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           REPOSITORY: ${{ github.repository }}
         run: |
+          # shellcheck disable=SC2016 # The backticks are literal Markdown for the step summary.
           repos="$(gh api installation/repositories --jq '[.repositories[].full_name]|join(",")')"
           rate="$(gh api rate_limit --jq .resources.core.limit)"
           {
@@ -126,6 +127,7 @@ jobs:
           HEAD: ${{ steps.body.outputs.head }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # shellcheck disable=SC2016 # The backticks are literal Markdown in the posted comment.
           {
             cat "$RUNNER_TEMP/review.md"
             printf '\n\n<sub>Posted by `hvo-agentcontrol[bot]` on dispatch by `%s`; head `%s`; run %s</sub>\n' "$ACTOR" "$HEAD" "$RUN_URL"
@@ -161,6 +163,7 @@ jobs:
           PR: ${{ inputs.pr }}
           THREAD_ID: ${{ inputs.thread_id }}
         run: |
+          # shellcheck disable=SC2016 # $id is a GraphQL variable, bound with -f, not a shell expansion.
           gh api graphql -f query='query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved pullRequest{number} comments(last:1){nodes{body}}}}}' \
             -f id="$THREAD_ID" > "$RUNNER_TEMP/thread.json"
           number="$(jq -r .data.node.pullRequest.number "$RUNNER_TEMP/thread.json")"
