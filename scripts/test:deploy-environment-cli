@@ -16,12 +16,49 @@ wait_for_process_exit() {
     return 1
 }
 
+# The closed shard contract is pinned here as a literal, independently of the
+# manifest the harness reads, so a manifest edit cannot silently redefine the
+# contract this test exists to hold. The harness must agree with both.
 expected_shards=$'preflight\nprepare-images\npartial-prepare\nexisting-catalog-up\nbootstrap-authority\nbootstrap-credentials\nsmoke\nmeasure\nexisting-down\ndeploy-services'
 actual_shards="$($HARNESS --list-shards)"
 [[ "$actual_shards" == "$expected_shards" ]] || {
     printf 'Deployment shard listing did not match the closed contract.\n' >&2
     exit 1
 }
+manifest_shards="$(jq -r '.shards[].name' "$SCRIPT_DIR/deploy/shards.json")"
+[[ "$manifest_shards" == "$expected_shards" ]] || {
+    printf 'Deployment shard manifest did not match the closed contract.\n' >&2
+    exit 1
+}
+
+# The harness refuses a manifest that is missing, malformed, or that disagrees
+# with the shard bodies, before any shard is dispatched.
+manifest_probe() {
+    local label="$1" manifest="$2" expected_fragment="$3" probe_root
+    probe_root="$WORK_ROOT/manifest-$label"
+    mkdir -p "$probe_root/scripts/deploy"
+    cp "$HARNESS" "$probe_root/scripts/test:deploy-environment"
+    [[ "$manifest" == MISSING ]] || printf '%s\n' "$manifest" > "$probe_root/scripts/deploy/shards.json"
+    if "$probe_root/scripts/test:deploy-environment" --list-shards > "$probe_root/out" 2>&1; then
+        printf 'Deployment harness accepted a %s shard manifest.\n' "$label" >&2
+        exit 1
+    fi
+    grep -Fq "$expected_fragment" "$probe_root/out" || {
+        printf 'Deployment harness rejected a %s shard manifest without the expected reason:\n' "$label" >&2
+        cat "$probe_root/out" >&2
+        exit 1
+    }
+}
+manifest_probe missing MISSING 'manifest is missing'
+manifest_probe malformed '{"schemaVersion": 1, "shards": [' 'manifest is invalid'
+manifest_probe wrong-schema '{"schemaVersion": 2, "shards": [{"name": "preflight"}]}' 'schemaVersion 1'
+manifest_probe empty '{"schemaVersion": 1, "shards": []}' 'non-empty shards array'
+manifest_probe bad-name '{"schemaVersion": 1, "shards": [{"name": "Preflight"}]}' 'lowercase-kebab'
+manifest_probe duplicate '{"schemaVersion": 1, "shards": [{"name": "preflight"}, {"name": "preflight"}]}' 'must be unique'
+manifest_probe unknown-shard "$(jq -c '.shards += [{"name": "phantom"}]' "$SCRIPT_DIR/deploy/shards.json")" 'manifest and shard bodies disagree'
+manifest_probe dropped-shard "$(jq -c 'del(.shards[0])' "$SCRIPT_DIR/deploy/shards.json")" 'manifest and shard bodies disagree'
+manifest_probe reordered "$(jq -c '.shards |= reverse' "$SCRIPT_DIR/deploy/shards.json")" 'order matters'
+
 
 # No arguments must stay in-process with SELECTED_SHARD=all rather than entering the shard coordinator.
 if DEPLOY_TEST_EARLY_FAIL_SHARD=all "$HARNESS" > "$WORK_ROOT/serial-dispatch.log" 2>&1; then

@@ -10,18 +10,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
-readonly DEPLOY_CONTRACT_SHARDS=(
-    preflight
-    prepare-images
-    partial-prepare
-    existing-catalog-up
-    bootstrap-authority
-    bootstrap-credentials
-    smoke
-    measure
-    existing-down
-    deploy-services
-)
+# The shard inventory is owned by scripts/deploy/shards.json (#875 stage 0) so the
+# coordinator, --list-shards, the CLI contract test and the eventual typed runners
+# all read one closed list. The manifest is validated before use: an object with
+# a non-empty array of unique, lowercase-kebab names, every name backed by an
+# `if shard_enabled NAME` block in this file, and every such block named in the
+# manifest. A manifest that drifts from the bodies fails here, not at dispatch.
+readonly DEPLOY_CONTRACT_SHARD_MANIFEST="$REPO_ROOT/scripts/deploy/shards.json"
+load_deploy_contract_shards() {
+    local names declared_bodies
+    [[ -f "$DEPLOY_CONTRACT_SHARD_MANIFEST" ]] || {
+        printf 'Deployment contract shard manifest is missing: %s\n' "$DEPLOY_CONTRACT_SHARD_MANIFEST" >&2
+        exit 2
+    }
+    names="$(jq -r '
+        if type != "object" or (.schemaVersion != 1) or (.shards | type) != "array" or (.shards | length) == 0 then
+            error("manifest must be an object with schemaVersion 1 and a non-empty shards array")
+        elif any(.shards[]; type != "object" or (.name | type) != "string" or (.name | test("^[a-z][a-z0-9-]*$") | not)) then
+            error("every shard needs a lowercase-kebab name")
+        elif ([.shards[].name] | length) != ([.shards[].name] | unique | length) then
+            error("shard names must be unique")
+        else .shards[].name end' "$DEPLOY_CONTRACT_SHARD_MANIFEST" 2>&1)" || {
+        printf 'Deployment contract shard manifest is invalid: %s\n' "$names" >&2
+        exit 2
+    }
+    mapfile -t DEPLOY_CONTRACT_SHARDS <<< "$names"
+    # Order-sensitive on purpose. Serial execution follows the order of the shard
+    # bodies in this file, and later bodies consume staging that earlier bodies
+    # define, so that order is load-bearing; parallel dispatch follows the manifest.
+    # Requiring the two orders to be identical keeps one contract, and makes a
+    # reordering edit to either side fail here rather than change scheduling.
+    declared_bodies="$(grep -oE '^if shard_enabled [a-z][a-z0-9-]*; then$' "${BASH_SOURCE[0]}" | awk '{print $3}' | tr -d ';' | awk '!seen[$0]++')"
+    if [[ "$(printf '%s\n' "${DEPLOY_CONTRACT_SHARDS[@]}")" != "$declared_bodies" ]]; then
+        printf 'Deployment contract shard manifest and shard bodies disagree (order matters).\nmanifest: %s\nbodies:   %s\n' \
+            "$(printf '%s ' "${DEPLOY_CONTRACT_SHARDS[@]}")" "$(printf '%s ' $declared_bodies)" >&2
+        exit 2
+    fi
+    readonly DEPLOY_CONTRACT_SHARDS
+}
+load_deploy_contract_shards
 
 is_deploy_contract_shard() {
     local candidate="$1" shard
