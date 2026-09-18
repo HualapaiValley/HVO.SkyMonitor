@@ -124,15 +124,15 @@ jobs:
           read_metric() {
             local file="$1" label="$2"
             [[ -f "$file" ]] || return 0
-            awk -F ': ' -v label="$label" '$1 ~ label { print $2; exit }' "$file"
+            awk -v label="$label" 'index($0, label) { sub(/^.*: /, ""); print; exit }' "$file"
           }
           stage_json() {
             local stage="$1" outcome="$2" file="$DEV_V1_EVIDENCE_ROOT/timing/$1.time"
             jq -n \
               --arg name "$stage" \
               --arg outcome "$outcome" \
-              --arg elapsed "$(read_metric "$file" 'Elapsed \(wall clock\) time')" \
-              --arg rss "$(read_metric "$file" 'Maximum resident set size \(kbytes\)')" \
+              --arg elapsed "$(read_metric "$file" 'Elapsed (wall clock) time')" \
+              --arg rss "$(read_metric "$file" 'Maximum resident set size (kbytes)')" \
               '{name:$name,outcome:$outcome,elapsed:$elapsed,largestProcessRssKilobytes:($rss|if length==0 then null else tonumber end)}'
           }
           completed_at="$(date +%s)"
