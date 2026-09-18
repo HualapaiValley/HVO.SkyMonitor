@@ -7,6 +7,13 @@ name: AgentControl
 # it needs. Nothing here runs on push or pull_request: it only runs when
 # dispatched by someone with write access, and every operation records who
 # dispatched it and what it did on the target PR.
+#
+# Resolving a review thread is deliberately not an operation here. The GraphQL
+# `resolveReviewThread` mutation is refused for App installation tokens
+# ("Resource not accessible by integration") regardless of permission grant and
+# even on a thread the App authored, proven on PR #909. The reviewer's judgement
+# is the VERIFIED_* comment, which the App can post; resolving the thread is the
+# operator's click.
 
 on:
   workflow_dispatch:
@@ -18,17 +25,12 @@ on:
         options:
           - verify-identity
           - post-review
-          - resolve-thread
       pr:
-        description: Pull request number (post-review, resolve-thread)
+        description: Pull request number (post-review)
         type: string
         required: false
       body_file:
         description: Path in the repository to a Markdown file holding the review body (post-review); read from the PR head
-        type: string
-        required: false
-      thread_id:
-        description: Review thread node ID to resolve (resolve-thread)
         type: string
         required: false
 
@@ -126,43 +128,6 @@ jobs:
           # The backticks are literal Markdown in the posted comment; the values are printf arguments.
           # shellcheck disable=SC2016
           printf '\n\n<sub>Posted by `hvo-agentcontrol[bot]` on dispatch by `%s`; head `%s`; run %s</sub>\n' "$ACTOR" "$HEAD" "$RUN_URL" >> "$RUNNER_TEMP/final.md"
-          gh api "repos/$REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/final.md" --jq .html_url | tee -a "$GITHUB_STEP_SUMMARY"
-
-  resolve-thread:
-    name: Resolve thread
-    if: inputs.operation == 'resolve-thread'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Validate inputs
-        env:
-          PR: ${{ inputs.pr }}
-          THREAD_ID: ${{ inputs.thread_id }}
-        run: |
-          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "pr must be a number" >&2; exit 2; }
-          [[ "$THREAD_ID" =~ ^PRRT_[A-Za-z0-9_-]+$ ]] || { echo "thread_id must be a PRRT_ node id" >&2; exit 2; }
-      - name: Mint a pull-request write token
-        id: token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ vars.HVO_AGENTCONTROL_APP_ID }}
-          private-key: ${{ secrets.HVO_AGENTCONTROL_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-metadata: read
-          permission-pull-requests: write
-      - name: Resolve only if the thread belongs to this PR and its last reply is a verification
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          PR: ${{ inputs.pr }}
-          THREAD_ID: ${{ inputs.thread_id }}
-        run: |
-          # shellcheck disable=SC2016 # $id is a GraphQL variable, bound with -f, not a shell expansion.
-          gh api graphql -f query='query($id:ID!){node(id:$id){... on PullRequestReviewThread{isResolved pullRequest{number} comments(last:1){nodes{body}}}}}' \
-            -f id="$THREAD_ID" > "$RUNNER_TEMP/thread.json"
-          number="$(jq -r .data.node.pullRequest.number "$RUNNER_TEMP/thread.json")"
-          last="$(jq -r '.data.node.comments.nodes[0].body' "$RUNNER_TEMP/thread.json")"
-          [[ "$number" == "$PR" ]] || { echo "thread belongs to PR #$number, not #$PR" >&2; exit 2; }
-          [[ "$last" == VERIFIED_* ]] || { echo "last comment in the thread is not a VERIFIED_* disposition; refusing to resolve" >&2; exit 2; }
-          # shellcheck disable=SC2016 # $id is a GraphQL variable, bound with -f, not a shell expansion.
-          gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id="$THREAD_ID" --jq '.data.resolveReviewThread.thread.isResolved' | tee -a "$GITHUB_STEP_SUMMARY"
+          url="$(gh api "repos/$REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/final.md" --jq .html_url)"
+          [[ "$url" == https://* ]] || { echo "comment was not created: $url" >&2; exit 1; }
+          printf '%s\n' "$url" | tee -a "$GITHUB_STEP_SUMMARY"
