@@ -32,6 +32,7 @@ expect() {
 }
 
 printf '#!/usr/bin/env bash\nprintf "ok\\n"\n' > "$WORK/good file.sh"
+printf '#!/usr/bin/env bash\nprintf "also ok\\n"\n' > "$WORK/good-two.sh"
 printf '%s\0' 'good file.sh' > "$WORK/good.targets"
 expect 'path containing spaces is preserved' 0 'passed for 1 derived shell file' "$WORK/good.targets"
 
@@ -43,6 +44,8 @@ called_later() { :; }
 EOF
 printf '%s\0' 'error.sh' > "$WORK/error.targets"
 expect 'new error-level diagnostic fails enforcement' 1 'SC2218' "$WORK/error.targets"
+printf '%s\0%s\0%s\0' 'good file.sh' 'error.sh' 'good-two.sh' > "$WORK/mixed.targets"
+expect 'bad file in a mixed batch is rejected' 1 'failed for 1 of 3' "$WORK/mixed.targets"
 
 # The source directive is load-bearing: the runtime source expression is dynamic and ShellCheck
 # can resolve it only through the directive.
@@ -171,6 +174,17 @@ trailing_path='trailing'$'\n'
 printf '#!/usr/bin/env bash\n:\n' > "$WORK/$trailing_path"
 printf '%s\0' "$trailing_path" > "$WORK/trailing-newline.targets"
 expect 'trailing newline path is preserved' 0 'passed for 1 derived shell file' "$WORK/trailing-newline.targets"
+
+# The bounded-source mode is exact, loud, and still lints the harness itself at error severity.
+install -d "$WORK/scripts/test"
+printf '#!/usr/bin/env bash\ncalled_later\ncalled_later() { :; }\n' > "$WORK/scripts/test:deploy-environment"
+printf '%s\0%s\0' 'scripts/test:deploy-environment' 'good file.sh' > "$WORK/exception.targets"
+expect 'bounded deployment harness is still linted' 1 'SC2218' "$WORK/exception.targets"
+printf '#!/usr/bin/env bash\n:\n' > "$WORK/scripts/test:deploy-environment"
+expect 'single deployment harness bounded mode is loud' 0 'typed replacement tracked in #875' "$WORK/exception.targets"
+printf '#!/usr/bin/env bash\n:\n' > "$WORK/scripts/test:another-harness"
+printf '%s\0%s\0%s\0' 'scripts/test:deploy-environment' 'scripts/test:another-harness' 'good file.sh' > "$WORK/exception-extra.targets"
+expect 'ordinary files beside bounded mode remain linted' 0 'passed for 3 derived shell file' "$WORK/exception-extra.targets"
 
 cat > "$WORK/fake-shellcheck" <<'EOF'
 #!/usr/bin/env bash

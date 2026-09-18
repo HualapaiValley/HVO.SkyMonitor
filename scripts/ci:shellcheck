@@ -102,6 +102,8 @@ if ((${#targets[@]} == 0)); then
 fi
 
 resolved=()
+lint_targets=()
+bounded_targets=()
 declare -A seen=()
 resolution_output="$(mktemp)"
 cleanup_files+=("$resolution_output")
@@ -150,8 +152,41 @@ for target in "${targets[@]}"; do
     }
     seen[$canonical]=1
     resolved+=("$path")
+    if [[ "$target" == 'scripts/test:deploy-environment' ]]; then
+        bounded_targets+=("$path")
+    else
+        lint_targets+=("$path")
+    fi
 done
 
-"$shellcheck_bin" -x --severity=error "${resolved[@]}"
+failed=()
+for path in "${lint_targets[@]}"; do
+    if ! "$shellcheck_bin" -x --severity=error "$path"; then
+        failed+=("${path#"$REPO_ROOT/"}")
+    fi
+done
+for path in "${bounded_targets[@]}"; do
+    if ! "$shellcheck_bin" --severity=error "$path"; then
+        failed+=("${path#"$REPO_ROOT/"}")
+    fi
+done
+if ((${#failed[@]} > 0)); then
+    printf 'ShellCheck %s error enforcement failed for %d of %d derived shell file(s):\n' \
+        "$SHELLCHECK_VERSION" "${#failed[@]}" "${#resolved[@]}" >&2
+    printf '  %s\n' "${failed[@]}" >&2
+    exit 1
+fi
+if ((${#bounded_targets[@]} > 1)); then
+    printf 'ShellCheck bounded-source set is invalid; observed %d entries.\n' "${#bounded_targets[@]}" >&2
+    exit 1
+fi
+if [[ -z "$targets_file" && ${#bounded_targets[@]} -ne 1 ]]; then
+    printf 'The authoritative derived set did not contain the tracked bounded-source deployment harness.\n' >&2
+    exit 1
+fi
+if ((${#bounded_targets[@]} == 1)); then
+    printf 'ShellCheck bounded-source mode: %s is linted without recursive -x expansion; typed replacement tracked in #875.\n' \
+        "${bounded_targets[0]#"$REPO_ROOT/"}"
+fi
 printf 'ShellCheck %s error enforcement passed for %d derived shell file(s).\n' \
     "$SHELLCHECK_VERSION" "${#resolved[@]}"
