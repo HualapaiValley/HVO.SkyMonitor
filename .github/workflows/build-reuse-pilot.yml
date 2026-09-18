@@ -31,7 +31,10 @@ jobs:
             \( -not -path '*/runtimes/*' -o -path '*/runtimes/linux-x64/*' -o -path '*/runtimes/linux/*' -o -path '*/runtimes/unix/*' \) \
             | sort > "$RUNNER_TEMP/artifact.list"
           find src tests tools -path '*/obj/Release/*' -type f | sort >> "$RUNNER_TEMP/artifact.list"
-          find src tests tools -path '*/obj/*' -maxdepth 4 -name 'project.assets.json' | sort >> "$RUNNER_TEMP/artifact.list"
+          {
+            find src tests tools -maxdepth 3 -path '*/obj/project.assets.json'
+            find src tests tools -maxdepth 3 \( -path '*/obj/*.nuget.g.props' -o -path '*/obj/*.nuget.g.targets' -o -path '*/obj/project.nuget.cache' \)
+          } | sort >> "$RUNNER_TEMP/artifact.list"
           tar --zstd -cf "$RUNNER_TEMP/release-build.tar.zst" -T "$RUNNER_TEMP/artifact.list"
           echo "pack=$(( $(date +%s) - s ))" >> "$RUNNER_TEMP/t"
           digest=$(sha256sum "$RUNNER_TEMP/release-build.tar.zst" | cut -d' ' -f1)
@@ -90,5 +93,7 @@ jobs:
           s=$(date +%s)
           dotnet test HVO.SkyMonitor.v9.slnx --no-build --no-restore --configuration Release --filter "TestCategory=Unit" --results-directory "$RUNNER_TEMP/unit" --logger trx
           echo "unit=$(( $(date +%s) - s ))" >> "$RUNNER_TEMP/t"
-          echo "trx=$(find "$RUNNER_TEMP/unit" -name '*.trx' | wc -l)" >> "$RUNNER_TEMP/t"
+          trx=$(find "$RUNNER_TEMP/unit" -name '*.trx' | wc -l); echo "trx=$trx" >> "$RUNNER_TEMP/t"
+          # A consumer that executes nothing must not pass: the first pilot run reported 0 TRX with exit 0.
+          [[ "$trx" -eq 20 ]] || { echo "expected 20 Unit TRX files, got $trx"; cat "$RUNNER_TEMP/t"; exit 1; }
           cat "$RUNNER_TEMP/t"
