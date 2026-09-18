@@ -3,6 +3,7 @@ name: Development v1
 on:
   pull_request:
     branches: [development/v1]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [development/v1]
 
@@ -52,6 +53,7 @@ jobs:
   build-unit:
     name: Development v1 / Build and Unit
     needs: preflight
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 15
     steps:
