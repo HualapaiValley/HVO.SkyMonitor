@@ -108,6 +108,7 @@ jobs:
       - name: Run static and lightweight contract checks
         run: |
           ./scripts/ci:shell-syntax
+          ./scripts/ci:shellcheck
           ./scripts/docs:audit-operations
           ./scripts/test:coordination-guard
           ./scripts/test:pr-review-tools
@@ -116,6 +117,7 @@ jobs:
           ./scripts/test:cameraagent-final-head-535
           ./scripts/test:record-cameraagent-final-head-535
           ./scripts/test:ci-shell-syntax
+          ./scripts/test:ci-shellcheck
           ./scripts/test:infra
           ./scripts/test:smoke-env
           ./scripts/test:devcontainer

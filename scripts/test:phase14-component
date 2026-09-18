@@ -117,8 +117,10 @@ cat > "$lock_bin/dotnet" <<'SHIM'
 SHIM
 chmod 700 "$lock_bin/dotnet"
 exec 201> "$TEMP_DIR/child-lock"
+# shellcheck disable=SC2218 # These fixture overrides are intentionally defined below after the inputs they exercise.
 HVO_EVIDENCE_TRIAL=7 HVO_ISSUE_107_DEPENDENCY=SqlServer PATH="$lock_bin:$PATH" \
   deploy_acceptance_component_execute_test "$TEMP_DIR/child-evidence" "$TEMP_DIR/child-trx" "$revision"
+# shellcheck disable=SC2218 # See the intentional forward-defined fixture overrides above.
 PATH="$lock_bin:$PATH" deploy_acceptance_component_verify_trx "$TEMP_DIR/child-trx"
 exec 201>&-
 
