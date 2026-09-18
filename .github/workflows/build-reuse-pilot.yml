@@ -1,6 +1,8 @@
 name: Build reuse pilot (852)
 on:
   workflow_dispatch:
+  push:
+    branches: [feature/852-immutable-build-reuse]
 permissions:
   contents: read
 jobs:
