@@ -301,6 +301,14 @@ while IFS= read -r inventory; do
         printf 'Malformed category inventory: %s\n' "$inventory" >&2
         exit 1
     fi
+    # jq collapses a duplicated key to its last value at parse time, so neither
+    # `keys` nor `tostream` can see the duplicate the audit engine rejects. Only
+    # the parser-level `--stream` mode emits one leaf event per key occurrence in
+    # the source text, so counting those against the six distinct keys catches it.
+    if [[ "$(jq --stream -c 'select(length == 2) | .[0][0]' "$inventory" | wc -l)" -ne 6 ]]; then
+        printf 'Duplicate category key in inventory: %s\n' "$inventory" >&2
+        exit 1
+    fi
     if ! ls "$(dirname "$inventory")"/*.csproj > /dev/null 2>&1; then
         printf 'Category inventory has no test project beside it: %s\n' "$inventory" >&2
         exit 1

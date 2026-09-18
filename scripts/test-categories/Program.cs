@@ -31,7 +31,7 @@ if (args.Contains("--emit-matrix", StringComparer.Ordinal))
     {
         foreach (var category in categories)
         {
-            Console.WriteLine($"{category}\t{relativeProject}\t{counts[category]}");
+            Console.WriteLine($"{category}\t{relativeProject}\t{counts![category]}");
         }
     }
 
@@ -75,6 +75,9 @@ foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "tests"), "*.cs
     }
 }
 
+// Every discovered project is audited against real discovery, including one whose inventory is
+// missing or unusable: its structural failure is already recorded, and reporting the actual counts
+// beside it means the operator can write the correct inventory from one run instead of guessing.
 foreach (var (relativeProject, expectedCounts) in expected)
 {
     var project = Path.Combine(root, relativeProject);
@@ -84,7 +87,11 @@ foreach (var (relativeProject, expectedCounts) in expected)
     {
         selected[category] = await DiscoverAsync(root, project, $"TestCategory={category}").ConfigureAwait(false);
         totals[category] += selected[category].Count;
-        if (selected[category].Count != expectedCounts[category])
+        if (expectedCounts is null)
+        {
+            failures.Add($"{relativeProject}: {category} discovery count is {selected[category].Count}; no usable inventory to compare against");
+        }
+        else if (selected[category].Count != expectedCounts[category])
         {
             failures.Add($"{relativeProject}: {category} discovery count is {selected[category].Count}; expected {expectedCounts[category]}");
         }
@@ -141,10 +148,10 @@ static int ReportFailures(List<string> failures)
 // object with one non-negative integer per known category, every category present, nothing else.
 // Anything looser is rejected rather than defaulted: a category that defaults to zero is a pin
 // that silently stops pinning the moment a case is recategorized.
-static Dictionary<string, IReadOnlyDictionary<string, int>> LoadInventories(string root, string[] categories, List<string> failures)
+static Dictionary<string, IReadOnlyDictionary<string, int>?> LoadInventories(string root, string[] categories, List<string> failures)
 {
     const string inventoryFileName = "test-categories.json";
-    var inventories = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal);
+    var inventories = new Dictionary<string, IReadOnlyDictionary<string, int>?>(StringComparer.Ordinal);
     var testsRoot = Path.Combine(root, "tests");
     var projectFiles = Directory.EnumerateFiles(testsRoot, "*.csproj", SearchOption.AllDirectories)
         .Where(static path => !path.EndsWith("/HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj", StringComparison.Ordinal))
@@ -179,14 +186,11 @@ static Dictionary<string, IReadOnlyDictionary<string, int>> LoadInventories(stri
         if (!File.Exists(inventoryFile))
         {
             failures.Add($"test project is missing its category inventory {inventoryFileName}: {relativeProject}");
+            inventories[relativeProject] = null;
             continue;
         }
 
-        var counts = ParseInventory(root, inventoryFile, categories, failures);
-        if (counts is not null)
-        {
-            inventories[relativeProject] = counts;
-        }
+        inventories[relativeProject] = ParseInventory(root, inventoryFile, categories, failures);
     }
 
     return inventories;
