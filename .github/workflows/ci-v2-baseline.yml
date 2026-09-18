@@ -37,12 +37,14 @@ jobs:
         id: restore
         run: |
           /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/restore.time" \
+            timeout --signal=TERM --kill-after=30s 11m \
             dotnet restore HVO.SkyMonitor.v9.slnx
 
       - name: Build warning-clean Release solution
         id: build
         run: |
           /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/build.time" \
+            timeout --signal=TERM --kill-after=30s 11m \
             dotnet build HVO.SkyMonitor.v9.slnx \
               --no-restore \
               --configuration Release \
@@ -54,6 +56,7 @@ jobs:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
         run: |
           /usr/bin/time -v -o "$CI_V2_EVIDENCE_ROOT/timing/unit.time" \
+            timeout --signal=TERM --kill-after=30s 11m \
             dotnet test HVO.SkyMonitor.v9.slnx \
               --no-build \
               --configuration Release \
@@ -115,7 +118,7 @@ jobs:
             --argjson restore "$(timing_json restore "$RESTORE_OUTCOME")" \
             --argjson build "$(timing_json build "$BUILD_OUTCOME")" \
             --argjson unit "$(timing_json unit "$UNIT_OUTCOME")" \
-            '{schema:$schema,repository:$repository,event:$event,headSha:$headSha,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),runner:{name:$runnerName,os:$runnerOs,arch:$runnerArch,image:$runnerImage},sdkVersion:$sdkVersion,runnerElapsedThroughManifestStartSeconds:$runnerElapsedThroughManifestStartSeconds,targetJobElapsedSeconds:600,hardTimeoutSeconds:1200,unitTrxCount:$trxCount,evidenceBytesBeforeUpload:$evidenceBytes,memoryMetric:"GNU time ru_maxrss: largest single process, not aggregate process-tree RSS",stages:[$restore,$build,$unit]}' \
+            '{schema:$schema,repository:$repository,event:$event,headSha:$headSha,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),runner:{name:$runnerName,os:$runnerOs,arch:$runnerArch,image:$runnerImage},sdkVersion:$sdkVersion,runnerElapsedThroughManifestStartSeconds:$runnerElapsedThroughManifestStartSeconds,targetJobElapsedSeconds:600,commandBudgetSeconds:660,hardTimeoutSeconds:1200,unitTrxCount:$trxCount,evidenceBytesBeforeUpload:$evidenceBytes,memoryMetric:"GNU time ru_maxrss: largest single process, not aggregate process-tree RSS",stages:[$restore,$build,$unit]}' \
             > "$CI_V2_EVIDENCE_ROOT/manifest.json"
 
           find "$CI_V2_EVIDENCE_ROOT" -type f -printf '%P %s bytes\n' 2>/dev/null | sort
