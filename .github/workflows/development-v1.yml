@@ -100,6 +100,19 @@ jobs:
               --configuration Release \
               -warnaserror
 
+      # Every test project owns its expected category counts (#853); a count that drifts
+      # on this line is a pin that has stopped pinning, and the Unit selection alone
+      # cannot see it. The audit runs against the Release build already produced.
+      - name: Audit behavioral test categories
+        id: audit
+        run: |
+          remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
+          ((remaining > 0)) || exit 124
+          /usr/bin/time -v -o "$DEV_V1_EVIDENCE_ROOT/timing/audit.time" \
+            timeout --signal=TERM --kill-after=30s "${remaining}s" \
+            dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj \
+              --configuration Release
+
       - name: Run Docker-disabled Unit selection
         id: unit
         env:
@@ -121,6 +134,7 @@ jobs:
         env:
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
+          AUDIT_OUTCOME: ${{ steps.audit.outcome }}
           UNIT_OUTCOME: ${{ steps.unit.outcome }}
         run: |
           read_metric() {
@@ -140,7 +154,7 @@ jobs:
           completed_at="$(date +%s)"
           trx_count="$(find "$DEV_V1_EVIDENCE_ROOT/unit" -name '*.trx' -type f | wc -l)"
           jq -n \
-            --arg schema hvo-development-v1-ci-v1 \
+            --arg schema hvo-development-v1-ci-v2 \
             --arg headSha "$GITHUB_SHA" \
             --arg event "$GITHUB_EVENT_NAME" \
             --arg sdkVersion "$(dotnet --version 2>/dev/null || true)" \
@@ -148,8 +162,9 @@ jobs:
             --argjson trxCount "$trx_count" \
             --argjson restore "$(stage_json restore "$RESTORE_OUTCOME")" \
             --argjson build "$(stage_json build "$BUILD_OUTCOME")" \
+            --argjson audit "$(stage_json audit "$AUDIT_OUTCOME")" \
             --argjson unit "$(stage_json unit "$UNIT_OUTCOME")" \
-            '{schema:$schema,headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:540,hardTimeoutSeconds:900,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit]}' \
+            '{schema:$schema,headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:540,hardTimeoutSeconds:900,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$audit,$unit]}' \
             > "$DEV_V1_EVIDENCE_ROOT/manifest.json"
           jq . "$DEV_V1_EVIDENCE_ROOT/manifest.json"
 
