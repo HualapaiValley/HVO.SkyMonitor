@@ -158,6 +158,73 @@ public sealed class FilesystemVersusS3ObjectStorePerformanceTests
         }
     }
 
+    [TestMethod]
+    [Timeout(1_800_000)]
+    public async Task CanonicalWriteMatrix_HardLinksAgainstStreamingCopy()
+    {
+        var runId = Guid.NewGuid().ToString("N");
+        var root = Path.Combine(Path.GetTempPath(), "hvo-920-perf-" + runId);
+        var streamingRoot = Path.Combine(root, "streaming");
+        var linkedRoot = Path.Combine(root, "hard-link");
+        foreach (var storeRoot in new[] { streamingRoot, linkedRoot })
+        {
+            Directory.CreateDirectory(Path.Combine(storeRoot, Bucket));
+            Directory.CreateDirectory(Path.Combine(storeRoot, "skymonitor-diagnostics"));
+        }
+        var streaming = OpenFilesystem(streamingRoot);
+        streaming.DisableHardLinksForTest = true;
+        var linked = OpenFilesystem(linkedRoot);
+        var prefix = $"issue-920/{runId}/";
+        try
+        {
+            var w1 = await CompareFilesystemStrategiesAsync("W1", streaming, linked, prefix + "w1/", W1Bytes, 5, 30, 1).ConfigureAwait(false);
+            var w2 = await CompareFilesystemStrategiesAsync("W2", streaming, linked, prefix + "w2/", W2Bytes, 5, 30, 1).ConfigureAwait(false);
+            var w4 = new List<object>();
+            foreach (var concurrency in new[] { 1, 4, 8 })
+            {
+                w4.Add(await CompareFilesystemStrategiesAsync(
+                    $"W4-c{concurrency}", streaming, linked, $"{prefix}w4/c{concurrency}/", W1Bytes, 20, 200, concurrency).ConfigureAwait(false));
+            }
+            var revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION") ?? "local-uncommitted";
+            var evidence = new
+            {
+                Schema = "hvo-issue-920-hard-link-copy-performance-v1",
+                Revision = revision,
+                RunId = runId,
+                Environment = new
+                {
+                    OS = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+                    Architecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
+                    Processors = Environment.ProcessorCount,
+                    Runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+                    Configuration = IsRelease ? "Release" : "Debug",
+                    Storage = DescribeStorage(root)
+                },
+                Method = "Same process, filesystem and IObjectStore workflow. Baseline forces the streaming-copy fallback; candidate uses descriptor-relative hard links. Each cell discards warm-ups and measures independent put, digest-read, copy, digest-read and delete workflows. Metrics are Stopwatch latency, process CPU, managed allocations, RSS and /proc/self/io deltas.",
+                Workloads = new { W1 = w1, W2 = w2, W4 = w4 },
+                Correctness = "Every operation verifies SHA-256 after put and copy, exact content length/type, independent generation tokens, and deletes both logical objects."
+            };
+            var directory = Path.Combine(AppContext.BaseDirectory, "TestResults", "issue-920");
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, $"hard-link-vs-streaming-{runId}.json");
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(evidence, EvidenceJson)).ConfigureAwait(false);
+            Console.WriteLine($"issue-920 evidence: {path}");
+            Console.WriteLine(SummarizeStrategies("W1", w1));
+            Console.WriteLine(SummarizeStrategies("W2", w2));
+            foreach (var entry in w4)
+            {
+                Console.WriteLine(SummarizeStrategies("W4", entry));
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static bool IsRelease
     {
         get
@@ -218,6 +285,42 @@ public sealed class FilesystemVersusS3ObjectStorePerformanceTests
         };
     }
 
+    private static async Task<object> CompareFilesystemStrategiesAsync(
+        string name,
+        IObjectStore streaming,
+        IObjectStore linked,
+        string prefix,
+        int payloadBytes,
+        int warmups,
+        int operations,
+        int concurrency)
+    {
+        var baseline = await MeasureAsync($"{name}-streaming", warmups, operations, concurrency,
+            (i, ct) => ExecuteWorkflowAsync(streaming, $"{prefix}streaming/{i:D4}", payloadBytes, ct)).ConfigureAwait(false);
+        var candidate = await MeasureAsync($"{name}-hard-link", warmups, operations, concurrency,
+            (i, ct) => ExecuteWorkflowAsync(linked, $"{prefix}hard-link/{i:D4}", payloadBytes, ct)).ConfigureAwait(false);
+        return new
+        {
+            Workload = name,
+            PayloadBytes = payloadBytes,
+            Warmups = warmups,
+            Operations = operations,
+            Concurrency = concurrency,
+            Streaming = baseline,
+            HardLink = candidate,
+            Change = new
+            {
+                MedianLatency = Ratio(candidate.MedianMilliseconds, baseline.MedianMilliseconds),
+                P95Latency = Ratio(candidate.P95Milliseconds, baseline.P95Milliseconds),
+                Throughput = Ratio(candidate.OperationsPerSecond, baseline.OperationsPerSecond),
+                Cpu = Ratio(candidate.CpuMilliseconds, baseline.CpuMilliseconds),
+                Allocations = Ratio(candidate.AllocatedBytes, baseline.AllocatedBytes),
+                WriteBytes = baseline.Io.WriteBytes <= 0 ? "n/a" : Ratio(candidate.Io.WriteBytes, baseline.Io.WriteBytes),
+                WriteSyscalls = baseline.Io.WriteSyscalls <= 0 ? "n/a" : Ratio(candidate.Io.WriteSyscalls, baseline.Io.WriteSyscalls)
+            }
+        };
+    }
+
     private static string Ratio(double candidate, double baseline)
         => baseline <= 0 ? "n/a" : string.Create(CultureInfo.InvariantCulture, $"{candidate / baseline:F2}x");
 
@@ -233,6 +336,19 @@ public sealed class FilesystemVersusS3ObjectStorePerformanceTests
                $"ops/s s3={s3.GetProperty("OperationsPerSecond").GetDouble():F2} fs={fs.GetProperty("OperationsPerSecond").GetDouble():F2} " +
                $"cpu {change.GetProperty("Cpu")} alloc {change.GetProperty("Allocations")} " +
                $"fsWrite={fs.GetProperty("Io").GetProperty("WriteBytes").GetInt64() / 1024 / 1024}MiB fsRead={fs.GetProperty("Io").GetProperty("ReadBytes").GetInt64() / 1024 / 1024}MiB";
+    }
+
+    private static string SummarizeStrategies(string name, object comparison)
+    {
+        var json = JsonSerializer.SerializeToElement(comparison);
+        var streaming = json.GetProperty("Streaming");
+        var linked = json.GetProperty("HardLink");
+        var change = json.GetProperty("Change");
+        return $"{name} c{json.GetProperty("Concurrency").GetInt32()} {json.GetProperty("PayloadBytes").GetInt32() / 1024 / 1024}MiB: " +
+               $"median stream={streaming.GetProperty("MedianMilliseconds").GetDouble():F1}ms link={linked.GetProperty("MedianMilliseconds").GetDouble():F1}ms ({change.GetProperty("MedianLatency")}) " +
+               $"p95 stream={streaming.GetProperty("P95Milliseconds").GetDouble():F1}ms link={linked.GetProperty("P95Milliseconds").GetDouble():F1}ms ({change.GetProperty("P95Latency")}) " +
+               $"ops/s stream={streaming.GetProperty("OperationsPerSecond").GetDouble():F2} link={linked.GetProperty("OperationsPerSecond").GetDouble():F2} " +
+               $"cpu {change.GetProperty("Cpu")} alloc {change.GetProperty("Allocations")} writes {change.GetProperty("WriteBytes")}";
     }
 
     private static async Task<Measurement> MeasureAsync(string name, int warmups, int operations, int concurrency, Func<int, CancellationToken, Task> workflow)
