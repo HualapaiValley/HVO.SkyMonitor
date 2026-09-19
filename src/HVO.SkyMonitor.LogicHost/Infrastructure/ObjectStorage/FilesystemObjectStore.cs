@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -40,7 +39,13 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
     private readonly ObjectStoreTelemetry _telemetry;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FilesystemObjectStore> _logger;
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _keyLocks = new(StringComparer.Ordinal);
+    // Per-key serialization through a fixed stripe of locks, selected by the key hash. A
+    // dictionary keyed by every key ever written would grow with the object count for the
+    // life of the process; 1,024 stripes bound that at a constant while keeping contention
+    // between unrelated keys negligible for the supported single-replica topology. Two keys
+    // that share a stripe serialize needlessly but never incorrectly.
+    private const int LockStripes = 1024;
+    private readonly SemaphoreSlim[] _keyLocks = Enumerable.Range(0, LockStripes).Select(static _ => new SemaphoreSlim(1, 1)).ToArray();
 
     public FilesystemObjectStore(
         IOptions<CentralObjectStorageOptions> options,
@@ -478,7 +483,11 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
 
     private async Task<IDisposable> LockKeyAsync(string bucket, string keyHash, CancellationToken cancellationToken)
     {
-        var gate = _keyLocks.GetOrAdd(bucket + "/" + keyHash, static _ => new SemaphoreSlim(1, 1));
+        // The hash is uniform hex, so its leading bits pick a stripe evenly; the bucket is
+        // folded in so the same key in two buckets does not always share a stripe.
+        var stripe = (int)((uint)BitConverter.ToInt32(Convert.FromHexString(keyHash.AsSpan(0, 8)))
+            ^ (uint)StringComparer.Ordinal.GetHashCode(bucket)) & (LockStripes - 1);
+        var gate = _keyLocks[stripe];
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         return new Release(gate);
     }
