@@ -158,6 +158,13 @@ internal static class FilesystemObjectBackup
                 Directory.Delete(staging, recursive: true);
             }
             Directory.CreateDirectory(staging);
+            if (!OperatingSystem.IsWindows())
+            {
+                var mode = Directory.Exists(final)
+                    ? File.GetUnixFileMode(final)
+                    : UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute;
+                File.SetUnixFileMode(staging, mode);
+            }
             foreach (var entry in inventory.Entries.Where(e => string.Equals(e.Bucket, bucket, StringComparison.Ordinal)))
             {
                 cancellationToken.ThrowIfCancellationRequested();

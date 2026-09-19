@@ -30,6 +30,12 @@ public sealed class FilesystemObjectBackupTests
         _backup = Path.Combine(_temp, "backup");
         Directory.CreateDirectory(Path.Combine(_root, Artifacts));
         Directory.CreateDirectory(Path.Combine(_root, Diagnostics));
+        if (!OperatingSystem.IsWindows())
+        {
+            var mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute;
+            File.SetUnixFileMode(Path.Combine(_root, Artifacts), mode);
+            File.SetUnixFileMode(Path.Combine(_root, Diagnostics), mode);
+        }
         _store = OpenStore(_root);
     }
 
@@ -169,6 +175,15 @@ public sealed class FilesystemObjectBackupTests
         Assert.AreEqual(0, await FilesystemObjectBackup.VerifyAsync(_backup, _root, None));
         Assert.IsFalse(Directory.Exists(Path.Combine(_root, Artifacts + ".restoring")));
         Assert.IsFalse(Directory.Exists(Path.Combine(_root, Artifacts + ".replaced")));
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.AreEqual(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute,
+                File.GetUnixFileMode(Path.Combine(_root, Artifacts)));
+            Assert.AreEqual(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute,
+                File.GetUnixFileMode(Path.Combine(_root, Diagnostics)));
+        }
     }
 
     [TestMethod]
