@@ -82,7 +82,7 @@ was built to keep:
    could be a hard link to the same inode with a new descriptor, which would
    remove half the write bytes and four of the ten fsyncs per workflow. That
    is a correctness-preserving design change with a named workload and a
-   measured payoff, and it is filed as a follow-up rather than folded into
+   measured payoff, and it is filed as #920 rather than folded into
    this evidence slice.
 3. **Concurrency does not scale the write path** (c4 is 1.9x c1 throughput,
    c8 3.3x, against S3's 3.3x and 4.6x) because fsyncs serialise on one device.
