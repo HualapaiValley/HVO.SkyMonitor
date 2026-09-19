@@ -39,6 +39,10 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
     private readonly ObjectStoreTelemetry _telemetry;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FilesystemObjectStore> _logger;
+    internal bool DisableHardLinksForTest { get; set; }
+    private long _hardLinkCopyCount;
+    internal Func<Task>? AfterHardLinkForTest { get; set; }
+    internal long HardLinkCopyCount => Interlocked.Read(ref _hardLinkCopyCount);
     // Per-key serialization through a fixed stripe of locks, selected by the key hash. A
     // dictionary keyed by every key ever written would grow with the object count for the
     // life of the process; 1,024 stripes bound that at a constant while keeping contention
@@ -217,6 +221,56 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
 
         using var _ = await LockKeyAsync(bucket, destinationHash, token).ConfigureAwait(false);
         var generation = FilesystemObjectLayout.NewGeneration();
+        var sourceRelative = FilesystemObjectLayout.DataRelativePath(bucket, sourceHash, source.Generation);
+        var destinationRelative = FilesystemObjectLayout.DataRelativePath(bucket, destinationHash, generation);
+        var destinationData = _root.Resolve(destinationRelative);
+        HardLinkPublication? linked = null;
+        try
+        {
+            linked = DisableHardLinksForTest
+                ? null
+                : await HardLinkPublisher.TryPublishAsync(_root, sourceRelative, destinationRelative, token).ConfigureAwait(false);
+        }
+        catch (FileSystemFaultException fault) when (fault.Kind == FileSystemFaultKind.NotFound)
+        {
+            await ThrowCopySourceMovedAsync(bucket, sourceKey, source, fault, token).ConfigureAwait(false);
+        }
+        if (linked is not null)
+        {
+            using (linked)
+            {
+                try
+                {
+                    if (linked.Length != source.Length || !string.Equals(linked.Sha256, source.Sha256, StringComparison.Ordinal))
+                    {
+                        linked.DeleteUncommitted();
+                        throw new ObjectStoreException(ObjectStoreFailureKind.CorruptState, "copy");
+                    }
+                    linked.VerifyCurrent();
+                }
+                catch (Exception exception) when (exception is OperationCanceledException or IOException or UnauthorizedAccessException or FileSystemFaultException)
+                {
+                    linked.DeleteUncommitted();
+                    if (exception is FileSystemFaultException fault)
+                    {
+                        throw Map("copy", fault);
+                    }
+                    throw;
+                }
+                Interlocked.Increment(ref _hardLinkCopyCount);
+                if (AfterHardLinkForTest is { } afterHardLink)
+                {
+                    await afterHardLink().ConfigureAwait(false);
+                }
+                // Do not unlink after descriptor publication starts: a rename may have committed
+                // before a later directory-sync failure. As on the streaming path, an unreferenced
+                // linked generation is safe reconciliation debris; missing committed data is not.
+                var linkedDescriptor = source with { Key = destinationKey, Generation = generation, ModifiedUtc = _timeProvider.GetUtcNow() };
+                await PublishDescriptorAsync(bucket, destinationHash, linkedDescriptor, token).ConfigureAwait(false);
+            }
+            return;
+        }
+
         FileStream sourceStream;
         try
         {
@@ -225,25 +279,8 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
         }
         catch (FileNotFoundException exception)
         {
-            // The source data named by the descriptor we read is gone. Re-read the
-            // descriptor to tell the two causes apart: if it now names a different
-            // generation (or is gone), the source was replaced or deleted and its retired
-            // data reclaimed under us, which is a Precondition on a moving source; only if
-            // the descriptor still names this generation is the store contradicting itself.
-            FilesystemObjectDescriptor? again = null;
-            try
-            {
-                again = await ReadDescriptorAsync(bucket, sourceKey, "copy", token).ConfigureAwait(false);
-            }
-            catch (ObjectStoreException recheck) when (recheck.Kind == ObjectStoreFailureKind.MissingObject)
-            {
-                throw new ObjectStoreException(ObjectStoreFailureKind.MissingObject, "copy", exception);
-            }
-            if (!string.Equals(again.Generation, source.Generation, StringComparison.Ordinal))
-            {
-                throw new ObjectStoreException(ObjectStoreFailureKind.Precondition, "copy", exception);
-            }
-            throw new ObjectStoreException(ObjectStoreFailureKind.CorruptState, "copy", exception);
+            await ThrowCopySourceMovedAsync(bucket, sourceKey, source, exception, token).ConfigureAwait(false);
+            throw;
         }
         (long length, string sha256) written;
         await using (sourceStream.ConfigureAwait(false))
@@ -258,6 +295,31 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
         }
         var descriptor = source with { Key = destinationKey, Generation = generation, ModifiedUtc = _timeProvider.GetUtcNow() };
         await PublishDescriptorAsync(bucket, destinationHash, descriptor, token).ConfigureAwait(false);
+    }
+
+    private async Task ThrowCopySourceMovedAsync(
+        string bucket,
+        string sourceKey,
+        FilesystemObjectDescriptor source,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        // The source data named by the descriptor we read is gone. Re-read the descriptor
+        // to distinguish source movement from a store that contradicts itself.
+        FilesystemObjectDescriptor? again;
+        try
+        {
+            again = await ReadDescriptorAsync(bucket, sourceKey, "copy", cancellationToken).ConfigureAwait(false);
+        }
+        catch (ObjectStoreException recheck) when (recheck.Kind == ObjectStoreFailureKind.MissingObject)
+        {
+            throw new ObjectStoreException(ObjectStoreFailureKind.MissingObject, "copy", exception);
+        }
+        if (!string.Equals(again.Generation, source.Generation, StringComparison.Ordinal))
+        {
+            throw new ObjectStoreException(ObjectStoreFailureKind.Precondition, "copy", exception);
+        }
+        throw new ObjectStoreException(ObjectStoreFailureKind.CorruptState, "copy", exception);
     }
 
     public Task DeleteAsync(string bucket, string key, CancellationToken cancellationToken)
@@ -516,13 +578,24 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
 
     private async Task<IDisposable> LockKeyAsync(string bucket, string keyHash, CancellationToken cancellationToken)
     {
-        // The hash is uniform hex, so its leading bits pick a stripe evenly; the bucket is
-        // folded in so the same key in two buckets does not always share a stripe.
-        var stripe = (int)((uint)BitConverter.ToInt32(Convert.FromHexString(keyHash.AsSpan(0, 8)))
-            ^ (uint)StringComparer.Ordinal.GetHashCode(bucket)) & (LockStripes - 1);
-        var gate = _keyLocks[stripe];
+        var gate = _keyLocks[GetLockStripe(bucket, keyHash)];
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         return new Release(gate);
+    }
+
+    internal IDisposable LockKeyForMaintenance(string bucket, string keyHash, CancellationToken cancellationToken)
+    {
+        var gate = _keyLocks[GetLockStripe(bucket, keyHash)];
+        gate.Wait(cancellationToken);
+        return new Release(gate);
+    }
+
+    private static int GetLockStripe(string bucket, string keyHash)
+    {
+        // The hash is uniform hex, so its leading bits pick a stripe evenly; the bucket is
+        // folded in so the same key in two buckets does not always share a stripe.
+        return (int)((uint)BitConverter.ToInt32(Convert.FromHexString(keyHash.AsSpan(0, 8)))
+            ^ (uint)StringComparer.Ordinal.GetHashCode(bucket)) & (LockStripes - 1);
     }
 
     private sealed class Release(SemaphoreSlim gate) : IDisposable

@@ -301,6 +301,45 @@ public sealed class FilesystemObjectReconcilerTests
     }
 
     [TestMethod]
+    public async Task ReconciliationCannotPreAgeAnInFlightHardLinkCopy()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("The hard-link optimization is Linux-only.");
+        }
+        await _store.PutAsync(Bucket, "src", Bytes("payload"), 7, "text/plain", None);
+        var linked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _store.AfterHardLinkForTest = () =>
+        {
+            linked.TrySetResult();
+            return release.Task;
+        };
+
+        var copy = _store.CopyAsync(Bucket, "src", "dst", None);
+        await linked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var destinationHash = FilesystemObjectLayout.KeyHash("dst");
+        var destinationDirectory = Path.Combine(_temp, FilesystemObjectLayout.KeyDirectoryRelativePath(Bucket, destinationHash));
+        var linkedData = Directory.EnumerateFiles(destinationDirectory, destinationHash + ".*" + FilesystemObjectLayout.DataSuffix).Single();
+        var reconcile = Task.Run(() => Run());
+        await Task.Delay(100);
+        Assert.IsFalse(reconcile.IsCompleted, "reconciliation waits for the copy's destination-key publication lock");
+        Assert.IsFalse(File.Exists(Path.ChangeExtension(linkedData, ".retired")), "in-flight linked data is not pre-aged");
+
+        release.TrySetResult();
+        await copy;
+        await reconcile;
+        _store.AfterHardLinkForTest = null;
+        Assert.IsFalse(File.Exists(Path.ChangeExtension(linkedData, ".retired")), "descriptor publication keeps the generation live");
+
+        Age(linkedData, TimeSpan.FromDays(7));
+        await _store.PutAsync(Bucket, "dst", Bytes("new"), 3, "text/plain", None);
+        var report = Run();
+        Assert.AreEqual(1, report.RetiredWithinGrace, "the grace clock starts when the linked generation actually retires");
+        Assert.IsTrue(File.Exists(linkedData));
+    }
+
+    [TestMethod]
     public void MissingBucketIsMissingBucket()
     {
         var fault = Assert.ThrowsExactly<ObjectStoreException>(() => _reconciler.Reconcile("absent", new FilesystemReconciliationOptions(), None));

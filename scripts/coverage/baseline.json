@@ -30,6 +30,7 @@
     "HVO.SkyMonitor.Storage.FileSystem/AtomicPublisher.cs": { "line": 0.85, "branch": 0.90 },
     "HVO.SkyMonitor.Storage.FileSystem/DurableSync.cs": { "line": 0.75, "branch": 0.90, "belowAggregateReason": "the non-Linux no-op branches and the framework catch paths a Linux run cannot exercise; the Linux mechanism itself is fully exercised" },
     "HVO.SkyMonitor.Storage.FileSystem/FileSystemFault.cs": { "line": 0.95, "branch": 0.90 },
+    "HVO.SkyMonitor.Storage.FileSystem/HardLinkPublisher.cs": { "line": 0.55, "branch": 0.40, "belowAggregateReason": "the Linux success and confinement paths are covered; native errno fallback, non-Linux, and post-link durability failure branches require platform or fault-injection evidence" },
     "HVO.SkyMonitor.Storage.FileSystem/LinuxOpenFlags.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs": { "line": 0.55, "branch": 0.35 },

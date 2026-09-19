@@ -240,7 +240,11 @@ public sealed class FilesystemObjectStoreFaultTests
         Assert.AreNotEqual(src.Generation, dst.Generation);
         Assert.AreEqual("payload", await ReadAll("dst"));
         await _store.DeleteAsync(Bucket, "src", None);
-        Assert.AreEqual("payload", await ReadAll("dst"), "the copy does not share the source's data file");
+        if (OperatingSystem.IsLinux())
+        {
+            File.Delete(DataPath("src", src.Generation));
+        }
+        Assert.AreEqual("payload", await ReadAll("dst"), "unlinking the source object does not remove the destination object");
 
         // Corrupt the source bytes under an intact descriptor: copy must refuse, not propagate.
         await _store.PutAsync(Bucket, "src2", Bytes("payload"), 7, "text/plain", None);
@@ -249,6 +253,19 @@ public sealed class FilesystemObjectStoreFaultTests
         var fault = await Assert.ThrowsExactlyAsync<ObjectStoreException>(() => _store.CopyAsync(Bucket, "src2", "dst2", None));
         Assert.AreEqual(ObjectStoreFailureKind.CorruptState, fault.Kind);
         Assert.IsFalse(File.Exists(DescriptorPath("dst2")));
+    }
+
+    [TestMethod]
+    public async Task CopyFallsBackToStreamingWhenHardLinksAreUnavailable()
+    {
+        await _store.PutAsync(Bucket, "src", Bytes("payload"), 7, "text/plain", None);
+        _store.DisableHardLinksForTest = true;
+        await _store.CopyAsync(Bucket, "src", "dst", None);
+        var src = await _store.StatAsync(Bucket, "src", None);
+        var dst = await _store.StatAsync(Bucket, "dst", None);
+        await File.WriteAllTextAsync(DataPath("src", src.Generation), "PAYLOAD");
+        Assert.AreEqual("payload", await ReadAll("dst"), "fallback writes an independent data file");
+        Assert.AreNotEqual(src.Generation, dst.Generation);
     }
 
     // ---- buckets and containment ----

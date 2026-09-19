@@ -259,9 +259,10 @@ public sealed class ArchitectureBoundaryTests
             }
         }
 
-        // Six importers: RawIngressFileStore and the CameraAgent table's other callers, the deployment CLI, the
-        // SQLite catalog resolver, and Storage.FileSystem's DurableSync (#592), which delegates to its own table.
-        Assert.AreEqual(6, callers, "the set of libc open importers changed; update this guard deliberately");
+        // Seven importers: RawIngressFileStore and the CameraAgent table's other callers, the deployment CLI, the
+        // SQLite catalog resolver, and Storage.FileSystem's DurableSync plus HardLinkPublisher, which delegate to
+        // the shared per-architecture flag table.
+        Assert.AreEqual(7, callers, "the set of libc open importers changed; update this guard deliberately");
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
 
