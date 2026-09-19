@@ -1,9 +1,9 @@
 # Filesystem Topology Qualification (#586)
 
-Status: correction in progress after independent review returned NO-GO. Issue
-#506 remains gated. Earlier campaign results remain historical evidence; the
-corrected backup exclusion, durability, CI ownership, runbook, and complete
-resource-evidence changes require exact-head validation and correction review.
+Status: correction review in progress. Issue #506 remains gated. Backup
+exclusion, durability, CI ownership, operations, native fault campaigns, and
+complete resource evidence are implemented and locally validated; exact-range
+review, final synchronization, protected CI, and the final decision remain.
 
 ## Candidate
 
@@ -29,8 +29,8 @@ immutable reviewed revision and exact image digests.
 | Inventory input validation | Local regressions now reject null collections/entries, duplicate identities, unlisted buckets, unsafe names, invalid generation/digest/metadata, inconsistent totals, and restore scratch-name collisions before creating destination state. |
 | Source/target isolation | Local library checks reject equal or ancestor/descendant roots and symlink/reparse ancestors before mutation. Bind-mount aliases and concurrent path substitution remain topology-preflight/exclusion concerns. |
 | Offline maintenance exclusion and recovery | Corrected implementation holds one exclusive root lock across runtime lifetime, backup, verify, and destructive restore; rejects a second replica or concurrent maintenance; writes a durable prepared/committed whole-store marker; rolls all buckets back from prepared state; and only cleans rollback copies after exact verification and committed publication. Native ARM64 SIGKILL after a durable prepared marker recovered on the first restore retry from a runtime-owned baseline and exact verification passed. |
-| Bounded reconciliation | Local implementation now divides every pass budget across descriptor, data, retirement-stamp and temporary phases, with a cursor per bucket/phase. A tiny-budget regression proves retired data and stale temporaries converge despite a larger live descriptor inventory. Exact-topology backlog timing remains required. |
-| Persistent health | Local health is degraded until the first pass completes, while any pass is truncated or failed, while quarantine persists across later passes, and when the last evidence is older than two cadences. Inaccessible-bucket and capacity-threshold topology evidence remains required. |
+| Bounded reconciliation | Local implementation divides every pass budget across descriptor, data, retirement-stamp and temporary phases, with a cursor per bucket/phase. A tiny-budget regression proves retired data and stale temporaries converge despite a larger live descriptor inventory; exact-topology restart and backlog-drain timing is retained in the correction bundle. |
+| Persistent health | Local health is degraded until the first pass completes, while any pass is truncated or failed, while quarantine persists across later passes, and when the last evidence is older than two cadences. Native inaccessible-bucket, permission-loss, read-only-remount, block-full, and inode-full evidence passed recovery checks. |
 | Deployment preflight | Reject unsupported filesystem/mounts, missing roots, wrong ownership/modes, symlinks, insufficient bytes/inodes, overlapping state, and extra writers. |
 | Native and destructive campaign | ARM64 and x64 campaigns completed preflight, native build/publish, container filesystem probes, read-only remount, permission loss, block/inode exhaustion, interrupted backup/restore, reboot recovery, and corrected-head backup/verify tests under runtime identity `4242:4343`. |
 | Performance and observability | Historical and corrected five-trial W1/W2/W3M/W3P/W4 plus backup/restore timing is recorded below. The corrected bundle retains CPU, allocations, before/after/peak RSS and Linux process I/O for every phase, exact list order, and copied payload SHA-256. |
