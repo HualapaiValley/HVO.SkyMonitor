@@ -8,7 +8,8 @@ namespace HVO.SkyMonitor.LogicHost.HealthChecks;
 internal sealed partial class ObjectStoreHealthCheck(
     IObjectStore objectStore,
     IOptions<CentralObjectStorageOptions> options,
-    ILogger<ObjectStoreHealthCheck> logger) : IHealthCheck
+    ILogger<ObjectStoreHealthCheck> logger,
+    Infrastructure.ObjectStorage.FilesystemObjectReconciliationWorker? reconciliation = null) : IHealthCheck
 {
     private const int PersistentFailureThreshold = 3;
     private readonly CentralObjectStorageOptions _options = options.Value;
@@ -37,6 +38,39 @@ internal sealed partial class ObjectStoreHealthCheck(
                     "missing-bucket");
             }
             Interlocked.Exchange(ref _consecutiveRetryableFailures, 0);
+            // For the filesystem provider, reconciliation facts are part of readiness: a
+            // bucket with quarantined objects is serving (the rest of its objects are fine)
+            // but an operator must look, which is Degraded; a bucket the reconciler could not
+            // clean is the same. Bucket reachability alone is not the whole story locally.
+            var latest = reconciliation?.Latest;
+            if (latest is { } facts)
+            {
+                var quarantined = facts.Reports.Values.Sum(report => report.Quarantined);
+                var reclaimFailed = facts.Reports.Values.Sum(report => report.ReclaimFailed);
+                var retiredBytes = facts.Reports.Values.Sum(report => report.RetiredBytes);
+                var oldestRetired = facts.Reports.Values.Select(report => report.OldestRetiredAge).DefaultIfEmpty(TimeSpan.Zero).Max();
+                var data = new Dictionary<string, object>(StringComparer.Ordinal)
+                {
+                    ["QuarantinedCount"] = quarantined,
+                    ["ReclaimFailedCount"] = reclaimFailed,
+                    ["RetiredBytes"] = retiredBytes,
+                    ["OldestRetiredAgeSeconds"] = (long)oldestRetired.TotalSeconds,
+                    ["ReconciledUtc"] = facts.CompletedUtc.UtcDateTime.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+                };
+                if (quarantined > 0 || reclaimFailed > 0)
+                {
+                    return Result(
+                        HealthStatus.Degraded,
+                        "Object storage is serving but reconciliation quarantined or could not reclaim objects; operator attention is required.",
+                        "reconciliation-attention",
+                        data);
+                }
+                return Result(
+                    HealthStatus.Healthy,
+                    "Both required object-storage buckets are available and reconciled.",
+                    "both-required-buckets-reconciled",
+                    data);
+            }
             return Result(
                 HealthStatus.Healthy,
                 "Authenticated access to both required object-storage buckets succeeded.",
@@ -71,7 +105,8 @@ internal sealed partial class ObjectStoreHealthCheck(
     private HealthCheckResult Result(
         HealthStatus status,
         string description,
-        string reason)
+        string reason,
+        Dictionary<string, object>? data = null)
     {
         lock (_stateLock)
         {
@@ -81,10 +116,9 @@ internal sealed partial class ObjectStoreHealthCheck(
                 _lastStatus = status;
             }
         }
-        return new HealthCheckResult(
-            status,
-            description,
-            data: new Dictionary<string, object>(StringComparer.Ordinal) { ["Reason"] = reason });
+        data ??= new Dictionary<string, object>(StringComparer.Ordinal);
+        data["Reason"] = reason;
+        return new HealthCheckResult(status, description, data: data);
     }
 
     private static partial class Log

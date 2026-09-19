@@ -37,6 +37,11 @@ internal static partial class ObjectStorageServiceCollectionExtensions
                     throw new InvalidOperationException($"Unknown ObjectStorage:Provider '{options.Provider}'.");
             }
         });
+        // The reconciliation worker registers unconditionally and exits immediately when the
+        // provider is not the filesystem one, so the service graph does not depend on options
+        // being resolved at registration time.
+        services.AddSingleton<FilesystemObjectReconciliationWorker>();
+        services.AddHostedService(provider => provider.GetRequiredService<FilesystemObjectReconciliationWorker>());
         return services;
     }
 

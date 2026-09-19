@@ -153,8 +153,23 @@ now starts:
   container) with `Capabilities.None`; 28 fault tests cover mapping, crash points, races,
   and containment.
 
-Not yet delivered (later slices of #585): restart reconciliation and retired-generation
-reclamation; backup inventory/restore contract; measured performance against the S3 path.
+**Slice 2: reconciliation.** `FilesystemObjectReconciler` runs at startup and every ten
+minutes per bucket. It never writes a descriptor. It quarantines (renames into
+`<bucket>/.quarantine/` with a reason prefix) any descriptor that is malformed, misnamed for
+its key, or lacks its data, and any live data/descriptor pair whose digest or length
+disagrees when digest verification is requested; a quarantined key becomes `MissingObject`.
+It reclaims retired data generations (those the current descriptor does not name) only
+after a grace age, so a reader that opened one finishes it; on Windows a sharing violation
+defers rather than faults. Stale temporaries are removed after their own grace age. Each
+pass is bounded and reports counts only, never keys or paths. The health check surfaces
+`QuarantinedCount`, `ReclaimFailedCount`, `RetiredBytes`, `OldestRetiredAgeSeconds` and
+`ReconciledUtc`, and is `Degraded` while anything is quarantined or unreclaimable. A copy
+whose source data was reclaimed under it re-reads the descriptor and reports `Precondition`
+when the source moved on, `CorruptState` only when the descriptor still names the missing
+generation (the deferred F1 from #917).
+
+Not yet delivered (later slices of #585): backup inventory/restore contract; measured
+performance against the S3 path.
 
 ## Delivery and Future Order
 
