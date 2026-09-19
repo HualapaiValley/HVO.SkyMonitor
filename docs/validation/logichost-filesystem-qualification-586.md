@@ -32,8 +32,8 @@ immutable reviewed revision and exact image digests.
 | Bounded reconciliation | Local implementation now divides every pass budget across descriptor, data, retirement-stamp and temporary phases, with a cursor per bucket/phase. A tiny-budget regression proves retired data and stale temporaries converge despite a larger live descriptor inventory. Exact-topology backlog timing remains required. |
 | Persistent health | Local health is degraded until the first pass completes, while any pass is truncated or failed, while quarantine persists across later passes, and when the last evidence is older than two cadences. Inaccessible-bucket and capacity-threshold topology evidence remains required. |
 | Deployment preflight | Reject unsupported filesystem/mounts, missing roots, wrong ownership/modes, symlinks, insufficient bytes/inodes, overlapping state, and extra writers. |
-| Native and destructive campaign | Historical ARM64 and x64 campaigns completed preflight, native build/publish, container filesystem probes, read-only remount, permission loss, block/inode exhaustion, interrupted backup/restore, and reboot recovery. The corrected maintenance-lock head requires affected native reruns. |
-| Performance and observability | Historical five-trial W1/W2/W3M/W3P/W4 and backup/restore timing is recorded below. The corrected harness now records CPU, allocations, before/after/peak RSS and Linux process I/O for every phase, and validates exact list order and copied payload SHA-256. New five-trial retained machine-readable evidence is required before GO. |
+| Native and destructive campaign | ARM64 and x64 campaigns completed preflight, native build/publish, container filesystem probes, read-only remount, permission loss, block/inode exhaustion, interrupted backup/restore, reboot recovery, and corrected-head backup/verify tests under runtime identity `4242:4343`. |
+| Performance and observability | Historical and corrected five-trial W1/W2/W3M/W3P/W4 plus backup/restore timing is recorded below. The corrected bundle retains CPU, allocations, before/after/peak RSS and Linux process I/O for every phase, exact list order, and copied payload SHA-256. |
 
 ## Local Validation
 
@@ -47,10 +47,9 @@ dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.
   --no-restore -c Release --filter 'FullyQualifiedName~FilesystemObjectBackupTests'
 ```
 
-Run the complete Tier M candidate gate only after the correction candidate is
-stable. Retain a checksummed machine-readable projection of all five native
-trials in tracked validation evidence, bind it to the candidate identity, and
-obtain independent correction review before a go decision.
+The complete Tier M candidate gate and checksummed ten-trial native evidence are
+complete on the correction candidate. Independent correction review and final
+target synchronization remain before a go decision.
 
 ## Candidate Artifacts
 
@@ -127,11 +126,8 @@ rendered Compose model and exact image digest.
   Linux image; full HTTP host evidence is therefore x64, while ARM64 evidence is
   native provider/image/offline-operation evidence. No substitute database was
   introduced.
-- Rerun affected native backup/verify exclusion and complete five-trial resource
-  evidence on x64 and ARM64 at one immutable correction revision.
-- Commit the checksum-bound evidence projection and complete exact-head
-  correction review, Tier M candidate gates, and a final go/no-go decision
-  before #506 starts.
+- Complete exact-head correction review, final target synchronization, protected
+  CI, and a final go/no-go decision before #506 starts.
 
 ## Native X64 Evidence
 
@@ -235,7 +231,7 @@ amd64 or arm64, with a fixed non-root identity, read-only container root and a
 dedicated same-host ext4 mount. Direct ext4 x64 and loop-backed ext4 Pi 5 are the
 tested storage forms; NFS, SMB, NAS, XFS/ZFS object roots, clustered filesystems,
 arbitrary Docker volumes and multiple writers remain unsupported. The current
-decision is **NO-GO pending correction evidence and rereview**. Historical
-campaign results support the envelope, but #506 remains gated until the corrected
-head passes the required native reruns, complete Tier M gate, and exact-range
-independent correction review.
+decision is **NO-GO pending correction rereview and finalization**. The corrected
+native evidence and complete Tier M candidate gate are green, but #506 remains
+gated until exact-range independent correction review records GO and protected
+CI passes the final reviewed head.

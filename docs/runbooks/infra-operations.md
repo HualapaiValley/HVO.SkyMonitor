@@ -302,15 +302,19 @@ run the preflight against the exact host path while no LogicHost process or
 container is running:
 
 ```bash
-FSROOT=/srv/skymonitor/object-store \
-EXPECTED_UID=4242 EXPECTED_GID=4343 \
-MIN_FREE_BYTES=2147483648 MIN_FREE_INODES=10000 \
-STATE_PATHS=/srv/skymonitor/data/logichost/dataprotection:/srv/skymonitor/data/logichost/home \
-./scripts/qualify:filesystem-object-store | tee filesystem-object-store-preflight.json
+./scripts/qualify:filesystem-object-store \
+  /srv/skymonitor/object-store \
+  4242 4343 \
+  00000000-0000-0000-0000-000000000000 \
+  2147483648 10000 \
+  /srv/skymonitor/data/logichost/dataprotection \
+  /srv/skymonitor/data/logichost/home \
+  | tee filesystem-object-store-preflight.json
 sha256sum filesystem-object-store-preflight.json > filesystem-object-store-preflight.json.sha256
 ```
 
-Use site-approved thresholds at least as strict as the deployment configuration.
+Replace the example UUID with the provisioned ext4 filesystem UUID from the
+site's storage inventory. Use site-approved thresholds at least as strict as the deployment configuration.
 The result must name native Linux amd64 or arm64, an `rw` ext4 mount backed by an
 expected `/dev` source/UUID, the exact mountpoint, owner `4242:4343`, mode `0750`,
 both canonical buckets, and sufficient free bytes/inodes. Treat a changed source,

@@ -62,6 +62,10 @@ case "$*" in
   *' MODEL '*) printf 'Qualification Disk\n' ;;
 esac
 EOF
+cat > "$bin/blkid" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_UUID:-60f60c10-d77e-46a0-a641-5396e9413535}"
+EOF
 cat > "$bin/stat" <<EOF
 #!/usr/bin/env bash
 if [[ \$1 == -c ]]; then
@@ -81,23 +85,24 @@ chmod +x "$bin"/*
 
 run() {
   PATH="$bin:/usr/bin:/bin" "$repo_root/scripts/qualify:filesystem-object-store" \
-    "$root" "$uid" "$gid" 1048576 100 "$temp/state" "$temp/config" "$temp/catalog"
+    "$root" "$uid" "$gid" 60f60c10-d77e-46a0-a641-5396e9413535 1048576 100 "$temp/state" "$temp/config" "$temp/catalog"
 }
 
-run | jq -e '.schema == "hvo-filesystem-object-store-preflight-v1" and .result == "passed" and .mount.filesystem == "ext4" and .identity.uid > 0 and .capacity.freeBytes >= 1048576' >/dev/null
+run | jq -e '.schema == "hvo-filesystem-object-store-preflight-v1" and .result == "passed" and .mount.filesystem == "ext4" and .mount.uuid == "60f60c10-d77e-46a0-a641-5396e9413535" and .identity.uid > 0 and .capacity.freeBytes >= 1048576' >/dev/null
 if FAKE_FSTYPE=xfs run >/dev/null 2>&1; then exit 10; fi
 if FAKE_OPTIONS=ro run >/dev/null 2>&1; then exit 11; fi
+if FAKE_UUID=11111111-1111-1111-1111-111111111111 run >/dev/null 2>&1; then exit 22; fi
 if FAKE_MODE=755 run >/dev/null 2>&1; then exit 12; fi
 if FAKE_STATFS='1 4096 1' run >/dev/null 2>&1; then exit 13; fi
 if FAKE_NESTED_BUCKET=true run >/dev/null 2>&1; then exit 16; fi
 if FAKE_BIND_ALIAS=true run >/dev/null 2>&1; then exit 18; fi
 if FAKE_ROOT_BIND_ALIAS=true run >/dev/null 2>&1; then exit 19; fi
 if PATH="$bin:/usr/bin:/bin" "$repo_root/scripts/qualify:filesystem-object-store" \
-  "$root" "$uid" "$gid" 9223372036854775808 1 "$temp/state" >/dev/null 2>&1; then exit 17; fi
+  "$root" "$uid" "$gid" 60f60c10-d77e-46a0-a641-5396e9413535 9223372036854775808 1 "$temp/state" >/dev/null 2>&1; then exit 17; fi
 if FAKE_STATFS='9223372036854775808 1 1' run >/dev/null 2>&1; then exit 20; fi
 if FAKE_STATFS='4611686018427387904 4 1' run >/dev/null 2>&1; then exit 21; fi
 if PATH="$bin:/usr/bin:/bin" "$repo_root/scripts/qualify:filesystem-object-store" \
-  "$root" "$uid" "$gid" 1 1 "$root/overlap" >/dev/null 2>&1; then exit 14; fi
+  "$root" "$uid" "$gid" 60f60c10-d77e-46a0-a641-5396e9413535 1 1 "$root/overlap" >/dev/null 2>&1; then exit 14; fi
 rm -rf "$root/skymonitor-diagnostics"
 if run >/dev/null 2>&1; then exit 15; fi
 

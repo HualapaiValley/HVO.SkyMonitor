@@ -2,24 +2,25 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s ROOT UID GID MIN_FREE_BYTES MIN_FREE_INODES [DISJOINT_PATH ...]\n' "$0" >&2
+  printf 'Usage: %s ROOT UID GID EXPECTED_UUID MIN_FREE_BYTES MIN_FREE_INODES [DISJOINT_PATH ...]\n' "$0" >&2
   exit 2
 }
 
-[[ $# -ge 5 ]] || usage
+[[ $# -ge 6 ]] || usage
 root=$1
 runtime_uid=$2
 runtime_gid=$3
-minimum_bytes=$4
-minimum_inodes=$5
-shift 5
+expected_uuid=$4
+minimum_bytes=$5
+minimum_inodes=$6
+shift 6
 
 fail() {
   printf 'filesystem-object-store preflight failed: %s\n' "$1" >&2
   exit 1
 }
 
-for tool in findmnt jq lsblk readlink stat uname; do
+for tool in blkid findmnt jq lsblk readlink stat uname; do
   command -v "$tool" >/dev/null 2>&1 || fail "required tool unavailable: $tool"
 done
 
@@ -30,6 +31,7 @@ case $(uname -m) in
 esac
 [[ $runtime_uid =~ ^[1-9][0-9]*$ ]] || fail 'runtime UID must be a non-root integer'
 [[ $runtime_gid =~ ^[1-9][0-9]*$ ]] || fail 'runtime GID must be a non-root integer'
+[[ $expected_uuid =~ ^[0-9a-fA-F-]+$ ]] || fail 'expected filesystem UUID is invalid'
 bounded_positive_integer() {
   local value=$1 prefix last
   [[ $value =~ ^[1-9][0-9]*$ ]] || return 1
@@ -70,6 +72,8 @@ IFS=$'\t' read -r mount_target mount_source filesystem mount_options mount_major
 [[ $filesystem == ext4 ]] || fail 'object-store filesystem is not ext4'
 [[ ,$mount_options, == *,rw,* ]] || fail 'object-store mount is not read-write'
 [[ $mount_source == /dev/* ]] || fail 'object-store ext4 source is not a same-host block device'
+filesystem_uuid=$(blkid -s UUID -o value -- "$mount_source" 2>/dev/null) || fail 'object-store filesystem UUID is unavailable'
+[[ ${filesystem_uuid,,} == ${expected_uuid,,} ]] || fail 'object-store filesystem UUID does not match the expected device'
 block_type=$(lsblk -dn -o TYPE -- "$mount_source" 2>/dev/null || printf unknown)
 block_rotation=$(lsblk -dn -o ROTA -- "$mount_source" 2>/dev/null || printf unknown)
 block_model=$(lsblk -dn -o MODEL -- "$mount_source" 2>/dev/null | sed 's/[[:space:]]*$//' || printf unknown)
@@ -130,12 +134,12 @@ jq -n \
   --arg schema hvo-filesystem-object-store-preflight-v1 \
   --arg kernel "$(uname -r)" --arg architecture "$(uname -m)" \
   --arg root "$root" --arg mountSource "$mount_source" --arg mountTarget "$mount_target" \
-  --arg filesystem "$filesystem" --arg mountOptions "$mount_options" \
+  --arg filesystem "$filesystem" --arg filesystemUuid "$filesystem_uuid" --arg mountOptions "$mount_options" \
   --arg blockType "$block_type" --arg blockRotation "$block_rotation" --arg blockModel "$block_model" \
   --argjson runtimeUid "$runtime_uid" --argjson runtimeGid "$runtime_gid" \
   --argjson freeBytes "$available_bytes" --argjson freeInodes "$available_inodes" \
   '{schema:$schema,kernel:$kernel,architecture:$architecture,root:$root,
-    mount:{source:$mountSource,target:$mountTarget,filesystem:$filesystem,options:$mountOptions},
+    mount:{source:$mountSource,target:$mountTarget,filesystem:$filesystem,uuid:$filesystemUuid,options:$mountOptions},
     blockDevice:{type:$blockType,rotational:$blockRotation,model:$blockModel},
     identity:{uid:$runtimeUid,gid:$runtimeGid,rootMode:"0750",bucketMode:"0750"},
     capacity:{freeBytes:$freeBytes,freeInodes:$freeInodes},
