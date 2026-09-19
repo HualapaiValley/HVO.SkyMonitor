@@ -196,14 +196,17 @@ public sealed class ArchitectureBoundaryTests
         // 0x4000/0x8000 on arm and powerpc, so a hard-coded value silently breaks aarch64 while every x86-64 lane
         // stays green (#603). Any file that imports open(2)/openat(2) from libc must select the flags by
         // RuntimeInformation.ProcessArchitecture, either through a per-architecture table it declares itself or by
-        // delegating to LinuxOpenFlags, and no importer outside the three declared tables may spell the values on a
+        // delegating to LinuxOpenFlags, and no importer outside the four declared tables may spell the values on a
         // line that talks about open flags. The sweep covers src/; tests and tools do not import libc open.
+        // Storage.FileSystem (#592) carries the table the shared primitives use; #587 retires the CameraAgent copy
+        // in favour of it, at which point the CameraAgent entry below and one caller leave this guard.
         var root = RepositoryGraph.FindRepositoryRoot();
         string[] tableFiles =
         [
             Path.Combine("src", "HVO.SkyMonitor.CameraAgent.Common", "Storage", "LinuxOpenFlags.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Deployment.Cli", "NativeLinux.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Catalog.Sqlite", "CatalogSnapshotResolver.cs"),
+            Path.Combine("src", "HVO.SkyMonitor.Storage.FileSystem", "LinuxOpenFlags.cs"),
         ];
         var importPattern = new System.Text.RegularExpressions.Regex(
             """"libc"[^;]*(EntryPoint\s*=\s*"open(at)?"|\bopen(at)?\s*\()"""",
@@ -256,7 +259,9 @@ public sealed class ArchitectureBoundaryTests
             }
         }
 
-        Assert.AreEqual(5, callers, "the set of libc open importers changed; update this guard deliberately");
+        // Six importers: RawIngressFileStore and the CameraAgent table's other callers, the deployment CLI, the
+        // SQLite catalog resolver, and Storage.FileSystem's DurableSync (#592), which delegates to its own table.
+        Assert.AreEqual(6, callers, "the set of libc open importers changed; update this guard deliberately");
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
 
