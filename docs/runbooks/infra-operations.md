@@ -302,6 +302,7 @@ run the preflight against the exact host path while no LogicHost process or
 container is running:
 
 ```bash
+set -o pipefail
 ./scripts/qualify:filesystem-object-store \
   /srv/skymonitor/object-store \
   4242 4343 \
@@ -309,7 +310,8 @@ container is running:
   2147483648 10000 \
   /srv/skymonitor/data/logichost/dataprotection \
   /srv/skymonitor/data/logichost/home \
-  | tee filesystem-object-store-preflight.json
+  | tee filesystem-object-store-preflight.json \
+  || { rm -f filesystem-object-store-preflight.json; exit 1; }
 sha256sum filesystem-object-store-preflight.json > filesystem-object-store-preflight.json.sha256
 ```
 
