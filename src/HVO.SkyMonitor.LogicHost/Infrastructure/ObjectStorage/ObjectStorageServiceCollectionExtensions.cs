@@ -8,10 +8,8 @@ namespace HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 internal static partial class ObjectStorageServiceCollectionExtensions
 {
     // The provider is chosen here and nowhere else. Every consumer takes IObjectStore; the
-    // AWS SDK client is registered only when the S3 provider is selected, so a Filesystem
-    // deployment never constructs one. The Filesystem adapter is delivered by #585; until
-    // then selecting it is a startup failure with the reason named, which is the honest
-    // state rather than a fallback to S3.
+    // AWS SDK client is constructed only when the S3 provider is selected, so a Filesystem
+    // deployment never touches the SDK.
     public static IServiceCollection AddObjectStorageInfrastructure(this IServiceCollection services)
     {
         services.AddSingleton<IObjectStore>(provider =>
@@ -33,8 +31,8 @@ internal static partial class ObjectStorageServiceCollectionExtensions
                         provider,
                         S3ObjectStoreClientFactory.Create(options.S3));
                 case ObjectStorageProvider.Filesystem:
-                    throw new InvalidOperationException(
-                        "ObjectStorage:Provider=Filesystem is selected but the filesystem provider is not yet delivered (#585).");
+                    ObjectStorageConfigured(logger, "filesystem", "local", "n/a", "n/a", false);
+                    return ActivatorUtilities.CreateInstance<FilesystemObjectStore>(provider);
                 default:
                     throw new InvalidOperationException($"Unknown ObjectStorage:Provider '{options.Provider}'.");
             }

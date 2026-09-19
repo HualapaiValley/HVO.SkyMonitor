@@ -15,6 +15,11 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.ProcessingRunner.Contracts\HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
     <Compile Include="..\TestSettings\MSTestSettings.cs" Link="MSTestSettings.cs" />
+    <!-- The universal object-store conformance suite is shared with the Integration project so the filesystem
+         provider is held to exactly the contract the S3 provider passes; linked rather than referenced so the
+         Unit run does not take a dependency on Testcontainers. The classifier treats a linked source as owned
+         by every project that compiles it. -->
+    <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\ObjectStoreConformanceSuite.cs" Link="Services\ObjectStoreConformanceSuite.cs" />
     <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\LogicHostProcessingConformanceTests.cs" Link="Services\LogicHostProcessingConformanceTests.cs" />
   </ItemGroup>
   <ItemGroup>

@@ -130,6 +130,32 @@ The provider-neutral surface is in place and every central workflow consumes onl
   project references no project, takes no host/persistence/provider package, and is consumed
   only by `LogicHost` and `CameraAgent.Common`.
 
+## Delivered By #585 (slice 1)
+
+`FilesystemObjectStore` in `LogicHost/Infrastructure/ObjectStorage` implements every
+`IObjectStore` operation on the #592 primitives, and `ObjectStorage:Provider=Filesystem`
+now starts:
+
+- **Layout.** `<root>/<bucket>/<h[0..2]>/<h[2..4]>/<h>.desc.json` and `<h>.<generation>.data`,
+  where `h` is the SHA-256 of the exact logical key. No key segment is ever a physical
+  segment, so traversal, case aliasing, reserved names and separators in keys cannot escape
+  or collide; the descriptor records the exact key and every read verifies it.
+- **Commit point.** The descriptor. Data is streamed to a same-directory temporary with a
+  running SHA-256, flushed, renamed onto an immutable per-generation name, and the directory
+  flushed; the descriptor is then published atomically. Declared length is enforced exactly
+  (short and long input both refuse). A committed generation is never modified; replacement
+  publishes a new generation and retires the old data file for reclamation, so an open reader
+  keeps what it opened and a conditional read of a retired generation is `Precondition`.
+- **Failure facts.** Containment and cross-device are `Unsupported` (misconfiguration); no
+  space is `Capacity`; a descriptor contradicting its data (missing, wrong length, wrong key,
+  malformed) is `CorruptState`; delete is idempotent and never creates a bucket.
+- **Conformance.** The universal suite passes against the provider as a Unit test (no
+  container) with `Capabilities.None`; 28 fault tests cover mapping, crash points, races,
+  and containment.
+
+Not yet delivered (later slices of #585): restart reconciliation and retired-generation
+reclamation; backup inventory/restore contract; measured performance against the S3 path.
+
 ## Delivery and Future Order
 
 1. [#584](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/584) neutralizes provider selection, configuration, telemetry, health, and durable identity.
