@@ -89,6 +89,27 @@
     "HVO.SkyMonitor.Catalog.Sqlite/SqliteCelestialCatalog.cs": {
       "line": 0.95,
       "branch": 0.85
+    },
+    "HVO.SkyMonitor.Storage.FileSystem/AtomicPublisher.cs": {
+      "line": 0.85,
+      "branch": 0.90
+    },
+    "HVO.SkyMonitor.Storage.FileSystem/DurableSync.cs": {
+      "line": 0.75,
+      "branch": 0.90,
+      "belowAggregateReason": "the non-Linux no-op branches and the framework catch paths a Linux run cannot exercise; the Linux mechanism itself is fully exercised"
+    },
+    "HVO.SkyMonitor.Storage.FileSystem/FileSystemFault.cs": {
+      "line": 0.95,
+      "branch": 0.90
+    },
+    "HVO.SkyMonitor.Storage.FileSystem/LinuxOpenFlags.cs": {
+      "line": 0.95,
+      "branch": 0.90
+    },
+    "HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs": {
+      "line": 0.95,
+      "branch": 0.90
     }
   }
 }

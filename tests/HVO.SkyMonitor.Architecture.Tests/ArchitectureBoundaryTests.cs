@@ -28,11 +28,9 @@ public sealed class ArchitectureBoundaryTests
     private const string DeploymentDistribution = "HVO.SkyMonitor.Deployment.Distribution";
     private const string DeploymentCli = "HVO.SkyMonitor.Deployment.Cli";
 
-    // Reserved by #584 for the host-neutral filesystem primitives project #592 delivers. It is
-    // not in AllowedProductionReferences yet because the graph refuses a documented project
-    // that does not exist (ARCH-MISSING); the dependency rule it must satisfy on arrival is
-    // asserted by StorageFileSystemBoundaryIsNarrowWhenPresent, which becomes live the moment
-    // the project is added and would fail if it were added with any wider rule.
+    // Host-neutral filesystem primitives (#592): mechanisms only, references nothing, consumed
+    // by the LogicHost filesystem provider (#585) and later CameraAgent.Common (#587). Its
+    // dependency rule is asserted by StorageFileSystemBoundaryIsNarrowWhenPresent.
     private const string StorageFileSystem = "HVO.SkyMonitor.Storage.FileSystem";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
     private const string LogicHostTestInfrastructure = "HVO.SkyMonitor.LogicHost.TestInfrastructure";
@@ -66,6 +64,7 @@ public sealed class ArchitectureBoundaryTests
             [Processing] = Set(AgentCore, Astronomy, Imaging),
             [Catalog] = Set(Astronomy),
             [Common] = Set(),
+            [StorageFileSystem] = Set(),
             [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts, CameraAgentReplay),
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
@@ -92,6 +91,7 @@ public sealed class ArchitectureBoundaryTests
         "HVO.SkyMonitor.Imaging.Tests",
         "HVO.SkyMonitor.Processing.Tests",
         "HVO.SkyMonitor.ProcessingRunner.Tests",
+        "HVO.SkyMonitor.Storage.FileSystem.Tests",
         "HVO.SkyMonitor.TestSupport.Tests");
 
     private static readonly IReadOnlySet<string> CameraAgentTestProjects = Set(
@@ -196,14 +196,17 @@ public sealed class ArchitectureBoundaryTests
         // 0x4000/0x8000 on arm and powerpc, so a hard-coded value silently breaks aarch64 while every x86-64 lane
         // stays green (#603). Any file that imports open(2)/openat(2) from libc must select the flags by
         // RuntimeInformation.ProcessArchitecture, either through a per-architecture table it declares itself or by
-        // delegating to LinuxOpenFlags, and no importer outside the three declared tables may spell the values on a
+        // delegating to LinuxOpenFlags, and no importer outside the four declared tables may spell the values on a
         // line that talks about open flags. The sweep covers src/; tests and tools do not import libc open.
+        // Storage.FileSystem (#592) carries the table the shared primitives use; #587 retires the CameraAgent copy
+        // in favour of it, at which point the CameraAgent entry below and one caller leave this guard.
         var root = RepositoryGraph.FindRepositoryRoot();
         string[] tableFiles =
         [
             Path.Combine("src", "HVO.SkyMonitor.CameraAgent.Common", "Storage", "LinuxOpenFlags.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Deployment.Cli", "NativeLinux.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Catalog.Sqlite", "CatalogSnapshotResolver.cs"),
+            Path.Combine("src", "HVO.SkyMonitor.Storage.FileSystem", "LinuxOpenFlags.cs"),
         ];
         var importPattern = new System.Text.RegularExpressions.Regex(
             """"libc"[^;]*(EntryPoint\s*=\s*"open(at)?"|\bopen(at)?\s*\()"""",
@@ -256,7 +259,9 @@ public sealed class ArchitectureBoundaryTests
             }
         }
 
-        Assert.AreEqual(5, callers, "the set of libc open importers changed; update this guard deliberately");
+        // Six importers: RawIngressFileStore and the CameraAgent table's other callers, the deployment CLI, the
+        // SQLite catalog resolver, and Storage.FileSystem's DurableSync (#592), which delegates to its own table.
+        Assert.AreEqual(6, callers, "the set of libc open importers changed; update this guard deliberately");
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
 
