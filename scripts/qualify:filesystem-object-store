@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'Usage: %s ROOT UID GID MIN_FREE_BYTES MIN_FREE_INODES [DISJOINT_PATH ...]\n' "$0" >&2
+  exit 2
+}
+
+[[ $# -ge 5 ]] || usage
+root=$1
+runtime_uid=$2
+runtime_gid=$3
+minimum_bytes=$4
+minimum_inodes=$5
+shift 5
+
+fail() {
+  printf 'filesystem-object-store preflight failed: %s\n' "$1" >&2
+  exit 1
+}
+
+for tool in findmnt jq lsblk readlink stat uname; do
+  command -v "$tool" >/dev/null 2>&1 || fail "required tool unavailable: $tool"
+done
+
+[[ $(uname -s) == Linux ]] || fail 'host OS is not Linux'
+case $(uname -m) in
+  x86_64|aarch64) ;;
+  *) fail 'host architecture is not native amd64 or arm64' ;;
+esac
+[[ $runtime_uid =~ ^[1-9][0-9]*$ ]] || fail 'runtime UID must be a non-root integer'
+[[ $runtime_gid =~ ^[1-9][0-9]*$ ]] || fail 'runtime GID must be a non-root integer'
+bounded_positive_integer() {
+  local value=$1 prefix last
+  [[ $value =~ ^[1-9][0-9]*$ ]] || return 1
+  (( ${#value} < 19 )) && return 0
+  (( ${#value} == 19 )) || return 1
+  prefix=${value:0:18}; last=${value:18:1}
+  (( 10#$prefix < 922337203685477580 || 10#$prefix == 922337203685477580 && 10#$last <= 7 ))
+}
+bounded_nonnegative_integer() {
+  local value=$1 prefix last
+  [[ $value =~ ^[0-9]+$ ]] || return 1
+  value=${value#"${value%%[!0]*}"}
+  [[ -n $value ]] || value=0
+  (( ${#value} < 19 )) && return 0
+  (( ${#value} == 19 )) || return 1
+  prefix=${value:0:18}; last=${value:18:1}
+  (( 10#$prefix < 922337203685477580 || 10#$prefix == 922337203685477580 && 10#$last <= 7 ))
+}
+fsroot_contains() {
+  local parent=${1%/} child=${2%/}
+  [[ -n $parent ]] || parent=/
+  [[ -n $child ]] || child=/
+  [[ $parent == / || $child == "$parent" || $child == "$parent"/* ]]
+}
+bounded_positive_integer "$minimum_bytes" || fail 'minimum free bytes must be a positive signed 64-bit integer'
+bounded_positive_integer "$minimum_inodes" || fail 'minimum free inodes must be a positive signed 64-bit integer'
+[[ $root == /* ]] || fail 'object-store root must be absolute'
+[[ -d $root && ! -L $root ]] || fail 'object-store root must be a precreated nonsymlink directory'
+
+canonical_root=$(readlink -f -- "$root")
+[[ $canonical_root == "$root" ]] || fail 'object-store root must be canonical and contain no symlink ancestors'
+
+mount_json=$(findmnt -J -o TARGET,SOURCE,FSTYPE,OPTIONS,MAJ:MIN,FSROOT --target "$root") || fail 'object-store root mount identity is unavailable'
+IFS=$'\t' read -r mount_target mount_source filesystem mount_options mount_major_minor mount_fsroot < <(
+  jq -er '.filesystems | select(length == 1) | .[0] | [.target,.source,.fstype,.options,."maj:min",.fsroot] | @tsv' <<< "$mount_json"
+) || fail 'object-store root mount identity is invalid'
+[[ $mount_target == "$root" ]] || fail 'object-store root is not the dedicated mount target'
+[[ $filesystem == ext4 ]] || fail 'object-store filesystem is not ext4'
+[[ ,$mount_options, == *,rw,* ]] || fail 'object-store mount is not read-write'
+[[ $mount_source == /dev/* ]] || fail 'object-store ext4 source is not a same-host block device'
+block_type=$(lsblk -dn -o TYPE -- "$mount_source" 2>/dev/null || printf unknown)
+block_rotation=$(lsblk -dn -o ROTA -- "$mount_source" 2>/dev/null || printf unknown)
+block_model=$(lsblk -dn -o MODEL -- "$mount_source" 2>/dev/null | sed 's/[[:space:]]*$//' || printf unknown)
+
+owner_uid=$(stat -c %u -- "$root")
+owner_gid=$(stat -c %g -- "$root")
+mode=$(stat -c %a -- "$root")
+[[ $owner_uid == "$runtime_uid" && $owner_gid == "$runtime_gid" ]] || fail 'object-store root ownership does not match runtime UID/GID'
+[[ $mode == 750 ]] || fail 'object-store root mode must be 0750'
+
+for bucket in skymonitor-artifacts skymonitor-diagnostics; do
+  path=$root/$bucket
+  [[ -d $path && ! -L $path ]] || fail "bucket root is missing or linked: $bucket"
+  [[ $(readlink -f -- "$path") == "$path" ]] || fail "bucket root is not canonical: $bucket"
+  [[ $(stat -c %u -- "$path") == "$runtime_uid" && $(stat -c %g -- "$path") == "$runtime_gid" ]] ||
+    fail "bucket ownership does not match runtime UID/GID: $bucket"
+  [[ $(stat -c %a -- "$path") == 750 ]] || fail "bucket mode must be 0750: $bucket"
+  bucket_mount_json=$(findmnt -J -o TARGET,SOURCE,FSTYPE,OPTIONS,MAJ:MIN,FSROOT --target "$path") || fail "bucket mount identity is unavailable: $bucket"
+  IFS=$'\t' read -r bucket_target bucket_source bucket_filesystem _ bucket_major_minor bucket_fsroot < <(
+    jq -er '.filesystems | select(length == 1) | .[0] | [.target,.source,.fstype,.options,."maj:min",.fsroot] | @tsv' <<< "$bucket_mount_json"
+  ) || fail "bucket mount identity is invalid: $bucket"
+  [[ $bucket_target == "$mount_target" && $bucket_source == "$mount_source" &&
+     $bucket_filesystem == "$filesystem" && $bucket_major_minor == "$mount_major_minor" &&
+     $bucket_fsroot == "$mount_fsroot" ]] || fail "bucket root is a nested mount: $bucket"
+done
+
+read -r available_blocks block_size available_inodes < <(stat -f -c '%a %S %d' -- "$root")
+bounded_nonnegative_integer "$available_blocks" || fail 'filesystem available blocks exceed signed 64-bit range'
+bounded_positive_integer "$block_size" || fail 'filesystem block size exceeds signed 64-bit range'
+bounded_nonnegative_integer "$available_inodes" || fail 'filesystem available inodes exceed signed 64-bit range'
+(( available_blocks <= 9223372036854775807 / block_size )) || fail 'filesystem free-byte calculation overflows'
+available_bytes=$((available_blocks * block_size))
+(( available_bytes >= minimum_bytes )) || fail 'object-store free bytes are below the configured minimum'
+(( available_inodes >= minimum_inodes )) || fail 'object-store free inodes are below the configured minimum'
+
+for other in "$@"; do
+  [[ $other == /* ]] || fail 'disjoint application paths must be absolute'
+  [[ -e $other && ! -L $other ]] || fail 'disjoint application paths must exist and not be links'
+  canonical_other=$(readlink -m -- "$other")
+  if [[ $canonical_other == "$canonical_root" || $canonical_other == "$canonical_root"/* || $canonical_root == "$canonical_other"/* ]]; then
+    fail 'object-store root overlaps another application-state path'
+  fi
+  if [[ $(stat -c '%d:%i' -- "$other") == "$(stat -c '%d:%i' -- "$root")" ]]; then
+    fail 'object-store root aliases another application-state path'
+  fi
+  other_mount_json=$(findmnt -J -o TARGET,SOURCE,FSTYPE,OPTIONS,MAJ:MIN,FSROOT --target "$other") || fail 'application-state mount identity is unavailable'
+  IFS=$'\t' read -r _ _ _ _ other_major_minor other_fsroot < <(
+    jq -er '.filesystems | select(length == 1) | .[0] | [.target,.source,.fstype,.options,."maj:min",.fsroot] | @tsv' <<< "$other_mount_json"
+  ) || fail 'application-state mount identity is invalid'
+  if [[ $other_major_minor == "$mount_major_minor" ]]; then
+    if fsroot_contains "$mount_fsroot" "$other_fsroot" || fsroot_contains "$other_fsroot" "$mount_fsroot"; then
+      fail 'object-store root overlaps application state through a mount alias'
+    fi
+  fi
+done
+
+jq -n \
+  --arg schema hvo-filesystem-object-store-preflight-v1 \
+  --arg kernel "$(uname -r)" --arg architecture "$(uname -m)" \
+  --arg root "$root" --arg mountSource "$mount_source" --arg mountTarget "$mount_target" \
+  --arg filesystem "$filesystem" --arg mountOptions "$mount_options" \
+  --arg blockType "$block_type" --arg blockRotation "$block_rotation" --arg blockModel "$block_model" \
+  --argjson runtimeUid "$runtime_uid" --argjson runtimeGid "$runtime_gid" \
+  --argjson freeBytes "$available_bytes" --argjson freeInodes "$available_inodes" \
+  '{schema:$schema,kernel:$kernel,architecture:$architecture,root:$root,
+    mount:{source:$mountSource,target:$mountTarget,filesystem:$filesystem,options:$mountOptions},
+    blockDevice:{type:$blockType,rotational:$blockRotation,model:$blockModel},
+    identity:{uid:$runtimeUid,gid:$runtimeGid,rootMode:"0750",bucketMode:"0750"},
+    capacity:{freeBytes:$freeBytes,freeInodes:$freeInodes},
+    buckets:["skymonitor-artifacts","skymonitor-diagnostics"],result:"passed"}'

@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+temp=$(mktemp -d)
+trap 'rm -rf -- "$temp"' EXIT
+bin=$temp/bin
+root=$temp/object-store
+mkdir -p "$bin" "$root/skymonitor-artifacts" "$root/skymonitor-diagnostics"
+mkdir -p "$temp/state" "$temp/config" "$temp/catalog"
+uid=$(id -u)
+gid=$(id -g)
+if (( uid == 0 || gid == 0 )); then
+  uid=4242
+  gid=4343
+fi
+
+cat > "$bin/uname" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+  -s) printf 'Linux\n' ;;
+  -m) printf '%s\n' "${FAKE_ARCH:-x86_64}" ;;
+  -r) printf '6.8.0-test\n' ;;
+esac
+EOF
+cat > "$bin/readlink" <<'EOF'
+#!/usr/bin/env bash
+exec /usr/bin/readlink "$@"
+EOF
+cat > "$bin/findmnt" <<EOF
+#!/usr/bin/env bash
+target='${root}'
+source=/dev/test-object-store
+majmin=8:1
+fsroot=/objects
+case \${*: -1} in
+  '${temp}/state'|'${temp}/config'|'${temp}/catalog')
+    target=\${*: -1}; source=/dev/application-state; majmin=8:9; fsroot=/ ;;
+esac
+if [[ \${FAKE_NESTED_BUCKET:-false} == true && \${*: -1} == *skymonitor-diagnostics ]]; then
+  target=\${*: -1}; source=/dev/nested; majmin=8:2; fsroot=/
+fi
+if [[ \${FAKE_BIND_ALIAS:-false} == true && \${*: -1} == '${temp}/state' ]]; then
+  target=\${*: -1}; source=/dev/test-object-store; majmin=8:1; fsroot=/objects/state
+fi
+if [[ \${FAKE_ROOT_BIND_ALIAS:-false} == true ]]; then
+  if [[ \${*: -1} == '${root}' ]]; then fsroot=/; fi
+  if [[ \${*: -1} == '${temp}/state' ]]; then
+    target=\${*: -1}; source=/dev/test-object-store; majmin=8:1; fsroot=/state
+  fi
+fi
+jq -n --arg target "\$target" --arg source "\$source" \
+  --arg fstype "\${FAKE_FSTYPE:-ext4}" --arg options "\${FAKE_OPTIONS:-rw,nodev,nosuid}" \
+  --arg majmin "\${FAKE_MAJMIN:-\$majmin}" --arg fsroot "\${FAKE_FSROOT:-\$fsroot}" \
+  '{filesystems:[{target:\$target,source:\$source,fstype:\$fstype,options:\$options,"maj:min":\$majmin,fsroot:\$fsroot}]}'
+EOF
+cat > "$bin/lsblk" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *' TYPE '*) printf 'disk\n' ;;
+  *' ROTA '*) printf '0\n' ;;
+  *' MODEL '*) printf 'Qualification Disk\n' ;;
+esac
+EOF
+cat > "$bin/stat" <<EOF
+#!/usr/bin/env bash
+if [[ \$1 == -c ]]; then
+  case \$2 in
+    %u) printf '%s\n' '${uid}' ;;
+    %g) printf '%s\n' '${gid}' ;;
+    %a) printf '%s\n' "\${FAKE_MODE:-750}" ;;
+    %d:%i) printf '%s\n' "\${FAKE_IDENTITY:-1:\$(printf '%s' \${*: -1} | cksum | cut -d' ' -f1)}" ;;
+  esac
+elif [[ \$1 == -f ]]; then
+  printf '%s\n' "\${FAKE_STATFS:-1000000 4096 1000000}"
+else
+  exit 1
+fi
+EOF
+chmod +x "$bin"/*
+
+run() {
+  PATH="$bin:/usr/bin:/bin" "$repo_root/scripts/qualify:filesystem-object-store" \
+    "$root" "$uid" "$gid" 1048576 100 "$temp/state" "$temp/config" "$temp/catalog"
+}
+
+run | jq -e '.schema == "hvo-filesystem-object-store-preflight-v1" and .result == "passed" and .mount.filesystem == "ext4" and .identity.uid > 0 and .capacity.freeBytes >= 1048576' >/dev/null
+if FAKE_FSTYPE=xfs run >/dev/null 2>&1; then exit 10; fi
+if FAKE_OPTIONS=ro run >/dev/null 2>&1; then exit 11; fi
+if FAKE_MODE=755 run >/dev/null 2>&1; then exit 12; fi
+if FAKE_STATFS='1 4096 1' run >/dev/null 2>&1; then exit 13; fi
+if FAKE_NESTED_BUCKET=true run >/dev/null 2>&1; then exit 16; fi
+if FAKE_BIND_ALIAS=true run >/dev/null 2>&1; then exit 18; fi
+if FAKE_ROOT_BIND_ALIAS=true run >/dev/null 2>&1; then exit 19; fi
+if PATH="$bin:/usr/bin:/bin" "$repo_root/scripts/qualify:filesystem-object-store" \
+  "$root" "$uid" "$gid" 9223372036854775808 1 "$temp/state" >/dev/null 2>&1; then exit 17; fi
+if FAKE_STATFS='9223372036854775808 1 1' run >/dev/null 2>&1; then exit 20; fi
+if FAKE_STATFS='4611686018427387904 4 1' run >/dev/null 2>&1; then exit 21; fi
+if PATH="$bin:/usr/bin:/bin" "$repo_root/scripts/qualify:filesystem-object-store" \
+  "$root" "$uid" "$gid" 1 1 "$root/overlap" >/dev/null 2>&1; then exit 14; fi
+rm -rf "$root/skymonitor-diagnostics"
+if run >/dev/null 2>&1; then exit 15; fi
+
+printf 'Filesystem object-store qualification preflight tests passed.\n'

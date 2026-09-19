@@ -47,3 +47,29 @@ dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.
 Run the complete Tier M candidate gate only after the candidate is stable.
 Retain raw destructive/performance evidence outside tracked source, bind it to
 the candidate identity, and obtain independent review before a go decision.
+
+## Candidate Artifacts
+
+- `deploy/qualification/compose.logichost-filesystem.yml` is a qualification-only
+  overlay. Combined with `deploy/split-host/compose.logichost.yml`, it fixes the
+  runtime UID/GID, retains the read-only container root, selects the filesystem
+  provider, and exposes only the dedicated object-store bind mount at
+  `/var/lib/hvo/object-store` in addition to existing declared mounts. It is not
+  the supported deployment adoption owned by #506.
+- `scripts/qualify:filesystem-object-store` validates a precreated canonical
+  same-host ext4 mount, non-root ownership, exact `0750` root/bucket modes, both
+  logical buckets, configured free-byte/inode thresholds, and disjoint state
+  paths. Success emits `hvo-filesystem-object-store-preflight-v1` JSON with
+  kernel, architecture, mount, block-device, identity and capacity facts.
+- `scripts/test:filesystem-object-store-qualification` exercises the pass case
+  and rejects wrong filesystem, read-only mount, wrong mode, low bytes/inodes,
+  overlap, nested bucket mounts, bind aliases (including `FSROOT=/`), signed
+  integer overflow, and a missing bucket. These fixture tests do not qualify a
+  real host.
+
+The preflight intentionally does not claim to settle privileged mount mutation,
+the complete block-device parent/controller/cache chain, LSM/user-namespace
+access, or the exact container's effective write/fsync/rename behavior. Those
+facts belong to the isolated candidate campaign, which must run preflight and
+container startup under one recorded operational exclusion and retain the
+rendered Compose model and exact image digest.
