@@ -62,7 +62,21 @@ internal enum ObjectStoreFailureKind
     Timeout,
     Canceled,
     Unsupported,
-    Ambiguous
+    Ambiguous,
+
+    /// <summary>
+    /// The provider cannot accept the write because its durable medium is full or over quota.
+    /// Not retryable: retrying without operator action reproduces the failure. Not terminal
+    /// for the store as a whole: reads and deletes still work, and capacity can be restored.
+    /// </summary>
+    Capacity,
+
+    /// <summary>
+    /// The provider found its own durable state contradictory (a manifest that does not match
+    /// its object, a journal that cannot be replayed). Terminal: the store must not serve
+    /// until an operator has inspected it, because every further operation could compound it.
+    /// </summary>
+    CorruptState
 }
 
 internal sealed class ObjectStoreException : Exception
@@ -105,7 +119,16 @@ internal sealed class ObjectStoreException : Exception
     public bool IsTerminal => Kind is ObjectStoreFailureKind.MissingBucket
         or ObjectStoreFailureKind.Authentication
         or ObjectStoreFailureKind.Authorization
-        or ObjectStoreFailureKind.Unsupported;
+        or ObjectStoreFailureKind.Unsupported
+        or ObjectStoreFailureKind.CorruptState;
+
+    /// <summary>
+    /// True for failures that neither a retry nor the caller can resolve, but which an
+    /// operator can: today only <see cref="ObjectStoreFailureKind.Capacity"/>. Health checks
+    /// surface these as degraded rather than unhealthy, because the store still serves reads.
+    /// </summary>
+    public bool RequiresOperator => Kind is ObjectStoreFailureKind.Capacity
+        or ObjectStoreFailureKind.CorruptState;
 
     public static string GetOutcome(ObjectStoreFailureKind kind)
         => kind switch
@@ -121,6 +144,8 @@ internal sealed class ObjectStoreException : Exception
             ObjectStoreFailureKind.Canceled => "canceled",
             ObjectStoreFailureKind.Unsupported => "unsupported",
             ObjectStoreFailureKind.Ambiguous => "ambiguous",
+            ObjectStoreFailureKind.Capacity => "capacity",
+            ObjectStoreFailureKind.CorruptState => "corrupt-state",
             _ => "transient"
         };
 }

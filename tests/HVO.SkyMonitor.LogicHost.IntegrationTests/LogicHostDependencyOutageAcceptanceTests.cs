@@ -22,7 +22,7 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
     [
         new(IntegrationDependency.SqlServer, "database"),
         new(IntegrationDependency.Redis, "redis"),
-        new(IntegrationDependency.Minio, "s3-object-store"),
+        new(IntegrationDependency.Minio, "object-store"),
         new(IntegrationDependency.Smtp, "smtp")
     ];
 

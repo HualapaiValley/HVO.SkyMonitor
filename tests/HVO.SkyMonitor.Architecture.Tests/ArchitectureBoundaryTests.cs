@@ -27,6 +27,13 @@ public sealed class ArchitectureBoundaryTests
     private const string DeploymentContracts = "HVO.SkyMonitor.Deployment.Contracts";
     private const string DeploymentDistribution = "HVO.SkyMonitor.Deployment.Distribution";
     private const string DeploymentCli = "HVO.SkyMonitor.Deployment.Cli";
+
+    // Reserved by #584 for the host-neutral filesystem primitives project #592 delivers. It is
+    // not in AllowedProductionReferences yet because the graph refuses a documented project
+    // that does not exist (ARCH-MISSING); the dependency rule it must satisfy on arrival is
+    // asserted by StorageFileSystemBoundaryIsNarrowWhenPresent, which becomes live the moment
+    // the project is added and would fail if it were added with any wider rule.
+    private const string StorageFileSystem = "HVO.SkyMonitor.Storage.FileSystem";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
     private const string LogicHostTestInfrastructure = "HVO.SkyMonitor.LogicHost.TestInfrastructure";
     private const string FixtureCatalogSha256 = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
@@ -123,6 +130,52 @@ public sealed class ArchitectureBoundaryTests
             .ToArray();
 
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void StorageFileSystemBoundaryIsNarrowWhenPresent()
+    {
+        // #584 defines the boundary; #592 delivers the project; #585 and #587 consume it.
+        // The project may reference nothing: no host, no AgentCore, no Common, no persistence,
+        // no provider SDK. Its consumers are the LogicHost filesystem provider and, after
+        // RM-017, CameraAgent.Common. Nothing else may reference it, and it may not appear
+        // in the graph with a wider rule than an empty set.
+        var repository = Repository.Value;
+        if (!repository.Projects.TryGetValue(StorageFileSystem, out var project))
+        {
+            Assert.IsFalse(AllowedProductionReferences.ContainsKey(StorageFileSystem),
+                $"{StorageFileSystem} is documented in the graph before it exists.");
+            return;
+        }
+
+        Assert.AreEqual(ProjectKind.Production, project.Kind);
+        Assert.IsTrue(AllowedProductionReferences.TryGetValue(StorageFileSystem, out var allowed)
+            && allowed.Count == 0,
+            $"{StorageFileSystem} must be documented with an empty reference set.");
+        Assert.IsEmpty(project.References,
+            $"{StorageFileSystem} must reference no project: {string.Join(", ", project.References)}");
+
+        var forbiddenPackages = project.PackageReferences
+            .Where(package => package.StartsWith("Microsoft.AspNetCore", StringComparison.Ordinal)
+                || package.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal)
+                || package.StartsWith("Microsoft.Data.Sqlite", StringComparison.Ordinal)
+                || package.StartsWith("AWSSDK", StringComparison.Ordinal)
+                || package.StartsWith("Azure.", StringComparison.Ordinal)
+                || package.StartsWith("Minio", StringComparison.Ordinal)
+                || package.StartsWith("SkiaSharp", StringComparison.Ordinal))
+            .ToArray();
+        Assert.IsEmpty(forbiddenPackages,
+            $"{StorageFileSystem} must not take host, persistence, or provider packages: {string.Join(", ", forbiddenPackages)}");
+
+        var consumers = repository.Projects.Values
+            .Where(candidate => candidate.Kind == ProjectKind.Production && candidate.References.Contains(StorageFileSystem))
+            .Select(candidate => candidate.Name)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var permittedConsumers = new[] { CameraAgentCommon, LogicHost };
+        Assert.IsEmpty(consumers.Except(permittedConsumers, StringComparer.Ordinal).ToArray(),
+            $"Only {string.Join(" and ", permittedConsumers)} may reference {StorageFileSystem}: {string.Join(", ", consumers)}");
     }
 
     [TestMethod]
