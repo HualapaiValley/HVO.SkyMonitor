@@ -4,6 +4,7 @@ using Amazon.Runtime.Credentials;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 using HVO.SkyMonitor.LogicHost.Services;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Configuration;
@@ -360,5 +361,36 @@ public sealed class DeploymentConfigurationTests
         // Existing categories keep their semantics.
         Assert.IsTrue(new ObjectStoreException(ObjectStoreFailureKind.Throttled, "put").IsRetryable);
         Assert.IsFalse(new ObjectStoreException(ObjectStoreFailureKind.Throttled, "put").RequiresOperator);
+    }
+
+    [TestMethod]
+    public void ProviderSelection_BindsGroupedAndFlattenedKeysFromConfiguration()
+    {
+        // The nested option groups are get-only properties initialised in place. The
+        // configuration binder must populate them through the getter, and the flattened
+        // ObjectStorage:* keys the deployment inventory writes must land in the S3 group;
+        // otherwise a deployment that upgrades in place silently loses its endpoint.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ObjectStorage:Provider"] = "Filesystem",
+                ["ObjectStorage:Filesystem:Root"] = "/srv/skymonitor/objects",
+                ["ObjectStorage:S3:Region"] = "eu-west-1",
+                ["ObjectStorage:ServiceEndpoint"] = "flat.example.test:9000",
+                ["ObjectStorage:ArtifactBucket"] = "hvo-bound-artifacts"
+            })
+            .Build();
+        var options = new CentralObjectStorageOptions();
+        configuration.GetSection(CentralObjectStorageOptions.SectionName).Bind(options);
+
+        Assert.AreEqual(ObjectStorageProvider.Filesystem, options.Provider);
+        Assert.AreEqual("/srv/skymonitor/objects", options.Filesystem.Root);
+        Assert.AreEqual("eu-west-1", options.S3.Region, "grouped key binds into the S3 group");
+        Assert.AreEqual("flat.example.test:9000", options.S3.ServiceEndpoint, "flattened key forwards into the S3 group");
+        Assert.AreEqual("hvo-bound-artifacts", options.ArtifactBucket);
+        Assert.IsTrue(options.HasS3Settings);
+        Assert.IsTrue(options.HasFilesystemSettings);
+        // And that shape is exactly the contradiction the exclusivity rule refuses.
+        Assert.IsFalse(HVO.SkyMonitor.LogicHost.Program.HasExclusiveProviderSettings(options));
     }
 }
