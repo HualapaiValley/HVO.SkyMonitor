@@ -116,7 +116,7 @@ public sealed class CentralProcessingGraphMigrationTests
                 MediaType = "application/octet-stream",
                 ByteLength = 1,
                 ChecksumSha256 = new string('A', 64),
-                StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}",
+                StorageReference = $"object://skymonitor-artifacts/{Guid.NewGuid():N}",
                 IdempotencyKey = Guid.NewGuid().ToString("N"),
                 ReceivedAtUtc = now.AddMinutes(-1),
                 CreatedUtc = now.AddMinutes(-1),
@@ -311,7 +311,7 @@ public sealed class CentralProcessingGraphMigrationTests
                 MediaType = "application/octet-stream",
                 ByteLength = 1,
                 ChecksumSha256 = new string('B', 64),
-                StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}",
+                StorageReference = $"object://skymonitor-artifacts/{Guid.NewGuid():N}",
                 IdempotencyKey = Guid.NewGuid().ToString("N"),
                 ReceivedAtUtc = now,
                 CreatedUtc = now,
@@ -2238,7 +2238,7 @@ public sealed class CentralProcessingGraphMigrationTests
             NullLogger<ProcessingGraphCatalogService>.Instance);
 
     private const string FenceBucket = "skymonitor-artifacts";
-    private const string FenceBucketPrefix = "s3://" + FenceBucket + "/";
+    private const string FenceBucketPrefix = "object://" + FenceBucket + "/";
 
     private static IMinioClient GetFixtureMinio()
         => AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
@@ -3431,7 +3431,7 @@ public sealed class CentralProcessingGraphMigrationTests
             MediaType = "application/octet-stream",
             ByteLength = 1,
             ChecksumSha256 = new string(checksumDigit, 64),
-            StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}",
+            StorageReference = $"object://skymonitor-artifacts/{Guid.NewGuid():N}",
             IdempotencyKey = Guid.NewGuid().ToString("N"),
             ReceivedAtUtc = receivedAtUtc,
             CreatedUtc = receivedAtUtc,

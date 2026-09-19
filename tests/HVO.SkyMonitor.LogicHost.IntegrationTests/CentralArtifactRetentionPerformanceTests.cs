@@ -409,7 +409,7 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
                 MediaType = "application/octet-stream",
                 ByteLength = payload.LongLength,
                 ChecksumSha256 = checksum,
-                StorageReference = $"s3://{Bucket}/{key}",
+                StorageReference = $"object://{Bucket}/{key}",
                 ReceivedAtUtc = DateTimeOffset.UnixEpoch,
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 ObjectState = CentralArtifactObjectState.Available,
@@ -1485,7 +1485,7 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
         var json = Encoding.UTF8.GetString(evidenceBytes);
         var keyValues = keys.ToArray();
         var forbidden = keyValues
-            .Concat(keyValues.Select(key => $"s3://{Bucket}/{key}"))
+            .Concat(keyValues.Select(key => $"object://{Bucket}/{key}"))
             .Concat(entityIds.SelectMany(id => new[] { id.ToString("D"), id.ToString("N") }))
             .Concat([
                 IntegrationTestFixture.MinioAccessKey,

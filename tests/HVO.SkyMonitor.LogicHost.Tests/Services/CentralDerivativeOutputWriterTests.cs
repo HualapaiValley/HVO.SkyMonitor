@@ -105,8 +105,8 @@ public sealed class CentralDerivativeOutputWriterTests
             () => artifact.ChecksumSha256 = new string('0', 64),
             () => artifact.ChecksumSha256 = product.ChecksumSha256);
         Reject(
-            () => artifact.StorageReference = "s3://different/key",
-            () => artifact.StorageReference = $"s3://{Bucket}/{objectKey}");
+            () => artifact.StorageReference = "object://different/key",
+            () => artifact.StorageReference = $"object://{Bucket}/{objectKey}");
         var source = artifact.Sources.Single();
         Reject(() => source.SourceArtifactId = Guid.NewGuid(), () => source.SourceArtifactId = lease.SourceArtifactId);
         Reject(
@@ -268,7 +268,7 @@ public sealed class CentralDerivativeOutputWriterTests
             MediaType = product.MediaType,
             ByteLength = product.Payload.Length,
             ChecksumSha256 = product.ChecksumSha256,
-            StorageReference = $"s3://skymonitor-artifacts/{objectKey}"
+            StorageReference = $"object://skymonitor-artifacts/{objectKey}"
         };
         artifact.Sources.Add(new CentralArtifactSource
         {

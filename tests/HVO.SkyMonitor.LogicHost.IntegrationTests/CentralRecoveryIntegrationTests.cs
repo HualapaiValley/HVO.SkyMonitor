@@ -29,7 +29,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class CentralRecoveryIntegrationTests
 {
     private const string Bucket = "skymonitor-artifacts";
-    private const string StoragePrefix = "s3://skymonitor-artifacts/";
+    private const string StoragePrefix = "object://skymonitor-artifacts/";
     private readonly HashSet<string> objectKeys = new(StringComparer.Ordinal);
     private readonly string agentMarker = $"central-recovery-test-{Guid.NewGuid():N}";
 
@@ -216,7 +216,7 @@ public sealed class CentralRecoveryIntegrationTests
                 CentralReconstructionState.Complete).ConfigureAwait(false);
         }
         var legacyId = await AddArtifactAsync(db, $"legacy/{Guid.NewGuid():N}-not-owned.bin", [7], CentralArtifactObjectState.Available,
-            CentralReconstructionState.Complete, storageReference: "s3://unsupported-bucket/not-owned.bin").ConfigureAwait(false);
+            CentralReconstructionState.Complete, storageReference: "object://unsupported-bucket/not-owned.bin").ConfigureAwait(false);
         await SetCheckpointAsync(db, CentralRecoveryPhases.SqlArtifacts, generation: generation).ConfigureAwait(false);
 
         await CreateReconciler(database.Services, TimeProvider.System)
@@ -1085,7 +1085,7 @@ public sealed class CentralRecoveryIntegrationTests
         var clock = new MutableTimeProvider(now);
         var artifactId = await AddArtifactAsync($"unsupported/{Guid.NewGuid():N}.bin", [8],
             CentralArtifactObjectState.Available, CentralReconstructionState.PendingReference, putObject: false,
-            storageReference: $"s3://legacy-overflow/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
+            storageReference: $"object://legacy-overflow/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
         await using (var setupScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
             await setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralArtifacts
@@ -1111,7 +1111,7 @@ public sealed class CentralRecoveryIntegrationTests
         var artifactId = await AddArtifactAsync(
             $"unsupported/{Guid.NewGuid():N}.bin", [8, 8], CentralArtifactObjectState.Pending,
             CentralReconstructionState.Complete, putObject: false,
-            storageReference: $"s3://legacy-private/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
+            storageReference: $"object://legacy-private/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
         await SetCheckpointAsync(CentralRecoveryPhases.Idle, nextInventoryAtUtc: clock.UtcNow.AddDays(1))
             .ConfigureAwait(false);
         var reconciler = CreateReconciler(AssemblyHooks.Fixture.Factory.Services, clock);
@@ -1161,7 +1161,7 @@ public sealed class CentralRecoveryIntegrationTests
                 MediaType = "application/octet-stream",
                 ByteLength = 1,
                 ChecksumSha256 = new string('A', 64),
-                StorageReference = $"s3://legacy-fairness/{Guid.NewGuid():N}",
+                StorageReference = $"object://legacy-fairness/{Guid.NewGuid():N}",
                 ReceivedAtUtc = now.AddMinutes(-index),
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 ObjectState = CentralArtifactObjectState.Available,
@@ -1298,7 +1298,7 @@ public sealed class CentralRecoveryIntegrationTests
             CentralArtifactObjectState.Pending,
             CentralReconstructionState.Complete,
             putObject: false,
-            storageReference: $"s3://legacy/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
+            storageReference: $"object://legacy/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
         await using (var setupScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
             var db = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();

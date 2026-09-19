@@ -243,7 +243,7 @@ public static class SkyMonitorObservabilityExtensions
             "artifact-consistency" => ArtifactConsistencyHealthDataKeys,
             "artifact-retention" => ArtifactRetentionHealthDataKeys,
             "central-derivative-worker" => CentralDerivativeWorkerHealthDataKeys,
-            "s3-object-store" => ObjectStoreHealthDataKeys,
+            "object-store" => ObjectStoreHealthDataKeys,
             "environmental-observations" => EnvironmentalObservationHealthDataKeys,
             "environmental-delivery" => EnvironmentalDeliveryHealthDataKeys,
             "environmental-acquisition" => EnvironmentalAcquisitionHealthDataKeys,

@@ -2,7 +2,7 @@
 
 Status date: 2026-09-05
 
-Decision owner: `RM-016`, epic [#499](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/499)
+Decision owner: `RM-016`, epic [#499](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/499)
 
 ## Decision
 
@@ -16,7 +16,7 @@ The AWS SDK S3 adapter remains available for development and future remote
 profiles. A native Azure Blob adapter can implement the same application
 contract later. Remote filesystem, S3, and Azure qualification do not block
 `RM-016`; that vNext work belongs to `RM-019`, epic
-[#588](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/588).
+[#588](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/588).
 The first supported release profile is filesystem-only: installer and production
 preflight reject S3 selection until #589 qualifies and enables an exact profile.
 
@@ -84,7 +84,7 @@ and remote-provider errors. CameraAgent keeps `IFrameStorageService`, raw ingres
 canonical relative artifact paths, payload/sidecar commit order, SQLite journals,
 outbox, retention holds, gallery, replay, and local recovery authority. CameraAgent
 adoption of the shared primitives is isolated in post-`RM-017` issue
-[#587](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/587); it is not part
+[#587](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/587); it is not part
 of active `RM-016` implementation.
 
 ## Supported First-Release Envelope
@@ -101,12 +101,41 @@ NFS, SMB, NAS appliances, XFS, ZFS, clustered filesystems, arbitrary Docker
 volume drivers, multiple LogicHost writers, and remote-mount outage behavior are
 not certified by this decision. They require separate topology evidence.
 
+## Delivered By #584
+
+The provider-neutral surface is in place and every central workflow consumes only it:
+
+- **Selection.** `ObjectStorage:Provider` is `Filesystem` or `S3` (default `S3` while it is the
+  only delivered adapter). S3 transport settings live in the `ObjectStorage:S3` group; the
+  flattened `ObjectStorage:ServiceEndpoint`-style keys the deployment inventory writes forward
+  to it, so no deployment changed. `ObjectStorage:Filesystem:Root` is reserved for #585.
+- **Fail-closed validation.** Naming one provider while carrying the other's settings fails
+  startup with the contradiction named; a filesystem root must be absolute and normalized.
+  Installer preflight, not this validation, is what restricts the supported release profile.
+- **Logical identity.** Every persisted `StorageReference` is `object://<bucket>/<key>`; the
+  scheme names an identity every provider resolves, so switching providers changes no row.
+  The unreleased schema has one canonical migration and needed no change: the column is a
+  binary-collated string with no scheme constraint.
+- **Neutral names.** The dependency health check is `object-store`; telemetry carries a
+  bounded `object_store.provider` tag beside the transport-specific `addressing_style`; AWS
+  SDK types are confined to `LogicHost/Infrastructure/ObjectStorage` and the S3 client
+  factory reads only the S3 group.
+- **Failure categories.** `Capacity` (not retryable, not terminal, operator action) and
+  `CorruptState` (terminal, operator action) join the existing kinds with
+  `RequiresOperator` semantics for health reporting.
+- **Conformance.** `ObjectStoreConformanceSuite` takes a capability set; the universal
+  assertions run for every provider, and the transport-fault assertions run only where the
+  harness declares it can inject them.
+- **#592 boundary.** `StorageFileSystemBoundaryIsNarrowWhenPresent` asserts the future
+  project references no project, takes no host/persistence/provider package, and is consumed
+  only by `LogicHost` and `CameraAgent.Common`.
+
 ## Delivery and Future Order
 
-1. [#584](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/584) neutralizes provider selection, configuration, telemetry, health, and durable identity.
-2. [#592](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/592) introduces and registers the host-neutral filesystem durability primitives.
-3. [#585](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/585) implements the LogicHost filesystem provider on those primitives.
-4. [#586](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/586) qualifies the exact same-host Linux ext4 topology.
-5. [#506](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/506) adopts it across supported deployment, tests, CI, and operations and removes MinIO ownership.
-6. After `RM-017`, [#587](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/587) may move CameraAgent onto the shared primitives without changing its contracts.
-7. In vNext, [#591](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/591) qualifies one exact remote filesystem mount for storage-server capacity, [#589](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/589) qualifies and enables one exact external S3/LAN or AWS profile, and [#590](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/590) adds and qualifies Azure Blob.
+1. [#584](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/584) neutralizes provider selection, configuration, telemetry, health, and durable identity.
+2. [#592](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/592) introduces and registers the host-neutral filesystem durability primitives.
+3. [#585](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/585) implements the LogicHost filesystem provider on those primitives.
+4. [#586](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/586) qualifies the exact same-host Linux ext4 topology.
+5. [#506](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/506) adopts it across supported deployment, tests, CI, and operations and removes MinIO ownership.
+6. After `RM-017`, [#587](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/587) may move CameraAgent onto the shared primitives without changing its contracts.
+7. In vNext, [#591](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/591) qualifies one exact remote filesystem mount for storage-server capacity, [#589](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/589) qualifies and enables one exact external S3/LAN or AWS profile, and [#590](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/590) adds and qualifies Azure Blob.

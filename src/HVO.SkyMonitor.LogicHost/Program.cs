@@ -227,7 +227,7 @@ public sealed partial class Program
 
         if (objectStorageConfigured)
         {
-            healthChecks.AddCheck<ObjectStoreHealthCheck>("s3-object-store", tags: ["dependency"]);
+            healthChecks.AddCheck<ObjectStoreHealthCheck>("object-store", tags: ["dependency"]);
         }
 
         if (!string.IsNullOrWhiteSpace(smtpHost))
@@ -391,6 +391,10 @@ public sealed partial class Program
                 "ObjectStorage:ServiceEndpoint must be a host name with an optional port and no URI scheme.")
             .Validate(HasValidObjectStorageCredentials,
                 "ObjectStorage credentials do not match the configured CredentialMode.")
+            .Validate(HasExclusiveProviderSettings,
+                "ObjectStorage:Provider selects one provider; settings for the other provider must not be present.")
+            .Validate(HasValidFilesystemRoot,
+                "ObjectStorage:Filesystem:Root must be an absolute path when ObjectStorage:Provider is Filesystem.")
             .ValidateOnStart();
         builder.Services.AddSingleton<CentralObjectStorageNames>();
         builder.Services.AddSingleton<ObjectStoreTelemetry>();
@@ -1192,6 +1196,25 @@ public sealed partial class Program
             && string.IsNullOrEmpty(endpoint.Query)
             && string.IsNullOrEmpty(endpoint.Fragment);
     }
+
+    // Provider settings are mutually exclusive and fail closed: a deployment that names one
+    // provider while carrying the other's settings is half-migrated, and starting it would
+    // silently serve the wrong provider. The S3 group is only checked when Filesystem is
+    // selected, because S3 is the default and its defaults are indistinguishable from
+    // "unset"; a Filesystem root under an S3 selection is always a contradiction.
+    internal static bool HasExclusiveProviderSettings(CentralObjectStorageOptions options)
+        => options.Provider switch
+        {
+            ObjectStorageProvider.Filesystem => !options.HasS3Settings,
+            ObjectStorageProvider.S3 => !options.HasFilesystemSettings,
+            _ => false
+        };
+
+    internal static bool HasValidFilesystemRoot(CentralObjectStorageOptions options)
+        => options.Provider != ObjectStorageProvider.Filesystem
+            || (!string.IsNullOrWhiteSpace(options.Filesystem.Root)
+                && Path.IsPathRooted(options.Filesystem.Root)
+                && options.Filesystem.Root == Path.GetFullPath(options.Filesystem.Root));
 
     internal static bool HasValidObjectStorageCredentials(CentralObjectStorageOptions options)
         => options.CredentialMode switch
