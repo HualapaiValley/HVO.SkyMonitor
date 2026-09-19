@@ -252,7 +252,7 @@ Retired generations, in-flight temporaries, retirement stamps and quarantine
 are not objects and are not backed up. The target must be an empty or absent
 directory; a backup never merges. A store that fails its own digest check or
 has a malformed descriptor is refused: reconcile it (the host does this on
-start and every ten minutes; the health check reports `QuarantinedCount`)
+start and every ten minutes; the health check reports `QuarantinedBuckets`)
 before taking the backup, so a backup is never a copy of a known-bad store.
 
 Restore is destructive by contract and staged: every configured bucket is

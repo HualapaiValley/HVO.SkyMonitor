@@ -164,7 +164,7 @@ beside the data, because nothing is written when a descriptor moves on), so a re
 opened one finishes it; on Windows a sharing violation
 defers rather than faults. Stale temporaries are removed after their own grace age. Each
 pass is bounded and reports counts only, never keys or paths. The health check surfaces
-`QuarantinedCount`, `ReclaimFailedCount`, `RetiredBytes`, `OldestRetiredAgeSeconds` and
+`QuarantinedBuckets`, `ReclaimFailedCount`, `RetiredBytes`, `OldestRetiredAgeSeconds` and
 `ReconciledUtc`, and is `Degraded` while anything is quarantined or unreclaimable. A copy
 whose source data was reclaimed under it re-reads the descriptor and reports `Precondition`
 when the source moved on, `CorruptState` only when the descriptor still names the missing

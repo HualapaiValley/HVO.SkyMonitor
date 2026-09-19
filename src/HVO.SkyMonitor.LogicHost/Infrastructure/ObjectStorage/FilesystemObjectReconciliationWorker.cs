@@ -51,18 +51,33 @@ internal sealed partial class FilesystemObjectReconciliationWorker(
         while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
     }
 
-    internal void RunOnce(FilesystemObjectReconciler reconciler, CancellationToken cancellationToken)
+    internal void RunOnce(
+        FilesystemObjectReconciler reconciler,
+        CancellationToken cancellationToken,
+        FilesystemReconciliationOptions? reconciliationOptions = null)
     {
         var reports = new Dictionary<string, FilesystemReconciliationReport>(StringComparer.Ordinal);
         foreach (var bucket in new[] { _options.ArtifactBucket, _options.DiagnosticsBucket })
         {
             try
             {
-                reports[bucket] = reconciler.Reconcile(bucket, new FilesystemReconciliationOptions(), cancellationToken);
+                reports[bucket] = reconciler.Reconcile(bucket, reconciliationOptions ?? new FilesystemReconciliationOptions(), cancellationToken);
             }
             catch (ObjectStoreException exception)
             {
-                LogBucketSkipped(_logger, bucket, ObjectStoreException.GetOutcome(exception.Kind));
+                var outcome = ObjectStoreException.GetOutcome(exception.Kind);
+                reports[bucket] = new FilesystemReconciliationReport { FailureOutcome = outcome };
+                LogBucketSkipped(_logger, bucket, outcome);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or HVO.SkyMonitor.Storage.FileSystem.FileSystemFaultException)
+            {
+                reports[bucket] = new FilesystemReconciliationReport { FailureOutcome = "filesystem-access" };
+                LogBucketSkipped(_logger, bucket, "filesystem-access");
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                reports[bucket] = new FilesystemReconciliationReport { FailureOutcome = "reconciliation-failed" };
+                LogBucketFailed(_logger, bucket, exception);
             }
         }
         lock (_reportLock)
@@ -74,4 +89,7 @@ internal sealed partial class FilesystemObjectReconciliationWorker(
 
     [LoggerMessage(2187, LogLevel.Warning, "Filesystem object store reconciliation skipped bucket {Bucket}: {Outcome}.")]
     private static partial void LogBucketSkipped(ILogger logger, string bucket, string outcome);
+
+    [LoggerMessage(2188, LogLevel.Error, "Filesystem object store reconciliation failed unexpectedly for bucket {Bucket}.")]
+    private static partial void LogBucketFailed(ILogger logger, string bucket, Exception exception);
 }
