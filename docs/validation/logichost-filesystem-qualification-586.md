@@ -116,11 +116,80 @@ rendered Compose model and exact image digest.
 
 ## Remaining Gates
 
-- Run the same exact candidate campaign on the isolated x64 target.
-- Run W1/W2/W3M/W3P/W4, reconciliation backlog, backup and restore timings on
-  the ARM64 candidate, with loop-backed topology named in every result.
-- Exercise full HTTP health/log/metric/trace behavior where supported SQL Server
-  is available. Microsoft SQL Server has no supported native ARM64 Linux image,
-  so the Pi campaign does not substitute another database implementation.
+- Retain the limitation that Microsoft SQL Server has no supported native ARM64
+  Linux image; full HTTP host evidence is therefore x64, while ARM64 evidence is
+  native provider/image/offline-operation evidence. No substitute database was
+  introduced.
 - Complete exact-head independent review, Tier M candidate gates, and a final
   go/no-go decision before #506 starts.
+
+## Native X64 Evidence
+
+- Primary target: `gh-runner-01`, Ubuntu 24.04 x64 KVM VM, 4 CPUs, 12 GiB,
+  Docker 29.8.1, SDK 10.0.401. Dedicated 20 GiB `/dev/sdb` was reformatted
+  ext4 with UUID `fa678c86-1c12-4eba-8f04-c84256772089` and mounted directly at
+  `/var/lib/hvo-qualification/object-store` with the same `4242:4343` and
+  `0750` contract.
+- Native Release solution build was warning-clean. Storage.FileSystem Unit was
+  61/61. LogicHost filesystem/backup/reconciliation was 77 pass and one expected
+  skip. Self-contained `linux-x64` publish produced an x86-64 ELF. The exact
+  x64 image was `sha256:28be739ceb5ffbdef0fa385f7dee24262f44a5896da91807c102928135f60621`.
+- Read-only-root/non-root container probe passed file and directory sync,
+  atomic rename, hard-link/unlink semantics, cleanup and root-write refusal.
+- Full host startup used real pinned SQL Server, Redis and Mailpit containers,
+  no MinIO, a valid fixture catalog package, the ext4 filesystem provider, a
+  read-only root and the declared Data Protection mount. Database migration and
+  seeding passed; `/alive` was 200; database, Redis, SMTP and object-store health
+  were Healthy; the aggregate remained Degraded only because the fixture catalog
+  correctly reports that production catalog data is not active. Object-store
+  health reported zero quarantine/failures/backlog and current reconciliation.
+  Logs, Prometheus metrics, health JSON and exact container inspection were
+  retained under `/var/lib/hvo-qualification/evidence`.
+- Read-only remount and permission loss failed closed and recovered. Dedicated
+  ext4 fixtures proved neutral `Capacity` for 100% blocks and zero free inodes,
+  followed by successful writes after release. SIGKILL during backup left no
+  completion checksum. SIGKILL after a prepared restore marker recovered on the
+  first retry and exact verify passed. A VM reboot automatically mounted
+  `/dev/sdb`, retained byte-identical store checksums and passed exact backup
+  verification. The GitHub runner was restored online afterward.
+
+## Exact-Mount Performance
+
+Five independent trials ran the same Docker-free provider workload at candidate
+revision `525312ef` on each exact mount. Raw JSON remains with each host's
+evidence. Values below are median with observed min-max where material.
+
+| Metric | x64 direct ext4 | ARM64 ext4 loop over NVMe/XFS |
+| --- | ---: | ---: |
+| W1 median latency | 57.7 ms (56.5-61.6) | 255.2 ms (62.6-452.3) |
+| W1 p95 | 63.0 ms (60.3-67.5) | 321.1 ms (74.3-486.9) |
+| W1 throughput | 17.24 ops/s (16.12-17.70) | 3.78 ops/s (2.20-16.20) |
+| W2 median latency | 146.0 ms (142.8-147.8) | 684.2 ms (158.7-1342.5) |
+| W2 p95 | 161.2 ms (150.6-164.8) | 755.7 ms (707.4-1409.5) |
+| W2 throughput | 6.86 ops/s (6.75-6.96) | 1.46 ops/s (0.78-1.93) |
+| W4 c1/c4/c8 throughput | 17.70 / 27.66 / 42.68 ops/s | 3.71 / 6.77 / 9.19 ops/s |
+| W3M list 10,000 | 83.7 ms (80.0-87.2) | 352.2 ms (320.2-381.6) |
+| W3P drain 100 x W2 | 42.5 ms (38.9-43.8) | 164.4 ms (23.6-291.4) |
+| Restart + reconciliation | 117.6 ms (115.9-127.0) | 437.5 ms (427.6-466.9) |
+| Backup one W2 object | 61.8 ms (59.8-63.2) | 357.4 ms (324.5-385.8) |
+| Restore one W2 object | 58.3 ms (56.8-63.0) | 146.8 ms (115.7-309.0) |
+
+The x64 direct-ext4 topology is stable. ARM64 shows material durability-latency
+variance despite `throttled=0x0` and temperatures of 42-47 C; this is attributed
+only to the measured Pi 5 loop-backed stack and is not generalized to direct
+ext4 storage. Its median W2 rate still exceeds the supported handful-of-rigs
+ingest envelope, W4 scales to 9.19 operations/s, restart reconciliation remains
+under half a second, and memory/allocation behavior stayed bounded. The ARM64
+performance result is therefore acceptable for correctness and supported load,
+with the loop-backed topology and high tail variance retained as explicit
+operational limits rather than hidden as noise.
+
+## Provisional Disposition
+
+The measured candidate supports one trusted LogicHost writer on native Linux
+amd64 or arm64, with a fixed non-root identity, read-only container root and a
+dedicated same-host ext4 mount. Direct ext4 x64 and loop-backed ext4 Pi 5 are the
+tested storage forms; NFS, SMB, NAS, XFS/ZFS object roots, clustered filesystems,
+arbitrary Docker volumes and multiple writers remain unsupported. The evidence
+supports a provisional **go**, subject to exact-head independent review and the
+complete Tier M gate. #506 remains gated until that review records the final go.
