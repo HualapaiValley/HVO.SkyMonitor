@@ -202,36 +202,63 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
         {
             await RequireBucketAsync(bucket, "copy", token).ConfigureAwait(false);
             var source = await ReadDescriptorAsync(bucket, sourceKey, "copy", token).ConfigureAwait(false);
-            var sourceHash = FilesystemObjectLayout.KeyHash(sourceKey);
-            var destinationHash = FilesystemObjectLayout.KeyHash(destinationKey);
-            var sourceData = _root.Resolve(FilesystemObjectLayout.DataRelativePath(bucket, sourceHash, source.Generation));
+            await CopyFromDescriptorAsync(bucket, sourceKey, destinationKey, source, token).ConfigureAwait(false);
+        }, cancellationToken);
 
-            using var _ = await LockKeyAsync(bucket, destinationHash, token).ConfigureAwait(false);
-            var generation = FilesystemObjectLayout.NewGeneration();
-            FileStream sourceStream;
+    /// <summary>Test seam: run the copy body from an already-read source descriptor, to pin the reclaim race deterministically.</summary>
+    internal Task CopyFromDescriptorForTestAsync(string bucket, string sourceKey, string destinationKey, FilesystemObjectDescriptor source, CancellationToken cancellationToken)
+        => ExecuteAsync("copy", bucket, token => CopyFromDescriptorAsync(bucket, sourceKey, destinationKey, source, token), cancellationToken);
+
+    private async Task CopyFromDescriptorAsync(string bucket, string sourceKey, string destinationKey, FilesystemObjectDescriptor source, CancellationToken token)
+    {
+        var sourceHash = FilesystemObjectLayout.KeyHash(sourceKey);
+        var destinationHash = FilesystemObjectLayout.KeyHash(destinationKey);
+        var sourceData = _root.Resolve(FilesystemObjectLayout.DataRelativePath(bucket, sourceHash, source.Generation));
+
+        using var _ = await LockKeyAsync(bucket, destinationHash, token).ConfigureAwait(false);
+        var generation = FilesystemObjectLayout.NewGeneration();
+        FileStream sourceStream;
+        try
+        {
+            sourceStream = new FileStream(sourceData, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, StreamBufferSize,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (FileNotFoundException exception)
+        {
+            // The source data named by the descriptor we read is gone. Re-read the
+            // descriptor to tell the two causes apart: if it now names a different
+            // generation (or is gone), the source was replaced or deleted and its retired
+            // data reclaimed under us, which is a Precondition on a moving source; only if
+            // the descriptor still names this generation is the store contradicting itself.
+            FilesystemObjectDescriptor? again = null;
             try
             {
-                sourceStream = new FileStream(sourceData, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, StreamBufferSize,
-                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                again = await ReadDescriptorAsync(bucket, sourceKey, "copy", token).ConfigureAwait(false);
             }
-            catch (FileNotFoundException exception)
+            catch (ObjectStoreException recheck) when (recheck.Kind == ObjectStoreFailureKind.MissingObject)
             {
-                throw new ObjectStoreException(ObjectStoreFailureKind.CorruptState, "copy", exception);
+                throw new ObjectStoreException(ObjectStoreFailureKind.MissingObject, "copy", exception);
             }
-            (long length, string sha256) written;
-            await using (sourceStream.ConfigureAwait(false))
+            if (!string.Equals(again.Generation, source.Generation, StringComparison.Ordinal))
             {
-                written = await WriteDataAsync(bucket, destinationHash, generation, sourceStream, source.Length, token).ConfigureAwait(false);
+                throw new ObjectStoreException(ObjectStoreFailureKind.Precondition, "copy", exception);
             }
-            if (!string.Equals(written.sha256, source.Sha256, StringComparison.Ordinal))
-            {
-                // The source data no longer matches its descriptor's digest: local corruption.
-                TryDelete(_root.Resolve(FilesystemObjectLayout.DataRelativePath(bucket, destinationHash, generation)));
-                throw new ObjectStoreException(ObjectStoreFailureKind.CorruptState, "copy");
-            }
-            var descriptor = source with { Key = destinationKey, Generation = generation, ModifiedUtc = _timeProvider.GetUtcNow() };
-            await PublishDescriptorAsync(bucket, destinationHash, descriptor, token).ConfigureAwait(false);
-        }, cancellationToken);
+            throw new ObjectStoreException(ObjectStoreFailureKind.CorruptState, "copy", exception);
+        }
+        (long length, string sha256) written;
+        await using (sourceStream.ConfigureAwait(false))
+        {
+            written = await WriteDataAsync(bucket, destinationHash, generation, sourceStream, source.Length, token).ConfigureAwait(false);
+        }
+        if (!string.Equals(written.sha256, source.Sha256, StringComparison.Ordinal))
+        {
+            // The source data no longer matches its descriptor's digest: local corruption.
+            TryDelete(_root.Resolve(FilesystemObjectLayout.DataRelativePath(bucket, destinationHash, generation)));
+            throw new ObjectStoreException(ObjectStoreFailureKind.CorruptState, "copy");
+        }
+        var descriptor = source with { Key = destinationKey, Generation = generation, ModifiedUtc = _timeProvider.GetUtcNow() };
+        await PublishDescriptorAsync(bucket, destinationHash, descriptor, token).ConfigureAwait(false);
+    }
 
     public Task DeleteAsync(string bucket, string key, CancellationToken cancellationToken)
         => ExecuteAsync("delete", bucket, async token =>
@@ -304,12 +331,18 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
     {
         var bucketPath = _root.Resolve(FilesystemObjectLayout.BucketRelativePath(bucket));
         var items = new List<ObjectStoreItem>();
-        foreach (var descriptorPath in Directory.EnumerateFiles(bucketPath, "*" + FilesystemObjectLayout.DescriptorSuffix, SearchOption.AllDirectories))
+        var quarantineMarker = Path.DirectorySeparatorChar + FilesystemObjectReconciler.QuarantineDirectoryName + Path.DirectorySeparatorChar;
+        foreach (var descriptorPath in Directory.EnumerateFiles(bucketPath, "*" + FilesystemObjectLayout.DescriptorSuffix, new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+            IgnoreInaccessible = true
+        }))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (new FileInfo(descriptorPath).LinkTarget is not null)
+            if (descriptorPath.Contains(quarantineMarker, StringComparison.Ordinal))
             {
-                continue;
+                continue; // quarantined descriptors are the operator's, not the store's
             }
             FilesystemObjectDescriptor? descriptor;
             try
