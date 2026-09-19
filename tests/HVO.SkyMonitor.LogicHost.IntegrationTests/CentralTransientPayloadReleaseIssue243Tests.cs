@@ -76,7 +76,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             }
             foreach (var artifact in seeded.Artifacts)
             {
-                var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
+                var objectKey = artifact.StorageReference["object://skymonitor-artifacts/".Length..];
                 var payload = fixture.Payloads[artifact.ArtifactId];
                 await using var stream = new MemoryStream(payload, writable: false);
                 await fixtureMinio.PutObjectAsync(new PutObjectArgs()

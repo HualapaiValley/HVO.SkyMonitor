@@ -37,7 +37,14 @@ public sealed class CentralObjectStorageOptions
     [RegularExpression("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")]
     public string DiagnosticsBucket { get; set; } = DefaultDiagnosticsBucket;
 
-    public string ArtifactPrefix => $"s3://{ArtifactBucket}/";
+    /// <summary>
+    /// The scheme of every persisted storage reference. It names a logical object identity
+    /// (bucket and key) that every provider resolves, so the reference does not change when
+    /// the physical provider does.
+    /// </summary>
+    public const string LogicalScheme = "object://";
+
+    public string ArtifactPrefix => $"{LogicalScheme}{ArtifactBucket}/";
 }
 
 public enum ObjectStorageAddressingStyle

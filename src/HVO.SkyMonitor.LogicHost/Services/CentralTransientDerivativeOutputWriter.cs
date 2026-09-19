@@ -578,7 +578,7 @@ internal sealed class CentralTransientDerivativeOutputWriter(
         CentralDerivativeJobLease lease,
         CentralTransientDerivativeBundle bundle)
         => CreateStorageReferences(CreateOutputs(lease, bundle),
-            $"s3://{Configuration.CentralObjectStorageOptions.DefaultArtifactBucket}/");
+            $"{Configuration.CentralObjectStorageOptions.LogicalScheme}{Configuration.CentralObjectStorageOptions.DefaultArtifactBucket}/");
 
     private static string[] CreateStorageReferences(IReadOnlyList<Output> outputs, string bucketPrefix)
         => outputs.Select(output => $"{bucketPrefix}{output.ObjectKey}")

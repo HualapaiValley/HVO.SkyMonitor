@@ -1007,7 +1007,7 @@ public sealed class CentralProcessingGraphOutputBindingTests
             ResolvedCentralArtifactId = anchor.Id
         });
         const string bucket = "skymonitor-artifacts";
-        var objectKey = result.StorageReference[$"s3://{bucket}/".Length..];
+        var objectKey = result.StorageReference[$"object://{bucket}/".Length..];
         var inputSet = new string('1', 64);
         var legacyJob = new CentralDerivativeJob { InputSetIdentitySha256 = inputSet };
         var evidence = new CentralArtifactProcessingEvidence
@@ -1120,7 +1120,7 @@ public sealed class CentralProcessingGraphOutputBindingTests
             MediaType = "application/octet-stream",
             ByteLength = 1,
             ChecksumSha256 = new string('9', 64),
-            StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}",
+            StorageReference = $"object://skymonitor-artifacts/{Guid.NewGuid():N}",
             IdempotencyKey = Guid.NewGuid().ToString("N"),
             ReceivedAtUtc = DateTimeOffset.UtcNow,
             ObjectState = CentralArtifactObjectState.Available,

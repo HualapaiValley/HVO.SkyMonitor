@@ -254,7 +254,7 @@ public sealed class CentralDerivativeJobSchedulerTransientOwnershipTests
             MediaType = "application/octet-stream",
             ByteLength = 1,
             ChecksumSha256 = new string('A', 64),
-            StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}",
+            StorageReference = $"object://skymonitor-artifacts/{Guid.NewGuid():N}",
             IdempotencyKey = Guid.NewGuid().ToString("N"),
             ReceivedAtUtc = frame.CapturedAtUtc,
             CreatedUtc = frame.CapturedAtUtc,

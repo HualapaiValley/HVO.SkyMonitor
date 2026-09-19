@@ -18,7 +18,7 @@ public sealed class DeploymentConfigurationTests
     {
         var defaults = new CentralObjectStorageNames();
         Assert.AreEqual("skymonitor-artifacts", defaults.ArtifactBucket);
-        Assert.AreEqual("s3://skymonitor-artifacts/", defaults.ArtifactPrefix);
+        Assert.AreEqual("object://skymonitor-artifacts/", defaults.ArtifactPrefix);
 
         var configured = new CentralObjectStorageNames(Options.Create(new CentralObjectStorageOptions
         {
@@ -26,7 +26,7 @@ public sealed class DeploymentConfigurationTests
             DiagnosticsBucket = "hvo-run-42-diagnostics"
         }));
         Assert.AreEqual("hvo-run-42-artifacts", configured.ArtifactBucket);
-        Assert.AreEqual("s3://hvo-run-42-artifacts/", configured.ArtifactPrefix);
+        Assert.AreEqual("object://hvo-run-42-artifacts/", configured.ArtifactPrefix);
     }
 
     [TestMethod]

@@ -728,7 +728,7 @@ public sealed class CentralDerivativeWorkerTests
         Guid.NewGuid(),
         FrameArtifactRole.Raw,
         "raw-v1",
-        "s3://test/source.raw",
+        "object://test/source.raw",
         new string('A', 64),
         "application/octet-stream",
         Guid.NewGuid(),

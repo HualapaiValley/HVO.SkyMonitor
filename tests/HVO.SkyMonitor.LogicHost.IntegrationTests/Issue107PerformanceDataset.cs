@@ -469,7 +469,7 @@ internal static class Issue107PerformanceDatasetSeeder
                         MediaType = ArtifactPayloads.Value[artifactOrdinal].MediaType,
                         ByteLength = ArtifactPayloads.Value[artifactOrdinal].Bytes.LongLength,
                         ChecksumSha256 = ArtifactPayloads.Value[artifactOrdinal].ChecksumSha256,
-                        StorageReference = $"s3://skymonitor-artifacts/issue-107/{artifactOrdinal:D2}.bin",
+                        StorageReference = $"object://skymonitor-artifacts/issue-107/{artifactOrdinal:D2}.bin",
                         ReceivedAtUtc = capturedAtUtc.AddSeconds(1),
                         IdempotencyKey = Sha($"artifact-idempotency-{artifactIndex}"),
                         Variant = $"variant-{artifactOrdinal}",

@@ -162,13 +162,13 @@ public sealed class CentralTransientPayloadReleaseMigrationTests
                     ({releaseIds[3]}, 0, N'SourceArtifact', {Guid.NewGuid()}, N'Pending', 0);
                 UPDATE [CentralTransientPayloadReleaseItems]
                 SET [Outcome] = N'Failed', [RequestedAtUtc] = {now}, [ReleasedUtc] = {now},
-                    [StorageReference] = N's3://skymonitor-artifacts/issue-250/trigger-failed.bin',
+                    [StorageReference] = N'object://skymonitor-artifacts/issue-250/trigger-failed.bin',
                     [TargetRowVersion] = 0x0102030405060708, [TargetGeneration] = 0,
                     [FailureReasonCode] = N'transient-retention.delete-retry-exhausted'
                 WHERE [ReleaseId] IN ({releaseIds[0]}, {releaseIds[3]});
                 UPDATE [CentralTransientPayloadReleaseItems]
                 SET [Outcome] = N'Released', [RequestedAtUtc] = {now}, [ReleasedUtc] = {now},
-                    [StorageReference] = N's3://skymonitor-artifacts/issue-250/trigger-released.bin',
+                    [StorageReference] = N'object://skymonitor-artifacts/issue-250/trigger-released.bin',
                     [TargetRowVersion] = 0x0102030405060708, [TargetGeneration] = 0
                 WHERE [ReleaseId] = {releaseIds[2]};
                 """).ConfigureAwait(false);

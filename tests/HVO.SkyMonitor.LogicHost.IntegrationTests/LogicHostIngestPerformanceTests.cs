@@ -947,7 +947,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             Assert.IsNotNull(frame);
             Assert.AreEqual(expected.Workload.Payload.LongLength, frame.PixelData.Length);
 
-            var objectKey = artifact.StorageReference[$"s3://{ArtifactBucket}/".Length..];
+            var objectKey = artifact.StorageReference[$"object://{ArtifactBucket}/".Length..];
             string? objectChecksum = null;
             var objectInfo = await minio.StatObjectAsync(new StatObjectArgs()
                 .WithBucket(ArtifactBucket).WithObject(objectKey)).ConfigureAwait(false);
