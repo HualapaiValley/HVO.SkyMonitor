@@ -56,6 +56,12 @@ public sealed class AtomicPublisherTests
     }
 
     [TestMethod]
+    public void SupportsAtomicReplace_IsTrueExactlyOnLinux()
+    {
+        Assert.AreEqual(OperatingSystem.IsLinux(), AtomicPublisher.SupportsAtomicReplace);
+    }
+
+    [TestMethod]
     public async Task Publish_ReplaceSwapsContentAtomically()
     {
         await AtomicPublisher.PublishAsync(_root, "key.bin", PublishMode.CreateNew, Bytes(Encoding.UTF8.GetBytes("v1")), CancellationToken.None);

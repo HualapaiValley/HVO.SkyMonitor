@@ -19,6 +19,16 @@ public static class AtomicPublisher
     private const string TemporarySuffix = ".tmp";
 
     /// <summary>
+    /// True where <see cref="PublishMode.Replace"/> is atomic with respect to readers. On Linux the
+    /// rename is <c>rename(2)</c>, which replaces the directory entry in one step. On Windows the
+    /// runtime uses <c>MoveFileEx(MOVEFILE_REPLACE_EXISTING)</c>, which is not guaranteed atomic when
+    /// the target exists, so a host that needs the guarantee must check this and refuse to claim it.
+    /// <see cref="PublishMode.CreateNew"/> is safe everywhere: the target either appears complete or
+    /// not at all.
+    /// </summary>
+    public static bool SupportsAtomicReplace => OperatingSystem.IsLinux();
+
+    /// <summary>
     /// Publish <paramref name="relativePath"/> under <paramref name="root"/>. The
     /// <paramref name="write"/> callback receives a stream positioned at zero and must write
     /// the complete content; the stream is flushed to the medium after it returns.
@@ -173,6 +183,10 @@ public enum PublishMode
     /// <summary>The target must not exist; an existing target fails with <see cref="FileSystemFaultKind.AlreadyExists"/>.</summary>
     CreateNew,
 
-    /// <summary>An existing target is replaced atomically; readers see the old content or the new, never a mix.</summary>
+    /// <summary>
+    /// An existing target is replaced. Where <see cref="AtomicPublisher.SupportsAtomicReplace"/> is
+    /// true, readers see the old content or the new and never a mix; elsewhere the replacement is
+    /// best-effort and a host must not report it as atomic.
+    /// </summary>
     Replace
 }
