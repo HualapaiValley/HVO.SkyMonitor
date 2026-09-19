@@ -165,11 +165,10 @@ rendered Compose model and exact image digest.
 
 ## Exact-Mount Performance
 
-These historical five independent trials ran the same Docker-free provider
-workload at candidate revision `525312ef` on each exact mount. Their raw JSON
-remains with each host and does not contain complete resource metrics for every
-phase; it is not the final correction evidence. Values below are median with
-observed min-max where material.
+The first table is historical evidence from revision `525312ef`; its host-local
+raw JSON did not contain complete resource metrics for every phase and is not
+the final correction evidence. Values are median with observed min-max where
+material.
 
 | Metric | x64 direct ext4 | ARM64 ext4 loop over NVMe/XFS |
 | --- | ---: | ---: |
@@ -195,6 +194,39 @@ under half a second, and memory/allocation behavior stayed bounded. The ARM64
 performance result is therefore acceptable for correctness and supported load,
 with the loop-backed topology and high tail variance retained as explicit
 operational limits rather than hidden as noise.
+
+### Correction Evidence
+
+Five new independent Release processes per architecture ran at immutable
+revision `84b8b0b6e9d744d45e7f6029e6b32e95df070fc0` under numeric runtime identity
+`4242:4343`. Both hosts executed the same assembly digest
+`d2cbdaa47ab7ea3e0332e2b1872b221d5690aa93675ce18ba5b3f90950fde985`
+through direct `dotnet vstest`. The tracked ten-trial machine-readable bundle is
+`logichost-filesystem-qualification-586-performance.json`; its adjacent checksum
+is `e33784f696df93d0c8a145cc94195ca7a705b48ea5db7eb0b38ba7fb80671825`.
+It retains every raw workload record, run ID, environment, CPU delta, managed
+allocation delta, before/after/peak RSS, and Linux process-I/O delta.
+
+| Metric, min / median / max | x64 direct ext4 | ARM64 ext4 loop over NVMe/XFS |
+| --- | ---: | ---: |
+| W1 median latency | 62.2 / 65.6 / 72.0 ms | 55.2 / 66.5 / 269.9 ms |
+| W2 median latency | 156.8 / 164.5 / 172.0 ms | 130.4 / 137.3 / 691.0 ms |
+| W3M exact ordered list 10,000 | 93.9 / 98.1 / 111.7 ms | 364.4 / 372.9 / 400.8 ms |
+| W3P read/checksum/delete 100 x W2 | 191.1 / 204.3 / 217.4 ms | 430.8 / 483.8 / 501.1 ms |
+| Restart reconciliation | 117.0 / 120.4 / 122.1 ms | 409.8 / 428.5 / 473.4 ms |
+| Backup one W2 object | 71.4 / 72.2 / 85.2 ms | 343.1 / 374.6 / 427.2 ms |
+| Restore one W2 object | 55.2 / 57.0 / 58.7 ms | 110.6 / 139.2 / 141.0 ms |
+
+The maximum observed process RSS across all measured phases was 175,857,664
+bytes on x64 and 198,475,776 bytes on ARM64. The maximum single-phase managed
+allocation delta was 144,389,176 bytes on x64 and 229,902,904 bytes on ARM64;
+the maximum physical write delta was 943,718,400 and 950,272,000 bytes
+respectively. These are process-scoped measurements, not system-wide or device
+controller telemetry. Exact correctness assertions passed in all ten trials:
+copied and drained payloads matched expected length and SHA-256, W3M returned the
+exact ordinal key set without gaps or duplicates, and restored inventory had
+zero mismatches. ARM64 retained the previously observed high durability-latency
+variance without changing the supported load conclusion.
 
 ## Current Disposition
 

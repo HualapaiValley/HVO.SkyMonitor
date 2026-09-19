@@ -1,0 +1,2216 @@
+{
+  "schema": "hvo-issue-586-filesystem-topology-performance-bundle-v1",
+  "issue": 586,
+  "candidate": {
+    "revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+    "testAssemblySha256": "d2cbdaa47ab7ea3e0332e2b1872b221d5690aa93675ce18ba5b3f90950fde985"
+  },
+  "invocation": "dotnet vstest HVO.SkyMonitor.LogicHost.Tests.dll --TestCaseFilter:FullyQualifiedName~FilesystemObjectStoreTopologyPerformanceTests.ExactMount_RecordsCanonicalTopologyEvidence",
+  "runtimeIdentity": {
+    "uid": 4242,
+    "gid": 4343
+  },
+  "trialCountPerArchitecture": 5,
+  "trials": [
+    {
+      "Schema": "hvo-issue-586-filesystem-topology-performance-v1",
+      "Revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+      "RunId": "2f54746168af48d59c68975e9fc86882",
+      "Environment": {
+        "OS": "Debian GNU/Linux 13 (trixie)",
+        "Architecture": "Arm64",
+        "Processors": 4,
+        "Runtime": ".NET 10.0.12",
+        "Root": "/var/lib/hvo-qualification/object-store",
+        "Drive": "ext4 total=20957446144 free=19314876416"
+      },
+      "Workloads": {
+        "W1": {
+          "Name": "W1",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 1816.6242,
+          "MedianMilliseconds": 58.2764,
+          "P95Milliseconds": 77.2902,
+          "OperationsPerSecond": 16.51414750502608,
+          "CpuMilliseconds": 1564.893,
+          "AllocatedBytes": 21111776,
+          "WorkingSetBeforeBytes": 170229760,
+          "WorkingSetAfterBytes": 176472064,
+          "PeakWorkingSetBytes": 176553984,
+          "Io": {
+            "ReadChars": 283760453,
+            "WriteChars": 141268072,
+            "ReadSyscalls": 11035,
+            "WriteSyscalls": 2220,
+            "ReadBytes": 0,
+            "WriteBytes": 142540800
+          }
+        },
+        "W2": {
+          "Name": "W2",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 4164.368,
+          "MedianMilliseconds": 136.7104,
+          "P95Milliseconds": 152.5722,
+          "OperationsPerSecond": 7.2039742885355,
+          "CpuMilliseconds": 3958.375,
+          "AllocatedBytes": 26274016,
+          "WorkingSetBeforeBytes": 174637056,
+          "WorkingSetAfterBytes": 177848320,
+          "PeakWorkingSetBytes": 177881088,
+          "Io": {
+            "ReadChars": 775636857,
+            "WriteChars": 386398372,
+            "ReadSyscalls": 27096,
+            "WriteSyscalls": 5970,
+            "ReadBytes": 0,
+            "WriteBytes": 387809280
+          }
+        },
+        "W4": [
+          {
+            "Name": "W4-c1",
+            "Operations": 200,
+            "Concurrency": 1,
+            "ElapsedMilliseconds": 11747.0027,
+            "MedianMilliseconds": 58.5062,
+            "P95Milliseconds": 63.0813,
+            "OperationsPerSecond": 17.025619650193832,
+            "CpuMilliseconds": 8478.187,
+            "AllocatedBytes": 134805160,
+            "WorkingSetBeforeBytes": 178044928,
+            "WorkingSetAfterBytes": 174309376,
+            "PeakWorkingSetBytes": 178257920,
+            "Io": {
+              "ReadChars": 1891530739,
+              "WriteChars": 941788378,
+              "ReadSyscalls": 72364,
+              "WriteSyscalls": 14802,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          },
+          {
+            "Name": "W4-c4",
+            "Operations": 200,
+            "Concurrency": 4,
+            "ElapsedMilliseconds": 6085.6354,
+            "MedianMilliseconds": 100.9473,
+            "P95Milliseconds": 147.9457,
+            "OperationsPerSecond": 32.864275766504186,
+            "CpuMilliseconds": 5339.168999999998,
+            "AllocatedBytes": 114855192,
+            "WorkingSetBeforeBytes": 174686208,
+            "WorkingSetAfterBytes": 178176000,
+            "PeakWorkingSetBytes": 178176000,
+            "Io": {
+              "ReadChars": 1885253620,
+              "WriteChars": 941788364,
+              "ReadSyscalls": 39273,
+              "WriteSyscalls": 14800,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          },
+          {
+            "Name": "W4-c8",
+            "Operations": 200,
+            "Concurrency": 8,
+            "ElapsedMilliseconds": 5542.2361,
+            "MedianMilliseconds": 129.5355,
+            "P95Milliseconds": 251.0066,
+            "OperationsPerSecond": 36.08651749787418,
+            "CpuMilliseconds": 4379.134999999998,
+            "AllocatedBytes": 112830752,
+            "WorkingSetBeforeBytes": 175521792,
+            "WorkingSetAfterBytes": 175046656,
+            "PeakWorkingSetBytes": 176701440,
+            "Io": {
+              "ReadChars": 1884627854,
+              "WriteChars": 941788361,
+              "ReadSyscalls": 35892,
+              "WriteSyscalls": 14800,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          }
+        ],
+        "W3M": {
+          "Count": 10000,
+          "List": {
+            "ElapsedMilliseconds": 364.3867,
+            "CpuMilliseconds": 440.7430000000022,
+            "AllocatedBytes": 17372384,
+            "WorkingSetBeforeBytes": 176898048,
+            "WorkingSetAfterBytes": 185221120,
+            "PeakWorkingSetBytes": 185237504,
+            "Io": {
+              "ReadChars": 3032153,
+              "WriteChars": 1,
+              "ReadSyscalls": 11623,
+              "WriteSyscalls": 1,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          }
+        },
+        "W3P": {
+          "Count": 100,
+          "PayloadBytes": 12879360,
+          "Drain": {
+            "ElapsedMilliseconds": 430.8254,
+            "CpuMilliseconds": 1498.4729999999981,
+            "AllocatedBytes": 18417552,
+            "WorkingSetBeforeBytes": 180584448,
+            "WorkingSetAfterBytes": 182894592,
+            "PeakWorkingSetBytes": 182894592,
+            "Io": {
+              "ReadChars": 1288314417,
+              "WriteChars": 0,
+              "ReadSyscalls": 21680,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "DrainedBytes": 1287936000,
+          "RestartReconciliation": {
+            "ElapsedMilliseconds": 431.0167,
+            "CpuMilliseconds": 458.2130000000034,
+            "AllocatedBytes": 31966360,
+            "WorkingSetBeforeBytes": 176717824,
+            "WorkingSetAfterBytes": 198459392,
+            "PeakWorkingSetBytes": 198475776,
+            "Io": {
+              "ReadChars": 625550,
+              "WriteChars": 0,
+              "ReadSyscalls": 2969,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "LiveObjects": 436
+        },
+        "BackupRestore": {
+          "ObjectCount": 1,
+          "TotalBytes": 12879360,
+          "Backup": {
+            "ElapsedMilliseconds": 350.6818,
+            "CpuMilliseconds": 210.63500000000204,
+            "AllocatedBytes": 3706520,
+            "WorkingSetBeforeBytes": 177356800,
+            "WorkingSetAfterBytes": 181043200,
+            "PeakWorkingSetBytes": 181075968,
+            "Io": {
+              "ReadChars": 26082692,
+              "WriteChars": 12880317,
+              "ReadSyscalls": 2163,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12943360
+            }
+          },
+          "Restore": {
+            "ElapsedMilliseconds": 111.1227,
+            "CpuMilliseconds": 97.49799999999959,
+            "AllocatedBytes": 874136,
+            "WorkingSetBeforeBytes": 179355648,
+            "WorkingSetAfterBytes": 180420608,
+            "PeakWorkingSetBytes": 180453376,
+            "Io": {
+              "ReadChars": 25881191,
+              "WriteChars": 12880275,
+              "ReadSyscalls": 1068,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12943360
+            }
+          }
+        }
+      }
+    },
+    {
+      "Schema": "hvo-issue-586-filesystem-topology-performance-v1",
+      "Revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+      "RunId": "6d789c1c80ec4a8cab57ec2f5d53e8e8",
+      "Environment": {
+        "OS": "Debian GNU/Linux 13 (trixie)",
+        "Architecture": "Arm64",
+        "Processors": 4,
+        "Runtime": ".NET 10.0.12",
+        "Root": "/var/lib/hvo-qualification/object-store",
+        "Drive": "ext4 total=20957446144 free=19314876416"
+      },
+      "Workloads": {
+        "W1": {
+          "Name": "W1",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 1757.104,
+          "MedianMilliseconds": 55.2462,
+          "P95Milliseconds": 68.1608,
+          "OperationsPerSecond": 17.073548293100465,
+          "CpuMilliseconds": 1567.7579999999998,
+          "AllocatedBytes": 20926584,
+          "WorkingSetBeforeBytes": 169377792,
+          "WorkingSetAfterBytes": 175538176,
+          "PeakWorkingSetBytes": 175636480,
+          "Io": {
+            "ReadChars": 283711284,
+            "WriteChars": 141268090,
+            "ReadSyscalls": 10778,
+            "WriteSyscalls": 2222,
+            "ReadBytes": 0,
+            "WriteBytes": 142540800
+          }
+        },
+        "W2": {
+          "Name": "W2",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 4085.7894,
+          "MedianMilliseconds": 137.2848,
+          "P95Milliseconds": 145.9585,
+          "OperationsPerSecond": 7.342522353207926,
+          "CpuMilliseconds": 3870.2690000000002,
+          "AllocatedBytes": 26446216,
+          "WorkingSetBeforeBytes": 174112768,
+          "WorkingSetAfterBytes": 177274880,
+          "PeakWorkingSetBytes": 177307648,
+          "Io": {
+            "ReadChars": 775691127,
+            "WriteChars": 386398374,
+            "ReadSyscalls": 27480,
+            "WriteSyscalls": 5970,
+            "ReadBytes": 0,
+            "WriteBytes": 387809280
+          }
+        },
+        "W4": [
+          {
+            "Name": "W4-c1",
+            "Operations": 200,
+            "Concurrency": 1,
+            "ElapsedMilliseconds": 10588.7178,
+            "MedianMilliseconds": 50.7731,
+            "P95Milliseconds": 60.5704,
+            "OperationsPerSecond": 18.888028161445572,
+            "CpuMilliseconds": 6936.194,
+            "AllocatedBytes": 133333536,
+            "WorkingSetBeforeBytes": 177373184,
+            "WorkingSetAfterBytes": 177471488,
+            "PeakWorkingSetBytes": 177471488,
+            "Io": {
+              "ReadChars": 1891055342,
+              "WriteChars": 941788354,
+              "ReadSyscalls": 70097,
+              "WriteSyscalls": 14800,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          },
+          {
+            "Name": "W4-c4",
+            "Operations": 200,
+            "Concurrency": 4,
+            "ElapsedMilliseconds": 5916.8606,
+            "MedianMilliseconds": 93.7128,
+            "P95Milliseconds": 196.5791,
+            "OperationsPerSecond": 33.80170896708299,
+            "CpuMilliseconds": 4870.0599999999995,
+            "AllocatedBytes": 114647672,
+            "WorkingSetBeforeBytes": 177586176,
+            "WorkingSetAfterBytes": 178651136,
+            "PeakWorkingSetBytes": 178667520,
+            "Io": {
+              "ReadChars": 1885202483,
+              "WriteChars": 941788360,
+              "ReadSyscalls": 38897,
+              "WriteSyscalls": 14800,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          },
+          {
+            "Name": "W4-c8",
+            "Operations": 200,
+            "Concurrency": 8,
+            "ElapsedMilliseconds": 5729.1558,
+            "MedianMilliseconds": 123.691,
+            "P95Milliseconds": 843.1092,
+            "OperationsPerSecond": 34.90915712224129,
+            "CpuMilliseconds": 4759.189000000002,
+            "AllocatedBytes": 110120032,
+            "WorkingSetBeforeBytes": 175292416,
+            "WorkingSetAfterBytes": 176242688,
+            "PeakWorkingSetBytes": 178044928,
+            "Io": {
+              "ReadChars": 1883784862,
+              "WriteChars": 941788372,
+              "ReadSyscalls": 31329,
+              "WriteSyscalls": 14802,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          }
+        ],
+        "W3M": {
+          "Count": 10000,
+          "List": {
+            "ElapsedMilliseconds": 372.8652,
+            "CpuMilliseconds": 449.45900000000256,
+            "AllocatedBytes": 17450272,
+            "WorkingSetBeforeBytes": 177061888,
+            "WorkingSetAfterBytes": 185352192,
+            "PeakWorkingSetBytes": 185352192,
+            "Io": {
+              "ReadChars": 3052317,
+              "WriteChars": 1,
+              "ReadSyscalls": 11740,
+              "WriteSyscalls": 1,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          }
+        },
+        "W3P": {
+          "Count": 100,
+          "PayloadBytes": 12879360,
+          "Drain": {
+            "ElapsedMilliseconds": 483.773,
+            "CpuMilliseconds": 1472.8220000000001,
+            "AllocatedBytes": 18628856,
+            "WorkingSetBeforeBytes": 181256192,
+            "WorkingSetAfterBytes": 184041472,
+            "PeakWorkingSetBytes": 184041472,
+            "Io": {
+              "ReadChars": 1288377504,
+              "WriteChars": 0,
+              "ReadSyscalls": 22033,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "DrainedBytes": 1287936000,
+          "RestartReconciliation": {
+            "ElapsedMilliseconds": 409.7562,
+            "CpuMilliseconds": 435.7869999999966,
+            "AllocatedBytes": 31954056,
+            "WorkingSetBeforeBytes": 179355648,
+            "WorkingSetAfterBytes": 193019904,
+            "PeakWorkingSetBytes": 193036288,
+            "Io": {
+              "ReadChars": 617169,
+              "WriteChars": 0,
+              "ReadSyscalls": 2931,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "LiveObjects": 436
+        },
+        "BackupRestore": {
+          "ObjectCount": 1,
+          "TotalBytes": 12879360,
+          "Backup": {
+            "ElapsedMilliseconds": 427.2236,
+            "CpuMilliseconds": 213.04699999999866,
+            "AllocatedBytes": 3868072,
+            "WorkingSetBeforeBytes": 181534720,
+            "WorkingSetAfterBytes": 185286656,
+            "PeakWorkingSetBytes": 185319424,
+            "Io": {
+              "ReadChars": 26130909,
+              "WriteChars": 12880317,
+              "ReadSyscalls": 2417,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12943360
+            }
+          },
+          "Restore": {
+            "ElapsedMilliseconds": 110.5651,
+            "CpuMilliseconds": 97.97300000000541,
+            "AllocatedBytes": 862304,
+            "WorkingSetBeforeBytes": 189857792,
+            "WorkingSetAfterBytes": 190169088,
+            "PeakWorkingSetBytes": 190169088,
+            "Io": {
+              "ReadChars": 25877380,
+              "WriteChars": 12880275,
+              "ReadSyscalls": 1044,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12943360
+            }
+          }
+        }
+      }
+    },
+    {
+      "Schema": "hvo-issue-586-filesystem-topology-performance-v1",
+      "Revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+      "RunId": "7e59402da1da4cb78167bcf21054c860",
+      "Environment": {
+        "OS": "Debian GNU/Linux 13 (trixie)",
+        "Architecture": "Arm64",
+        "Processors": 4,
+        "Runtime": ".NET 10.0.12",
+        "Root": "/var/lib/hvo-qualification/object-store",
+        "Drive": "ext4 total=20957446144 free=19314876416"
+      },
+      "Workloads": {
+        "W1": {
+          "Name": "W1",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 8279.4552,
+          "MedianMilliseconds": 262.4843,
+          "P95Milliseconds": 420.5095,
+          "OperationsPerSecond": 3.6234268167789594,
+          "CpuMilliseconds": 3367.267,
+          "AllocatedBytes": 34316720,
+          "WorkingSetBeforeBytes": 168099840,
+          "WorkingSetAfterBytes": 175063040,
+          "PeakWorkingSetBytes": 175144960,
+          "Io": {
+            "ReadChars": 288080487,
+            "WriteChars": 141268072,
+            "ReadSyscalls": 33961,
+            "WriteSyscalls": 2220,
+            "ReadBytes": 0,
+            "WriteBytes": 142540800
+          }
+        },
+        "W2": {
+          "Name": "W2",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 20700.2579,
+          "MedianMilliseconds": 691.0162,
+          "P95Milliseconds": 748.9344,
+          "OperationsPerSecond": 1.4492573061130798,
+          "CpuMilliseconds": 4499.343000000001,
+          "AllocatedBytes": 62070912,
+          "WorkingSetBeforeBytes": 173178880,
+          "WorkingSetAfterBytes": 173686784,
+          "PeakWorkingSetBytes": 173703168,
+          "Io": {
+            "ReadChars": 786928511,
+            "WriteChars": 386398385,
+            "ReadSyscalls": 87122,
+            "WriteSyscalls": 5972,
+            "ReadBytes": 0,
+            "WriteBytes": 387809280
+          }
+        },
+        "W4": [
+          {
+            "Name": "W4-c1",
+            "Operations": 200,
+            "Concurrency": 1,
+            "ElapsedMilliseconds": 55207.7304,
+            "MedianMilliseconds": 274.8373,
+            "P95Milliseconds": 300.3306,
+            "OperationsPerSecond": 3.622681072939017,
+            "CpuMilliseconds": 11698.506,
+            "AllocatedBytes": 229902904,
+            "WorkingSetBeforeBytes": 169705472,
+            "WorkingSetAfterBytes": 170049536,
+            "PeakWorkingSetBytes": 173883392,
+            "Io": {
+              "ReadChars": 1921329276,
+              "WriteChars": 941788420,
+              "ReadSyscalls": 230597,
+              "WriteSyscalls": 14808,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          },
+          {
+            "Name": "W4-c4",
+            "Operations": 200,
+            "Concurrency": 4,
+            "ElapsedMilliseconds": 29804.0062,
+            "MedianMilliseconds": 577.7478,
+            "P95Milliseconds": 676.2552,
+            "OperationsPerSecond": 6.710507260597738,
+            "CpuMilliseconds": 8374.964,
+            "AllocatedBytes": 166402824,
+            "WorkingSetBeforeBytes": 170082304,
+            "WorkingSetAfterBytes": 173981696,
+            "PeakWorkingSetBytes": 176095232,
+            "Io": {
+              "ReadChars": 1901250034,
+              "WriteChars": 941788389,
+              "ReadSyscalls": 125863,
+              "WriteSyscalls": 14804,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          },
+          {
+            "Name": "W4-c8",
+            "Operations": 200,
+            "Concurrency": 8,
+            "ElapsedMilliseconds": 22970.9239,
+            "MedianMilliseconds": 862.3415,
+            "P95Milliseconds": 1428.9504,
+            "OperationsPerSecond": 8.70665894287343,
+            "CpuMilliseconds": 7539.030999999999,
+            "AllocatedBytes": 142906216,
+            "WorkingSetBeforeBytes": 174555136,
+            "WorkingSetAfterBytes": 172589056,
+            "PeakWorkingSetBytes": 176553984,
+            "Io": {
+              "ReadChars": 1893884623,
+              "WriteChars": 941788404,
+              "ReadSyscalls": 86840,
+              "WriteSyscalls": 14806,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          }
+        ],
+        "W3M": {
+          "Count": 10000,
+          "List": {
+            "ElapsedMilliseconds": 400.7567,
+            "CpuMilliseconds": 481.32500000000437,
+            "AllocatedBytes": 18145112,
+            "WorkingSetBeforeBytes": 176177152,
+            "WorkingSetAfterBytes": 178520064,
+            "PeakWorkingSetBytes": 183222272,
+            "Io": {
+              "ReadChars": 3263433,
+              "WriteChars": 1,
+              "ReadSyscalls": 12999,
+              "WriteSyscalls": 1,
+              "ReadBytes": 16384,
+              "WriteBytes": 0
+            }
+          }
+        },
+        "W3P": {
+          "Count": 100,
+          "PayloadBytes": 12879360,
+          "Drain": {
+            "ElapsedMilliseconds": 479.1655,
+            "CpuMilliseconds": 1522.5690000000031,
+            "AllocatedBytes": 18679920,
+            "WorkingSetBeforeBytes": 182730752,
+            "WorkingSetAfterBytes": 183058432,
+            "PeakWorkingSetBytes": 183058432,
+            "Io": {
+              "ReadChars": 1288392779,
+              "WriteChars": 0,
+              "ReadSyscalls": 22129,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "DrainedBytes": 1287936000,
+          "RestartReconciliation": {
+            "ElapsedMilliseconds": 473.3595,
+            "CpuMilliseconds": 504.7669999999998,
+            "AllocatedBytes": 32224848,
+            "WorkingSetBeforeBytes": 176750592,
+            "WorkingSetAfterBytes": 194494464,
+            "PeakWorkingSetBytes": 194510848,
+            "Io": {
+              "ReadChars": 695732,
+              "WriteChars": 0,
+              "ReadSyscalls": 3380,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "LiveObjects": 436
+        },
+        "BackupRestore": {
+          "ObjectCount": 1,
+          "TotalBytes": 12879360,
+          "Backup": {
+            "ElapsedMilliseconds": 374.5749,
+            "CpuMilliseconds": 207.20999999999913,
+            "AllocatedBytes": 3549448,
+            "WorkingSetBeforeBytes": 176308224,
+            "WorkingSetAfterBytes": 179666944,
+            "PeakWorkingSetBytes": 179683328,
+            "Io": {
+              "ReadChars": 26025029,
+              "WriteChars": 12880317,
+              "ReadSyscalls": 1797,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12943360
+            }
+          },
+          "Restore": {
+            "ElapsedMilliseconds": 139.2173,
+            "CpuMilliseconds": 93.76900000000023,
+            "AllocatedBytes": 872096,
+            "WorkingSetBeforeBytes": 178421760,
+            "WorkingSetAfterBytes": 179535872,
+            "PeakWorkingSetBytes": 179568640,
+            "Io": {
+              "ReadChars": 25873225,
+              "WriteChars": 12880290,
+              "ReadSyscalls": 1009,
+              "WriteSyscalls": 202,
+              "ReadBytes": 0,
+              "WriteBytes": 12943360
+            }
+          }
+        }
+      }
+    },
+    {
+      "Schema": "hvo-issue-586-filesystem-topology-performance-v1",
+      "Revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+      "RunId": "d1305f7c10aa46b88183db10a7e7f41d",
+      "Environment": {
+        "OS": "Debian GNU/Linux 13 (trixie)",
+        "Architecture": "Arm64",
+        "Processors": 4,
+        "Runtime": ".NET 10.0.12",
+        "Root": "/var/lib/hvo-qualification/object-store",
+        "Drive": "ext4 total=20957446144 free=19314876416"
+      },
+      "Workloads": {
+        "W1": {
+          "Name": "W1",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 2223.4315,
+          "MedianMilliseconds": 66.5164,
+          "P95Milliseconds": 159.6801,
+          "OperationsPerSecond": 13.492657633032545,
+          "CpuMilliseconds": 1918.3590000000002,
+          "AllocatedBytes": 21903184,
+          "WorkingSetBeforeBytes": 166313984,
+          "WorkingSetAfterBytes": 172883968,
+          "PeakWorkingSetBytes": 173080576,
+          "Io": {
+            "ReadChars": 284002319,
+            "WriteChars": 141268075,
+            "ReadSyscalls": 12324,
+            "WriteSyscalls": 2220,
+            "ReadBytes": 0,
+            "WriteBytes": 142540800
+          }
+        },
+        "W2": {
+          "Name": "W2",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 5549.3851,
+          "MedianMilliseconds": 164.4033,
+          "P95Milliseconds": 371.8186,
+          "OperationsPerSecond": 5.406004351725382,
+          "CpuMilliseconds": 4132.722,
+          "AllocatedBytes": 29104696,
+          "WorkingSetBeforeBytes": 171425792,
+          "WorkingSetAfterBytes": 174424064,
+          "PeakWorkingSetBytes": 174456832,
+          "Io": {
+            "ReadChars": 776563957,
+            "WriteChars": 386398387,
+            "ReadSyscalls": 32059,
+            "WriteSyscalls": 5972,
+            "ReadBytes": 0,
+            "WriteBytes": 387809280
+          }
+        },
+        "W4": [
+          {
+            "Name": "W4-c1",
+            "Operations": 200,
+            "Concurrency": 1,
+            "ElapsedMilliseconds": 14117.7729,
+            "MedianMilliseconds": 70.4406,
+            "P95Milliseconds": 77.0492,
+            "OperationsPerSecond": 14.166540389667269,
+            "CpuMilliseconds": 8279.839000000002,
+            "AllocatedBytes": 141301552,
+            "WorkingSetBeforeBytes": 170426368,
+            "WorkingSetAfterBytes": 170868736,
+            "PeakWorkingSetBytes": 174587904,
+            "Io": {
+              "ReadChars": 1893537185,
+              "WriteChars": 941788356,
+              "ReadSyscalls": 83330,
+              "WriteSyscalls": 14800,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          },
+          {
+            "Name": "W4-c4",
+            "Operations": 200,
+            "Concurrency": 4,
+            "ElapsedMilliseconds": 5911.2788,
+            "MedianMilliseconds": 98.142,
+            "P95Milliseconds": 240.7547,
+            "OperationsPerSecond": 33.8336266595986,
+            "CpuMilliseconds": 4992.103999999999,
+            "AllocatedBytes": 116153024,
+            "WorkingSetBeforeBytes": 171343872,
+            "WorkingSetAfterBytes": 174112768,
+            "PeakWorkingSetBytes": 174112768,
+            "Io": {
+              "ReadChars": 1885655092,
+              "WriteChars": 941788364,
+              "ReadSyscalls": 41430,
+              "WriteSyscalls": 14800,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          },
+          {
+            "Name": "W4-c8",
+            "Operations": 200,
+            "Concurrency": 8,
+            "ElapsedMilliseconds": 12271.2264,
+            "MedianMilliseconds": 149.742,
+            "P95Milliseconds": 1472.0838,
+            "OperationsPerSecond": 16.298289468443024,
+            "CpuMilliseconds": 5096.281000000003,
+            "AllocatedBytes": 113382112,
+            "WorkingSetBeforeBytes": 174555136,
+            "WorkingSetAfterBytes": 174440448,
+            "PeakWorkingSetBytes": 175128576,
+            "Io": {
+              "ReadChars": 1884781178,
+              "WriteChars": 941788412,
+              "ReadSyscalls": 36768,
+              "WriteSyscalls": 14806,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          }
+        ],
+        "W3M": {
+          "Count": 10000,
+          "List": {
+            "ElapsedMilliseconds": 366.1419,
+            "CpuMilliseconds": 448.83000000000175,
+            "AllocatedBytes": 18127736,
+            "WorkingSetBeforeBytes": 177209344,
+            "WorkingSetAfterBytes": 186597376,
+            "PeakWorkingSetBytes": 186613760,
+            "Io": {
+              "ReadChars": 3247211,
+              "WriteChars": 1,
+              "ReadSyscalls": 12944,
+              "WriteSyscalls": 1,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          }
+        },
+        "W3P": {
+          "Count": 100,
+          "PayloadBytes": 12879360,
+          "Drain": {
+            "ElapsedMilliseconds": 501.0929,
+            "CpuMilliseconds": 1513.0119999999952,
+            "AllocatedBytes": 18796952,
+            "WorkingSetBeforeBytes": 184107008,
+            "WorkingSetAfterBytes": 184369152,
+            "PeakWorkingSetBytes": 184369152,
+            "Io": {
+              "ReadChars": 1288426561,
+              "WriteChars": 0,
+              "ReadSyscalls": 22330,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "DrainedBytes": 1287936000,
+          "RestartReconciliation": {
+            "ElapsedMilliseconds": 424.4991,
+            "CpuMilliseconds": 453.0769999999975,
+            "AllocatedBytes": 32158256,
+            "WorkingSetBeforeBytes": 178290688,
+            "WorkingSetAfterBytes": 195788800,
+            "PeakWorkingSetBytes": 195805184,
+            "Io": {
+              "ReadChars": 674730,
+              "WriteChars": 0,
+              "ReadSyscalls": 3273,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "LiveObjects": 436
+        },
+        "BackupRestore": {
+          "ObjectCount": 1,
+          "TotalBytes": 12879360,
+          "Backup": {
+            "ElapsedMilliseconds": 388.8369,
+            "CpuMilliseconds": 209.70899999999529,
+            "AllocatedBytes": 3552400,
+            "WorkingSetBeforeBytes": 176128000,
+            "WorkingSetAfterBytes": 179519488,
+            "PeakWorkingSetBytes": 179552256,
+            "Io": {
+              "ReadChars": 26037678,
+              "WriteChars": 12880332,
+              "ReadSyscalls": 1871,
+              "WriteSyscalls": 202,
+              "ReadBytes": 0,
+              "WriteBytes": 12943360
+            }
+          },
+          "Restore": {
+            "ElapsedMilliseconds": 140.9608,
+            "CpuMilliseconds": 103.11100000000442,
+            "AllocatedBytes": 871200,
+            "WorkingSetBeforeBytes": 179404800,
+            "WorkingSetAfterBytes": 180469760,
+            "PeakWorkingSetBytes": 180502528,
+            "Io": {
+              "ReadChars": 25873862,
+              "WriteChars": 12880275,
+              "ReadSyscalls": 1010,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12943360
+            }
+          }
+        }
+      }
+    },
+    {
+      "Schema": "hvo-issue-586-filesystem-topology-performance-v1",
+      "Revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+      "RunId": "ff0416363bf54619b68bdf65c55aa45e",
+      "Environment": {
+        "OS": "Debian GNU/Linux 13 (trixie)",
+        "Architecture": "Arm64",
+        "Processors": 4,
+        "Runtime": ".NET 10.0.12",
+        "Root": "/var/lib/hvo-qualification/object-store",
+        "Drive": "ext4 total=20957446144 free=19314876416"
+      },
+      "Workloads": {
+        "W1": {
+          "Name": "W1",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 7951.9894,
+          "MedianMilliseconds": 269.9076,
+          "P95Milliseconds": 300.4668,
+          "OperationsPerSecond": 3.7726408438119896,
+          "CpuMilliseconds": 2952.9219999999996,
+          "AllocatedBytes": 33428520,
+          "WorkingSetBeforeBytes": 168427520,
+          "WorkingSetAfterBytes": 173572096,
+          "PeakWorkingSetBytes": 173637632,
+          "Io": {
+            "ReadChars": 287836485,
+            "WriteChars": 141268074,
+            "ReadSyscalls": 32671,
+            "WriteSyscalls": 2220,
+            "ReadBytes": 0,
+            "WriteBytes": 142540800
+          }
+        },
+        "W2": {
+          "Name": "W2",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 3917.6134,
+          "MedianMilliseconds": 130.3736,
+          "P95Milliseconds": 135.2639,
+          "OperationsPerSecond": 7.657723449690058,
+          "CpuMilliseconds": 2643.6579999999994,
+          "AllocatedBytes": 25462000,
+          "WorkingSetBeforeBytes": 171737088,
+          "WorkingSetAfterBytes": 171835392,
+          "PeakWorkingSetBytes": 171851776,
+          "Io": {
+            "ReadChars": 775465428,
+            "WriteChars": 386398368,
+            "ReadSyscalls": 26192,
+            "WriteSyscalls": 5970,
+            "ReadBytes": 0,
+            "WriteBytes": 387809280
+          }
+        },
+        "W4": [
+          {
+            "Name": "W4-c1",
+            "Operations": 200,
+            "Concurrency": 1,
+            "ElapsedMilliseconds": 20478.2791,
+            "MedianMilliseconds": 56.7134,
+            "P95Milliseconds": 280.8842,
+            "OperationsPerSecond": 9.766445658024066,
+            "CpuMilliseconds": 8425.207000000002,
+            "AllocatedBytes": 153509016,
+            "WorkingSetBeforeBytes": 171851776,
+            "WorkingSetAfterBytes": 168312832,
+            "PeakWorkingSetBytes": 172064768,
+            "Io": {
+              "ReadChars": 1897399787,
+              "WriteChars": 941788374,
+              "ReadSyscalls": 103469,
+              "WriteSyscalls": 14804,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          },
+          {
+            "Name": "W4-c4",
+            "Operations": 200,
+            "Concurrency": 4,
+            "ElapsedMilliseconds": 29403.7012,
+            "MedianMilliseconds": 563.3413,
+            "P95Milliseconds": 690.1764,
+            "OperationsPerSecond": 6.801864793810379,
+            "CpuMilliseconds": 7962.645999999997,
+            "AllocatedBytes": 155918760,
+            "WorkingSetBeforeBytes": 169033728,
+            "WorkingSetAfterBytes": 173637632,
+            "PeakWorkingSetBytes": 174620672,
+            "Io": {
+              "ReadChars": 1897957558,
+              "WriteChars": 941788420,
+              "ReadSyscalls": 108390,
+              "WriteSyscalls": 14808,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          },
+          {
+            "Name": "W4-c8",
+            "Operations": 200,
+            "Concurrency": 8,
+            "ElapsedMilliseconds": 21279.3885,
+            "MedianMilliseconds": 778.8751,
+            "P95Milliseconds": 1169.8394,
+            "OperationsPerSecond": 9.398766322631875,
+            "CpuMilliseconds": 7493.850000000002,
+            "AllocatedBytes": 143149800,
+            "WorkingSetBeforeBytes": 171540480,
+            "WorkingSetAfterBytes": 174686208,
+            "PeakWorkingSetBytes": 177242112,
+            "Io": {
+              "ReadChars": 1893963218,
+              "WriteChars": 941788364,
+              "ReadSyscalls": 87264,
+              "WriteSyscalls": 14802,
+              "ReadBytes": 0,
+              "WriteBytes": 950272000
+            }
+          }
+        ],
+        "W3M": {
+          "Count": 10000,
+          "List": {
+            "ElapsedMilliseconds": 391.7568,
+            "CpuMilliseconds": 472.2089999999953,
+            "AllocatedBytes": 18209736,
+            "WorkingSetBeforeBytes": 176373760,
+            "WorkingSetAfterBytes": 179863552,
+            "PeakWorkingSetBytes": 184582144,
+            "Io": {
+              "ReadChars": 3271626,
+              "WriteChars": 1,
+              "ReadSyscalls": 13056,
+              "WriteSyscalls": 1,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          }
+        },
+        "W3P": {
+          "Count": 100,
+          "PayloadBytes": 12879360,
+          "Drain": {
+            "ElapsedMilliseconds": 489.0263,
+            "CpuMilliseconds": 1480.5020000000004,
+            "AllocatedBytes": 18693488,
+            "WorkingSetBeforeBytes": 186023936,
+            "WorkingSetAfterBytes": 184188928,
+            "PeakWorkingSetBytes": 187990016,
+            "Io": {
+              "ReadChars": 1288390820,
+              "WriteChars": 0,
+              "ReadSyscalls": 22127,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "DrainedBytes": 1287936000,
+          "RestartReconciliation": {
+            "ElapsedMilliseconds": 428.4627,
+            "CpuMilliseconds": 454.9059999999954,
+            "AllocatedBytes": 32105328,
+            "WorkingSetBeforeBytes": 182059008,
+            "WorkingSetAfterBytes": 191414272,
+            "PeakWorkingSetBytes": 191430656,
+            "Io": {
+              "ReadChars": 664752,
+              "WriteChars": 0,
+              "ReadSyscalls": 3199,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "LiveObjects": 436
+        },
+        "BackupRestore": {
+          "ObjectCount": 1,
+          "TotalBytes": 12879360,
+          "Backup": {
+            "ElapsedMilliseconds": 343.1408,
+            "CpuMilliseconds": 187.93699999999808,
+            "AllocatedBytes": 3454688,
+            "WorkingSetBeforeBytes": 179519488,
+            "WorkingSetAfterBytes": 182009856,
+            "PeakWorkingSetBytes": 182042624,
+            "Io": {
+              "ReadChars": 26001801,
+              "WriteChars": 12880317,
+              "ReadSyscalls": 1674,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12943360
+            }
+          },
+          "Restore": {
+            "ElapsedMilliseconds": 139.1935,
+            "CpuMilliseconds": 101.99399999999878,
+            "AllocatedBytes": 891376,
+            "WorkingSetBeforeBytes": 186613760,
+            "WorkingSetAfterBytes": 186925056,
+            "PeakWorkingSetBytes": 186925056,
+            "Io": {
+              "ReadChars": 25873241,
+              "WriteChars": 12880290,
+              "ReadSyscalls": 1009,
+              "WriteSyscalls": 202,
+              "ReadBytes": 0,
+              "WriteBytes": 12943360
+            }
+          }
+        }
+      }
+    },
+    {
+      "Schema": "hvo-issue-586-filesystem-topology-performance-v1",
+      "Revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+      "RunId": "0924b52d84c049f29ff00f92acfd12cf",
+      "Environment": {
+        "OS": "Ubuntu 24.04.5 LTS",
+        "Architecture": "X64",
+        "Processors": 4,
+        "Runtime": ".NET 10.0.12",
+        "Root": "/var/lib/hvo-qualification/object-store",
+        "Drive": "ext4 total=20957446144 free=19451232256"
+      },
+      "Workloads": {
+        "W1": {
+          "Name": "W1",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 2056.4011,
+          "MedianMilliseconds": 67.8881,
+          "P95Milliseconds": 75.2467,
+          "OperationsPerSecond": 14.588593635745479,
+          "CpuMilliseconds": 1071.7759999999998,
+          "AllocatedBytes": 22507336,
+          "WorkingSetBeforeBytes": 152207360,
+          "WorkingSetAfterBytes": 162721792,
+          "PeakWorkingSetBytes": 162742272,
+          "Io": {
+            "ReadChars": 284240038,
+            "WriteChars": 141268076,
+            "ReadSyscalls": 13134,
+            "WriteSyscalls": 2220,
+            "ReadBytes": 0,
+            "WriteBytes": 141557760
+          }
+        },
+        "W2": {
+          "Name": "W2",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 5197.5391,
+          "MedianMilliseconds": 171.9686,
+          "P95Milliseconds": 187.9338,
+          "OperationsPerSecond": 5.771962350413102,
+          "CpuMilliseconds": 2185.2629999999995,
+          "AllocatedBytes": 30499928,
+          "WorkingSetBeforeBytes": 164515840,
+          "WorkingSetAfterBytes": 165306368,
+          "PeakWorkingSetBytes": 165310464,
+          "Io": {
+            "ReadChars": 777121405,
+            "WriteChars": 386398373,
+            "ReadSyscalls": 33793,
+            "WriteSyscalls": 5970,
+            "ReadBytes": 0,
+            "WriteBytes": 386703360
+          }
+        },
+        "W4": [
+          {
+            "Name": "W4-c1",
+            "Operations": 200,
+            "Concurrency": 1,
+            "ElapsedMilliseconds": 13426.6155,
+            "MedianMilliseconds": 66.0671,
+            "P95Milliseconds": 75.5062,
+            "OperationsPerSecond": 14.895786655989367,
+            "CpuMilliseconds": 4612.101000000001,
+            "AllocatedBytes": 144389176,
+            "WorkingSetBeforeBytes": 165318656,
+            "WorkingSetAfterBytes": 166191104,
+            "PeakWorkingSetBytes": 166191104,
+            "Io": {
+              "ReadChars": 1894714843,
+              "WriteChars": 941788379,
+              "ReadSyscalls": 86343,
+              "WriteSyscalls": 14802,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          },
+          {
+            "Name": "W4-c4",
+            "Operations": 200,
+            "Concurrency": 4,
+            "ElapsedMilliseconds": 7820.9059,
+            "MedianMilliseconds": 133.5228,
+            "P95Milliseconds": 254.4718,
+            "OperationsPerSecond": 25.57248515162419,
+            "CpuMilliseconds": 3176.262999999999,
+            "AllocatedBytes": 119468984,
+            "WorkingSetBeforeBytes": 162287616,
+            "WorkingSetAfterBytes": 166785024,
+            "PeakWorkingSetBytes": 166785024,
+            "Io": {
+              "ReadChars": 1886689868,
+              "WriteChars": 941788366,
+              "ReadSyscalls": 46381,
+              "WriteSyscalls": 14802,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          },
+          {
+            "Name": "W4-c8",
+            "Operations": 200,
+            "Concurrency": 8,
+            "ElapsedMilliseconds": 5286.5697,
+            "MedianMilliseconds": 147.1729,
+            "P95Milliseconds": 466.8082,
+            "OperationsPerSecond": 37.83171533707387,
+            "CpuMilliseconds": 2789.0339999999997,
+            "AllocatedBytes": 112812288,
+            "WorkingSetBeforeBytes": 162938880,
+            "WorkingSetAfterBytes": 167833600,
+            "PeakWorkingSetBytes": 167833600,
+            "Io": {
+              "ReadChars": 1884563068,
+              "WriteChars": 941788421,
+              "ReadSyscalls": 35566,
+              "WriteSyscalls": 14808,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          }
+        ],
+        "W3M": {
+          "Count": 10000,
+          "List": {
+            "ElapsedMilliseconds": 97.0685,
+            "CpuMilliseconds": 105.16100000000006,
+            "AllocatedBytes": 16945440,
+            "WorkingSetBeforeBytes": 168374272,
+            "WorkingSetAfterBytes": 171012096,
+            "PeakWorkingSetBytes": 171020288,
+            "Io": {
+              "ReadChars": 2895921,
+              "WriteChars": 0,
+              "ReadSyscalls": 10903,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          }
+        },
+        "W3P": {
+          "Count": 100,
+          "PayloadBytes": 12879360,
+          "Drain": {
+            "ElapsedMilliseconds": 217.4059,
+            "CpuMilliseconds": 803.3040000000001,
+            "AllocatedBytes": 18337144,
+            "WorkingSetBeforeBytes": 173723648,
+            "WorkingSetAfterBytes": 173907968,
+            "PeakWorkingSetBytes": 173907968,
+            "Io": {
+              "ReadChars": 1288284408,
+              "WriteChars": 0,
+              "ReadSyscalls": 21529,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "DrainedBytes": 1287936000,
+          "RestartReconciliation": {
+            "ElapsedMilliseconds": 120.4464,
+            "CpuMilliseconds": 126.39899999999761,
+            "AllocatedBytes": 31368232,
+            "WorkingSetBeforeBytes": 170909696,
+            "WorkingSetAfterBytes": 174030848,
+            "PeakWorkingSetBytes": 174034944,
+            "Io": {
+              "ReadChars": 435729,
+              "WriteChars": 0,
+              "ReadSyscalls": 1930,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "LiveObjects": 437
+        },
+        "BackupRestore": {
+          "ObjectCount": 1,
+          "TotalBytes": 12879360,
+          "Backup": {
+            "ElapsedMilliseconds": 72.0503,
+            "CpuMilliseconds": 83.02200000000084,
+            "AllocatedBytes": 3073992,
+            "WorkingSetBeforeBytes": 168263680,
+            "WorkingSetAfterBytes": 169730048,
+            "PeakWorkingSetBytes": 169734144,
+            "Io": {
+              "ReadChars": 25898040,
+              "WriteChars": 12880317,
+              "ReadSyscalls": 1152,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12894208
+            }
+          },
+          "Restore": {
+            "ElapsedMilliseconds": 57.0043,
+            "CpuMilliseconds": 51.81600000000253,
+            "AllocatedBytes": 834464,
+            "WorkingSetBeforeBytes": 170414080,
+            "WorkingSetAfterBytes": 170749952,
+            "PeakWorkingSetBytes": 170749952,
+            "Io": {
+              "ReadChars": 25871115,
+              "WriteChars": 12880275,
+              "ReadSyscalls": 1008,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12894208
+            }
+          }
+        }
+      }
+    },
+    {
+      "Schema": "hvo-issue-586-filesystem-topology-performance-v1",
+      "Revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+      "RunId": "7850c314f5164acb8126b76a50e352c6",
+      "Environment": {
+        "OS": "Ubuntu 24.04.5 LTS",
+        "Architecture": "X64",
+        "Processors": 4,
+        "Runtime": ".NET 10.0.12",
+        "Root": "/var/lib/hvo-qualification/object-store",
+        "Drive": "ext4 total=20957446144 free=19451232256"
+      },
+      "Workloads": {
+        "W1": {
+          "Name": "W1",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 1897.8549,
+          "MedianMilliseconds": 63.2013,
+          "P95Milliseconds": 68.4947,
+          "OperationsPerSecond": 15.807320148658361,
+          "CpuMilliseconds": 938.978,
+          "AllocatedBytes": 22136408,
+          "WorkingSetBeforeBytes": 150769664,
+          "WorkingSetAfterBytes": 158883840,
+          "PeakWorkingSetBytes": 158900224,
+          "Io": {
+            "ReadChars": 284111545,
+            "WriteChars": 141268078,
+            "ReadSyscalls": 12489,
+            "WriteSyscalls": 2220,
+            "ReadBytes": 0,
+            "WriteBytes": 141557760
+          }
+        },
+        "W2": {
+          "Name": "W2",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 4730.4498,
+          "MedianMilliseconds": 156.8382,
+          "P95Milliseconds": 166.5978,
+          "OperationsPerSecond": 6.341891631531531,
+          "CpuMilliseconds": 1982.6290000000001,
+          "AllocatedBytes": 29321592,
+          "WorkingSetBeforeBytes": 160669696,
+          "WorkingSetAfterBytes": 164896768,
+          "PeakWorkingSetBytes": 164896768,
+          "Io": {
+            "ReadChars": 776744796,
+            "WriteChars": 386398374,
+            "ReadSyscalls": 31901,
+            "WriteSyscalls": 5970,
+            "ReadBytes": 0,
+            "WriteBytes": 386703360
+          }
+        },
+        "W4": [
+          {
+            "Name": "W4-c1",
+            "Operations": 200,
+            "Concurrency": 1,
+            "ElapsedMilliseconds": 12882.0948,
+            "MedianMilliseconds": 64.0402,
+            "P95Milliseconds": 72.2672,
+            "OperationsPerSecond": 15.525425259252088,
+            "CpuMilliseconds": 4556.8240000000005,
+            "AllocatedBytes": 142858168,
+            "WorkingSetBeforeBytes": 161501184,
+            "WorkingSetAfterBytes": 165826560,
+            "PeakWorkingSetBytes": 165826560,
+            "Io": {
+              "ReadChars": 1894223645,
+              "WriteChars": 941788361,
+              "ReadSyscalls": 83848,
+              "WriteSyscalls": 14802,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          },
+          {
+            "Name": "W4-c4",
+            "Operations": 200,
+            "Concurrency": 4,
+            "ElapsedMilliseconds": 7316.5467,
+            "MedianMilliseconds": 136.8998,
+            "P95Milliseconds": 181.7367,
+            "OperationsPerSecond": 27.335300135513386,
+            "CpuMilliseconds": 3462.3109999999997,
+            "AllocatedBytes": 122107080,
+            "WorkingSetBeforeBytes": 161832960,
+            "WorkingSetAfterBytes": 166322176,
+            "PeakWorkingSetBytes": 166322176,
+            "Io": {
+              "ReadChars": 1887524552,
+              "WriteChars": 941788387,
+              "ReadSyscalls": 50648,
+              "WriteSyscalls": 14804,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          },
+          {
+            "Name": "W4-c8",
+            "Operations": 200,
+            "Concurrency": 8,
+            "ElapsedMilliseconds": 5226.3569,
+            "MedianMilliseconds": 170.614,
+            "P95Milliseconds": 436.1623,
+            "OperationsPerSecond": 38.2675741107539,
+            "CpuMilliseconds": 3272.3950000000004,
+            "AllocatedBytes": 114356496,
+            "WorkingSetBeforeBytes": 162508800,
+            "WorkingSetAfterBytes": 166924288,
+            "PeakWorkingSetBytes": 166924288,
+            "Io": {
+              "ReadChars": 1885058964,
+              "WriteChars": 941788400,
+              "ReadSyscalls": 38145,
+              "WriteSyscalls": 14806,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          }
+        ],
+        "W3M": {
+          "Count": 10000,
+          "List": {
+            "ElapsedMilliseconds": 106.7504,
+            "CpuMilliseconds": 115.6469999999972,
+            "AllocatedBytes": 16957048,
+            "WorkingSetBeforeBytes": 167673856,
+            "WorkingSetAfterBytes": 170344448,
+            "PeakWorkingSetBytes": 170352640,
+            "Io": {
+              "ReadChars": 2901251,
+              "WriteChars": 0,
+              "ReadSyscalls": 10926,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          }
+        },
+        "W3P": {
+          "Count": 100,
+          "PayloadBytes": 12879360,
+          "Drain": {
+            "ElapsedMilliseconds": 198.45,
+            "CpuMilliseconds": 739.2940000000017,
+            "AllocatedBytes": 18209512,
+            "WorkingSetBeforeBytes": 173252608,
+            "WorkingSetAfterBytes": 173408256,
+            "PeakWorkingSetBytes": 173420544,
+            "Io": {
+              "ReadChars": 1288242966,
+              "WriteChars": 0,
+              "ReadSyscalls": 21295,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "DrainedBytes": 1287936000,
+          "RestartReconciliation": {
+            "ElapsedMilliseconds": 122.0771,
+            "CpuMilliseconds": 127.78499999999985,
+            "AllocatedBytes": 31327376,
+            "WorkingSetBeforeBytes": 170303488,
+            "WorkingSetAfterBytes": 173572096,
+            "PeakWorkingSetBytes": 173576192,
+            "Io": {
+              "ReadChars": 426608,
+              "WriteChars": 0,
+              "ReadSyscalls": 1874,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "LiveObjects": 437
+        },
+        "BackupRestore": {
+          "ObjectCount": 1,
+          "TotalBytes": 12879360,
+          "Backup": {
+            "ElapsedMilliseconds": 85.2409,
+            "CpuMilliseconds": 100.41899999999805,
+            "AllocatedBytes": 3126368,
+            "WorkingSetBeforeBytes": 167776256,
+            "WorkingSetAfterBytes": 169017344,
+            "PeakWorkingSetBytes": 169017344,
+            "Io": {
+              "ReadChars": 25904655,
+              "WriteChars": 12880317,
+              "ReadSyscalls": 1183,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12894208
+            }
+          },
+          "Restore": {
+            "ElapsedMilliseconds": 58.5172,
+            "CpuMilliseconds": 60.63199999999779,
+            "AllocatedBytes": 822368,
+            "WorkingSetBeforeBytes": 170016768,
+            "WorkingSetAfterBytes": 170377216,
+            "PeakWorkingSetBytes": 170381312,
+            "Io": {
+              "ReadChars": 25865859,
+              "WriteChars": 12880275,
+              "ReadSyscalls": 976,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12894208
+            }
+          }
+        }
+      }
+    },
+    {
+      "Schema": "hvo-issue-586-filesystem-topology-performance-v1",
+      "Revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+      "RunId": "87c71bb500ac4f9bba8c5e0aa0eac73c",
+      "Environment": {
+        "OS": "Ubuntu 24.04.5 LTS",
+        "Architecture": "X64",
+        "Processors": 4,
+        "Runtime": ".NET 10.0.12",
+        "Root": "/var/lib/hvo-qualification/object-store",
+        "Drive": "ext4 total=20957446144 free=19451232256"
+      },
+      "Workloads": {
+        "W1": {
+          "Name": "W1",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 2209.8563,
+          "MedianMilliseconds": 71.9888,
+          "P95Milliseconds": 86.324,
+          "OperationsPerSecond": 13.575543350940963,
+          "CpuMilliseconds": 1076.554,
+          "AllocatedBytes": 22879312,
+          "WorkingSetBeforeBytes": 151973888,
+          "WorkingSetAfterBytes": 159330304,
+          "PeakWorkingSetBytes": 159350784,
+          "Io": {
+            "ReadChars": 284346842,
+            "WriteChars": 141268074,
+            "ReadSyscalls": 13779,
+            "WriteSyscalls": 2220,
+            "ReadBytes": 0,
+            "WriteBytes": 141557760
+          }
+        },
+        "W2": {
+          "Name": "W2",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 5093.2764,
+          "MedianMilliseconds": 164.5039,
+          "P95Milliseconds": 197.5701,
+          "OperationsPerSecond": 5.8901181958238125,
+          "CpuMilliseconds": 1952.8470000000002,
+          "AllocatedBytes": 30150624,
+          "WorkingSetBeforeBytes": 160755712,
+          "WorkingSetAfterBytes": 161259520,
+          "PeakWorkingSetBytes": 161263616,
+          "Io": {
+            "ReadChars": 776994062,
+            "WriteChars": 386398376,
+            "ReadSyscalls": 33406,
+            "WriteSyscalls": 5970,
+            "ReadBytes": 0,
+            "WriteBytes": 386703360
+          }
+        },
+        "W4": [
+          {
+            "Name": "W4-c1",
+            "Operations": 200,
+            "Concurrency": 1,
+            "ElapsedMilliseconds": 12808.5621,
+            "MedianMilliseconds": 63.6406,
+            "P95Milliseconds": 71.1052,
+            "OperationsPerSecond": 15.614555204444065,
+            "CpuMilliseconds": 4497.490999999999,
+            "AllocatedBytes": 142565264,
+            "WorkingSetBeforeBytes": 161370112,
+            "WorkingSetAfterBytes": 165466112,
+            "PeakWorkingSetBytes": 165470208,
+            "Io": {
+              "ReadChars": 1894082279,
+              "WriteChars": 941788356,
+              "ReadSyscalls": 83797,
+              "WriteSyscalls": 14800,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          },
+          {
+            "Name": "W4-c4",
+            "Operations": 200,
+            "Concurrency": 4,
+            "ElapsedMilliseconds": 7628.8467,
+            "MedianMilliseconds": 131.9389,
+            "P95Milliseconds": 315.6411,
+            "OperationsPerSecond": 26.216282469013304,
+            "CpuMilliseconds": 3176.1049999999996,
+            "AllocatedBytes": 119987672,
+            "WorkingSetBeforeBytes": 161513472,
+            "WorkingSetAfterBytes": 165974016,
+            "PeakWorkingSetBytes": 165974016,
+            "Io": {
+              "ReadChars": 1886852350,
+              "WriteChars": 941788355,
+              "ReadSyscalls": 47415,
+              "WriteSyscalls": 14800,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          },
+          {
+            "Name": "W4-c8",
+            "Operations": 200,
+            "Concurrency": 8,
+            "ElapsedMilliseconds": 5104.5854,
+            "MedianMilliseconds": 142.8899,
+            "P95Milliseconds": 410.3597,
+            "OperationsPerSecond": 39.18045920046709,
+            "CpuMilliseconds": 2541.154999999999,
+            "AllocatedBytes": 112775864,
+            "WorkingSetBeforeBytes": 162213888,
+            "WorkingSetAfterBytes": 166694912,
+            "PeakWorkingSetBytes": 166694912,
+            "Io": {
+              "ReadChars": 1884574333,
+              "WriteChars": 941788385,
+              "ReadSyscalls": 35612,
+              "WriteSyscalls": 14804,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          }
+        ],
+        "W3M": {
+          "Count": 10000,
+          "List": {
+            "ElapsedMilliseconds": 98.1176,
+            "CpuMilliseconds": 105.0689999999995,
+            "AllocatedBytes": 16907712,
+            "WorkingSetBeforeBytes": 163393536,
+            "WorkingSetAfterBytes": 165904384,
+            "PeakWorkingSetBytes": 165908480,
+            "Io": {
+              "ReadChars": 2885961,
+              "WriteChars": 0,
+              "ReadSyscalls": 10855,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          }
+        },
+        "W3P": {
+          "Count": 100,
+          "PayloadBytes": 12879360,
+          "Drain": {
+            "ElapsedMilliseconds": 204.2939,
+            "CpuMilliseconds": 723.8549999999996,
+            "AllocatedBytes": 18246744,
+            "WorkingSetBeforeBytes": 168833024,
+            "WorkingSetAfterBytes": 172539904,
+            "PeakWorkingSetBytes": 172539904,
+            "Io": {
+              "ReadChars": 1288252407,
+              "WriteChars": 0,
+              "ReadSyscalls": 21366,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "DrainedBytes": 1287936000,
+          "RestartReconciliation": {
+            "ElapsedMilliseconds": 118.1128,
+            "CpuMilliseconds": 124.54400000000169,
+            "AllocatedBytes": 31336600,
+            "WorkingSetBeforeBytes": 166154240,
+            "WorkingSetAfterBytes": 170348544,
+            "PeakWorkingSetBytes": 170409984,
+            "Io": {
+              "ReadChars": 424215,
+              "WriteChars": 0,
+              "ReadSyscalls": 1874,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "LiveObjects": 437
+        },
+        "BackupRestore": {
+          "ObjectCount": 1,
+          "TotalBytes": 12879360,
+          "Backup": {
+            "ElapsedMilliseconds": 72.1984,
+            "CpuMilliseconds": 78.39199999999983,
+            "AllocatedBytes": 3155064,
+            "WorkingSetBeforeBytes": 167710720,
+            "WorkingSetAfterBytes": 169340928,
+            "PeakWorkingSetBytes": 169340928,
+            "Io": {
+              "ReadChars": 25876785,
+              "WriteChars": 12880317,
+              "ReadSyscalls": 1041,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12894208
+            }
+          },
+          "Restore": {
+            "ElapsedMilliseconds": 55.1604,
+            "CpuMilliseconds": 52.39800000000105,
+            "AllocatedBytes": 819584,
+            "WorkingSetBeforeBytes": 170016768,
+            "WorkingSetAfterBytes": 170352640,
+            "PeakWorkingSetBytes": 170352640,
+            "Io": {
+              "ReadChars": 25864507,
+              "WriteChars": 12880275,
+              "ReadSyscalls": 976,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12894208
+            }
+          }
+        }
+      }
+    },
+    {
+      "Schema": "hvo-issue-586-filesystem-topology-performance-v1",
+      "Revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+      "RunId": "b87ce32b4c7f41fdba8f615fd2731aa1",
+      "Environment": {
+        "OS": "Ubuntu 24.04.5 LTS",
+        "Architecture": "X64",
+        "Processors": 4,
+        "Runtime": ".NET 10.0.12",
+        "Root": "/var/lib/hvo-qualification/object-store",
+        "Drive": "ext4 total=20957446144 free=19451232256"
+      },
+      "Workloads": {
+        "W1": {
+          "Name": "W1",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 1973.6611,
+          "MedianMilliseconds": 65.6134,
+          "P95Milliseconds": 74.2496,
+          "OperationsPerSecond": 15.20017798395074,
+          "CpuMilliseconds": 970.737,
+          "AllocatedBytes": 22330240,
+          "WorkingSetBeforeBytes": 150941696,
+          "WorkingSetAfterBytes": 162607104,
+          "PeakWorkingSetBytes": 162611200,
+          "Io": {
+            "ReadChars": 284171565,
+            "WriteChars": 141268071,
+            "ReadSyscalls": 12790,
+            "WriteSyscalls": 2220,
+            "ReadBytes": 0,
+            "WriteBytes": 141557760
+          }
+        },
+        "W2": {
+          "Name": "W2",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 5023.5291,
+          "MedianMilliseconds": 166.9835,
+          "P95Milliseconds": 183.32,
+          "OperationsPerSecond": 5.971897326124775,
+          "CpuMilliseconds": 2102.767,
+          "AllocatedBytes": 30046360,
+          "WorkingSetBeforeBytes": 164552704,
+          "WorkingSetAfterBytes": 166019072,
+          "PeakWorkingSetBytes": 166019072,
+          "Io": {
+            "ReadChars": 776975769,
+            "WriteChars": 386398377,
+            "ReadSyscalls": 33062,
+            "WriteSyscalls": 5970,
+            "ReadBytes": 0,
+            "WriteBytes": 386703360
+          }
+        },
+        "W4": [
+          {
+            "Name": "W4-c1",
+            "Operations": 200,
+            "Concurrency": 1,
+            "ElapsedMilliseconds": 13012.4947,
+            "MedianMilliseconds": 64.8581,
+            "P95Milliseconds": 71.1883,
+            "OperationsPerSecond": 15.369842955632482,
+            "CpuMilliseconds": 4639.86,
+            "AllocatedBytes": 143295768,
+            "WorkingSetBeforeBytes": 166060032,
+            "WorkingSetAfterBytes": 166195200,
+            "PeakWorkingSetBytes": 166199296,
+            "Io": {
+              "ReadChars": 1894360698,
+              "WriteChars": 941788388,
+              "ReadSyscalls": 84571,
+              "WriteSyscalls": 14802,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          },
+          {
+            "Name": "W4-c4",
+            "Operations": 200,
+            "Concurrency": 4,
+            "ElapsedMilliseconds": 7887.8494,
+            "MedianMilliseconds": 139.4333,
+            "P95Milliseconds": 280.315,
+            "OperationsPerSecond": 25.35545366776399,
+            "CpuMilliseconds": 3563.513999999999,
+            "AllocatedBytes": 123259760,
+            "WorkingSetBeforeBytes": 162287616,
+            "WorkingSetAfterBytes": 166739968,
+            "PeakWorkingSetBytes": 166739968,
+            "Io": {
+              "ReadChars": 1887904968,
+              "WriteChars": 941788355,
+              "ReadSyscalls": 52610,
+              "WriteSyscalls": 14800,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          },
+          {
+            "Name": "W4-c8",
+            "Operations": 200,
+            "Concurrency": 8,
+            "ElapsedMilliseconds": 4701.163,
+            "MedianMilliseconds": 154.2208,
+            "P95Milliseconds": 456.8571,
+            "OperationsPerSecond": 42.542664442819785,
+            "CpuMilliseconds": 2964.968999999999,
+            "AllocatedBytes": 115562728,
+            "WorkingSetBeforeBytes": 162586624,
+            "WorkingSetAfterBytes": 167251968,
+            "PeakWorkingSetBytes": 167251968,
+            "Io": {
+              "ReadChars": 1885413895,
+              "WriteChars": 941788438,
+              "ReadSyscalls": 40052,
+              "WriteSyscalls": 14810,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          }
+        ],
+        "W3M": {
+          "Count": 10000,
+          "List": {
+            "ElapsedMilliseconds": 111.6898,
+            "CpuMilliseconds": 118.44700000000012,
+            "AllocatedBytes": 16967832,
+            "WorkingSetBeforeBytes": 167813120,
+            "WorkingSetAfterBytes": 170467328,
+            "PeakWorkingSetBytes": 170471424,
+            "Io": {
+              "ReadChars": 2901294,
+              "WriteChars": 0,
+              "ReadSyscalls": 10926,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          }
+        },
+        "W3P": {
+          "Count": 100,
+          "PayloadBytes": 12879360,
+          "Drain": {
+            "ElapsedMilliseconds": 191.0854,
+            "CpuMilliseconds": 718.393,
+            "AllocatedBytes": 18156424,
+            "WorkingSetBeforeBytes": 175124480,
+            "WorkingSetAfterBytes": 175333376,
+            "PeakWorkingSetBytes": 175333376,
+            "Io": {
+              "ReadChars": 1288229822,
+              "WriteChars": 0,
+              "ReadSyscalls": 21224,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "DrainedBytes": 1287936000,
+          "RestartReconciliation": {
+            "ElapsedMilliseconds": 120.8368,
+            "CpuMilliseconds": 127.30400000000009,
+            "AllocatedBytes": 31340904,
+            "WorkingSetBeforeBytes": 170409984,
+            "WorkingSetAfterBytes": 175423488,
+            "PeakWorkingSetBytes": 175431680,
+            "Io": {
+              "ReadChars": 426616,
+              "WriteChars": 0,
+              "ReadSyscalls": 1874,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "LiveObjects": 437
+        },
+        "BackupRestore": {
+          "ObjectCount": 1,
+          "TotalBytes": 12879360,
+          "Backup": {
+            "ElapsedMilliseconds": 71.3783,
+            "CpuMilliseconds": 83.97499999999854,
+            "AllocatedBytes": 3038912,
+            "WorkingSetBeforeBytes": 169697280,
+            "WorkingSetAfterBytes": 170901504,
+            "PeakWorkingSetBytes": 170905600,
+            "Io": {
+              "ReadChars": 25878333,
+              "WriteChars": 12880317,
+              "ReadSyscalls": 1041,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12894208
+            }
+          },
+          "Restore": {
+            "ElapsedMilliseconds": 58.7008,
+            "CpuMilliseconds": 61.03099999999904,
+            "AllocatedBytes": 817552,
+            "WorkingSetBeforeBytes": 171704320,
+            "WorkingSetAfterBytes": 172023808,
+            "PeakWorkingSetBytes": 172023808,
+            "Io": {
+              "ReadChars": 25865891,
+              "WriteChars": 12880275,
+              "ReadSyscalls": 976,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12894208
+            }
+          }
+        }
+      }
+    },
+    {
+      "Schema": "hvo-issue-586-filesystem-topology-performance-v1",
+      "Revision": "84b8b0b6e9d744d45e7f6029e6b32e95df070fc0",
+      "RunId": "bdc819cfb60448c7820e45e5e48f2aea",
+      "Environment": {
+        "OS": "Ubuntu 24.04.5 LTS",
+        "Architecture": "X64",
+        "Processors": 4,
+        "Runtime": ".NET 10.0.12",
+        "Root": "/var/lib/hvo-qualification/object-store",
+        "Drive": "ext4 total=20957446144 free=19451232256"
+      },
+      "Workloads": {
+        "W1": {
+          "Name": "W1",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 1874.2094,
+          "MedianMilliseconds": 62.2467,
+          "P95Milliseconds": 67.0741,
+          "OperationsPerSecond": 16.00674929919784,
+          "CpuMilliseconds": 929.3,
+          "AllocatedBytes": 22075440,
+          "WorkingSetBeforeBytes": 151142400,
+          "WorkingSetAfterBytes": 159137792,
+          "PeakWorkingSetBytes": 159145984,
+          "Io": {
+            "ReadChars": 284094514,
+            "WriteChars": 141268066,
+            "ReadSyscalls": 12403,
+            "WriteSyscalls": 2220,
+            "ReadBytes": 0,
+            "WriteBytes": 141557760
+          }
+        },
+        "W2": {
+          "Name": "W2",
+          "Operations": 30,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 4729.6212,
+          "MedianMilliseconds": 157.4916,
+          "P95Milliseconds": 164.8195,
+          "OperationsPerSecond": 6.343002691209182,
+          "CpuMilliseconds": 2016.9499999999998,
+          "AllocatedBytes": 29321360,
+          "WorkingSetBeforeBytes": 161087488,
+          "WorkingSetAfterBytes": 165339136,
+          "PeakWorkingSetBytes": 165339136,
+          "Io": {
+            "ReadChars": 776744235,
+            "WriteChars": 386398376,
+            "ReadSyscalls": 31901,
+            "WriteSyscalls": 5970,
+            "ReadBytes": 0,
+            "WriteBytes": 386703360
+          }
+        },
+        "W4": [
+          {
+            "Name": "W4-c1",
+            "Operations": 200,
+            "Concurrency": 1,
+            "ElapsedMilliseconds": 12538.745,
+            "MedianMilliseconds": 62.5809,
+            "P95Milliseconds": 70.1748,
+            "OperationsPerSecond": 15.950559645323356,
+            "CpuMilliseconds": 4375.458,
+            "AllocatedBytes": 142007392,
+            "WorkingSetBeforeBytes": 161714176,
+            "WorkingSetAfterBytes": 166199296,
+            "PeakWorkingSetBytes": 166199296,
+            "Io": {
+              "ReadChars": 1893952513,
+              "WriteChars": 941788367,
+              "ReadSyscalls": 82480,
+              "WriteSyscalls": 14802,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          },
+          {
+            "Name": "W4-c4",
+            "Operations": 200,
+            "Concurrency": 4,
+            "ElapsedMilliseconds": 7416.8114,
+            "MedianMilliseconds": 131.3432,
+            "P95Milliseconds": 266.4024,
+            "OperationsPerSecond": 26.96576590851427,
+            "CpuMilliseconds": 3119.991,
+            "AllocatedBytes": 120112616,
+            "WorkingSetBeforeBytes": 162226176,
+            "WorkingSetAfterBytes": 166637568,
+            "PeakWorkingSetBytes": 166637568,
+            "Io": {
+              "ReadChars": 1886909361,
+              "WriteChars": 941788373,
+              "ReadSyscalls": 47418,
+              "WriteSyscalls": 14802,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          },
+          {
+            "Name": "W4-c8",
+            "Operations": 200,
+            "Concurrency": 8,
+            "ElapsedMilliseconds": 4589.5872,
+            "MedianMilliseconds": 149.0939,
+            "P95Milliseconds": 428.3342,
+            "OperationsPerSecond": 43.57690382263572,
+            "CpuMilliseconds": 3017.9850000000006,
+            "AllocatedBytes": 115995072,
+            "WorkingSetBeforeBytes": 166760448,
+            "WorkingSetAfterBytes": 167043072,
+            "PeakWorkingSetBytes": 167043072,
+            "Io": {
+              "ReadChars": 1885569704,
+              "WriteChars": 941788407,
+              "ReadSyscalls": 40814,
+              "WriteSyscalls": 14806,
+              "ReadBytes": 0,
+              "WriteBytes": 943718400
+            }
+          }
+        ],
+        "W3M": {
+          "Count": 10000,
+          "List": {
+            "ElapsedMilliseconds": 93.8699,
+            "CpuMilliseconds": 99.66800000000148,
+            "AllocatedBytes": 16924760,
+            "WorkingSetBeforeBytes": 167931904,
+            "WorkingSetAfterBytes": 170713088,
+            "PeakWorkingSetBytes": 170717184,
+            "Io": {
+              "ReadChars": 2888050,
+              "WriteChars": 0,
+              "ReadSyscalls": 10855,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          }
+        },
+        "W3P": {
+          "Count": 100,
+          "PayloadBytes": 12879360,
+          "Drain": {
+            "ElapsedMilliseconds": 208.6012,
+            "CpuMilliseconds": 727.2970000000023,
+            "AllocatedBytes": 18242352,
+            "WorkingSetBeforeBytes": 171347968,
+            "WorkingSetAfterBytes": 171790336,
+            "PeakWorkingSetBytes": 171790336,
+            "Io": {
+              "ReadChars": 1288255951,
+              "WriteChars": 0,
+              "ReadSyscalls": 21366,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "DrainedBytes": 1287936000,
+          "RestartReconciliation": {
+            "ElapsedMilliseconds": 117.0298,
+            "CpuMilliseconds": 122.68800000000192,
+            "AllocatedBytes": 31327032,
+            "WorkingSetBeforeBytes": 170844160,
+            "WorkingSetAfterBytes": 175853568,
+            "PeakWorkingSetBytes": 175857664,
+            "Io": {
+              "ReadChars": 426490,
+              "WriteChars": 0,
+              "ReadSyscalls": 1874,
+              "WriteSyscalls": 0,
+              "ReadBytes": 0,
+              "WriteBytes": 0
+            }
+          },
+          "LiveObjects": 437
+        },
+        "BackupRestore": {
+          "ObjectCount": 1,
+          "TotalBytes": 12879360,
+          "Backup": {
+            "ElapsedMilliseconds": 77.8388,
+            "CpuMilliseconds": 89.21200000000317,
+            "AllocatedBytes": 3083720,
+            "WorkingSetBeforeBytes": 168222720,
+            "WorkingSetAfterBytes": 169209856,
+            "PeakWorkingSetBytes": 169213952,
+            "Io": {
+              "ReadChars": 25891402,
+              "WriteChars": 12880317,
+              "ReadSyscalls": 1112,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12894208
+            }
+          },
+          "Restore": {
+            "ElapsedMilliseconds": 56.6153,
+            "CpuMilliseconds": 50.84599999999773,
+            "AllocatedBytes": 921472,
+            "WorkingSetBeforeBytes": 170082304,
+            "WorkingSetAfterBytes": 170393600,
+            "PeakWorkingSetBytes": 170393600,
+            "Io": {
+              "ReadChars": 25865803,
+              "WriteChars": 12880275,
+              "ReadSyscalls": 976,
+              "WriteSyscalls": 200,
+              "ReadBytes": 0,
+              "WriteBytes": 12894208
+            }
+          }
+        }
+      }
+    }
+  ]
+}
