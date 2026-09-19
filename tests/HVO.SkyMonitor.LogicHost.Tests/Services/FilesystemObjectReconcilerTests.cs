@@ -56,6 +56,21 @@ public sealed class FilesystemObjectReconcilerTests
     /// <summary>Set a file's mtime relative to the fake clock so grace ages are deterministic.</summary>
     private void Age(string path, TimeSpan age) => File.SetLastWriteTimeUtc(path, (_clock.GetUtcNow() - age).UtcDateTime);
 
+    /// <summary>
+    /// Retired data ages from its retirement stamp, which the first pass that finds it writes.
+    /// To age a retired file for a test: run one pass (stamps it), then age the stamp.
+    /// </summary>
+    private void AgeRetired(string dataPath, TimeSpan age)
+    {
+        var stamp = Path.ChangeExtension(dataPath, ".retired");
+        if (!File.Exists(stamp))
+        {
+            Run();
+        }
+        Assert.IsTrue(File.Exists(stamp), "the pass stamps a retired file");
+        Age(stamp, age);
+    }
+
     [TestMethod]
     public async Task CleanBucketReportsLiveObjectsAndNothingElse()
     {
@@ -87,7 +102,7 @@ public sealed class FilesystemObjectReconcilerTests
         Assert.AreEqual(0, young.ReclaimedCount);
         Assert.IsTrue(File.Exists(DataPath("k", g1)), "within grace, an open reader may still hold it");
 
-        Age(DataPath("k", g1), TimeSpan.FromMinutes(16));
+        AgeRetired(DataPath("k", g1), TimeSpan.FromMinutes(16));
         var old = Run();
         Assert.AreEqual(1, old.ReclaimedCount);
         Assert.AreEqual(2, old.ReclaimedBytes);
@@ -97,14 +112,32 @@ public sealed class FilesystemObjectReconcilerTests
     }
 
     [TestMethod]
+    public async Task GraceRunsFromRetirementNotFromWrite()
+    {
+        // An object written long ago and replaced just now has a reader window that opened
+        // just now; ageing from the file's write time would reclaim it immediately.
+        await _store.PutAsync(Bucket, "k", Bytes("old"), 3, "text/plain", None);
+        var g1 = (await _store.StatAsync(Bucket, "k", None)).Generation;
+        Age(DataPath("k", g1), TimeSpan.FromDays(7));
+        await _store.PutAsync(Bucket, "k", Bytes("new"), 3, "text/plain", None);
+        var first = Run();
+        Assert.AreEqual(1, first.RetiredWithinGrace, "just retired, however old the bytes are");
+        Assert.AreEqual(0, first.ReclaimedCount);
+        Assert.IsTrue(File.Exists(Path.ChangeExtension(DataPath("k", g1), ".retired")));
+        var second = Run();
+        Assert.AreEqual(1, second.RetiredWithinGrace, "still within grace on the next pass");
+    }
+
+    [TestMethod]
     public async Task DeletedObjectDataIsReclaimedAfterGraceAndNothingIsInvented()
     {
         await _store.PutAsync(Bucket, "k", Bytes("v1"), 2, "text/plain", None);
         var g = (await _store.StatAsync(Bucket, "k", None)).Generation;
         await _store.DeleteAsync(Bucket, "k", None);
-        Age(DataPath("k", g), TimeSpan.FromHours(1));
+        AgeRetired(DataPath("k", g), TimeSpan.FromHours(1));
         var report = Run();
         Assert.AreEqual(1, report.ReclaimedCount);
+        Assert.IsFalse(File.Exists(Path.ChangeExtension(DataPath("k", g), ".retired")), "the stamp goes with the data");
         Assert.AreEqual(0, report.LiveObjects);
         Assert.IsFalse(File.Exists(DescriptorPath("k")), "reconciliation never writes a descriptor");
         var gone = await Assert.ThrowsExactlyAsync<ObjectStoreException>(() => _store.StatAsync(Bucket, "k", None));
@@ -129,7 +162,7 @@ public sealed class FilesystemObjectReconcilerTests
             readBack.Append(Encoding.UTF8.GetString(buffer, 0, first));
             // Replace, age the retired file past grace, reclaim: all while the reader holds it.
             await _store.PutAsync(Bucket, "k", Bytes("new"), 3, "text/plain", ct);
-            Age(DataPath("k", g1), TimeSpan.FromHours(1));
+            AgeRetired(DataPath("k", g1), TimeSpan.FromHours(1));
             var report = Run();
             Assert.AreEqual(1, report.ReclaimedCount, "unlinked while open");
             int read;
@@ -247,7 +280,7 @@ public sealed class FilesystemObjectReconcilerTests
         await _store.PutAsync(Bucket, "src", Bytes("v1"), 2, "text/plain", None);
         var g1 = (await _store.StatAsync(Bucket, "src", None)).Generation;
         await _store.PutAsync(Bucket, "src", Bytes("v2"), 2, "text/plain", None);
-        Age(DataPath("src", g1), TimeSpan.FromHours(1));
+        AgeRetired(DataPath("src", g1), TimeSpan.FromHours(1));
         Run();
         Assert.IsFalse(File.Exists(DataPath("src", g1)), "g1 reclaimed");
 

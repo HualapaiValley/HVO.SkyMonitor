@@ -122,7 +122,32 @@ internal sealed partial class FilesystemObjectReconciler(
                 continue; // live
             }
             var info = new FileInfo(dataPath);
+            // The grace clock is the moment the file became retired, not the moment it was
+            // written: an object written a week ago and replaced a second ago has a reader
+            // window that opened a second ago. The store cannot know that moment on its own
+            // (nothing is written when a descriptor moves on), so the first pass that finds a
+            // file retired stamps it by touching its mtime, and later passes age it from there.
+            // A file that was never touched is at most one cadence away from being stamped.
             var age = now - info.LastWriteTimeUtc;
+            var retirementStamp = Path.ChangeExtension(dataPath, ".retired");
+            if (!File.Exists(retirementStamp))
+            {
+                try
+                {
+                    File.WriteAllBytes(retirementStamp, []);
+                    File.SetLastWriteTimeUtc(retirementStamp, now.UtcDateTime);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    report.ReclaimFailed++;
+                    continue;
+                }
+                age = TimeSpan.Zero;
+            }
+            else
+            {
+                age = now - new FileInfo(retirementStamp).LastWriteTimeUtc;
+            }
             report.RetiredBytes += info.Length;
             report.RetiredCount++;
             if (age < options.RetiredGraceAge)
@@ -133,6 +158,7 @@ internal sealed partial class FilesystemObjectReconciler(
             }
             if (TryDelete(dataPath, out var deferred))
             {
+                TryDelete(retirementStamp, out _);
                 report.ReclaimedCount++;
                 report.ReclaimedBytes += info.Length;
                 report.RetiredBytes -= info.Length;
@@ -147,6 +173,17 @@ internal sealed partial class FilesystemObjectReconciler(
             else
             {
                 report.ReclaimFailed++;
+            }
+        }
+
+        // Retirement stamps whose data file is already gone (reclaimed by an earlier pass that
+        // crashed before removing the stamp, or removed by an operator) are themselves garbage.
+        foreach (var stampPath in EnumerateSafely(bucketPath, "*.retired"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!File.Exists(Path.ChangeExtension(stampPath, FilesystemObjectLayout.DataSuffix)))
+            {
+                TryDelete(stampPath, out _);
             }
         }
 

@@ -159,7 +159,9 @@ minutes per bucket. It never writes a descriptor. It quarantines (renames into
 its key, or lacks its data, and any live data/descriptor pair whose digest or length
 disagrees when digest verification is requested; a quarantined key becomes `MissingObject`.
 It reclaims retired data generations (those the current descriptor does not name) only
-after a grace age, so a reader that opened one finishes it; on Windows a sharing violation
+after a grace age counted from the pass that first found them retired (a `.retired` stamp
+beside the data, because nothing is written when a descriptor moves on), so a reader that
+opened one finishes it; on Windows a sharing violation
 defers rather than faults. Stale temporaries are removed after their own grace age. Each
 pass is bounded and reports counts only, never keys or paths. The health check surfaces
 `QuarantinedCount`, `ReclaimFailedCount`, `RetiredBytes`, `OldestRetiredAgeSeconds` and
