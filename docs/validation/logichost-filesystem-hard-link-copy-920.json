@@ -1,0 +1,319 @@
+{
+  "Schema": "hvo-issue-920-hard-link-copy-performance-v1",
+  "Revision": "1f0d4bb0bd7885f2c44f04afc00aacd0801a46d2",
+  "RunId": "5d39aa2647694c7a8396b06cf1ef0fcd",
+  "Environment": {
+    "OS": "Ubuntu 24.04.5 LTS",
+    "Architecture": "X64",
+    "Processors": 12,
+    "Runtime": ".NET 10.0.12",
+    "Configuration": "Release",
+    "Storage": "ext4 at /tmp/hvo-920-perf-5d39aa2647694c7a8396b06cf1ef0fcd (909681 MiB free)"
+  },
+  "Method": "Same process, filesystem and IObjectStore workflow. Baseline forces the streaming-copy fallback; candidate uses descriptor-relative hard links. Each cell discards warm-ups and measures independent put, digest-read, copy, digest-read and delete workflows. Metrics are Stopwatch latency, process CPU, managed allocations, RSS and /proc/self/io deltas.",
+  "Workloads": {
+    "W1": {
+      "Workload": "W1",
+      "PayloadBytes": 4708352,
+      "Warmups": 5,
+      "Operations": 30,
+      "Concurrency": 1,
+      "Streaming": {
+        "Name": "W1-streaming",
+        "Operations": 30,
+        "Concurrency": 1,
+        "ElapsedMilliseconds": 3845.7594,
+        "MedianMilliseconds": 127.9241,
+        "P95Milliseconds": 141.1528,
+        "MaxMilliseconds": 147.3625,
+        "OperationsPerSecond": 7.800800018846733,
+        "CpuMilliseconds": 1599.575,
+        "AllocatedBytes": 166734536,
+        "WorkingSetBeforeBytes": 159166464,
+        "WorkingSetAfterBytes": 164618240,
+        "Io": {
+          "ReadChars": 423828978,
+          "WriteChars": 282521816,
+          "ReadSyscalls": 4645,
+          "WriteSyscalls": 4380,
+          "ReadBytes": 0,
+          "WriteBytes": 282869760
+        }
+      },
+      "HardLink": {
+        "Name": "W1-hard-link",
+        "Operations": 30,
+        "Concurrency": 1,
+        "ElapsedMilliseconds": 2241.1859,
+        "MedianMilliseconds": 75.1975,
+        "P95Milliseconds": 79.841,
+        "MaxMilliseconds": 85.4167,
+        "OperationsPerSecond": 13.385770453044524,
+        "CpuMilliseconds": 962.6899999999996,
+        "AllocatedBytes": 162547728,
+        "WorkingSetBeforeBytes": 166490112,
+        "WorkingSetAfterBytes": 165183488,
+        "Io": {
+          "ReadChars": 423827477,
+          "WriteChars": 141271255,
+          "ReadSyscalls": 4614,
+          "WriteSyscalls": 2220,
+          "ReadBytes": 0,
+          "WriteBytes": 141557760
+        }
+      },
+      "Change": {
+        "MedianLatency": "0.59x",
+        "P95Latency": "0.57x",
+        "Throughput": "1.72x",
+        "Cpu": "0.60x",
+        "Allocations": "0.97x",
+        "WriteBytes": "0.50x",
+        "WriteSyscalls": "0.51x"
+      }
+    },
+    "W2": {
+      "Workload": "W2",
+      "PayloadBytes": 12879360,
+      "Warmups": 5,
+      "Operations": 30,
+      "Concurrency": 1,
+      "Streaming": {
+        "Name": "W2-streaming",
+        "Operations": 30,
+        "Concurrency": 1,
+        "ElapsedMilliseconds": 9697.7838,
+        "MedianMilliseconds": 321.8482,
+        "P95Milliseconds": 352.1619,
+        "MaxMilliseconds": 352.2524,
+        "OperationsPerSecond": 3.093490287956306,
+        "CpuMilliseconds": 2963.3150000000005,
+        "AllocatedBytes": 416193800,
+        "WorkingSetBeforeBytes": 166576128,
+        "WorkingSetAfterBytes": 166559744,
+        "Io": {
+          "ReadChars": 1159249561,
+          "WriteChars": 772782374,
+          "ReadSyscalls": 12206,
+          "WriteSyscalls": 11882,
+          "ReadBytes": 0,
+          "WriteBytes": 773160960
+        }
+      },
+      "HardLink": {
+        "Name": "W2-hard-link",
+        "Operations": 30,
+        "Concurrency": 1,
+        "ElapsedMilliseconds": 5541.6148,
+        "MedianMilliseconds": 185.8371,
+        "P95Milliseconds": 198.3091,
+        "MaxMilliseconds": 198.4203,
+        "OperationsPerSecond": 5.413584502481118,
+        "CpuMilliseconds": 2402.459,
+        "AllocatedBytes": 412256336,
+        "WorkingSetBeforeBytes": 167915520,
+        "WorkingSetAfterBytes": 170409984,
+        "Io": {
+          "ReadChars": 1159249052,
+          "WriteChars": 386401548,
+          "ReadSyscalls": 12174,
+          "WriteSyscalls": 5970,
+          "ReadBytes": 0,
+          "WriteBytes": 386703360
+        }
+      },
+      "Change": {
+        "MedianLatency": "0.58x",
+        "P95Latency": "0.56x",
+        "Throughput": "1.75x",
+        "Cpu": "0.81x",
+        "Allocations": "0.99x",
+        "WriteBytes": "0.50x",
+        "WriteSyscalls": "0.50x"
+      }
+    },
+    "W4": [
+      {
+        "Workload": "W4-c1",
+        "PayloadBytes": 4708352,
+        "Warmups": 20,
+        "Operations": 200,
+        "Concurrency": 1,
+        "Streaming": {
+          "Name": "W4-c1-streaming",
+          "Operations": 200,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 24309.9513,
+          "MedianMilliseconds": 120.9745,
+          "P95Milliseconds": 130.08,
+          "MaxMilliseconds": 136.1045,
+          "OperationsPerSecond": 8.227083531837433,
+          "CpuMilliseconds": 7360.8150000000005,
+          "AllocatedBytes": 1109482224,
+          "WorkingSetBeforeBytes": 169365504,
+          "WorkingSetAfterBytes": 170532864,
+          "Io": {
+            "ReadChars": 2825534656,
+            "WriteChars": 1883479991,
+            "ReadSyscalls": 30965,
+            "WriteSyscalls": 29204,
+            "ReadBytes": 0,
+            "WriteBytes": 1885798400
+          }
+        },
+        "HardLink": {
+          "Name": "W4-c1-hard-link",
+          "Operations": 200,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 14525.0501,
+          "MedianMilliseconds": 72.0777,
+          "P95Milliseconds": 79.3729,
+          "MaxMilliseconds": 107.5163,
+          "OperationsPerSecond": 13.769315673479158,
+          "CpuMilliseconds": 5982.338,
+          "AllocatedBytes": 1083373896,
+          "WorkingSetBeforeBytes": 169484288,
+          "WorkingSetAfterBytes": 170541056,
+          "Io": {
+            "ReadChars": 2825528349,
+            "WriteChars": 941809552,
+            "ReadSyscalls": 30758,
+            "WriteSyscalls": 14800,
+            "ReadBytes": 0,
+            "WriteBytes": 943718400
+          }
+        },
+        "Change": {
+          "MedianLatency": "0.60x",
+          "P95Latency": "0.61x",
+          "Throughput": "1.67x",
+          "Cpu": "0.81x",
+          "Allocations": "0.98x",
+          "WriteBytes": "0.50x",
+          "WriteSyscalls": "0.51x"
+        }
+      },
+      {
+        "Workload": "W4-c4",
+        "PayloadBytes": 4708352,
+        "Warmups": 20,
+        "Operations": 200,
+        "Concurrency": 4,
+        "Streaming": {
+          "Name": "W4-c4-streaming",
+          "Operations": 200,
+          "Concurrency": 4,
+          "ElapsedMilliseconds": 12947.9621,
+          "MedianMilliseconds": 257.5437,
+          "P95Milliseconds": 273.4762,
+          "MaxMilliseconds": 296.7963,
+          "OperationsPerSecond": 15.44644620175402,
+          "CpuMilliseconds": 7255.747000000003,
+          "AllocatedBytes": 1109476928,
+          "WorkingSetBeforeBytes": 169938944,
+          "WorkingSetAfterBytes": 167919616,
+          "Io": {
+            "ReadChars": 2825533670,
+            "WriteChars": 1883479993,
+            "ReadSyscalls": 30965,
+            "WriteSyscalls": 29204,
+            "ReadBytes": 4096,
+            "WriteBytes": 1885798400
+          }
+        },
+        "HardLink": {
+          "Name": "W4-c4-hard-link",
+          "Operations": 200,
+          "Concurrency": 4,
+          "ElapsedMilliseconds": 7201.2484,
+          "MedianMilliseconds": 141.7189,
+          "P95Milliseconds": 152.2679,
+          "MaxMilliseconds": 249.6554,
+          "OperationsPerSecond": 27.77296225471128,
+          "CpuMilliseconds": 6172.906000000003,
+          "AllocatedBytes": 1083352792,
+          "WorkingSetBeforeBytes": 166141952,
+          "WorkingSetAfterBytes": 168275968,
+          "Io": {
+            "ReadChars": 2825533461,
+            "WriteChars": 941809547,
+            "ReadSyscalls": 30763,
+            "WriteSyscalls": 14800,
+            "ReadBytes": 0,
+            "WriteBytes": 943718400
+          }
+        },
+        "Change": {
+          "MedianLatency": "0.55x",
+          "P95Latency": "0.56x",
+          "Throughput": "1.80x",
+          "Cpu": "0.85x",
+          "Allocations": "0.98x",
+          "WriteBytes": "0.50x",
+          "WriteSyscalls": "0.51x"
+        }
+      },
+      {
+        "Workload": "W4-c8",
+        "PayloadBytes": 4708352,
+        "Warmups": 20,
+        "Operations": 200,
+        "Concurrency": 8,
+        "Streaming": {
+          "Name": "W4-c8-streaming",
+          "Operations": 200,
+          "Concurrency": 8,
+          "ElapsedMilliseconds": 7357.2836,
+          "MedianMilliseconds": 284.9379,
+          "P95Milliseconds": 308.846,
+          "MaxMilliseconds": 425.3654,
+          "OperationsPerSecond": 27.183945987891512,
+          "CpuMilliseconds": 9484.296000000002,
+          "AllocatedBytes": 1109597288,
+          "WorkingSetBeforeBytes": 170430464,
+          "WorkingSetAfterBytes": 174653440,
+          "Io": {
+            "ReadChars": 2825539844,
+            "WriteChars": 1883479997,
+            "ReadSyscalls": 30971,
+            "WriteSyscalls": 29204,
+            "ReadBytes": 0,
+            "WriteBytes": 1885798400
+          }
+        },
+        "HardLink": {
+          "Name": "W4-c8-hard-link",
+          "Operations": 200,
+          "Concurrency": 8,
+          "ElapsedMilliseconds": 4127.9604,
+          "MedianMilliseconds": 160.3272,
+          "P95Milliseconds": 179.8147,
+          "MaxMilliseconds": 304.018,
+          "OperationsPerSecond": 48.45007718581796,
+          "CpuMilliseconds": 6126.089,
+          "AllocatedBytes": 1083430000,
+          "WorkingSetBeforeBytes": 166707200,
+          "WorkingSetAfterBytes": 168964096,
+          "Io": {
+            "ReadChars": 2825538592,
+            "WriteChars": 941809550,
+            "ReadSyscalls": 30768,
+            "WriteSyscalls": 14800,
+            "ReadBytes": 0,
+            "WriteBytes": 943718400
+          }
+        },
+        "Change": {
+          "MedianLatency": "0.56x",
+          "P95Latency": "0.58x",
+          "Throughput": "1.78x",
+          "Cpu": "0.65x",
+          "Allocations": "0.98x",
+          "WriteBytes": "0.50x",
+          "WriteSyscalls": "0.51x"
+        }
+      }
+    ]
+  },
+  "Correctness": "Every operation verifies SHA-256 after put and copy, exact content length/type, independent generation tokens, and deletes both logical objects."
+}
