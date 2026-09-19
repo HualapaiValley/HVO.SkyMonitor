@@ -72,7 +72,7 @@ public sealed class ArchitectureBoundaryTests
             [ProcessingRunnerContracts] = Set(AgentCore, Processing),
             [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
-            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, ProcessingRunnerContracts, FleetContracts, Catalog, Common),
+            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
             [DeploymentContracts] = Set(),
             [DeploymentDistribution] = Set(DeploymentContracts),
             [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts, DeploymentDistribution)
