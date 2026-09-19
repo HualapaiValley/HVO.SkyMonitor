@@ -400,7 +400,14 @@ readonly CAMERA_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.Sky
 readonly ACCEPTANCE_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly CATALOG_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"
 readonly CLI_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj"
-readonly UNIT_FILTER='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware'
+# This is a Linux lane, and the evidence gate below refuses any result that is not Passed.
+# The one [OSCondition(OperatingSystems.OSX)] Unit test in the tree records NotExecuted on
+# Linux, which is correct for the test and fatal for the gate; it has failed every run of
+# this workflow since it was marked in 852e0770. It is excluded here by name so the gate
+# stays strict for every test that should run on ARM64 Linux. The category audit owns the
+# Unit count and still sees it; the macOS lane still runs it. If a second OS-conditioned
+# test appears, add it here with its commit, not a broader pattern.
+readonly UNIT_FILTER='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&FullyQualifiedName!=HVO.SkyMonitor.CameraAgent.Tests.ZwoAsiCameraModuleTests.InitializeOnMacOsRejectsBeforeRuntimeAccess'
 DOCKER_SERVER_ID="$(docker info --format '{{.ID}}')"
 readonly DOCKER_SERVER_ID
 
