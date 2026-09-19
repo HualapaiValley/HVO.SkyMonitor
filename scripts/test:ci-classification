@@ -173,6 +173,8 @@ verify_component_plan "src/HVO.SkyMonitor.Processing/Recipe.cs"                 
 verify_component_plan "src/HVO.SkyMonitor.ProcessingRunner/Program.cs"                 full false false true  true  true  true  true
 verify_component_plan "src/HVO.SkyMonitor.ProcessingRunner.Contracts/Contract.cs"      full false false true  true  true  true  true
 verify_component_plan "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs"                   full false false true  true  true  true  true
+verify_component_plan "src/HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs"          full false false true  true  true  true  true
+verify_component_plan "tests/HVO.SkyMonitor.Storage.FileSystem.Tests/RootTests.cs"     full false false true  true  true  true  true
 verify_component_plan "src/HVO.SkyMonitor.Common/Security/ApiKey.cs"                   full false false true  true  true  true  true
 verify_component_plan "src/HVO.SkyMonitor.Fleet.Contracts/Registration.cs"             full false false true  true  true  true  true
 verify_component_plan "src/HVO.SkyMonitor.TestSupport/Fixture.cs"                      full false false true  true  true  true  true
@@ -1122,8 +1124,8 @@ while IFS= read -r component; do
   done < <("$repo_root/scripts/coverage:component" --list-slots "$component")
 done < <("$repo_root/scripts/coverage:component" --list-components)
 
-if (( slot_count != 20 )); then
-  printf 'Expected 20 component coverage slots across the five lanes, found %s.\n' "$slot_count" >&2
+if (( slot_count != 21 )); then
+  printf 'Expected 21 component coverage slots across the five lanes, found %s.\n' "$slot_count" >&2
   exit 1
 fi
 

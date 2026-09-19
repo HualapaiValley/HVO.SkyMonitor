@@ -198,6 +198,7 @@ shared_projects=(
   HVO.SkyMonitor.Processing
   HVO.SkyMonitor.ProcessingRunner
   HVO.SkyMonitor.ProcessingRunner.Contracts
+  HVO.SkyMonitor.Storage.FileSystem
   HVO.SkyMonitor.TestSupport
   HVO.SkyMonitor.AgentCore.Tests
   HVO.SkyMonitor.Astronomy.Tests
@@ -208,6 +209,7 @@ shared_projects=(
   HVO.SkyMonitor.Imaging.Tests
   HVO.SkyMonitor.Processing.Tests
   HVO.SkyMonitor.ProcessingRunner.Tests
+  HVO.SkyMonitor.Storage.FileSystem.Tests
   HVO.SkyMonitor.TestSupport.Tests
 )
 

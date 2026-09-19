@@ -22,10 +22,10 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **LogicHost Component** | Component lane. Project-root restore/build of the LogicHost host and test project roots, the LogicHost Unit and Integration selections, the LogicHost publish with checksum manifest and an opposite-host assembly check, and the LogicHost component coverage baseline over 2 slots. |
 | **Combined Protocol & Integration** | Component lane. Project-root restore/build and execution of the only suites allowed to compose both hosts, covering registration, identity, artifact transfer, fleet contracts, and other cross-host behavior, plus the combined component coverage baseline over 2 slots. |
 | **Delivery Component** | Component lane. Project-root restore/build of the deployment CLI project root and the deployment CLI/distribution test roots, which also build the deployment contracts and release-tool projects they reference, against the exact production catalog contract; a `linux-x64` installer publish with a checksum manifest; and the delivery component coverage baseline over 2 slots. |
-| **Coverage** | Aggregate rollup for the complete solution plan: exact source-path and branch merge of 22 expected reports, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. Component plans enforce their own baselines inside their lanes instead. |
+| **Coverage** | Aggregate rollup for the complete solution plan: exact source-path and branch merge of 23 expected reports, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. Component plans enforce their own baselines inside their lanes instead. |
 | **Required CI** | One current-head aggregate whose expected job results are derived from the validated classifier plan. It fails when any expected check fails, times out, is canceled, is missing, is unexpectedly skipped, or is unexpectedly run, and it rejects the plan itself when the plan is incomplete, self-inconsistent, or invalid for the event. |
 
-Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected 22, preventing missing or overwritten evidence.
+Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected 23, preventing missing or overwritten evidence.
 
 Change Classification, Catalog Contracts, Quality, Coverage Policy, and Required
 CI run on pinned `ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit
@@ -214,7 +214,7 @@ review: a base-sync review verifies that the merge preserved both sides'
 behaviour, which is the wrong instrument for a classifier lane that each side
 satisfied separately and their union does not.
 
-Use a fresh result root for every collection. Before merging, require exactly one report from each of the 22 category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those 22 explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
+Use a fresh result root for every collection. Before merging, require exactly one report from each of the 23 category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those 23 explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
 ```bash
 patterns=(

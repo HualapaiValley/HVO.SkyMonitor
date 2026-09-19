@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Mechanisms only. This project may reference nothing: no host, no AgentCore, no Common,
+         no persistence, no provider SDK. The architecture test StorageFileSystemBoundaryIsNarrowWhenPresent
+         enforces that, and the reference-free shape here is what lets both hosts consume it. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="HVO.SkyMonitor.Storage.FileSystem.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -28,11 +28,9 @@ public sealed class ArchitectureBoundaryTests
     private const string DeploymentDistribution = "HVO.SkyMonitor.Deployment.Distribution";
     private const string DeploymentCli = "HVO.SkyMonitor.Deployment.Cli";
 
-    // Reserved by #584 for the host-neutral filesystem primitives project #592 delivers. It is
-    // not in AllowedProductionReferences yet because the graph refuses a documented project
-    // that does not exist (ARCH-MISSING); the dependency rule it must satisfy on arrival is
-    // asserted by StorageFileSystemBoundaryIsNarrowWhenPresent, which becomes live the moment
-    // the project is added and would fail if it were added with any wider rule.
+    // Host-neutral filesystem primitives (#592): mechanisms only, references nothing, consumed
+    // by the LogicHost filesystem provider (#585) and later CameraAgent.Common (#587). Its
+    // dependency rule is asserted by StorageFileSystemBoundaryIsNarrowWhenPresent.
     private const string StorageFileSystem = "HVO.SkyMonitor.Storage.FileSystem";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
     private const string LogicHostTestInfrastructure = "HVO.SkyMonitor.LogicHost.TestInfrastructure";
@@ -66,6 +64,7 @@ public sealed class ArchitectureBoundaryTests
             [Processing] = Set(AgentCore, Astronomy, Imaging),
             [Catalog] = Set(Astronomy),
             [Common] = Set(),
+            [StorageFileSystem] = Set(),
             [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts, CameraAgentReplay),
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
@@ -92,6 +91,7 @@ public sealed class ArchitectureBoundaryTests
         "HVO.SkyMonitor.Imaging.Tests",
         "HVO.SkyMonitor.Processing.Tests",
         "HVO.SkyMonitor.ProcessingRunner.Tests",
+        "HVO.SkyMonitor.Storage.FileSystem.Tests",
         "HVO.SkyMonitor.TestSupport.Tests");
 
     private static readonly IReadOnlySet<string> CameraAgentTestProjects = Set(
