@@ -18,6 +18,8 @@ public sealed class FilesystemObjectStoreTopologyPerformanceTests
     private const int W1Bytes = 4_708_352;
     private const int W2Bytes = 12_879_360;
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
+    private static readonly string W1Sha256 = CreatePatternSha256(W1Bytes);
+    private static readonly string W2Sha256 = CreatePatternSha256(W2Bytes);
 
     [TestMethod]
     [Timeout(1_800_000)]
@@ -53,30 +55,36 @@ public sealed class FilesystemObjectStoreTopologyPerformanceTests
 
             const int metadataCount = 10_000;
             await SeedAsync(store, artifactBucket, "w3m/", metadataCount, 1, 32).ConfigureAwait(false);
-            var listStarted = Stopwatch.GetTimestamp();
-            var listed = 0;
-            await foreach (var _ in store.ListAsync(artifactBucket, "w3m/", CancellationToken.None)) listed++;
-            var listMilliseconds = Stopwatch.GetElapsedTime(listStarted).TotalMilliseconds;
-            Assert.AreEqual(metadataCount, listed);
+            var list = await MeasureActivityAsync(async () =>
+            {
+                var keys = new List<string>(metadataCount);
+                await foreach (var item in store.ListAsync(artifactBucket, "w3m/", CancellationToken.None)) keys.Add(item.Key);
+                CollectionAssert.AreEqual(Enumerable.Range(0, metadataCount).Select(i => $"w3m/{i:D5}").ToArray(), keys.ToArray());
+                return keys.Count;
+            }).ConfigureAwait(false);
 
             const int backlogCount = 100;
             await SeedAsync(store, artifactBucket, "w3p/", backlogCount, W2Bytes, 8).ConfigureAwait(false);
             store.Dispose();
-            var restartStarted = Stopwatch.GetTimestamp();
-            store = OpenStore(root, artifactBucket, diagnosticsBucket);
-            var reconciliation = new FilesystemObjectReconciler(store, TimeProvider.System, NullLogger<FilesystemObjectReconciler>.Instance)
-                .Reconcile(artifactBucket, new FilesystemReconciliationOptions(), CancellationToken.None);
-            var restartMilliseconds = Stopwatch.GetElapsedTime(restartStarted).TotalMilliseconds;
-            var drainStarted = Stopwatch.GetTimestamp();
-            long drainedBytes = 0;
-            await Parallel.ForEachAsync(Enumerable.Range(0, backlogCount), new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (i, ct) =>
+            FilesystemObjectStore? reopened = null;
+            var restart = await MeasureActivityAsync(() =>
             {
-                var key = $"w3p/{i:D5}";
-                var stat = await store.StatAsync(artifactBucket, key, ct).ConfigureAwait(false);
-                Interlocked.Add(ref drainedBytes, stat.ContentLength);
-                await store.DeleteAsync(artifactBucket, key, ct).ConfigureAwait(false);
+                reopened = OpenStore(root, artifactBucket, diagnosticsBucket);
+                return Task.FromResult(new FilesystemObjectReconciler(reopened, TimeProvider.System, NullLogger<FilesystemObjectReconciler>.Instance)
+                    .Reconcile(artifactBucket, new FilesystemReconciliationOptions(), CancellationToken.None));
             }).ConfigureAwait(false);
-            var drainMilliseconds = Stopwatch.GetElapsedTime(drainStarted).TotalMilliseconds;
+            store = reopened!;
+            long drainedBytes = 0;
+            var drain = await MeasureActivityAsync(async () =>
+            {
+                await Parallel.ForEachAsync(Enumerable.Range(0, backlogCount), new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (i, ct) =>
+                {
+                    var key = $"w3p/{i:D5}";
+                    Interlocked.Add(ref drainedBytes, await ReadAndVerifyAsync(store, artifactBucket, key, W2Bytes, ct).ConfigureAwait(false));
+                    await store.DeleteAsync(artifactBucket, key, ct).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+                return drainedBytes;
+            }).ConfigureAwait(false);
 
             // Remove the metadata set before backup so the timed backup is W1/W2-sized data, not 10k tiny descriptors.
             for (var i = 0; i < metadataCount; i++)
@@ -90,14 +98,12 @@ public sealed class FilesystemObjectStoreTopologyPerformanceTests
             store.Dispose();
 
             var backupRoot = Path.Combine(evidenceRoot, "topology-backup-" + runId);
-            var backupStarted = Stopwatch.GetTimestamp();
-            var inventory = await FilesystemObjectBackup.BackupAsync(root, [artifactBucket, diagnosticsBucket], backupRoot, TimeProvider.System, CancellationToken.None).ConfigureAwait(false);
-            var backupMilliseconds = Stopwatch.GetElapsedTime(backupStarted).TotalMilliseconds;
+            var backup = await MeasureActivityAsync(() => FilesystemObjectBackup.BackupAsync(
+                root, [artifactBucket, diagnosticsBucket], backupRoot, TimeProvider.System, CancellationToken.None)).ConfigureAwait(false);
             Directory.Delete(artifactPath, recursive: true);
             Directory.Delete(diagnosticsPath, recursive: true);
-            var restoreStarted = Stopwatch.GetTimestamp();
-            await FilesystemObjectBackup.RestoreAsync(backupRoot, root, [artifactBucket, diagnosticsBucket], CancellationToken.None).ConfigureAwait(false);
-            var restoreMilliseconds = Stopwatch.GetElapsedTime(restoreStarted).TotalMilliseconds;
+            var restore = await MeasureActivityAsync(() => FilesystemObjectBackup.RestoreAsync(
+                backupRoot, root, [artifactBucket, diagnosticsBucket], CancellationToken.None)).ConfigureAwait(false);
             Assert.AreEqual(0, await FilesystemObjectBackup.VerifyAsync(backupRoot, root, CancellationToken.None).ConfigureAwait(false));
 
             var evidence = new
@@ -119,9 +125,9 @@ public sealed class FilesystemObjectStoreTopologyPerformanceTests
                     W1 = w1,
                     W2 = w2,
                     W4 = w4,
-                    W3M = new { Count = metadataCount, ListMilliseconds = listMilliseconds },
-                    W3P = new { Count = backlogCount, PayloadBytes = W2Bytes, DrainMilliseconds = drainMilliseconds, DrainedBytes = drainedBytes, RestartReconciliationMilliseconds = restartMilliseconds, reconciliation.LiveObjects },
-                    BackupRestore = new { inventory.ObjectCount, inventory.TotalBytes, BackupMilliseconds = backupMilliseconds, RestoreMilliseconds = restoreMilliseconds }
+                    W3M = new { Count = metadataCount, List = list.Metrics },
+                    W3P = new { Count = backlogCount, PayloadBytes = W2Bytes, Drain = drain.Metrics, DrainedBytes = drain.Result, RestartReconciliation = restart.Metrics, restart.Result.LiveObjects },
+                    BackupRestore = new { backup.Result.ObjectCount, backup.Result.TotalBytes, Backup = backup.Metrics, Restore = restore.Metrics }
                 }
             };
             Directory.CreateDirectory(evidenceRoot);
@@ -130,7 +136,7 @@ public sealed class FilesystemObjectStoreTopologyPerformanceTests
             Console.WriteLine($"issue-586 topology evidence: {output}");
             Console.WriteLine($"W1 median={w1.MedianMilliseconds:F1}ms p95={w1.P95Milliseconds:F1}ms ops/s={w1.OperationsPerSecond:F2}");
             Console.WriteLine($"W2 median={w2.MedianMilliseconds:F1}ms p95={w2.P95Milliseconds:F1}ms ops/s={w2.OperationsPerSecond:F2}");
-            Console.WriteLine($"W3M list={listMilliseconds:F0}ms W3P drain={drainMilliseconds:F0}ms restart={restartMilliseconds:F0}ms backup={backupMilliseconds:F0}ms restore={restoreMilliseconds:F0}ms");
+            Console.WriteLine($"W3M list={list.Metrics.ElapsedMilliseconds:F0}ms W3P drain={drain.Metrics.ElapsedMilliseconds:F0}ms restart={restart.Metrics.ElapsedMilliseconds:F0}ms backup={backup.Metrics.ElapsedMilliseconds:F0}ms restore={restore.Metrics.ElapsedMilliseconds:F0}ms");
         }
         finally
         {
@@ -161,6 +167,7 @@ public sealed class FilesystemObjectStoreTopologyPerformanceTests
         var allocations = GC.GetTotalAllocatedBytes(precise: true);
         var rss = process.WorkingSet64;
         var ioBefore = ProcessIo.Read();
+        await using var peak = new PeakWorkingSetSampler(process);
         var latencies = new double[operations];
         var started = Stopwatch.GetTimestamp();
         await Parallel.ForEachAsync(Enumerable.Range(0, operations), new ParallelOptions { MaxDegreeOfParallelism = concurrency }, async (i, ct) =>
@@ -173,7 +180,8 @@ public sealed class FilesystemObjectStoreTopologyPerformanceTests
         process.Refresh();
         Array.Sort(latencies);
         return new(name, operations, concurrency, elapsed.TotalMilliseconds, latencies[operations / 2], latencies[(int)Math.Ceiling(operations * .95) - 1], operations / elapsed.TotalSeconds,
-            process.TotalProcessorTime.TotalMilliseconds - cpu.TotalMilliseconds, GC.GetTotalAllocatedBytes(true) - allocations, rss, process.WorkingSet64, ProcessIo.Delta(ioBefore, ProcessIo.Read()));
+            process.TotalProcessorTime.TotalMilliseconds - cpu.TotalMilliseconds, GC.GetTotalAllocatedBytes(true) - allocations, rss, process.WorkingSet64,
+            await peak.StopAsync().ConfigureAwait(false), ProcessIo.Delta(ioBefore, ProcessIo.Read()));
     }
 
     private static async ValueTask WorkflowAsync(IObjectStore store, string bucket, string prefix, int bytes, CancellationToken cancellationToken)
@@ -185,6 +193,7 @@ public sealed class FilesystemObjectStoreTopologyPerformanceTests
         await store.CopyAsync(bucket, sourceKey, destinationKey, cancellationToken).ConfigureAwait(false);
         var destination = await store.StatAsync(bucket, destinationKey, cancellationToken).ConfigureAwait(false);
         Assert.AreEqual(bytes, destination.ContentLength);
+        await ReadAndVerifyAsync(store, bucket, destinationKey, bytes, cancellationToken).ConfigureAwait(false);
         await store.DeleteAsync(bucket, sourceKey, cancellationToken).ConfigureAwait(false);
         await store.DeleteAsync(bucket, destinationKey, cancellationToken).ConfigureAwait(false);
     }
@@ -202,9 +211,118 @@ public sealed class FilesystemObjectStoreTopologyPerformanceTests
         return $"{drive.DriveFormat} total={drive.TotalSize} free={drive.AvailableFreeSpace}";
     }
 
+    private static async Task<long> ReadAndVerifyAsync(IObjectStore store, string bucket, string key, int expectedBytes, CancellationToken cancellationToken)
+    {
+        long length = 0;
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        await store.ReadAsync(bucket, key, null, async (stream, ct) =>
+        {
+            var buffer = new byte[64 * 1024];
+            int read;
+            while ((read = await stream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+            {
+                hash.AppendData(buffer, 0, read);
+                length += read;
+            }
+        }, cancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(expectedBytes, length);
+        Assert.AreEqual(PatternSha256(expectedBytes), Convert.ToHexStringLower(hash.GetHashAndReset()));
+        return length;
+    }
+
+    private static string PatternSha256(int bytes)
+        => bytes switch
+        {
+            W1Bytes => W1Sha256,
+            W2Bytes => W2Sha256,
+            _ => CreatePatternSha256(bytes)
+        };
+
+    private static string CreatePatternSha256(int bytes)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[Math.Min(bytes, 64 * 1024)];
+        buffer.AsSpan().Fill(0x5a);
+        for (var remaining = bytes; remaining > 0; remaining -= buffer.Length)
+        {
+            hash.AppendData(buffer, 0, Math.Min(buffer.Length, remaining));
+        }
+        return Convert.ToHexStringLower(hash.GetHashAndReset());
+    }
+
+    private static async Task<ActivityMeasurement<T>> MeasureActivityAsync<T>(Func<Task<T>> activity)
+    {
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        using var process = Process.GetCurrentProcess();
+        process.Refresh();
+        var cpu = process.TotalProcessorTime;
+        var allocations = GC.GetTotalAllocatedBytes(precise: true);
+        var rss = process.WorkingSet64;
+        var ioBefore = ProcessIo.Read();
+        await using var peak = new PeakWorkingSetSampler(process);
+        var started = Stopwatch.GetTimestamp();
+        var result = await activity().ConfigureAwait(false);
+        var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        process.Refresh();
+        return new(result, new ActivityMetrics(elapsed, process.TotalProcessorTime.TotalMilliseconds - cpu.TotalMilliseconds,
+            GC.GetTotalAllocatedBytes(true) - allocations, rss, process.WorkingSet64, await peak.StopAsync().ConfigureAwait(false),
+            ProcessIo.Delta(ioBefore, ProcessIo.Read())));
+    }
+
     private sealed record Measurement(string Name, int Operations, int Concurrency, double ElapsedMilliseconds, double MedianMilliseconds,
         double P95Milliseconds, double OperationsPerSecond, double CpuMilliseconds, long AllocatedBytes, long WorkingSetBeforeBytes,
-        long WorkingSetAfterBytes, ProcessIo Io);
+        long WorkingSetAfterBytes, long PeakWorkingSetBytes, ProcessIo Io);
+
+    private sealed record ActivityMeasurement<T>(T Result, ActivityMetrics Metrics);
+
+    private sealed record ActivityMetrics(double ElapsedMilliseconds, double CpuMilliseconds, long AllocatedBytes,
+        long WorkingSetBeforeBytes, long WorkingSetAfterBytes, long PeakWorkingSetBytes, ProcessIo Io);
+
+    private sealed class PeakWorkingSetSampler : IAsyncDisposable
+    {
+        private readonly Process _process;
+        private readonly CancellationTokenSource _stop = new();
+        private readonly Task _sampling;
+        private long _peak;
+
+        public PeakWorkingSetSampler(Process process)
+        {
+            _process = process;
+            _peak = process.WorkingSet64;
+            _sampling = SampleAsync();
+        }
+
+        public async Task<long> StopAsync()
+        {
+            if (!_stop.IsCancellationRequested) await _stop.CancelAsync().ConfigureAwait(false);
+            await _sampling.ConfigureAwait(false);
+            return _peak;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await StopAsync().ConfigureAwait(false);
+            _stop.Dispose();
+        }
+
+        private async Task SampleAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    _process.Refresh();
+                    _peak = Math.Max(_peak, _process.WorkingSet64);
+                    await Task.Delay(10, _stop.Token).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+            {
+                _process.Refresh();
+                _peak = Math.Max(_peak, _process.WorkingSet64);
+            }
+        }
+    }
 
     private sealed record ProcessIo(long ReadChars, long WriteChars, long ReadSyscalls, long WriteSyscalls, long ReadBytes, long WriteBytes)
     {

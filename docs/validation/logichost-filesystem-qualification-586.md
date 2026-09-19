@@ -1,7 +1,9 @@
 # Filesystem Topology Qualification (#586)
 
-Status: qualification in progress; no go decision. Issue #506 remains gated.
-This record tracks gaps, not certification or proof of power-loss survival.
+Status: correction in progress after independent review returned NO-GO. Issue
+#506 remains gated. Earlier campaign results remain historical evidence; the
+corrected backup exclusion, durability, CI ownership, runbook, and complete
+resource-evidence changes require exact-head validation and correction review.
 
 ## Candidate
 
@@ -23,19 +25,20 @@ immutable reviewed revision and exact image digests.
 | --- | --- |
 | Exact backup inventory | Regressions reproduced: metadata-only changes and unexpected live descriptors passed verification. Local corrections compare content type and exact modified time, reject metadata drift before restore swap, and count extra descriptors. |
 | Empty buckets and invalid descriptors | Regressions reproduced: backups omitted empty bucket directories and accepted invalid content types. Local corrections preserve empty roots and validate descriptor metadata before completing backup. |
-| File and directory durability | Local corrections sync copied descriptors and nested directory chains, publish the completion checksum after the inventory flush, and sync the first restore rename. Native ARM64 container probes passed file/directory sync, rename, hard-link and unlink durability. Two full Pi reboots preserved byte-identical object-store checksums and automatic ext4 loop remount. Newly created backup/restore root parent durability still needs final review. |
+| File and directory durability | Corrected code syncs copied descriptors and nested directory chains, verifies the completed copied tree before publishing the completion checksum, and syncs every newly created top-level backup/restore directory through its first pre-existing ancestor. Native ARM64 container probes passed file/directory sync, rename, hard-link and unlink durability. Two full Pi reboots preserved byte-identical object-store checksums and automatic ext4 loop remount. Exact-head correction review remains. |
 | Inventory input validation | Local regressions now reject null collections/entries, duplicate identities, unlisted buckets, unsafe names, invalid generation/digest/metadata, inconsistent totals, and restore scratch-name collisions before creating destination state. |
 | Source/target isolation | Local library checks reject equal or ancestor/descendant roots and symlink/reparse ancestors before mutation. Bind-mount aliases and concurrent path substitution remain topology-preflight/exclusion concerns. |
-| Restore exclusion and recovery | Local implementation holds an exclusive root lock across runtime lifetime and destructive restore, rejects a second replica, writes a durable prepared/committed whole-store marker, rolls all buckets back from prepared state, and only cleans rollback copies after exact verification and committed publication. Native ARM64 SIGKILL after a durable prepared marker recovered on the first restore retry from a runtime-owned baseline and exact verification passed. |
+| Offline maintenance exclusion and recovery | Corrected implementation holds one exclusive root lock across runtime lifetime, backup, verify, and destructive restore; rejects a second replica or concurrent maintenance; writes a durable prepared/committed whole-store marker; rolls all buckets back from prepared state; and only cleans rollback copies after exact verification and committed publication. Native ARM64 SIGKILL after a durable prepared marker recovered on the first restore retry from a runtime-owned baseline and exact verification passed. |
 | Bounded reconciliation | Local implementation now divides every pass budget across descriptor, data, retirement-stamp and temporary phases, with a cursor per bucket/phase. A tiny-budget regression proves retired data and stale temporaries converge despite a larger live descriptor inventory. Exact-topology backlog timing remains required. |
 | Persistent health | Local health is degraded until the first pass completes, while any pass is truncated or failed, while quarantine persists across later passes, and when the last evidence is older than two cadences. Inaccessible-bucket and capacity-threshold topology evidence remains required. |
 | Deployment preflight | Reject unsupported filesystem/mounts, missing roots, wrong ownership/modes, symlinks, insufficient bytes/inodes, overlapping state, and extra writers. |
-| Native and destructive campaign | ARM64 complete on native Pi 5 for preflight, build/publish, container filesystem probe, two reboots, read-only remount, permission loss, block/inode exhaustion, interrupted backup and interrupted restore. Exact x64 campaign remains. |
-| Performance and observability | Re-run applicable W1/W2/W3M/W3P/W4 workloads on the exact container/mount; include backup/restore timing, resource scope, logs, metrics, traces and leakage checks. The #585 in-process benchmark is not topology qualification. |
+| Native and destructive campaign | Historical ARM64 and x64 campaigns completed preflight, native build/publish, container filesystem probes, read-only remount, permission loss, block/inode exhaustion, interrupted backup/restore, and reboot recovery. The corrected maintenance-lock head requires affected native reruns. |
+| Performance and observability | Historical five-trial W1/W2/W3M/W3P/W4 and backup/restore timing is recorded below. The corrected harness now records CPU, allocations, before/after/peak RSS and Linux process I/O for every phase, and validates exact list order and copied payload SHA-256. New five-trial retained machine-readable evidence is required before GO. |
 
 ## Local Validation
 
-The backup test suite currently contains 26 cases, including the new regressions.
+The backup test suite contains 26 cases, including offline backup/verify/runtime
+exclusion and exact backup verification regressions.
 The ARM64 campaign additionally exercised the exact image and runtime identity
 on the real ext4 qualification mount, including destructive and reboot cases.
 
@@ -44,9 +47,10 @@ dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.
   --no-restore -c Release --filter 'FullyQualifiedName~FilesystemObjectBackupTests'
 ```
 
-Run the complete Tier M candidate gate only after the candidate is stable.
-Retain raw destructive/performance evidence outside tracked source, bind it to
-the candidate identity, and obtain independent review before a go decision.
+Run the complete Tier M candidate gate only after the correction candidate is
+stable. Retain a checksummed machine-readable projection of all five native
+trials in tracked validation evidence, bind it to the candidate identity, and
+obtain independent correction review before a go decision.
 
 ## Candidate Artifacts
 
@@ -66,6 +70,9 @@ the candidate identity, and obtain independent review before a go decision.
   overlap, nested bucket mounts, bind aliases (including `FSROOT=/`), signed
   integer overflow, and a missing bucket. These fixture tests do not qualify a
   real host.
+- Protected CI's classifier assigns both qualification scripts to Deployment
+  Contracts, whose lightweight contract step executes the fixture on every
+  selected head. Classifier contract tests require this ownership and invocation.
 
 The preflight intentionally does not claim to settle privileged mount mutation,
 the complete block-device parent/controller/cache chain, LSM/user-namespace
@@ -120,8 +127,11 @@ rendered Compose model and exact image digest.
   Linux image; full HTTP host evidence is therefore x64, while ARM64 evidence is
   native provider/image/offline-operation evidence. No substitute database was
   introduced.
-- Complete exact-head independent review, Tier M candidate gates, and a final
-  go/no-go decision before #506 starts.
+- Rerun affected native backup/verify exclusion and complete five-trial resource
+  evidence on x64 and ARM64 at one immutable correction revision.
+- Commit the checksum-bound evidence projection and complete exact-head
+  correction review, Tier M candidate gates, and a final go/no-go decision
+  before #506 starts.
 
 ## Native X64 Evidence
 
@@ -155,9 +165,11 @@ rendered Compose model and exact image digest.
 
 ## Exact-Mount Performance
 
-Five independent trials ran the same Docker-free provider workload at candidate
-revision `525312ef` on each exact mount. Raw JSON remains with each host's
-evidence. Values below are median with observed min-max where material.
+These historical five independent trials ran the same Docker-free provider
+workload at candidate revision `525312ef` on each exact mount. Their raw JSON
+remains with each host and does not contain complete resource metrics for every
+phase; it is not the final correction evidence. Values below are median with
+observed min-max where material.
 
 | Metric | x64 direct ext4 | ARM64 ext4 loop over NVMe/XFS |
 | --- | ---: | ---: |
@@ -184,12 +196,14 @@ performance result is therefore acceptable for correctness and supported load,
 with the loop-backed topology and high tail variance retained as explicit
 operational limits rather than hidden as noise.
 
-## Provisional Disposition
+## Current Disposition
 
-The measured candidate supports one trusted LogicHost writer on native Linux
+The exact support envelope remains one trusted LogicHost writer on native Linux
 amd64 or arm64, with a fixed non-root identity, read-only container root and a
 dedicated same-host ext4 mount. Direct ext4 x64 and loop-backed ext4 Pi 5 are the
 tested storage forms; NFS, SMB, NAS, XFS/ZFS object roots, clustered filesystems,
-arbitrary Docker volumes and multiple writers remain unsupported. The evidence
-supports a provisional **go**, subject to exact-head independent review and the
-complete Tier M gate. #506 remains gated until that review records the final go.
+arbitrary Docker volumes and multiple writers remain unsupported. The current
+decision is **NO-GO pending correction evidence and rereview**. Historical
+campaign results support the envelope, but #506 remains gated until the corrected
+head passes the required native reruns, complete Tier M gate, and exact-range
+independent correction review.

@@ -42,6 +42,7 @@ that root for isolated command testing.
 | --- | --- | --- |
 | LogicHost | `data/logichost/dataprotection` | `/app/DataProtection-Keys` |
 | LogicHost | `data/logichost/home` | `/home/app` |
+| LogicHost, filesystem object storage | Dedicated same-host ext4 mount, site-defined host path | `/var/lib/hvo/object-store` |
 | Both hosts | `data/catalog` | `/app/catalog` (read-only) |
 | CameraAgent | `data/cameraagent/identity` | `/app/App_Data/identity` |
 | CameraAgent | `data/cameraagent/dataprotection` | `/app/DataProtection-Keys` |
@@ -53,6 +54,14 @@ A rebuild or ordinary container recreation preserves these mounts. An explicit
 reset deletes the selected host's listed state. CameraAgent provisioning and its
 Data Protection key ring are one recovery unit. The verified catalog root is
 preserved by application reset and can be reinstalled independently.
+
+The qualified filesystem object-store root is separate from `data/` and every
+other application-state mount. Provision it before container startup with owner
+`4242:4343`, mode `0750`, and precreated `skymonitor-artifacts` and
+`skymonitor-diagnostics` directories with the same owner and mode. One trusted
+LogicHost writer is supported. NFS, SMB, NAS, XFS/ZFS object roots, clustered
+filesystems, arbitrary volume drivers, nested bucket mounts, bind aliases, and
+multiple writers are not qualified.
 
 ## Common Operations
 
@@ -184,7 +193,8 @@ controlled-start sequence.
 A complete recovery set contains:
 
 - encrypted SQL Server backup of `SkyMonitor`;
-- both approved MinIO buckets with keys, metadata, and checksums;
+- the active provider's object data: both approved MinIO buckets for S3, or one
+  completed LogicHost filesystem-object-store backup for the filesystem provider;
 - LogicHost Data Protection files;
 - LogicHost Development certificate-store home for the supported Compose
   topology;
@@ -193,13 +203,14 @@ A complete recovery set contains:
   `data/agent` and `data/archive`.
 
 Redis cache and Mailpit messages are not authoritative recovery inputs. SQL
-Server and MinIO are operator-managed services, so their exact backup location,
+Server and S3 storage are operator-managed services, so their exact backup location,
 encryption, retention, restore command, and verification belong to the site's
 service runbook. Do not use a command for another database engine or copy SQL
-metadata without its corresponding MinIO objects.
+metadata without its matching object-store generation.
 
-Keep both applications stopped while restoring MinIO and SQL Server, with MinIO
-available before SQL object references are validated. Then restore the local
+Keep both applications stopped while restoring object storage and SQL Server,
+with the selected object provider available before SQL object references are
+validated. Then restore the local
 application state as one unit. The application restore starts LogicHost and
 waits for `/health` before it starts CameraAgent and waits for CameraAgent
 `/health`. Run auth, durable-heartbeat, object-inventory, and checksum checks
@@ -237,7 +248,10 @@ dotnet HVO.SkyMonitor.LogicHost.dll --host-mode=object-store-verify  --path=/var
 dotnet HVO.SkyMonitor.LogicHost.dll --host-mode=object-store-restore --path=/var/backups/skymonitor/objects/<stamp>
 ```
 
-Stop LogicHost first. All three modes start no listener, open no database
+Stop LogicHost first and prove the container/process is absent. Backup, verify,
+and restore all acquire the same exclusive root lock as the runtime and fail if
+LogicHost or another maintenance operation owns it. Do not bypass or delete the
+lock file. All three modes start no listener, open no database
 connection, and exit: `0` success, `1` the operation failed or verification
 found a mismatch, `2` the mode does not apply (the provider is S3, the root is
 invalid, or the path is inside the root). With the S3 provider the object
@@ -253,24 +267,76 @@ are not objects and are not backed up. The target must be an empty or absent
 directory; a backup never merges. A store that fails its own digest check or
 has a malformed descriptor is refused: reconcile it (the host does this on
 start and every ten minutes; the health check reports `QuarantinedBuckets`)
-before taking the backup, so a backup is never a copy of a known-bad store.
+before taking the backup, so a backup is never a copy of a known-bad store. The
+completed copied tree is re-read and matched to the in-memory inventory before
+`inventory.json.sha256` is published. Absence of that checksum means the backup
+is incomplete and must not be restored. Store backups on a separate durable
+filesystem with enough free bytes and inodes; retain command output, inventory,
+checksum, source revision, image digest, mount identity, and UTC time.
 
 Restore is destructive by contract and staged: every configured bucket is
 rebuilt in full under `<bucket>.restoring`, with each data file re-hashed
 against the inventory, and only after every bucket has staged completely is
-each swapped into place through `<bucket>.replaced`. A damaged backup is
-therefore discovered before any existing bucket is touched, and a failure
-during the swap leaves each bucket either wholly previous or wholly restored.
+each swapped into place through `<bucket>.replaced`. Before the first swap it
+publishes a durable whole-store marker in phase `prepared`; after exact
+verification it advances that marker to `committed`, removes rollback trees,
+and finally removes the marker. A damaged backup is
+therefore discovered before any existing bucket is touched.
 Restore refuses a backup that lacks a configured bucket rather than leaving it
 empty and refuses a bucket, staging or replaced directory that is a link. If an
-earlier restore was interrupted, the next restore heals before it proceeds: a
-`<bucket>.replaced` with no live `<bucket>` means the interruption fell inside
-the swap, and the previous bucket is moved back first so the store is whole
-again; a `<bucket>.replaced` beside a live `<bucket>` means the swap completed
-and only the cleanup was lost, and the restore refuses until the operator has
-inspected and removed the `.replaced` copy. After the swap the mode runs verify
-and exits non-zero on any mismatch. Restore reproduces exact keys, metadata, lengths, generations and
+interrupted restore is recovered as one transaction on the next restore attempt:
+`prepared` rolls every configured bucket back before retry, while `committed`
+keeps every restored bucket and finishes cleanup. Ordinary runtime startup stays
+fenced while a marker exists. Do not manually remove the marker, `.restoring`,
+or `.replaced` trees. If ownership, mode, a link, or contradictory state prevents
+automatic recovery, preserve the marker and rollback trees as evidence, repair
+only the reported host ownership/mount fault, and retry the same restore command.
+After the swap the mode runs verify and exits non-zero on any mismatch. Restore
+reproduces exact keys, metadata, lengths, generations and
 digests, so SQL rows that reference `object://bucket/key` resolve unchanged.
+
+### Filesystem object-store topology preflight
+
+Before first start, after a mount/configuration change, and after every reboot,
+run the preflight against the exact host path while no LogicHost process or
+container is running:
+
+```bash
+FSROOT=/srv/skymonitor/object-store \
+EXPECTED_UID=4242 EXPECTED_GID=4343 \
+MIN_FREE_BYTES=2147483648 MIN_FREE_INODES=10000 \
+STATE_PATHS=/srv/skymonitor/data/logichost/dataprotection:/srv/skymonitor/data/logichost/home \
+./scripts/qualify:filesystem-object-store | tee filesystem-object-store-preflight.json
+sha256sum filesystem-object-store-preflight.json > filesystem-object-store-preflight.json.sha256
+```
+
+Use site-approved thresholds at least as strict as the deployment configuration.
+The result must name native Linux amd64 or arm64, an `rw` ext4 mount backed by an
+expected `/dev` source/UUID, the exact mountpoint, owner `4242:4343`, mode `0750`,
+both canonical buckets, and sufficient free bytes/inodes. Treat a changed source,
+UUID, filesystem type, mountpoint, nested mount, bind alias, owner, mode, or
+capacity result as a failed start. A bare directory exposed because the intended
+mount is absent is never a recovery target.
+
+Render and retain the effective Compose model and exact image digest before
+startup. The container root remains read-only and only declared state plus
+`/var/lib/hvo/object-store` are writable. Start one LogicHost, confirm `/alive`
+and object-store health, then prove a second replica cannot acquire the root.
+After recovery, verify zero inventory mismatches and reconcile SQL object
+references before starting CameraAgent.
+
+Investigate filesystem object-store health as follows: stop writes for a
+read-only mount, permission loss, inaccessible bucket, exhausted bytes/inodes,
+or stale/failed reconciliation; restore the qualified mount/ownership/capacity;
+rerun preflight; restart the single writer; then require current reconciliation,
+zero persistent quarantine, and zero backup verification mismatches. Never
+delete quarantine or provider-owned paths to make health green.
+
+Take encrypted off-host copies on the site's recovery-point schedule and retain
+multiple generations. Verify every completed backup after transfer and perform a
+periodic destructive restore drill into an isolated qualified root. A drill is
+complete only after exact inventory verification and retained command, checksum,
+revision, image, topology, and timing evidence.
 
 Ordinary start, rebuild, reset, backup, restore, and production-catalog
 install/rollback share one nonblocking operation lock outside the runtime root.

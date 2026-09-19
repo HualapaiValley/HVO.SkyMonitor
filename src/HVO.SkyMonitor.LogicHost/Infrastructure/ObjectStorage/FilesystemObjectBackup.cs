@@ -44,11 +44,12 @@ internal static class FilesystemObjectBackup
         ValidateSeparateRoots(sourceRoot, backupPath);
         ValidateBuckets(buckets);
         var root = PhysicalRoot.Open(sourceRoot);
+        await using var backupLock = AcquireExclusiveMaintenanceLock(root);
         if (Directory.Exists(backupPath) && Directory.EnumerateFileSystemEntries(backupPath).Any())
         {
             throw new InvalidOperationException("The backup path must be an empty or absent directory; a backup never merges into an existing one.");
         }
-        Directory.CreateDirectory(backupPath);
+        CreateTopLevelDirectoryDurably(backupPath);
         var target = PhysicalRoot.Open(backupPath);
         var entries = new List<FilesystemObjectBackupEntry>();
         foreach (var bucket in buckets)
@@ -98,6 +99,11 @@ internal static class FilesystemObjectBackup
         await File.WriteAllBytesAsync(inventoryPath, inventoryBytes, cancellationToken).ConfigureAwait(false);
         DurableSync.File(inventoryPath);
         DurableSync.Directory(backupPath);
+        var mismatches = await VerifyInventoryAsync(inventory, backupPath, cancellationToken).ConfigureAwait(false);
+        if (mismatches != 0)
+        {
+            throw new InvalidOperationException($"The completed filesystem object-store backup has {mismatches} inventory mismatch(es); no completion checksum was published.");
+        }
         // Publish the completion checksum only after the inventory and object tree are durable.
         var checksumPath = Path.Combine(backupPath, InventoryChecksumFileName);
         await File.WriteAllTextAsync(checksumPath, Convert.ToHexStringLower(SHA256.HashData(inventoryBytes)) + "  " + InventoryFileName + "\n", cancellationToken).ConfigureAwait(false);
@@ -121,9 +127,9 @@ internal static class FilesystemObjectBackup
         {
             throw new InvalidOperationException($"The backup does not contain configured bucket(s) {string.Join(", ", missing)}; refusing a restore that would leave them empty.");
         }
-        Directory.CreateDirectory(targetRoot);
+        CreateTopLevelDirectoryDurably(targetRoot);
         var root = PhysicalRoot.Open(targetRoot);
-        await using var restoreLock = AcquireExclusiveRestoreLock(root);
+        await using var restoreLock = AcquireExclusiveMaintenanceLock(root);
         RecoverInterruptedRestore(root, buckets);
         var source = PhysicalRoot.Open(backupPath);
 
@@ -217,7 +223,7 @@ internal static class FilesystemObjectBackup
             Directory.Move(staging, final);
             DurableSync.Directory(targetRoot);
         }
-        var mismatches = await VerifyAsync(backupPath, targetRoot, cancellationToken).ConfigureAwait(false);
+        var mismatches = await VerifyInventoryAsync(inventory, targetRoot, cancellationToken).ConfigureAwait(false);
         if (mismatches != 0)
         {
             throw new InvalidOperationException($"The restored object store has {mismatches} inventory mismatch(es); the restore remains fenced for rollback.");
@@ -263,10 +269,36 @@ internal static class FilesystemObjectBackup
     }
 
     internal static FileStream AcquireRuntimeLock(PhysicalRoot root)
-        => AcquireLock(root, FileShare.None, "Another LogicHost or destructive restore already owns the filesystem object store.");
+        => AcquireLock(root, FileShare.None, "Another LogicHost or offline maintenance operation already owns the filesystem object store.");
 
-    private static FileStream AcquireExclusiveRestoreLock(PhysicalRoot root)
-        => AcquireLock(root, FileShare.None, "LogicHost is running or another destructive restore already owns the filesystem object store.");
+    private static FileStream AcquireExclusiveMaintenanceLock(PhysicalRoot root)
+        => AcquireLock(root, FileShare.None, "LogicHost is running or another offline maintenance operation already owns the filesystem object store.");
+
+    private static void CreateTopLevelDirectoryDurably(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            return;
+        }
+        var fullPath = Path.GetFullPath(path);
+        var existingAncestor = Directory.GetParent(fullPath)
+            ?? throw new InvalidOperationException("A filesystem object-store path must have a parent directory.");
+        while (!existingAncestor.Exists)
+        {
+            existingAncestor = existingAncestor.Parent
+                ?? throw new InvalidOperationException("A filesystem object-store path must have an existing ancestor directory.");
+        }
+        Directory.CreateDirectory(fullPath);
+        for (var current = new DirectoryInfo(fullPath); current is not null; current = current.Parent)
+        {
+            DurableSync.Directory(current.FullName);
+            if (string.Equals(current.FullName, existingAncestor.FullName, StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+        throw new InvalidOperationException("The created filesystem object-store path is not below its original ancestor directory.");
+    }
 
     private static FileStream AcquireLock(PhysicalRoot root, FileShare share, string message)
     {
@@ -476,6 +508,14 @@ internal static class FilesystemObjectBackup
     public static async Task<int> VerifyAsync(string backupPath, string root, CancellationToken cancellationToken)
     {
         var inventory = await ReadVerifiedInventoryAsync(backupPath, cancellationToken).ConfigureAwait(false);
+        var physical = PhysicalRoot.Open(root);
+        await using var verifyLock = AcquireExclusiveMaintenanceLock(physical);
+        return await VerifyInventoryAsync(inventory, root, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<int> VerifyInventoryAsync(
+        FilesystemObjectBackupInventory inventory, string root, CancellationToken cancellationToken)
+    {
         var physical = PhysicalRoot.Open(root);
         var mismatches = 0;
         var expectedDescriptors = new HashSet<string>(StringComparer.Ordinal);
