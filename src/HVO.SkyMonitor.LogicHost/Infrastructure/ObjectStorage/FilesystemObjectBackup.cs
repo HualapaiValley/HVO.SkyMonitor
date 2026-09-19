@@ -112,13 +112,28 @@ internal static class FilesystemObjectBackup
         {
             var staging = root.Resolve(bucket + RestoringSuffix);
             var replaced = root.Resolve(bucket + ReplacedSuffix);
-            if (Directory.Exists(staging))
-            {
-                Directory.Delete(staging, recursive: true);
-            }
+            var final = root.Resolve(bucket);
             if (Directory.Exists(replaced))
             {
-                throw new InvalidOperationException($"'{bucket}{ReplacedSuffix}' already exists from an earlier interrupted restore; inspect and remove it before restoring again.");
+                // An earlier restore was interrupted after it had moved the previous bucket
+                // aside. If the bucket itself is now absent, the interruption fell inside the
+                // swap window and the previous bucket is the only copy: put it back rather
+                // than refuse, so the store is whole again and the operator can retry.
+                if (!Directory.Exists(final))
+                {
+                    RefuseLink(replaced, bucket + ReplacedSuffix);
+                    Directory.Move(replaced, final);
+                    DurableSync.Directory(targetRoot);
+                }
+                else
+                {
+                    throw new InvalidOperationException($"'{bucket}{ReplacedSuffix}' exists beside a live '{bucket}' from an earlier interrupted restore; the live bucket is the restored one. Inspect '{bucket}{ReplacedSuffix}' and remove it before restoring again.");
+                }
+            }
+            if (Directory.Exists(staging))
+            {
+                RefuseLink(staging, bucket + RestoringSuffix);
+                Directory.Delete(staging, recursive: true);
             }
             Directory.CreateDirectory(staging);
             foreach (var entry in inventory.Entries.Where(e => string.Equals(e.Bucket, bucket, StringComparison.Ordinal)))
@@ -144,7 +159,7 @@ internal static class FilesystemObjectBackup
                 File.Copy(source.Resolve(descriptorRelative), stagedDescriptor, overwrite: false);
             }
             DurableSync.DirectoryChain(root, staging);
-            staged.Add((bucket, staging, root.Resolve(bucket), replaced));
+            staged.Add((bucket, staging, final, replaced));
         }
 
         // Swap. Each bucket's swap is two renames; the previous bucket is intact until the
@@ -153,10 +168,7 @@ internal static class FilesystemObjectBackup
         {
             if (Directory.Exists(final))
             {
-                if (new DirectoryInfo(final).LinkTarget is not null)
-                {
-                    throw new InvalidOperationException($"'{bucket}' is a link; refusing to replace it.");
-                }
+                RefuseLink(final, bucket);
                 Directory.Move(final, replaced);
             }
             Directory.Move(staging, final);
@@ -168,6 +180,14 @@ internal static class FilesystemObjectBackup
             }
         }
         return inventory;
+    }
+
+    private static void RefuseLink(string path, string name)
+    {
+        if (new DirectoryInfo(path).LinkTarget is not null)
+        {
+            throw new InvalidOperationException($"'{name}' is a link; refusing to touch it.");
+        }
     }
 
     /// <summary>Re-hash every restored or live object against the inventory. Used after a restore and as an operator audit.</summary>

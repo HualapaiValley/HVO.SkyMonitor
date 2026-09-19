@@ -202,6 +202,51 @@ public sealed class FilesystemObjectBackupTests
     }
 
     [TestMethod]
+    public async Task InterruptedSwapIsHealedByPuttingThePreviousBucketBack()
+    {
+        // The narrowest failure window: the previous bucket moved to .replaced, the process
+        // died before the staged bucket moved in. The store has no bucket at all. The next
+        // restore must first make the store whole (previous bucket back), then proceed.
+        await Put(Artifacts, "k", "previous");
+        await Put(Diagnostics, "d", "dd");
+        await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
+        Directory.Move(Path.Combine(_root, Artifacts), Path.Combine(_root, Artifacts + ".replaced"));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_root, Artifacts)));
+
+        await FilesystemObjectBackup.RestoreAsync(_backup, _root, Buckets, None);
+        Assert.AreEqual("previous", await Read(OpenStore(_root), Artifacts, "k"));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_root, Artifacts + ".replaced")));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_root, Artifacts + ".restoring")));
+    }
+
+    [TestMethod]
+    public async Task ReplacedBesideALiveBucketIsRefusedAndNeitherIsTouched()
+    {
+        await Put(Artifacts, "k", "live");
+        await Put(Diagnostics, "d", "dd");
+        await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
+        Directory.CreateDirectory(Path.Combine(_root, Artifacts + ".replaced"));
+        await File.WriteAllTextAsync(Path.Combine(_root, Artifacts + ".replaced", "marker"), "x");
+        var fault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => FilesystemObjectBackup.RestoreAsync(_backup, _root, Buckets, None));
+        StringAssert.Contains(fault.Message, ".replaced");
+        Assert.AreEqual("live", await Read(_store, Artifacts, "k"));
+        Assert.IsTrue(File.Exists(Path.Combine(_root, Artifacts + ".replaced", "marker")));
+    }
+
+    [TestMethod]
+    public async Task LeftoverStagingThatIsALinkIsRefusedNotDeletedThrough()
+    {
+        await Put(Artifacts, "k", "v");
+        await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
+        var victim = Path.Combine(_temp, "victim-dir");
+        Directory.CreateDirectory(victim);
+        await File.WriteAllTextAsync(Path.Combine(victim, "keep"), "x");
+        Directory.CreateSymbolicLink(Path.Combine(_root, Artifacts + ".restoring"), victim);
+        await Assert.ThrowsAsync<Exception>(() => FilesystemObjectBackup.RestoreAsync(_backup, _root, Buckets, None));
+        Assert.IsTrue(File.Exists(Path.Combine(victim, "keep")), "the link target was not deleted through");
+    }
+
+    [TestMethod]
     public async Task VerifyCountsEveryKindOfDrift()
     {
         await Put(Artifacts, "a", "aa");

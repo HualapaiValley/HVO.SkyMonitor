@@ -262,10 +262,14 @@ each swapped into place through `<bucket>.replaced`. A damaged backup is
 therefore discovered before any existing bucket is touched, and a failure
 during the swap leaves each bucket either wholly previous or wholly restored.
 Restore refuses a backup that lacks a configured bucket rather than leaving it
-empty, refuses a bucket that is a link, and refuses to proceed while a
-`<bucket>.replaced` from an earlier interrupted restore exists: inspect and
-remove it by hand. After the swap the mode runs verify and exits non-zero on
-any mismatch. Restore reproduces exact keys, metadata, lengths, generations and
+empty and refuses a bucket, staging or replaced directory that is a link. If an
+earlier restore was interrupted, the next restore heals before it proceeds: a
+`<bucket>.replaced` with no live `<bucket>` means the interruption fell inside
+the swap, and the previous bucket is moved back first so the store is whole
+again; a `<bucket>.replaced` beside a live `<bucket>` means the swap completed
+and only the cleanup was lost, and the restore refuses until the operator has
+inspected and removed the `.replaced` copy. After the swap the mode runs verify
+and exits non-zero on any mismatch. Restore reproduces exact keys, metadata, lengths, generations and
 digests, so SQL rows that reference `object://bucket/key` resolve unchanged.
 
 Ordinary start, rebuild, reset, backup, restore, and production-catalog
