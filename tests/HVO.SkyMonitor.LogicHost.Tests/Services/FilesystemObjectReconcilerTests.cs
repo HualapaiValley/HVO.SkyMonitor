@@ -12,7 +12,7 @@ namespace HVO.SkyMonitor.LogicHost.Tests.Services;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class FilesystemObjectReconcilerTests
+public sealed class FilesystemObjectReconcilerTests : IDisposable
 {
     private const string Bucket = "skymonitor-artifacts";
     private string _temp = null!;
@@ -38,10 +38,16 @@ public sealed class FilesystemObjectReconcilerTests
     [TestCleanup]
     public void Cleanup()
     {
+        _store.Dispose();
         if (Directory.Exists(_temp))
         {
             Directory.Delete(_temp, recursive: true);
         }
+    }
+
+    public void Dispose()
+    {
+        _store?.Dispose();
     }
 
     private static MemoryStream Bytes(string text) => new(Encoding.UTF8.GetBytes(text));

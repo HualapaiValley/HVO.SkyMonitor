@@ -1,4 +1,5 @@
 using System.Text;
+using System.Runtime.InteropServices;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 using HVO.SkyMonitor.LogicHost.Services;
@@ -35,6 +36,7 @@ public sealed class FilesystemObjectBackupTests
     [TestCleanup]
     public void Cleanup()
     {
+        _store.Dispose();
         if (Directory.Exists(_temp))
         {
             Directory.Delete(_temp, recursive: true);
@@ -50,6 +52,18 @@ public sealed class FilesystemObjectBackupTests
     }
 
     private static MemoryStream Bytes(string text) => new(Encoding.UTF8.GetBytes(text));
+
+    private async Task WriteRestoreMarker(string phase, bool hadPrevious)
+    {
+        var marker = new FilesystemObjectRestoreMarker(
+            "hvo-fs-object-restore-v1",
+            Guid.NewGuid(),
+            phase,
+            Buckets.Select(bucket => new FilesystemObjectRestoreBucket(bucket, hadPrevious)).ToArray());
+        await File.WriteAllTextAsync(
+            Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName),
+            System.Text.Json.JsonSerializer.Serialize(marker));
+    }
 
     private async Task Put(string bucket, string key, string text, string contentType = "text/plain")
         => await _store.PutAsync(bucket, key, Bytes(text), Encoding.UTF8.GetByteCount(text), contentType, None);
@@ -131,11 +145,12 @@ public sealed class FilesystemObjectBackupTests
         await Put(Artifacts, "keep/1", "one-changed");
         await Put(Artifacts, "added-later", "z");
         await _store.DeleteAsync(Artifacts, "keep/2", None);
+        _store.Dispose();
 
         var inventory = await FilesystemObjectBackup.RestoreAsync(_backup, _root, Buckets, None);
         Assert.AreEqual(3, inventory.ObjectCount);
 
-        var restored = OpenStore(_root);
+        using var restored = OpenStore(_root);
         Assert.AreEqual("one", await Read(restored, Artifacts, "keep/1"));
         Assert.AreEqual("two", await Read(restored, Artifacts, "keep/2"));
         Assert.AreEqual("dd", await Read(restored, Diagnostics, "d"));
@@ -163,7 +178,8 @@ public sealed class FilesystemObjectBackupTests
         await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
         var fresh = Path.Combine(_temp, "fresh-root");
         await FilesystemObjectBackup.RestoreAsync(_backup, fresh, Buckets, None);
-        Assert.AreEqual("v", await Read(OpenStore(fresh), Artifacts, "k"));
+        using var restored = OpenStore(fresh);
+        Assert.AreEqual("v", await Read(restored, Artifacts, "k"));
         Assert.IsTrue(Directory.Exists(Path.Combine(fresh, Diagnostics)), "an empty bucket in the backup is restored as an empty bucket");
     }
 
@@ -180,10 +196,12 @@ public sealed class FilesystemObjectBackupTests
         // not matter: staging completes for all buckets before any swap).
         var damaged = Directory.EnumerateFiles(Path.Combine(_backup, Diagnostics), "*" + FilesystemObjectLayout.DataSuffix, SearchOption.AllDirectories).Single();
         await File.WriteAllTextAsync(damaged, "XX");
+        _store.Dispose();
         var fault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => FilesystemObjectBackup.RestoreAsync(_backup, _root, Buckets, None));
         StringAssert.Contains(fault.Message, "nothing has been restored");
-        Assert.AreEqual(currentGeneration, (await _store.StatAsync(Artifacts, "k", None)).Generation, "the live bucket is untouched");
-        Assert.AreEqual("current", await Read(_store, Artifacts, "k"));
+        using var reopened = OpenStore(_root);
+        Assert.AreEqual(currentGeneration, (await reopened.StatAsync(Artifacts, "k", None)).Generation, "the live bucket is untouched");
+        Assert.AreEqual("current", await Read(reopened, Artifacts, "k"));
 
         // A tampered inventory is refused by its checksum before anything is read.
         var inventoryPath = Path.Combine(_backup, FilesystemObjectBackup.InventoryFileName);
@@ -212,9 +230,11 @@ public sealed class FilesystemObjectBackupTests
         await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
         Directory.Move(Path.Combine(_root, Artifacts), Path.Combine(_root, Artifacts + ".replaced"));
         Assert.IsFalse(Directory.Exists(Path.Combine(_root, Artifacts)));
+        _store.Dispose();
 
         await FilesystemObjectBackup.RestoreAsync(_backup, _root, Buckets, None);
-        Assert.AreEqual("previous", await Read(OpenStore(_root), Artifacts, "k"));
+        using var restored = OpenStore(_root);
+        Assert.AreEqual("previous", await Read(restored, Artifacts, "k"));
         Assert.IsFalse(Directory.Exists(Path.Combine(_root, Artifacts + ".replaced")));
         Assert.IsFalse(Directory.Exists(Path.Combine(_root, Artifacts + ".restoring")));
     }
@@ -227,10 +247,177 @@ public sealed class FilesystemObjectBackupTests
         await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
         Directory.CreateDirectory(Path.Combine(_root, Artifacts + ".replaced"));
         await File.WriteAllTextAsync(Path.Combine(_root, Artifacts + ".replaced", "marker"), "x");
+        _store.Dispose();
         var fault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => FilesystemObjectBackup.RestoreAsync(_backup, _root, Buckets, None));
         StringAssert.Contains(fault.Message, ".replaced");
-        Assert.AreEqual("live", await Read(_store, Artifacts, "k"));
+        using var reopened = OpenStore(_root);
+        Assert.AreEqual("live", await Read(reopened, Artifacts, "k"));
         Assert.IsTrue(File.Exists(Path.Combine(_root, Artifacts + ".replaced", "marker")));
+    }
+
+    [TestMethod]
+    public async Task RuntimeOwnershipRejectsASecondReplicaAndOfflineRestore()
+    {
+        await Put(Artifacts, "k", "live");
+        await Put(Diagnostics, "d", "dd");
+        await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => OpenStore(_root));
+        var restore = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => FilesystemObjectBackup.RestoreAsync(_backup, _root, Buckets, None));
+        StringAssert.Contains(restore.Message, "LogicHost is running");
+        Assert.IsFalse(File.Exists(Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName)));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_root, Artifacts + ".restoring")));
+        Assert.AreEqual("live", await Read(_store, Artifacts, "k"));
+    }
+
+    [TestMethod]
+    public async Task PreparedRestoreMarkerRollsEveryBucketBackBeforeRetry()
+    {
+        await Put(Artifacts, "a", "old-a");
+        await Put(Diagnostics, "d", "old-d");
+        var previousArtifacts = Path.Combine(_root, Artifacts + ".replaced");
+        Directory.Move(Path.Combine(_root, Artifacts), previousArtifacts);
+        Directory.CreateDirectory(Path.Combine(_root, Artifacts));
+        await File.WriteAllTextAsync(Path.Combine(_root, Artifacts, "new-marker"), "new");
+        var previousDiagnostics = Path.Combine(_root, Diagnostics + ".replaced");
+        Directory.Move(Path.Combine(_root, Diagnostics), previousDiagnostics);
+        var stagingDiagnostics = Path.Combine(_root, Diagnostics + ".restoring");
+        Directory.CreateDirectory(stagingDiagnostics);
+        await File.WriteAllTextAsync(Path.Combine(stagingDiagnostics, "staged-marker"), "new");
+        await WriteRestoreMarker("prepared", hadPrevious: true);
+        _store.Dispose();
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => OpenStore(_root));
+        FilesystemObjectBackup.RecoverInterruptedRestore(HVO.SkyMonitor.Storage.FileSystem.PhysicalRoot.Open(_root), Buckets);
+
+        using var recovered = OpenStore(_root);
+        Assert.AreEqual("old-a", await Read(recovered, Artifacts, "a"));
+        Assert.AreEqual("old-d", await Read(recovered, Diagnostics, "d"));
+        Assert.IsFalse(Directory.Exists(previousArtifacts));
+        Assert.IsFalse(Directory.Exists(previousDiagnostics));
+        Assert.IsFalse(Directory.Exists(stagingDiagnostics));
+        Assert.IsFalse(File.Exists(Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName)));
+    }
+
+    [TestMethod]
+    public async Task CommittedRestoreMarkerKeepsRestoredBucketsAndFinishesCleanup()
+    {
+        await Put(Artifacts, "a", "new-a");
+        await Put(Diagnostics, "d", "new-d");
+        foreach (var bucket in Buckets)
+        {
+            var replaced = Path.Combine(_root, bucket + ".replaced");
+            Directory.CreateDirectory(replaced);
+            await File.WriteAllTextAsync(Path.Combine(replaced, "old-marker"), "old");
+        }
+        await WriteRestoreMarker("committed", hadPrevious: true);
+        _store.Dispose();
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => OpenStore(_root));
+        FilesystemObjectBackup.RecoverInterruptedRestore(HVO.SkyMonitor.Storage.FileSystem.PhysicalRoot.Open(_root), Buckets);
+
+        using var recovered = OpenStore(_root);
+        Assert.AreEqual("new-a", await Read(recovered, Artifacts, "a"));
+        Assert.AreEqual("new-d", await Read(recovered, Diagnostics, "d"));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_root, Artifacts + ".replaced")));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_root, Diagnostics + ".replaced")));
+        Assert.IsFalse(File.Exists(Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName)));
+    }
+
+    [TestMethod]
+    public async Task MalformedOrImpossibleRestoreMarkerStaysFenced()
+    {
+        var markerPath = Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName);
+        await File.WriteAllTextAsync(markerPath, "{not-json");
+        _store.Dispose();
+        Assert.ThrowsExactly<InvalidOperationException>(() => OpenStore(_root));
+        Assert.ThrowsExactly<InvalidOperationException>(() => FilesystemObjectBackup.RecoverInterruptedRestore(HVO.SkyMonitor.Storage.FileSystem.PhysicalRoot.Open(_root), Buckets));
+        Assert.IsTrue(File.Exists(markerPath));
+
+        await WriteRestoreMarker("committed", hadPrevious: false);
+        Directory.Delete(Path.Combine(_root, Diagnostics), recursive: true);
+        Assert.ThrowsExactly<InvalidOperationException>(() => FilesystemObjectBackup.RecoverInterruptedRestore(HVO.SkyMonitor.Storage.FileSystem.PhysicalRoot.Open(_root), Buckets));
+        Assert.IsTrue(File.Exists(markerPath));
+    }
+
+    [TestMethod]
+    public void ReservedMarkerDirectoryFailsClosedAtRuntimeStartup()
+    {
+        _store.Dispose();
+        Directory.CreateDirectory(Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName));
+        Assert.ThrowsExactly<InvalidOperationException>(() => OpenStore(_root));
+        Assert.ThrowsExactly<InvalidOperationException>(() => FilesystemObjectBackup.RecoverInterruptedRestore(
+            HVO.SkyMonitor.Storage.FileSystem.PhysicalRoot.Open(_root), Buckets));
+    }
+
+    [TestMethod]
+    public void DanglingRestoreMarkerLinkFailsClosedAtRuntimeStartup()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Linux qualification case.");
+        }
+        _store.Dispose();
+        File.CreateSymbolicLink(
+            Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName),
+            Path.Combine(_root, "absent-marker-target"));
+        var fault = Assert.ThrowsExactly<HVO.SkyMonitor.Storage.FileSystem.FileSystemFaultException>(() => OpenStore(_root));
+        Assert.AreEqual(HVO.SkyMonitor.Storage.FileSystem.FileSystemFaultKind.Containment, fault.Kind);
+    }
+
+    [TestMethod]
+    public void FifoRestoreMarkerFailsClosedWithoutBlocking()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Linux qualification case.");
+        }
+        _store.Dispose();
+        var path = Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName);
+        Assert.AreEqual(0, NativeMkFifo(path, Convert.ToUInt32("600", 8)));
+        Assert.ThrowsExactly<InvalidOperationException>(() => OpenStore(_root));
+    }
+
+    [TestMethod]
+    public async Task ContradictoryCommittedStateKeepsMarkerAndRollbackData()
+    {
+        await Put(Artifacts, "a", "old-a");
+        await Put(Diagnostics, "d", "new-d");
+        var replaced = Path.Combine(_root, Artifacts + ".replaced");
+        Directory.Move(Path.Combine(_root, Artifacts), replaced);
+        var outside = Path.Combine(_temp, "outside-live");
+        Directory.CreateDirectory(outside);
+        Directory.CreateSymbolicLink(Path.Combine(_root, Artifacts), outside);
+        await WriteRestoreMarker("committed", hadPrevious: true);
+        _store.Dispose();
+
+        var fault = Assert.ThrowsExactly<HVO.SkyMonitor.Storage.FileSystem.FileSystemFaultException>(
+            () => FilesystemObjectBackup.RecoverInterruptedRestore(HVO.SkyMonitor.Storage.FileSystem.PhysicalRoot.Open(_root), Buckets));
+        Assert.AreEqual(HVO.SkyMonitor.Storage.FileSystem.FileSystemFaultKind.Containment, fault.Kind);
+        Assert.IsTrue(File.Exists(Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName)));
+        Assert.IsTrue(Directory.Exists(replaced));
+        Assert.AreEqual("old-a", await File.ReadAllTextAsync(Directory.EnumerateFiles(replaced, "*" + FilesystemObjectLayout.DataSuffix, SearchOption.AllDirectories).Single()));
+    }
+
+    [TestMethod]
+    public async Task LaterPreparedContradictionDoesNotMutateEarlierBuckets()
+    {
+        await Put(Artifacts, "a", "old-a");
+        await Put(Diagnostics, "d", "old-d");
+        var replacedArtifacts = Path.Combine(_root, Artifacts + ".replaced");
+        Directory.Move(Path.Combine(_root, Artifacts), replacedArtifacts);
+        Directory.CreateDirectory(Path.Combine(_root, Artifacts));
+        await File.WriteAllTextAsync(Path.Combine(_root, Artifacts, "restored-marker"), "new");
+        // Diagnostics says it had a previous bucket, but has neither live nor rollback state.
+        Directory.Delete(Path.Combine(_root, Diagnostics), recursive: true);
+        await WriteRestoreMarker("prepared", hadPrevious: true);
+        _store.Dispose();
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => FilesystemObjectBackup.RecoverInterruptedRestore(
+            HVO.SkyMonitor.Storage.FileSystem.PhysicalRoot.Open(_root), Buckets));
+        Assert.IsTrue(File.Exists(Path.Combine(_root, Artifacts, "restored-marker")), "the earlier bucket was not rolled back before validating the later one");
+        Assert.IsTrue(Directory.Exists(replacedArtifacts));
+        Assert.IsTrue(File.Exists(Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName)));
     }
 
     [TestMethod]
@@ -259,6 +446,123 @@ public sealed class FilesystemObjectBackupTests
         var gc = (await _store.StatAsync(Artifacts, "c", None)).Generation;
         await File.WriteAllTextAsync(Path.Combine(_root, FilesystemObjectLayout.DataRelativePath(Artifacts, FilesystemObjectLayout.KeyHash("c"), gc)), "CC"); // bytes differ
         Assert.AreEqual(3, await FilesystemObjectBackup.VerifyAsync(_backup, _root, None));
+
+        await Put(Artifacts, "unexpected", "extra");
+        Assert.AreEqual(4, await FilesystemObjectBackup.VerifyAsync(_backup, _root, None), "extra live keys are inventory drift too");
+    }
+
+    [TestMethod]
+    public async Task MetadataOnlyDriftFailsVerificationAndRestoreBeforeSwap()
+    {
+        await Put(Artifacts, "k", "original");
+        await Put(Diagnostics, "diagnostic", "unchanged");
+        await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
+        var relative = FilesystemObjectLayout.DescriptorRelativePath(Artifacts, FilesystemObjectLayout.KeyHash("k"));
+        var path = Path.Combine(_backup, relative);
+        var original = System.Text.Json.JsonSerializer.Deserialize<FilesystemObjectDescriptor>(
+            await File.ReadAllTextAsync(path), FilesystemObjectLayout.DescriptorJson)!;
+        await Put(Artifacts, "k", "current");
+
+        foreach (var changed in new[]
+                 {
+                     original with { ContentType = "application/changed" },
+                     original with { ModifiedUtc = original.ModifiedUtc.AddSeconds(1) }
+                 })
+        {
+            await File.WriteAllTextAsync(path, System.Text.Json.JsonSerializer.Serialize(changed, FilesystemObjectLayout.DescriptorJson));
+            Assert.AreEqual(1, await FilesystemObjectBackup.VerifyAsync(_backup, _backup, None));
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => FilesystemObjectBackup.RestoreAsync(_backup, _root, Buckets, None));
+            Assert.AreEqual("current", await Read(_store, Artifacts, "k"), "metadata mismatch must be rejected before replacing live data");
+        }
+    }
+
+    [TestMethod]
+    public async Task EmptyBucketsArePresentAndVerifiableInBackupAndRestore()
+    {
+        await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
+        foreach (var bucket in Buckets)
+        {
+            Assert.IsTrue(Directory.Exists(Path.Combine(_backup, bucket)));
+        }
+        Assert.AreEqual(0, await FilesystemObjectBackup.VerifyAsync(_backup, _backup, None));
+        var restored = Path.Combine(_temp, "empty-restored");
+        await FilesystemObjectBackup.RestoreAsync(_backup, restored, Buckets, None);
+        Assert.AreEqual(0, await FilesystemObjectBackup.VerifyAsync(_backup, restored, None));
+        Directory.Delete(Path.Combine(restored, Diagnostics));
+        Assert.AreEqual(1, await FilesystemObjectBackup.VerifyAsync(_backup, restored, None));
+    }
+
+    [TestMethod]
+    public async Task BackupRejectsInvalidDescriptorMetadataBeforePublishingInventory()
+    {
+        await Put(Artifacts, "k", "payload");
+        var path = Path.Combine(_root, FilesystemObjectLayout.DescriptorRelativePath(Artifacts, FilesystemObjectLayout.KeyHash("k")));
+        var descriptor = System.Text.Json.JsonSerializer.Deserialize<FilesystemObjectDescriptor>(
+            await File.ReadAllTextAsync(path), FilesystemObjectLayout.DescriptorJson)!;
+        await File.WriteAllTextAsync(path, System.Text.Json.JsonSerializer.Serialize(
+            descriptor with { ContentType = "" }, FilesystemObjectLayout.DescriptorJson));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None));
+        Assert.IsFalse(File.Exists(Path.Combine(_backup, FilesystemObjectBackup.InventoryChecksumFileName)));
+    }
+
+    [TestMethod]
+    public async Task InvalidInventoriesAreRejectedBeforeCreatingRestoreState()
+    {
+        await Put(Artifacts, "k", "original");
+        var inventory = await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
+        var entry = inventory.Entries.Single();
+        var invalid = new[]
+        {
+            inventory with { Buckets = null! },
+            inventory with { Entries = null! },
+            inventory with { Buckets = [Artifacts, Artifacts] },
+            inventory with { Buckets = ["../escape"] },
+            inventory with { Entries = [null!] },
+            inventory with { Entries = [entry, entry], ObjectCount = 2, TotalBytes = entry.Length * 2 },
+            inventory with { Entries = [entry with { Bucket = "unlisted" }] },
+            inventory with { Entries = [entry with { Key = null! }] },
+            inventory with { Entries = [entry with { Length = -1 }] },
+            inventory with { Entries = [entry with { Generation = "../escape" }] },
+            inventory with { Entries = [entry with { Sha256 = new string('z', 64) }] },
+            inventory with { Entries = [entry with { ContentType = "" }] },
+            inventory with { TotalBytes = inventory.TotalBytes + 1 },
+            inventory with { Buckets = [Artifacts, Artifacts + ".restoring"] }
+        };
+        var target = Path.Combine(_temp, "must-not-be-created");
+        foreach (var candidate in invalid)
+        {
+            var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(candidate);
+            await File.WriteAllBytesAsync(Path.Combine(_backup, FilesystemObjectBackup.InventoryFileName), bytes);
+            await File.WriteAllTextAsync(Path.Combine(_backup, FilesystemObjectBackup.InventoryChecksumFileName),
+                Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes)) + "  inventory.json\n");
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => FilesystemObjectBackup.RestoreAsync(_backup, target, Buckets, None));
+            Assert.IsFalse(Directory.Exists(target), "invalid inventory must fail before creating restore state");
+            Assert.AreEqual("original", await Read(_store, Artifacts, "k"));
+        }
+    }
+
+    [TestMethod]
+    public async Task OverlappingRootsAreRejectedBeforeMutation()
+    {
+        await Put(Artifacts, "k", "original");
+        await FilesystemObjectBackup.BackupAsync(_root, Buckets, _backup, TimeProvider.System, None);
+        foreach (var target in new[] { _backup, Path.Combine(_backup, "child"), _temp })
+        {
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => FilesystemObjectBackup.RestoreAsync(_backup, target, Buckets, None));
+        }
+        var nestedBackup = Path.Combine(_root, "nested-backup");
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => FilesystemObjectBackup.BackupAsync(_root, Buckets, nestedBackup, TimeProvider.System, None));
+        Assert.IsFalse(Directory.Exists(nestedBackup));
+        Assert.IsFalse(Directory.Exists(Path.Combine(_backup, "child")));
+        if (OperatingSystem.IsLinux())
+        {
+            var alias = Path.Combine(_temp, "backup-alias");
+            Directory.CreateSymbolicLink(alias, _backup);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => FilesystemObjectBackup.RestoreAsync(_backup, Path.Combine(alias, "child"), Buckets, None));
+            Assert.IsFalse(Directory.Exists(Path.Combine(_backup, "child")), "ancestor aliases must not bypass overlap rejection");
+        }
+        Assert.AreEqual("original", await Read(_store, Artifacts, "k"));
+        Assert.AreEqual(0, await FilesystemObjectBackup.VerifyAsync(_backup, _backup, None));
     }
 
     [TestMethod]
@@ -276,4 +580,10 @@ public sealed class FilesystemObjectBackupTests
         Assert.AreEqual(HVO.SkyMonitor.Storage.FileSystem.FileSystemFaultKind.Containment, fault.Kind);
         Assert.IsFalse(Directory.EnumerateFiles(_backup, "*", SearchOption.AllDirectories).Any(f => f.EndsWith(FilesystemObjectLayout.DataSuffix, StringComparison.Ordinal)), "no bytes from outside the root were copied");
     }
+
+#pragma warning disable SYSLIB1054 // Test-only creation of an actual FIFO for the Linux qualification case.
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "mkfifo", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int NativeMkFifo(string path, uint mode);
+#pragma warning restore SYSLIB1054
 }

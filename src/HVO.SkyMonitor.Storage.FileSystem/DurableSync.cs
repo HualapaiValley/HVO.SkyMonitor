@@ -16,6 +16,11 @@ namespace HVO.SkyMonitor.Storage.FileSystem;
 /// </remarks>
 public static class DurableSync
 {
+    private const int AtFileDescriptorCurrentWorkingDirectory = -100;
+    private const int AtSymbolicLinkNoFollow = 0x100;
+    private const uint StatxType = 0x00000001;
+    private const ushort UnixFileTypeMask = 0xF000;
+    private const ushort UnixRegularFileType = 0x8000;
     /// <summary>True where <see cref="Directory(string)"/> performs a real flush.</summary>
     public static bool SupportsDirectorySync => OperatingSystem.IsLinux();
 
@@ -58,6 +63,39 @@ public static class DurableSync
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             throw FileSystemFaultException.From("sync-file", absolutePath, exception);
+        }
+    }
+
+    /// <summary>
+    /// Prove that <paramref name="absolutePath"/> is a regular Linux file without following
+    /// links or blocking on a FIFO. Other platforms use the managed attributes available to
+    /// them; callers that require the Linux guarantee must separately require Linux.
+    /// </summary>
+    public static void RequireRegularFile(string absolutePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
+        if (OperatingSystem.IsLinux())
+        {
+            if (StatX(
+                    AtFileDescriptorCurrentWorkingDirectory,
+                    absolutePath,
+                    AtSymbolicLinkNoFollow,
+                    StatxType,
+                    out var status) != 0)
+            {
+                var errno = Marshal.GetLastPInvokeError();
+                throw new FileSystemFaultException(FileSystemFaultKind.Io, "inspect-file", absolutePath, new Win32Exception(errno));
+            }
+            if ((status.Mask & StatxType) != StatxType || (status.Mode & UnixFileTypeMask) != UnixRegularFileType)
+            {
+                throw new FileSystemFaultException(FileSystemFaultKind.Containment, "inspect-file", absolutePath);
+            }
+            return;
+        }
+        var attributes = System.IO.File.GetAttributes(absolutePath);
+        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint | FileAttributes.Device)) != 0)
+        {
+            throw new FileSystemFaultException(FileSystemFaultKind.Containment, "inspect-file", absolutePath);
         }
     }
 
@@ -139,5 +177,16 @@ public static class DurableSync
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "open", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern int NativeOpen(string path, int flags);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "statx", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int StatX(int directoryFileDescriptor, string path, int flags, uint mask, out LinuxFileStatus status);
 #pragma warning restore SYSLIB1054
+
+    [StructLayout(LayoutKind.Explicit, Size = 256)]
+    private struct LinuxFileStatus
+    {
+        [FieldOffset(0)] internal uint Mask;
+        [FieldOffset(28)] internal ushort Mode;
+    }
 }
