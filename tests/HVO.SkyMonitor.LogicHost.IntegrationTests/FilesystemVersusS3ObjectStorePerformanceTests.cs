@@ -162,6 +162,10 @@ public sealed class FilesystemVersusS3ObjectStorePerformanceTests
     [Timeout(1_800_000)]
     public async Task CanonicalWriteMatrix_HardLinksAgainstStreamingCopy()
     {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Issue #920 hard-link evidence requires native Linux.");
+        }
         var runId = Guid.NewGuid().ToString("N");
         var root = Path.Combine(Path.GetTempPath(), "hvo-920-perf-" + runId);
         var streamingRoot = Path.Combine(root, "streaming");
@@ -287,8 +291,8 @@ public sealed class FilesystemVersusS3ObjectStorePerformanceTests
 
     private static async Task<object> CompareFilesystemStrategiesAsync(
         string name,
-        IObjectStore streaming,
-        IObjectStore linked,
+        FilesystemObjectStore streaming,
+        FilesystemObjectStore linked,
         string prefix,
         int payloadBytes,
         int warmups,
@@ -297,8 +301,11 @@ public sealed class FilesystemVersusS3ObjectStorePerformanceTests
     {
         var baseline = await MeasureAsync($"{name}-streaming", warmups, operations, concurrency,
             (i, ct) => ExecuteWorkflowAsync(streaming, $"{prefix}streaming/{i:D4}", payloadBytes, ct)).ConfigureAwait(false);
+        var hardLinksBefore = linked.HardLinkCopyCount;
         var candidate = await MeasureAsync($"{name}-hard-link", warmups, operations, concurrency,
             (i, ct) => ExecuteWorkflowAsync(linked, $"{prefix}hard-link/{i:D4}", payloadBytes, ct)).ConfigureAwait(false);
+        Assert.AreEqual(warmups + operations, linked.HardLinkCopyCount - hardLinksBefore,
+            "every candidate workflow must use the hard-link path; fallback evidence is not hard-link evidence");
         return new
         {
             Workload = name,

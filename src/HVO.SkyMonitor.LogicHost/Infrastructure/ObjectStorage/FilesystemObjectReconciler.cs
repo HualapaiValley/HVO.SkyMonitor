@@ -117,8 +117,12 @@ internal sealed partial class FilesystemObjectReconciler(
             }
             var keyHash = name[..64];
             var generation = name[65..];
-            if (current.TryGetValue(keyHash, out var descriptor) && string.Equals(descriptor.Generation, generation, StringComparison.Ordinal))
+            using var keyLock = store.LockKeyForMaintenance(bucket, keyHash, cancellationToken);
+            var descriptorPath = Path.Combine(Path.GetDirectoryName(dataPath)!, keyHash + FilesystemObjectLayout.DescriptorSuffix);
+            var currentDescriptor = TryReadDescriptor(descriptorPath);
+            if (currentDescriptor is not null && string.Equals(currentDescriptor.Generation, generation, StringComparison.Ordinal))
             {
+                TryDelete(Path.ChangeExtension(dataPath, ".retired"), out _);
                 continue; // live
             }
             var info = new FileInfo(dataPath);

@@ -40,6 +40,9 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FilesystemObjectStore> _logger;
     internal bool DisableHardLinksForTest { get; set; }
+    private long _hardLinkCopyCount;
+    internal Func<Task>? AfterHardLinkForTest { get; set; }
+    internal long HardLinkCopyCount => Interlocked.Read(ref _hardLinkCopyCount);
     // Per-key serialization through a fixed stripe of locks, selected by the key hash. A
     // dictionary keyed by every key ever written would grow with the object count for the
     // life of the process; 1,024 stripes bound that at a constant while keeping contention
@@ -253,6 +256,11 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
                         throw Map("copy", fault);
                     }
                     throw;
+                }
+                Interlocked.Increment(ref _hardLinkCopyCount);
+                if (AfterHardLinkForTest is { } afterHardLink)
+                {
+                    await afterHardLink().ConfigureAwait(false);
                 }
                 // Do not unlink after descriptor publication starts: a rename may have committed
                 // before a later directory-sync failure. As on the streaming path, an unreferenced
@@ -570,13 +578,24 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
 
     private async Task<IDisposable> LockKeyAsync(string bucket, string keyHash, CancellationToken cancellationToken)
     {
-        // The hash is uniform hex, so its leading bits pick a stripe evenly; the bucket is
-        // folded in so the same key in two buckets does not always share a stripe.
-        var stripe = (int)((uint)BitConverter.ToInt32(Convert.FromHexString(keyHash.AsSpan(0, 8)))
-            ^ (uint)StringComparer.Ordinal.GetHashCode(bucket)) & (LockStripes - 1);
-        var gate = _keyLocks[stripe];
+        var gate = _keyLocks[GetLockStripe(bucket, keyHash)];
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         return new Release(gate);
+    }
+
+    internal IDisposable LockKeyForMaintenance(string bucket, string keyHash, CancellationToken cancellationToken)
+    {
+        var gate = _keyLocks[GetLockStripe(bucket, keyHash)];
+        gate.Wait(cancellationToken);
+        return new Release(gate);
+    }
+
+    private static int GetLockStripe(string bucket, string keyHash)
+    {
+        // The hash is uniform hex, so its leading bits pick a stripe evenly; the bucket is
+        // folded in so the same key in two buckets does not always share a stripe.
+        return (int)((uint)BitConverter.ToInt32(Convert.FromHexString(keyHash.AsSpan(0, 8)))
+            ^ (uint)StringComparer.Ordinal.GetHashCode(bucket)) & (LockStripes - 1);
     }
 
     private sealed class Release(SemaphoreSlim gate) : IDisposable
