@@ -10,7 +10,7 @@ Raw evidence: `logichost-filesystem-hard-link-copy-920.json`.
 
 ## Revision and method
 
-- Candidate `1f0d4bb0bd7885f2c44f04afc00aacd0801a46d2`; baseline is the forced
+- Candidate `eee24a1c`; baseline is the forced
   streaming fallback in the same candidate process.
 - Ubuntu 24.04.5 x64, 12 logical CPUs, .NET 10.0.12, Release, ext4 under `/tmp`.
 - The same `IObjectStore` workflow and deterministic payload generator run on
@@ -25,14 +25,14 @@ Raw evidence: `logichost-filesystem-hard-link-copy-920.json`.
 
 | Workload | Median stream/link | p95 stream/link | Throughput stream/link | CPU ratio | Allocation ratio | Write-byte ratio |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| W1 c1, 4.5 MiB | 127.9 / 75.2 ms | 141.2 / 79.8 ms | 7.80 / 13.39 ops/s | 0.60x | 0.97x | 0.50x |
-| W2 c1, 12.3 MiB | 321.8 / 185.8 ms | 352.2 / 198.3 ms | 3.09 / 5.41 ops/s | 0.81x | 0.99x | 0.50x |
-| W4 c1 | 121.0 / 72.1 ms | 130.1 / 79.4 ms | 8.23 / 13.77 ops/s | 0.81x | 0.98x | 0.50x |
-| W4 c4 | 257.5 / 141.7 ms | 273.5 / 152.3 ms | 15.45 / 27.77 ops/s | 0.85x | 0.98x | 0.50x |
-| W4 c8 | 284.9 / 160.3 ms | 308.8 / 179.8 ms | 27.18 / 48.45 ops/s | 0.65x | 0.98x | 0.50x |
+| W1 c1, 4.5 MiB | 142.9 / 83.5 ms | 160.1 / 87.6 ms | 6.95 / 12.13 ops/s | 0.61x | 0.98x | 0.50x |
+| W2 c1, 12.3 MiB | 381.4 / 203.3 ms | 455.7 / 213.3 ms | 2.60 / 4.91 ops/s | 0.74x | 0.99x | 0.50x |
+| W4 c1 | 133.3 / 78.6 ms | 151.3 / 89.9 ms | 7.41 / 12.46 ops/s | 0.79x | 0.98x | 0.50x |
+| W4 c4 | 265.9 / 145.3 ms | 284.1 / 165.9 ms | 14.99 / 26.84 ops/s | 0.74x | 0.98x | 0.50x |
+| W4 c8 | 291.8 / 163.9 ms | 314.5 / 186.1 ms | 26.83 / 46.99 ops/s | 0.76x | 0.98x | 0.50x |
 
-The candidate cuts median latency to 0.55-0.60x and p95 to 0.56-0.61x,
-increases throughput by approximately 1.7-1.8x, reduces CPU to 0.60-0.85x,
+The candidate cuts median latency to 0.53-0.59x and p95 to 0.47-0.59x,
+increases throughput by approximately 1.7-1.9x, reduces CPU to 0.61-0.79x,
 and halves physical write bytes in every workload. Allocation behavior is
 effectively unchanged. The result matches #920's expected mechanism: copy no
 longer rewrites and fsyncs the payload, but still reads and hashes all bytes
@@ -54,6 +54,10 @@ before publishing the destination descriptor.
 - Source replacement/reclamation is reclassified through the existing
   Missing/Precondition/CorruptState descriptor recheck. Deleting or reclaiming
   one hard-link name does not remove the other object.
+- Reconciliation takes the same destination-key lock as publication and rereads
+  the descriptor under that lock, so an in-flight linked generation cannot be
+  stamped as retired before its descriptor commits. The benchmark asserts every
+  candidate copy used the hard-link path and refuses fallback-labelled evidence.
 - The supported topology has one trusted LogicHost writer and excludes external
   mutation of provider-owned physical paths. #586 qualifies and enforces that
   boundary independently.
