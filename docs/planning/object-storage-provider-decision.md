@@ -180,7 +180,13 @@ damaged backup touches nothing; each swap leaves the bucket wholly previous or w
 restored. Generations are retained, so persisted `object://` references resolve unchanged.
 Documented in `docs/runbooks/infra-operations.md`.
 
-Not yet delivered (final slice of #585): measured performance against the S3 path.
+**Slice 4: measured against S3.** `docs/validation/logichost-filesystem-object-store-585.md`.
+Read, list, drain, restart, CPU, allocations and working set all favour the filesystem
+provider (list 0.55x, drain 0.09x, allocations 0.39x). Write-path latency is 1.5–3.8x a
+loopback MinIO because the provider performs ten fsyncs per put+copy+delete workflow and
+rewrites the payload on copy, work the S3 path leaves to the remote process; explained,
+bounded by a VM disk, and an order of magnitude above the product's ingest rate. Accepted.
+Follow-up filed as #920: hard-link copy of immutable generations to halve write bytes and fsyncs.
 
 ## Delivery and Future Order
 
