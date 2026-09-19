@@ -73,7 +73,7 @@ IFS=$'\t' read -r mount_target mount_source filesystem mount_options mount_major
 [[ ,$mount_options, == *,rw,* ]] || fail 'object-store mount is not read-write'
 [[ $mount_source == /dev/* ]] || fail 'object-store ext4 source is not a same-host block device'
 filesystem_uuid=$(blkid -s UUID -o value -- "$mount_source" 2>/dev/null) || fail 'object-store filesystem UUID is unavailable'
-[[ ${filesystem_uuid,,} == ${expected_uuid,,} ]] || fail 'object-store filesystem UUID does not match the expected device'
+[[ ${filesystem_uuid,,} == "${expected_uuid,,}" ]] || fail 'object-store filesystem UUID does not match the expected device'
 block_type=$(lsblk -dn -o TYPE -- "$mount_source" 2>/dev/null || printf unknown)
 block_rotation=$(lsblk -dn -o ROTA -- "$mount_source" 2>/dev/null || printf unknown)
 block_model=$(lsblk -dn -o MODEL -- "$mount_source" 2>/dev/null | sed 's/[[:space:]]*$//' || printf unknown)
