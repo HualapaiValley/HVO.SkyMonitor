@@ -124,6 +124,24 @@ public static class DurableSync
         }
     }
 
+    /// <summary>Flush a directory through an already-authenticated Linux directory handle.</summary>
+    public static void Directory(SafeFileHandle handle, string pathForDiagnostics)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        try
+        {
+            RandomAccess.FlushToDisk(handle);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw FileSystemFaultException.From("sync-directory", pathForDiagnostics, exception);
+        }
+    }
+
     /// <summary>
     /// Flush every directory from <paramref name="absolutePath"/> up to and including the root.
     /// Used after creating a directory chain so that each new entry is durable in its parent.

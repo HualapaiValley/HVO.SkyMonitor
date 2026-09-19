@@ -89,7 +89,7 @@ internal sealed partial class FilesystemObjectReconciler(
                         ReconcileDescriptor(root, bucketPath, path, options, report, cancellationToken);
                         break;
                     case FilesystemReconciliationPhase.Data:
-                        ReconcileData(root, bucketPath, path, options, report, now);
+                        ReconcileData(root, bucketPath, path, options, report, now, cancellationToken);
                         break;
                     case FilesystemReconciliationPhase.RetirementStamps:
                         if (!File.Exists(Path.ChangeExtension(path, FilesystemObjectLayout.DataSuffix)))
@@ -225,7 +225,8 @@ internal sealed partial class FilesystemObjectReconciler(
         string dataPath,
         FilesystemReconciliationOptions options,
         FilesystemReconciliationReport report,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
         var name = Path.GetFileName(dataPath)[..^FilesystemObjectLayout.DataSuffix.Length];
         var dot = name.IndexOf('.', StringComparison.Ordinal);
@@ -236,6 +237,7 @@ internal sealed partial class FilesystemObjectReconciler(
         }
         var keyHash = name[..64];
         var generation = name[65..];
+        using var keyLock = store.LockKeyForMaintenance(report.Bucket, keyHash, cancellationToken);
         var descriptorPath = Path.Combine(Path.GetDirectoryName(dataPath)!, keyHash + FilesystemObjectLayout.DescriptorSuffix);
         var descriptorResult = ReadDescriptor(descriptorPath);
         if (descriptorResult.Status == DescriptorReadStatus.Unreadable)
