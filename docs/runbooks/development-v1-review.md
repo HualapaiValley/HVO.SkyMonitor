@@ -1,6 +1,6 @@
 # Development v1 Review Process
 
-This process applies to feature pull requests targeting `development/v1`. It does not define promotion to `main`.
+This process applies to feature pull requests targeting `development/v1`. Promotion to `main` is described in [development-v1.md](../development-v1.md). The command-level procedure for one pull request is [pull-request-walkthrough.md](pull-request-walkthrough.md).
 
 ## Flow
 
