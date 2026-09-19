@@ -848,7 +848,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         CentralDerivativeJobLease lease,
         ProcessingProduct product,
         string bucket = Configuration.CentralObjectStorageOptions.DefaultArtifactBucket)
-        => $"s3://{bucket}/derivatives/{lease.SourceDevicePublicId:N}/{product.OutputIdentitySha256}.bin";
+        => $"{Configuration.CentralObjectStorageOptions.LogicalScheme}{bucket}/derivatives/{lease.SourceDevicePublicId:N}/{product.OutputIdentitySha256}.bin";
 
     internal static void ValidateProduct(CentralDerivativeJobLease lease, ProcessingProduct product)
     {
@@ -914,7 +914,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
             || !HasExpectedSources(artifact, lease)
             || artifact.ByteLength != product.Payload.Length
             || !string.Equals(artifact.ChecksumSha256, product.ChecksumSha256, StringComparison.OrdinalIgnoreCase)
-            || artifact.StorageReference != $"s3://{bucket}/{objectKey}")
+            || artifact.StorageReference != $"{Configuration.CentralObjectStorageOptions.LogicalScheme}{bucket}/{objectKey}")
         {
             throw new CentralDerivativeJobStateException("The derivative output identity conflicts with existing evidence.");
         }

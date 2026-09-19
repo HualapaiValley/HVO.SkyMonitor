@@ -1,0 +1,381 @@
+{
+  "Schema": "hvo-issue-585-filesystem-vs-s3-performance-v1",
+  "Revision": "c587d484068708b74c25031a96a654c0934c8244",
+  "RunId": "bc4b7e880ee94fda85682062fd710fe2",
+  "Environment": {
+    "OS": "Ubuntu 24.04.5 LTS",
+    "Architecture": "X64",
+    "Processors": 12,
+    "Runtime": ".NET 10.0.12",
+    "Configuration": "Release",
+    "FilesystemRoot": "/tmp/hvo-585-perf-bc4b7e880ee94fda85682062fd710fe2",
+    "Storage": "ext4 at /tmp/hvo-585-perf-bc4b7e880ee94fda85682062fd710fe2 (931986 MiB free)",
+    "S3": "MinIO Testcontainer on loopback (most favourable S3 topology; a real deployment adds a network)"
+  },
+  "Method": "Same IObjectStore contract, same process, same PatternReadStream payload generator, same fixture; per workload: warm-ups discarded, then N measured operations; latency per operation via Stopwatch; CPU via Process.TotalProcessorTime; allocations via GC.GetTotalAllocatedBytes(precise); working set via Process.WorkingSet64; filesystem bytes/syscalls via /proc/self/io deltas (rchar/wchar/syscr/syscw/read_bytes/write_bytes) which capture this process\u0027s own I/O for both providers (for S3 that is the socket traffic; for the filesystem it is the data, descriptor, temporary and fsync work).",
+  "Rule": "Issue #585: no unexplained material regression against the S3 path. Explanation recorded per workload: the filesystem provider hashes every byte written and read and fsyncs data, descriptor and directory per publish; S3 does none of that locally.",
+  "Workloads": {
+    "W1": {
+      "Workload": "W1",
+      "PayloadBytes": 4708352,
+      "Warmups": 5,
+      "Operations": 30,
+      "Concurrency": 1,
+      "S3": {
+        "Name": "W1-s3",
+        "Operations": 30,
+        "Concurrency": 1,
+        "ElapsedMilliseconds": 2518.2632,
+        "MedianMilliseconds": 83.2162,
+        "P95Milliseconds": 90.3848,
+        "MaxMilliseconds": 91.268,
+        "OperationsPerSecond": 11.91297240097858,
+        "CpuMilliseconds": 3206.1899999999996,
+        "AllocatedBytes": 429627752,
+        "WorkingSetBeforeBytes": 326488064,
+        "WorkingSetAfterBytes": 346554368,
+        "Io": {
+          "ReadChars": 55467,
+          "WriteChars": 0,
+          "ReadSyscalls": 312,
+          "WriteSyscalls": 0,
+          "ReadBytes": 0,
+          "WriteBytes": 0
+        }
+      },
+      "Filesystem": {
+        "Name": "W1-filesystem",
+        "Operations": 30,
+        "Concurrency": 1,
+        "ElapsedMilliseconds": 3787.104,
+        "MedianMilliseconds": 125.8411,
+        "P95Milliseconds": 138.9624,
+        "MaxMilliseconds": 141.1355,
+        "OperationsPerSecond": 7.921620319906715,
+        "CpuMilliseconds": 2183.6820000000007,
+        "AllocatedBytes": 167742176,
+        "WorkingSetBeforeBytes": 351129600,
+        "WorkingSetAfterBytes": 353656832,
+        "Io": {
+          "ReadChars": 423824295,
+          "WriteChars": 282521396,
+          "ReadSyscalls": 4670,
+          "WriteSyscalls": 4380,
+          "ReadBytes": 0,
+          "WriteBytes": 282869760
+        }
+      },
+      "Change": {
+        "MedianLatency": "1.51x",
+        "P95Latency": "1.54x",
+        "Throughput": "0.66x",
+        "Cpu": "0.68x",
+        "Allocations": "0.39x",
+        "WorkingSetGrowthBytes": -17539072
+      }
+    },
+    "W2": {
+      "Workload": "W2",
+      "PayloadBytes": 12879360,
+      "Warmups": 5,
+      "Operations": 30,
+      "Concurrency": 1,
+      "S3": {
+        "Name": "W2-s3",
+        "Operations": 30,
+        "Concurrency": 1,
+        "ElapsedMilliseconds": 3682.1157,
+        "MedianMilliseconds": 122.1469,
+        "P95Milliseconds": 128.6354,
+        "MaxMilliseconds": 137.2565,
+        "OperationsPerSecond": 8.147489770622906,
+        "CpuMilliseconds": 4145.072000000002,
+        "AllocatedBytes": 1121195856,
+        "WorkingSetBeforeBytes": 350953472,
+        "WorkingSetAfterBytes": 369049600,
+        "Io": {
+          "ReadChars": 140488,
+          "WriteChars": 0,
+          "ReadSyscalls": 396,
+          "WriteSyscalls": 0,
+          "ReadBytes": 0,
+          "WriteBytes": 0
+        }
+      },
+      "Filesystem": {
+        "Name": "W2-filesystem",
+        "Operations": 30,
+        "Concurrency": 1,
+        "ElapsedMilliseconds": 9300.0424,
+        "MedianMilliseconds": 310.6055,
+        "P95Milliseconds": 336.2549,
+        "MaxMilliseconds": 338.2684,
+        "OperationsPerSecond": 3.2257917447774216,
+        "CpuMilliseconds": 3266.5790000000015,
+        "AllocatedBytes": 417981960,
+        "WorkingSetBeforeBytes": 363012096,
+        "WorkingSetAfterBytes": 372359168,
+        "Io": {
+          "ReadChars": 1159245366,
+          "WriteChars": 772781937,
+          "ReadSyscalls": 12260,
+          "WriteSyscalls": 11880,
+          "ReadBytes": 0,
+          "WriteBytes": 773160960
+        }
+      },
+      "Change": {
+        "MedianLatency": "2.54x",
+        "P95Latency": "2.61x",
+        "Throughput": "0.40x",
+        "Cpu": "0.79x",
+        "Allocations": "0.37x",
+        "WorkingSetGrowthBytes": -8749056
+      }
+    },
+    "W3M": {
+      "Records": 10000,
+      "S3": {
+        "ElapsedMilliseconds": 185.9151,
+        "Count": 10000,
+        "AllocatedBytes": 6778208,
+        "Io": {
+          "ReadChars": 301,
+          "WriteChars": 0,
+          "ReadSyscalls": 13,
+          "WriteSyscalls": 0,
+          "ReadBytes": 0,
+          "WriteBytes": 0
+        }
+      },
+      "Filesystem": {
+        "ElapsedMilliseconds": 102.7993,
+        "Count": 10000,
+        "AllocatedBytes": 18185448,
+        "Io": {
+          "ReadChars": 3222248,
+          "WriteChars": 0,
+          "ReadSyscalls": 10011,
+          "WriteSyscalls": 0,
+          "ReadBytes": 0,
+          "WriteBytes": 0
+        }
+      }
+    },
+    "W3P": {
+      "Payloads": 100,
+      "PayloadBytes": 12879360,
+      "S3": {
+        "DrainMilliseconds": 895.5194,
+        "Drained": 100,
+        "Bytes": 1287936000,
+        "MebibytesPerSecond": 1371.5744007053338,
+        "Io": {
+          "ReadChars": 225181,
+          "WriteChars": 0,
+          "ReadSyscalls": 523,
+          "WriteSyscalls": 0,
+          "ReadBytes": 0,
+          "WriteBytes": 0
+        }
+      },
+      "Filesystem": {
+        "DrainMilliseconds": 84.2072,
+        "Drained": 100,
+        "Bytes": 1287936000,
+        "MebibytesPerSecond": 14586.30003580454,
+        "Io": {
+          "ReadChars": 1288003527,
+          "WriteChars": 0,
+          "ReadSyscalls": 10103,
+          "WriteSyscalls": 0,
+          "ReadBytes": 0,
+          "WriteBytes": 0
+        }
+      },
+      "FilesystemRestartMilliseconds": 237.3624,
+      "ReconciliationLiveObjects": 10100
+    },
+    "W4": [
+      {
+        "Workload": "W4-c1",
+        "PayloadBytes": 4708352,
+        "Warmups": 20,
+        "Operations": 200,
+        "Concurrency": 1,
+        "S3": {
+          "Name": "W4-c1-s3",
+          "Operations": 200,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 11133.5051,
+          "MedianMilliseconds": 54.9338,
+          "P95Milliseconds": 60.8737,
+          "MaxMilliseconds": 67.5982,
+          "OperationsPerSecond": 17.963794708281043,
+          "CpuMilliseconds": 9180.858,
+          "AllocatedBytes": 2861866648,
+          "WorkingSetBeforeBytes": 397496320,
+          "WorkingSetAfterBytes": 392867840,
+          "Io": {
+            "ReadChars": 373085,
+            "WriteChars": 0,
+            "ReadSyscalls": 2018,
+            "WriteSyscalls": 0,
+            "ReadBytes": 0,
+            "WriteBytes": 0
+          }
+        },
+        "Filesystem": {
+          "Name": "W4-c1-filesystem",
+          "Operations": 200,
+          "Concurrency": 1,
+          "ElapsedMilliseconds": 23428.6422,
+          "MedianMilliseconds": 116.1786,
+          "P95Milliseconds": 127.5883,
+          "MaxMilliseconds": 141.08,
+          "OperationsPerSecond": 8.536559579197467,
+          "CpuMilliseconds": 7374.908000000003,
+          "AllocatedBytes": 1113924616,
+          "WorkingSetBeforeBytes": 393560064,
+          "WorkingSetAfterBytes": 402010112,
+          "Io": {
+            "ReadChars": 2825499408,
+            "WriteChars": 1883477192,
+            "ReadSyscalls": 31093,
+            "WriteSyscalls": 29206,
+            "ReadBytes": 0,
+            "WriteBytes": 1885798400
+          }
+        },
+        "Change": {
+          "MedianLatency": "2.11x",
+          "P95Latency": "2.10x",
+          "Throughput": "0.48x",
+          "Cpu": "0.80x",
+          "Allocations": "0.39x",
+          "WorkingSetGrowthBytes": 13078528
+        }
+      },
+      {
+        "Workload": "W4-c4",
+        "PayloadBytes": 4708352,
+        "Warmups": 20,
+        "Operations": 200,
+        "Concurrency": 4,
+        "S3": {
+          "Name": "W4-c4-s3",
+          "Operations": 200,
+          "Concurrency": 4,
+          "ElapsedMilliseconds": 3329.5079,
+          "MedianMilliseconds": 65.8296,
+          "P95Milliseconds": 74.1269,
+          "MaxMilliseconds": 79.0669,
+          "OperationsPerSecond": 60.0689369140707,
+          "CpuMilliseconds": 8719.088999999993,
+          "AllocatedBytes": 2859986928,
+          "WorkingSetBeforeBytes": 383033344,
+          "WorkingSetAfterBytes": 395706368,
+          "Io": {
+            "ReadChars": 376442,
+            "WriteChars": 30,
+            "ReadSyscalls": 1977,
+            "WriteSyscalls": 4,
+            "ReadBytes": 0,
+            "WriteBytes": 0
+          }
+        },
+        "Filesystem": {
+          "Name": "W4-c4-filesystem",
+          "Operations": 200,
+          "Concurrency": 4,
+          "ElapsedMilliseconds": 12589.2539,
+          "MedianMilliseconds": 250.5142,
+          "P95Milliseconds": 266.027,
+          "MaxMilliseconds": 281.0516,
+          "OperationsPerSecond": 15.886564969509433,
+          "CpuMilliseconds": 6951.025000000009,
+          "AllocatedBytes": 1111721320,
+          "WorkingSetBeforeBytes": 401121280,
+          "WorkingSetAfterBytes": 399085568,
+          "Io": {
+            "ReadChars": 2825499229,
+            "WriteChars": 1883477148,
+            "ReadSyscalls": 31014,
+            "WriteSyscalls": 29200,
+            "ReadBytes": 0,
+            "WriteBytes": 1885798400
+          }
+        },
+        "Change": {
+          "MedianLatency": "3.81x",
+          "P95Latency": "3.59x",
+          "Throughput": "0.26x",
+          "Cpu": "0.80x",
+          "Allocations": "0.39x",
+          "WorkingSetGrowthBytes": -14708736
+        }
+      },
+      {
+        "Workload": "W4-c8",
+        "PayloadBytes": 4708352,
+        "Warmups": 20,
+        "Operations": 200,
+        "Concurrency": 8,
+        "S3": {
+          "Name": "W4-c8-s3",
+          "Operations": 200,
+          "Concurrency": 8,
+          "ElapsedMilliseconds": 2398.0674,
+          "MedianMilliseconds": 91.9395,
+          "P95Milliseconds": 108.491,
+          "MaxMilliseconds": 307.6898,
+          "OperationsPerSecond": 83.40049157917747,
+          "CpuMilliseconds": 8569.363000000012,
+          "AllocatedBytes": 2859737936,
+          "WorkingSetBeforeBytes": 390639616,
+          "WorkingSetAfterBytes": 394330112,
+          "Io": {
+            "ReadChars": 384431,
+            "WriteChars": 0,
+            "ReadSyscalls": 1971,
+            "WriteSyscalls": 0,
+            "ReadBytes": 0,
+            "WriteBytes": 0
+          }
+        },
+        "Filesystem": {
+          "Name": "W4-c8-filesystem",
+          "Operations": 200,
+          "Concurrency": 8,
+          "ElapsedMilliseconds": 7006.2107,
+          "MedianMilliseconds": 275.7479,
+          "P95Milliseconds": 302.7492,
+          "MaxMilliseconds": 391.6891,
+          "OperationsPerSecond": 28.546101246997896,
+          "CpuMilliseconds": 7259.697,
+          "AllocatedBytes": 1110692784,
+          "WorkingSetBeforeBytes": 396341248,
+          "WorkingSetAfterBytes": 411774976,
+          "Io": {
+            "ReadChars": 2825497710,
+            "WriteChars": 1883477174,
+            "ReadSyscalls": 30982,
+            "WriteSyscalls": 29202,
+            "ReadBytes": 0,
+            "WriteBytes": 1885798400
+          }
+        },
+        "Change": {
+          "MedianLatency": "3.00x",
+          "P95Latency": "2.79x",
+          "Throughput": "0.34x",
+          "Cpu": "0.85x",
+          "Allocations": "0.39x",
+          "WorkingSetGrowthBytes": 11743232
+        }
+      }
+    ]
+  },
+  "FilesystemBucketBytesAfterRun": 8737329435,
+  "Correctness": "Every workflow verified SHA-256 of staged and canonical copies against the generator on both providers; W3M asserted 10,000 distinct keys in ordinal order; W3P asserted 100 payloads of exact length drained; any mismatch fails the test."
+}

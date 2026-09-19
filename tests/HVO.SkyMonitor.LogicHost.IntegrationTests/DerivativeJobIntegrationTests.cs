@@ -56,7 +56,7 @@ public sealed class DerivativeJobIntegrationTests
         lease.SourceDevicePublicId.Should().NotBeEmpty();
         lease.SourceContentUri.Should().Be(
             $"/api/v1.0/devices/{lease.SourceDevicePublicId:D}/artifacts/{lease.SourceArtifactId:D}/content");
-        lease.SourceContentUri.Should().NotContain("s3://");
+        lease.SourceContentUri.Should().NotContain("object://");
         await using var verificationScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = verificationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var job = await db.CentralDerivativeJobs.SingleAsync(item => item.Id == jobId).ConfigureAwait(false);
@@ -212,7 +212,7 @@ public sealed class DerivativeJobIntegrationTests
             MediaType = "image/png",
             ByteLength = 4,
             ChecksumSha256 = new string('A', 64),
-            StorageReference = "s3://result",
+            StorageReference = "object://result",
             ReceivedAtUtc = now,
             IdempotencyKey = Convert.ToHexString(Guid.NewGuid().ToByteArray()).PadRight(64, '0'),
             ObjectState = CentralArtifactObjectState.Available,
@@ -304,7 +304,7 @@ public sealed class DerivativeJobIntegrationTests
                 MediaType = "image/png",
                 ByteLength = 4,
                 ChecksumSha256 = new string('B', 64),
-                StorageReference = $"s3://result/{Guid.NewGuid():N}",
+                StorageReference = $"object://result/{Guid.NewGuid():N}",
                 ReceivedAtUtc = DateTimeOffset.UtcNow,
                 IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 ObjectState = CentralArtifactObjectState.Available,
@@ -362,7 +362,7 @@ public sealed class DerivativeJobIntegrationTests
             MediaType = "image/png",
             ByteLength = 4,
             ChecksumSha256 = new string('C', 64),
-            StorageReference = $"s3://result/{Guid.NewGuid():N}",
+            StorageReference = $"object://result/{Guid.NewGuid():N}",
             ReceivedAtUtc = now,
             IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray())),
             ObjectState = CentralArtifactObjectState.Available,
@@ -460,7 +460,7 @@ public sealed class DerivativeJobIntegrationTests
             MediaType = "image/png",
             ByteLength = 4,
             ChecksumSha256 = new string('D', 64),
-            StorageReference = $"s3://result/{Guid.NewGuid():N}",
+            StorageReference = $"object://result/{Guid.NewGuid():N}",
             ReceivedAtUtc = now,
             IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray())),
             ObjectState = CentralArtifactObjectState.Available,
@@ -649,7 +649,7 @@ public sealed class DerivativeJobIntegrationTests
             MediaType = "image/jpeg",
             ByteLength = 4,
             ChecksumSha256 = new string('B', 64),
-            StorageReference = $"s3://target/{Guid.NewGuid():N}",
+            StorageReference = $"object://target/{Guid.NewGuid():N}",
             ReceivedAtUtc = DateTimeOffset.UtcNow,
             IdempotencyKey = Guid.NewGuid().ToString("N"),
             ObjectState = CentralArtifactObjectState.Available,
@@ -860,7 +860,7 @@ public sealed class DerivativeJobIntegrationTests
             MediaType = "application/octet-stream",
             ByteLength = 4,
             ChecksumSha256 = new string('A', 64),
-            StorageReference = $"s3://source/{Guid.NewGuid():N}",
+            StorageReference = $"object://source/{Guid.NewGuid():N}",
             ReceivedAtUtc = now,
             IdempotencyKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray())),
             ObjectState = CentralArtifactObjectState.Available,

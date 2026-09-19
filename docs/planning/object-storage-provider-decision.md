@@ -2,7 +2,7 @@
 
 Status date: 2026-09-05
 
-Decision owner: `RM-016`, epic [#499](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/499)
+Decision owner: `RM-016`, epic [#499](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/499)
 
 ## Decision
 
@@ -16,7 +16,7 @@ The AWS SDK S3 adapter remains available for development and future remote
 profiles. A native Azure Blob adapter can implement the same application
 contract later. Remote filesystem, S3, and Azure qualification do not block
 `RM-016`; that vNext work belongs to `RM-019`, epic
-[#588](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/588).
+[#588](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/588).
 The first supported release profile is filesystem-only: installer and production
 preflight reject S3 selection until #589 qualifies and enables an exact profile.
 
@@ -84,7 +84,7 @@ and remote-provider errors. CameraAgent keeps `IFrameStorageService`, raw ingres
 canonical relative artifact paths, payload/sidecar commit order, SQLite journals,
 outbox, retention holds, gallery, replay, and local recovery authority. CameraAgent
 adoption of the shared primitives is isolated in post-`RM-017` issue
-[#587](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/587); it is not part
+[#587](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/587); it is not part
 of active `RM-016` implementation.
 
 ## Supported First-Release Envelope
@@ -101,12 +101,99 @@ NFS, SMB, NAS appliances, XFS, ZFS, clustered filesystems, arbitrary Docker
 volume drivers, multiple LogicHost writers, and remote-mount outage behavior are
 not certified by this decision. They require separate topology evidence.
 
+## Delivered By #584
+
+The provider-neutral surface is in place and every central workflow consumes only it:
+
+- **Selection.** `ObjectStorage:Provider` is `Filesystem` or `S3` (default `S3` while it is the
+  only delivered adapter). S3 transport settings live in the `ObjectStorage:S3` group; the
+  flattened `ObjectStorage:ServiceEndpoint`-style keys the deployment inventory writes forward
+  to it, so no deployment changed. `ObjectStorage:Filesystem:Root` is reserved for #585.
+- **Fail-closed validation.** Naming one provider while carrying the other's settings fails
+  startup with the contradiction named; a filesystem root must be absolute and normalized.
+  Installer preflight, not this validation, is what restricts the supported release profile.
+- **Logical identity.** Every persisted `StorageReference` is `object://<bucket>/<key>`; the
+  scheme names an identity every provider resolves, so switching providers changes no row.
+  The unreleased schema has one canonical migration and needed no change: the column is a
+  binary-collated string with no scheme constraint.
+- **Neutral names.** The dependency health check is `object-store`; telemetry carries a
+  bounded `object_store.provider` tag beside the transport-specific `addressing_style`; AWS
+  SDK types are confined to `LogicHost/Infrastructure/ObjectStorage` and the S3 client
+  factory reads only the S3 group.
+- **Failure categories.** `Capacity` (not retryable, not terminal, operator action) and
+  `CorruptState` (terminal, operator action) join the existing kinds with
+  `RequiresOperator` semantics for health reporting.
+- **Conformance.** `ObjectStoreConformanceSuite` takes a capability set; the universal
+  assertions run for every provider, and the transport-fault assertions run only where the
+  harness declares it can inject them.
+- **#592 boundary.** `StorageFileSystemBoundaryIsNarrowWhenPresent` asserts the future
+  project references no project, takes no host/persistence/provider package, and is consumed
+  only by `LogicHost` and `CameraAgent.Common`.
+
+## Delivered By #585 (slice 1)
+
+`FilesystemObjectStore` in `LogicHost/Infrastructure/ObjectStorage` implements every
+`IObjectStore` operation on the #592 primitives, and `ObjectStorage:Provider=Filesystem`
+now starts:
+
+- **Layout.** `<root>/<bucket>/<h[0..2]>/<h[2..4]>/<h>.desc.json` and `<h>.<generation>.data`,
+  where `h` is the SHA-256 of the exact logical key. No key segment is ever a physical
+  segment, so traversal, case aliasing, reserved names and separators in keys cannot escape
+  or collide; the descriptor records the exact key and every read verifies it.
+- **Commit point.** The descriptor. Data is streamed to a same-directory temporary with a
+  running SHA-256, flushed, renamed onto an immutable per-generation name, and the directory
+  flushed; the descriptor is then published atomically. Declared length is enforced exactly
+  (short and long input both refuse). A committed generation is never modified; replacement
+  publishes a new generation and retires the old data file for reclamation, so an open reader
+  keeps what it opened and a conditional read of a retired generation is `Precondition`.
+- **Failure facts.** Containment and cross-device are `Unsupported` (misconfiguration); no
+  space is `Capacity`; a descriptor contradicting its data (missing, wrong length, wrong key,
+  malformed) is `CorruptState`; delete is idempotent and never creates a bucket.
+- **Conformance.** The universal suite passes against the provider as a Unit test (no
+  container) with `Capabilities.None`; 28 fault tests cover mapping, crash points, races,
+  and containment.
+
+**Slice 2: reconciliation.** `FilesystemObjectReconciler` runs at startup and every ten
+minutes per bucket. It never writes a descriptor. It quarantines (renames into
+`<bucket>/.quarantine/` with a reason prefix) any descriptor that is malformed, misnamed for
+its key, or lacks its data, and any live data/descriptor pair whose digest or length
+disagrees when digest verification is requested; a quarantined key becomes `MissingObject`.
+It reclaims retired data generations (those the current descriptor does not name) only
+after a grace age counted from the pass that first found them retired (a `.retired` stamp
+beside the data, because nothing is written when a descriptor moves on), so a reader that
+opened one finishes it; on Windows a sharing violation
+defers rather than faults. Stale temporaries are removed after their own grace age. Each
+pass is bounded and reports counts only, never keys or paths. The health check surfaces
+`QuarantinedCount`, `ReclaimFailedCount`, `RetiredBytes`, `OldestRetiredAgeSeconds` and
+`ReconciledUtc`, and is `Degraded` while anything is quarantined or unreclaimable. A copy
+whose source data was reclaimed under it re-reads the descriptor and reports `Precondition`
+when the source moved on, `CorruptState` only when the descriptor still names the missing
+generation (the deferred F1 from #917).
+
+**Slice 3: backup and restore.** Three offline host modes, `--host-mode=object-store-backup`,
+`-verify` and `-restore` with `--path=<dir>`, run from LogicHost's own configuration with no
+listener or database. Backup copies every live object in the store's layout, hashing as it
+copies and refusing any mismatch, and writes a checksummed `hvo-fs-object-backup-v1`
+inventory of exact key, content type, length, generation, SHA-256 and modified time. Restore
+is destructive and staged: all buckets stage completely (re-hashed) before any swap, so a
+damaged backup touches nothing; each swap leaves the bucket wholly previous or wholly
+restored. Generations are retained, so persisted `object://` references resolve unchanged.
+Documented in `docs/runbooks/infra-operations.md`.
+
+**Slice 4: measured against S3.** `docs/validation/logichost-filesystem-object-store-585.md`.
+Read, list, drain, restart, CPU, allocations and working set all favour the filesystem
+provider (list 0.55x, drain 0.09x, allocations 0.39x). Write-path latency is 1.5–3.8x a
+loopback MinIO because the provider performs ten fsyncs per put+copy+delete workflow and
+rewrites the payload on copy, work the S3 path leaves to the remote process; explained,
+bounded by a VM disk, and an order of magnitude above the product's ingest rate. Accepted.
+Follow-up filed as #920: hard-link copy of immutable generations to halve write bytes and fsyncs.
+
 ## Delivery and Future Order
 
-1. [#584](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/584) neutralizes provider selection, configuration, telemetry, health, and durable identity.
-2. [#592](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/592) introduces and registers the host-neutral filesystem durability primitives.
-3. [#585](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/585) implements the LogicHost filesystem provider on those primitives.
-4. [#586](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/586) qualifies the exact same-host Linux ext4 topology.
-5. [#506](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/506) adopts it across supported deployment, tests, CI, and operations and removes MinIO ownership.
-6. After `RM-017`, [#587](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/587) may move CameraAgent onto the shared primitives without changing its contracts.
-7. In vNext, [#591](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/591) qualifies one exact remote filesystem mount for storage-server capacity, [#589](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/589) qualifies and enables one exact external S3/LAN or AWS profile, and [#590](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/590) adds and qualifies Azure Blob.
+1. [#584](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/584) neutralizes provider selection, configuration, telemetry, health, and durable identity.
+2. [#592](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/592) introduces and registers the host-neutral filesystem durability primitives.
+3. [#585](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/585) implements the LogicHost filesystem provider on those primitives.
+4. [#586](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/586) qualifies the exact same-host Linux ext4 topology.
+5. [#506](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/506) adopts it across supported deployment, tests, CI, and operations and removes MinIO ownership.
+6. After `RM-017`, [#587](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/587) may move CameraAgent onto the shared primitives without changing its contracts.
+7. In vNext, [#591](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/591) qualifies one exact remote filesystem mount for storage-server capacity, [#589](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/589) qualifies and enables one exact external S3/LAN or AWS profile, and [#590](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/590) adds and qualifies Azure Blob.

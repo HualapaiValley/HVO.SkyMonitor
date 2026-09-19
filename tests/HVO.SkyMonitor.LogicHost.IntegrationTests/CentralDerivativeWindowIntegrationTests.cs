@@ -238,7 +238,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                             RetentionDeletionToken = operationToken,
                             RetentionDeletionRequestedAtUtc = now
                         };
-                        var objectKey = blockedReference[$"s3://{Bucket}/".Length..];
+                        var objectKey = blockedReference[$"object://{Bucket}/".Length..];
                         var disposition = new CentralObjectRecoveryDisposition
                         {
                             SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
@@ -335,7 +335,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                         RetentionDeletionToken = operationToken,
                         RetentionDeletionRequestedAtUtc = now
                     };
-                    var objectKey = blockedReference[$"s3://{Bucket}/".Length..];
+                    var objectKey = blockedReference[$"object://{Bucket}/".Length..];
                     var disposition = new CentralObjectRecoveryDisposition
                     {
                         SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
@@ -507,7 +507,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                     }
                     if (intent.Id == intents[0].Id)
                     {
-                        var objectKey = intent.StorageReference[$"s3://{Bucket}/".Length..];
+                        var objectKey = intent.StorageReference[$"object://{Bucket}/".Length..];
                         var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
                         await using (var corrupt = new MemoryStream(new byte[derivativeBytes.Length], writable: false))
                         {
@@ -636,7 +636,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 var db = corruptScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var source = await db.CentralArtifacts.AsNoTracking()
                     .SingleAsync(item => item.Id == sources[100]).ConfigureAwait(false);
-                var objectName = source.StorageReference[$"s3://{Bucket}/".Length..];
+                var objectName = source.StorageReference[$"object://{Bucket}/".Length..];
                 await using var corrupt = new MemoryStream(CreatePayload(101), writable: false);
                 await corruptScope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(new PutObjectArgs()
                     .WithBucket(Bucket)
@@ -1560,7 +1560,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var storageReference = await db.CentralArtifacts.Where(item => item.Id == sources[99])
                 .Select(item => item.StorageReference).SingleAsync().ConfigureAwait(false);
-            var objectName = storageReference[$"s3://{Bucket}/".Length..];
+            var objectName = storageReference[$"object://{Bucket}/".Length..];
             await using var corrupt = new MemoryStream(CreatePayload(101), writable: false);
             await scope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(new PutObjectArgs()
                 .WithBucket(Bucket)
@@ -2445,7 +2445,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
             MediaType = "application/x-hvo-linear-frame",
             ByteLength = payload.Length,
             ChecksumSha256 = checksum,
-            StorageReference = $"s3://{Bucket}/{objectKey}",
+            StorageReference = $"object://{Bucket}/{objectKey}",
             ReceivedAtUtc = receivedAtUtc ?? DateTimeOffset.UtcNow,
             IdempotencyKey = HashText($"{scenario}-{sequence}"),
             SourceId = "window-integration",

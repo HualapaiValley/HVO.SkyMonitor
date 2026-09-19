@@ -38,7 +38,7 @@ public sealed class PublicNetworkPageIntegrationTests
                 "anonymous page {0} returned {1}", path, response.Headers.CacheControl);
             response.Headers.Vary.Should().ContainSingle().Which.Should().Be("Cookie");
             html.Should().Contain("HVO SkyMonitor")
-                .And.NotContain("s3://")
+                .And.NotContain("object://")
                 .And.NotContain("StorageReference")
                 .And.NotContain("DevicePublicId")
                 .And.NotContain("OwnerUserId");

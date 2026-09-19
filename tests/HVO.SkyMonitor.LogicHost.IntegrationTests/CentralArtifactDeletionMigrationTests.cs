@@ -117,7 +117,7 @@ public sealed class CentralArtifactDeletionMigrationTests
                 MediaType = "application/octet-stream",
                 ByteLength = 3,
                 ChecksumSha256 = Convert.ToHexString(SHA256.HashData([1, 2, 3])),
-                StorageReference = $"s3://skymonitor-artifacts/migration/{Guid.NewGuid():N}.bin",
+                StorageReference = $"object://skymonitor-artifacts/migration/{Guid.NewGuid():N}.bin",
                 ReceivedAtUtc = now,
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 ObjectState = CentralArtifactObjectState.Available,

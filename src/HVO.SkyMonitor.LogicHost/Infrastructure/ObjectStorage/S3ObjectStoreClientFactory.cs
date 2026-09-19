@@ -7,10 +7,24 @@ namespace HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 
 internal static class S3ObjectStoreClientFactory
 {
+    // This factory reads only the S3 transport group: it is the one place the AWS SDK meets
+    // configuration, and it must not see the neutral or filesystem surface.
     public static IAmazonS3 Create(CentralObjectStorageOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return Create(options.S3, null);
+    }
+
+    public static IAmazonS3 Create(S3ObjectStorageOptions options)
         => Create(options, null);
 
     internal static IAmazonS3 Create(CentralObjectStorageOptions options, HttpClientFactory? httpClientFactory)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return Create(options.S3, httpClientFactory);
+    }
+
+    internal static IAmazonS3 Create(S3ObjectStorageOptions options, HttpClientFactory? httpClientFactory)
     {
         ArgumentNullException.ThrowIfNull(options);
         var config = CreateConfig(options);
@@ -27,6 +41,12 @@ internal static class S3ObjectStoreClientFactory
     }
 
     internal static AmazonS3Config CreateConfig(CentralObjectStorageOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return CreateConfig(options.S3);
+    }
+
+    internal static AmazonS3Config CreateConfig(S3ObjectStorageOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         var hasCustomEndpoint = !string.IsNullOrWhiteSpace(options.ServiceEndpoint);

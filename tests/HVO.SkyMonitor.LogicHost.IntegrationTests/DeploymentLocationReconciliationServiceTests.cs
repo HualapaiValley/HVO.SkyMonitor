@@ -542,7 +542,7 @@ public sealed class DeploymentLocationReconciliationServiceTests
                         MediaType = "application/octet-stream",
                         ByteLength = 4,
                         ChecksumSha256 = new string('D', 64),
-                        StorageReference = $"s3://skymonitor-artifacts/reconciliation/{Guid.NewGuid():N}",
+                        StorageReference = $"object://skymonitor-artifacts/reconciliation/{Guid.NewGuid():N}",
                         ReceivedAtUtc = spec.FirstReceivedAtUtc,
                         IdempotencyKey = Guid.NewGuid().ToString("N"),
                         ObjectState = CentralArtifactObjectState.Available,

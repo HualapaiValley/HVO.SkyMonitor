@@ -33,7 +33,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class CentralArtifactRetentionIntegrationTests
 {
     private const string ArtifactBucketPrefix =
-        "s3://" + HVO.SkyMonitor.LogicHost.Configuration.CentralObjectStorageOptions.DefaultArtifactBucket + "/";
+        "object://" + HVO.SkyMonitor.LogicHost.Configuration.CentralObjectStorageOptions.DefaultArtifactBucket + "/";
     private const string Bucket = "skymonitor-artifacts";
 
     [TestMethod]

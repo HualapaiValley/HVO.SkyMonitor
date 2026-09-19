@@ -210,7 +210,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             try
             {
                 await reader.Entered.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
-                var objectKey = storageReference["s3://skymonitor-artifacts/".Length..];
+                var objectKey = storageReference["object://skymonitor-artifacts/".Length..];
                 var replacement = Enumerable.Repeat((byte)0xA5, checked((int)byteLength)).ToArray();
                 await using var replacementStream = new MemoryStream(replacement, writable: false);
                 await using var replacementScope = factory.Services.CreateAsyncScope();

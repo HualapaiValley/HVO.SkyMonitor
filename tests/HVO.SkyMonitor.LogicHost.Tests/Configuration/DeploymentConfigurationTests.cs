@@ -4,6 +4,7 @@ using Amazon.Runtime.Credentials;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 using HVO.SkyMonitor.LogicHost.Services;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Configuration;
@@ -18,7 +19,7 @@ public sealed class DeploymentConfigurationTests
     {
         var defaults = new CentralObjectStorageNames();
         Assert.AreEqual("skymonitor-artifacts", defaults.ArtifactBucket);
-        Assert.AreEqual("s3://skymonitor-artifacts/", defaults.ArtifactPrefix);
+        Assert.AreEqual("object://skymonitor-artifacts/", defaults.ArtifactPrefix);
 
         var configured = new CentralObjectStorageNames(Options.Create(new CentralObjectStorageOptions
         {
@@ -26,7 +27,7 @@ public sealed class DeploymentConfigurationTests
             DiagnosticsBucket = "hvo-run-42-diagnostics"
         }));
         Assert.AreEqual("hvo-run-42-artifacts", configured.ArtifactBucket);
-        Assert.AreEqual("s3://hvo-run-42-artifacts/", configured.ArtifactPrefix);
+        Assert.AreEqual("object://hvo-run-42-artifacts/", configured.ArtifactPrefix);
     }
 
     [TestMethod]
@@ -276,4 +277,120 @@ public sealed class DeploymentConfigurationTests
         Assert.IsFalse(DeploymentTransportSecurity.AllowsInsecureOpenIddictTransport(true, "ISOLATED"));
     }
 
+    [TestMethod]
+    public void ProviderSelection_DefaultsToS3AndFlattenedKeysForwardToTheS3Group()
+    {
+        // The default keeps every existing deployment working: S3 is the only delivered
+        // adapter, and the flattened ObjectStorage:* keys the inventory writes land in the
+        // S3 group with no second copy of any value.
+        var options = new CentralObjectStorageOptions();
+        Assert.AreEqual(ObjectStorageProvider.S3, options.Provider);
+        Assert.IsFalse(options.HasS3Settings);
+        Assert.IsFalse(options.HasFilesystemSettings);
+
+        options.ServiceEndpoint = "minio.example.test:9000";
+        options.CredentialMode = ObjectStorageCredentialMode.Static;
+        options.AccessKey = "key";
+        options.SecretKey = "secret";
+        Assert.AreEqual("minio.example.test:9000", options.S3.ServiceEndpoint);
+        Assert.AreEqual(ObjectStorageCredentialMode.Static, options.S3.CredentialMode);
+        Assert.AreEqual("key", options.S3.AccessKey);
+        Assert.IsTrue(options.HasS3Settings);
+        Assert.IsTrue(HVO.SkyMonitor.LogicHost.Program.HasExclusiveProviderSettings(options));
+    }
+
+    [TestMethod]
+    public void ProviderSelection_IsMutuallyExclusiveAndFailsClosed()
+    {
+        // Filesystem selected with any S3 transport value present: a half-migrated deployment.
+        var filesystemWithS3 = new CentralObjectStorageOptions { Provider = ObjectStorageProvider.Filesystem };
+        filesystemWithS3.Filesystem.Root = "/srv/skymonitor/objects";
+        filesystemWithS3.ServiceEndpoint = "minio.example.test:9000";
+        Assert.IsFalse(HVO.SkyMonitor.LogicHost.Program.HasExclusiveProviderSettings(filesystemWithS3));
+
+        // S3 selected with a filesystem root present: the same contradiction the other way.
+        var s3WithFilesystem = new CentralObjectStorageOptions { Provider = ObjectStorageProvider.S3 };
+        s3WithFilesystem.Filesystem.Root = "/srv/skymonitor/objects";
+        Assert.IsFalse(HVO.SkyMonitor.LogicHost.Program.HasExclusiveProviderSettings(s3WithFilesystem));
+
+        // Filesystem selected cleanly: exclusive, and the root must be absolute and normalized.
+        var filesystem = new CentralObjectStorageOptions { Provider = ObjectStorageProvider.Filesystem };
+        filesystem.Filesystem.Root = "/srv/skymonitor/objects";
+        Assert.IsTrue(HVO.SkyMonitor.LogicHost.Program.HasExclusiveProviderSettings(filesystem));
+        Assert.IsTrue(HVO.SkyMonitor.LogicHost.Program.HasValidFilesystemRoot(filesystem));
+
+        filesystem.Filesystem.Root = "relative/objects";
+        Assert.IsFalse(HVO.SkyMonitor.LogicHost.Program.HasValidFilesystemRoot(filesystem));
+        filesystem.Filesystem.Root = "/srv/skymonitor/../objects";
+        Assert.IsFalse(HVO.SkyMonitor.LogicHost.Program.HasValidFilesystemRoot(filesystem));
+        filesystem.Filesystem.Root = null;
+        Assert.IsFalse(HVO.SkyMonitor.LogicHost.Program.HasValidFilesystemRoot(filesystem));
+
+        // The root rule does not apply when S3 is selected.
+        Assert.IsTrue(HVO.SkyMonitor.LogicHost.Program.HasValidFilesystemRoot(new CentralObjectStorageOptions()));
+    }
+
+    [TestMethod]
+    public void LogicalIdentity_DoesNotDependOnTheProvider()
+    {
+        // The persisted reference is object://bucket/key for every provider, so switching the
+        // physical provider changes no stored row.
+        var s3 = new CentralObjectStorageOptions { Provider = ObjectStorageProvider.S3 };
+        var filesystem = new CentralObjectStorageOptions { Provider = ObjectStorageProvider.Filesystem };
+        filesystem.Filesystem.Root = "/srv/skymonitor/objects";
+        Assert.AreEqual(s3.ArtifactPrefix, filesystem.ArtifactPrefix);
+        Assert.IsTrue(s3.ArtifactPrefix.StartsWith("object://", StringComparison.Ordinal),
+            "the persisted scheme is the logical one, not a provider's");
+    }
+
+    [TestMethod]
+    public void FailureKinds_CapacityIsOperatorActionAndCorruptStateIsTerminal()
+    {
+        var capacity = new ObjectStoreException(ObjectStoreFailureKind.Capacity, "put");
+        Assert.IsFalse(capacity.IsRetryable, "capacity cannot be retried into success");
+        Assert.IsFalse(capacity.IsTerminal, "reads and deletes still work under capacity pressure");
+        Assert.IsTrue(capacity.RequiresOperator);
+        Assert.AreEqual("capacity", ObjectStoreException.GetOutcome(ObjectStoreFailureKind.Capacity));
+
+        var corrupt = new ObjectStoreException(ObjectStoreFailureKind.CorruptState, "read");
+        Assert.IsFalse(corrupt.IsRetryable);
+        Assert.IsTrue(corrupt.IsTerminal, "a store that contradicts itself must not serve");
+        Assert.IsTrue(corrupt.RequiresOperator);
+        Assert.AreEqual("corrupt-state", ObjectStoreException.GetOutcome(ObjectStoreFailureKind.CorruptState));
+
+        // Existing categories keep their semantics.
+        Assert.IsTrue(new ObjectStoreException(ObjectStoreFailureKind.Throttled, "put").IsRetryable);
+        Assert.IsFalse(new ObjectStoreException(ObjectStoreFailureKind.Throttled, "put").RequiresOperator);
+    }
+
+    [TestMethod]
+    public void ProviderSelection_BindsGroupedAndFlattenedKeysFromConfiguration()
+    {
+        // The nested option groups are get-only properties initialised in place. The
+        // configuration binder must populate them through the getter, and the flattened
+        // ObjectStorage:* keys the deployment inventory writes must land in the S3 group;
+        // otherwise a deployment that upgrades in place silently loses its endpoint.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ObjectStorage:Provider"] = "Filesystem",
+                ["ObjectStorage:Filesystem:Root"] = "/srv/skymonitor/objects",
+                ["ObjectStorage:S3:Region"] = "eu-west-1",
+                ["ObjectStorage:ServiceEndpoint"] = "flat.example.test:9000",
+                ["ObjectStorage:ArtifactBucket"] = "hvo-bound-artifacts"
+            })
+            .Build();
+        var options = new CentralObjectStorageOptions();
+        configuration.GetSection(CentralObjectStorageOptions.SectionName).Bind(options);
+
+        Assert.AreEqual(ObjectStorageProvider.Filesystem, options.Provider);
+        Assert.AreEqual("/srv/skymonitor/objects", options.Filesystem.Root);
+        Assert.AreEqual("eu-west-1", options.S3.Region, "grouped key binds into the S3 group");
+        Assert.AreEqual("flat.example.test:9000", options.S3.ServiceEndpoint, "flattened key forwards into the S3 group");
+        Assert.AreEqual("hvo-bound-artifacts", options.ArtifactBucket);
+        Assert.IsTrue(options.HasS3Settings);
+        Assert.IsTrue(options.HasFilesystemSettings);
+        // And that shape is exactly the contradiction the exclusivity rule refuses.
+        Assert.IsFalse(HVO.SkyMonitor.LogicHost.Program.HasExclusiveProviderSettings(options));
+    }
 }

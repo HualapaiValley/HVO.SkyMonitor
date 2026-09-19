@@ -63,7 +63,7 @@ public static class SkyMonitorObservabilityExtensions
     };
     private static readonly HashSet<string> ObjectStoreHealthDataKeys = new(StringComparer.Ordinal)
     {
-        "Reason"
+        "Reason", "QuarantinedCount", "ReclaimFailedCount", "RetiredBytes", "OldestRetiredAgeSeconds", "ReconciledUtc"
     };
     private static readonly HashSet<string> EnvironmentalObservationHealthDataKeys = new(StringComparer.Ordinal)
     {
@@ -243,7 +243,7 @@ public static class SkyMonitorObservabilityExtensions
             "artifact-consistency" => ArtifactConsistencyHealthDataKeys,
             "artifact-retention" => ArtifactRetentionHealthDataKeys,
             "central-derivative-worker" => CentralDerivativeWorkerHealthDataKeys,
-            "s3-object-store" => ObjectStoreHealthDataKeys,
+            "object-store" => ObjectStoreHealthDataKeys,
             "environmental-observations" => EnvironmentalObservationHealthDataKeys,
             "environmental-delivery" => EnvironmentalDeliveryHealthDataKeys,
             "environmental-acquisition" => EnvironmentalAcquisitionHealthDataKeys,
