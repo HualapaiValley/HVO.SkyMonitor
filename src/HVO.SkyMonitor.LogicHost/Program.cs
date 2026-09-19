@@ -51,11 +51,19 @@ namespace HVO.SkyMonitor.LogicHost;
 
 public sealed partial class Program
 {
-    public static async Task Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
         var command = LogicHostCommandParser.Parse(args);
         var builder = WebApplication.CreateBuilder(command.ForwardedArguments.ToArray());
         DeploymentKeyPerFile.AddConfiguredDirectory(builder.Configuration);
+
+        if (command.Mode is LogicHostHostMode.ObjectStoreBackup or LogicHostHostMode.ObjectStoreRestore or LogicHostHostMode.ObjectStoreVerify)
+        {
+            // Offline object-store maintenance: no services, no database, no listener. Runs
+            // against the same configuration the runtime would use so the root and bucket
+            // names cannot drift from what the host serves.
+            return await RunObjectStoreMaintenanceAsync(command, builder.Configuration).ConfigureAwait(false);
+        }
 
         var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
         if (reverseProxy.Enabled)
@@ -959,7 +967,7 @@ public sealed partial class Program
         if (command.Mode == LogicHostHostMode.DatabaseInitialize)
         {
             await app.DisposeAsync().ConfigureAwait(false);
-            return;
+            return 0;
         }
         _ = app.Services.GetRequiredService<CatalogSnapshotResult>();
 
@@ -1083,6 +1091,55 @@ public sealed partial class Program
         app.MapSkyMonitorHealthEndpoints();
 
         await app.RunAsync().ConfigureAwait(false);
+        return 0;
+    }
+
+    private static async Task<int> RunObjectStoreMaintenanceAsync(LogicHostCommand command, ConfigurationManager configuration)
+    {
+        var options = configuration.GetSection(CentralObjectStorageOptions.SectionName).Get<CentralObjectStorageOptions>() ?? new();
+        if (options.Provider != ObjectStorageProvider.Filesystem || !HasValidFilesystemRoot(options))
+        {
+            await Console.Error.WriteLineAsync("Object-store backup, restore and verify apply only when ObjectStorage:Provider is Filesystem with a valid ObjectStorage:Filesystem:Root; the S3 provider's backup belongs to the object-storage service's own runbook.").ConfigureAwait(false);
+            return 2;
+        }
+        var buckets = new[] { options.ArtifactBucket, options.DiagnosticsBucket };
+        var path = Path.GetFullPath(command.Path!);
+        var root = Path.GetFullPath(options.Filesystem.Root!);
+        if (path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal) || string.Equals(path, root, StringComparison.Ordinal))
+        {
+            await Console.Error.WriteLineAsync("The backup path must be outside the object-store root.").ConfigureAwait(false);
+            return 2;
+        }
+        try
+        {
+            switch (command.Mode)
+            {
+                case LogicHostHostMode.ObjectStoreBackup:
+                    {
+                        var inventory = await FilesystemObjectBackup.BackupAsync(root, buckets, path, TimeProvider.System, CancellationToken.None).ConfigureAwait(false);
+                        await Console.Out.WriteLineAsync($"object-store-backup ok objects={inventory.ObjectCount} bytes={inventory.TotalBytes} buckets={string.Join(",", inventory.Buckets)} path={path}").ConfigureAwait(false);
+                        return 0;
+                    }
+                case LogicHostHostMode.ObjectStoreRestore:
+                    {
+                        var inventory = await FilesystemObjectBackup.RestoreAsync(path, root, buckets, CancellationToken.None).ConfigureAwait(false);
+                        var mismatches = await FilesystemObjectBackup.VerifyAsync(path, root, CancellationToken.None).ConfigureAwait(false);
+                        await Console.Out.WriteLineAsync($"object-store-restore ok objects={inventory.ObjectCount} bytes={inventory.TotalBytes} verifiedMismatches={mismatches}").ConfigureAwait(false);
+                        return mismatches == 0 ? 0 : 1;
+                    }
+                default:
+                    {
+                        var mismatches = await FilesystemObjectBackup.VerifyAsync(path, root, CancellationToken.None).ConfigureAwait(false);
+                        await Console.Out.WriteLineAsync($"object-store-verify {(mismatches == 0 ? "ok" : "MISMATCH")} mismatches={mismatches}").ConfigureAwait(false);
+                        return mismatches == 0 ? 0 : 1;
+                    }
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or UnauthorizedAccessException or HVO.SkyMonitor.Storage.FileSystem.FileSystemFaultException)
+        {
+            await Console.Error.WriteLineAsync($"object-store maintenance failed: {exception.Message}").ConfigureAwait(false);
+            return 1;
+        }
     }
 
     private static bool HasUsableDeviceBootstrapCredentials(DeviceBootstrapSecretsOptions options)

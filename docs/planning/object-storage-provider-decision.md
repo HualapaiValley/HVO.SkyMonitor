@@ -170,8 +170,17 @@ whose source data was reclaimed under it re-reads the descriptor and reports `Pr
 when the source moved on, `CorruptState` only when the descriptor still names the missing
 generation (the deferred F1 from #917).
 
-Not yet delivered (later slices of #585): backup inventory/restore contract; measured
-performance against the S3 path.
+**Slice 3: backup and restore.** Three offline host modes, `--host-mode=object-store-backup`,
+`-verify` and `-restore` with `--path=<dir>`, run from LogicHost's own configuration with no
+listener or database. Backup copies every live object in the store's layout, hashing as it
+copies and refusing any mismatch, and writes a checksummed `hvo-fs-object-backup-v1`
+inventory of exact key, content type, length, generation, SHA-256 and modified time. Restore
+is destructive and staged: all buckets stage completely (re-hashed) before any swap, so a
+damaged backup touches nothing; each swap leaves the bucket wholly previous or wholly
+restored. Generations are retained, so persisted `object://` references resolve unchanged.
+Documented in `docs/runbooks/infra-operations.md`.
+
+Not yet delivered (final slice of #585): measured performance against the S3 path.
 
 ## Delivery and Future Order
 

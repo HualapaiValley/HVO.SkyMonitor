@@ -225,6 +225,49 @@ complete, it preserves the durable transaction marker and rollback state for
 operator recovery rather than claiming success. These scripts do not back up
 or restore SQL Server or MinIO.
 
+### Filesystem object-store backup and restore
+
+When `ObjectStorage:Provider` is `Filesystem`, the object-store portion of the
+recovery set is produced and consumed by LogicHost itself, offline, with the
+same configuration the runtime uses so the root and bucket names cannot drift:
+
+```bash
+dotnet HVO.SkyMonitor.LogicHost.dll --host-mode=object-store-backup  --path=/var/backups/skymonitor/objects/<stamp>
+dotnet HVO.SkyMonitor.LogicHost.dll --host-mode=object-store-verify  --path=/var/backups/skymonitor/objects/<stamp>
+dotnet HVO.SkyMonitor.LogicHost.dll --host-mode=object-store-restore --path=/var/backups/skymonitor/objects/<stamp>
+```
+
+Stop LogicHost first. All three modes start no listener, open no database
+connection, and exit: `0` success, `1` the operation failed or verification
+found a mismatch, `2` the mode does not apply (the provider is S3, the root is
+invalid, or the path is inside the root). With the S3 provider the object
+store's backup belongs to the storage service's own runbook, exactly as before.
+
+A backup is the set of live objects, copied in the store's own layout, with
+every data file hashed as it is copied and refused on any mismatch against its
+descriptor, plus `inventory.json` (schema `hvo-fs-object-backup-v1`: bucket,
+exact logical key, content type, length, generation, SHA-256 and modified time
+for every object, sorted by bucket then key) and its `inventory.json.sha256`.
+Retired generations, in-flight temporaries, retirement stamps and quarantine
+are not objects and are not backed up. The target must be an empty or absent
+directory; a backup never merges. A store that fails its own digest check or
+has a malformed descriptor is refused: reconcile it (the host does this on
+start and every ten minutes; the health check reports `QuarantinedCount`)
+before taking the backup, so a backup is never a copy of a known-bad store.
+
+Restore is destructive by contract and staged: every configured bucket is
+rebuilt in full under `<bucket>.restoring`, with each data file re-hashed
+against the inventory, and only after every bucket has staged completely is
+each swapped into place through `<bucket>.replaced`. A damaged backup is
+therefore discovered before any existing bucket is touched, and a failure
+during the swap leaves each bucket either wholly previous or wholly restored.
+Restore refuses a backup that lacks a configured bucket rather than leaving it
+empty, refuses a bucket that is a link, and refuses to proceed while a
+`<bucket>.replaced` from an earlier interrupted restore exists: inspect and
+remove it by hand. After the swap the mode runs verify and exits non-zero on
+any mismatch. Restore reproduces exact keys, metadata, lengths, generations and
+digests, so SQL rows that reference `object://bucket/key` resolve unchanged.
+
 Ordinary start, rebuild, reset, backup, restore, and production-catalog
 install/rollback share one nonblocking operation lock outside the runtime root.
 The lock helper creates a missing runtime parent but never chmods an existing
