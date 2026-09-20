@@ -52,8 +52,9 @@ run_test() {
     [[ "$(printf '%s\n' "$counters" | grep -c '<Counters ')" == 1 ]] || fail "$slot counters are ambiguous."
     executed="$(grep -o 'executed="[0-9]*"' <<< "$counters" | cut -d'"' -f2)"
     passed="$(grep -o 'passed="[0-9]*"' <<< "$counters" | cut -d'"' -f2)"
+    total="$(grep -o 'total="[0-9]*"' <<< "$counters" | cut -d'"' -f2)"
     not_executed="$(grep -o 'notExecuted="[0-9]*"' <<< "$counters" | cut -d'"' -f2)"
-    [[ "$executed" =~ ^[1-9][0-9]*$ && "$passed" == "$executed" && "$not_executed" == 1 ]] \
+    [[ "$executed" =~ ^[1-9][0-9]*$ && "$passed" == "$executed" && "$total" == "$((executed + 1))" && "$not_executed" == 0 ]] \
       || fail "$slot counters do not match the exact permitted Linux exclusion."
     for zero in failed error timeout aborted inconclusive; do
       [[ "$(grep -o "$zero=\"[0-9]*\"" <<< "$counters" | cut -d'"' -f2)" == 0 ]] || fail "$slot counters report $zero."
