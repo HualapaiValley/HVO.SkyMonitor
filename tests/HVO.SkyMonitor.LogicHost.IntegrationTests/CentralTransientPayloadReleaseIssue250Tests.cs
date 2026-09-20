@@ -16,8 +16,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -30,7 +28,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
     public async Task PayloadReleaseReservation_CommitsBeforeDeleteAndFreshProcessorReclaimsExpiredLease()
     {
         await using var database = CreateDatabase("Issue250ReservationRestart");
-        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         Issue250ReleaseSeed? seed = null;
         try
         {
@@ -99,7 +97,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
     public async Task PayloadReleaseReservation_StaleTargetSnapshotRetriesWithoutDeletingStaleReference()
     {
         await using var database = CreateDatabase("Issue250StaleTarget");
-        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         Issue250ReleaseSeed? seed = null;
         string? replacementKey = null;
         try
@@ -164,8 +162,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             }
             if (replacementKey is not null)
             {
-                await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket("skymonitor-artifacts")
-                    .WithObject(replacementKey)).ConfigureAwait(false);
+                await minio.DeleteAsync("skymonitor-artifacts", replacementKey, CancellationToken.None).ConfigureAwait(false);
             }
             await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
         }
@@ -175,7 +172,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
     public async Task PayloadReleaseLateHolds_PreserveBeforeDeleteAndRetryAfterDelete()
     {
         await using var database = CreateDatabase("Issue250LateHolds");
-        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         Issue250ReleaseSeed? seed = null;
         try
         {
@@ -357,7 +354,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         await using var database = CreateDatabase("Issue250LostDeleteResponse");
         using var handler = new Issue250LoseFirstDeleteResponseHandler { InnerHandler = new SocketsHttpHandler() };
         var minio = CreateIssue250Minio(handler);
-        var cleanupMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var cleanupMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         Issue250ReleaseSeed? seed = null;
         try
         {
@@ -399,7 +396,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         await using var database = CreateDatabase("Issue250RetryExhaustion");
         using var handler = new Issue250AlwaysFailDeleteHandler { InnerHandler = new SocketsHttpHandler() };
         var minio = CreateIssue250Minio(handler);
-        var cleanupMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var cleanupMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         Issue250ReleaseSeed? seed = null;
         try
         {
@@ -445,7 +442,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         await using var database = CreateDatabase("Issue250AmbiguousDeleteOutcome");
         using var handler = new Issue250UnknownDeleteOutcomeHandler { InnerHandler = new SocketsHttpHandler() };
         var minio = CreateIssue250Minio(handler);
-        var cleanupMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var cleanupMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         Issue250ReleaseSeed? seed = null;
         try
         {
@@ -455,7 +452,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var service = new CentralTransientPayloadReleaseService(
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
-                ObjectStoreTestClient.Create(minio),
+                minio,
                 Issue250ReleaseOptions(maximumRetryCount: 1),
                 new MutableIssue250TimeProvider(seed.CreatedUtc));
 
@@ -488,7 +485,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
     public async Task PayloadReleaseClaim_SkipsLockedOldestParentAndProcessesSecondDueParent()
     {
         await using var database = CreateDatabase("Issue250NonBlockingClaim");
-        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         var seeds = new List<Issue250ReleaseSeed>();
         try
         {
@@ -567,7 +564,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
     public async Task PayloadReleaseApiReplay_ReturnsAcceptedWhileSameReleaseDeleteIsLive()
     {
         await using var database = CreateDatabase("Issue250ConcurrentApiReplay");
-        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Issue250ReleaseSeed? seed = null;
@@ -633,7 +630,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
     public async Task PayloadHoldFence_ReverseInputOperationsAcquireOneCompleteSortedSetWithoutDeadlock()
     {
         await using var database = CreateDatabase("Issue250CompleteLockOrder");
-        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         Issue250ReleaseSeed? seed = null;
         try
         {
@@ -673,7 +670,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
     [TestMethod]
     public async Task PayloadRelease_ProductionPublicationAndClearWritersLoseReservationAndLiveDeleteRaces()
     {
-        var rawMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var rawMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         await using (var controlDatabase = CreateDatabase("Issue250PublicationControl"))
         {
             Issue250PublicationSeed? control = null;
@@ -950,7 +947,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             (Fence: "reference", Derivative: false),
             (Fence: "target-rowversion", Derivative: true)
         };
-        var rawMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var rawMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         foreach (var scenario in scenarios)
         {
             await using var database = CreateDatabase($"Issue250Cas{scenario.Fence}{scenario.Derivative}");
@@ -1071,13 +1068,13 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 }
                 if (derivativeTarget is not null)
                 {
-                    await rawMinio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket("skymonitor-artifacts")
-                        .WithObject(derivativeTarget.ObjectKey)).ConfigureAwait(false);
+                    await rawMinio.DeleteAsync("skymonitor-artifacts", derivativeTarget.ObjectKey, CancellationToken.None)
+                        .ConfigureAwait(false);
                 }
                 if (replacementKey is not null)
                 {
-                    await rawMinio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket("skymonitor-artifacts")
-                        .WithObject(replacementKey)).ConfigureAwait(false);
+                    await rawMinio.DeleteAsync("skymonitor-artifacts", replacementKey, CancellationToken.None)
+                        .ConfigureAwait(false);
                 }
                 await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
             }
@@ -1144,14 +1141,14 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
 
     private static CentralTransientPayloadReleaseService CreateIssue250Service(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore minio,
         TimeProvider clock,
         ICentralTransientPayloadReleaseFaultInjector? fault = null,
         ICentralArtifactRetentionReferences? references = null)
         => new(
             db,
             references ?? new CentralArtifactRetentionReferences(db),
-            ObjectStoreTestClient.Create(minio),
+            minio,
             Issue250ReleaseOptions(),
             clock,
             faultInjector: fault);
@@ -1169,7 +1166,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
 
     private static async Task<Issue250ReleaseSeed> SeedIssue250ReleaseAsync(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore minio,
         int itemCount)
     {
         var fixture = CentralTransientPersistenceFixture.Create();
@@ -1216,12 +1213,6 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         }
         db.CentralTransientPayloadReleases.Add(release);
         await db.SaveChangesAsync().ConfigureAwait(false);
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-artifacts"))
-                .ConfigureAwait(false))
-        {
-            await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-artifacts"))
-                .ConfigureAwait(false);
-        }
         foreach (var target in targets)
         {
             await PutIssue250ObjectAsync(minio, target.ObjectKey, target.Payload).ConfigureAwait(false);
@@ -1229,17 +1220,16 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         return new(release.ReleaseId, createdUtc, targets);
     }
 
-    private static async Task PutIssue250ObjectAsync(IMinioClient minio, string key, byte[] payload)
+    private static async Task PutIssue250ObjectAsync(IObjectStore minio, string key, byte[] payload)
     {
         await using var stream = new MemoryStream(payload, writable: false);
-        await minio.PutObjectAsync(new PutObjectArgs().WithBucket("skymonitor-artifacts").WithObject(key)
-            .WithStreamData(stream).WithObjectSize(payload.LongLength).WithContentType("application/octet-stream"))
+        await minio.PutAsync("skymonitor-artifacts", key, stream, payload.LongLength, "application/octet-stream", CancellationToken.None)
             .ConfigureAwait(false);
     }
 
     private static async Task<Issue250PublicationSeed> SeedIssue250PublicationAsync(
         ApplicationDbContext db,
-        IMinioClient minio)
+        IObjectStore minio)
     {
         var release = await SeedIssue250ReleaseAsync(db, minio, 1).ConfigureAwait(false);
         var owner = new ApplicationUser
@@ -1292,7 +1282,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
 
     private static async Task<Issue250ReleaseTarget> AddIssue250DerivativeTargetAsync(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore minio,
         Issue250ReleaseSeed seed)
     {
         var release = await db.CentralTransientPayloadReleases.AsNoTracking()
@@ -1377,31 +1367,27 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         return new(intent.Id, intent.StorageReference, objectKey, 0, payload);
     }
 
-    private static async Task AssertIssue250ObjectExistsAsync(IMinioClient minio, string key)
-        => Assert.IsNotNull(await minio.StatObjectAsync(new StatObjectArgs()
-            .WithBucket("skymonitor-artifacts").WithObject(key)).ConfigureAwait(false));
+    private static async Task AssertIssue250ObjectExistsAsync(IObjectStore minio, string key)
+        => Assert.IsNotNull(await minio.StatAsync("skymonitor-artifacts", key, CancellationToken.None).ConfigureAwait(false));
 
-    private static async Task AssertIssue250ObjectAbsentAsync(IMinioClient minio, string key)
+    private static async Task AssertIssue250ObjectAbsentAsync(IObjectStore minio, string key)
     {
-        Func<Task> stat = () => minio.StatObjectAsync(new StatObjectArgs()
-            .WithBucket("skymonitor-artifacts").WithObject(key));
-        await stat.Should().ThrowAsync<Minio.Exceptions.ObjectNotFoundException>().ConfigureAwait(false);
+        Func<Task> stat = () => minio.StatAsync("skymonitor-artifacts", key, CancellationToken.None);
+        (await stat.Should().ThrowAsync<ObjectStoreException>().ConfigureAwait(false))
+            .Which.Kind.Should().Be(ObjectStoreFailureKind.MissingObject);
     }
 
-    private static async Task CleanupIssue250ObjectsAsync(IMinioClient minio, Issue250ReleaseSeed seed)
+    private static async Task CleanupIssue250ObjectsAsync(IObjectStore minio, Issue250ReleaseSeed seed)
     {
         foreach (var target in seed.Items)
         {
-            await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket("skymonitor-artifacts")
-                .WithObject(target.ObjectKey)).ConfigureAwait(false);
+            await minio.DeleteAsync("skymonitor-artifacts", target.ObjectKey, CancellationToken.None).ConfigureAwait(false);
         }
     }
 
-    private static IMinioClient CreateIssue250Minio(HttpMessageHandler handler)
-        => new MinioClient().WithEndpoint(AssemblyHooks.Fixture.MinioEndpoint)
-            .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
-            .WithHttpClient(new HttpClient(handler, disposeHandler: false), disposeHttpClient: true)
-            .Build();
+    private static IObjectStore CreateIssue250Minio(HttpMessageHandler handler)
+        => ObjectStoreTestClient.Create(
+            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>(), handler);
 
     private sealed class MutableIssue250TimeProvider(DateTimeOffset now) : TimeProvider
     {

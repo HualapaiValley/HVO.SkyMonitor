@@ -188,7 +188,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
                 Storage = "Docker-backed SQL Server and MinIO Testcontainers",
                 SqlServerVersion = sqlVersion,
                 MinioVersion = "RELEASE.2025-09-07T16-13-09Z",
-                fixture.MinioEndpoint,
+                IntegrationTestFixture.ExternalS3Endpoint,
                 SqlServer = new SqlConnectionStringBuilder(fixture.SqlServerConnectionString).DataSource
             },
             P0 = new

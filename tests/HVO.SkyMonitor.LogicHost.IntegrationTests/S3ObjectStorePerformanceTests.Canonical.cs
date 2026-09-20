@@ -36,8 +36,8 @@ public sealed partial class S3ObjectStorePerformanceTests
         using var httpClient = new HttpClient(handler, disposeHandler: false);
         using var directClient = new MinioClient();
         _ = directClient
-            .WithEndpoint(fixture.MinioEndpoint)
-            .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+            .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+            .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
             .WithHttpClient(httpClient, disposeHttpClient: false)
             .Build();
         var options = CreateS3Options();

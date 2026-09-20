@@ -6,7 +6,6 @@ using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
-using Minio;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -66,7 +65,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
     public async Task PayloadReleaseReplay_NormalizesIncompletePendingItemSet()
     {
         await using var database = CreateDatabase("Issue284ReplayNormalization");
-        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         Issue250ReleaseSeed? seed = null;
         try
         {

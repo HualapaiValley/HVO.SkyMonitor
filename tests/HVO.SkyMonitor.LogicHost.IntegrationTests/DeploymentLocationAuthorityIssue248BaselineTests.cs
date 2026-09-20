@@ -2290,8 +2290,8 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 new("sql-data-source", builder.DataSource, PrivateValueMatch.Substring),
                 new("sql-initial-catalog", builder.InitialCatalog, PrivateValueMatch.ExactJsonString),
                 new("sql-user-id", builder.UserID, PrivateValueMatch.ExactJsonString),
-                new("minio-access-key", IntegrationTestFixture.MinioAccessKey, PrivateValueMatch.Substring),
-                new("minio-secret-key", IntegrationTestFixture.MinioSecretKey, PrivateValueMatch.Substring)
+                new("minio-access-key", IntegrationTestFixture.ExternalS3AccessKey, PrivateValueMatch.Substring),
+                new("minio-secret-key", IntegrationTestFixture.ExternalS3SecretKey, PrivateValueMatch.Substring)
             ]).Where(candidate => !string.IsNullOrEmpty(candidate.Value));
         foreach (var candidate in candidates)
         {

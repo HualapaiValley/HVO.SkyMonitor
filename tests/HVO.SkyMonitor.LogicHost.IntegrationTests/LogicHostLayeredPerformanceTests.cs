@@ -84,7 +84,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             fixture, ingestClient, rawUpload).ConfigureAwait(false);
         using var ownerClient = await ArtifactRetrievalTests.CreateUserClientAsync(
             TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
-        using var protocol = new ProtocolCounter(fixture.MinioEndpoint);
+        using var protocol = new ProtocolCounter(IntegrationTestFixture.ExternalS3Endpoint);
 
         var structuredIngest = await MeasureIssues437432UploadsAsync(
             ingestClient,
@@ -207,7 +207,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 serverGc = GCSettings.IsServerGC,
                 host = "ASP.NET Core TestServer",
                 sqlServer = IntegrationTestFixture.SqlServerImage,
-                minio = IntegrationTestFixture.MinioImage,
+                minio = IntegrationTestFixture.ExternalS3ImageLabel,
                 redis = IntegrationTestFixture.RedisImage,
                 storage = new DriveInfo(Path.GetPathRoot(root)!).DriveFormat,
                 containerMode = "SQL Server, MinIO, and Redis Testcontainers; LogicHost in-process"
@@ -314,7 +314,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         };
         var json = JsonSerializer.Serialize(result, Issues437432JsonOptions);
         Assert.IsFalse(json.Contains(fixture.SqlServerConnectionString, StringComparison.Ordinal));
-        Assert.IsFalse(json.Contains(IntegrationTestFixture.MinioSecretKey, StringComparison.Ordinal));
+        Assert.IsFalse(json.Contains(IntegrationTestFixture.ExternalS3SecretKey, StringComparison.Ordinal));
         await using (var stream = new FileStream(
                          outputPath,
                          FileMode.CreateNew,

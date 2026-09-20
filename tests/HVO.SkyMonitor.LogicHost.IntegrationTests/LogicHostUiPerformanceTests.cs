@@ -652,7 +652,7 @@ public sealed class LogicHostUiPerformanceTests
             {
                 SqlServer = IntegrationTestFixture.SqlServerImage,
                 Redis = IntegrationTestFixture.RedisImage,
-                Minio = IntegrationTestFixture.MinioImage,
+                Minio = IntegrationTestFixture.ExternalS3ImageLabel,
                 Mailpit = IntegrationTestFixture.MailpitImage
             }
         };

@@ -17,9 +17,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Minio;
-using Minio.DataModel.Args;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -36,11 +33,6 @@ public sealed class CentralRecoveryIntegrationTests
     [TestInitialize]
     public async Task InitializeAsync()
     {
-        var minio = GetMinio();
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(Bucket)).ConfigureAwait(false))
-        {
-            await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(Bucket)).ConfigureAwait(false);
-        }
         await ResetCheckpointAsync().ConfigureAwait(false);
     }
 
@@ -130,18 +122,11 @@ public sealed class CentralRecoveryIntegrationTests
                 .ExecuteDeleteAsync().ConfigureAwait(false);
             await db.Observatories.Where(item => observatoryIds.Contains(item.Id)).ExecuteDeleteAsync().ConfigureAwait(false);
         }
-        var minio = GetMinio();
+        var objectStore = GetObjectStore();
         await Parallel.ForEachAsync(objectKeys, new ParallelOptions { MaxDegreeOfParallelism = 16 },
             async (key, cancellationToken) =>
             {
-                try
-                {
-                    await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket(Bucket).WithObject(key), cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (MinioException exception) when (ObjectStoreTestClient.IsNotFound(exception))
-                {
-                }
+                await objectStore.DeleteAsync(Bucket, key, cancellationToken).ConfigureAwait(false);
             }).ConfigureAwait(false);
     }
 
@@ -568,12 +553,12 @@ public sealed class CentralRecoveryIntegrationTests
             .Select(index => $"artifacts/{deviceKey}/{index:D5}.bin")
             .ToArray();
         objectKeys.UnionWith(keys);
-        var minio = GetMinio();
+        var objectStore = GetObjectStore();
         await Parallel.ForEachAsync(keys, new ParallelOptions { MaxDegreeOfParallelism = 16 },
             async (key, cancellationToken) =>
             {
-                await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(key)
-                    .WithStreamData(new MemoryStream([1], writable: false)).WithObjectSize(1), cancellationToken)
+                await using var stream = new MemoryStream([1], writable: false);
+                await objectStore.PutAsync(Bucket, key, stream, 1, "application/octet-stream", cancellationToken)
                     .ConfigureAwait(false);
             }).ConfigureAwait(false);
         await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifactsCatchAll).ConfigureAwait(false);
@@ -716,7 +701,7 @@ public sealed class CentralRecoveryIntegrationTests
         var artifactId = await AddArtifactAsync(key, [1, 2, 3], CentralArtifactObjectState.Pending,
             CentralReconstructionState.Complete).ConfigureAwait(false);
         var stolenToken = Guid.NewGuid();
-        var handler = new LeaseStealingHandler(async () =>
+        var objectStore = new LeaseStealingObjectStore(GetObjectStore(), async () =>
         {
             await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
             await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralRecoveryCheckpoints
@@ -724,18 +709,10 @@ public sealed class CentralRecoveryIntegrationTests
                     .SetProperty(item => item.LeaseToken, stolenToken)
                     .SetProperty(item => item.LeaseExpiresAtUtc, DateTimeOffset.UtcNow.AddMinutes(5)))
                 .ConfigureAwait(false);
-        })
-        {
-            InnerHandler = new SocketsHttpHandler()
-        };
-        using var httpClient = new HttpClient(handler, disposeHandler: false);
-        using var minio = new MinioClient().WithEndpoint(AssemblyHooks.Fixture.MinioEndpoint)
-            .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
-            .WithHttpClient(httpClient, disposeHttpClient: false).Build();
+        });
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
-        services.AddSingleton<IMinioClient>(minio);
-        services.AddSingleton<IObjectStore>(ObjectStoreTestClient.Create(minio));
+        services.AddSingleton<IObjectStore>(objectStore);
         AddObjectReader(services);
         services.AddScoped<ICentralDerivativeJobScheduler>(_ => new RecordingScheduler());
         await using var provider = services.BuildServiceProvider();
@@ -765,9 +742,7 @@ public sealed class CentralRecoveryIntegrationTests
         var state = new SchedulerLeaseLossState(Guid.NewGuid());
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
-        services.AddSingleton(GetMinio());
-        services.AddSingleton<IObjectStore>(provider =>
-            ObjectStoreTestClient.Create(provider.GetRequiredService<IMinioClient>()));
+        services.AddSingleton(GetObjectStore());
         AddObjectReader(services);
         services.AddScoped<ICentralDerivativeJobScheduler>(provider => new CommittingLeaseStealingScheduler(
             provider.GetRequiredService<ApplicationDbContext>(), provider.GetRequiredService<IServiceScopeFactory>(), state));
@@ -1405,39 +1380,40 @@ public sealed class CentralRecoveryIntegrationTests
     private async Task PutObjectAsync(string key, byte[] payload)
     {
         objectKeys.Add(key);
-        await GetMinio().PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(key)
-            .WithStreamData(new MemoryStream(payload)).WithObjectSize(payload.LongLength)).ConfigureAwait(false);
+        await using var stream = new MemoryStream(payload, writable: false);
+        await GetObjectStore().PutAsync(Bucket, key, stream, payload.LongLength, "application/octet-stream", CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     private static async Task<byte[]> ReadObjectAsync(string key)
     {
-        using var stream = new MemoryStream();
-        await GetMinio().GetObjectAsync(new GetObjectArgs().WithBucket(Bucket).WithObject(key)
-            .WithCallbackStream(source => source.CopyTo(stream))).ConfigureAwait(false);
-        return stream.ToArray();
+        using var destination = new MemoryStream();
+        await GetObjectStore().ReadAsync(Bucket, key, null,
+            (source, cancellationToken) => source.CopyToAsync(destination, cancellationToken), CancellationToken.None)
+            .ConfigureAwait(false);
+        return destination.ToArray();
     }
 
     private static async Task<bool> ObjectExistsAsync(string key)
     {
         try
         {
-            await GetMinio().StatObjectAsync(new StatObjectArgs().WithBucket(Bucket).WithObject(key)).ConfigureAwait(false);
+            await GetObjectStore().StatAsync(Bucket, key, CancellationToken.None).ConfigureAwait(false);
             return true;
         }
-        catch (MinioException exception) when (ObjectStoreTestClient.IsNotFound(exception))
+        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
         {
             return false;
         }
     }
 
-    private static IMinioClient GetMinio()
-        => AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+    private static IObjectStore GetObjectStore()
+        => AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
 
     private static async Task<int> FindEmptyObjectPartitionPairAsync(string prefix)
     {
         var occupied = new HashSet<int>();
-        await foreach (var item in GetMinio().ListObjectsEnumAsync(
-            new ListObjectsArgs().WithBucket(Bucket).WithPrefix(prefix).WithRecursive(true)))
+        await foreach (var item in GetObjectStore().ListAsync(Bucket, prefix, CancellationToken.None))
         {
             var relative = item.Key.AsSpan(prefix.Length);
             if (relative.Length >= 2
@@ -1460,9 +1436,7 @@ public sealed class CentralRecoveryIntegrationTests
     {
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
-        services.AddSingleton(GetMinio());
-        services.AddSingleton<IObjectStore>(provider =>
-            ObjectStoreTestClient.Create(provider.GetRequiredService<IMinioClient>()));
+        services.AddSingleton(GetObjectStore());
         if (objectReader is null)
         {
             AddObjectReader(services);
@@ -1479,9 +1453,7 @@ public sealed class CentralRecoveryIntegrationTests
     {
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
-        services.AddSingleton(GetMinio());
-        services.AddSingleton<IObjectStore>(provider =>
-            ObjectStoreTestClient.Create(provider.GetRequiredService<IMinioClient>()));
+        services.AddSingleton(GetObjectStore());
         AddObjectReader(services);
         services.AddScoped<ICentralDerivativeJobScheduler>(provider => new DurableRecordingScheduler(
             provider.GetRequiredService<ApplicationDbContext>(), state));
@@ -1718,22 +1690,42 @@ public sealed class CentralRecoveryIntegrationTests
         }
     }
 
-    private sealed class LeaseStealingHandler(Func<Task> stealLease) : DelegatingHandler
+    private sealed class LeaseStealingObjectStore(IObjectStore inner, Func<Task> stealLease) : IObjectStore
     {
         private int armed = 1;
 
-        protected override async Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
+        public Task<bool> BucketExistsAsync(string bucket, CancellationToken cancellationToken)
+            => inner.BucketExistsAsync(bucket, cancellationToken);
+
+        public Task PutAsync(string bucket, string key, Stream content, long contentLength, string contentType, CancellationToken cancellationToken)
+            => inner.PutAsync(bucket, key, content, contentLength, contentType, cancellationToken);
+
+        public Task<ObjectStoreObjectMetadata> StatAsync(string bucket, string key, CancellationToken cancellationToken)
+            => inner.StatAsync(bucket, key, cancellationToken);
+
+        public async Task ReadAsync(
+            string bucket,
+            string key,
+            string? generation,
+            Func<Stream, CancellationToken, Task> reader,
             CancellationToken cancellationToken)
         {
-            if (request.Method == HttpMethod.Get
-                && request.RequestUri?.Query.Contains("list-type", StringComparison.Ordinal) != true
-                && Interlocked.Exchange(ref armed, 0) == 1)
+            if (Interlocked.Exchange(ref armed, 0) == 1)
             {
                 await stealLease().ConfigureAwait(false);
             }
-            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            await inner.ReadAsync(bucket, key, generation, reader, cancellationToken).ConfigureAwait(false);
         }
+
+        public Task CopyAsync(string bucket, string sourceKey, string destinationKey, CancellationToken cancellationToken)
+            => inner.CopyAsync(bucket, sourceKey, destinationKey, cancellationToken);
+
+        public Task DeleteAsync(string bucket, string key, CancellationToken cancellationToken)
+            => inner.DeleteAsync(bucket, key, cancellationToken);
+
+        public IAsyncEnumerable<ObjectStoreItem> ListAsync(
+            string bucket, string prefix, CancellationToken cancellationToken, string? startAfter = null)
+            => inner.ListAsync(bucket, prefix, cancellationToken, startAfter);
     }
 
     private sealed class SchedulerLeaseLossState(Guid stolenToken)
@@ -1888,9 +1880,7 @@ public sealed class CentralRecoveryIntegrationTests
             var services = new ServiceCollection();
             services.AddDbContext<ApplicationDbContext>(builder => builder.UseSqlServer(connection)
                 .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning)));
-            services.AddSingleton(GetMinio());
-            services.AddSingleton<IObjectStore>(provider =>
-                ObjectStoreTestClient.Create(provider.GetRequiredService<IMinioClient>()));
+            services.AddSingleton(GetObjectStore());
             AddObjectReader(services);
             services.AddScoped<ICentralDerivativeJobScheduler>(_ => new RecordingScheduler());
             return new IsolatedRecoveryDatabase(context, services.BuildServiceProvider());

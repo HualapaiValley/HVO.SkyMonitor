@@ -50,9 +50,9 @@ public sealed class CentralObjectStorageOptions
     public S3ObjectStorageOptions S3 { get; } = new();
 
     /// <summary>
-    /// Filesystem-provider settings. Reserved by this issue and bound by #585; until then a
-    /// configured root with <see cref="Provider"/> not set to Filesystem is a validation error,
-    /// so a half-migrated deployment fails closed at startup rather than silently using S3.
+    /// Filesystem-provider settings. Supported local deployments select this provider explicitly;
+    /// a configured root with <see cref="Provider"/> not set to Filesystem remains a validation
+    /// error so a contradictory deployment fails closed rather than silently using S3.
     /// </summary>
     public FilesystemObjectStorageOptions Filesystem { get; } = new();
 

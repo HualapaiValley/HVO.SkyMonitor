@@ -1,12 +1,12 @@
 using System.Collections.Generic;
 using System.Globalization;
-using System.Net;
-using System.Net.Sockets;
 using System.Threading.Tasks;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using HVO.SkyMonitor.Common.Security;
+using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.AgentCore;
@@ -20,8 +20,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Minio;
-using Minio.DataModel.Args;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Testcontainers.MsSql;
 using Testcontainers.Redis;
 
@@ -30,30 +30,27 @@ namespace HVO.SkyMonitor.LogicHost.TestInfrastructure;
 using Program = HVO.SkyMonitor.LogicHost.Program;
 
 /// <summary>
-/// Integration test fixture that starts Testcontainers for SQL Server, Redis, and MinIO.
+/// Integration test fixture that starts Testcontainers for SQL Server, Redis, and Mailpit
+/// and uses the production filesystem object-store provider.
 /// Provides a WebApplicationFactory for hosting the HVO.SkyMonitor application in-process.
 /// </summary>
 public sealed class IntegrationTestFixture : IDisposable
 {
     public const string SqlServerImage = "mcr.microsoft.com/mssql/server:2022-CU26-ubuntu-22.04@sha256:ba4c8329f48fb8f02e1416be6a930ebfd71268caee78aa985f3af4315e457c89";
     public const string RedisImage = "redis:7.4.11-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf";
-    public const string MinioImage = "minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e";
     public const string MailpitImage = "axllent/mailpit:v1.31.0@sha256:c96991d9bef73594c246d89ca81411d4e916f03e76a7d2d72fa2ab5dd3c9ce24";
     private const string SqlServerPassword = "SkyMonitor_test_password1!";
     private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
     private readonly bool _suppressRecurringWorkers;
-    private readonly bool _useEphemeralMinioStorage;
-    private readonly int _minioHostPort = GetFreeTcpPort();
     private MsSqlContainer? _sqlServerContainer;
     private RedisContainer? _redisContainer;
-    private IContainer? _minioContainer;
     private IContainer? _smtpContainer;
+    private FilesystemObjectStore? _objectStore;
     private CatalogFixtureInstallation? _catalogFixture;
     private bool _initialized;
     private string? _originalSqlServerConnectionString;
     private string? _originalDefaultConnectionString;
     private string _redisHost = "127.0.0.1";
-    private string _minioHost = "127.0.0.1";
     private string _smtpHost = "127.0.0.1";
 
     /// <summary>
@@ -72,33 +69,54 @@ public sealed class IntegrationTestFixture : IDisposable
     public string RedisConnectionString { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the MinIO endpoint.
+    /// Gets the fixture-owned filesystem object-store root.
     /// </summary>
-    public string MinioEndpoint { get; private set; } = string.Empty;
+    public string ObjectStorageRoot { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Environment variables naming an operator-provided S3-compatible endpoint. The supported
+    /// LogicHost deployment uses the filesystem provider, so no S3 server is started or managed
+    /// here; the retained S3 adapter tests are opt-in against an endpoint the operator supplies.
+    /// </summary>
+    public const string ExternalS3EndpointVariable = "HVO_SKYMONITOR_S3_TEST_ENDPOINT";
+    public const string ExternalS3AccessKeyVariable = "HVO_SKYMONITOR_S3_TEST_ACCESS_KEY";
+    public const string ExternalS3SecretKeyVariable = "HVO_SKYMONITOR_S3_TEST_SECRET_KEY";
+
+    public static string? TryGetExternalS3Endpoint()
+    {
+        var endpoint = Environment.GetEnvironmentVariable(ExternalS3EndpointVariable);
+        return string.IsNullOrWhiteSpace(endpoint) ? null : endpoint;
+    }
+
+    public static string ExternalS3Endpoint
+        => TryGetExternalS3Endpoint()
+            ?? throw new InvalidOperationException(
+                $"These tests require an S3-compatible endpoint in {ExternalS3EndpointVariable}. " +
+                "The supported LogicHost deployment uses the filesystem object-store provider.");
+
+    public static string ExternalS3AccessKey
+        => Environment.GetEnvironmentVariable(ExternalS3AccessKeyVariable) ?? "minioadmin";
+
+    public static string ExternalS3SecretKey
+        => Environment.GetEnvironmentVariable(ExternalS3SecretKeyVariable) ?? "minioadmin";
+
+    /// <summary>
+    /// Provenance label for historical evidence documents that recorded the object-storage
+    /// server image. No such server is managed by this fixture.
+    /// </summary>
+    public static string ExternalS3ImageLabel => TryGetExternalS3Endpoint() ?? "external-s3-endpoint";
 
     /// <summary>
     /// Gets the SMTP HTTP endpoint (Mailpit UI/API).
     /// </summary>
     public string SmtpHttpEndpoint { get; private set; } = string.Empty;
 
-    /// <summary>
-    /// Gets the MinIO access key.
-    /// </summary>
-    public const string MinioAccessKey = "minioadmin";
-
-    /// <summary>
-    /// Gets the MinIO secret key.
-    /// </summary>
-    public const string MinioSecretKey = "minioadmin";
-
     public IntegrationTestFixture(
         IReadOnlyDictionary<string, string?>? configurationOverrides = null,
-        bool suppressRecurringWorkers = false,
-        bool useEphemeralMinioStorage = false)
+        bool suppressRecurringWorkers = false)
     {
         _configurationOverrides = configurationOverrides ?? new Dictionary<string, string?>();
         _suppressRecurringWorkers = suppressRecurringWorkers;
-        _useEphemeralMinioStorage = useEphemeralMinioStorage;
     }
 
     public async Task SeedActiveDeviceAsync(string deviceId)
@@ -261,26 +279,28 @@ public sealed class IntegrationTestFixture : IDisposable
         var redisPort = _redisContainer.GetMappedPublicPort(6379);
         RedisConnectionString = $"{_redisHost}:{redisPort}";
 
-        // Start MinIO container
-        var minioBuilder = new ContainerBuilder(MinioImage)
-            .WithPortBinding(_minioHostPort, 9000)
-            .WithEnvironment(new Dictionary<string, string>
-            {
-                ["MINIO_ROOT_USER"] = MinioAccessKey,
-                ["MINIO_ROOT_PASSWORD"] = MinioSecretKey
-            })
-                .WithCommand("server", "/data", "--console-address", ":9001")
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(9000));
-        if (_useEphemeralMinioStorage)
+        ObjectStorageRoot = Path.Combine(Path.GetTempPath(), "hvo-logichost-object-store-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(ObjectStorageRoot);
+        foreach (var bucket in new[] { "skymonitor-artifacts", "skymonitor-diagnostics" })
         {
-            minioBuilder = minioBuilder.WithTmpfsMount("/data");
+            Directory.CreateDirectory(Path.Combine(ObjectStorageRoot, bucket));
         }
-        _minioContainer = minioBuilder.Build();
-
-        await _minioContainer.StartAsync().ConfigureAwait(false);
-        _minioHost = _minioContainer.Hostname;
-        var minioPort = _minioHostPort;
-        MinioEndpoint = $"{_minioHost}:{minioPort}";
+        if (!OperatingSystem.IsWindows())
+        {
+            const UnixFileMode mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupExecute;
+            File.SetUnixFileMode(ObjectStorageRoot, mode);
+            File.SetUnixFileMode(Path.Combine(ObjectStorageRoot, "skymonitor-artifacts"), mode);
+            File.SetUnixFileMode(Path.Combine(ObjectStorageRoot, "skymonitor-diagnostics"), mode);
+        }
+        var objectStorageOptions = new CentralObjectStorageOptions { Provider = ObjectStorageProvider.Filesystem };
+        objectStorageOptions.Filesystem.Root = ObjectStorageRoot;
+        var wrappedObjectStorageOptions = Options.Create(objectStorageOptions);
+        _objectStore = new FilesystemObjectStore(
+            wrappedObjectStorageOptions,
+            new ObjectStoreTelemetry(wrappedObjectStorageOptions),
+            TimeProvider.System,
+            NullLogger<FilesystemObjectStore>.Instance);
 
         // Start SMTP (Mailpit) container
         _smtpContainer = new ContainerBuilder(MailpitImage)
@@ -296,10 +316,7 @@ public sealed class IntegrationTestFixture : IDisposable
         SmtpHttpEndpoint = $"http://{_smtpHost}:{smtpHttpPort}";
 
         // Create the web application factory
-        Factory = CreateFactory(minioPort, smtpPort);
-
-        // Seed test data
-        await SeedTestDataAsync().ConfigureAwait(false);
+        Factory = CreateFactory(smtpPort);
 
         _initialized = true;
     }
@@ -310,8 +327,7 @@ public sealed class IntegrationTestFixture : IDisposable
     {
         var smtpPort = _smtpContainer?.GetMappedPublicPort(1025)
             ?? throw new InvalidOperationException("The SMTP fixture is not initialized.");
-        var factory = CreateFactory(
-            _minioHostPort, smtpPort, "Development", configureDatabase, configureServices);
+        var factory = CreateFactory(smtpPort, "Development", configureDatabase, configureServices);
         factory.UseKestrel(0);
         return factory;
     }
@@ -322,15 +338,13 @@ public sealed class IntegrationTestFixture : IDisposable
             ?? throw new InvalidOperationException("The SQL Server fixture is not initialized."),
         IntegrationDependency.Redis => _redisContainer
             ?? throw new InvalidOperationException("The Redis fixture is not initialized."),
-        IntegrationDependency.Minio => _minioContainer
-            ?? throw new InvalidOperationException("The MinIO fixture is not initialized."),
+        IntegrationDependency.Minio => throw new InvalidOperationException("MinIO is not part of the shared LogicHost integration fixture."),
         IntegrationDependency.Smtp => _smtpContainer
             ?? throw new InvalidOperationException("The SMTP fixture is not initialized."),
         _ => throw new ArgumentOutOfRangeException(nameof(dependency))
     };
 
     private WebApplicationFactory<Program> CreateFactory(
-        int minioPort,
         int smtpPort,
         string environment = "Testing",
         Action<DbContextOptionsBuilder>? configureDatabase = null,
@@ -348,13 +362,8 @@ public sealed class IntegrationTestFixture : IDisposable
                         ["ConnectionStrings:DefaultConnection"] = SqlServerConnectionString,
                         ["Redis:Configuration"] = RedisConnectionString,
                         ["Redis:InstanceName"] = "integration-tests",
-                        ["ObjectStorage:ServiceEndpoint"] = $"{_minioHost}:{minioPort.ToString(CultureInfo.InvariantCulture)}",
-                        ["ObjectStorage:Region"] = "us-east-1",
-                        ["ObjectStorage:UseTls"] = "false",
-                        ["ObjectStorage:AddressingStyle"] = "Path",
-                        ["ObjectStorage:CredentialMode"] = "Static",
-                        ["ObjectStorage:AccessKey"] = MinioAccessKey,
-                        ["ObjectStorage:SecretKey"] = MinioSecretKey,
+                        ["ObjectStorage:Provider"] = "Filesystem",
+                        ["ObjectStorage:Filesystem:Root"] = ObjectStorageRoot,
                         ["ObjectStorage:ArtifactBucket"] = "skymonitor-artifacts",
                         ["ObjectStorage:DiagnosticsBucket"] = "skymonitor-diagnostics",
                         ["Smtp:Host"] = _smtpHost,
@@ -387,10 +396,9 @@ public sealed class IntegrationTestFixture : IDisposable
 
                 builder.ConfigureTestServices(services =>
                 {
-                    services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                        .WithEndpoint(_minioHost, minioPort)
-                        .WithCredentials(MinioAccessKey, MinioSecretKey)
-                        .Build());
+                    services.RemoveAll<IObjectStore>();
+                    services.AddSingleton<IObjectStore>(_objectStore
+                        ?? throw new InvalidOperationException("The filesystem object-store fixture is not initialized."));
                     foreach (var descriptor in services.Where(static descriptor =>
                              descriptor.ServiceType == typeof(IHostedService)
                               && (descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)
@@ -437,26 +445,6 @@ public sealed class IntegrationTestFixture : IDisposable
 
     private string CatalogRoot => _catalogFixture?.Root
         ?? throw new InvalidOperationException("The catalog fixture is not initialized.");
-
-    /// <summary>
-    /// Seeds test data into the database.
-    /// </summary>
-    private async Task SeedTestDataAsync()
-    {
-        // Deployment owns provisioning; the fixture provides both required private buckets.
-        using var client = new MinioClient()
-            .WithEndpoint(_minioHost, _minioHostPort)
-            .WithCredentials(MinioAccessKey, MinioSecretKey)
-            .Build();
-
-        foreach (var bucket in new[] { "skymonitor-artifacts", "skymonitor-diagnostics" })
-        {
-            if (!await client.BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket)).ConfigureAwait(false))
-            {
-                await client.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket)).ConfigureAwait(false);
-            }
-        }
-    }
 
     private static void AddDatabaseSeedOverrides(Dictionary<string, string?> overrides)
     {
@@ -567,25 +555,15 @@ public sealed class IntegrationTestFixture : IDisposable
             _redisContainer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
 
-        if (_minioContainer != null)
-        {
-            _minioContainer.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        }
-
         if (_smtpContainer != null)
         {
             _smtpContainer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
-
-    }
-
-    private static int GetFreeTcpPort()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
+        _objectStore?.Dispose();
+        if (Directory.Exists(ObjectStorageRoot))
+        {
+            Directory.Delete(ObjectStorageRoot, recursive: true);
+        }
     }
 }
 

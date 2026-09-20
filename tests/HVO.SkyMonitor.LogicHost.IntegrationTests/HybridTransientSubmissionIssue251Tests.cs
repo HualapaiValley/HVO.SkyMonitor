@@ -10,8 +10,6 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -214,14 +212,9 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                 var replacement = Enumerable.Repeat((byte)0xA5, checked((int)byteLength)).ToArray();
                 await using var replacementStream = new MemoryStream(replacement, writable: false);
                 await using var replacementScope = factory.Services.CreateAsyncScope();
-                await replacementScope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(
-                    new PutObjectArgs()
-                        .WithBucket("skymonitor-artifacts")
-                        .WithObject(objectKey)
-                        .WithStreamData(replacementStream)
-                        .WithObjectSize(byteLength)
-                        .WithContentType("application/x-hvo-linear-frame"),
-                    CancellationToken.None).ConfigureAwait(false);
+                await replacementScope.ServiceProvider.GetRequiredService<IObjectStore>().PutAsync(
+                    "skymonitor-artifacts", objectKey, replacementStream, byteLength,
+                    "application/x-hvo-linear-frame", CancellationToken.None).ConfigureAwait(false);
             }
             finally
             {

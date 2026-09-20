@@ -302,8 +302,8 @@ public sealed class CentralArtifactRetentionCandidateFaultEvidenceTests
         var findings = new List<string>();
         var forbiddenValues = new[]
         {
-            IntegrationTestFixture.MinioAccessKey,
-            IntegrationTestFixture.MinioSecretKey,
+            IntegrationTestFixture.ExternalS3AccessKey,
+            IntegrationTestFixture.ExternalS3SecretKey,
             AssemblyHooks.Fixture.SqlServerConnectionString
         };
         foreach (var value in forbiddenValues)
