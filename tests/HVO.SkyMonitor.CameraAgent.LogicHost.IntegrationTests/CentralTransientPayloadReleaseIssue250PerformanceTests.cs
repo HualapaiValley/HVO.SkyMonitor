@@ -5348,7 +5348,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         var drive = new DriveInfo(Path.GetPathRoot(repositoryRoot)!);
         var availableDisk = drive.AvailableFreeSpace;
         var minioStorageFree = await ReadContainerStorageFreeBytesAsync(
-            fixture, IntegrationDependency.Minio, "/data").ConfigureAwait(false);
+            fixture, IntegrationDependency.ObjectStore, "/data").ConfigureAwait(false);
         var sqlStorageFree = await ReadContainerStorageFreeBytesAsync(
             fixture, IntegrationDependency.SqlServer, "/var/opt/mssql/data").ConfigureAwait(false);
         const long minimumMemory = 8L * 1024 * 1024 * 1024;

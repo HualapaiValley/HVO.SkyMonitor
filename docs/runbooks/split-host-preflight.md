@@ -1037,7 +1037,7 @@ exception text, or credentials.
 
 Before recording anything, the importer requires exactly one passing TRX for
 that fully qualified test and exactly four evidence entries. It sanitizes only
-`minio-failure`, `sql-failure`, `redis-failure`, and `smtp-failure` into the
+`object-store-failure`, `sql-failure`, `redis-failure`, and `smtp-failure` into the
 existing acceptance artifact schema. Source evidence, TRX, sanitized artifacts,
 and their lengths/SHA-256 values are committed as one owner-only, atomically
 renamed bundle beneath

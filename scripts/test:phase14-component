@@ -137,7 +137,7 @@ write_source_evidence() {
           Configuration:"Release",InformationalVersion:("1.0+"+$revision),SourceSha256:("E"*64),AssemblyWrittenUtc:"2026-08-10T01:00:00Z",LatestSourceWriteUtc:"2026-08-10T00:59:00Z"},
          {Name:"HVO.SkyMonitor.TestSupport",Sha256:("F"*64),ModuleVersionId:"00000000-0000-0000-0000-000000000003",
           Configuration:"Release",InformationalVersion:("1.0+"+$revision),SourceSha256:("A"*64),AssemblyWrittenUtc:"2026-08-10T01:00:00Z",LatestSourceWriteUtc:"2026-08-10T00:59:00Z"}]},
-       Dependencies:["Minio","SqlServer","Redis","Smtp"] | map({Dependency:.,StartedAt:"2026-08-10T01:00:00Z",
+       Dependencies:["ObjectStore","SqlServer","Redis","Smtp"] | map({Dependency:.,StartedAt:"2026-08-10T01:00:00Z",
          CompletedAt:"2026-08-10T01:01:00Z",InitialHealthStatus:"Healthy",OutageStatus:"Unhealthy",RecoveryStatus:"Healthy",
          InitialOperationPassed:true,OutageOperationFailed:true,RecoveryOperationPassed:true,OutageMilliseconds:15000,
           RecoveryMilliseconds:1000,OutageHealthHttpStatus:null,RecoveryHealthHttpStatus:200})}' > "$destination"
@@ -182,7 +182,7 @@ DEPLOY_EVIDENCE="$FIXTURE_EVIDENCE/preflight.json"
     jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg tree "$tree" \
       --slurpfile campaign "$SOURCE_REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json" '
       {schemaVersion:2,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,sourceTree:$tree,
-       scenarios:[$campaign[0].scenarios[] | select(.id == "minio-failure" or .id == "sql-failure" or .id == "redis-failure" or .id == "smtp-failure") |
+       scenarios:[$campaign[0].scenarios[] | select(.id == "object-store-failure" or .id == "sql-failure" or .id == "redis-failure" or .id == "smtp-failure") |
          {id,classification,executionClass,evidenceSource,workloads,status:"not-run",artifact:{relativePath:.artifactPath,byteLength:null,sha256:null}}]}' \
       > "$FIXTURE_STATE/acceptance-ledger.json"
     chmod 600 "$FIXTURE_STATE/acceptance-ledger.json"
@@ -204,7 +204,7 @@ run_component
 bundle="$FIXTURE_STATE/acceptance-component-logichost-dependencies/bundle"
 [[ "$(stat -c '%u:%a' "$bundle")" == "$(id -u):700" && "$(stat -c '%u:%h:%a' "$bundle/bundle.json")" == "$(id -u):1:600" ]] ||
   fail 'The committed bundle is not private.'
-[[ "$(< "$CALL_LOG")" == $'minio-failure\nsql-failure\nredis-failure\nsmtp-failure' ]] || fail 'Recorder order is not fixed.'
+[[ "$(< "$CALL_LOG")" == $'object-store-failure\nsql-failure\nredis-failure\nsmtp-failure' ]] || fail 'Recorder order is not fixed.'
 jq -e 'all(.scenarios[]; .status == "not-run")' "$FIXTURE_STATE/acceptance-ledger.json" >/dev/null || fail 'Importer promoted a scenario.'
 bundle_digest="$(sha256sum "$bundle/bundle.json")"
 : > "$CALL_LOG"
@@ -234,8 +234,8 @@ prepare_fixture tampered-bundle
 run_component
 bundle="$FIXTURE_STATE/acceptance-component-logichost-dependencies/bundle"
 : > "$CALL_LOG"
-jq '.measurements[0].value=16000' "$bundle/artifacts/minio-failure.json" > "$TEMP_DIR/tampered-artifact"
-chmod 600 "$TEMP_DIR/tampered-artifact"; mv "$TEMP_DIR/tampered-artifact" "$bundle/artifacts/minio-failure.json"
+jq '.measurements[0].value=16000' "$bundle/artifacts/object-store-failure.json" > "$TEMP_DIR/tampered-artifact"
+chmod 600 "$TEMP_DIR/tampered-artifact"; mv "$TEMP_DIR/tampered-artifact" "$bundle/artifacts/object-store-failure.json"
 expect_rejected 'A digest-tampered bundle was reused.' run_component
 [[ ! -s "$CALL_LOG" ]] || fail 'A tampered bundle reached the recorder.'
 

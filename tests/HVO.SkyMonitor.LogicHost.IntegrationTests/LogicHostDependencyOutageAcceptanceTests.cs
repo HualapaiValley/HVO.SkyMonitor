@@ -22,7 +22,7 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
     [
         new(IntegrationDependency.SqlServer, "database"),
         new(IntegrationDependency.Redis, "redis"),
-        new(IntegrationDependency.Minio, "object-store"),
+        new(IntegrationDependency.ObjectStore, "object-store"),
         new(IntegrationDependency.Smtp, "smtp")
     ];
 
@@ -129,7 +129,7 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
                 {
                     IntegrationDependency.SqlServer => "sql-failure",
                     IntegrationDependency.Redis => "redis-failure",
-                    IntegrationDependency.Minio => "minio-failure",
+                    IntegrationDependency.ObjectStore => "object-store-failure",
                     IntegrationDependency.Smtp => "smtp-failure",
                     _ => throw new ArgumentOutOfRangeException(nameof(scenario.Dependency))
                 };
@@ -271,7 +271,7 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
                     Value = "bounded",
                     ExpirationSeconds = 60
                 }, timeout.Token).ConfigureAwait(false),
-            IntegrationDependency.Minio => await client.PostAsJsonAsync(
+            IntegrationDependency.ObjectStore => await client.PostAsJsonAsync(
                 new Uri("/api/v1.0/diagnostics/object-storage", UriKind.Relative),
                 new StorageDiagnosticsRequest
                 {
@@ -307,7 +307,7 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
                 cache.WrittenValue.Should().Be("bounded");
                 cache.RetrievedValue.Should().Be("bounded");
                 break;
-            case IntegrationDependency.Minio:
+            case IntegrationDependency.ObjectStore:
                 var storage = await response.Content.ReadFromJsonAsync<StorageDiagnosticsResponse>().ConfigureAwait(false);
                 storage.Should().NotBeNull();
                 storage!.ObjectName.Should().Be("diagnostics/i107-outage.txt");
@@ -382,7 +382,7 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
                 Source = source,
                 Dependencies = dependencies.OrderBy(static dependency => dependency.Dependency switch
                 {
-                    nameof(IntegrationDependency.Minio) => 0,
+                    nameof(IntegrationDependency.ObjectStore) => 0,
                     nameof(IntegrationDependency.SqlServer) => 1,
                     nameof(IntegrationDependency.Redis) => 2,
                     nameof(IntegrationDependency.Smtp) => 3,

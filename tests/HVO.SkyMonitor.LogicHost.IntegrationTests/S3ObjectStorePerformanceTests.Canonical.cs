@@ -561,7 +561,7 @@ public sealed partial class S3ObjectStorePerformanceTests
 
     private static async Task<double> RestartProviderAsync(IObjectStore store)
     {
-        var container = AssemblyHooks.Fixture.GetDependencyContainer(IntegrationDependency.Minio);
+        var container = AssemblyHooks.Fixture.GetDependencyContainer(IntegrationDependency.ObjectStore);
         await container.StopAsync().ConfigureAwait(false);
         var started = Stopwatch.GetTimestamp();
         await container.StartAsync().ConfigureAwait(false);
@@ -616,7 +616,7 @@ public sealed partial class S3ObjectStorePerformanceTests
 
     private static async Task<ProviderResourceSnapshot> ReadProviderResourcesAsync()
     {
-        var result = await AssemblyHooks.Fixture.GetDependencyContainer(IntegrationDependency.Minio)
+        var result = await AssemblyHooks.Fixture.GetDependencyContainer(IntegrationDependency.ObjectStore)
             .ExecAsync([
                 "sh", "-c",
                 "cpu=0; while read key value; do if [ \"$key\" = usage_usec ]; then cpu=$value; break; fi; done < /sys/fs/cgroup/cpu.stat; read memory < /sys/fs/cgroup/memory.current; read peak < /sys/fs/cgroup/memory.peak; printf '%s %s %s' \"$cpu\" \"$memory\" \"$peak\""

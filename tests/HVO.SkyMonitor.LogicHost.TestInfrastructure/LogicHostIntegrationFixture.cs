@@ -338,7 +338,7 @@ public sealed class IntegrationTestFixture : IDisposable
             ?? throw new InvalidOperationException("The SQL Server fixture is not initialized."),
         IntegrationDependency.Redis => _redisContainer
             ?? throw new InvalidOperationException("The Redis fixture is not initialized."),
-        IntegrationDependency.Minio => throw new InvalidOperationException("MinIO is not part of the shared LogicHost integration fixture."),
+        IntegrationDependency.ObjectStore => throw new InvalidOperationException("The object store is a filesystem root, not a container dependency."),
         IntegrationDependency.Smtp => _smtpContainer
             ?? throw new InvalidOperationException("The SMTP fixture is not initialized."),
         _ => throw new ArgumentOutOfRangeException(nameof(dependency))
@@ -571,7 +571,7 @@ public enum IntegrationDependency
 {
     SqlServer,
     Redis,
-    Minio,
+    ObjectStore,
     Smtp
 }
 
