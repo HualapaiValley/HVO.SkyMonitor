@@ -115,6 +115,77 @@ public sealed class EnvironmentalAcquisitionServiceTests
         }
     }
 
+    [TestMethod]
+    public async Task PeriodicStartup_WithSharedSqlitePersistenceAndRetention_HasNoUnexpectedFailure()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-environmental-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var services = new ServiceCollection().BuildServiceProvider();
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
+                {
+                    Enabled = true,
+                    MaximumConcurrency = 4,
+                    QueueCapacity = 32,
+                    SourceTimeoutMilliseconds = 5_000,
+                    Sources = StartupSourceKinds.Select((kind, index) => Source(kind, index)).ToArray()
+                }
+            });
+            using var store = new SqliteEnvironmentalObservationOutbox();
+            var factory = new EnvironmentalSourceFactory(
+                services,
+                [new EnvironmentalSourceRegistration(
+                    "VirtualEnvironment", typeof(VirtualEnvironmentalSource), typeof(VirtualEnvironmentalSourceOptions))]);
+            using var coordinator = new EnvironmentalAcquisitionCoordinator(
+                factory,
+                new StorePublisher(store, root),
+                new FixedDeploymentLocationStore(Location()),
+                options,
+                TimeProvider.System,
+                store);
+            var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
+            using var telemetry = new EnvironmentalAcquisitionTelemetry();
+            using var service = new EnvironmentalAcquisitionService(
+                coordinator, store, store, telemetry, TimeProvider.System, options, logger);
+
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            await WaitForAttemptsAsync(store, root, StartupSourceKinds.Length).ConfigureAwait(false);
+            await service.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+            var attempts = await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false);
+            var snapshot = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(StartupSourceKinds.Length, attempts);
+            Assert.AreEqual(StartupSourceKinds.Length, snapshot.StoredCount);
+            Assert.IsFalse(logger.Events.Any(static entry => entry.EventId == 2522));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task WaitForAttemptsAsync(
+        SqliteEnvironmentalObservationOutbox store,
+        string root,
+        int count)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            var attempts = await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false);
+            if (attempts.Count >= count)
+            {
+                return;
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(25)).ConfigureAwait(false);
+        }
+        Assert.Fail($"Timed out waiting for {count} environmental startup attempts.");
+    }
+
     private static readonly EnvironmentalObservationKind[] StartupSourceKinds =
     [
         EnvironmentalObservationKind.AirTemperature,
@@ -212,6 +283,22 @@ public sealed class EnvironmentalAcquisitionServiceTests
         }
     }
 
+    private sealed class StorePublisher(SqliteEnvironmentalObservationOutbox store, string root)
+        : IEnvironmentalObservationPublisher
+    {
+        public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(
+            EnvironmentalObservationFactV1 fact,
+            CancellationToken cancellationToken = default)
+        {
+            var result = await store.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
+            return new EnvironmentalObservationPublishResult(
+                result.Disposition == LocalEnvironmentalObservationCommitDisposition.Committed
+                    ? EnvironmentalObservationPublishDisposition.Enqueued
+                    : EnvironmentalObservationPublishDisposition.Duplicate,
+                null);
+        }
+    }
+
     private sealed class FirstBusyPerSourceStateStore(int expectedReceipts) : IEnvironmentalAcquisitionStateStore
     {
         private readonly ConcurrentDictionary<string, int> _calls = new(StringComparer.Ordinal);
@@ -283,7 +370,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
 
     private sealed class RecordingLogger<T> : ILogger<T>
     {
-        public ConcurrentQueue<(LogLevel Level, int EventId)> Events { get; } = new();
+        public ConcurrentQueue<(LogLevel Level, int EventId, Exception? Exception)> Events { get; } = new();
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -295,6 +382,6 @@ public sealed class EnvironmentalAcquisitionServiceTests
             TState state,
             Exception? exception,
             Func<TState, Exception?, string> formatter)
-            => Events.Enqueue((logLevel, eventId.Id));
+            => Events.Enqueue((logLevel, eventId.Id, exception));
     }
 }

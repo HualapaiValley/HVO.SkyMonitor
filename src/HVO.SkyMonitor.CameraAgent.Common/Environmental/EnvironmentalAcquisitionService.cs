@@ -77,9 +77,9 @@ public sealed partial class EnvironmentalAcquisitionService(
             {
                 throw;
             }
-            catch (Exception)
+            catch (Exception exception)
             {
-                AcquisitionFailed(logger, "Multiple", request.Trigger.ToString(), "Failed", "unexpected");
+                AcquisitionFailed(logger, "Multiple", request.Trigger.ToString(), "Failed", "unexpected", exception);
             }
         }
     }
@@ -195,14 +195,15 @@ public sealed partial class EnvironmentalAcquisitionService(
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             AcquisitionFailed(
                 logger,
                 source.Kind.ToString(),
                 EnvironmentalAcquisitionTrigger.Periodic.ToString(),
                 EnvironmentalAcquisitionDisposition.Failed.ToString(),
-                "unexpected");
+                "unexpected",
+                exception);
         }
     }
 
@@ -236,7 +237,7 @@ public sealed partial class EnvironmentalAcquisitionService(
     [LoggerMessage(2522, LogLevel.Error,
         "Environmental acquisition failed for kind {Kind}, trigger {Trigger}, outcome {Outcome}, and reason {Reason}.")]
     private static partial void AcquisitionFailed(
-        ILogger logger, string kind, string trigger, string outcome, string reason);
+        ILogger logger, string kind, string trigger, string outcome, string reason, Exception exception);
 
     [LoggerMessage(2525, LogLevel.Warning,
         "Environmental trigger {Trigger} was rejected for reason {Reason}.")]
