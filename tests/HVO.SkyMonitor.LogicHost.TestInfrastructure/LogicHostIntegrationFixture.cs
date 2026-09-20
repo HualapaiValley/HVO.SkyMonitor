@@ -418,11 +418,12 @@ public sealed class IntegrationTestFixture : IDisposable
                              descriptor.ServiceType == typeof(IHostedService)
                                && (descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)
                                     || descriptor.ImplementationType == typeof(CentralDerivativeWorker)
-                                    || descriptor.ImplementationType == typeof(FilesystemObjectReconciliationWorker)
+                                    || descriptor.ImplementationType == typeof(FilesystemObjectReconciliationHostedService)
                                     || descriptor.ImplementationType == typeof(EnvironmentalObservationRetentionWorker))).ToArray())
                     {
                         services.Remove(descriptor);
                     }
+                    services.RemoveAll<FilesystemObjectReconciliationWorker>();
                     if (_suppressRecurringWorkers)
                     {
                         foreach (var descriptor in services.Where(static descriptor =>

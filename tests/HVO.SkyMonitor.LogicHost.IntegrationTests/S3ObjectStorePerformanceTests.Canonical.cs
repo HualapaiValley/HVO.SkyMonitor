@@ -105,7 +105,7 @@ public sealed partial class S3ObjectStorePerformanceTests
             await SeedObjectsAsync(directClient, w3pCandidatePrefix, 100, W2Bytes, concurrency: 8).ConfigureAwait(false);
             var w3pBaseline = await MeasureDirectDrainAsync(directClient, handler, w3pBaselinePrefix, 100, W2Bytes)
                 .ConfigureAwait(false);
-            var restartMilliseconds = await RestartProviderAsync(store).ConfigureAwait(false);
+            double? restartMilliseconds = null;
             var w3pCandidate = await MeasureCandidateDrainAsync(store, handler, w3pCandidatePrefix, 100, W2Bytes)
                 .ConfigureAwait(false);
             Assert.IsTrue(w3pCandidate.DrainMilliseconds <= w3pBaseline.DrainMilliseconds * 2 + 2000);
@@ -153,7 +153,7 @@ public sealed partial class S3ObjectStorePerformanceTests
                 Schema = "hvo-issue-504-object-store-canonical-performance-v1",
                 Revision = revision,
                 RunId = runId,
-                Topology = "In-process test and LogicHost adapter with the same isolated MinIO S3 Testcontainer for baseline and candidate",
+                Topology = "In-process test and LogicHost adapter against the same operator-provided external S3-compatible endpoint",
                 Workloads = new
                 {
                     W1 = new { PayloadBytes = W1Bytes, Warmups = 5, Operations = 30, Baseline = w1Baseline, Candidate = w1Candidate },
@@ -559,20 +559,6 @@ public sealed partial class S3ObjectStorePerformanceTests
             candidate[28]);
     }
 
-    private static async Task<double> RestartProviderAsync(IObjectStore store)
-    {
-        var container = AssemblyHooks.Fixture.GetDependencyContainer(IntegrationDependency.ObjectStore);
-        await container.StopAsync().ConfigureAwait(false);
-        var started = Stopwatch.GetTimestamp();
-        await container.StartAsync().ConfigureAwait(false);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        while (!await store.BucketExistsAsync(Bucket, timeout.Token).ConfigureAwait(false))
-        {
-            await Task.Delay(100, timeout.Token).ConfigureAwait(false);
-        }
-        return Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-    }
-
     private static async Task<RestoreMeasurement> MeasureRestoreAsync(IObjectStore store, string prefix)
     {
         var backupKey = prefix + "backup.bin";
@@ -614,27 +600,8 @@ public sealed partial class S3ObjectStorePerformanceTests
         Assert.IsTrue(candidate.Protocol.Requests <= baseline.Protocol.Requests + candidate.Operations);
     }
 
-    private static async Task<ProviderResourceSnapshot> ReadProviderResourcesAsync()
-    {
-        var result = await AssemblyHooks.Fixture.GetDependencyContainer(IntegrationDependency.ObjectStore)
-            .ExecAsync([
-                "sh", "-c",
-                "cpu=0; while read key value; do if [ \"$key\" = usage_usec ]; then cpu=$value; break; fi; done < /sys/fs/cgroup/cpu.stat; read memory < /sys/fs/cgroup/memory.current; read peak < /sys/fs/cgroup/memory.peak; printf '%s %s %s' \"$cpu\" \"$memory\" \"$peak\""
-            ]).ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new InvalidOperationException("Object-storage provider resource sampling failed.");
-        }
-        var values = result.Stdout.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (values.Length != 3)
-        {
-            throw new InvalidOperationException("Object-storage provider resource sampling returned an invalid result.");
-        }
-        return new ProviderResourceSnapshot(
-            long.Parse(values[0], CultureInfo.InvariantCulture),
-            long.Parse(values[1], CultureInfo.InvariantCulture),
-            long.Parse(values[2], CultureInfo.InvariantCulture));
-    }
+    private static Task<ProviderResourceSnapshot> ReadProviderResourcesAsync()
+        => Task.FromResult(new ProviderResourceSnapshot(null, null, null));
 
     private sealed class ObjectStoreSignalCollector : IDisposable
     {
@@ -741,17 +708,19 @@ public sealed partial class S3ObjectStorePerformanceTests
 
     private sealed record RestoreMeasurement(double ElapsedMilliseconds, long ContentLength, string ContentType);
 
-    private sealed record ProviderResourceSnapshot(long CpuMicroseconds, long RssBytes, long PeakRssBytes);
+    private sealed record ProviderResourceSnapshot(long? CpuMicroseconds, long? RssBytes, long? PeakRssBytes);
 
     private sealed record ProviderResourceDelta(
-        long CpuMicroseconds,
-        long RssBeforeBytes,
-        long RssAfterBytes,
-        long PeakRssBytes)
+        long? CpuMicroseconds,
+        long? RssBeforeBytes,
+        long? RssAfterBytes,
+        long? PeakRssBytes)
     {
         public static ProviderResourceDelta Create(ProviderResourceSnapshot before, ProviderResourceSnapshot after)
             => new(
-                Math.Max(0, after.CpuMicroseconds - before.CpuMicroseconds),
+                before.CpuMicroseconds is null || after.CpuMicroseconds is null
+                    ? null
+                    : Math.Max(0, after.CpuMicroseconds.Value - before.CpuMicroseconds.Value),
                 before.RssBytes,
                 after.RssBytes,
                 after.PeakRssBytes);

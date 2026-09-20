@@ -104,7 +104,9 @@ deploy_validate_inventory() {
             all(.uid,.gid; type == "number" and floor == . and . >= 1 and . <= 4294967294) and
             (.filesystemUuid | type == "string" and test("^[0-9a-fA-F-]{36}$")) and
             all(.minimumFreeBytes,.minimumFreeInodes; type == "number" and floor == . and . >= 1) and
-            (.artifactBucket | name) and (.diagnosticsBucket | name) and .artifactBucket != .diagnosticsBucket) and
+            (.artifactBucket | type == "string" and test("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")) and
+            (.diagnosticsBucket | type == "string" and test("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")) and
+            .artifactBucket != .diagnosticsBucket) and
           (.smtp | exact(["kind","host","ports","usernameReference","passwordReference"]) and (.kind == "production" or .kind == "mailpit") and
             (.ports | type == "array" and length == 2) and
             (.ports[0] | type == "number" and floor == . and . >= 1 and . <= 65535) and

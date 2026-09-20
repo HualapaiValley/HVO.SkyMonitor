@@ -93,3 +93,11 @@ internal sealed partial class FilesystemObjectReconciliationWorker(
     [LoggerMessage(2188, LogLevel.Error, "Filesystem object store reconciliation failed unexpectedly for bucket {Bucket}.")]
     private static partial void LogBucketFailed(ILogger logger, string bucket, Exception exception);
 }
+
+internal sealed class FilesystemObjectReconciliationHostedService(
+    FilesystemObjectReconciliationWorker worker) : IHostedService
+{
+    public Task StartAsync(CancellationToken cancellationToken) => worker.StartAsync(cancellationToken);
+
+    public Task StopAsync(CancellationToken cancellationToken) => worker.StopAsync(cancellationToken);
+}

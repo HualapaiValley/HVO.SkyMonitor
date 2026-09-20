@@ -539,18 +539,33 @@ public sealed class CentralDerivativeWindowIntegrationTests
                         }
                         await File.WriteAllBytesAsync(dataPath, derivativeBytes).ConfigureAwait(false);
 
-                        await using (var replacement = new MemoryStream(derivativeBytes, writable: false))
+                        string? replacementDataPath = null;
+                        try
                         {
-                            await minio.PutAsync(
-                                Bucket, objectKey, replacement, replacement.Length, intent.MediaType, CancellationToken.None)
-                                .ConfigureAwait(false);
+                            await using var replacement = new MemoryStream(derivativeBytes, writable: false);
+                            await minio.PutAsync(Bucket, objectKey, replacement, replacement.Length, intent.MediaType,
+                                CancellationToken.None).ConfigureAwait(false);
+                            var replacementGeneration = (await minio.StatAsync(Bucket, objectKey, CancellationToken.None)
+                                .ConfigureAwait(false)).Generation;
+                            replacementDataPath = Path.Combine(
+                                AssemblyHooks.Fixture.ObjectStorageRoot,
+                                FilesystemObjectLayout.DataRelativePath(Bucket, keyHash, replacementGeneration));
+                            (await retrieval.GetAsync(principal, eventId, intent.DerivativeId, CancellationToken.None)
+                                .ConfigureAwait(false)).Status.Should().Be(CentralTransientDerivativeLookupStatus.IntegrityFailure);
                         }
-                        (await retrieval.GetAsync(principal, eventId, intent.DerivativeId, CancellationToken.None)
-                            .ConfigureAwait(false)).Status.Should().Be(CentralTransientDerivativeLookupStatus.IntegrityFailure);
-                        await File.WriteAllBytesAsync(
-                            descriptorPath,
-                            JsonSerializer.SerializeToUtf8Bytes(descriptor, FilesystemObjectLayout.DescriptorJson))
-                            .ConfigureAwait(false);
+                        finally
+                        {
+                            var restorePath = descriptorPath + ".restore-" + Guid.NewGuid().ToString("N");
+                            await File.WriteAllBytesAsync(
+                                restorePath,
+                                JsonSerializer.SerializeToUtf8Bytes(descriptor, FilesystemObjectLayout.DescriptorJson))
+                                .ConfigureAwait(false);
+                            File.Move(restorePath, descriptorPath, overwrite: true);
+                            if (replacementDataPath is not null)
+                            {
+                                File.Delete(replacementDataPath);
+                            }
+                        }
                     }
                 }
                 (await retrieval.GetAsync(

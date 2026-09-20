@@ -275,7 +275,8 @@ deploy_up_stage_target() {
 
 deploy_run_up() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6"
-    local state_dir evidence_dir render_root images mode_services project now target agent name context ssh component image endpoint path shared_context shared_env shared_target runtime_identity runtime_uid runtime_gid value provisioning_gate upload_enabled object_store_preflight
+    local state_dir evidence_dir render_root images mode_services project now target agent name context ssh component image endpoint path shared_context shared_env shared_target runtime_identity runtime_uid runtime_gid value provisioning_gate upload_enabled object_store_preflight logic_host_identity
+    local -a object_store_disjoint_paths
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/prepare-manifest.json" up "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/catalog-manifest.json" up "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
@@ -400,6 +401,13 @@ deploy_run_up() {
     [[ "$runtime_uid" == "$(jq -r '.deployment.services.objectStore.uid' "$inventory")" &&
        "$runtime_gid" == "$(jq -r '.deployment.services.objectStore.gid' "$inventory")" ]] ||
       { deploy_fail up logic object-store-owner-mismatch; return 1; }
+    logic_host_identity="$(jq -r '.expectedHostIdentity' <<< "$target")"
+    mapfile -t object_store_disjoint_paths < <(jq -r --arg identity "$logic_host_identity" '
+      ([.logicHost] + .cameraAgents + (if .sharedServices then [.sharedServices] else [] end))[] |
+      select(.expectedHostIdentity == $identity) | .runtimeRoot' "$inventory")
+    while IFS= read -r path; do
+      object_store_disjoint_paths+=("$path")
+    done < <(jq -r '.catalogs[].installRoot' "$inventory")
     object_store_preflight="$(deploy_transport_qualify_object_store "$ssh" "$REPO_ROOT/scripts/qualify:filesystem-object-store" \
       "$(jq -r '.deployment.services.objectStore.root' "$inventory")" \
       "$(jq -r '.deployment.services.objectStore.uid' "$inventory")" \
@@ -409,8 +417,7 @@ deploy_run_up() {
       "$(jq -r '.deployment.services.objectStore.minimumFreeInodes' "$inventory")" \
       "$(jq -r '.deployment.services.objectStore.artifactBucket' "$inventory")" \
       "$(jq -r '.deployment.services.objectStore.diagnosticsBucket' "$inventory")" \
-      "$(jq -r '.runtimeRoot' <<< "$target")" \
-      "$(deploy_catalog_root "$inventory" "$target")")" ||
+      "${object_store_disjoint_paths[@]}")" ||
       { deploy_fail up logic object-store-qualification-failed; return 1; }
     jq -e --arg root "$(jq -r '.deployment.services.objectStore.root' "$inventory")" \
       --argjson uid "$(jq -r '.deployment.services.objectStore.uid' "$inventory")" \

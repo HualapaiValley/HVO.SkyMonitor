@@ -220,8 +220,8 @@
             "filesystemUuid": { "type": "string", "pattern": "^[0-9a-fA-F-]{36}$" },
             "minimumFreeBytes": { "type": "integer", "minimum": 1 },
             "minimumFreeInodes": { "type": "integer", "minimum": 1 },
-            "artifactBucket": { "$ref": "#/$defs/name" },
-            "diagnosticsBucket": { "$ref": "#/$defs/name" }
+            "artifactBucket": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" },
+            "diagnosticsBucket": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
           }
         },
         "smtp": {
