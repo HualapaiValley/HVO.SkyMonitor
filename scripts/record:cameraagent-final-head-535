@@ -248,8 +248,29 @@ verify_generation() {
     jq --exit-status --argjson bytes "$(bytes_of "$evidence_path")" '.evidence.bytes == $bytes' "$index" >/dev/null 2>&1 \
         || die "Evidence set byte length does not match the index: $recorded_evidence"
 
-    local support_count support_original support_stored support_bytes support_sha support_path
-    support_count="$(jq -r '.supportFiles | length // 0' "$index")"
+    local support_count support_original support_stored support_bytes support_sha support_path support_tsv expected_support
+    jq --exit-status '
+      (.supportFiles | type) == "array" and
+      all(.supportFiles[];
+        (type == "object") and
+        ((keys | sort) == (["bytes","originalPath","sha256","storedPath"] | sort)) and
+        (.originalPath | type) == "string" and (.storedPath | type) == "string" and
+        (.bytes | type) == "number" and .bytes > 0 and (.bytes | floor) == .bytes and
+        (.sha256 | type) == "string" and (.sha256 | test("^[0-9a-f]{64}$"))) and
+      ([.supportFiles[].originalPath] | length) == ([.supportFiles[].originalPath] | unique | length) and
+      ([.supportFiles[].storedPath] | length) == ([.supportFiles[].storedPath] | unique | length)
+    ' "$index" >/dev/null 2>&1 || die "Generation support inventory is malformed"
+    expected_support="$(jq -c '[.ci.artifacts[]?.path,.components.records[]?.path] | sort | unique' "$evidence_path")" \
+        || die "Generation evidence support inventory cannot be read"
+    jq --exit-status --argjson expected "$expected_support" '
+      ([.supportFiles[].originalPath] | sort) == $expected and
+      ([.supportFiles[].storedPath] | sort) == $expected and
+      all(.supportFiles[]; .originalPath == .storedPath)
+    ' "$index" >/dev/null 2>&1 || die "Generation support inventory does not match generation-local evidence"
+    support_count="$(jq -r '.supportFiles | length' "$index")"
+    support_tsv="$(mktemp)"
+    jq -r '.supportFiles[] | [.originalPath,.storedPath,.bytes,.sha256] | @tsv' "$index" > "$support_tsv" \
+        || { rm -f "$support_tsv"; die "Generation support inventory cannot be extracted"; }
     while IFS=$'\t' read -r support_original support_stored support_bytes support_sha; do
         [[ -n "$support_stored" ]] || continue
         [[ "$support_stored" != /* && "$support_stored" != ../* && "$support_stored" != *'/../'* ]] \
@@ -260,7 +281,8 @@ verify_generation() {
         require_regular_file "$support_path"
         [[ "$(bytes_of "$support_path")" == "$support_bytes" ]] || die "Generation support byte length differs: $support_original"
         [[ "$(sha256_of "$support_path")" == "$support_sha" ]] || die "Generation support digest differs: $support_original"
-    done < <(jq -r '.supportFiles[]? | [.originalPath,.storedPath,.bytes,.sha256] | @tsv' "$index")
+    done < "$support_tsv"
+    rm -f "$support_tsv"
     [[ "$support_count" == "$(find "$gen_dir/ci-artifacts" "$gen_dir/component-evidence" -type f 2>/dev/null | wc -l)" ]] \
         || die "Generation support file inventory is incomplete"
 

@@ -243,6 +243,26 @@ cases=$((cases + 1))
 expect_success "committed generations still verify after a clean" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 
+# The envelope-authenticated support inventory is itself part of the generation
+# contract. A matching count cannot substitute for typed, unique, evidence-bound
+# entries.
+cp "$dir/generations/2/$INDEX" "$WORK/support-index.json"
+cp "$dir/generations/2/$ENVELOPE" "$WORK/support-envelope.json"
+for mutation in non-array duplicated malformed; do
+    case "$mutation" in
+      non-array) jq '.supportFiles = "12345678901234"' "$WORK/support-index.json" ;;
+      duplicated) jq '.supportFiles as $support | .supportFiles = [range(0; ($support | length)) | $support[0]]' "$WORK/support-index.json" ;;
+      malformed) jq '.supportFiles[0].bytes = "sixteen"' "$WORK/support-index.json" ;;
+    esac > "$dir/generations/2/$INDEX"
+    jq --sort-keys --arg sha "$(sha256sum "$dir/generations/2/$INDEX" | cut -d' ' -f1)" \
+        --argjson bytes "$(wc -c < "$dir/generations/2/$INDEX")" \
+        '.index.sha256 = $sha | .index.bytes = $bytes' "$WORK/support-envelope.json" > "$dir/generations/2/$ENVELOPE"
+    expect_refusal "support inventory mutation $mutation is refused" "Generation support inventory" \
+        "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --generation 2 --output-root "$root"
+done
+cp "$WORK/support-index.json" "$dir/generations/2/$INDEX"
+cp "$WORK/support-envelope.json" "$dir/generations/2/$ENVELOPE"
+
 # Generation numbering past nine must use real publications, not copies claiming
 # generation 1 under other directory names. Verification now rejects those copies.
 root="$(new_root)"
