@@ -806,7 +806,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             profile,
             $"State reuse '{stateReused}' and replay profile '{profile}' disagree about which #719 invocation this is.");
 
-        var password = (await File.ReadAllTextAsync(RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE"))
+        var passwordPath = RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE");
+        var password = (await File.ReadAllTextAsync(passwordPath)
             .ConfigureAwait(false)).Trim();
         Directory.CreateDirectory(evidenceRoot);
 
@@ -818,6 +819,20 @@ public sealed class StandaloneW6DockerAcceptanceTests
             $"The campaign asked for {profile} and the container is running {declaredProfile}.");
 
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
+        var readyPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
+            session, password, $"issue-719 {profile}").ConfigureAwait(false);
+        await OwnerBootstrapSession.AssertOperationsAuthorizedAsync(
+            session, $"issue-719 {profile}").ConfigureAwait(false);
+        if (!string.Equals(readyPassword, password, StringComparison.Ordinal))
+        {
+            Assert.IsFalse(stateReused, "Only the first replay invocation may replace the temporary owner password.");
+            await File.WriteAllTextAsync(passwordPath, string.Concat(readyPassword, Environment.NewLine))
+                .ConfigureAwait(false);
+            if (OperatingSystem.IsLinux())
+            {
+                File.SetUnixFileMode(passwordPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
         var evidence = stateReused
             ? await AssertLocalRunnerReplayAsync(session, profile, stateKey).ConfigureAwait(false)
             : await AssertInProcessReplayAsync(session, runtimeRoot, profile, stateKey).ConfigureAwait(false);
