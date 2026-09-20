@@ -34,12 +34,31 @@ rows="$staging/records.jsonl"
 : > "$rows"
 
 run_test() {
-  local project="$1" filter="$2" slot="$3" trx="$4"
+  local project="$1" filter="$2" slot="$3" trx="$4" exclusion="${5:-}"
   dotnet test "$project" --no-build --configuration Release --filter "$filter" \
     --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" \
     --results-directory "$slot" --logger "trx;LogFileName=$trx"
-  trx_assert_executed_and_passed "$slot/$trx" "$slot"
-  trx_assert_counters_executed_and_passed "$slot/$trx" "$slot"
+  if [[ -z "$exclusion" ]]; then
+    trx_assert_executed_and_passed "$slot/$trx" "$slot"
+    trx_assert_counters_executed_and_passed "$slot/$trx" "$slot"
+  else
+    results="$(trx_result_elements "$slot/$trx")"
+    excluded="$(printf '%s\n' "$results" | grep "testName=\"$exclusion\"" || true)"
+    [[ "$(printf '%s\n' "$excluded" | grep -c . || true)" == 1 && "$excluded" == *'outcome="NotExecuted"'* ]] \
+      || fail "$slot did not record the exact permitted Linux exclusion."
+    unexpected="$(printf '%s\n' "$results" | grep -v 'outcome="Passed"' | grep -v "testName=\"$exclusion\"" || true)"
+    [[ -z "$unexpected" ]] || fail "$slot contains an unexpected non-passing result."
+    counters="$(trx_counters_elements "$slot/$trx")"
+    [[ "$(printf '%s\n' "$counters" | grep -c '<Counters ')" == 1 ]] || fail "$slot counters are ambiguous."
+    executed="$(grep -o 'executed="[0-9]*"' <<< "$counters" | cut -d'"' -f2)"
+    passed="$(grep -o 'passed="[0-9]*"' <<< "$counters" | cut -d'"' -f2)"
+    not_executed="$(grep -o 'notExecuted="[0-9]*"' <<< "$counters" | cut -d'"' -f2)"
+    [[ "$executed" =~ ^[1-9][0-9]*$ && "$passed" == "$executed" && "$not_executed" == 1 ]] \
+      || fail "$slot counters do not match the exact permitted Linux exclusion."
+    for zero in failed error timeout aborted inconclusive; do
+      [[ "$(grep -o "$zero=\"[0-9]*\"" <<< "$counters" | cut -d'"' -f2)" == 0 ]] || fail "$slot counters report $zero."
+    done
+  fi
 }
 
 run_component() {
@@ -62,7 +81,7 @@ run_component() {
       run_test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj "$integration_filter" TestResults/integration/astronomy integration-astronomy.trx
       ./scripts/ci:component-publish shared > "$component_root/receipts/publish.log" 2>&1 ;;
     cameraagent)
-      run_test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj "$unit_filter" TestResults/unit/cameraagent unit-cameraagent.trx
+      run_test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj "$unit_filter" TestResults/unit/cameraagent unit-cameraagent.trx InitializeOnMacOsRejectsBeforeRuntimeAccess
       run_test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj "$unit_filter" TestResults/unit/cameraagent-acceptance unit-cameraagent-acceptance.trx
       run_test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj "$integration_filter" TestResults/integration/cameraagent-storage integration-cameraagent-storage.trx
       run_test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj "$integration_filter" TestResults/integration/cameraagent-standalone integration-cameraagent-standalone.trx
