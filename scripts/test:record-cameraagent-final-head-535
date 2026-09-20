@@ -114,6 +114,12 @@ support_after="$(sha256sum "$support_file" | cut -d' ' -f1)"
 [[ "$support_before" != "$support_after" ]] || fail "support mutation did not change the file"
 expect_refusal "tampered retained support file fails verification" "Generation support byte length differs" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+verify_tmp="$WORK/verify-tmp"
+mkdir "$verify_tmp"
+TMPDIR="$verify_tmp" expect_refusal "failed verification cleans its support inventory temporary" "Generation support byte length differs" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+cases=$((cases + 1))
+[[ -z "$(find "$verify_tmp" -mindepth 1 -print -quit)" ]] || fail "failed verification leaked a support inventory temporary"
 rm -rf "$root"
 root="$(new_root)"
 assert_equal "replacement first publish is generation 1" "1" "$(publish "$root" green.json CAMP)"

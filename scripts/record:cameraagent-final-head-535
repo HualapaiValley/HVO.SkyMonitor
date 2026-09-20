@@ -60,7 +60,12 @@ USAGE
     exit 2
 }
 
-die() { printf '%s\n' "$*" >&2; exit 1; }
+verification_temp=""
+die() {
+    [[ -z "$verification_temp" ]] || rm -f -- "$verification_temp"
+    printf '%s\n' "$*" >&2
+    exit 1
+}
 
 sha256_of() { sha256sum -- "$1" | cut -d' ' -f1; }
 bytes_of() { wc -c <"$1" | tr -d ' '; }
@@ -269,8 +274,9 @@ verify_generation() {
     ' "$index" >/dev/null 2>&1 || die "Generation support inventory does not match generation-local evidence"
     support_count="$(jq -r '.supportFiles | length' "$index")"
     support_tsv="$(mktemp)"
+    verification_temp="$support_tsv"
     jq -r '.supportFiles[] | [.originalPath,.storedPath,.bytes,.sha256] | @tsv' "$index" > "$support_tsv" \
-        || { rm -f "$support_tsv"; die "Generation support inventory cannot be extracted"; }
+        || die "Generation support inventory cannot be extracted"
     while IFS=$'\t' read -r support_original support_stored support_bytes support_sha; do
         [[ -n "$support_stored" ]] || continue
         [[ "$support_stored" != /* && "$support_stored" != ../* && "$support_stored" != *'/../'* ]] \
@@ -283,6 +289,7 @@ verify_generation() {
         [[ "$(sha256_of "$support_path")" == "$support_sha" ]] || die "Generation support digest differs: $support_original"
     done < "$support_tsv"
     rm -f "$support_tsv"
+    verification_temp=""
     [[ "$support_count" == "$(find "$gen_dir/ci-artifacts" "$gen_dir/component-evidence" -type f 2>/dev/null | wc -l)" ]] \
         || die "Generation support file inventory is incomplete"
 
