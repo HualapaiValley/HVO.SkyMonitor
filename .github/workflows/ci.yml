@@ -511,6 +511,7 @@ jobs:
             TestResults/publish/*.sha256
             TestResults/publish/summary.txt
             TestResults/publish/*capabilities.json
+            TestResults/publish/ci-artifact-provenance.json
           if-no-files-found: error
           retention-days: 30
 
