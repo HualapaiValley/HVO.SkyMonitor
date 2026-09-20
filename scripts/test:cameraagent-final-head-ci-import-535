@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+root="$(mktemp -d)"
+trap 'rm -rf "$root"' EXIT
+fixture="$root/fixture"
+mkdir -p "$fixture/downloads"
+head_sha="428e346ef16c00f6a3257315c95384092b1b3290"
+run_id=12345
+repo_id=1095187036
+workflow_id=240252431
+
+jq -n --arg head "$head_sha" --argjson id "$run_id" --argjson repo "$repo_id" --argjson workflow "$workflow_id" \
+  '{id:$id,run_attempt:1,event:"workflow_dispatch",path:".github/workflows/ci.yml",head_sha:$head,status:"completed",conclusion:"success",workflow_id:$workflow,
+    repository:{id:$repo,name:"HVO.SkyMonitor",owner:{login:"HualapaiValley"}},head_repository:{id:$repo}}' > "$fixture/run.json"
+jq -n --argjson id "$workflow_id" '{id:$id,path:".github/workflows/ci.yml",state:"active"}' > "$fixture/workflow.json"
+jq -n '{path:".github/workflows/ci.yml",type:"file",sha:"0123456789abcdef0123456789abcdef01234567"}' > "$fixture/workflow-content.json"
+
+success=("Change Classification" "Quality" "Catalog Contracts" "Deployment Contracts" "Build" "Architecture & Publish" "Coverage Policy" "CameraAgent Migrations" "LogicHost Migrations" "Unit Tests" "Integration Tests" "Coverage" "Required CI")
+skipped=("Shared Libraries" "CameraAgent Component" "LogicHost Component" "Combined Protocol & Integration" "Delivery Component")
+jobs='[]'; id=200
+for name in "${success[@]}"; do jobs="$(jq -c --arg name "$name" --arg head "$head_sha" --argjson id "$id" --argjson run "$run_id" '. + [{id:$id,name:$name,run_id:$run,run_attempt:1,head_sha:$head,status:"completed",conclusion:"success"}]' <<< "$jobs")"; id=$((id+1)); done
+for name in "${skipped[@]}"; do jobs="$(jq -c --arg name "$name" --arg head "$head_sha" --argjson id "$id" --argjson run "$run_id" '. + [{id:$id,name:$name,run_id:$run,run_attempt:1,head_sha:$head,status:"completed",conclusion:"skipped"}]' <<< "$jobs")"; id=$((id+1)); done
+jq -n --argjson jobs "$jobs" '{total_count:($jobs|length),jobs:$jobs}' > "$fixture/jobs.json"
+
+names=(hyg-v42-contracts package-audit deployment-contract-logs unit-test-evidence integration-test-evidence architecture-unit-evidence architecture-test-evidence publish-evidence coverage-report)
+artifacts='[]'; id=300
+for name in "${names[@]}"; do
+    artifact_dir="$root/artifact-$id"
+    mkdir "$artifact_dir"
+    printf 'artifact-%s\n' "$name" > "$artifact_dir/content.txt"
+    job_key="$(jq -nr --arg name "$name" '{"hyg-v42-contracts":"catalog-contracts","package-audit":"quality","deployment-contract-logs":"deployment-contracts","unit-test-evidence":"unit","integration-test-evidence":"integration","architecture-unit-evidence":"architecture","architecture-test-evidence":"architecture","publish-evidence":"architecture","coverage-report":"coverage"}[$name]')"
+    jq -nS --arg artifact "$name" --arg job "$job_key" --arg head "$head_sha" --argjson run "$run_id" \
+      '{schemaVersion:"hvo-ci-artifact-provenance-v1",artifact:$artifact,jobKey:$job,runId:$run,attempt:1,headSha:$head,workflowPath:".github/workflows/ci.yml"}' > "$artifact_dir/ci-artifact-provenance.json"
+    (cd "$artifact_dir" && zip -q "$fixture/downloads/$id.zip" content.txt ci-artifact-provenance.json)
+    bytes="$(stat -c %s "$fixture/downloads/$id.zip")"; sha="$(sha256sum "$fixture/downloads/$id.zip" | cut -d' ' -f1)"
+    artifacts="$(jq -c --arg name "$name" --arg head "$head_sha" --arg sha "sha256:$sha" --argjson id "$id" --argjson bytes "$bytes" --argjson run "$run_id" --argjson repo "$repo_id" '. + [{id:$id,name:$name,size_in_bytes:$bytes,digest:$sha,expired:false,workflow_run:{id:$run,repository_id:$repo,head_repository_id:$repo,head_sha:$head}}]' <<< "$artifacts")"
+    id=$((id+1))
+done
+jq -n --argjson artifacts "$artifacts" '{total_count:($artifacts|length),artifacts:$artifacts}' > "$fixture/artifacts.json"
+printf 'CI classification: mode=full deployment=true complete=true shared=true cameraagent=true logichost=true combined=true delivery=true paths=0\n' > "$fixture/classification.log"
+
+importer="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/import:cameraagent-final-head-ci-535"
+mkdir "$root/out-parent"
+out="$root/out-parent/out/ci.json"
+"$importer" --fixture "$fixture" --attempt 1 --bound-head "$head_sha" --output "$out"
+jq -e '.schemaVersion == "issue-535-ci-import-v1" and (.jobs|length)==18 and (.artifacts|length)==9 and .run.headSha == $head' --arg head "$head_sha" "$out" >/dev/null
+if "$importer" --fixture "$fixture" --attempt 1 --bound-head "$head_sha" --output "$out" >/dev/null 2>&1; then
+    printf 'Existing output namespace unexpectedly passed.\n' >&2; exit 1
+fi
+ln -s "$root/out-parent" "$root/linked-parent"
+if "$importer" --fixture "$fixture" --attempt 1 --bound-head "$head_sha" --output "$root/linked-parent/linked/ci.json" >/dev/null 2>&1; then
+    printf 'Linked output parent unexpectedly passed.\n' >&2; exit 1
+fi
+
+if "$importer" --fixture "$fixture" --attempt 2 --bound-head "$head_sha" --output "$root/out-parent/bad-attempt/ci.json" >/dev/null 2>&1; then
+    printf 'attempt 2 unexpectedly passed\n' >&2; exit 1
+fi
+jq '.jobs[0].conclusion="failure"' "$fixture/jobs.json" > "$fixture/jobs.bad"; mv "$fixture/jobs.bad" "$fixture/jobs.json"
+if "$importer" --fixture "$fixture" --attempt 1 --bound-head "$head_sha" --output "$root/out-parent/bad-job/ci.json" >/dev/null 2>&1; then
+    printf 'failed required job unexpectedly passed\n' >&2; exit 1
+fi
+jq '.jobs[0].conclusion="success"' "$fixture/jobs.json" > "$fixture/jobs.bad"; mv "$fixture/jobs.bad" "$fixture/jobs.json"
+
+cp "$fixture/artifacts.json" "$root/artifacts.json"
+jq '.artifacts |= .[:-1] | .total_count -= 1' "$fixture/artifacts.json" > "$fixture/artifacts.bad"; mv "$fixture/artifacts.bad" "$fixture/artifacts.json"
+if "$importer" --fixture "$fixture" --attempt 1 --bound-head "$head_sha" --output "$root/out-parent/bad-missing/ci.json" >/dev/null 2>&1; then
+    printf 'missing required artifact unexpectedly passed\n' >&2; exit 1
+fi
+cp "$root/artifacts.json" "$fixture/artifacts.json"
+
+cp "$fixture/downloads/300.zip" "$root/300.zip"
+printf 'tamper\n' >> "$fixture/downloads/300.zip"
+if "$importer" --fixture "$fixture" --attempt 1 --bound-head "$head_sha" --output "$root/out-parent/bad-tamper/ci.json" >/dev/null 2>&1; then
+    printf 'tampered artifact unexpectedly passed\n' >&2; exit 1
+fi
+cp "$root/300.zip" "$fixture/downloads/300.zip"
+
+printf '%s\n' "$(cat "$fixture/classification.log")" >> "$fixture/classification.log"
+if "$importer" --fixture "$fixture" --attempt 1 --bound-head "$head_sha" --output "$root/out-parent/bad-classification/ci.json" >/dev/null 2>&1; then
+    printf 'ambiguous classification unexpectedly passed\n' >&2; exit 1
+fi
+sed -n '1p' "$fixture/classification.log" > "$fixture/classification.one"; mv "$fixture/classification.one" "$fixture/classification.log"
+
+jq '.head_sha="0000000000000000000000000000000000000000"' "$fixture/run.json" > "$fixture/run.bad"; mv "$fixture/run.bad" "$fixture/run.json"
+if "$importer" --fixture "$fixture" --attempt 1 --bound-head "$head_sha" --output "$root/out-parent/bad-head/ci.json" >/dev/null 2>&1; then
+    printf 'wrong head unexpectedly passed\n' >&2; exit 1
+fi
+printf 'CameraAgent final-head CI import contract passed.\n'

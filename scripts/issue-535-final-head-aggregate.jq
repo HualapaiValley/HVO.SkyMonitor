@@ -247,8 +247,9 @@ def evidence_schema:
       "dualAgent": { "many": false, "fields": {
           "citable": "bool", "evidenceMode": "token" } },
       "centralTrafficAttempts": { "scalar": "uint" },
-      # Handled by ci_slot_problems, which refuses the section outright. Naming it
-      # here keeps that refusal the only problem such a record produces.
+      "components": { "opaque": true },
+      # CI is acquired and byte-verified by import:cameraagent-final-head-ci-535;
+      # the predicates below independently verify its bounded projection.
       "ci": { "opaque": true } };
 
 def shape_test($shape):
@@ -439,36 +440,111 @@ def central_traffic_problems:
     else [] end;
 
 # --- imported CI slots ------------------------------------------------------
-# The CI import is not implemented in this layer, and a deferral is not a neutral
-# state: "not implemented yet" reads as a pass to everything downstream, which is
-# the same defect as a green reporting something unverified, one costume further on.
-#
-# So a record carrying imported CI slots is REFUSED rather than validated around.
-# A predicate here could check the shape of a supplied CI conclusion and recompute
-# nothing about where it came from, and a shape-only check living in a file named
-# for provenance is exactly how a later reader mistakes one for the other.
-#
-# When the compiled helper can query a real run and attempt, this refusal is
-# replaced by predicates that recompute. Until then the absence is loud.
+def ci_job_expectations:
+  {"changes":"success","quality":"success","catalog-contracts":"success",
+   "deployment-contracts":"success","build":"success","architecture":"success",
+   "coverage-policy":"success","migrations-cameraagent":"success","migrations-logichost":"success",
+   "unit":"success","integration":"success","coverage":"success",
+   "shared-libraries":"skipped","cameraagent-component":"skipped","logichost-component":"skipped",
+   "combined-integration":"skipped","delivery-component":"skipped","required":"success"};
+
+def ci_artifact_expectations:
+  {"hyg-v42-contracts":"catalog-contracts","package-audit":"quality",
+   "deployment-contract-logs":"deployment-contracts","unit-test-evidence":"unit",
+   "integration-test-evidence":"integration","architecture-unit-evidence":"architecture",
+   "architecture-test-evidence":"architecture","publish-evidence":"architecture",
+   "coverage-report":"coverage"};
+
 def ci_slot_problems:
-    if (.ci // null) != null then
-        [ problem("ci-slots-unverifiable";
-            "this record carries imported CI slots, and nothing in this layer can check their provenance; "
-            + "the CI import belongs to the compiled helper and until it exists such a record is refused rather than "
-            + "validated around") ]
-    else [] end;
+    (.ci // null) as $ci
+    | if $ci == null then []
+      elif ($ci | type) != "object" then
+        [problem("ci-projection-invalid"; "ci must be an imported record")]
+      else
+        (ci_job_expectations) as $jobs
+        | (ci_artifact_expectations) as $artifacts
+        | (["schemaVersion","repository","workflow","run","plan","jobs","artifacts"] | sort) as $top
+        | (["mode","deployment","complete","shared","cameraagent","logichost","combined","delivery"] | sort) as $planKeys
+        | (["id","key","runId","attempt","headSha","status","conclusion"] | sort) as $jobKeys
+        | (["id","key","jobKey","name","path","bytes","sha256"] | sort) as $artifactKeys
+        | ([if (($ci|keys|sort) != $top) then problem("ci-projection-invalid"; "ci top-level fields are not exact") else empty end]
+          + [if $ci.schemaVersion != "issue-535-ci-import-v1" then problem("ci-schema-invalid"; "ci schema is unsupported") else empty end]
+          + [if ($ci.repository | type) != "object" or (($ci.repository|keys|sort) != (["id","name","owner"]|sort))
+               or $ci.repository.owner != "HualapaiValley" or $ci.repository.name != "HVO.SkyMonitor"
+               or ($ci.repository.id|type) != "number" or $ci.repository.id <= 0 or ($ci.repository.id|floor) != $ci.repository.id
+             then problem("ci-repository-invalid"; "ci repository identity is not the bound repository") else empty end]
+          + [if ($ci.workflow | type) != "object" or (($ci.workflow|keys|sort) != (["blobSha","id","path"]|sort))
+               or ($ci.workflow.id|type) != "number" or $ci.workflow.id <= 0 or ($ci.workflow.id|floor) != $ci.workflow.id
+               or $ci.workflow.path != ".github/workflows/ci.yml" or (($ci.workflow.blobSha // "")|test("^[0-9a-f]{40}$")|not)
+             then problem("ci-workflow-invalid"; "ci workflow identity is invalid") else empty end]
+          + [if ($ci.run | type) != "object" or (($ci.run|keys|sort) != (["attempt","conclusion","event","headSha","id","status"]|sort))
+               or ($ci.run.id|type) != "number" or $ci.run.id <= 0 or ($ci.run.id|floor) != $ci.run.id
+               or $ci.run.attempt != 1 or $ci.run.event != "workflow_dispatch" or $ci.run.status != "completed"
+               or $ci.run.conclusion != "success" or $ci.run.headSha != .heads.protectedCi
+             then problem("ci-run-invalid"; "ci run is not a successful first-attempt workflow_dispatch on the protected head") else empty end]
+          + [if ($ci.plan | type) != "object" or (($ci.plan|keys|sort) != $planKeys)
+               or $ci.plan.mode != "full" or any([$ci.plan.deployment,$ci.plan.complete,$ci.plan.shared,$ci.plan.cameraagent,$ci.plan.logichost,
+                 $ci.plan.combined,$ci.plan.delivery][]; . != true)
+             then problem("ci-plan-invalid"; "ci classifier plan is not the complete campaign matrix") else empty end]
+          + [if ($ci.jobs|type) != "array" or ($ci.jobs|length) != ($jobs|length)
+               or ([ $ci.jobs[].key ]|sort) != ($jobs|keys|sort) or ([ $ci.jobs[].id ]|length) != ([ $ci.jobs[].id ]|unique|length)
+             then problem("ci-jobs-incomplete"; "ci required job inventory is incomplete or duplicated") else empty end]
+          + [if any($ci.jobs[]?; . as $job | ($job | type) != "object" or (($job|keys|sort) != $jobKeys)
+               or ($job.key|type) != "string" or ($jobs|has($job.key)|not)
+               or ($job.id|type) != "number" or $job.id <= 0 or ($job.id|floor) != $job.id
+               or ($job.runId|type) != "number" or $job.runId != $ci.run.id or $job.attempt != $ci.run.attempt or $job.headSha != $ci.run.headSha
+               or $job.status != "completed" or (if ($job.key|type)=="string" and ($jobs|has($job.key)) then $job.conclusion != $jobs[$job.key] else true end))
+             then problem("ci-job-result-invalid"; "one or more CI jobs disagree with the imported run or classifier plan") else empty end]
+          + [if ($ci.artifacts|type) != "array" or ($ci.artifacts|length) != ($artifacts|length)
+               or ([ $ci.artifacts[].key ]|sort) != ($artifacts|keys|sort)
+               or ([ $ci.artifacts[].id ]|length) != ([ $ci.artifacts[].id ]|unique|length)
+               or ([ $ci.artifacts[].path ]|length) != ([ $ci.artifacts[].path ]|unique|length)
+             then problem("ci-artifacts-incomplete"; "ci retained artifact inventory is incomplete or duplicated") else empty end]
+          + [if any($ci.artifacts[]?; . as $artifact | ($artifact | type) != "object" or (($artifact|keys|sort) != $artifactKeys)
+               or ($artifact.key|type) != "string" or ($artifacts|has($artifact.key)|not)
+               or $artifact.name != $artifact.key or (if ($artifact.key|type)=="string" and ($artifacts|has($artifact.key)) then $artifact.jobKey != $artifacts[$artifact.key] else true end)
+               or ($artifact.id|type) != "number" or $artifact.id <= 0 or ($artifact.id|floor) != $artifact.id
+               or ($artifact.bytes|type) != "number" or $artifact.bytes <= 0 or ($artifact.bytes|floor) != $artifact.bytes or (($artifact.sha256 // "")|test("^[0-9a-f]{64}$")|not)
+               or $artifact.path != ("ci-artifacts/" + ($artifact.id|tostring) + ".zip"))
+             then problem("ci-artifact-invalid"; "one or more CI artifacts have invalid identity or content bindings") else empty end])
+      end;
+
+def ci_final_problems($prior):
+    if ($prior|length) != 0 then []
+    else ([if (.ci // null) == null then problem("ci-absent"; "final evidence requires an imported exact-head CI projection") else empty end]
+      + [if (.components // null) == null then problem("component-evidence-absent"; "final evidence requires exact-head component archives") else empty end]) end;
+
+def component_problems($bound):
+    (.components // null) as $c
+    | (["cameraagent","combined","delivery","shared"] | sort) as $expected
+    | if $c == null then []
+      elif ($c|type) != "object" or (($c|keys|sort) != (["records","schemaVersion"]|sort))
+        or $c.schemaVersion != "issue-535-component-evidence-v1" or ($c.records|type) != "array"
+        then [problem("component-evidence-invalid"; "component evidence projection is malformed")]
+      elif ($c.records|length) != 4 or ([ $c.records[].component ]|sort) != $expected
+        or ([ $c.records[].path ]|length) != ([ $c.records[].path ]|unique|length)
+        then [problem("component-evidence-incomplete"; "all five exact-head component records are required")]
+      elif any($c.records[];
+        (type != "object") or ((keys|sort) != (["bytes","component","headSha","path","sha256"]|sort))
+        or (.component|type) != "string" or ((.component|IN($expected[]))|not)
+        or .headSha != $bound or (.bytes|type) != "number" or .bytes <= 0 or (.bytes|floor) != .bytes
+        or ((.sha256 // "")|test("^[0-9a-f]{64}$")|not)
+        or ((.path // "")|test("^component-evidence/[A-Za-z0-9._-]+$")|not))
+        then [problem("component-evidence-invalid"; "one or more component records have invalid identity or content bindings")]
+      else [] end;
 
 def all_problems($bound):
     revision_problems($bound) + claimability_problems + freshness_problems
     + admissibility_problems + heads_problems + command_problems
     + assembly_problems($bound) + source_stability_problems
     + path_problems + schema_problems + replay_problems
-    + dual_agent_problems + central_traffic_problems + ci_slot_problems;
+    + dual_agent_problems + central_traffic_problems + ci_slot_problems + component_problems($bound);
 
 def evaluate($bound; $mode):
     (all_problems($bound)
       + (if $mode == "final" then claimability_final_problems + source_clean_problems + command_final_problems
-          + free_text_final_problems else [] end)) as $problems
+          + free_text_final_problems else [] end)) as $baseProblems
+    | ($baseProblems + (if $mode == "final" then ci_final_problems($baseProblems) else [] end)) as $problems
     | {
         schemaVersion: "issue-535-final-head-validation-v1",
         mode: $mode,

@@ -68,11 +68,14 @@ jobs:
           catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
           ./scripts/catalog/prepare-hyg-v42-contracts.sh "$catalog_root" >/dev/null
           tar -czf "$RUNNER_TEMP/hyg-v42-contracts.tar.gz" -C "$catalog_root" .
+          ./scripts/ci:artifact-provenance hyg-v42-contracts catalog-contracts "$RUNNER_TEMP/hyg-v42-contract-provenance"
       - name: Upload exact production catalog contracts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hyg-v42-contracts
-          path: ${{ runner.temp }}/hyg-v42-contracts.tar.gz
+          path: |
+            ${{ runner.temp }}/hyg-v42-contracts.tar.gz
+            ${{ runner.temp }}/hyg-v42-contract-provenance/ci-artifact-provenance.json
           if-no-files-found: error
           retention-days: 1
 
@@ -123,6 +126,9 @@ jobs:
           ./scripts/test:issue-211-w6-identity
           ./scripts/test:cameraagent-final-head-535
           ./scripts/test:record-cameraagent-final-head-535
+          ./scripts/test:cameraagent-final-head-ci-import-535
+          ./scripts/test:cameraagent-final-head-components-535
+          ./scripts/test:ci-artifact-provenance
           ./scripts/test:ci-shell-syntax
           ./scripts/test:ci-shellcheck
           ./scripts/test:infra
@@ -137,7 +143,9 @@ jobs:
           docker compose --env-file deploy/acceptance/cameraagent-dual-standalone-smoke/compose.validation.env.template -f deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml config --quiet
       - name: Audit vulnerable and deprecated packages
         if: needs.changes.outputs.mode == 'full'
-        run: ./scripts/package:audit
+        run: |
+          ./scripts/package:audit
+          ./scripts/ci:artifact-provenance package-audit quality TestResults/package-audit
       - name: Upload package audit
         if: always() && needs.changes.outputs.mode == 'full'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -215,6 +223,9 @@ jobs:
       - name: Run exhaustive disposable offline installer contract
         if: needs.changes.outputs.deployment_installer == 'true'
         run: ./scripts/test:deployment-installer
+      - name: Bind deployment contract evidence
+        if: always() && needs.changes.outputs.deployment_shards == 'true'
+        run: ./scripts/ci:artifact-provenance deployment-contract-logs deployment-contracts TestResults/deployment-contracts
       - name: Upload deployment contract logs
         if: always() && needs.changes.outputs.deployment_shards == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -308,6 +319,9 @@ jobs:
           dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-acceptance --logger "trx;LogFileName=unit-cameraagent-acceptance.trx"
           dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/logichost --logger "trx;LogFileName=unit-logichost.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-logichost --logger "trx;LogFileName=unit-cameraagent-logichost.trx"
+      - name: Bind Unit evidence
+        if: always()
+        run: ./scripts/ci:artifact-provenance unit-test-evidence unit TestResults/unit
       - name: Upload Unit evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -373,6 +387,9 @@ jobs:
           wait "$other_pid" || failed=1
           cat TestResults/integration/lane-logichost.log TestResults/integration/lane-other.log
           exit "$failed"
+      - name: Bind Integration evidence
+        if: always()
+        run: ./scripts/ci:artifact-provenance integration-test-evidence integration TestResults/integration
       - name: Upload Integration evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -463,6 +480,12 @@ jobs:
             "$replay_runner_x64_bytes" "$replay_runner_arm64_bytes" \
             "$processing_runner_x64_bytes" "$processing_runner_arm64_bytes" \
             > TestResults/publish/summary.txt
+      - name: Bind architecture and publish evidence
+        if: always()
+        run: |
+          ./scripts/ci:artifact-provenance architecture-unit-evidence architecture TestResults/architecture-unit
+          ./scripts/ci:artifact-provenance architecture-test-evidence architecture TestResults/architecture
+          ./scripts/ci:artifact-provenance publish-evidence architecture TestResults/publish
       - name: Upload architecture unit evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -488,6 +511,7 @@ jobs:
             TestResults/publish/*.sha256
             TestResults/publish/summary.txt
             TestResults/publish/*capabilities.json
+            TestResults/publish/ci-artifact-provenance.json
           if-no-files-found: error
           retention-days: 30
 
@@ -902,6 +926,9 @@ jobs:
           line=$(awk '/Line coverage:/ {gsub("%", "", $3); print $3}' coverage-report/Summary.txt)
           branch=$(awk '/Branch coverage:/ {gsub("%", "", $3); print $3}' coverage-report/Summary.txt)
           printf 'line=%s\nbranch=%s\n' "$line" "$branch" >> "$GITHUB_OUTPUT"
+      - name: Bind coverage evidence
+        if: always()
+        run: ./scripts/ci:artifact-provenance coverage-report coverage coverage-report
       - name: Upload merged coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

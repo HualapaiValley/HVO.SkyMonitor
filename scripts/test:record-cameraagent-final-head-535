@@ -107,6 +107,24 @@ assert_equal "latest reports the newest generation" "2" \
 expect_success "verify accepts a committed generation" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 
+support_file="$(campaign_dir "$root" CAMP)/generations/2/ci-artifacts/101.zip"
+support_before="$(sha256sum "$support_file" | cut -d' ' -f1)"
+printf 'tamper\n' >> "$support_file"
+support_after="$(sha256sum "$support_file" | cut -d' ' -f1)"
+[[ "$support_before" != "$support_after" ]] || fail "support mutation did not change the file"
+expect_refusal "tampered retained support file fails verification" "Generation support byte length differs" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+verify_tmp="$WORK/verify-tmp"
+mkdir "$verify_tmp"
+TMPDIR="$verify_tmp" expect_refusal "failed verification cleans its support inventory temporary" "Generation support byte length differs" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+cases=$((cases + 1))
+[[ -z "$(find "$verify_tmp" -mindepth 1 -print -quit)" ]] || fail "failed verification leaked a support inventory temporary"
+rm -rf "$root"
+root="$(new_root)"
+assert_equal "replacement first publish is generation 1" "1" "$(publish "$root" green.json CAMP)"
+assert_equal "replacement second publish is generation 2" "2" "$(publish "$root" green.json CAMP)"
+
 # The layout is the contract a later reader navigates, so assert it rather than
 # assuming it followed from the exit status.
 dir="$(campaign_dir "$root" CAMP)"
@@ -186,12 +204,12 @@ cases=$((cases + 1))
 expect_refusal "a tampered envelope fails verification" "Index digest does not match" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 
-# Tamper with the evidence set the index names. The generation and its envelope
-# still agree with each other; what has moved is the thing they describe. A gate
-# that stopped at the envelope would call this clean.
+# A committed generation is self-contained. Mutating and then deleting the source
+# campaign tree must not change verification of the generation-local retained copy.
 root="$(new_root)"
 mkdir -p "$SCRATCH"
 cp "$FIXTURES/green.json" "$SCRATCH/evidence.json"
+cp -a "$FIXTURES/ci-artifacts" "$FIXTURES/component-evidence" "$SCRATCH/"
 "$RECORD" publish --evidence "$SCRATCH/evidence.json" --bound-head "$HEAD_SHA" \
     --campaign CAMP --output-root "$root" --recorded-utc "$STAMP" >/dev/null
 before="$(sha256sum "$SCRATCH/evidence.json" | cut -d' ' -f1)"
@@ -200,9 +218,11 @@ mv "$WORK/ev.json" "$SCRATCH/evidence.json"
 after="$(sha256sum "$SCRATCH/evidence.json" | cut -d' ' -f1)"
 cases=$((cases + 1))
 [[ "$before" != "$after" ]] || fail "evidence tamper did not change the file"
-expect_refusal "a generation whose evidence set moved fails verification" "Evidence set digest does not match the index" \
+expect_success "external evidence mutation does not alter the retained generation" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 rm -rf "$SCRATCH"
+expect_success "external evidence deletion does not alter the retained generation" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 
 # ---------------------------------------------------------------------------
 # An uncommitted generation is ignored, and cleanable.
@@ -228,6 +248,26 @@ cases=$((cases + 1))
 [[ -d "$dir/generations/1" && -d "$dir/generations/2" ]] || fail "clean removed a committed generation"
 expect_success "committed generations still verify after a clean" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+
+# The envelope-authenticated support inventory is itself part of the generation
+# contract. A matching count cannot substitute for typed, unique, evidence-bound
+# entries.
+cp "$dir/generations/2/$INDEX" "$WORK/support-index.json"
+cp "$dir/generations/2/$ENVELOPE" "$WORK/support-envelope.json"
+for mutation in non-array duplicated malformed; do
+    case "$mutation" in
+      non-array) jq '.supportFiles = "12345678901234"' "$WORK/support-index.json" ;;
+      duplicated) jq '.supportFiles as $support | .supportFiles = [range(0; ($support | length)) | $support[0]]' "$WORK/support-index.json" ;;
+      malformed) jq '.supportFiles[0].bytes = "sixteen"' "$WORK/support-index.json" ;;
+    esac > "$dir/generations/2/$INDEX"
+    jq --sort-keys --arg sha "$(sha256sum "$dir/generations/2/$INDEX" | cut -d' ' -f1)" \
+        --argjson bytes "$(wc -c < "$dir/generations/2/$INDEX")" \
+        '.index.sha256 = $sha | .index.bytes = $bytes' "$WORK/support-envelope.json" > "$dir/generations/2/$ENVELOPE"
+    expect_refusal "support inventory mutation $mutation is refused" "Generation support inventory" \
+        "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --generation 2 --output-root "$root"
+done
+cp "$WORK/support-index.json" "$dir/generations/2/$INDEX"
+cp "$WORK/support-envelope.json" "$dir/generations/2/$ENVELOPE"
 
 # Generation numbering past nine must use real publications, not copies claiming
 # generation 1 under other directory names. Verification now rejects those copies.
@@ -395,16 +435,17 @@ done
 expect_refusal "hard-linked evidence is refused" "Hard-linked file is not allowed" \
     "$RECORD" publish --evidence "$SCRATCH/hardlink.json" --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 cp "$FIXTURES/green.json" "$SCRATCH/regular.json"
+cp -a "$FIXTURES/ci-artifacts" "$FIXTURES/component-evidence" "$SCRATCH/"
 expect_success "a genuine regular-file copy remains publishable" \
     "$RECORD" publish --evidence "$SCRATCH/regular.json" --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 mv "$SCRATCH/regular.json" "$WORK/regular-original.json"
 ln -s "$WORK/regular-original.json" "$SCRATCH/regular.json"
-expect_refusal "verification also rejects replaced linked evidence" "Symlink path is not allowed" \
+expect_success "verification is independent of replaced linked external evidence" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 
 rm "$SCRATCH/regular.json"
 ln "$WORK/regular-original.json" "$SCRATCH/regular.json"
-expect_refusal "verification also rejects replaced hard-linked evidence" "Hard-linked file is not allowed" \
+expect_success "verification is independent of replaced hard-linked external evidence" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 mkfifo "$SCRATCH/evidence-pipe"
 expect_refusal "nonregular evidence is refused without blocking on a read" "Path must be a regular file" \
@@ -448,17 +489,16 @@ for invalid in 0 01 -1 1.5 1000000000000000; do
         "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --generation "$invalid" --output-root "$root"
 done
 
-# Hash-correct indexes must not smuggle absolute, traversal or alias paths.
+# Hash-correct indexes may name only the fixed generation-local evidence document.
 root="$(new_root)"
 publish "$root" green.json CAMP >/dev/null
 dir="$(campaign_dir "$root" CAMP)"
 for bad_path in "$FIXTURES/green.json" 'tests/../tests/fixtures/issue-535/final-head/green.json' 'tests/./fixtures/issue-535/final-head/green.json' $'tests/\nfixtures/green.json'; do
-    case "$bad_path" in
-        /*) reason="Index evidence path must be repository-relative" ;;
-        *../*) reason="Parent traversal is not allowed" ;;
-        *./*) reason="Index evidence path must be canonical" ;;
-        *) reason="Index evidence path must be a safe repository-relative path" ;;
-    esac
+    if [[ "$bad_path" == *$'\n'* ]]; then
+        reason="Index evidence path must be a safe repository-relative path"
+    else
+        reason="Index evidence path must be generation-local evidence.json"
+    fi
     jq --sort-keys --arg path "$bad_path" '.evidence.path = $path' "$WORK/green-index.json" > "$dir/generations/1/$INDEX"
     assert_changed "$WORK/green-index.json" "$dir/generations/1/$INDEX"
     jq --sort-keys --arg sha "$(sha256sum "$dir/generations/1/$INDEX" | cut -d' ' -f1)" \

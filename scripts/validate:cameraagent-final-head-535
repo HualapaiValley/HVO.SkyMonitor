@@ -59,10 +59,61 @@ jq --exit-status 'type == "object"' "$evidence" > /dev/null 2>&1 || {
     exit 1
 }
 
+evidence_dir="$(cd "$(dirname "$evidence")" && pwd)"
+support_problems="$(mktemp)"
+trap 'rm -f "$support_problems" /tmp/hvo-535-jq-error' EXIT
+: > "$support_problems"
+declare -A support_paths=()
+reject_linked_ancestors() {
+    local path="$1" current=""
+    [[ "$path" == /* ]] || path="$evidence_dir/$path"
+    IFS='/' read -r -a parts <<< "${path#/}"
+    for part in "${parts[@]}"; do
+        [[ -n "$part" ]] || continue
+        current="$current/$part"
+        [[ ! -L "$current" ]] || return 1
+    done
+}
+support_shape_valid=true
+if ! jq -e '
+  ((.ci // null) == null or ((.ci|type)=="object" and (.ci.artifacts|type)=="array" and
+    all(.ci.artifacts[]; (type=="object") and (.path|type)=="string" and (.bytes|type)=="number" and (.sha256|type)=="string"))) and
+  ((.components // null) == null or ((.components|type)=="object" and (.components.records|type)=="array" and
+    all(.components.records[]; (type=="object") and (.path|type)=="string" and (.bytes|type)=="number" and (.sha256|type)=="string")))
+' "$evidence" >/dev/null 2>&1; then
+    support_shape_valid=false
+fi
+if [[ "$support_shape_valid" == true ]]; then
+while IFS=$'\t' read -r path bytes sha; do
+    [[ -n "$path" ]] || continue
+    if [[ -n "${support_paths[$path]+set}" ]]; then
+        jq -cn --arg path "$path" '{id:"support-file-duplicated",detail:($path + ": support path is duplicated across evidence sections")}' >> "$support_problems"
+        continue
+    fi
+    support_paths["$path"]=1
+    if [[ "$path" == /* || "$path" == ../* || "$path" == *'/../'* || "$path" == *$'\n'* ]]; then
+        jq -cn --arg path "$path" '{id:"support-file-unsafe",detail:($path + ": support path is not safe and relative")}' >> "$support_problems"
+        continue
+    fi
+    file="$evidence_dir/$path"
+    if ! reject_linked_ancestors "$file" || [[ ! -f "$file" || -L "$file" || "$(stat -c %h "$file" 2>/dev/null || printf 0)" != 1 ]]; then
+        jq -cn --arg path "$path" '{id:"support-file-missing",detail:($path + ": support file is absent, linked, or not private")}' >> "$support_problems"
+        continue
+    fi
+    actual_bytes="$(stat -c %s "$file")"
+    actual_sha="$(sha256sum "$file" | cut -d' ' -f1)"
+    [[ "$actual_bytes" == "$bytes" ]] || jq -cn --arg path "$path" '{id:"support-file-length-mismatch",detail:($path + ": support byte length does not match")}' >> "$support_problems"
+    [[ "$actual_sha" == "$sha" ]] || jq -cn --arg path "$path" '{id:"support-file-digest-mismatch",detail:($path + ": support SHA-256 does not match")}' >> "$support_problems"
+done < <(jq -r '[(.ci.artifacts[]? | [.path,.bytes,.sha256]),(.components.records[]? | [.path,.bytes,.sha256])] | .[] | @tsv' "$evidence" 2>/dev/null)
+fi
+
 if ! result="$(jq --sort-keys \
     --arg bound "$bound_head" \
     --arg mode "$mode" \
-    'include "issue-535-final-head-aggregate"; evaluate($bound; $mode)' \
+    'include "issue-535-final-head-aggregate"; try evaluate($bound; $mode) catch
+      {schemaVersion:"issue-535-final-head-validation-v1",mode:$mode,boundHead:$bound,artifactCount:0,
+       problems:[{id:"evidence-structure-invalid",detail:"evidence structure could not be evaluated"}],
+       localReady:false,acceptanceReady:false}' \
     -L "$SCRIPT_DIR" "$evidence" 2>/tmp/hvo-535-jq-error)"; then
     printf 'The aggregate contract failed to evaluate. This is a defect in %s, not in the evidence set:\n' \
         "$AGGREGATE" >&2
@@ -70,7 +121,10 @@ if ! result="$(jq --sort-keys \
     rm -f /tmp/hvo-535-jq-error
     exit 1
 fi
-rm -f /tmp/hvo-535-jq-error
+result="$(jq -nS --argjson result "$result" --slurpfile support "$support_problems" '
+  ($result.problems + $support) as $problems |
+  $result + {problems:$problems,localReady:(($problems|length)==0),acceptanceReady:((($problems|length)==0) and $result.mode=="final")}
+')"
 
 printf '%s\n' "$result"
 

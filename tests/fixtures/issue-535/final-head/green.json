@@ -10,6 +10,53 @@
     }
   ],
   "centralTrafficAttempts": 0,
+  "ci": {
+    "schemaVersion": "issue-535-ci-import-v1",
+    "repository": { "owner": "HualapaiValley", "name": "HVO.SkyMonitor", "id": 1095187036 },
+    "workflow": { "id": 240252431, "path": ".github/workflows/ci.yml", "blobSha": "0123456789abcdef0123456789abcdef01234567" },
+    "run": { "id": 12345, "attempt": 1, "event": "workflow_dispatch", "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+    "plan": { "mode": "full", "deployment": true, "complete": true, "shared": true, "cameraagent": true, "logichost": true, "combined": true, "delivery": true },
+    "jobs": [
+      { "key": "architecture", "id": 1, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "build", "id": 2, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "cameraagent-component", "id": 3, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "skipped" },
+      { "key": "catalog-contracts", "id": 4, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "changes", "id": 5, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "combined-integration", "id": 6, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "skipped" },
+      { "key": "coverage", "id": 7, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "coverage-policy", "id": 8, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "delivery-component", "id": 9, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "skipped" },
+      { "key": "deployment-contracts", "id": 10, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "integration", "id": 11, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "logichost-component", "id": 12, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "skipped" },
+      { "key": "migrations-cameraagent", "id": 13, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "migrations-logichost", "id": 14, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "quality", "id": 15, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "required", "id": 16, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" },
+      { "key": "shared-libraries", "id": 17, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "skipped" },
+      { "key": "unit", "id": 18, "runId": 12345, "attempt": 1, "headSha": "428e346ef16c00f6a3257315c95384092b1b3290", "status": "completed", "conclusion": "success" }
+    ],
+    "artifacts": [
+      { "key": "architecture-test-evidence", "id": 101, "jobKey": "architecture", "name": "architecture-test-evidence", "path": "ci-artifacts/101.zip", "bytes": 16, "sha256": "7437f1b7cb51afe32d928e6ce21bf96dffefbb7f7ef26c0e5666efe73ff59507" },
+      { "key": "architecture-unit-evidence", "id": 102, "jobKey": "architecture", "name": "architecture-unit-evidence", "path": "ci-artifacts/102.zip", "bytes": 16, "sha256": "f7651b8fb896903849961cb24f826d67e613dcced91b8d79e63a183ffc41fb4a" },
+      { "key": "coverage-report", "id": 103, "jobKey": "coverage", "name": "coverage-report", "path": "ci-artifacts/103.zip", "bytes": 16, "sha256": "cabe68fd562f4b40f4f4600a25c99744a3a57d20c9ca7f6f325f7ac2d0fa10d2" },
+      { "key": "deployment-contract-logs", "id": 104, "jobKey": "deployment-contracts", "name": "deployment-contract-logs", "path": "ci-artifacts/104.zip", "bytes": 16, "sha256": "331e907665d2741cf61788b8223015030ca315f182041af717cadf28ee961a57" },
+      { "key": "hyg-v42-contracts", "id": 105, "jobKey": "catalog-contracts", "name": "hyg-v42-contracts", "path": "ci-artifacts/105.zip", "bytes": 16, "sha256": "3947ea12330a13a17a8606fdc6694e7ee9bd996cdce2f7f70a271b0b911befa2" },
+      { "key": "integration-test-evidence", "id": 106, "jobKey": "integration", "name": "integration-test-evidence", "path": "ci-artifacts/106.zip", "bytes": 16, "sha256": "715b2978fb65303dea7caa94d3caa7b7a2f0cf798f6d63351f550655c7e73d51" },
+      { "key": "package-audit", "id": 107, "jobKey": "quality", "name": "package-audit", "path": "ci-artifacts/107.zip", "bytes": 16, "sha256": "815faff69faf491d18b042781aed2907367d49ac42b597c5424c2dc4d3687fea" },
+      { "key": "publish-evidence", "id": 108, "jobKey": "architecture", "name": "publish-evidence", "path": "ci-artifacts/108.zip", "bytes": 16, "sha256": "de97bde8266e52906d3f8f7cef02a0247fa5ad68e9ce7e2396bea0a5429952de" },
+      { "key": "unit-test-evidence", "id": 109, "jobKey": "unit", "name": "unit-test-evidence", "path": "ci-artifacts/109.zip", "bytes": 16, "sha256": "abb06a6375f5cb196147eff6ad85df2b25bd1fb675ab69655c58743c35b6241d" }
+    ]
+  },
+  "components": {
+    "schemaVersion": "issue-535-component-evidence-v1",
+    "records": [
+      { "component": "cameraagent", "path": "component-evidence/cameraagent.tar", "bytes": 31, "sha256": "b4765b3d07cc418662751d35d04a6d7255c2aac3c6687a20386457b07a786e9c", "headSha": "428e346ef16c00f6a3257315c95384092b1b3290" },
+      { "component": "combined", "path": "component-evidence/combined.tar", "bytes": 28, "sha256": "fe2bc08bd3949ce78cc001a57c2ec6aa6f5b62e850826164c05bb86c6c503a89", "headSha": "428e346ef16c00f6a3257315c95384092b1b3290" },
+      { "component": "delivery", "path": "component-evidence/delivery.tar", "bytes": 28, "sha256": "b7540ce3f8d22bb51d6b4679bff313380fcb6f2650975704df406bd4951d6844", "headSha": "428e346ef16c00f6a3257315c95384092b1b3290" },
+      { "component": "shared", "path": "component-evidence/shared.tar", "bytes": 26, "sha256": "03ce8e15d106fd58a4bbe5e4badaf8bcc9eec22a7082751c6c1e587d70684644", "headSha": "428e346ef16c00f6a3257315c95384092b1b3290" }
+    ]
+  },
   "commands": [
     {
       "argvSha256": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a",
