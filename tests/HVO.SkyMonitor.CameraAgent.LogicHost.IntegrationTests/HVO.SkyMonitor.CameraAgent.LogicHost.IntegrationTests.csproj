@@ -10,7 +10,6 @@
     </PackageReference>
     <PackageReference Include="FluentAssertions" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
-    <PackageReference Include="Minio" />
     <PackageReference Include="MSTest" />
   </ItemGroup>
   <ItemGroup>

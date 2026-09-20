@@ -48,8 +48,10 @@ services:
         target: /app/catalog
         read_only: true
       - type: bind
-        source: ${HVO_OBJECT_STORE_ROOT:-./data/object-store}
+        source: ${HVO_OBJECT_STORE_ROOT:?HVO_OBJECT_STORE_ROOT must be set}
         target: /var/lib/hvo/object-store
+        bind:
+          create_host_path: false
     restart: unless-stopped
     networks:
       - skymonitor-network

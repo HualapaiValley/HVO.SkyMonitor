@@ -57,6 +57,18 @@ jq -e '.phaseStatus == "failed" and ([.targets[].target] | sort) == ["east","log
 jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_services-evidence/catalog.json" >/dev/null
 run_deploy_mode catalog "$deploy_services" isolated >/dev/null
 export FAKE_RUNTIME_UID_HOST=shared FAKE_RUNTIME_UID=4242 FAKE_RUNTIME_GID=4343
+if FAKE_OBJECT_STORE_QUALIFY_FAIL=logic run_deploy_mode up "$deploy_services" isolated > "$TEMP_DIR/up-object-store-qualifier-failure.log" 2>&1; then
+  fail 'Up accepted a failed object-store qualification.'
+fi
+grep -Fq 'reason=object-store-qualification-failed' "$TEMP_DIR/up-object-store-qualifier-failure.log"
+if FAKE_OBJECT_STORE_QUALIFY_MALFORMED=logic run_deploy_mode up "$deploy_services" isolated > "$TEMP_DIR/up-object-store-qualifier-malformed.log" 2>&1; then
+  fail 'Up accepted an incomplete object-store preflight document.'
+fi
+grep -Fq 'reason=object-store-qualification-invalid' "$TEMP_DIR/up-object-store-qualifier-malformed.log"
+if FAKE_RUNTIME_UID=4343 run_deploy_mode up "$deploy_services" isolated > "$TEMP_DIR/up-object-store-owner-mismatch.log" 2>&1; then
+  fail 'Up accepted an object-store owner that differs from runtimeOwner.'
+fi
+grep -Fq 'reason=object-store-owner-mismatch' "$TEMP_DIR/up-object-store-owner-mismatch.log"
 if FAKE_COMPOSE_FAIL_MATCH="hvo-deploy-services-22222222222242228222222222222222" run_deploy_mode up "$deploy_services" isolated > "$TEMP_DIR/up-failure.log" 2>&1; then fail 'Up partial failure passed.'; fi
 jq -e '.phaseStatus == "failed" and ([.targets[].target] | sort) == ["logic"] and
   ([.resources[].kind] | sort) == ["logic-initializer","object-store","runtime-role","shared-services"]' "$TEMP_DIR/output/$deploy_services-state/up-ledger.json" >/dev/null

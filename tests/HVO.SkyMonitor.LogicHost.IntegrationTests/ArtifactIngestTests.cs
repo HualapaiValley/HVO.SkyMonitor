@@ -3189,7 +3189,7 @@ public sealed class ArtifactIngestTests
 
         status.StatusCode.Should().Be(HttpStatusCode.NotFound);
         minioCounter.GetRequests.Should().Be(failure == "checksum" ? 1 : 0,
-            "filesystem missing and truncated objects fail during metadata validation, while same-length corruption is streamed once");
+            "missing-object bucket disambiguation and truncated-object rejection do not stream content through the adapter, while same-length corruption is streamed once");
         await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
         var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var quarantined = await assertionDb.CentralArtifacts.SingleAsync(item =>

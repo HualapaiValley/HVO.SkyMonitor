@@ -66,7 +66,9 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
                 await AssertSuccessfulOperationAsync(successfulOperation, scenario.Dependency).ConfigureAwait(false);
             }
 
-            var container = AssemblyHooks.Fixture.GetDependencyContainer(scenario.Dependency);
+            var container = scenario.Dependency == IntegrationDependency.ObjectStore
+                ? null
+                : AssemblyHooks.Fixture.GetDependencyContainer(scenario.Dependency);
             var outageStarted = Stopwatch.GetTimestamp();
             var restored = false;
             try
@@ -190,11 +192,38 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
         await WriteEvidenceAsync(evidenceRoot, source, evidence).ConfigureAwait(false);
     }
 
-    private static Task DisruptAsync(DotNet.Testcontainers.Containers.IContainer container, IntegrationDependency dependency)
-        => container.PauseAsync(CancellationToken.None);
+    private static Task DisruptAsync(
+        DotNet.Testcontainers.Containers.IContainer? container,
+        IntegrationDependency dependency)
+    {
+        if (dependency == IntegrationDependency.ObjectStore)
+        {
+            Directory.Move(ObjectStoreBucketPath, ObjectStoreOutagePath);
+            return Task.CompletedTask;
+        }
+        return container!.PauseAsync(CancellationToken.None);
+    }
 
-    private static Task RestoreAsync(DotNet.Testcontainers.Containers.IContainer container, IntegrationDependency dependency)
-        => container.UnpauseAsync(CancellationToken.None);
+    private static Task RestoreAsync(
+        DotNet.Testcontainers.Containers.IContainer? container,
+        IntegrationDependency dependency)
+    {
+        if (dependency == IntegrationDependency.ObjectStore)
+        {
+            if (Directory.Exists(ObjectStoreOutagePath))
+            {
+                Directory.Move(ObjectStoreOutagePath, ObjectStoreBucketPath);
+            }
+            return Task.CompletedTask;
+        }
+        return container!.UnpauseAsync(CancellationToken.None);
+    }
+
+    private static string ObjectStoreBucketPath
+        => Path.Combine(AssemblyHooks.Fixture.ObjectStorageRoot, "skymonitor-diagnostics");
+
+    private static string ObjectStoreOutagePath
+        => ObjectStoreBucketPath + ".outage";
 
     private static async Task<HealthSnapshot> ObserveUnavailableHealthEndpointAsync(
         HttpClient client,

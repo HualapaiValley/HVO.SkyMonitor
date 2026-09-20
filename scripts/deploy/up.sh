@@ -394,15 +394,32 @@ deploy_run_up() {
     target="$(jq -c '.logicHost' "$inventory")"; name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
     image="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .reference' <<< "$images")"
     deploy_up_stage_target "$inventory" "$target" "$run_id" "$render_root" "$image" logicHost || return 1
+    runtime_identity="$(deploy_transport_owner_identity "$ssh" "$(jq -r '.runtimeOwner' <<< "$target")")" ||
+      { deploy_fail up logic runtime-owner-identity-failed; return 1; }
+    IFS=$'\t' read -r runtime_uid runtime_gid <<< "$runtime_identity"
+    [[ "$runtime_uid" == "$(jq -r '.deployment.services.objectStore.uid' "$inventory")" &&
+       "$runtime_gid" == "$(jq -r '.deployment.services.objectStore.gid' "$inventory")" ]] ||
+      { deploy_fail up logic object-store-owner-mismatch; return 1; }
     object_store_preflight="$(deploy_transport_qualify_object_store "$ssh" "$REPO_ROOT/scripts/qualify:filesystem-object-store" \
       "$(jq -r '.deployment.services.objectStore.root' "$inventory")" \
       "$(jq -r '.deployment.services.objectStore.uid' "$inventory")" \
       "$(jq -r '.deployment.services.objectStore.gid' "$inventory")" \
       "$(jq -r '.deployment.services.objectStore.filesystemUuid' "$inventory")" \
       "$(jq -r '.deployment.services.objectStore.minimumFreeBytes' "$inventory")" \
-      "$(jq -r '.deployment.services.objectStore.minimumFreeInodes' "$inventory")")" ||
+      "$(jq -r '.deployment.services.objectStore.minimumFreeInodes' "$inventory")" \
+      "$(jq -r '.deployment.services.objectStore.artifactBucket' "$inventory")" \
+      "$(jq -r '.deployment.services.objectStore.diagnosticsBucket' "$inventory")" \
+      "$(jq -r '.runtimeRoot' <<< "$target")" \
+      "$(deploy_catalog_root "$inventory" "$target")")" ||
       { deploy_fail up logic object-store-qualification-failed; return 1; }
-    jq -e '.schema == "hvo-filesystem-object-store-preflight-v1"' <<< "$object_store_preflight" >/dev/null 2>&1 ||
+    jq -e --arg root "$(jq -r '.deployment.services.objectStore.root' "$inventory")" \
+      --argjson uid "$(jq -r '.deployment.services.objectStore.uid' "$inventory")" \
+      --argjson gid "$(jq -r '.deployment.services.objectStore.gid' "$inventory")" \
+      --arg artifact "$(jq -r '.deployment.services.objectStore.artifactBucket' "$inventory")" \
+      --arg diagnostics "$(jq -r '.deployment.services.objectStore.diagnosticsBucket' "$inventory")" \
+      '.schema == "hvo-filesystem-object-store-preflight-v1" and .result == "passed" and
+       .root == $root and .identity.uid == $uid and .identity.gid == $gid and
+       .buckets == [$artifact,$diagnostics]' <<< "$object_store_preflight" >/dev/null 2>&1 ||
       { deploy_fail up logic object-store-qualification-invalid; return 1; }
     DEPLOY_UP_JSON="$(jq -c --argjson preflight "$object_store_preflight" '.resources = ([.resources[] | select(.kind != "object-store")] + [{kind:"object-store",status:"qualified",preflight:$preflight}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"
     deploy_up_compose_mutation "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" --profile initialize run --rm logic-init || { deploy_fail up logic initializer-failed; return 1; }

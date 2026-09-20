@@ -313,6 +313,7 @@ set -o pipefail
   4242 4343 \
   00000000-0000-0000-0000-000000000000 \
   2147483648 10000 \
+  skymonitor-artifacts skymonitor-diagnostics \
   /srv/skymonitor/data/logichost/dataprotection \
   /srv/skymonitor/data/logichost/home \
   | tee filesystem-object-store-preflight.json \

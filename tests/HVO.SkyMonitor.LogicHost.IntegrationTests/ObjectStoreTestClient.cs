@@ -101,7 +101,7 @@ internal static class ObjectStoreTestClient
 
         public async Task ReadAsync(string bucket, string key, string? generation, Func<Stream, CancellationToken, Task> reader, CancellationToken cancellationToken)
         {
-            using var response = await SendAsync(HttpMethod.Get, bucket, key, cancellationToken).ConfigureAwait(false);
+            using var response = await SendAsync(HttpMethod.Get, bucket, key, "read", cancellationToken).ConfigureAwait(false);
             await inner.ReadAsync(bucket, key, generation, reader, cancellationToken).ConfigureAwait(false);
         }
 
@@ -116,7 +116,7 @@ internal static class ObjectStoreTestClient
 
         public async Task DeleteAsync(string bucket, string key, CancellationToken cancellationToken)
         {
-            using var response = await SendAsync(HttpMethod.Delete, bucket, key, cancellationToken).ConfigureAwait(false);
+            using var response = await SendAsync(HttpMethod.Delete, bucket, key, "delete", cancellationToken).ConfigureAwait(false);
         }
 
         public IAsyncEnumerable<ObjectStoreItem> ListAsync(string bucket, string prefix, CancellationToken cancellationToken, string? startAfter = null)
@@ -125,9 +125,18 @@ internal static class ObjectStoreTestClient
         public void Dispose() => invoker.Dispose();
 
         private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string bucket, string key, CancellationToken cancellationToken)
+            => await SendAsync(method, bucket, key, method == HttpMethod.Head ? "stat" : method == HttpMethod.Get ? "read" : "request", cancellationToken)
+                .ConfigureAwait(false);
+
+        private async Task<HttpResponseMessage> SendAsync(
+            HttpMethod method,
+            string bucket,
+            string key,
+            string operation,
+            CancellationToken cancellationToken)
             => await SendAsync(
                 new HttpRequestMessage(method, new Uri($"http://object-store/{bucket}/{Uri.EscapeDataString(key)}")),
-                method == HttpMethod.Delete ? "delete" : "stat",
+                operation,
                 cancellationToken).ConfigureAwait(false);
 
         private async Task<HttpResponseMessage> SendAsync(

@@ -350,8 +350,8 @@ require_source_reference '[HttpGet("protected")]' src/HVO.SkyMonitor.LogicHost/C
 require_source_reference '/connect/token' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'X-API-Key' src/HVO.SkyMonitor.Common/Security/ApiKeyAuthenticationOptions.cs
 require_source_reference 'Redis__InstanceName: "skymonitor:"' docker-compose.apps.yml
-require_source_reference 'skymonitor-diagnostics' scripts/qualify:filesystem-object-store
-require_source_reference 'skymonitor-artifacts' scripts/qualify:filesystem-object-store
+require_source_reference 'skymonitor-diagnostics' src/HVO.SkyMonitor.LogicHost/Configuration/CentralObjectStorageOptions.cs
+require_source_reference 'skymonitor-artifacts' src/HVO.SkyMonitor.LogicHost/Configuration/CentralObjectStorageOptions.cs
 require_source_reference 'DeviceProvisioning__StateDirectory: /app/data/provisioning' docker-compose.apps.yml
 require_source_reference 'DeviceBootstrap__CentralIdentity__ClientCredentials__ClientSecret' docker-compose.apps.yml
 require_source_reference 'OpenIddictCertificateOptions.SectionName' src/HVO.SkyMonitor.LogicHost/Program.cs

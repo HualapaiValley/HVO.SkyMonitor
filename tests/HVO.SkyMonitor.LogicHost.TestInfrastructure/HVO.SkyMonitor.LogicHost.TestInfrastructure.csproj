@@ -5,6 +5,7 @@
     <NoWarn>$(NoWarn);CA1515;CA1707;CA2000;CA2007;CA1812;CA2025</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Minio" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
     <PackageReference Include="Testcontainers.MsSql" />

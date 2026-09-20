@@ -551,12 +551,17 @@ if [[ "$prepare" == true ]]; then /usr/bin/cat "$script" >> "${FAKE_PREPARE_REMO
 if [[ -n "${FAKE_SSH_FAIL_UPLOAD_MOVE_MATCH:-}" && $# -eq 2 && "$2" == *"$FAKE_SSH_FAIL_UPLOAD_MOVE_MATCH"* ]]; then exit 73; fi
 # The object-store qualifier is piped to the target host. The fixture has no qualified
 # filesystem, so the declared topology is echoed back as the preflight document it emits.
-if (( $# == 6 )) && [[ "$1" == /* && "$2" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ && "$4" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+if (( $# >= 8 )) && [[ "$1" == /* && "$2" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ && "$4" =~ ^[0-9a-fA-F-]{36}$ ]]; then
   /usr/bin/cat >/dev/null
   [[ "${FAKE_OBJECT_STORE_QUALIFY_FAIL:-}" != "$host" ]] || exit 1
+  if [[ "${FAKE_OBJECT_STORE_QUALIFY_MALFORMED:-}" == "$host" ]]; then
+    printf '%s\n' '{"schema":"hvo-filesystem-object-store-preflight-v1","result":"passed"}'
+    exit 0
+  fi
   /usr/bin/jq -cn --arg root "$1" --argjson uid "$2" --argjson gid "$3" --arg uuid "$4" \
-    '{schema:"hvo-filesystem-object-store-preflight-v1",root:$root,uid:$uid,gid:$gid,
-      mount:{uuid:$uuid,filesystem:"ext4"},buckets:["skymonitor-artifacts","skymonitor-diagnostics"]}'
+    --arg artifact "$7" --arg diagnostics "$8" \
+    '{schema:"hvo-filesystem-object-store-preflight-v1",result:"passed",root:$root,
+      identity:{uid:$uid,gid:$gid},mount:{uuid:$uuid,filesystem:"ext4"},buckets:[$artifact,$diagnostics]}'
   exit 0
 fi
 remote_path="${FAKE_REMOTE_BIN:?}"
@@ -1108,7 +1113,8 @@ exec /usr/bin/stat "$@"
 EOF
 cat > "$REMOTE_BIN/id" <<'EOF'
 #!/usr/bin/bash
-if [[ "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ]]; then
+if [[ "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ||
+      "${FAKE_OBJECT_STORE_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ]]; then
   case "$1" in -u) printf '%s\n' "${FAKE_RUNTIME_UID:?}" ;; -g) printf '%s\n' "${FAKE_RUNTIME_GID:?}" ;; *) exec /usr/bin/id "$@" ;; esac
 else
   exec /usr/bin/id "$@"

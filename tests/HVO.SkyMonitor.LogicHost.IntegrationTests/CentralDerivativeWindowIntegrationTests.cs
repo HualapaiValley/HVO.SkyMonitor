@@ -538,6 +538,19 @@ public sealed class CentralDerivativeWindowIntegrationTests
                                 .Which.Kind.Should().Be(ObjectStoreFailureKind.CorruptState);
                         }
                         await File.WriteAllBytesAsync(dataPath, derivativeBytes).ConfigureAwait(false);
+
+                        await using (var replacement = new MemoryStream(derivativeBytes, writable: false))
+                        {
+                            await minio.PutAsync(
+                                Bucket, objectKey, replacement, replacement.Length, intent.MediaType, CancellationToken.None)
+                                .ConfigureAwait(false);
+                        }
+                        (await retrieval.GetAsync(principal, eventId, intent.DerivativeId, CancellationToken.None)
+                            .ConfigureAwait(false)).Status.Should().Be(CentralTransientDerivativeLookupStatus.IntegrityFailure);
+                        await File.WriteAllBytesAsync(
+                            descriptorPath,
+                            JsonSerializer.SerializeToUtf8Bytes(descriptor, FilesystemObjectLayout.DescriptorJson))
+                            .ConfigureAwait(false);
                     }
                 }
                 (await retrieval.GetAsync(

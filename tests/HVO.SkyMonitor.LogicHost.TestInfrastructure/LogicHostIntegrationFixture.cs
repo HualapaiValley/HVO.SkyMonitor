@@ -22,6 +22,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Minio;
 using Testcontainers.MsSql;
 using Testcontainers.Redis;
 
@@ -105,6 +106,14 @@ public sealed class IntegrationTestFixture : IDisposable
     /// server image. No such server is managed by this fixture.
     /// </summary>
     public static string ExternalS3ImageLabel => TryGetExternalS3Endpoint() ?? "external-s3-endpoint";
+
+    public static string MinioEndpoint => ExternalS3Endpoint;
+
+    public static string MinioAccessKey => ExternalS3AccessKey;
+
+    public static string MinioSecretKey => ExternalS3SecretKey;
+
+    public static string MinioImage => ExternalS3ImageLabel;
 
     /// <summary>
     /// Gets the SMTP HTTP endpoint (Mailpit UI/API).
@@ -338,7 +347,8 @@ public sealed class IntegrationTestFixture : IDisposable
             ?? throw new InvalidOperationException("The SQL Server fixture is not initialized."),
         IntegrationDependency.Redis => _redisContainer
             ?? throw new InvalidOperationException("The Redis fixture is not initialized."),
-        IntegrationDependency.ObjectStore => throw new InvalidOperationException("The object store is a filesystem root, not a container dependency."),
+        IntegrationDependency.ObjectStore => throw new InvalidOperationException(
+            "The object store is a filesystem root, not a container dependency. Use filesystem fault injection."),
         IntegrationDependency.Smtp => _smtpContainer
             ?? throw new InvalidOperationException("The SMTP fixture is not initialized."),
         _ => throw new ArgumentOutOfRangeException(nameof(dependency))
@@ -399,11 +409,17 @@ public sealed class IntegrationTestFixture : IDisposable
                     services.RemoveAll<IObjectStore>();
                     services.AddSingleton<IObjectStore>(_objectStore
                         ?? throw new InvalidOperationException("The filesystem object-store fixture is not initialized."));
+                    services.RemoveAll<IMinioClient>();
+                    services.AddSingleton<IMinioClient>(_ => new MinioClient()
+                        .WithEndpoint(ExternalS3Endpoint)
+                        .WithCredentials(ExternalS3AccessKey, ExternalS3SecretKey)
+                        .Build());
                     foreach (var descriptor in services.Where(static descriptor =>
                              descriptor.ServiceType == typeof(IHostedService)
-                              && (descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)
-                                   || descriptor.ImplementationType == typeof(CentralDerivativeWorker)
-                                   || descriptor.ImplementationType == typeof(EnvironmentalObservationRetentionWorker))).ToArray())
+                               && (descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)
+                                    || descriptor.ImplementationType == typeof(CentralDerivativeWorker)
+                                    || descriptor.ImplementationType == typeof(FilesystemObjectReconciliationWorker)
+                                    || descriptor.ImplementationType == typeof(EnvironmentalObservationRetentionWorker))).ToArray())
                     {
                         services.Remove(descriptor);
                     }

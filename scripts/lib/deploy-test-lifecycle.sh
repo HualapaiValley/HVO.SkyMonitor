@@ -23,9 +23,13 @@ run_deploy() {
 }
 
 run_deploy_mode() {
-    local phase="$1" run_id="$2" mode="$3" status; shift 3
+    local phase="$1" run_id="$2" mode="$3" status object_store_owner_host; shift 3
+    object_store_owner_host="${FAKE_OBJECT_STORE_OWNER_HOST:-}"
+    [[ "$phase" != up ]] || object_store_owner_host="${object_store_owner_host:-logic}"
     deploy_test_checkpoint "$phase:$run_id:starting"
-    if PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" "$phase" --inventory "$INVENTORY" --mode "$mode" \
+    if FAKE_OBJECT_STORE_OWNER_HOST="$object_store_owner_host" \
+      FAKE_RUNTIME_UID="${FAKE_RUNTIME_UID:-4242}" FAKE_RUNTIME_GID="${FAKE_RUNTIME_GID:-4343}" \
+      PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" "$phase" --inventory "$INVENTORY" --mode "$mode" \
       --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"; then status=0; else status=$?; fi
     deploy_test_checkpoint "$phase:$run_id:$([[ $status -eq 0 ]] && printf completed || printf failed)"
     return "$status"
