@@ -102,8 +102,9 @@
           "required": ["project", "sqlDatabase", "redisPrefix", "artifactBucket", "diagnosticsBucket"],
           "properties": {
             "project": { "$ref": "#/$defs/name" }, "sqlDatabase": { "$ref": "#/$defs/name" },
-            "redisPrefix": { "type": "string" }, "artifactBucket": { "$ref": "#/$defs/name" },
-            "diagnosticsBucket": { "$ref": "#/$defs/name" }
+            "redisPrefix": { "type": "string" },
+            "artifactBucket": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" },
+            "diagnosticsBucket": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
           }
         },
         "certificates": {

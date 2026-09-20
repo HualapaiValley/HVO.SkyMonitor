@@ -539,31 +539,39 @@ public sealed class CentralDerivativeWindowIntegrationTests
                         }
                         await File.WriteAllBytesAsync(dataPath, derivativeBytes).ConfigureAwait(false);
 
-                        string? replacementDataPath = null;
+                        var keyDirectory = Path.GetDirectoryName(dataPath)!;
+                        var generationsBefore = Directory.GetFiles(
+                            keyDirectory, keyHash + ".*" + FilesystemObjectLayout.DataSuffix).ToHashSet(StringComparer.Ordinal);
                         try
                         {
                             await using var replacement = new MemoryStream(derivativeBytes, writable: false);
                             await minio.PutAsync(Bucket, objectKey, replacement, replacement.Length, intent.MediaType,
                                 CancellationToken.None).ConfigureAwait(false);
-                            var replacementGeneration = (await minio.StatAsync(Bucket, objectKey, CancellationToken.None)
-                                .ConfigureAwait(false)).Generation;
-                            replacementDataPath = Path.Combine(
-                                AssemblyHooks.Fixture.ObjectStorageRoot,
-                                FilesystemObjectLayout.DataRelativePath(Bucket, keyHash, replacementGeneration));
                             (await retrieval.GetAsync(principal, eventId, intent.DerivativeId, CancellationToken.None)
                                 .ConfigureAwait(false)).Status.Should().Be(CentralTransientDerivativeLookupStatus.IntegrityFailure);
                         }
                         finally
                         {
                             var restorePath = descriptorPath + ".restore-" + Guid.NewGuid().ToString("N");
-                            await File.WriteAllBytesAsync(
-                                restorePath,
-                                JsonSerializer.SerializeToUtf8Bytes(descriptor, FilesystemObjectLayout.DescriptorJson))
-                                .ConfigureAwait(false);
-                            File.Move(restorePath, descriptorPath, overwrite: true);
-                            if (replacementDataPath is not null)
+                            try
                             {
-                                File.Delete(replacementDataPath);
+                                await File.WriteAllBytesAsync(
+                                    restorePath,
+                                    JsonSerializer.SerializeToUtf8Bytes(descriptor, FilesystemObjectLayout.DescriptorJson))
+                                    .ConfigureAwait(false);
+                                File.Move(restorePath, descriptorPath, overwrite: true);
+                            }
+                            finally
+                            {
+                                File.Delete(restorePath);
+                                foreach (var generationPath in Directory.GetFiles(
+                                             keyDirectory, keyHash + ".*" + FilesystemObjectLayout.DataSuffix))
+                                {
+                                    if (!generationsBefore.Contains(generationPath))
+                                    {
+                                        File.Delete(generationPath);
+                                    }
+                                }
                             }
                         }
                     }

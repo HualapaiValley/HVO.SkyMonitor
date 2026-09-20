@@ -117,7 +117,8 @@ deploy_validate_inventory() {
           (.images | exact(["sqlServer","redis","mailpit"]) and all(.[]; . == null or (type == "string" and test("^[a-z0-9][a-z0-9._/-]+@sha256:[0-9a-f]{64}$"))))) and
         (.resources | exact(["project","sqlDatabase","redisPrefix","artifactBucket","diagnosticsBucket"]) and
           (.project | name) and (.sqlDatabase | name) and (.redisPrefix | text and test("^[a-z0-9][a-z0-9:-]{0,63}:$")) and
-          (.artifactBucket | name) and (.diagnosticsBucket | name)) and
+          (.artifactBucket | type == "string" and test("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")) and
+          (.diagnosticsBucket | type == "string" and test("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"))) and
          (.certificates | exact(["signingPath","encryptionPath","signingPasswordReference","encryptionPasswordReference"]) and
           (.signingPath | root) and (.encryptionPath | root) and
            all(.signingPasswordReference,.encryptionPasswordReference; . == null or (type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$")))) and

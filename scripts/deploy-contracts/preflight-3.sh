@@ -245,6 +245,11 @@ done < <(jq -r '.profiles[] | [.sourcePath,.sourceSha256,.configurationIdentityS
   done
   jq '.catalogs[0].version="catalog:v1"' "$BASE_INVENTORY" > "$TEMP_DIR/catalog.json"
   if deploy_validate_inventory "$TEMP_DIR/catalog.json" isolated >/dev/null 2>&1; then exit 93; fi
+  for bucket_name in hvo.main.artifacts abcdefghijklmnopqrstuvwxyz0123456789-artifacts; do
+    jq --arg bucket "$bucket_name" '.deployment.services.objectStore.artifactBucket=$bucket |
+      .deployment.resources.artifactBucket=$bucket' "$BASE_INVENTORY" > "$TEMP_DIR/bucket.json"
+    deploy_validate_inventory "$TEMP_DIR/bucket.json" isolated
+  done
   # The filesystem provider takes no transport credentials, so routing one is a rejection.
   jq '.deployment.secretMappings += [{reference:"SQL_PASSWORD",key:"ObjectStorage__AccessKey"}]' "$BASE_INVENTORY" > "$TEMP_DIR/mapping-invalid.json"
   if deploy_validate_inventory "$TEMP_DIR/mapping-invalid.json" isolated >/dev/null 2>&1; then exit 96; fi
