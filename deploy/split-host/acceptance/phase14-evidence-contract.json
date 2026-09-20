@@ -9,7 +9,7 @@
     "relativePath": "deploy/split-host/acceptance/phase14-scenarios.json",
     "schemaVersion": 2,
     "scenarioCount": 113,
-    "canonicalSha256": "4f7dde2ac91448ac8c218329013af31fb3f91ce9ad8f6a9f3b43ae18a3fa6b93",
+    "canonicalSha256": "7d9b300d7e6d24d82e6b9123b1cd1884d096141fb3b45b09199a615626b751f0",
     "reconciliation": "The raw-boundary-payload-partially-written row added by a2e61a1bbff5decf454151ddae9eef72934d6113 remains distinct from payload-written; calibration-before-bundle-write and calibration-bundle-publication cover the canonical envelope boundaries introduced by issue 470."
   },
   "gateDisposition": {
@@ -312,7 +312,7 @@
         "environment": ["os","architecture","cpu","memory","storage","sdk-runtime","release-configuration","container-mode","service-versions"],
         "workload": ["workload-id","dimensions","formats","frame-count","recipe","concurrency","total-bytes","fixture-seed-version"],
         "method": ["command","warm-up","repetitions","sampling-interval","counters-tools"],
-        "io": ["filesystem","sqlite","sql-server","minio","network","transaction-checkpoint-fsync-batching"],
+        "io": ["filesystem","sqlite","sql-server","object-store","network","transaction-checkpoint-fsync-batching"],
         "cpu": ["process-time","operation-time","hot-paths","complexity"],
         "memory": ["allocated-bytes","allocation-rate","loh","working-set","peak-temporary","retained-buffers","queue-window-size"],
         "latency": ["median","p95-from-at-least-30-operations","bounded-worst-case"],
@@ -365,7 +365,7 @@
         "environment": ["os","architecture","cpu","memory","storage","sdk-runtime","release-configuration","container-mode","service-versions"],
         "workload": ["workload-id","dimensions","formats","frame-count","recipe","concurrency","total-bytes","fixture-seed-version"],
         "method": ["command","warm-up","repetitions","sampling-interval","counters-tools"],
-        "io": ["filesystem","sqlite","sql-server","minio","network","transaction-checkpoint-fsync-batching"],
+        "io": ["filesystem","sqlite","sql-server","object-store","network","transaction-checkpoint-fsync-batching"],
         "cpu": ["process-time","operation-time","hot-paths","complexity"],
         "memory": ["allocated-bytes","allocation-rate","loh","working-set","peak-temporary","retained-buffers","queue-window-size"],
         "latency": ["median","p95-from-at-least-30-operations","bounded-worst-case"],

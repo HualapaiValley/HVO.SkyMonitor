@@ -387,6 +387,15 @@ source=$1; expected_uid=$2; expected_gid=$3
 REMOTE
 }
 
+# Runs the object-store qualifier on the target host and emits its preflight JSON on stdout.
+# The store is a host filesystem root, so qualification replaces service provisioning.
+deploy_transport_qualify_object_store() {
+    local ssh_host="$1" qualifier="$2" remote_command
+    shift 2
+    remote_command="$(deploy_transport_remote_command "$@")"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" "$remote_command" 2>/dev/null < "$qualifier"
+}
+
 deploy_transport_remote_directories() {
     local ssh_host="$1"
     shift

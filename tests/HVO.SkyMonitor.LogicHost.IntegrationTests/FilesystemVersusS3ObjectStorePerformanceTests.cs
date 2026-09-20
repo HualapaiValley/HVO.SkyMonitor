@@ -57,13 +57,13 @@ public sealed class FilesystemVersusS3ObjectStorePerformanceTests
         var s3Options = new CentralObjectStorageOptions
         {
             Provider = ObjectStorageProvider.S3,
-            ServiceEndpoint = fixture.MinioEndpoint,
+            ServiceEndpoint = IntegrationTestFixture.ExternalS3Endpoint,
             Region = "us-east-1",
             UseTls = false,
             AddressingStyle = ObjectStorageAddressingStyle.Path,
             CredentialMode = ObjectStorageCredentialMode.Static,
-            AccessKey = IntegrationTestFixture.MinioAccessKey,
-            SecretKey = IntegrationTestFixture.MinioSecretKey
+            AccessKey = IntegrationTestFixture.ExternalS3AccessKey,
+            SecretKey = IntegrationTestFixture.ExternalS3SecretKey
         };
         using var s3Client = S3ObjectStoreClientFactory.Create(s3Options);
         var s3 = ObjectStoreTestClient.Create(s3Client, s3Options);

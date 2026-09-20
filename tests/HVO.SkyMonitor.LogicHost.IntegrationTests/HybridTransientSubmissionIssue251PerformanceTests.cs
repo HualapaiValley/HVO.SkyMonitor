@@ -178,7 +178,7 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         var commands = new CountingDbCommandInterceptor();
         var transactions = new CountingDbTransactionInterceptor();
         var generation = new GenerationDelayProbe(delay);
-        using var protocol = new Issue251ProtocolCounter(AssemblyHooks.Fixture.MinioEndpoint);
+        using var protocol = new Issue251ProtocolCounter(IntegrationTestFixture.ExternalS3Endpoint);
         var applicationName = $"HVO.SkyMonitor.Issue251.{workload.Id}.C{concurrency}.D{delay.TotalMilliseconds:0}.{Guid.NewGuid():N}";
         var connectionString = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
         {

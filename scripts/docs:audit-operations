@@ -55,8 +55,8 @@ if grep -En 'Historical and non-executable|quarantined historical' "${DOCS[@]}";
     exit 1
 fi
 
-if grep -En 'MINIO_ROOT_(USER|PASSWORD)' docs/runbooks/local-dev.md; then
-    printf 'Local application troubleshooting must use the scoped MinIO account.\n' >&2
+if grep -En 'MINIO_|mc admin|minio/minio' "${DOCS[@]}"; then
+    printf 'Active operations guidance still provisions a MinIO server; LogicHost uses the filesystem object store.\n' >&2
     exit 1
 fi
 
@@ -350,8 +350,8 @@ require_source_reference '[HttpGet("protected")]' src/HVO.SkyMonitor.LogicHost/C
 require_source_reference '/connect/token' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'X-API-Key' src/HVO.SkyMonitor.Common/Security/ApiKeyAuthenticationOptions.cs
 require_source_reference 'Redis__InstanceName: "skymonitor:"' docker-compose.apps.yml
-require_source_reference 'skymonitor-diagnostics' deploy/hvo-docker/minio/skymonitor-policy.json
-require_source_reference 'skymonitor-artifacts' deploy/hvo-docker/minio/skymonitor-policy.json
+require_source_reference 'skymonitor-diagnostics' src/HVO.SkyMonitor.LogicHost/Configuration/CentralObjectStorageOptions.cs
+require_source_reference 'skymonitor-artifacts' src/HVO.SkyMonitor.LogicHost/Configuration/CentralObjectStorageOptions.cs
 require_source_reference 'DeviceProvisioning__StateDirectory: /app/data/provisioning' docker-compose.apps.yml
 require_source_reference 'DeviceBootstrap__CentralIdentity__ClientCredentials__ClientSecret' docker-compose.apps.yml
 require_source_reference 'OpenIddictCertificateOptions.SectionName' src/HVO.SkyMonitor.LogicHost/Program.cs

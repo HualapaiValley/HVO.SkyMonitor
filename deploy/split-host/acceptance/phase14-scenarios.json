@@ -90,16 +90,16 @@
       "artifactPath": "acceptance-artifacts/logichost-network-outage.json"
     },
     {
-      "id": "minio-failure",
-      "title": "Normative row 5: MinIO failure",
+      "id": "object-store-failure",
+      "title": "Normative row 5: object-store failure",
       "classification": "fault",
       "executionClass": "component-automated",
       "source": "project-plan:phase-14-fault-row-5",
-      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDependencyOutageAcceptanceTests.Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound;case=Minio",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDependencyOutageAcceptanceTests.Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound;case=ObjectStore",
       "workloads": [
         "W0"
       ],
-      "artifactPath": "acceptance-artifacts/minio-failure.json"
+      "artifactPath": "acceptance-artifacts/object-store-failure.json"
     },
     {
       "id": "sql-failure",

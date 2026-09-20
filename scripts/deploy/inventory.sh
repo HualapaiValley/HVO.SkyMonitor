@@ -90,18 +90,23 @@ deploy_validate_inventory() {
       ((.images.distributionMode == "archive" and .images.artifactRoot != null and .images.registryImmutableTags == false) or
        (.images.distributionMode == "registry" and .images.artifactRoot == null and .images.registryImmutableTags == true)) and
        (.deployment | exact(["services","resources","certificates","automation","deviceBootstrap","transient","workload","secretMappings","limits"]) and
-        (.services | exact(["mode","sql","redis","minio","smtp","images"]) and (.mode == "existing" or .mode == "deploy") and
-          all(.sql,.redis,.minio,.smtp; .host | text and test("^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")) and
-          all(.sql,.redis,.minio; .port | type == "number" and floor == . and . >= 1 and . <= 65535) and
+        (.services | exact(["mode","sql","redis","objectStore","smtp","images"]) and (.mode == "existing" or .mode == "deploy") and
+          all(.sql,.redis,.smtp; .host | text and test("^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")) and
+          all(.sql,.redis; .port | type == "number" and floor == . and . >= 1 and . <= 65535) and
           (.sql | exact(["host","port","database","adminUser","adminSecretReference","initializerUser","initializerSecretReference","initializerConnectionReference","runtimeUser","runtimeSecretReference","runtimeConnectionReference"]) and (.database | name) and
             all(.adminUser,.initializerUser,.runtimeUser; type == "string" and test("^[A-Za-z][A-Za-z0-9._-]{0,63}$")) and
             all(.adminSecretReference,.initializerSecretReference,.initializerConnectionReference,.runtimeSecretReference,.runtimeConnectionReference; type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$"))) and
           (.redis | exact(["host","port","prefix","adminSecretReference","user","secretReference"]) and (.prefix | text and test("^[a-z0-9][a-z0-9:-]{0,63}:$")) and
             (.user | type == "string" and test("^[A-Za-z][A-Za-z0-9._-]{0,63}$")) and
             all(.adminSecretReference,.secretReference; type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$"))) and
-          (.minio | exact(["host","port","useSsl","artifactBucket","diagnosticsBucket","rootAccessKeyReference","rootSecretKeyReference","accessKeyReference","secretKeyReference"]) and (.useSsl | type == "boolean") and
-            (.artifactBucket | name) and (.diagnosticsBucket | name) and .artifactBucket != .diagnosticsBucket and
-            all(.rootAccessKeyReference,.rootSecretKeyReference,.accessKeyReference,.secretKeyReference; type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$"))) and
+          (.objectStore | exact(["root","uid","gid","filesystemUuid","minimumFreeBytes","minimumFreeInodes","artifactBucket","diagnosticsBucket"]) and
+            (.root | root) and
+            all(.uid,.gid; type == "number" and floor == . and . >= 1 and . <= 4294967294) and
+            (.filesystemUuid | type == "string" and test("^[0-9a-fA-F-]{36}$")) and
+            all(.minimumFreeBytes,.minimumFreeInodes; type == "number" and floor == . and . >= 1) and
+            (.artifactBucket | type == "string" and test("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")) and
+            (.diagnosticsBucket | type == "string" and test("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")) and
+            .artifactBucket != .diagnosticsBucket) and
           (.smtp | exact(["kind","host","ports","usernameReference","passwordReference"]) and (.kind == "production" or .kind == "mailpit") and
             (.ports | type == "array" and length == 2) and
             (.ports[0] | type == "number" and floor == . and . >= 1 and . <= 65535) and
@@ -109,10 +114,11 @@ deploy_validate_inventory() {
              (.kind == "production" and .ports[1] == null)) and
             (.usernameReference == null or (.usernameReference | type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$"))) and
             (.passwordReference == null or (.passwordReference | type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$")))) and
-          (.images | exact(["sqlServer","redis","minio","minioClient","mailpit"]) and all(.[]; . == null or (type == "string" and test("^[a-z0-9][a-z0-9._/-]+@sha256:[0-9a-f]{64}$"))))) and
+          (.images | exact(["sqlServer","redis","mailpit"]) and all(.[]; . == null or (type == "string" and test("^[a-z0-9][a-z0-9._/-]+@sha256:[0-9a-f]{64}$"))))) and
         (.resources | exact(["project","sqlDatabase","redisPrefix","artifactBucket","diagnosticsBucket"]) and
           (.project | name) and (.sqlDatabase | name) and (.redisPrefix | text and test("^[a-z0-9][a-z0-9:-]{0,63}:$")) and
-          (.artifactBucket | name) and (.diagnosticsBucket | name)) and
+          (.artifactBucket | type == "string" and test("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")) and
+          (.diagnosticsBucket | type == "string" and test("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"))) and
          (.certificates | exact(["signingPath","encryptionPath","signingPasswordReference","encryptionPasswordReference"]) and
           (.signingPath | root) and (.encryptionPath | root) and
            all(.signingPasswordReference,.encryptionPasswordReference; . == null or (type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$")))) and
@@ -140,13 +146,12 @@ deploy_validate_inventory() {
              .limits.sqlMemoryLimitMb < (.limits.sqlMemory | memory_mib)))) and
       .deployment.resources.sqlDatabase == .deployment.services.sql.database and
       .deployment.resources.redisPrefix == .deployment.services.redis.prefix and
-      .deployment.resources.artifactBucket == .deployment.services.minio.artifactBucket and
-      .deployment.resources.diagnosticsBucket == .deployment.services.minio.diagnosticsBucket and
+      .deployment.resources.artifactBucket == .deployment.services.objectStore.artifactBucket and
+      .deployment.resources.diagnosticsBucket == .deployment.services.objectStore.diagnosticsBucket and
       (.deployment as $deployment |
         any($deployment.secretMappings[]; .reference == $deployment.services.sql.runtimeConnectionReference and .key == "ConnectionStrings__skymonitordb") and
         any($deployment.secretMappings[]; .reference == $deployment.services.sql.initializerConnectionReference and .key == "ConnectionStrings__skymonitordb-migrations") and
-        any($deployment.secretMappings[]; .reference == $deployment.services.minio.accessKeyReference and .key == "ObjectStorage__AccessKey") and
-        any($deployment.secretMappings[]; .reference == $deployment.services.minio.secretKeyReference and .key == "ObjectStorage__SecretKey") and
+        (all($deployment.secretMappings[]; .key != "ObjectStorage__AccessKey" and .key != "ObjectStorage__SecretKey")) and
         ($deployment.services.smtp.usernameReference == null or any($deployment.secretMappings[];
           .reference == $deployment.services.smtp.usernameReference and .key == "Smtp__Username")) and
         ($deployment.services.smtp.passwordReference == null or any($deployment.secretMappings[];
@@ -156,8 +161,8 @@ deploy_validate_inventory() {
         ($deployment.certificates.encryptionPasswordReference == null or any($deployment.secretMappings[];
           .reference == $deployment.certificates.encryptionPasswordReference and .key == "OpenIddictCertificates__EncryptionPassword"))) and
       ((.deployment.services.mode == "deploy" and .sharedServices != null and .deployment.services.smtp.kind == "mailpit" and
-          ([.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.minio.port,.deployment.services.smtp.ports[]] | unique | length) == 5 and
-          (.sharedServices.ports | sort) == ([.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.minio.port,.deployment.services.smtp.ports[]] | sort)) or
+          ([.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.smtp.ports[]] | unique | length) == 4 and
+          (.sharedServices.ports | sort) == ([.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.smtp.ports[]] | sort)) or
        .deployment.services.mode == "existing") and
        (($mode == "isolated" and all(.catalogs[]; .kind == "production" or .allowFixture == true)) or $mode == "persistent")
     ' "$inventory" >/dev/null 2>&1 || deploy_fail validate inventory "schema-or-value-invalid" || return 1
@@ -187,8 +192,6 @@ deploy_validate_inventory() {
         .deployment.services.sql.adminSecretReference,.deployment.services.sql.initializerSecretReference,.deployment.services.sql.initializerConnectionReference,
         .deployment.services.sql.runtimeSecretReference,.deployment.services.sql.runtimeConnectionReference,
         .deployment.services.redis.adminSecretReference,.deployment.services.redis.secretReference,
-        .deployment.services.minio.rootAccessKeyReference,.deployment.services.minio.rootSecretKeyReference,
-        .deployment.services.minio.accessKeyReference,.deployment.services.minio.secretKeyReference,
         .deployment.services.smtp.usernameReference,.deployment.services.smtp.passwordReference,
         .deployment.certificates.signingPasswordReference,.deployment.certificates.encryptionPasswordReference,
         .deployment.automation.ownerApiKeySecretReference,.deployment.deviceBootstrap.clientSecretReference,.cameraAgents[].ownerPasswordSecretReference] |

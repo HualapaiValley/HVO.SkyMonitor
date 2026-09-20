@@ -443,7 +443,7 @@ jq -e --argjson required "$required_ids" '
     .executionClass == "component-automated" or .executionClass == "real-campaign") and
   all(.scenarios[] | select(.source | startswith("boundary:")); .evidenceSource | startswith("test:")) and
   ([.scenarios[] | select(.id == "cameraagent-host-failure" or .id == "logichost-host-failure" or .id == "network-failure" or
-    .id == "sql-failure" or .id == "redis-failure" or .id == "minio-failure" or .id == "smtp-failure") | .id] | length) == 7
+    .id == "sql-failure" or .id == "redis-failure" or .id == "object-store-failure" or .id == "smtp-failure") | .id] | length) == 7
 ' "$campaign" >/dev/null
 jq 'del(.scenarios[0])' "$campaign" > "$TEMP_DIR/missing-scenario.json"
 expect_rejected 'A campaign manifest missing a required scenario was accepted.' \

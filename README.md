@@ -71,7 +71,7 @@ For GitHub Codespaces:
 
 ### Running the Application
 
-The application uses persistent SQL Server, Redis, MinIO, and Mailpit services on `hvo-docker.hvo.lan`. Configure their endpoints and credentials in the ignored `.env` file using `.env.template`. Docker Compose runs only application containers.
+The application uses persistent SQL Server, Redis, and Mailpit services on `hvo-docker.hvo.lan`, plus a LogicHost-local filesystem object store. Configure their endpoints and credentials in the ignored `.env` file using `.env.template`. Docker Compose runs only application containers.
 
 #### Option 1: Docker Compose (Recommended)
 
@@ -114,7 +114,7 @@ You can pass specific services to `--rebuild` (for example `--rebuild logichost`
 **Shared services:**
 - **SQL Server** - configured by `SQLSERVER_*` in `.env`
 - **Redis** - configured by `REDIS_*` in `.env`
-- **MinIO** - configured by `MINIO_*` in `.env`
+- **Object store** - a LogicHost-local filesystem root configured by `HVO_OBJECT_STORE_ROOT` in `.env`; not a shared service
 - **SMTP (Mailpit)** - configured by `SMTP_*` in `.env`
 - **Logic Host** - Main application: http://localhost:5174
 - **Camera Agent** - http://localhost:5130
@@ -136,7 +136,7 @@ Configure the CameraAgent owner password with the protected prompt in
 Both hosts require the same verified production catalog installed under the
 configured runtime-data root; production builds do not package the test fixture.
 
-This mode keeps hot reload and a faster edit/run cycle while still talking to the same SQL Server, Redis, and MinIO containers.
+This mode keeps hot reload and a faster edit/run cycle while still talking to the same SQL Server and Redis containers and the same object-store root.
 
 VS Code launch configuration is intentionally attach-only. Start a host with
 `./scripts/with-env` as shown above, then select the matching `Attach` profile so

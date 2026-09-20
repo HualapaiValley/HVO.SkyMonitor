@@ -18,8 +18,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -584,14 +582,9 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             await db.SaveChangesAsync().ConfigureAwait(false);
             var objectKey = storageReference["object://skymonitor-artifacts/".Length..];
             await using var corrupt = new MemoryStream(new byte[checked((int)byteLength)], writable: false);
-            await restoreScope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(
-                new PutObjectArgs()
-                    .WithBucket("skymonitor-artifacts")
-                    .WithObject(objectKey)
-                    .WithStreamData(corrupt)
-                    .WithObjectSize(byteLength)
-                    .WithContentType("application/x-hvo-linear-frame"),
-                CancellationToken.None).ConfigureAwait(false);
+            await restoreScope.ServiceProvider.GetRequiredService<IObjectStore>().PutAsync(
+                "skymonitor-artifacts", objectKey, corrupt, byteLength, "application/x-hvo-linear-frame", CancellationToken.None)
+                .ConfigureAwait(false);
         }
         var corruptEnvelope = CreateEnvelope(Reidentify(scenario.Envelope.Candidate));
         using var corruptResponse = await SendAsync(client, scenario.DeviceId, DeviceKey, corruptEnvelope)

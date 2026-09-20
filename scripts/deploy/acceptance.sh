@@ -66,7 +66,7 @@ deploy_acceptance_validate_recorded_artifacts() {
 deploy_acceptance_required_ids() {
     jq -cn '[
       "normal-flow","raw-payload-write-crash","payload-published-before-journal-crash","journal-committed-before-wakeup-crash",
-      "logichost-network-outage","minio-failure","sql-failure","worker-before-output-crash",
+      "logichost-network-outage","object-store-failure","sql-failure","worker-before-output-crash",
       "worker-after-output-before-completion-crash","out-of-order-upload","permanent-upload-rejection","disk-pressure",
       "optional-lane-backlog","duplicate-delivery","corrupt-delivery","lease-crash-before-work","lease-crash-after-work","bounded-shutdown",
       "raw-boundary-payload-partially-written","raw-boundary-payload-written","raw-boundary-payload-flushed","raw-boundary-payload-published","raw-boundary-before-journal-commit",

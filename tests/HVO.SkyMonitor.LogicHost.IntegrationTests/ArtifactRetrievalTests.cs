@@ -16,8 +16,6 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Data.SqlClient;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -401,10 +399,10 @@ public sealed class ArtifactRetrievalTests
                 .ConfigureAwait(false);
             finalArtifact.ObjectState.Should().Be(CentralArtifactObjectState.Expired);
             finalArtifact.StateReasonCode.Should().Be("retention.expired");
-            var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
-            var action = () => minio.StatObjectAsync(new StatObjectArgs()
-                .WithBucket("skymonitor-artifacts").WithObject(seeded.ObjectKey));
-            await action.Should().ThrowAsync<Minio.Exceptions.MinioException>().ConfigureAwait(false);
+            var objectStore = scope.ServiceProvider.GetRequiredService<IObjectStore>();
+            var action = () => objectStore.StatAsync("skymonitor-artifacts", seeded.ObjectKey, CancellationToken.None);
+            (await action.Should().ThrowAsync<ObjectStoreException>().ConfigureAwait(false))
+                .Which.Kind.Should().Be(ObjectStoreFailureKind.MissingObject);
         }
     }
 
@@ -749,19 +747,11 @@ public sealed class ArtifactRetrievalTests
     private static async Task PutObjectAsync(string key, byte[] payload)
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
-        var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
+        var objectStore = scope.ServiceProvider.GetRequiredService<IObjectStore>();
         const string bucket = "skymonitor-artifacts";
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket)).ConfigureAwait(false))
-        {
-            await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket)).ConfigureAwait(false);
-        }
         await using var stream = new MemoryStream(payload, writable: false);
-        await minio.PutObjectAsync(new PutObjectArgs()
-            .WithBucket(bucket)
-            .WithObject(key)
-            .WithStreamData(stream)
-            .WithObjectSize(payload.LongLength)
-            .WithContentType("application/octet-stream")).ConfigureAwait(false);
+        await objectStore.PutAsync(bucket, key, stream, payload.LongLength, "application/octet-stream", CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     private static async Task<Uri> IssueDownloadAuthorizationAsync(

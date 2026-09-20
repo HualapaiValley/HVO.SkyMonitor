@@ -13,7 +13,7 @@ not start, stop, reset, or mutate resources.
 complete operator inputs:
 
 - control/Docker host names, addresses, public URLs, ports, and host-path mapping;
-- SQL Server, Redis, MinIO, SMTP, and OpenTelemetry endpoints and credentials;
+- SQL Server, Redis, SMTP, and OpenTelemetry endpoints and credentials, plus the object-store root;
 - LogicHost and CameraAgent owner/client identity inputs;
 - desired Observatory name, east-positive longitude, latitude, elevation, and
   timezone;
@@ -37,7 +37,7 @@ Create or refresh the ignored file from `.env` and the template:
 ```
 
 Existing `.env.smoketest` operator values win, so rerunning initialization
-preserves an established run. The canonical Compose/SQL/Redis/MinIO namespaces
+preserves an established run. The canonical Compose/SQL/Redis/object-store namespaces
 are re-derived in isolated mode. The development `.env` runtime root is ignored
 so a smoke cannot silently reuse ordinary application state. Missing smoke owner
 credentials are generated without being printed. Shared-service and CameraAgent
@@ -93,7 +93,7 @@ endpoints because the applications may not have started yet.
 `reset-shared` is rejected unless `SMOKETEST_CONFIRM_SHARED_DATA_RESET` exactly
 matches `SMOKETEST_RUN_ID`. The current environment command only validates this
 intent; it does not delete data. A reset implementation must enumerate the exact
-SQL database, Redis namespace, MinIO buckets, application state, and Mailpit data
+SQL database, Redis namespace, object-store buckets, application state, and Mailpit data
 before deletion and remain scoped to HVO.SkyMonitor resources.
 
 `preserve` and `reset-shared` accept only database `SkyMonitor`, Redis prefix
@@ -102,7 +102,7 @@ before deletion and remain scoped to HVO.SkyMonitor resources.
 an unrelated resource merely because the confirmation token matched.
 
 For `isolated`, initialization derives run-scoped SQL database, Redis prefix,
-MinIO artifact/diagnostic bucket, and Compose project names from
+object-store artifact/diagnostic bucket, and Compose project names from
 `SMOKETEST_RUN_ID`; validation rejects an isolated contract if any namespace no
 longer exactly matches its canonical run-owned name.
 
@@ -240,7 +240,7 @@ uses that content-addressed image ID for both containers, and invokes
 project names. Each project
 owns a separate bridge, runtime root, catalog copy, owner secret, local Identity
 database, Data Protection directory, provisioning state, cookie, AgentId, and
-OTLP file collector. LogicHost and the shared SQL Server, Redis, MinIO, and
+OTLP file collector. LogicHost and the shared SQL Server, Redis, and
 Mailpit services must be absent.
 
 Stop LogicHost, install the approved Production HYG package, and run.

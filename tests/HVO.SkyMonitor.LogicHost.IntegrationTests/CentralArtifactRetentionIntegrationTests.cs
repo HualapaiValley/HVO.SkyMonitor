@@ -21,9 +21,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
-using Minio;
-using Minio.DataModel.Args;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -45,7 +42,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         using var telemetry = new CentralArtifactRetentionTelemetry();
         using var signals = new RetentionSignalCollector();
         var service = CreateService(
-            database.Context, GetFixtureMinio(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
+            database.Context, GetFixtureObjectStore(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
 
         (await service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None).ConfigureAwait(false))
             .Should().Be(CentralArtifactRetentionResult.Released);
@@ -137,7 +134,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         await database.Context.SaveChangesAsync().ConfigureAwait(false);
         using var telemetry = new CentralArtifactRetentionTelemetry();
 
-        (await CreateService(database.Context, GetFixtureMinio(), telemetry)
+        (await CreateService(database.Context, GetFixtureObjectStore(), telemetry)
             .ReleaseAsync(seeded.ArtifactId, CancellationToken.None).ConfigureAwait(false))
             .Should().Be(CentralArtifactRetentionResult.Released);
 
@@ -162,7 +159,8 @@ public sealed class CentralArtifactRetentionIntegrationTests
         using var evidence = new Issue246RetentionEvidenceCollector();
         await using var measured = CreateContext(
             database.ConnectionString, evidence.Commands, evidence.Transactions);
-        using var minio = CreateMinio(evidence.Http);
+        using var ownedMinio = (IDisposable)CreateMinio(evidence.Http);
+        var minio = (IObjectStore)ownedMinio;
         using var telemetry = new CentralArtifactRetentionTelemetry();
 
         evidence.Reset();
@@ -243,7 +241,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var injected = new InvalidOperationException("Injected reservation deadlock.");
         var observedTokens = new List<Guid>();
         var service = CreateService(
-            database.Context, GetFixtureMinio(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
+            database.Context, GetFixtureObjectStore(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
         service.ReservationDeadlockClassifier = exception => ReferenceEquals(exception, injected);
         service.ReservationFaultInjector = (attempt, token) =>
         {
@@ -285,7 +283,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var injected = new InvalidOperationException("Injected reservation deadlock.");
         var observedTokens = new List<Guid>();
         var service = CreateService(
-            database.Context, GetFixtureMinio(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
+            database.Context, GetFixtureObjectStore(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
         service.ReservationDeadlockClassifier = exception => ReferenceEquals(exception, injected);
         service.ReservationFaultInjector = (_, token) =>
         {
@@ -327,7 +325,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var injected = new InvalidOperationException("Injected reservation uniqueness conflict.");
         var observedTokens = new List<Guid>();
         var service = CreateService(
-            database.Context, GetFixtureMinio(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
+            database.Context, GetFixtureObjectStore(), telemetry, signals.ProcessorLogger, signals.ServiceLogger);
         service.ReservationUniqueConstraintClassifier = exception => ReferenceEquals(exception, injected);
         service.ReservationFaultInjector = (attempt, token) =>
         {
@@ -370,7 +368,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var lanes = Enumerable.Range(0, 8).Select(async lane =>
         {
             await using var context = CreateContext(database.ConnectionString);
-            var service = CreateService(context, GetFixtureMinio(), telemetry);
+            var service = CreateService(context, GetFixtureObjectStore(), telemetry);
             for (var index = lane; index < seeded.Count; index += 8)
             {
                 results[index] = await service.ReleaseAsync(
@@ -426,7 +424,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         using var telemetry = new CentralArtifactRetentionTelemetry();
         using var signals = new RetentionSignalCollector();
         var processor = CreateProcessor(
-            faultContext, GetFixtureMinio(), telemetry, logger: signals.ProcessorLogger);
+            faultContext, GetFixtureObjectStore(), telemetry, logger: signals.ProcessorLogger);
         processor.SqlDeadlockClassifier = exception => ReferenceEquals(exception, injected);
 
         var process = () => processor.ProcessAsync(dispositionId, "worker", CancellationToken.None);
@@ -451,7 +449,8 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var seeded = await SeedAsync(database.Context, "delay", [5, 6, 7, 8]).ConfigureAwait(false);
         await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
         using var handler = new BlockingDeleteHandler { InnerHandler = new SocketsHttpHandler() };
-        using var minio = CreateMinio(handler);
+        using var ownedMinio = (IDisposable)CreateMinio(handler);
+        var minio = (IObjectStore)ownedMinio;
         using var telemetry = new CentralArtifactRetentionTelemetry();
         var service = CreateService(database.Context, minio, telemetry);
 
@@ -487,7 +486,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var dispositionId = await recoveryContext.CentralObjectRecoveryDispositions
             .Where(item => item.CentralArtifactId == seeded.ArtifactId)
             .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
-        var processor = CreateProcessor(recoveryContext, GetFixtureMinio(), recoveryTelemetry);
+        var processor = CreateProcessor(recoveryContext, GetFixtureObjectStore(), recoveryTelemetry);
         (await processor.ProcessAsync(dispositionId, "worker", CancellationToken.None).ConfigureAwait(false))
             .Should().Be(CentralArtifactRetentionProcessResult.Released);
         recoveryContext.ChangeTracker.Clear();
@@ -509,8 +508,9 @@ public sealed class CentralArtifactRetentionIntegrationTests
         using var telemetry = new CentralArtifactRetentionTelemetry();
         using var signals = new RetentionSignalCollector();
 
-        using (var transientMinio = CreateMinio(new StatusDeleteHandler(HttpStatusCode.ServiceUnavailable)))
+        using (var ownedTransientMinio = (IDisposable)CreateMinio(new StatusDeleteHandler(HttpStatusCode.ServiceUnavailable)))
         {
+            var transientMinio = (IObjectStore)ownedTransientMinio;
             var result = await CreateService(database.Context, transientMinio, telemetry)
                 .ReleaseAsync(transient.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             result.Should().Be(CentralArtifactRetentionResult.Pending);
@@ -522,8 +522,9 @@ public sealed class CentralArtifactRetentionIntegrationTests
         retry.AttemptCount.Should().Be(1);
         retry.NextAttemptAtUtc.Should().BeAfter(retry.LastAttemptAtUtc!.Value);
 
-        using (var timeoutMinio = CreateMinio(new ExceptionDeleteHandler(new TaskCanceledException("Injected timeout."))))
+        using (var ownedTimeoutMinio = (IDisposable)CreateMinio(new ExceptionDeleteHandler(new TaskCanceledException("Injected timeout."))))
         {
+            var timeoutMinio = (IObjectStore)ownedTimeoutMinio;
             var result = await CreateService(database.Context, timeoutMinio, telemetry)
                 .ReleaseAsync(timedOut.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             result.Should().Be(CentralArtifactRetentionResult.Pending);
@@ -535,8 +536,9 @@ public sealed class CentralArtifactRetentionIntegrationTests
         timeoutRetry.AttemptCount.Should().Be(1);
         timeoutRetry.ReasonCode.Should().BeNull();
 
-        using (var terminalMinio = CreateMinio(new StatusDeleteHandler(HttpStatusCode.Forbidden)))
+        using (var ownedTerminalMinio = (IDisposable)CreateMinio(new StatusDeleteHandler(HttpStatusCode.Forbidden)))
         {
+            var terminalMinio = (IObjectStore)ownedTerminalMinio;
             var result = await CreateService(
                     database.Context, terminalMinio, telemetry, signals.ProcessorLogger, signals.ServiceLogger)
                 .ReleaseAsync(terminal.ArtifactId, CancellationToken.None).ConfigureAwait(false);
@@ -560,7 +562,8 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var cancelled = await SeedAsync(database.Context, "cancelled", [15, 16]).ConfigureAwait(false);
         await PutAsync(cancelled.ObjectKey, cancelled.Payload).ConfigureAwait(false);
         using var handler = new BlockingDeleteHandler { InnerHandler = new SocketsHttpHandler() };
-        using var minio = CreateMinio(handler);
+        using var ownedMinio = (IDisposable)CreateMinio(handler);
+        var minio = (IObjectStore)ownedMinio;
         using var telemetry = new CentralArtifactRetentionTelemetry();
         using (var beforeReservation = new CancellationTokenSource())
         {
@@ -598,7 +601,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         await PutAsync(shared.ObjectKey, shared.Payload).ConfigureAwait(false);
         await PutAsync(caseDistinct.ObjectKey, caseDistinct.Payload).ConfigureAwait(false);
         database.Context.ChangeTracker.Clear();
-        var fixtureService = CreateService(database.Context, GetFixtureMinio(), telemetry);
+        var fixtureService = CreateService(database.Context, GetFixtureObjectStore(), telemetry);
         (await fixtureService.ReleaseAsync(shared.ArtifactId, CancellationToken.None).ConfigureAwait(false))
             .Should().Be(CentralArtifactRetentionResult.Held);
         (await fixtureService.ReleaseAsync(caseDistinct.ArtifactId, CancellationToken.None).ConfigureAwait(false))
@@ -612,8 +615,9 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var seeded = await SeedAsync(database.Context, "response-lost", [21, 22, 23]).ConfigureAwait(false);
         await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
         using var telemetry = new CentralArtifactRetentionTelemetry();
-        using (var minio = CreateMinio(new ResponseLostDeleteHandler { InnerHandler = new SocketsHttpHandler() }))
+        using (var ownedMinio = (IDisposable)CreateMinio(new ResponseLostDeleteHandler { InnerHandler = new SocketsHttpHandler() }))
         {
+            var minio = (IObjectStore)ownedMinio;
             (await CreateService(database.Context, minio, telemetry)
                 .ReleaseAsync(seeded.ArtifactId, CancellationToken.None).ConfigureAwait(false))
                 .Should().Be(CentralArtifactRetentionResult.Pending);
@@ -628,7 +632,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.NextAttemptAtUtc, DateTimeOffset.UtcNow))
             .ConfigureAwait(false);
 
-        (await CreateProcessor(database.Context, GetFixtureMinio(), telemetry)
+        (await CreateProcessor(database.Context, GetFixtureObjectStore(), telemetry)
             .ProcessAsync(disposition.Id, "worker", CancellationToken.None).ConfigureAwait(false))
             .Should().Be(CentralArtifactRetentionProcessResult.Released);
         database.Context.ChangeTracker.Clear();
@@ -647,7 +651,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         await using var faultContext = CreateContext(database.ConnectionString, interceptor);
         using var telemetry = new CentralArtifactRetentionTelemetry();
 
-        (await CreateService(faultContext, GetFixtureMinio(), telemetry)
+        (await CreateService(faultContext, GetFixtureObjectStore(), telemetry)
             .ReleaseAsync(seeded.ArtifactId, CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false))
             .Should().Be(CentralArtifactRetentionResult.Released);
@@ -673,7 +677,8 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var interceptor = new ThrowSpecificBeforeCommitInterceptor(commitNumber: 2, injected);
         await using var faultContext = CreateContext(database.ConnectionString, interceptor);
         using var handler = new BlockingDeleteHandler { InnerHandler = new SocketsHttpHandler() };
-        using var minio = CreateMinio(handler);
+        using var ownedMinio = (IDisposable)CreateMinio(handler);
+        var minio = (IObjectStore)ownedMinio;
         using var telemetry = new CentralArtifactRetentionTelemetry();
         using var signals = new RetentionSignalCollector();
         var references = new CentralArtifactRetentionReferences(faultContext);
@@ -718,7 +723,8 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var interceptor = new ThrowBeforeCommitFromInterceptor(firstCommitNumber: 2, injected);
         await using var faultContext = CreateContext(database.ConnectionString, interceptor);
         using var handler = new BlockingDeleteHandler { InnerHandler = new SocketsHttpHandler() };
-        using var minio = CreateMinio(handler);
+        using var ownedMinio = (IDisposable)CreateMinio(handler);
+        var minio = (IObjectStore)ownedMinio;
         using var telemetry = new CentralArtifactRetentionTelemetry();
         using var signals = new RetentionSignalCollector();
         var references = new CentralArtifactRetentionReferences(faultContext);
@@ -765,7 +771,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
 
         await using (var faultContext = CreateContext(database.ConnectionString, interceptor))
         {
-            (await CreateService(faultContext, GetFixtureMinio(), telemetry)
+            (await CreateService(faultContext, GetFixtureObjectStore(), telemetry)
                 .ReleaseAsync(seeded.ArtifactId, CancellationToken.None)
                 .WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false))
                 .Should().Be(CentralArtifactRetentionResult.Pending);
@@ -781,7 +787,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             .SingleAsync(item => item.Id == seeded.ArtifactId).ConfigureAwait(false);
         artifact.RetentionDeletionCompletedAtUtc.Should().BeNull();
 
-        (await CreateProcessor(recovery, GetFixtureMinio(), telemetry)
+        (await CreateProcessor(recovery, GetFixtureObjectStore(), telemetry)
             .ProcessAsync(disposition.Id, "worker", CancellationToken.None).ConfigureAwait(false))
             .Should().Be(CentralArtifactRetentionProcessResult.Released);
         recovery.ChangeTracker.Clear();
@@ -800,7 +806,8 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var seeded = await SeedAsync(database.Context, "stale-token", [24, 25, 26]).ConfigureAwait(false);
         await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
         using var handler = new BlockingDeleteHandler { InnerHandler = new SocketsHttpHandler() };
-        using var minio = CreateMinio(handler);
+        using var ownedMinio = (IDisposable)CreateMinio(handler);
+        var minio = (IObjectStore)ownedMinio;
         using var telemetry = new CentralArtifactRetentionTelemetry();
         var release = CreateService(database.Context, minio, telemetry)
             .ReleaseAsync(seeded.ArtifactId, CancellationToken.None);
@@ -826,7 +833,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         (await release.ConfigureAwait(false)).Should().Be(CentralArtifactRetentionResult.Pending);
 
         await using var recovery = CreateContext(database.ConnectionString);
-        (await CreateProcessor(recovery, GetFixtureMinio(), telemetry)
+        (await CreateProcessor(recovery, GetFixtureObjectStore(), telemetry)
             .ProcessAsync(dispositionId, "worker", CancellationToken.None).ConfigureAwait(false))
             .Should().Be(CentralArtifactRetentionProcessResult.Released);
         var completed = await recovery.CentralObjectRecoveryDispositions.AsNoTracking()
@@ -842,7 +849,8 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var seeded = await SeedAsync(database.Context, "concurrent", [27, 28, 29]).ConfigureAwait(false);
         await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
         using var handler = new BlockingDeleteHandler { InnerHandler = new SocketsHttpHandler() };
-        using var minio = CreateMinio(handler);
+        using var ownedMinio = (IDisposable)CreateMinio(handler);
+        var minio = (IObjectStore)ownedMinio;
         using var telemetry = new CentralArtifactRetentionTelemetry();
         var request = CreateService(database.Context, minio, telemetry)
             .ReleaseAsync(seeded.ArtifactId, CancellationToken.None);
@@ -1033,7 +1041,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             await using var publisherContext = CreateContext(database.ConnectionString);
             var writer = new CentralDerivativeOutputWriter(
                 publisherContext,
-                ObjectStoreTestClient.Create(GetFixtureMinio()),
+                GetFixtureObjectStore(),
                 AssemblyHooks.Fixture.Factory.Services.GetRequiredService<ICentralArtifactObjectReader>(),
                 AssemblyHooks.Fixture.Factory.Services.GetRequiredService<CentralDerivativeWorkerTelemetry>(),
                 TimeProvider.System,
@@ -1147,7 +1155,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             publicationContext,
             TimeProvider.System,
             NullLogger<PublicRecordPublicationService>.Instance);
-        var retentionService = CreateService(retentionContext, GetFixtureMinio(), telemetry);
+        var retentionService = CreateService(retentionContext, GetFixtureObjectStore(), telemetry);
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var publication = RunAfterGateAsync(gate.Task, () => publicationService.DecideAsync(
             observatory.Id,
@@ -1261,8 +1269,9 @@ public sealed class CentralArtifactRetentionIntegrationTests
         await PutAsync(second.ObjectKey, second.Payload).ConfigureAwait(false);
         using var telemetry = new CentralArtifactRetentionTelemetry();
         using var signals = new RetentionSignalCollector();
-        using (var unavailable = CreateMinio(new StatusDeleteHandler(HttpStatusCode.ServiceUnavailable)))
+        using (var ownedUnavailable = (IDisposable)CreateMinio(new StatusDeleteHandler(HttpStatusCode.ServiceUnavailable)))
         {
+            var unavailable = (IObjectStore)ownedUnavailable;
             (await CreateService(database.Context, unavailable, telemetry)
                 .ReleaseAsync(first.ArtifactId, CancellationToken.None).ConfigureAwait(false))
                 .Should().Be(CentralArtifactRetentionResult.Pending);
@@ -1336,8 +1345,9 @@ public sealed class CentralArtifactRetentionIntegrationTests
         await PutAsync(locked.ObjectKey, locked.Payload).ConfigureAwait(false);
         await PutAsync(drainable.ObjectKey, drainable.Payload).ConfigureAwait(false);
         using var telemetry = new CentralArtifactRetentionTelemetry();
-        using (var unavailable = CreateMinio(new StatusDeleteHandler(HttpStatusCode.ServiceUnavailable)))
+        using (var ownedUnavailable = (IDisposable)CreateMinio(new StatusDeleteHandler(HttpStatusCode.ServiceUnavailable)))
         {
+            var unavailable = (IObjectStore)ownedUnavailable;
             (await CreateService(database.Context, unavailable, telemetry)
                 .ReleaseAsync(locked.ArtifactId, CancellationToken.None).ConfigureAwait(false))
                 .Should().Be(CentralArtifactRetentionResult.Pending);
@@ -1434,7 +1444,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
 
     private static CentralArtifactRetentionService CreateService(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore minio,
         CentralArtifactRetentionTelemetry telemetry,
         ILogger<CentralArtifactRetentionProcessor>? logger = null,
         ILogger<CentralArtifactRetentionService>? serviceLogger = null)
@@ -1451,14 +1461,14 @@ public sealed class CentralArtifactRetentionIntegrationTests
 
     private static CentralArtifactRetentionProcessor CreateProcessor(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore minio,
         CentralArtifactRetentionTelemetry telemetry,
         CentralArtifactRetentionReferences? references = null,
         ILogger<CentralArtifactRetentionProcessor>? logger = null)
         => new(
             db,
             references ?? new CentralArtifactRetentionReferences(db),
-            ObjectStoreTestClient.Create(minio),
+            minio,
             TimeProvider.System,
             telemetry,
             logger ?? NullLogger<CentralArtifactRetentionProcessor>.Instance);
@@ -1539,9 +1549,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
     {
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(connectionString));
-        services.AddSingleton<IMinioClient>(GetFixtureMinio());
-        services.AddSingleton<IObjectStore>(provider =>
-            ObjectStoreTestClient.Create(provider.GetRequiredService<IMinioClient>()));
+        services.AddSingleton<IObjectStore>(GetFixtureObjectStore());
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton(telemetry);
         services.AddScoped<ICentralArtifactRetentionReferences, CentralArtifactRetentionReferences>();
@@ -1571,14 +1579,10 @@ public sealed class CentralArtifactRetentionIntegrationTests
 
     private static async Task PutAsync(string objectKey, byte[] payload)
     {
-        var minio = GetFixtureMinio();
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(Bucket)).ConfigureAwait(false))
-        {
-            await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(Bucket)).ConfigureAwait(false);
-        }
+        var objectStore = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         await using var stream = new MemoryStream(payload, writable: false);
-        await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(objectKey)
-            .WithStreamData(stream).WithObjectSize(payload.LongLength)).ConfigureAwait(false);
+        await objectStore.PutAsync(Bucket, objectKey, stream, payload.LongLength, "application/octet-stream", CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     private static async Task AssertMissingAsync(string objectKey)
@@ -1589,15 +1593,11 @@ public sealed class CentralArtifactRetentionIntegrationTests
             .Which.Kind.Should().Be(ObjectStoreFailureKind.MissingObject);
     }
 
-    private static IMinioClient GetFixtureMinio()
-        => AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+    private static IObjectStore GetFixtureObjectStore()
+        => AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
 
-    private static IMinioClient CreateMinio(HttpMessageHandler handler)
-        => new MinioClient()
-            .WithEndpoint(AssemblyHooks.Fixture.MinioEndpoint)
-            .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
-            .WithHttpClient(new HttpClient(handler, disposeHandler: false), disposeHttpClient: true)
-            .Build();
+    private static IObjectStore CreateMinio(HttpMessageHandler handler)
+        => ObjectStoreTestClient.Create(GetFixtureObjectStore(), handler);
 
     private static async Task<RetentionDatabase> CreateDatabaseAsync(string scenario, string? applicationName = null)
     {

@@ -14,4 +14,4 @@ fi
   # shard body are part of the same syntax contract, so they are checked here too.
   bash -n "$REPO_ROOT/scripts/deploy:environment" "$REPO_ROOT/scripts/deploy/"*.sh "$REPO_ROOT/scripts/test:deploy-environment" \
     "$REPO_ROOT/scripts/lib/deploy-test-lifecycle.sh" "$REPO_ROOT/scripts/deploy-contracts/"*.sh \
-    "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$REPO_ROOT/deploy/split-host/provision-minio.sh"
+    "$REPO_ROOT/deploy/split-host/provision-sql.sh"

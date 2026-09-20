@@ -155,8 +155,8 @@ public sealed partial class LogicHostIngestPerformanceTests
             services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(connectionString));
             services.RemoveAll<IMinioClient>();
             services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                .WithEndpoint(fixture.MinioEndpoint)
-                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+                .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
                 .WithHttpClient(new HttpClient(handler, disposeHandler: false), disposeHttpClient: true)
                 .Build());
             ObjectStoreTestClient.Replace(services);

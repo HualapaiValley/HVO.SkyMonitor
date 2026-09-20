@@ -303,8 +303,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         var privateValues = new Issue250PrivateValues(
             fixture.SqlServerConnectionString,
             repositoryRoot,
-            IntegrationTestFixture.MinioAccessKey,
-            IntegrationTestFixture.MinioSecretKey);
+            IntegrationTestFixture.ExternalS3AccessKey,
+            IntegrationTestFixture.ExternalS3SecretKey);
 
         var warmups = smoke ? 0 : 5;
         var measurements = smoke ? 1 : 30;
@@ -428,7 +428,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 TotalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
                 PinnedSdk = ReadPinnedSdk(repositoryRoot),
                 SqlServerImage = IntegrationTestFixture.SqlServerImage,
-                MinioImage = IntegrationTestFixture.MinioImage,
+                MinioImage = IntegrationTestFixture.ExternalS3ImageLabel,
                 Topology = "Direct production service instances over isolated SQL databases and shared testcontainer MinIO; HVO_ISSUE_250_EVIDENCE suppresses unrelated recurring workers before host startup.",
                 Preflight = preflight,
                 EnvironmentSha256 = environmentSha256
@@ -5076,8 +5076,8 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
     private static IMinioClient CreateMinio(IntegrationTestFixture fixture, HttpClient httpClient)
         => new MinioClient()
-            .WithEndpoint(fixture.MinioEndpoint)
-            .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+            .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+            .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
             .WithHttpClient(httpClient, disposeHttpClient: false)
             .Build();
 
@@ -5348,7 +5348,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         var drive = new DriveInfo(Path.GetPathRoot(repositoryRoot)!);
         var availableDisk = drive.AvailableFreeSpace;
         var minioStorageFree = await ReadContainerStorageFreeBytesAsync(
-            fixture, IntegrationDependency.Minio, "/data").ConfigureAwait(false);
+            fixture, IntegrationDependency.ObjectStore, "/data").ConfigureAwait(false);
         var sqlStorageFree = await ReadContainerStorageFreeBytesAsync(
             fixture, IntegrationDependency.SqlServer, "/var/opt/mssql/data").ConfigureAwait(false);
         const long minimumMemory = 8L * 1024 * 1024 * 1024;
@@ -5389,7 +5389,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
             minimumMemory,
             minimumDisk,
             IntegrationTestFixture.SqlServerImage,
-            IntegrationTestFixture.MinioImage,
+            IntegrationTestFixture.ExternalS3ImageLabel,
             1_800,
             smoke ? "Smoke bypasses full memory/disk thresholds and remains unclaimable." : "Full capacity thresholds passed.");
     }

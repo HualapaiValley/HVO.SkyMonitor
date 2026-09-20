@@ -41,7 +41,7 @@ internal static partial class ObjectStorageServiceCollectionExtensions
         // provider is not the filesystem one, so the service graph does not depend on options
         // being resolved at registration time.
         services.AddSingleton<FilesystemObjectReconciliationWorker>();
-        services.AddHostedService(provider => provider.GetRequiredService<FilesystemObjectReconciliationWorker>());
+        services.AddSingleton<IHostedService, FilesystemObjectReconciliationHostedService>();
         return services;
     }
 

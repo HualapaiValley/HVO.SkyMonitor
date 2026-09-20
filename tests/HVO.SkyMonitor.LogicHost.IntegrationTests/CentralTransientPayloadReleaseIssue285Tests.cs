@@ -9,7 +9,6 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging.Abstractions;
-using Minio;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -433,7 +432,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         return new(
             db,
             references,
-            ObjectStoreTestClient.Create(CreateIssue250Minio(handler)),
+            CreateIssue250Minio(handler),
             Options.Create(new CentralTransientPayloadReleaseOptions { Enabled = true }),
             TimeProvider.System,
             telemetry);

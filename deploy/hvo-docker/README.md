@@ -1,6 +1,8 @@
 # SkyMonitor Shared Services
 
-This stack provisions the shared SkyMonitor MinIO, Redis, and Mailpit services on `hvo-docker.hvo.lan`. It is separate from application stacks and retains data in named Docker volumes.
+This stack provisions the shared SkyMonitor Redis and Mailpit services on `hvo-docker.hvo.lan`. It is separate from application stacks and retains data in named Docker volumes.
+
+LogicHost object storage is not a shared service. It is a dedicated filesystem root on the LogicHost host itself, qualified by `./scripts/qualify:filesystem-object-store`; see `docs/runbooks/infra-operations.md`.
 
 ## Prerequisites
 
@@ -15,19 +17,10 @@ docker --context hvo-docker compose --env-file .env -f deploy/hvo-docker/docker-
 docker --context hvo-docker compose --env-file .env -f deploy/hvo-docker/docker-compose.shared-services.yml ps
 ```
 
-The stack creates the `skymonitor_default` network. Remote application containers that consume these services must join this external network and use the service names `minio`, `redis`, and `mailpit`.
-
-Provision the SkyMonitor application MinIO account after the first deployment. Its credentials are `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` in the root `.env`; its policy is limited to the `skymonitor-diagnostics` and `skymonitor-artifacts` buckets:
-
-```bash
-docker --context hvo-docker cp deploy/hvo-docker/minio/skymonitor-policy.json skymonitor-minio:/tmp/skymonitor-policy.json
-./scripts/infra:provision-minio-account
-```
+The stack creates the `skymonitor_default` network. Remote application containers that consume these services must join this external network and use the service names `redis` and `mailpit`.
 
 ## Endpoints
 
-- MinIO API: port `9000`
-- MinIO Console: port `9001`
 - Redis: port `6379`, authenticated with `REDIS_PASSWORD`
 - Mailpit SMTP: port `1025`
 - Mailpit web UI: port `8025`

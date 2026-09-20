@@ -12,15 +12,16 @@ filesystem semantics.
 
 ## Service Layout and Ownership
 
-`deploy/hvo-docker/docker-compose.shared-services.yml` defines Redis, MinIO, and
+`deploy/hvo-docker/docker-compose.shared-services.yml` defines Redis and
 Mailpit. SQL Server is provisioned separately. `docker-compose.apps.yml` defines
-only LogicHost and CameraAgent.
+only LogicHost and CameraAgent. Object storage is not a shared service: it is a
+dedicated filesystem root on the LogicHost host.
 
 | Resource | Repository ownership |
 | --- | --- |
 | SQL Server | LogicHost migrates and seeds only database `SkyMonitor`. Do not point it at a database owned by another repository. |
 | Redis | SkyMonitor cache keys use physical prefix `skymonitor:`. Redis is not authoritative identity or job state. |
-| MinIO | SkyMonitor uses only `skymonitor-diagnostics` and `skymonitor-artifacts`. |
+| Object store | A dedicated same-host ext4 root owned by the LogicHost runtime user, containing only `skymonitor-artifacts` and `skymonitor-diagnostics`. |
 | Mailpit | Development email capture; non-authoritative and disposable. |
 | LogicHost | Central application and file-backed Data Protection key ring. |
 | CameraAgent | Local Identity, Data Protection, provisioning state, capture state, and local application data. |
@@ -141,7 +142,7 @@ Reset is destructive and requires an approved backup and rollback decision:
 
 - LogicHost reset removes its container, Data Protection key ring, and
   persisted Development certificate store. It does not delete SQL Server,
-  Redis, MinIO, or Mailpit data.
+  Redis, Mailpit, or object-store data.
 - CameraAgent reset removes its container, local Identity database, Data
   Protection keys, provisioning files, packaged sample payloads, and outbox
   state.
@@ -169,22 +170,27 @@ Delete approved keys individually with `UNLINK`. Never clear an entire logical
 database or server. Redis deletion does not revoke cookies, OAuth tokens, API
 keys, or device credentials.
 
-## MinIO Safety
+## Object-Store Safety
 
-Applications use `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` with the policy in
-`deploy/hvo-docker/minio/skymonitor-policy.json`. Root credentials are reserved
-for service administration and `./scripts/infra:provision-minio-account`.
+The object store has no network endpoint, service account, or access policy.
+Its entire authorization boundary is filesystem ownership and mode: the root
+and both bucket directories are owned by the LogicHost runtime user
+(`4242:4343`) with mode `0750`, and LogicHost runs with a read-only container
+root. There is nothing to rotate, but the ownership and mode must be reasserted
+after any operator action that could change them, and
+`./scripts/qualify:filesystem-object-store` must pass before applications are
+restarted.
 
-The provisioning script creates a missing service account but does not change
-the secret of an existing account. Follow the MinIO operator's approved
-rotation procedure, reapply and inspect the scoped policy, then validate both
-approved buckets before restarting applications.
+LogicHost holds an exclusive lock on the root for its lifetime, so a second
+writer cannot start against the same store. Never let another process, user, or
+host write into the root; external mutation is unqualified and is detected as
+corruption rather than repaired.
 
-The schema-v8 split-host workflow is separate from local `infra:*` ownership.
+The split-host workflow is separate from local `infra:*` ownership.
 In isolated `services.mode: deploy`, it creates a run database with distinct
-initializer/runtime SQL users, a prefix-scoped Redis ACL user, and a MinIO user
-limited to the two run buckets. In `existing` mode it does not create or alter
-service identities. See
+initializer/runtime SQL users and a prefix-scoped Redis ACL user, and it
+qualifies the declared object-store root before the hosts start. In `existing`
+mode it does not create or alter service identities. See
 [`split-host-preflight.md`](split-host-preflight.md) for the exact inventory and
 controlled-start sequence.
 
@@ -193,8 +199,7 @@ controlled-start sequence.
 A complete recovery set contains:
 
 - encrypted SQL Server backup of `SkyMonitor`;
-- the active provider's object data: both approved MinIO buckets for S3, or one
-  completed LogicHost filesystem-object-store backup for the filesystem provider;
+- one completed LogicHost filesystem-object-store backup;
 - LogicHost Data Protection files;
 - LogicHost Development certificate-store home for the supported Compose
   topology;
@@ -234,7 +239,7 @@ failed application restore attempts collision-safe exact rollback and
 intentionally leaves both applications stopped. If exact rollback cannot
 complete, it preserves the durable transaction marker and rollback state for
 operator recovery rather than claiming success. These scripts do not back up
-or restore SQL Server or MinIO.
+or restore SQL Server or the object store.
 
 ### Filesystem object-store backup and restore
 
@@ -308,6 +313,7 @@ set -o pipefail
   4242 4343 \
   00000000-0000-0000-0000-000000000000 \
   2147483648 10000 \
+  skymonitor-artifacts skymonitor-diagnostics \
   /srv/skymonitor/data/logichost/dataprotection \
   /srv/skymonitor/data/logichost/home \
   | tee filesystem-object-store-preflight.json \
@@ -386,7 +392,7 @@ before those checks, allowing supported
 long paths without accepting GNU long-link, sparse, or PAX override records.
 Staged filesystem swaps are individual same-filesystem
 renames coordinated by a durable phase marker; they are not a transaction that
-is atomic with SQL Server, MinIO, container startup, or health checks.
+is atomic with SQL Server, the object store, container startup, or health checks.
 Recovery marker version 2 journals displacement, rollback restoration,
 displaced-tree removal, authenticated staging removal, and marker removal.
 Every destructive substep records intent before mutation and accepts either the

@@ -23,9 +23,13 @@ run_deploy() {
 }
 
 run_deploy_mode() {
-    local phase="$1" run_id="$2" mode="$3" status; shift 3
+    local phase="$1" run_id="$2" mode="$3" status object_store_owner_host; shift 3
+    object_store_owner_host="${FAKE_OBJECT_STORE_OWNER_HOST:-}"
+    [[ "$phase" != up ]] || object_store_owner_host="${object_store_owner_host:-logic}"
     deploy_test_checkpoint "$phase:$run_id:starting"
-    if PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" "$phase" --inventory "$INVENTORY" --mode "$mode" \
+    if FAKE_OBJECT_STORE_OWNER_HOST="$object_store_owner_host" \
+      FAKE_RUNTIME_UID="${FAKE_RUNTIME_UID:-4242}" FAKE_RUNTIME_GID="${FAKE_RUNTIME_GID:-4343}" \
+      PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" "$phase" --inventory "$INVENTORY" --mode "$mode" \
       --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"; then status=0; else status=$?; fi
     deploy_test_checkpoint "$phase:$run_id:$([[ $status -eq 0 ]] && printf completed || printf failed)"
     return "$status"
@@ -285,15 +289,15 @@ prepare_lifecycle_fixture() {
     .logicHost.catalogId="test-fixture" | (.cameraAgents[].catalogId)="test-fixture" |
     .deployment.services.sql.database="hvo-deploy-up" | .deployment.resources.sqlDatabase="hvo-deploy-up" |
     .deployment.services.redis.prefix="hvo-deploy-up:" | .deployment.resources.redisPrefix="hvo-deploy-up:" |
-    .deployment.services.minio.artifactBucket="hvo-deploy-up-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-up-artifacts" |
-    .deployment.services.minio.diagnosticsBucket="hvo-deploy-up-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-up-diagnostics" |
+    .deployment.services.objectStore.artifactBucket="hvo-deploy-up-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-up-artifacts" |
+    .deployment.services.objectStore.diagnosticsBucket="hvo-deploy-up-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-up-diagnostics" |
     .deployment.resources.project="hvo-deploy-up" |
     .deployment.transient.mode=$transientMode |
     .deployment.certificates.signingPath=$signing | .deployment.certificates.encryptionPath=$encryption |
     .logicHost.runtimeRoot=(.productRoot+"/logichosts/"+.logicHost.instanceId) | .logicHost.internalEndpoint=$endpoint | .logicHost.publicEndpoint=$public | .logicHost.trustedProxyAddresses=["127.0.0.1"] | .logicHost.ports=[$port] |
     (.cameraAgents[0].runtimeRoot)=(.productRoot+"/cameraagents/"+.cameraAgents[0].instanceId) | (.cameraAgents[0].internalEndpoint)=$endpoint | (.cameraAgents[0].publicEndpoint)=$public | (.cameraAgents[0].trustedProxyAddresses)=["127.0.0.1"] | (.cameraAgents[0].ports)=[$port] |
     (.cameraAgents[1].runtimeRoot)=(.productRoot+"/cameraagents/"+.cameraAgents[1].instanceId) | (.cameraAgents[1].internalEndpoint)=$endpoint | (.cameraAgents[1].publicEndpoint)=$public | (.cameraAgents[1].trustedProxyAddresses)=["127.0.0.1"] | (.cameraAgents[1].ports)=[$port] |
-    (.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.minio.port,.deployment.services.smtp.ports[0])=$port |
+    (.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.smtp.ports[0])=$port |
     .serviceEndpoints=[{name:"test-service",host:"127.0.0.1",port:$port,fromTargets:["logic","east","west"]}]' \
     "$BASE_INVENTORY" > "$INVENTORY"
   mkdir -p "$TEMP_DIR/remote/$deploy_case-skymonitor/logichosts" "$TEMP_DIR/remote/$deploy_case-skymonitor/cameraagents" "$TEMP_DIR/remote/$deploy_case-skymonitor/catalogs"

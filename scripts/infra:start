@@ -37,6 +37,9 @@ LOCAL_UID="$(id -u)"
 export LOCAL_UID
 LOCAL_GID="$(id -g)"
 export LOCAL_GID
+HVO_OBJECT_STORE_ROOT="$(realpath -ms "${HVO_OBJECT_STORE_ROOT:-$RUNTIME_DATA_ROOT/object-store}")"
+readonly HVO_OBJECT_STORE_ROOT
+export HVO_OBJECT_STORE_ROOT
 hvo_acquire_application_state_lock "$RUNTIME_DATA_ROOT"
 hvo_require_restore_marker_access start
 
@@ -177,6 +180,11 @@ fi
 
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/logichost/dataprotection"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/logichost/home"
+prepare_runtime_directory "$HVO_OBJECT_STORE_ROOT"
+prepare_runtime_directory "$HVO_OBJECT_STORE_ROOT/skymonitor-artifacts"
+prepare_runtime_directory "$HVO_OBJECT_STORE_ROOT/skymonitor-diagnostics"
+chmod 0750 "$HVO_OBJECT_STORE_ROOT" "$HVO_OBJECT_STORE_ROOT/skymonitor-artifacts" \
+    "$HVO_OBJECT_STORE_ROOT/skymonitor-diagnostics"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/catalog"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/identity"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"

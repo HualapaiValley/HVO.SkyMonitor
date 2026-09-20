@@ -21,7 +21,7 @@ Main sky monitoring application with full authentication, API versioning, and ob
 ```bash
 ./scripts/infra:start logichost
 ```
-Stop local application containers when you're done via `./scripts/infra:stop`. Shared SQL Server, Redis, MinIO, and Mailpit remain running on `hvo-docker`.
+Stop local application containers when you're done via `./scripts/infra:stop`. Shared SQL Server, Redis, and Mailpit remain running on `hvo-docker`.
 
 ### Direct execution only
 

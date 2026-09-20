@@ -4,73 +4,80 @@ using System.Text;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 using HVO.SkyMonitor.LogicHost.Services;
-using Microsoft.Extensions.DependencyInjection;
-using Minio;
-using Minio.DataModel.Args;
-
 namespace HVO.SkyMonitor.IntegrationTests;
 
+/// <summary>
+/// Conformance coverage for the retained AWS SDK S3 adapter. The supported LogicHost deployment
+/// uses the filesystem provider, so this suite runs only against an operator-provided endpoint.
+/// </summary>
 [TestClass]
-[TestCategory("Integration")]
+[TestCategory("Manual")]
 [DoNotParallelize]
 public sealed class S3ObjectStoreConformanceTests
 {
     private const string Bucket = "skymonitor-artifacts";
-    private ObjectStoreConformanceSuite _suite = null!;
+    private ObjectStoreConformanceSuite? _suite;
 
     [TestInitialize]
-    public async Task InitializeAsync()
+    public void Initialize()
     {
-        var services = AssemblyHooks.Fixture.Factory.Services;
-        var minio = services.GetRequiredService<IMinioClient>();
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(Bucket)).ConfigureAwait(false))
+        if (IntegrationTestFixture.TryGetExternalS3Endpoint() is null)
         {
-            await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(Bucket)).ConfigureAwait(false);
+            Assert.Inconclusive(
+                $"Set {IntegrationTestFixture.ExternalS3EndpointVariable} to run the S3 adapter conformance suite.");
         }
         _suite = new ObjectStoreConformanceSuite(
-            services.GetRequiredService<IObjectStore>(),
+            CreateStore(),
             CreateFaultedStore,
             Bucket,
             $"issue-504/conformance/{Guid.NewGuid():N}/");
     }
 
     [TestCleanup]
-    public Task CleanupAsync() => _suite.CleanupAsync();
+    public Task CleanupAsync() => _suite?.CleanupAsync() ?? Task.CompletedTask;
 
     [TestMethod]
     public Task MaximumStreamingPublicationConditionalReadAndDelete_Conform()
-        => _suite.MaximumStreamingPublicationConditionalReadAndDeleteAsync();
+        => _suite!.MaximumStreamingPublicationConditionalReadAndDeleteAsync();
 
     [TestMethod]
     public Task Listing_IsCompleteOrdinalAndCrossesProviderPages()
-        => _suite.ListingIsCompleteOrdinalAndCrossesProviderPagesAsync();
+        => _suite!.ListingIsCompleteOrdinalAndCrossesProviderPagesAsync();
 
     [TestMethod]
     public Task Failures_AreClassifiedAndCallerFailuresArePreserved()
-        => _suite.FailuresAreClassifiedAndCallerFailuresArePreservedAsync();
+        => _suite!.FailuresAreClassifiedAndCallerFailuresArePreservedAsync();
 
     [TestMethod]
     public Task AmbiguousDelete_ConvergesOnRetry()
-        => _suite.AmbiguousDeleteConvergesOnRetryAsync();
+        => _suite!.AmbiguousDeleteConvergesOnRetryAsync();
 
-    private static IObjectStore CreateFaultedStore(ObjectStoreConformanceFault fault)
-    {
-        var endpoint = AssemblyHooks.Fixture.MinioEndpoint;
-        if (fault == ObjectStoreConformanceFault.Unavailable)
-        {
-            endpoint = $"127.0.0.1:{GetUnusedPort()}";
-        }
+    private static IObjectStore CreateStore()
+        => ObjectStoreTestClient.Create(
+            S3ObjectStoreClientFactory.Create(CreateOptions(IntegrationTestFixture.ExternalS3Endpoint)),
+            CreateOptions(IntegrationTestFixture.ExternalS3Endpoint));
 
-        var options = new CentralObjectStorageOptions
+    private static CentralObjectStorageOptions CreateOptions(string endpoint)
+        => new()
         {
             ServiceEndpoint = endpoint,
             Region = "us-east-1",
             UseTls = false,
             AddressingStyle = ObjectStorageAddressingStyle.Path,
             CredentialMode = ObjectStorageCredentialMode.Static,
-            AccessKey = IntegrationTestFixture.MinioAccessKey,
-            SecretKey = IntegrationTestFixture.MinioSecretKey
+            AccessKey = IntegrationTestFixture.ExternalS3AccessKey,
+            SecretKey = IntegrationTestFixture.ExternalS3SecretKey
         };
+
+    private static IObjectStore CreateFaultedStore(ObjectStoreConformanceFault fault)
+    {
+        var endpoint = IntegrationTestFixture.ExternalS3Endpoint;
+        if (fault == ObjectStoreConformanceFault.Unavailable)
+        {
+            endpoint = $"127.0.0.1:{GetUnusedPort()}";
+        }
+
+        var options = CreateOptions(endpoint);
         if (fault is not ObjectStoreConformanceFault.Unavailable)
         {
             var handler = new ConformanceFaultHandler(fault) { InnerHandler = new SocketsHttpHandler() };

@@ -293,7 +293,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 ServerGarbageCollection = GCSettings.IsServerGC,
                 TotalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
                 SqlServer = DescribeSqlEndpoint(fixture.SqlServerConnectionString),
-                fixture.MinioEndpoint
+                IntegrationTestFixture.ExternalS3Endpoint
             },
             UnavailableEvidence = new
             {
@@ -1752,8 +1752,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         {
             services.RemoveAll<IMinioClient>();
             services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                .WithEndpoint(fixture.MinioEndpoint)
-                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+                .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
                 .WithHttpClient(new HttpClient(outage, disposeHandler: false), disposeHttpClient: true)
                 .Build());
             ObjectStoreTestClient.Replace(services);
@@ -1775,8 +1775,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             });
             services.RemoveAll<IMinioClient>();
             services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                .WithEndpoint(fixture.MinioEndpoint)
-                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+                .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
                 .WithHttpClient(new HttpClient(protocol.Http, disposeHandler: false), disposeHttpClient: true)
                 .Build());
             ObjectStoreTestClient.Replace(services);
@@ -1795,8 +1795,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 services.AddSingleton(handler);
                 services.RemoveAll<IMinioClient>();
                 services.AddSingleton<IMinioClient>(provider => new MinioClient()
-                    .WithEndpoint(fixture.MinioEndpoint)
-                    .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                    .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+                    .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
                     .WithHttpClient(
                         new HttpClient(provider.GetRequiredService<PublicationFaultHandler>(), disposeHandler: false),
                         disposeHttpClient: true)

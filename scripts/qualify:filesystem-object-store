@@ -2,18 +2,20 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s ROOT UID GID EXPECTED_UUID MIN_FREE_BYTES MIN_FREE_INODES [DISJOINT_PATH ...]\n' "$0" >&2
+  printf 'Usage: %s ROOT UID GID EXPECTED_UUID MIN_FREE_BYTES MIN_FREE_INODES ARTIFACT_BUCKET DIAGNOSTICS_BUCKET [DISJOINT_PATH ...]\n' "$0" >&2
   exit 2
 }
 
-[[ $# -ge 6 ]] || usage
+[[ $# -ge 8 ]] || usage
 root=$1
 runtime_uid=$2
 runtime_gid=$3
 expected_uuid=$4
 minimum_bytes=$5
 minimum_inodes=$6
-shift 6
+artifact_bucket=$7
+diagnostics_bucket=$8
+shift 8
 
 fail() {
   printf 'filesystem-object-store preflight failed: %s\n' "$1" >&2
@@ -58,6 +60,10 @@ fsroot_contains() {
 }
 bounded_positive_integer "$minimum_bytes" || fail 'minimum free bytes must be a positive signed 64-bit integer'
 bounded_positive_integer "$minimum_inodes" || fail 'minimum free inodes must be a positive signed 64-bit integer'
+bucket_name_pattern='^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+[[ $artifact_bucket =~ $bucket_name_pattern ]] || fail 'artifact bucket name is invalid'
+[[ $diagnostics_bucket =~ $bucket_name_pattern ]] || fail 'diagnostics bucket name is invalid'
+[[ $artifact_bucket != "$diagnostics_bucket" ]] || fail 'artifact and diagnostics bucket names must differ'
 [[ $root == /* ]] || fail 'object-store root must be absolute'
 [[ -d $root && ! -L $root ]] || fail 'object-store root must be a precreated nonsymlink directory'
 
@@ -84,7 +90,7 @@ mode=$(stat -c %a -- "$root")
 [[ $owner_uid == "$runtime_uid" && $owner_gid == "$runtime_gid" ]] || fail 'object-store root ownership does not match runtime UID/GID'
 [[ $mode == 750 ]] || fail 'object-store root mode must be 0750'
 
-for bucket in skymonitor-artifacts skymonitor-diagnostics; do
+for bucket in "$artifact_bucket" "$diagnostics_bucket"; do
   path=$root/$bucket
   [[ -d $path && ! -L $path ]] || fail "bucket root is missing or linked: $bucket"
   [[ $(readlink -f -- "$path") == "$path" ]] || fail "bucket root is not canonical: $bucket"
@@ -138,9 +144,10 @@ jq -n \
   --arg blockType "$block_type" --arg blockRotation "$block_rotation" --arg blockModel "$block_model" \
   --argjson runtimeUid "$runtime_uid" --argjson runtimeGid "$runtime_gid" \
   --argjson freeBytes "$available_bytes" --argjson freeInodes "$available_inodes" \
+  --arg artifactBucket "$artifact_bucket" --arg diagnosticsBucket "$diagnostics_bucket" \
   '{schema:$schema,kernel:$kernel,architecture:$architecture,root:$root,
     mount:{source:$mountSource,target:$mountTarget,filesystem:$filesystem,uuid:$filesystemUuid,options:$mountOptions},
     blockDevice:{type:$blockType,rotational:$blockRotation,model:$blockModel},
     identity:{uid:$runtimeUid,gid:$runtimeGid,rootMode:"0750",bucketMode:"0750"},
     capacity:{freeBytes:$freeBytes,freeInodes:$freeInodes},
-    buckets:["skymonitor-artifacts","skymonitor-diagnostics"],result:"passed"}'
+    buckets:[$artifactBucket,$diagnosticsBucket],result:"passed"}'

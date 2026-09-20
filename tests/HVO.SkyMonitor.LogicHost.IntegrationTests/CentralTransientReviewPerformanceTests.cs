@@ -93,7 +93,7 @@ public sealed class CentralTransientReviewPerformanceTests
                     AvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
                     Storage = "Docker-backed SQL Server and MinIO Testcontainers",
                     SqlServer = builder.DataSource,
-                    fixture.MinioEndpoint
+                    IntegrationTestFixture.ExternalS3Endpoint
                 },
                 Workloads = new
                 {

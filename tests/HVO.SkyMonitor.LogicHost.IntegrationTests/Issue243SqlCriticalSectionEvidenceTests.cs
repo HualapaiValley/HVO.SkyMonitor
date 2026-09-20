@@ -12,8 +12,6 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -110,10 +108,10 @@ public sealed class Issue243SqlCriticalSectionEvidenceTests
             artifact.StateReasonCode.Should().Be("retention.expired");
         }
 
-        var minio = fixture.Factory.Services.GetRequiredService<IMinioClient>();
-        var stat = () => minio.StatObjectAsync(new StatObjectArgs()
-            .WithBucket("skymonitor-artifacts").WithObject(seeded.ObjectKey));
-        await stat.Should().ThrowAsync<Minio.Exceptions.ObjectNotFoundException>().ConfigureAwait(false);
+        var minio = fixture.Factory.Services.GetRequiredService<IObjectStore>();
+        var stat = () => minio.StatAsync("skymonitor-artifacts", seeded.ObjectKey, CancellationToken.None);
+        (await stat.Should().ThrowAsync<ObjectStoreException>().ConfigureAwait(false))
+            .Which.Kind.Should().Be(ObjectStoreFailureKind.MissingObject);
 
         var repositoryRoot = FindRepositoryRoot();
         var source = await EvidenceSourceIdentity.CaptureAsync(
@@ -171,13 +169,10 @@ public sealed class Issue243SqlCriticalSectionEvidenceTests
             services.RemoveAll<DbContextOptions<ApplicationDbContext>>();
             services.RemoveAll<ApplicationDbContext>();
             services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(connectionString));
-            services.RemoveAll<IMinioClient>();
-            services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                .WithEndpoint(fixture.MinioEndpoint)
-                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
-                .WithHttpClient(new HttpClient(handler, disposeHandler: false), disposeHttpClient: true)
-                .Build());
-            ObjectStoreTestClient.Replace(services);
+            ObjectStoreTestClient.Replace(
+                services,
+                fixture.Factory.Services.GetRequiredService<IObjectStore>(),
+                handler);
         }));
 
     private static async Task<SqlCriticalSectionSnapshot> ReadSnapshotAsync(

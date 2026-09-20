@@ -128,7 +128,7 @@ separate membership and access-level checks.
 
 ## Security Invariants
 
-- No usable owner password, application API key, OAuth client secret, or MinIO
+- No usable owner password, application API key, OAuth client secret, or object-store
   credential is committed in application settings. Integration fixtures inject
   isolated test credentials.
 - Bootstrap material is encrypted, short-lived, single-use, and excluded from
@@ -151,7 +151,7 @@ separate membership and access-level checks.
 - CameraAgent operator APIs expose opaque artifact IDs and time-limited outbox
   references. Legacy raw-root, idempotency-key, and internal-record-ID routes
   are intentionally retired and have no compatibility alias.
-- SQL Server, Redis, and MinIO ownership is explicit; Redis and MinIO root access
+- SQL Server, Redis, and object-store ownership is explicit; Redis administrative access
   are never substitutes for identity revocation.
 - Azure Key Vault may be one future provider, but no cloud secret provider is
   required by the architecture or currently wired by the repository.

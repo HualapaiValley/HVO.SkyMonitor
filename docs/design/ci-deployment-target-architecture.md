@@ -14,7 +14,7 @@ Issue #877. Parent epic #876. This document is the approved current-state eviden
 | Deployment Contracts | self-hosted | `deployment == true` | Catalog, shard, and installer deployment gates |
 | Build | self-hosted | `mode == full` | Warning-clean Debug and Release solution build |
 | Unit Tests | self-hosted | `complete == true` | Complete Unit selection and category audit |
-| Integration Tests | self-hosted | `complete == true` | Testcontainers SQL Server, Redis, MinIO, Mailpit |
+| Integration Tests | self-hosted | `complete == true` | Testcontainers SQL Server, Redis, Mailpit; filesystem object store |
 | Architecture & Publish | self-hosted | `mode == full` | Architecture rules and publish verification |
 | CameraAgent Migrations | self-hosted | `mode == full` | Canonical migration check |
 | LogicHost Migrations | self-hosted | `mode == full` | Canonical migration check |

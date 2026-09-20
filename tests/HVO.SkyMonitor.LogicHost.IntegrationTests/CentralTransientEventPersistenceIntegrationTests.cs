@@ -14,8 +14,6 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -1041,17 +1039,11 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
                 .ConfigureAwait(false);
             var principal = CreateOwnerPrincipal("release-admin", admin: true);
-            var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
-            if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-artifacts"))
-                    .ConfigureAwait(false))
-            {
-                await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-artifacts"))
-                    .ConfigureAwait(false);
-            }
+            var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
             var disabled = new CentralTransientPayloadReleaseService(
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
-                ObjectStoreTestClient.Create(minio),
+                minio,
                 Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions()),
                 TimeProvider.System);
             (await disabled.ReleaseAsync(
@@ -1141,7 +1133,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var enabled = new CentralTransientPayloadReleaseService(
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
-                ObjectStoreTestClient.Create(minio),
+                minio,
                 Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions
                 {
                     Enabled = true,
@@ -1323,18 +1315,12 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             database.Context.CentralTransientPayloadReleases.Add(release);
             await database.Context.SaveChangesAsync().ConfigureAwait(false);
             database.Context.ChangeTracker.Clear();
-            var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
-            if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-artifacts"))
-                    .ConfigureAwait(false))
-            {
-                await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-artifacts"))
-                    .ConfigureAwait(false);
-            }
+            var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
 
             var processor = new CentralTransientPayloadReleaseService(
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
-                ObjectStoreTestClient.Create(minio),
+                minio,
                 Microsoft.Extensions.Options.Options.Create(
                     new CentralTransientPayloadReleaseOptions { Enabled = true }),
                 TimeProvider.System);
@@ -1795,18 +1781,12 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             await using var releaseContext = CreateContext(setup.ConnectionString);
             var appendService = new CentralTransientEventPersistence(appendContext);
             using var telemetry = new CentralArtifactRetentionTelemetry();
-            var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
-            if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-artifacts"))
-                    .ConfigureAwait(false))
-            {
-                await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-artifacts"))
-                    .ConfigureAwait(false);
-            }
+            var minio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
             var retentionReferences = new CentralArtifactRetentionReferences(releaseContext);
             var retentionProcessor = new CentralArtifactRetentionProcessor(
                 releaseContext,
                 retentionReferences,
-                ObjectStoreTestClient.Create(minio),
+                minio,
                 TimeProvider.System,
                 telemetry,
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<CentralArtifactRetentionProcessor>.Instance);
