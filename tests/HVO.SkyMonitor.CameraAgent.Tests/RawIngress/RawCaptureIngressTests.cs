@@ -3130,12 +3130,6 @@ public sealed class RawCaptureIngressTests
                 receipt.Manifest.Descriptor.Artifact.ChecksumSha256,
                 Convert.ToHexString(SHA256.HashData(payload)),
                 ignoreCase: true);
-            await Phase14ScenarioEvidence.RecordAsync(
-                "raw-boundary-before-initialization-lifecycle-lock",
-                "forced-initialization-waits-for-publication",
-                caseSelector: null,
-                ["lifecycle-lock-requested", "initialization-waited", "published-evidence-preserved"])
-                .ConfigureAwait(false);
             var sidecarPath = Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json");
             var sidecar = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
             Assert.AreEqual(receipt.CommittedManifestSha256, CaptureContractJson.ComputeManifestSha256(sidecar));
@@ -3143,6 +3137,12 @@ public sealed class RawCaptureIngressTests
             Assert.AreEqual(0L, state.Snapshot.QuarantineCount);
             Assert.IsEmpty(Directory.EnumerateFiles(Path.Combine(root, "quarantine"), "*", SearchOption.AllDirectories));
             Assert.IsEmpty(Directory.EnumerateFiles(Path.Combine(root, "frames"), "*.tmp", SearchOption.AllDirectories));
+            await Phase14ScenarioEvidence.RecordAsync(
+                "raw-boundary-before-initialization-lifecycle-lock",
+                "forced-initialization-waits-for-publication",
+                caseSelector: null,
+                ["lifecycle-lock-requested", "initialization-waited", "published-evidence-preserved"])
+                .ConfigureAwait(false);
 
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {

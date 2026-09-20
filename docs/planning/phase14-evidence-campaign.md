@@ -24,7 +24,7 @@ product or database behavior, and performs no optimization.
 
 ## Inventory Reconciliation
 
-The schema-v2 runtime inventory contains 111 distinct rows, not 110. Commit
+The schema-v2 runtime inventory contains 116 distinct rows. Commit
 `a2e61a1bbff5decf454151ddae9eef72934d6113` added
 `raw-boundary-payload-partially-written` as literal process-kill
 coverage. It is not interchangeable with `raw-boundary-payload-written` and must
@@ -36,7 +36,7 @@ exactly once:
 | Disposition | Rows | Meaning |
 | --- | ---: | --- |
 | `accepted-current-head` | 0 | Reserved for an already admissible immutable artifact; none is promoted by this definition. |
-| `source-family-import` | 103 | The inventory names a `test:` source; a later importer must produce sanitized revision-bound evidence. |
+| `source-family-import` | 108 | The inventory names a `test:` source; a later importer must produce sanitized revision-bound evidence. |
 | `real-campaign` | 2 | `normal-flow` and `logichost-network-outage` have supported executable harnesses. |
 | `deferred` | 2 | `permanent-upload-rejection` and `network-failure` lack supported campaign harnesses. |
 | `excluded` | 4 | External, soak, Stellarium, and future-hardware rows remain separate gates. |
@@ -61,12 +61,12 @@ its pinned catalog and collector inputs. The index and acceptance bundle bind
 the reviewed collector digest and validated production catalog manifest/database
 digests and length. Retained test assemblies use a deterministic relative source
 path map and are rejected if they contain the canonical repository path. There
-are 25 unique methods across the
-103 rows:
+are 29 unique methods across the
+108 rows:
 
 | Family | Project | Rows | Unique methods |
 | --- | --- | ---: | ---: |
-| `cameraagent-tests` | `tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj` | 75 | 18 |
+| `cameraagent-tests` | `tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj` | 80 | 22 |
 | `cameraagent-acceptance` | `tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj` | 6 | 1 |
 | `logichost-integration` | `tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj` | 22 | 6 |
 
@@ -177,7 +177,7 @@ particular, issue #318 cannot mark a scenario passed or complete #305.
 
 Later issues must remain non-overlapping:
 
-1. #319 owns source-family execution/import, sanitization, and immutable artifacts for the 103 test-backed rows.
+1. #319 owns source-family execution/import, sanitization, and immutable artifacts for the 108 test-backed rows.
 2. #320 owns execution and immutable artifacts for supported `normal-flow` and `logichost-network-outage`, plus harness support and execution for the two deferred rows.
 3. #321 follows both evidence families and owns admissibility, the immutable index, telemetry/resource summaries, and residual risks.
 4. #322 follows aggregation and opens focused product issues only where measured evidence justifies a change.
@@ -204,7 +204,7 @@ reproduction and use capability-based entry points:
 ./scripts/test:deployment-normal-flow-contract
 ```
 
-The acceptance contract test verifies the 111-row digest and exact one-rule
+The acceptance contract test verifies the 116-row digest and exact one-rule
 coverage, project/FQN family counts, executable workload fields, artifact/status
 semantics, and follow-up boundaries. Negative checks reject stale counts or
 hashes, unpinned source revisions, unmapped rows, missing sanitizer identity,
