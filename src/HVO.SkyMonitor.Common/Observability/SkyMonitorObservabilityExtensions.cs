@@ -63,7 +63,8 @@ public static class SkyMonitorObservabilityExtensions
     };
     private static readonly HashSet<string> ObjectStoreHealthDataKeys = new(StringComparer.Ordinal)
     {
-        "Reason", "QuarantinedCount", "ReclaimFailedCount", "RetiredBytes", "OldestRetiredAgeSeconds", "ReconciledUtc"
+        "Reason", "QuarantinedBuckets", "ReclaimFailedCount", "RetiredBytes", "OldestRetiredAgeSeconds", "ReconciledUtc",
+        "ReconciliationTruncatedBuckets", "ReconciliationFailedBuckets", "ReconciliationAgeSeconds"
     };
     private static readonly HashSet<string> EnvironmentalObservationHealthDataKeys = new(StringComparer.Ordinal)
     {

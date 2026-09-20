@@ -3,6 +3,7 @@ using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
 using HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -12,7 +13,7 @@ namespace HVO.SkyMonitor.LogicHost.Tests.Services;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class FilesystemObjectReconcilerTests
+public sealed class FilesystemObjectReconcilerTests : IDisposable
 {
     private const string Bucket = "skymonitor-artifacts";
     private string _temp = null!;
@@ -38,10 +39,16 @@ public sealed class FilesystemObjectReconcilerTests
     [TestCleanup]
     public void Cleanup()
     {
+        _store.Dispose();
         if (Directory.Exists(_temp))
         {
             Directory.Delete(_temp, recursive: true);
         }
+    }
+
+    public void Dispose()
+    {
+        _store?.Dispose();
     }
 
     private static MemoryStream Bytes(string text) => new(Encoding.UTF8.GetBytes(text));
@@ -219,7 +226,8 @@ public sealed class FilesystemObjectReconcilerTests
         var g = (await _store.StatAsync(Bucket, "k", None)).Generation;
         await File.WriteAllTextAsync(DataPath("k", g), "PAYLOAD");
         var report = Run(new FilesystemReconciliationOptions { VerifyDigests = true });
-        Assert.AreEqual(2, report.Quarantined);
+        Assert.AreEqual(1, report.Quarantined, "health reports the persistent presence of quarantine, not an unbounded exact count");
+        Assert.AreEqual(2, report.QuarantinedThisPass);
         Assert.AreEqual(2, report.QuarantineReasons["data-digest-mismatch"]);
         Assert.AreEqual(0, report.LiveObjects);
         Assert.IsFalse(File.Exists(DescriptorPath("k")));
@@ -254,7 +262,8 @@ public sealed class FilesystemObjectReconcilerTests
         }
         CollectionAssert.AreEqual(new[] { "good" }, listed);
         var second = Run();
-        Assert.AreEqual(0, second.Quarantined, "quarantine is not re-examined");
+        Assert.AreEqual(1, second.Quarantined, "quarantine remains an operator-visible fact");
+        Assert.AreEqual(0, second.QuarantinedThisPass, "the file was not quarantined again");
         Assert.AreEqual(1, second.LiveObjects);
     }
 
@@ -268,6 +277,38 @@ public sealed class FilesystemObjectReconcilerTests
         var report = Run(new FilesystemReconciliationOptions { MaximumEntriesPerPass = 5 });
         Assert.IsTrue(report.Truncated);
         Assert.IsTrue(report.LiveObjects <= 5);
+    }
+
+    [TestMethod]
+    public async Task TinyBudgetStillMakesEventualProgressInEveryPhase()
+    {
+        for (var i = 0; i < 20; i++)
+        {
+            await _store.PutAsync(Bucket, $"live-{i:D2}", Bytes("x"), 1, "text/plain", None);
+        }
+        await _store.PutAsync(Bucket, "retired", Bytes("old"), 3, "text/plain", None);
+        var oldGeneration = (await _store.StatAsync(Bucket, "retired", None)).Generation;
+        await _store.PutAsync(Bucket, "retired", Bytes("new"), 3, "text/plain", None);
+        var retiredData = DataPath("retired", oldGeneration);
+        var stamp = Path.ChangeExtension(retiredData, ".retired");
+        await File.WriteAllBytesAsync(stamp, []);
+        Age(stamp, TimeSpan.FromHours(1));
+        var staleTemporary = Path.Combine(KeyDir("retired"), "stale.tmp");
+        await File.WriteAllBytesAsync(staleTemporary, [1]);
+        Age(staleTemporary, TimeSpan.FromHours(1));
+
+        for (var pass = 0; pass < 1000 && (File.Exists(retiredData) || File.Exists(staleTemporary)); pass++)
+        {
+            var report = Run(new FilesystemReconciliationOptions
+            {
+                MaximumEntriesPerPass = 1,
+                RetiredGraceAge = TimeSpan.FromMinutes(15),
+                TemporaryGraceAge = TimeSpan.FromMinutes(15)
+            });
+            Assert.IsTrue(report.Truncated, "a one-entry budget remains incomplete until all phases finish their sweep");
+        }
+        Assert.IsFalse(File.Exists(retiredData), "the data cursor eventually reaches retired generations despite the descriptor backlog");
+        Assert.IsFalse(File.Exists(staleTemporary), "the temporary phase receives budget on every pass");
     }
 
     [TestMethod]
@@ -370,24 +411,73 @@ public sealed class FilesystemObjectReconcilerTests
     }
 
     [TestMethod]
+    public async Task QueuedDirectoryReplacedBySymlinkIsRefusedBeforeEnumeration()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Linux symlink qualification case.");
+        }
+        await _store.PutAsync(Bucket, "k", Bytes("v1"), 2, "text/plain", None);
+        var keyDirectory = KeyDir("k");
+        var outside = Path.Combine(Path.GetTempPath(), "hvo-fsrc-substitute-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, new string('e', 64) + "." + new string('f', 32) + FilesystemObjectLayout.DataSuffix);
+        await File.WriteAllBytesAsync(victim, [1, 2, 3]);
+        var substituted = false;
+        _reconciler.BeforeDirectoryEnumerationForTest = directory =>
+        {
+            if (substituted || !string.Equals(directory, keyDirectory, StringComparison.Ordinal))
+            {
+                return;
+            }
+            substituted = true;
+            Directory.Delete(keyDirectory, recursive: true);
+            Directory.CreateSymbolicLink(keyDirectory, outside);
+        };
+        try
+        {
+            for (var pass = 0; pass < 100 && !substituted; pass++)
+            {
+                try
+                {
+                    Run(new FilesystemReconciliationOptions { MaximumEntriesPerPass = 1 });
+                }
+                catch (FileSystemFaultException fault)
+                {
+                    Assert.AreEqual(FileSystemFaultKind.Containment, fault.Kind);
+                }
+            }
+            Assert.IsTrue(substituted, "the traversal eventually dequeued the previously validated directory");
+            Assert.IsTrue(File.Exists(victim));
+            Assert.IsFalse(File.Exists(Path.ChangeExtension(victim, ".retired")));
+        }
+        finally
+        {
+            _reconciler.BeforeDirectoryEnumerationForTest = null;
+            Directory.Delete(keyDirectory);
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task HealthCheckReportsReconciliationFactsAndDegradesOnQuarantine()
     {
         var options = new CentralObjectStorageOptions { Provider = ObjectStorageProvider.Filesystem };
         options.Filesystem.Root = _temp;
         var wrapped = Options.Create(options);
         using var worker = new FilesystemObjectReconciliationWorker(_store, wrapped, _clock, NullLoggerFactory.Instance);
-        var check = new ObjectStoreHealthCheck(_store, wrapped, NullLogger<ObjectStoreHealthCheck>.Instance, worker);
+        var check = new ObjectStoreHealthCheck(_store, wrapped, NullLogger<ObjectStoreHealthCheck>.Instance, worker, _clock);
 
         var beforeAnyPass = await check.CheckHealthAsync(new HealthCheckContext(), None);
-        Assert.AreEqual(HealthStatus.Healthy, beforeAnyPass.Status);
-        Assert.AreEqual("both-required-buckets-authenticated", beforeAnyPass.Data["Reason"]);
+        Assert.AreEqual(HealthStatus.Degraded, beforeAnyPass.Status);
+        Assert.AreEqual("reconciliation-pending", beforeAnyPass.Data["Reason"]);
 
         await _store.PutAsync(Bucket, "k", Bytes("v1"), 2, "text/plain", None);
         worker.RunOnce(_reconciler, None);
         var clean = await check.CheckHealthAsync(new HealthCheckContext(), None);
         Assert.AreEqual(HealthStatus.Healthy, clean.Status);
         Assert.AreEqual("both-required-buckets-reconciled", clean.Data["Reason"]);
-        Assert.AreEqual(0, clean.Data["QuarantinedCount"]);
+        Assert.AreEqual(0, clean.Data["QuarantinedBuckets"]);
         Assert.IsTrue(clean.Data.ContainsKey("ReconciledUtc"));
 
         var g = (await _store.StatAsync(Bucket, "k", None)).Generation;
@@ -396,7 +486,42 @@ public sealed class FilesystemObjectReconcilerTests
         var degraded = await check.CheckHealthAsync(new HealthCheckContext(), None);
         Assert.AreEqual(HealthStatus.Degraded, degraded.Status);
         Assert.AreEqual("reconciliation-attention", degraded.Data["Reason"]);
-        Assert.AreEqual(1, degraded.Data["QuarantinedCount"]);
+        Assert.AreEqual(1, degraded.Data["QuarantinedBuckets"]);
+
+        worker.RunOnce(_reconciler, None);
+        var stillDegraded = await check.CheckHealthAsync(new HealthCheckContext(), None);
+        Assert.AreEqual(HealthStatus.Degraded, stillDegraded.Status);
+        Assert.AreEqual(1, stillDegraded.Data["QuarantinedBuckets"], "quarantine remains visible on later passes");
+
+        _clock.Advance(FilesystemObjectReconciliationWorker.Cadence * 3);
+        var stale = await check.CheckHealthAsync(new HealthCheckContext(), None);
+        Assert.AreEqual(HealthStatus.Degraded, stale.Status);
+        Assert.AreEqual("reconciliation-stale", stale.Data["Reason"]);
+    }
+
+    [TestMethod]
+    public async Task HealthIsDegradedWhileAReconciliationPassIsTruncated()
+    {
+        for (var i = 0; i < 20; i++)
+        {
+            await _store.PutAsync(Bucket, $"k-{i:D2}", Bytes("x"), 1, "text/plain", None);
+        }
+        var options = new CentralObjectStorageOptions { Provider = ObjectStorageProvider.Filesystem };
+        options.Filesystem.Root = _temp;
+        var wrapped = Options.Create(options);
+        using var worker = new FilesystemObjectReconciliationWorker(_store, wrapped, _clock, NullLoggerFactory.Instance);
+        worker.RunOnce(_reconciler, None, new FilesystemReconciliationOptions { MaximumEntriesPerPass = 4 });
+        var check = new ObjectStoreHealthCheck(_store, wrapped, NullLogger<ObjectStoreHealthCheck>.Instance, worker, _clock);
+
+        var result = await check.CheckHealthAsync(new HealthCheckContext(), None);
+        Assert.AreEqual(HealthStatus.Degraded, result.Status);
+        Assert.AreEqual("reconciliation-attention", result.Data["Reason"]);
+        Assert.AreEqual(2, result.Data["ReconciliationTruncatedBuckets"], "both configured buckets are still inside their initial bounded sweep");
+        Assert.AreEqual(0, result.Data["ReconciliationFailedBuckets"]);
+
+        worker.RunOnce(_reconciler, None, new FilesystemReconciliationOptions { MaximumEntriesPerPass = 4 });
+        var subsequent = await check.CheckHealthAsync(new HealthCheckContext(), None);
+        Assert.AreEqual(HealthStatus.Degraded, subsequent.Status, "the initial sweep is still incomplete under this tiny budget");
     }
 
     private async Task<string> ReadAll(string key)
@@ -412,6 +537,10 @@ public sealed class FilesystemObjectReconcilerTests
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => utcNow;
+        private DateTimeOffset _utcNow = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+
+        public void Advance(TimeSpan amount) => _utcNow += amount;
     }
 }

@@ -26,6 +26,7 @@ public sealed class FilesystemObjectStoreFaultTests
     [TestCleanup]
     public void Cleanup()
     {
+        _store.Dispose();
         if (Directory.Exists(_temp))
         {
             Directory.Delete(_temp, recursive: true);

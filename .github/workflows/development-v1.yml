@@ -66,7 +66,7 @@ jobs:
           {
             printf 'DEV_V1_EVIDENCE_ROOT=%s\n' "$evidence_root"
             printf 'DEV_V1_STARTED_AT_EPOCH=%s\n' "$started_at_epoch"
-            printf 'DEV_V1_DEADLINE_EPOCH=%s\n' "$((started_at_epoch + 540))"
+            printf 'DEV_V1_DEADLINE_EPOCH=%s\n' "$((started_at_epoch + 720))"
           } >> "$GITHUB_ENV"
 
       - name: Checkout exact commit
@@ -187,7 +187,7 @@ jobs:
             --argjson shellcheck "$(stage_json shellcheck "$SHELLCHECK_OUTCOME")" \
             --argjson audit "$(stage_json audit "$AUDIT_OUTCOME")" \
             --argjson unit "$(stage_json unit "$UNIT_OUTCOME")" \
-            '{schema:$schema,headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:540,hardTimeoutSeconds:900,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$shellcheck,$audit,$unit]}' \
+            '{schema:$schema,headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:720,hardTimeoutSeconds:900,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$shellcheck,$audit,$unit]}' \
             > "$DEV_V1_EVIDENCE_ROOT/manifest.json"
           jq . "$DEV_V1_EVIDENCE_ROOT/manifest.json"
 

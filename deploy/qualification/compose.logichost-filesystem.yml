@@ -1,0 +1,24 @@
+services:
+  logic-init:
+    user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_GID:?runtime gid required}"
+    environment:
+      ObjectStorage__Provider: Filesystem
+      ObjectStorage__Filesystem__Root: /var/lib/hvo/object-store
+    volumes:
+      - type: bind
+        source: ${HVO_OBJECT_STORE_ROOT:?object store root required}
+        target: /var/lib/hvo/object-store
+        bind:
+          create_host_path: false
+
+  logichost:
+    user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_GID:?runtime gid required}"
+    environment:
+      ObjectStorage__Provider: Filesystem
+      ObjectStorage__Filesystem__Root: /var/lib/hvo/object-store
+    volumes:
+      - type: bind
+        source: ${HVO_OBJECT_STORE_ROOT:?object store root required}
+        target: /var/lib/hvo/object-store
+        bind:
+          create_host_path: false

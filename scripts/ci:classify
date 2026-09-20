@@ -98,7 +98,7 @@ is_deployment_path() {
     scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-skymonitor.sh)
       return 0
       ;;
-    scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract)
+    scripts/qualify:filesystem-object-store | scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract | scripts/test:filesystem-object-store-qualification)
       return 0
       ;;
     scripts/deploy-contracts/*)
@@ -168,6 +168,9 @@ select_deployment_suites() {
       ;;
     scripts/install-hvo-skymonitor.sh | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:cameraagent-image | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       deployment_installer="true"
+      ;;
+    scripts/qualify:filesystem-object-store | scripts/test:filesystem-object-store-qualification)
+      # The Deployment Contracts job always runs this lightweight preflight fixture.
       ;;
     .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
       deployment_shards="true"

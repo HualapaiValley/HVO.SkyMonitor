@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestClass]
 public sealed class AssemblyHooks
 {
+    private const string DockerDisabledUnitEndpoint = "unix:///tmp/hvo-no-docker.sock";
     private static readonly string[] RecurringWorkerSuppressionEvidenceVariables =
     [
         "HVO_ISSUE_246_RETENTION_EVIDENCE",
@@ -23,6 +24,10 @@ public sealed class AssemblyHooks
     [AssemblyInitialize]
     public static async Task AssemblyInitialize(TestContext context)
     {
+        if (string.Equals(Environment.GetEnvironmentVariable("DOCKER_HOST"), DockerDisabledUnitEndpoint, StringComparison.Ordinal))
+        {
+            return;
+        }
         if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION")))
         {
             Issue170PerformanceEvidence.AcquireExclusiveProcessLock();
@@ -36,6 +41,9 @@ public sealed class AssemblyHooks
     [AssemblyCleanup]
     public static void AssemblyCleanup()
     {
-        Fixture.Dispose();
+        if (Fixture is not null)
+        {
+            Fixture.Dispose();
+        }
     }
 }

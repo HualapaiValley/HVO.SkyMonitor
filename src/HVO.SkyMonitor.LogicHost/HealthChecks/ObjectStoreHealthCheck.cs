@@ -9,13 +9,15 @@ internal sealed partial class ObjectStoreHealthCheck(
     IObjectStore objectStore,
     IOptions<CentralObjectStorageOptions> options,
     ILogger<ObjectStoreHealthCheck> logger,
-    Infrastructure.ObjectStorage.FilesystemObjectReconciliationWorker? reconciliation = null) : IHealthCheck
+    Infrastructure.ObjectStorage.FilesystemObjectReconciliationWorker? reconciliation = null,
+    TimeProvider? timeProvider = null) : IHealthCheck
 {
     private const int PersistentFailureThreshold = 3;
     private readonly CentralObjectStorageOptions _options = options.Value;
     private readonly object _stateLock = new();
     private int _consecutiveRetryableFailures;
     private HealthStatus? _lastStatus;
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     public async Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
@@ -43,21 +45,42 @@ internal sealed partial class ObjectStoreHealthCheck(
             // but an operator must look, which is Degraded; a bucket the reconciler could not
             // clean is the same. Bucket reachability alone is not the whole story locally.
             var latest = reconciliation?.Latest;
+            if (objectStore is Infrastructure.ObjectStorage.FilesystemObjectStore && reconciliation is not null && latest is null)
+            {
+                return Result(
+                    HealthStatus.Degraded,
+                    "Object storage is available but its first reconciliation pass has not completed.",
+                    "reconciliation-pending");
+            }
             if (latest is { } facts)
             {
                 var quarantined = facts.Reports.Values.Sum(report => report.Quarantined);
                 var reclaimFailed = facts.Reports.Values.Sum(report => report.ReclaimFailed);
                 var retiredBytes = facts.Reports.Values.Sum(report => report.RetiredBytes);
                 var oldestRetired = facts.Reports.Values.Select(report => report.OldestRetiredAge).DefaultIfEmpty(TimeSpan.Zero).Max();
+                var truncated = facts.Reports.Values.Count(report => report.Truncated);
+                var failedBuckets = facts.Reports.Values.Count(report => report.FailureOutcome is not null);
+                var age = _timeProvider.GetUtcNow() - facts.CompletedUtc;
                 var data = new Dictionary<string, object>(StringComparer.Ordinal)
                 {
-                    ["QuarantinedCount"] = quarantined,
+                    ["QuarantinedBuckets"] = quarantined,
                     ["ReclaimFailedCount"] = reclaimFailed,
                     ["RetiredBytes"] = retiredBytes,
                     ["OldestRetiredAgeSeconds"] = (long)oldestRetired.TotalSeconds,
-                    ["ReconciledUtc"] = facts.CompletedUtc.UtcDateTime.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+                    ["ReconciledUtc"] = facts.CompletedUtc.UtcDateTime.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+                    ["ReconciliationTruncatedBuckets"] = truncated,
+                    ["ReconciliationFailedBuckets"] = failedBuckets,
+                    ["ReconciliationAgeSeconds"] = Math.Max(0, (long)age.TotalSeconds)
                 };
-                if (quarantined > 0 || reclaimFailed > 0)
+                if (age > Infrastructure.ObjectStorage.FilesystemObjectReconciliationWorker.Cadence * 2)
+                {
+                    return Result(
+                        HealthStatus.Degraded,
+                        "Object storage is serving but reconciliation evidence is stale.",
+                        "reconciliation-stale",
+                        data);
+                }
+                if (quarantined > 0 || reclaimFailed > 0 || truncated > 0 || failedBuckets > 0)
                 {
                     return Result(
                         HealthStatus.Degraded,

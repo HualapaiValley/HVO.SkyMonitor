@@ -30,7 +30,7 @@ namespace HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 /// contradicts its data is <see cref="ObjectStoreFailureKind.CorruptState"/>.</para>
 /// </remarks>
 [SuppressMessage("Performance", "CA1848:Use the LoggerMessage delegates", Justification = "Provider logs through the shared LoggerMessage partials below.")]
-internal sealed partial class FilesystemObjectStore : IObjectStore
+internal sealed partial class FilesystemObjectStore : IObjectStore, IDisposable
 {
     private const int StreamBufferSize = 64 * 1024;
     private const string TemporaryDataSuffix = ".tmp";
@@ -39,6 +39,7 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
     private readonly ObjectStoreTelemetry _telemetry;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FilesystemObjectStore> _logger;
+    private readonly FileStream _runtimeLock;
     internal bool DisableHardLinksForTest { get; set; }
     private long _hardLinkCopyCount;
     internal Func<Task>? AfterHardLinkForTest { get; set; }
@@ -61,6 +62,20 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
         var root = options.Value.Filesystem.Root
             ?? throw new InvalidOperationException("ObjectStorage:Filesystem:Root is required for the filesystem provider.");
         _root = PhysicalRoot.Open(root);
+        _runtimeLock = FilesystemObjectBackup.AcquireRuntimeLock(_root);
+        try
+        {
+            if (FilesystemObjectBackup.HasUnresolvedRestore(_root))
+            {
+                throw new InvalidOperationException(
+                    "Object storage has an unresolved destructive restore. Run the offline object-store restore command to recover it before starting LogicHost.");
+            }
+        }
+        catch
+        {
+            _runtimeLock.Dispose();
+            throw;
+        }
         _telemetry = telemetry;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -68,6 +83,15 @@ internal sealed partial class FilesystemObjectStore : IObjectStore
 
     /// <summary>The physical root; exposed for reconciliation and tests.</summary>
     internal PhysicalRoot Root => _root;
+
+    public void Dispose()
+    {
+        _runtimeLock.Dispose();
+        foreach (var keyLock in _keyLocks)
+        {
+            keyLock.Dispose();
+        }
+    }
 
     public Task<bool> BucketExistsAsync(string bucket, CancellationToken cancellationToken)
         => ExecuteAsync("bucket-exists", bucket, _ =>
