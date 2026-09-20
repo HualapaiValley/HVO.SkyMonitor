@@ -15,7 +15,8 @@ if [[ "$*" == *"HVO.SkyMonitor.LogicHost"* ]]; then
     export "Redis__Configuration=${REDIS_HOST:?REDIS_HOST must be set}:${REDIS_PORT:?REDIS_PORT must be set},user=${REDIS_USER:-skymonitor-app},password=${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
     export Redis__InstanceName="skymonitor:"
     export ObjectStorage__Provider="Filesystem"
-    export ObjectStorage__Filesystem__Root="$(realpath -m "${HVO_OBJECT_STORE_ROOT:-$runtime_data_root/object-store}")"
+    ObjectStorage__Filesystem__Root="$(realpath -m "${HVO_OBJECT_STORE_ROOT:-$runtime_data_root/object-store}")"
+    export ObjectStorage__Filesystem__Root
     export ObjectStorage__ArtifactBucket="skymonitor-artifacts"
     export ObjectStorage__DiagnosticsBucket="skymonitor-diagnostics"
     mkdir -p "$ObjectStorage__Filesystem__Root/skymonitor-artifacts" \
