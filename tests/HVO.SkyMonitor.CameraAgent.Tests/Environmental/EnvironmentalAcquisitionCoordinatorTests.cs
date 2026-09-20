@@ -116,9 +116,10 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         {
             using var store = new SqliteEnvironmentalObservationOutbox(busyTimeoutSeconds: 1);
             _ = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
+            var stateStore = new SignalingStateStore(store);
             using var coordinator = CreateCoordinator(
                 new StorePublisher(store, root),
-                stateStore: store,
+                stateStore: stateStore,
                 root: root);
             using var lockingConnection = new SqliteConnection(
                 $"Data Source={Path.Combine(root, ".environment", "environmental-observation-outbox.db")}");
@@ -134,7 +135,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
                 EnvironmentalAcquisitionTrigger.OnDemand,
                 Epoch,
                 cancellationToken: CancellationToken.None).AsTask();
-            await Task.Delay(TimeSpan.FromMilliseconds(2_050)).ConfigureAwait(false);
+            await stateStore.FirstLockFailure.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             using (var rollback = lockingConnection.CreateCommand())
             {
                 rollback.CommandText = "ROLLBACK;";
@@ -152,6 +153,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
             Assert.AreEqual(receipt.SourceId, attempt.SourceId);
             Assert.AreEqual(receipt.Disposition, attempt.Disposition);
             Assert.AreEqual(receipt.Reason, attempt.Reason);
+            Assert.AreEqual(2, stateStore.AttemptCount);
         }
         finally
         {
@@ -348,6 +350,65 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
             return ValueTask.FromException(
                 new SqliteException("Injected busy writer.", SQLitePCL.raw.SQLITE_BUSY, SQLitePCL.raw.SQLITE_BUSY));
         }
+    }
+
+    private sealed class SignalingStateStore(IEnvironmentalAcquisitionStateStore inner)
+        : IEnvironmentalAcquisitionStateStore
+    {
+        private readonly TaskCompletionSource _firstLockFailure = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _attemptCount;
+
+        public Task FirstLockFailure => _firstLockFailure.Task;
+        public int AttemptCount => Volatile.Read(ref _attemptCount);
+
+        public async ValueTask RecordAttemptAsync(
+            string root,
+            EnvironmentalSourceDescriptor source,
+            EnvironmentalAcquisitionReceipt receipt,
+            long? captureSequence,
+            Guid? captureId,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _attemptCount);
+            try
+            {
+                await inner.RecordAttemptAsync(
+                    root, source, receipt, captureSequence, captureId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SqliteException exception) when (
+                exception.SqliteErrorCode is SQLitePCL.raw.SQLITE_BUSY or SQLitePCL.raw.SQLITE_LOCKED)
+            {
+                _firstLockFailure.TrySetResult();
+                throw;
+            }
+        }
+
+        public ValueTask<bool> RecordCaptureRegimeAsync(
+            string root,
+            long captureSequence,
+            Guid captureId,
+            CaptureSolarRegime regime,
+            DateTimeOffset observedAtUtc,
+            CancellationToken cancellationToken)
+            => inner.RecordCaptureRegimeAsync(root, captureSequence, captureId, regime, observedAtUtc, cancellationToken);
+
+        public ValueTask UpdateSourceScheduleAsync(
+            string root,
+            EnvironmentalSourceDescriptor source,
+            DateTimeOffset nextPollUtc,
+            CancellationToken cancellationToken)
+            => inner.UpdateSourceScheduleAsync(root, source, nextPollUtc, cancellationToken);
+
+        public ValueTask<IReadOnlyList<EnvironmentalSourceRuntimeState>> ReadSourceStatesAsync(
+            string root,
+            CancellationToken cancellationToken)
+            => inner.ReadSourceStatesAsync(root, cancellationToken);
+
+        public ValueTask<IReadOnlyList<EnvironmentalAcquisitionAttemptRecord>> ReadAttemptsAsync(
+            string root,
+            int maximumResults,
+            CancellationToken cancellationToken)
+            => inner.ReadAttemptsAsync(root, maximumResults, cancellationToken);
     }
 
     private sealed class RecordingCommandStore : IEnvironmentalOnDemandCommandStore

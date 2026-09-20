@@ -359,8 +359,10 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
     }
 
     private static bool IsRetryableAttemptPersistenceFailure(Exception exception)
-        => exception is IOException or UnauthorizedAccessException ||
-            exception is SqliteException { SqliteErrorCode: SQLitePCL.raw.SQLITE_BUSY or SQLitePCL.raw.SQLITE_LOCKED };
+        => exception is SqliteException
+        {
+            SqliteErrorCode: SQLitePCL.raw.SQLITE_BUSY or SQLitePCL.raw.SQLITE_LOCKED
+        };
 
     private void LogReceipt(EnvironmentalSourceDescriptor source, EnvironmentalAcquisitionReceipt receipt)
     {
