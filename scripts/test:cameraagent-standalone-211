@@ -76,7 +76,7 @@ readonly LOCAL_GID
 # is the case the guard exists for: the replay runner key exists only in the LocalRunner trial, so
 # an unguarded site would fail every other trial's evidence gate rather than leak anything. A
 # zero-byte file is the quieter half; rg reports no match and the scan silently asserts nothing.
-readonly SECRET_FILE_NAMES=(owner-password replay-runner-auth-key)
+readonly SECRET_FILE_NAMES=(owner-password owner-password-initial replay-runner-auth-key)
 
 prepare_private_root() {
     local path="$1"

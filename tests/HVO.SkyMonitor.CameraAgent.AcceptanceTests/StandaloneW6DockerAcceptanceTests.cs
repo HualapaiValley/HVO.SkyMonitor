@@ -806,7 +806,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             profile,
             $"State reuse '{stateReused}' and replay profile '{profile}' disagree about which #719 invocation this is.");
 
-        var password = (await File.ReadAllTextAsync(RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE"))
+        var passwordPath = RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE");
+        var password = (await File.ReadAllTextAsync(passwordPath)
             .ConfigureAwait(false)).Trim();
         Directory.CreateDirectory(evidenceRoot);
 
@@ -818,6 +819,50 @@ public sealed class StandaloneW6DockerAcceptanceTests
             $"The campaign asked for {profile} and the container is running {declaredProfile}.");
 
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
+        var readyPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
+            session, password, $"issue-719 {profile}").ConfigureAwait(false);
+        await OwnerBootstrapSession.AssertOperationsAuthorizedAsync(
+            session, $"issue-719 {profile}").ConfigureAwait(false);
+        if (stateReused)
+        {
+            Assert.IsTrue(
+                string.Equals(password, readyPassword, StringComparison.Ordinal),
+                "The reused LocalRunner state attempted a second owner-password replacement.");
+        }
+        else
+        {
+            Assert.IsFalse(
+                string.Equals(password, readyPassword, StringComparison.Ordinal),
+                "The fresh InProcess replay invocation did not replace its temporary owner password.");
+            var initialPasswordPath = Path.Combine(Path.GetDirectoryName(passwordPath)!, "owner-password-initial");
+            await File.WriteAllTextAsync(initialPasswordPath, string.Concat(password, Environment.NewLine))
+                .ConfigureAwait(false);
+            await File.WriteAllTextAsync(passwordPath, string.Concat(readyPassword, Environment.NewLine))
+                .ConfigureAwait(false);
+            if (OperatingSystem.IsLinux())
+            {
+                File.SetUnixFileMode(initialPasswordPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                File.SetUnixFileMode(passwordPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                Assert.AreEqual(
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                    File.GetUnixFileMode(initialPasswordPath));
+                Assert.AreEqual(
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                    File.GetUnixFileMode(passwordPath));
+            }
+            Assert.IsTrue(
+                string.Equals(
+                    password,
+                    (await File.ReadAllTextAsync(initialPasswordPath).ConfigureAwait(false)).Trim(),
+                    StringComparison.Ordinal),
+                "The scanner-only initial owner credential does not match the credential that was replaced.");
+            Assert.IsTrue(
+                string.Equals(
+                    readyPassword,
+                    (await File.ReadAllTextAsync(passwordPath).ConfigureAwait(false)).Trim(),
+                    StringComparison.Ordinal),
+                "The persisted ready-owner credential does not match the credential accepted by the agent.");
+        }
         var evidence = stateReused
             ? await AssertLocalRunnerReplayAsync(session, profile, stateKey).ConfigureAwait(false)
             : await AssertInProcessReplayAsync(session, runtimeRoot, profile, stateKey).ConfigureAwait(false);
