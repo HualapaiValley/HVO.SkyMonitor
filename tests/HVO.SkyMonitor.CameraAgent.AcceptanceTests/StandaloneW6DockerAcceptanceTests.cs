@@ -825,16 +825,14 @@ public sealed class StandaloneW6DockerAcceptanceTests
             session, $"issue-719 {profile}").ConfigureAwait(false);
         if (stateReused)
         {
-            Assert.AreEqual(
-                password,
-                readyPassword,
+            Assert.IsTrue(
+                string.Equals(password, readyPassword, StringComparison.Ordinal),
                 "The reused LocalRunner state attempted a second owner-password replacement.");
         }
         else
         {
-            Assert.AreNotEqual(
-                password,
-                readyPassword,
+            Assert.IsFalse(
+                string.Equals(password, readyPassword, StringComparison.Ordinal),
                 "The fresh InProcess replay invocation did not replace its temporary owner password.");
             var initialPasswordPath = Path.Combine(Path.GetDirectoryName(passwordPath)!, "owner-password-initial");
             await File.WriteAllTextAsync(initialPasswordPath, string.Concat(password, Environment.NewLine))
@@ -852,8 +850,18 @@ public sealed class StandaloneW6DockerAcceptanceTests
                     UnixFileMode.UserRead | UnixFileMode.UserWrite,
                     File.GetUnixFileMode(passwordPath));
             }
-            Assert.AreEqual(password, (await File.ReadAllTextAsync(initialPasswordPath).ConfigureAwait(false)).Trim());
-            Assert.AreEqual(readyPassword, (await File.ReadAllTextAsync(passwordPath).ConfigureAwait(false)).Trim());
+            Assert.IsTrue(
+                string.Equals(
+                    password,
+                    (await File.ReadAllTextAsync(initialPasswordPath).ConfigureAwait(false)).Trim(),
+                    StringComparison.Ordinal),
+                "The scanner-only initial owner credential does not match the credential that was replaced.");
+            Assert.IsTrue(
+                string.Equals(
+                    readyPassword,
+                    (await File.ReadAllTextAsync(passwordPath).ConfigureAwait(false)).Trim(),
+                    StringComparison.Ordinal),
+                "The persisted ready-owner credential does not match the credential accepted by the agent.");
         }
         var evidence = stateReused
             ? await AssertLocalRunnerReplayAsync(session, profile, stateKey).ConfigureAwait(false)
