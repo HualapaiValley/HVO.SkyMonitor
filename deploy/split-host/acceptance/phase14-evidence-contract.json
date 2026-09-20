@@ -9,7 +9,7 @@
     "relativePath": "deploy/split-host/acceptance/phase14-scenarios.json",
     "schemaVersion": 2,
     "scenarioCount": 113,
-    "canonicalSha256": "7d9b300d7e6d24d82e6b9123b1cd1884d096141fb3b45b09199a615626b751f0",
+    "canonicalSha256": "5b1fbd3750e9f87bb485ef78e2f77603644f8bfcb900488a2b8f7ede884695ec",
     "reconciliation": "The raw-boundary-payload-partially-written row added by a2e61a1bbff5decf454151ddae9eef72934d6113 remains distinct from payload-written; calibration-before-bundle-write and calibration-bundle-publication cover the canonical envelope boundaries introduced by issue 470."
   },
   "gateDisposition": {
