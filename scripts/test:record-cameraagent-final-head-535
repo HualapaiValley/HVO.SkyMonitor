@@ -107,7 +107,7 @@ assert_equal "latest reports the newest generation" "2" \
 expect_success "verify accepts a committed generation" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 
-support_file="$(campaign_dir "$root" CAMP)/generations/2/support-files/001.bin"
+support_file="$(campaign_dir "$root" CAMP)/generations/2/ci-artifacts/101.zip"
 support_before="$(sha256sum "$support_file" | cut -d' ' -f1)"
 printf 'tamper\n' >> "$support_file"
 support_after="$(sha256sum "$support_file" | cut -d' ' -f1)"
@@ -198,9 +198,8 @@ cases=$((cases + 1))
 expect_refusal "a tampered envelope fails verification" "Index digest does not match" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 
-# Tamper with the evidence set the index names. The generation and its envelope
-# still agree with each other; what has moved is the thing they describe. A gate
-# that stopped at the envelope would call this clean.
+# A committed generation is self-contained. Mutating and then deleting the source
+# campaign tree must not change verification of the generation-local retained copy.
 root="$(new_root)"
 mkdir -p "$SCRATCH"
 cp "$FIXTURES/green.json" "$SCRATCH/evidence.json"
@@ -213,9 +212,11 @@ mv "$WORK/ev.json" "$SCRATCH/evidence.json"
 after="$(sha256sum "$SCRATCH/evidence.json" | cut -d' ' -f1)"
 cases=$((cases + 1))
 [[ "$before" != "$after" ]] || fail "evidence tamper did not change the file"
-expect_refusal "a generation whose evidence set moved fails verification" "Evidence set digest does not match the index" \
+expect_success "external evidence mutation does not alter the retained generation" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 rm -rf "$SCRATCH"
+expect_success "external evidence deletion does not alter the retained generation" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 
 # ---------------------------------------------------------------------------
 # An uncommitted generation is ignored, and cleanable.
@@ -413,12 +414,12 @@ expect_success "a genuine regular-file copy remains publishable" \
     "$RECORD" publish --evidence "$SCRATCH/regular.json" --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 mv "$SCRATCH/regular.json" "$WORK/regular-original.json"
 ln -s "$WORK/regular-original.json" "$SCRATCH/regular.json"
-expect_refusal "verification also rejects replaced linked evidence" "Symlink path is not allowed" \
+expect_success "verification is independent of replaced linked external evidence" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 
 rm "$SCRATCH/regular.json"
 ln "$WORK/regular-original.json" "$SCRATCH/regular.json"
-expect_refusal "verification also rejects replaced hard-linked evidence" "Hard-linked file is not allowed" \
+expect_success "verification is independent of replaced hard-linked external evidence" \
     "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
 mkfifo "$SCRATCH/evidence-pipe"
 expect_refusal "nonregular evidence is refused without blocking on a read" "Path must be a regular file" \
@@ -462,17 +463,16 @@ for invalid in 0 01 -1 1.5 1000000000000000; do
         "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --generation "$invalid" --output-root "$root"
 done
 
-# Hash-correct indexes must not smuggle absolute, traversal or alias paths.
+# Hash-correct indexes may name only the fixed generation-local evidence document.
 root="$(new_root)"
 publish "$root" green.json CAMP >/dev/null
 dir="$(campaign_dir "$root" CAMP)"
 for bad_path in "$FIXTURES/green.json" 'tests/../tests/fixtures/issue-535/final-head/green.json' 'tests/./fixtures/issue-535/final-head/green.json' $'tests/\nfixtures/green.json'; do
-    case "$bad_path" in
-        /*) reason="Index evidence path must be repository-relative" ;;
-        *../*) reason="Parent traversal is not allowed" ;;
-        *./*) reason="Index evidence path must be canonical" ;;
-        *) reason="Index evidence path must be a safe repository-relative path" ;;
-    esac
+    if [[ "$bad_path" == *$'\n'* ]]; then
+        reason="Index evidence path must be a safe repository-relative path"
+    else
+        reason="Index evidence path must be generation-local evidence.json"
+    fi
     jq --sort-keys --arg path "$bad_path" '.evidence.path = $path' "$WORK/green-index.json" > "$dir/generations/1/$INDEX"
     assert_changed "$WORK/green-index.json" "$dir/generations/1/$INDEX"
     jq --sort-keys --arg sha "$(sha256sum "$dir/generations/1/$INDEX" | cut -d' ' -f1)" \

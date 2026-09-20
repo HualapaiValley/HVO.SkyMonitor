@@ -232,13 +232,13 @@ verify_generation() {
         "$index" >/dev/null 2>&1 || die "Index evidence path must be a safe repository-relative path"
     recorded_evidence="$(jq -r '.evidence.path' "$index")"
     recorded_mode="$(jq -r '.campaign.mode' "$index")"
-    [[ "$recorded_evidence" != /* ]] || die "Index evidence path must be repository-relative: $recorded_evidence"
-    evidence_path="$REPO_ROOT/$recorded_evidence"
+    [[ "$recorded_evidence" == "evidence.json" ]] || die "Index evidence path must be generation-local evidence.json: $recorded_evidence"
+    evidence_path="$gen_dir/$recorded_evidence"
     reject_symlink_components "$evidence_path"
     [[ -f "$evidence_path" ]] || die "Index names an evidence set that is not present: $recorded_evidence"
     require_regular_file "$evidence_path"
     [[ "$(realpath -e -- "$evidence_path")" == "$evidence_path" ]] \
-        || die "Index evidence path must be canonical and repository-relative: $recorded_evidence"
+        || die "Index evidence path must be canonical and generation-local: $recorded_evidence"
 
     local want_ev_sha have_ev_sha
     want_ev_sha="$(jq -r '.evidence.sha256 // empty' "$index")"
@@ -252,7 +252,7 @@ verify_generation() {
     support_count="$(jq -r '.supportFiles | length // 0' "$index")"
     while IFS=$'\t' read -r support_original support_stored support_bytes support_sha; do
         [[ -n "$support_stored" ]] || continue
-        [[ "$support_stored" == support-files/* && "$support_stored" != *'/../'* ]] \
+        [[ "$support_stored" != /* && "$support_stored" != ../* && "$support_stored" != *'/../'* ]] \
             || die "Generation support path is unsafe: $support_stored"
         support_path="$gen_dir/$support_stored"
         reject_symlink_components "$support_path"
@@ -261,7 +261,7 @@ verify_generation() {
         [[ "$(bytes_of "$support_path")" == "$support_bytes" ]] || die "Generation support byte length differs: $support_original"
         [[ "$(sha256_of "$support_path")" == "$support_sha" ]] || die "Generation support digest differs: $support_original"
     done < <(jq -r '.supportFiles[]? | [.originalPath,.storedPath,.bytes,.sha256] | @tsv' "$index")
-    [[ "$support_count" == "$(find "$gen_dir/support-files" -type f 2>/dev/null | wc -l)" ]] \
+    [[ "$support_count" == "$(find "$gen_dir/ci-artifacts" "$gen_dir/component-evidence" -type f 2>/dev/null | wc -l)" ]] \
         || die "Generation support file inventory is incomplete"
 
     local recomputed embedded
@@ -282,10 +282,10 @@ cmd_publish() {
 
     # Recorded paths are repository-relative so a generation never carries a
     # private absolute path, which is one of the issue's explicit rejections.
-    local abs_evidence relative_evidence
+    local abs_evidence
     abs_evidence="$(realpath -e -- "$evidence")"
     case "$abs_evidence" in
-        "$REPO_ROOT"/*) relative_evidence="${abs_evidence#"$REPO_ROOT"/}" ;;
+        "$REPO_ROOT"/*) ;;
         *) die "Evidence set lives outside the repository, so it cannot be recorded by relative path: $evidence" ;;
     esac
 
@@ -321,26 +321,28 @@ cmd_publish() {
     # Do not erase a pre-existing staging path, even after PID reuse.
     mkdir -- "$staging"
 
-    mkdir "$staging/support-files"
-    local support_rows support_index support_source support_name support_number=0
+    mkdir "$staging/ci-artifacts" "$staging/component-evidence"
+    local support_rows support_index support_source support_name retained_evidence
     support_rows="$staging/support-files.jsonl"
     : > "$support_rows"
     while IFS= read -r support_original; do
         [[ -n "$support_original" ]] || continue
-        support_number=$((support_number + 1))
         support_source="$(dirname "$abs_evidence")/$support_original"
         reject_symlink_components "$support_source"
         [[ -f "$support_source" ]] || die "Evidence support file is missing: $support_original"
         require_regular_file "$support_source"
-        printf -v support_name '%03d.bin' "$support_number"
-        cp -- "$support_source" "$staging/support-files/$support_name"
-        chmod 600 "$staging/support-files/$support_name"
-        jq -cn --arg original "$support_original" --arg stored "support-files/$support_name" \
+        support_name="$support_original"
+        cp -- "$support_source" "$staging/$support_name"
+        chmod 600 "$staging/$support_name"
+        jq -cn --arg original "$support_original" --arg stored "$support_name" \
             --argjson bytes "$(bytes_of "$support_source")" --arg sha "$(sha256_of "$support_source")" \
             '{originalPath:$original,storedPath:$stored,bytes:$bytes,sha256:$sha}' >> "$support_rows"
     done < <(jq -r '[.ci.artifacts[]?.path,.components.records[]?.path] | sort | unique[]' "$abs_evidence")
     support_index="$(jq -sS '.' "$support_rows")"
     rm "$support_rows"
+    retained_evidence="$staging/evidence.json"
+    jq --sort-keys '.' "$abs_evidence" > "$retained_evidence"
+    chmod 600 "$retained_evidence"
 
     printf '%s' "$verdict" | jq --sort-keys \
         --arg schema "$INDEX_SCHEMA" \
@@ -349,9 +351,9 @@ cmd_publish() {
         --arg head "$bound_head" \
         --arg mode "$mode" \
         --arg recorded "$recorded_utc" \
-        --arg path "$relative_evidence" \
-        --argjson bytes "$(bytes_of "$abs_evidence")" \
-        --arg sha "$(sha256_of "$abs_evidence")" \
+        --arg path "evidence.json" \
+        --argjson bytes "$(bytes_of "$retained_evidence")" \
+        --arg sha "$(sha256_of "$retained_evidence")" \
         --argjson support "$support_index" \
         '{
             schemaVersion: $schema,

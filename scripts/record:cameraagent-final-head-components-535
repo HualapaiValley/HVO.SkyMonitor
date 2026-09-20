@@ -23,6 +23,10 @@ done
 [[ -d "$catalog_bundle" && ! -L "$catalog_bundle" ]] || fail 'Catalog bundle directory is missing or linked.'
 cd "$repo_root"
 [[ "$(git rev-parse HEAD)" == "$bound_head" && -z "$(git status --porcelain)" ]] || fail 'Component evidence requires the clean bound head.'
+git_common_dir="$(git rev-parse --git-common-dir)"
+[[ "$git_common_dir" == /* ]] || git_common_dir="$repo_root/$git_common_dir"
+exec 9>"$git_common_dir/hvo-component-evidence.lock"
+flock -n 9 || fail 'Another component evidence producer is active for this repository.'
 
 # shellcheck source=lib/trx-evidence.sh
 source "$repo_root/scripts/lib/trx-evidence.sh"

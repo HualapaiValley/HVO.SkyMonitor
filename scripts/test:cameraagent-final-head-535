@@ -135,7 +135,8 @@ fi
 
 without_components="$(mktemp "$FIXTURES/.without-components.XXXXXX")"
 bad_ci_type="$(mktemp "$FIXTURES/.bad-ci-type.XXXXXX")"
-trap 'rm -f "$without_ci" "$failed_ci" "$without_components" "$bad_ci_type"' EXIT
+bad_ci_object="$(mktemp "$FIXTURES/.bad-ci-object.XXXXXX")"
+trap 'rm -f "$without_ci" "$failed_ci" "$without_components" "$bad_ci_type" "$bad_ci_object"; rm -rf "$FIXTURES/.linked-support-test"' EXIT
 jq 'del(.components)' "$FIXTURES/green.json" > "$without_components"
 cases=$((cases + 1))
 component_out="$("$VALIDATE" final --evidence "$without_components" --bound-head "$BOUND_HEAD" 2>/dev/null || true)"
@@ -151,6 +152,29 @@ bad_ci_ids="$(jq -r '[.problems[]?.id] | sort | join(",")' <<< "$bad_ci_out")"
 if [[ "$bad_ci_ids" != "ci-workflow-invalid" ]]; then
     failures=$((failures + 1))
     printf 'FAIL malformed nested CI type: expected [ci-workflow-invalid], got [%s]\n' "$bad_ci_ids" >&2
+fi
+jq '.ci.artifacts[0].sha256={synthetic:"secret-like-payload"}' "$FIXTURES/green.json" > "$bad_ci_object"
+cases=$((cases + 1))
+bad_ci_object_out="$("$VALIDATE" final --evidence "$bad_ci_object" --bound-head "$BOUND_HEAD" 2>/dev/null || true)"
+bad_ci_object_ids="$(jq -r '[.problems[]?.id] | sort | join(",")' <<< "$bad_ci_object_out")"
+if [[ "$bad_ci_object_ids" != "evidence-structure-invalid" ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL malformed nested CI object: expected [evidence-structure-invalid], got [%s]\n' "$bad_ci_object_ids" >&2
+fi
+
+linked_root="$FIXTURES/.linked-support-test"
+mkdir -p "$linked_root/evidence" "$linked_root/real-ci" "$linked_root/real-components"
+cp "$FIXTURES/green.json" "$linked_root/evidence/green.json"
+cp -a "$FIXTURES/ci-artifacts/." "$linked_root/real-ci/"
+cp -a "$FIXTURES/component-evidence/." "$linked_root/real-components/"
+ln -s ../real-ci "$linked_root/evidence/ci-artifacts"
+ln -s ../real-components "$linked_root/evidence/component-evidence"
+cases=$((cases + 1))
+linked_out="$("$VALIDATE" final --evidence "$linked_root/evidence/green.json" --bound-head "$BOUND_HEAD" 2>/dev/null || true)"
+linked_ids="$(jq -r '[.problems[]?.id] | unique | sort | join(",")' <<< "$linked_out")"
+if [[ "$linked_ids" != "support-file-missing" ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL linked support ancestors: expected [support-file-missing], got [%s]\n' "$linked_ids" >&2
 fi
 
 # Paths. Filesystem facts — symlinks, hard links, ownership, mode — are not
