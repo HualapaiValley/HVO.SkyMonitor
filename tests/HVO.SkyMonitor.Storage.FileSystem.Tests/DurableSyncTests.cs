@@ -74,6 +74,72 @@ public sealed class DurableSyncTests
     }
 
     [TestMethod]
+    public void File_MapsAnUnclassifiedLinuxOpenErrorToIo()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("The errno mapping is Linux-only.");
+        }
+        var path = Path.Combine(_temp, new string('x', 300));
+
+        var fault = Assert.ThrowsExactly<FileSystemFaultException>(() => DurableSync.File(path));
+
+        Assert.AreEqual(FileSystemFaultKind.Io, fault.Kind);
+        Assert.AreEqual("sync-file", fault.Operation);
+    }
+
+    [TestMethod]
+    public void RequireRegularFile_ReportsStatxFailureForAMissingPath()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("The statx failure path is Linux-only.");
+        }
+
+        var fault = Assert.ThrowsExactly<FileSystemFaultException>(
+            () => DurableSync.RequireRegularFile(Path.Combine(_temp, "absent.bin")));
+
+        Assert.AreEqual(FileSystemFaultKind.Io, fault.Kind);
+        Assert.AreEqual("inspect-file", fault.Operation);
+        Assert.IsInstanceOfType<System.ComponentModel.Win32Exception>(fault.InnerException);
+    }
+
+    [TestMethod]
+    public void RequireRegularFile_AcceptsAFileAndRejectsADirectoryOnLinux()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("The statx type proof is Linux-only.");
+        }
+        var file = Path.Combine(_temp, "regular.bin");
+        File.WriteAllBytes(file, [1]);
+
+        DurableSync.RequireRegularFile(file);
+        var fault = Assert.ThrowsExactly<FileSystemFaultException>(() => DurableSync.RequireRegularFile(_temp));
+
+        Assert.AreEqual(FileSystemFaultKind.Containment, fault.Kind);
+        Assert.AreEqual("inspect-file", fault.Operation);
+    }
+
+    [TestMethod]
+    public void NonLinuxDispatch_UsesManagedFileChecksAndNoOpDirectorySync()
+    {
+        var file = Path.Combine(_temp, "managed.bin");
+        File.WriteAllBytes(file, [1]);
+
+        DurableSync.File(file, isLinux: false);
+        DurableSync.RequireRegularFile(file, isLinux: false);
+        var fault = Assert.ThrowsExactly<FileSystemFaultException>(
+            () => DurableSync.RequireRegularFile(_temp, isLinux: false));
+        DurableSync.Directory(_temp, isLinux: false);
+        using var handle = File.OpenHandle(file, FileMode.Open, FileAccess.Read);
+        DurableSync.Directory(handle, _temp, isLinux: false);
+
+        Assert.AreEqual(FileSystemFaultKind.Containment, fault.Kind);
+        Assert.AreEqual(0, DurableSync.DirectoryChain(_root, _temp, isLinux: false));
+    }
+
+    [TestMethod]
     public void File_RefusesToFollowASymbolicLinkOnLinux()
     {
         if (!OperatingSystem.IsLinux())

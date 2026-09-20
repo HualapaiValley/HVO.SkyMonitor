@@ -116,6 +116,20 @@ public sealed class AtomicPublisherTests
     }
 
     [TestMethod]
+    public async Task Publish_RejectsAResolvedFilesystemRootBecauseItHasNoParentDirectory()
+    {
+        var filesystemRootPath = Path.GetPathRoot(_temp)!;
+        var filesystemRoot = PhysicalRoot.Open(filesystemRootPath);
+
+        var fault = await Assert.ThrowsExactlyAsync<FileSystemFaultException>(
+            () => AtomicPublisher.PublishAsync(
+                filesystemRoot, ".", PublishMode.CreateNew, Bytes([1]), CancellationToken.None));
+
+        Assert.AreEqual(FileSystemFaultKind.Containment, fault.Kind);
+        Assert.AreEqual("publish", fault.Operation);
+    }
+
+    [TestMethod]
     public async Task Publish_RefusesWhenTheParentDirectoryIsASymbolicLink()
     {
         var outside = Path.Combine(Path.GetTempPath(), "hvo-fs-outside-" + Guid.NewGuid().ToString("N"));

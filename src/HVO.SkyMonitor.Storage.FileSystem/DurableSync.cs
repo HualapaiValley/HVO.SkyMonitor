@@ -47,9 +47,12 @@ public static class DurableSync
     /// rather than followed; elsewhere the caller's containment check is the only guard.
     /// </summary>
     public static void File(string absolutePath)
+        => File(absolutePath, OperatingSystem.IsLinux());
+
+    internal static void File(string absolutePath, bool isLinux)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
-        if (OperatingSystem.IsLinux())
+        if (isLinux)
         {
             using var handle = OpenLinux(absolutePath, LinuxOpenFlags.ReadOnly | LinuxOpenFlags.NoFollow | LinuxOpenFlags.CloseOnExec, "sync-file");
             File(handle, absolutePath);
@@ -72,9 +75,12 @@ public static class DurableSync
     /// them; callers that require the Linux guarantee must separately require Linux.
     /// </summary>
     public static void RequireRegularFile(string absolutePath)
+        => RequireRegularFile(absolutePath, OperatingSystem.IsLinux());
+
+    internal static void RequireRegularFile(string absolutePath, bool isLinux)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
-        if (OperatingSystem.IsLinux())
+        if (isLinux)
         {
             if (StatX(
                     AtFileDescriptorCurrentWorkingDirectory,
@@ -104,9 +110,12 @@ public static class DurableSync
     /// in it are durable. No-op where <see cref="SupportsDirectorySync"/> is false.
     /// </summary>
     public static void Directory(string absolutePath)
+        => Directory(absolutePath, OperatingSystem.IsLinux());
+
+    internal static void Directory(string absolutePath, bool isLinux)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
-        if (!OperatingSystem.IsLinux())
+        if (!isLinux)
         {
             return;
         }
@@ -126,9 +135,12 @@ public static class DurableSync
 
     /// <summary>Flush a directory through an already-authenticated Linux directory handle.</summary>
     public static void Directory(SafeFileHandle handle, string pathForDiagnostics)
+        => Directory(handle, pathForDiagnostics, OperatingSystem.IsLinux());
+
+    internal static void Directory(SafeFileHandle handle, string pathForDiagnostics, bool isLinux)
     {
         ArgumentNullException.ThrowIfNull(handle);
-        if (!OperatingSystem.IsLinux())
+        if (!isLinux)
         {
             return;
         }
@@ -148,9 +160,12 @@ public static class DurableSync
     /// Returns the number of directories flushed (0 where directory sync is unsupported).
     /// </summary>
     public static int DirectoryChain(PhysicalRoot root, string absolutePath)
+        => DirectoryChain(root, absolutePath, OperatingSystem.IsLinux());
+
+    internal static int DirectoryChain(PhysicalRoot root, string absolutePath, bool isLinux)
     {
         ArgumentNullException.ThrowIfNull(root);
-        if (!OperatingSystem.IsLinux())
+        if (!isLinux)
         {
             return 0;
         }
