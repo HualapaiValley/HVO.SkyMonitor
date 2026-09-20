@@ -334,14 +334,33 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             observedAtUtc,
             staleAfterUtc);
 
-    private ValueTask RecordAttemptAsync(
+    private async ValueTask RecordAttemptAsync(
         EnvironmentalSourceDescriptor source,
         EnvironmentalAcquisitionReceipt receipt,
         long? captureSequence,
         Guid? captureId,
         CancellationToken cancellationToken)
-        => _stateStore.RecordAttemptAsync(
-            _root, source, receipt, captureSequence, captureId, cancellationToken);
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await _stateStore.RecordAttemptAsync(
+                    _root, source, receipt, captureSequence, captureId, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception exception) when (
+                attempt < 3 && IsRetryableAttemptPersistenceFailure(exception))
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), _timeProvider, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static bool IsRetryableAttemptPersistenceFailure(Exception exception)
+        => exception is IOException or UnauthorizedAccessException ||
+            exception is SqliteException { SqliteErrorCode: SQLitePCL.raw.SQLITE_BUSY or SQLitePCL.raw.SQLITE_LOCKED };
 
     private void LogReceipt(EnvironmentalSourceDescriptor source, EnvironmentalAcquisitionReceipt receipt)
     {

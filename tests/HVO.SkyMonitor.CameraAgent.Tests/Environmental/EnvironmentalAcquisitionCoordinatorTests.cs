@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -106,12 +107,83 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         Assert.IsTrue(commands.Released);
     }
 
+    [TestMethod]
+    public async Task TransientWriterContention_DurablyRecordsTheFailedAcquisitionAfterTheWriterClears()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-environmental-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var store = new SqliteEnvironmentalObservationOutbox(busyTimeoutSeconds: 1);
+            _ = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
+            using var coordinator = CreateCoordinator(
+                new StorePublisher(store, root),
+                stateStore: store,
+                root: root);
+            using var lockingConnection = new SqliteConnection(
+                $"Data Source={Path.Combine(root, ".environment", "environmental-observation-outbox.db")}");
+            await lockingConnection.OpenAsync().ConfigureAwait(false);
+            using (var lockCommand = lockingConnection.CreateCommand())
+            {
+                lockCommand.CommandText = "BEGIN IMMEDIATE;";
+                await lockCommand.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            var acquisition = coordinator.AcquireSourceAsync(
+                "temperature",
+                EnvironmentalAcquisitionTrigger.OnDemand,
+                Epoch,
+                cancellationToken: CancellationToken.None).AsTask();
+            await Task.Delay(TimeSpan.FromMilliseconds(2_050)).ConfigureAwait(false);
+            using (var rollback = lockingConnection.CreateCommand())
+            {
+                rollback.CommandText = "ROLLBACK;";
+                await rollback.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            var receipt = await acquisition.ConfigureAwait(false);
+            var attempts = await store.ReadAttemptsAsync(
+                root, 10, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(1, attempts);
+            var attempt = attempts[0];
+
+            Assert.AreEqual(EnvironmentalAcquisitionDisposition.Failed, receipt.Disposition);
+            Assert.AreEqual("journal-unavailable", receipt.Reason);
+            Assert.AreEqual(receipt.SourceId, attempt.SourceId);
+            Assert.AreEqual(receipt.Disposition, attempt.Disposition);
+            Assert.AreEqual(receipt.Reason, attempt.Reason);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task PersistentWriterContention_ExhaustsTheBoundedRetryAndRemainsVisible()
+    {
+        var stateStore = new BusyStateStore();
+        using var coordinator = CreateCoordinator(new RecordingPublisher(), stateStore: stateStore);
+
+        var exception = await Assert.ThrowsExactlyAsync<SqliteException>(async () =>
+            await coordinator.AcquireSourceAsync(
+                "temperature",
+                EnvironmentalAcquisitionTrigger.OnDemand,
+                Epoch,
+                cancellationToken: CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(SQLitePCL.raw.SQLITE_BUSY, exception.SqliteErrorCode);
+        Assert.AreEqual(3, stateStore.AttemptCount);
+    }
+
     private static EnvironmentalAcquisitionCoordinator CreateCoordinator(
-        RecordingPublisher publisher,
+        IEnvironmentalObservationPublisher publisher,
         int delayMilliseconds = 0,
         int timeoutMilliseconds = 5_000,
         int everyNthCapture = 3,
-        IEnvironmentalAcquisitionStateStore? stateStore = null)
+        IEnvironmentalAcquisitionStateStore? stateStore = null,
+        string? root = null)
     {
         var sourceOptions = new VirtualEnvironmentalSourceOptions(
             209,
@@ -137,6 +209,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         };
         var hostOptions = Options.Create(new CameraAgentHostOptions
         {
+            RawIngressRoot = root ?? Path.GetTempPath(),
             EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
             {
                 Enabled = true,
@@ -189,6 +262,22 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         }
     }
 
+    private sealed class StorePublisher(SqliteEnvironmentalObservationOutbox store, string root)
+        : IEnvironmentalObservationPublisher
+    {
+        public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(
+            EnvironmentalObservationFactV1 fact,
+            CancellationToken cancellationToken = default)
+        {
+            var result = await store.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
+            return new EnvironmentalObservationPublishResult(
+                result.Disposition == LocalEnvironmentalObservationCommitDisposition.Committed
+                    ? EnvironmentalObservationPublishDisposition.Enqueued
+                    : EnvironmentalObservationPublishDisposition.Duplicate,
+                null);
+        }
+    }
+
     private sealed class FixedDeploymentLocationStore(DeploymentLocationSnapshot active) : IDeploymentLocationStore
     {
         public DeploymentLocationSnapshot? Active { get; } = active;
@@ -202,9 +291,9 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
             => Active!;
     }
 
-    private sealed class ThrowingStateStore : IEnvironmentalAcquisitionStateStore
+    private class ThrowingStateStore : IEnvironmentalAcquisitionStateStore
     {
-        public ValueTask RecordAttemptAsync(
+        public virtual ValueTask RecordAttemptAsync(
             string root,
             EnvironmentalSourceDescriptor source,
             EnvironmentalAcquisitionReceipt receipt,
@@ -239,6 +328,26 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
             int maximumResults,
             CancellationToken cancellationToken)
             => ValueTask.FromResult<IReadOnlyList<EnvironmentalAcquisitionAttemptRecord>>([]);
+    }
+
+    private sealed class BusyStateStore : ThrowingStateStore
+    {
+        private int _attemptCount;
+
+        public int AttemptCount => Volatile.Read(ref _attemptCount);
+
+        public override ValueTask RecordAttemptAsync(
+            string root,
+            EnvironmentalSourceDescriptor source,
+            EnvironmentalAcquisitionReceipt receipt,
+            long? captureSequence,
+            Guid? captureId,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _attemptCount);
+            return ValueTask.FromException(
+                new SqliteException("Injected busy writer.", SQLitePCL.raw.SQLITE_BUSY, SQLitePCL.raw.SQLITE_BUSY));
+        }
     }
 
     private sealed class RecordingCommandStore : IEnvironmentalOnDemandCommandStore
