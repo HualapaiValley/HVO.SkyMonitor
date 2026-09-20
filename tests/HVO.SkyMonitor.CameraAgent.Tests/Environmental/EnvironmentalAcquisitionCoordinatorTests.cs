@@ -135,13 +135,17 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
                 EnvironmentalAcquisitionTrigger.OnDemand,
                 Epoch,
                 cancellationToken: CancellationToken.None).AsTask();
-            await stateStore.FirstLockFailure.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            using (var rollback = lockingConnection.CreateCommand())
+            try
             {
+                await stateStore.FirstLockFailure.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                using var rollback = lockingConnection.CreateCommand();
                 rollback.CommandText = "ROLLBACK;";
                 await rollback.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
-            stateStore.ReleaseFailure();
+            finally
+            {
+                stateStore.ReleaseFailure();
+            }
 
             var receipt = await acquisition.ConfigureAwait(false);
             var attempts = await store.ReadAttemptsAsync(
