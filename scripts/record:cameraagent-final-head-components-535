@@ -63,7 +63,9 @@ run_test() {
 }
 
 run_component() {
-  local component="$1" component_root="$staging/$component" archive="$staging/$component.tar"
+  local component="$1" component_root archive
+  component_root="$staging/$component"
+  archive="$staging/$component.tar"
   rm -rf TestResults/unit TestResults/integration TestResults/publish/component "coverage-report/$component"
   mkdir -p "$component_root/receipts"
   ./scripts/ci:component-build "$component" > "$component_root/receipts/build.log" 2>&1
@@ -103,7 +105,7 @@ run_component() {
   [[ ! -d TestResults/integration ]] || cp -a TestResults/integration "$component_root/integration"
   [[ ! -d TestResults/publish/component ]] || cp -a TestResults/publish/component "$component_root/publish"
   cp -a "coverage-report/$component" "$component_root/coverage"
-  tree="$(git rev-parse HEAD^{tree})"
+  tree="$(git rev-parse 'HEAD^{tree}')"
   jq -nS --arg component "$component" --arg head "$bound_head" --arg tree "$tree" \
     '{schemaVersion:"issue-535-local-component-gate-v1",component:$component,headSha:$head,sourceTree:$tree,
       buildPassed:true,testsPassed:true,coveragePassed:true,publishRequired:($component!="combined"),publishPassed:true}' > "$component_root/manifest.json"
@@ -115,7 +117,10 @@ run_component() {
 
 for component in shared cameraagent combined delivery; do run_component "$component"; done
 mkdir "$staging/component-evidence"
-for component in shared cameraagent combined delivery; do mv "$staging/$component.tar" "$staging/component-evidence/"; rm -rf "$staging/$component"; done
+for component in shared cameraagent combined delivery; do
+  mv "$staging/$component.tar" "$staging/component-evidence/"
+  rm -rf "$staging/${component:?}"
+done
 jq -sS '{schemaVersion:"issue-535-component-evidence-v1",records:sort_by(.component)}' "$rows" > "$staging/components.json"
 rm "$rows"
 [[ "$(git rev-parse HEAD)" == "$bound_head" && -z "$(git status --porcelain)" ]] || fail 'Source changed during component evidence execution.'
