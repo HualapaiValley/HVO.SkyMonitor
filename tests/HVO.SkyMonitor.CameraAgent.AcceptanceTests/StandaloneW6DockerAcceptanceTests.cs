@@ -823,15 +823,37 @@ public sealed class StandaloneW6DockerAcceptanceTests
             session, password, $"issue-719 {profile}").ConfigureAwait(false);
         await OwnerBootstrapSession.AssertOperationsAuthorizedAsync(
             session, $"issue-719 {profile}").ConfigureAwait(false);
-        if (!string.Equals(readyPassword, password, StringComparison.Ordinal))
+        if (stateReused)
         {
-            Assert.IsFalse(stateReused, "Only the first replay invocation may replace the temporary owner password.");
+            Assert.AreEqual(
+                password,
+                readyPassword,
+                "The reused LocalRunner state attempted a second owner-password replacement.");
+        }
+        else
+        {
+            Assert.AreNotEqual(
+                password,
+                readyPassword,
+                "The fresh InProcess replay invocation did not replace its temporary owner password.");
+            var initialPasswordPath = Path.Combine(Path.GetDirectoryName(passwordPath)!, "owner-password-initial");
+            await File.WriteAllTextAsync(initialPasswordPath, string.Concat(password, Environment.NewLine))
+                .ConfigureAwait(false);
             await File.WriteAllTextAsync(passwordPath, string.Concat(readyPassword, Environment.NewLine))
                 .ConfigureAwait(false);
             if (OperatingSystem.IsLinux())
             {
+                File.SetUnixFileMode(initialPasswordPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
                 File.SetUnixFileMode(passwordPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                Assert.AreEqual(
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                    File.GetUnixFileMode(initialPasswordPath));
+                Assert.AreEqual(
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                    File.GetUnixFileMode(passwordPath));
             }
+            Assert.AreEqual(password, (await File.ReadAllTextAsync(initialPasswordPath).ConfigureAwait(false)).Trim());
+            Assert.AreEqual(readyPassword, (await File.ReadAllTextAsync(passwordPath).ConfigureAwait(false)).Trim());
         }
         var evidence = stateReused
             ? await AssertLocalRunnerReplayAsync(session, profile, stateKey).ConfigureAwait(false)
