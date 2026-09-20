@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(mktemp -d)"
+trap 'rm -rf "$root"' EXIT
+script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci:artifact-provenance"
+head="428e346ef16c00f6a3257315c95384092b1b3290"
+GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=1 GITHUB_SHA="$head" \
+GITHUB_WORKFLOW_REF='HualapaiValley/HVO.SkyMonitor/.github/workflows/ci.yml@refs/heads/development/v1' \
+GITHUB_JOB=quality "$script" package-audit quality "$root/out"
+jq -e --arg head "$head" '.artifact=="package-audit" and .jobKey=="quality" and .runId==123 and .attempt==1 and .headSha==$head' \
+  "$root/out/ci-artifact-provenance.json" >/dev/null
+if GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=1 GITHUB_SHA="$head" \
+  GITHUB_WORKFLOW_REF='HualapaiValley/HVO.SkyMonitor/.github/workflows/ci.yml@refs/heads/development/v1' \
+  GITHUB_JOB=build "$script" package-audit quality "$root/bad" >/dev/null 2>&1; then
+  printf 'Wrong producer job unexpectedly passed.\n' >&2; exit 1
+fi
+printf 'CI artifact producer provenance contract passed.\n'

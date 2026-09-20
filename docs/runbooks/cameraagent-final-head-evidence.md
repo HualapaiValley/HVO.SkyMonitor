@@ -15,6 +15,8 @@ Built and usable:
   validated generation, and verifies one that was published earlier.
 - `scripts/test:cameraagent-final-head-535` — the deterministic validator gate.
 - `scripts/test:record-cameraagent-final-head-535` — the deterministic recorder gate.
+- `scripts/import:cameraagent-final-head-ci-535` — the exact-run protected-CI importer.
+- `scripts/test:cameraagent-final-head-ci-import-535` — the deterministic importer gate.
 - `tests/fixtures/issue-535/final-head/` — the fixtures both gates exercise.
 
 Not built, and deliberately so: the real aggregate content. The machinery that
@@ -32,6 +34,7 @@ put the result, not so that a real generation can be produced early.
 ./scripts/validate:cameraagent-final-head-535 final --evidence EVIDENCE.json --bound-head <40-char-sha>
 ./scripts/test:cameraagent-final-head-535
 ./scripts/test:record-cameraagent-final-head-535
+./scripts/test:cameraagent-final-head-ci-import-535
 ```
 
 Publishing and re-reading a generation:
@@ -328,33 +331,70 @@ work.
 
 ## What this gate covers, and what it does not
 
-Eight classes are covered: source and review identity, command receipts, test
-assembly identity, the #719 replay profiles, #197 dual-agent admissibility,
-central traffic, paths, and the evidence schema that replaces sanitisation
-scanning.
+The gate covers source and review identity, command receipts, test assembly
+identity, the #719 replay profiles, #197 dual-agent admissibility, central
+traffic, paths, schema-by-construction sanitisation, exact protected CI, and the
+four independently required component lanes.
 
-**Two are not, and the gate is deliberately short rather than apparently
-complete.** A gate that covers eight classes and says so is more useful than one
-that covers eight and reads as though it covers ten.
+The validator also requires an imported exact-head CI projection in final mode.
+Local mode may omit CI and remains useful for staging, but can never yield
+`acceptanceReady`.
 
-*Filesystem and PE facts* — symlink, hard link, ownership, mode, byte length,
-MVID — are not JSON facts. The pure validator does not infer them from claims in a
-JSON document. The separate recorder now checks its own input evidence file and
-publication files for actual byte lengths, links and regular-file status as described
-above. That does not verify every nested artifact named inside the evidence set, or
-PE identity, ownership and mode provenance; those remain the compiled helper's job.
+Filesystem facts are not JSON facts. The validator wrapper resolves every cited
+CI/component support path relative to the evidence document, rejects missing,
+linked, hard-linked, unsafe, length-mismatched or digest-mismatched files, and the
+recorder copies those verified files into each immutable generation before
+publication. The CI importer itself queries one numeric GitHub Actions run and exact
+attempt, verifies the repository, workflow path and exact-head blob identity,
+reads every exact-attempt job page, parses one bounded classifier record, downloads
+each required artifact as an opaque ZIP, and checks its GitHub-reported byte length
+and SHA-256 against the downloaded bytes. Every retained CI artifact also contains
+one bounded producer record written by its actual Actions job; the importer checks
+run, attempt, head, workflow path, job key and artifact name from that embedded
+record rather than inferring the producer from the artifact name. It emits no URLs,
+logs, tokens, runner names, absolute paths, or raw API payloads.
 
-*The CI import* is not implemented in this layer, and this is where a deferral
-would quietly become a pass. "Not implemented yet" reads as success to everything
-downstream, which is the same defect as evidence reporting what it did not
-observe. So a record carrying imported CI slots is **refused**, not skipped: it
-fails with `ci-slots-unverifiable` and says why. A predicate here could check the
-shape of a supplied CI conclusion while recomputing nothing about its provenance,
-and a shape-only check living in a file named for provenance is exactly how a
-later reader mistakes one for the other.
+Use a fresh first-attempt workflow-dispatch run. GitHub's artifact API binds an
+artifact to a run and head but does not report the rerun attempt, so the importer
+refuses attempts greater than one rather than attributing an archive to an attempt
+it cannot prove. The campaign invocation is:
 
-When the helper can query a real run and attempt, that refusal is replaced by
-predicates that recompute. Until then the absence is loud rather than invisible.
+```bash
+./scripts/import:cameraagent-final-head-ci-535 \
+  --repo HualapaiValley/HVO.SkyMonitor \
+  --run <numeric-run-id> --attempt 1 --bound-head <40-char-sha> \
+  --output TestResults/issue-535/<head>/<campaign>/ci.json
+```
+
+The projection contains the eighteen jobs aggregated by Required CI. For the
+non-PR complete matrix, thirteen must succeed and the five component jobs must be
+skipped because Unit, Integration and Coverage already own the complete solution
+plan. It also binds the nine artifacts produced by Catalog Contracts, Quality,
+Deployment Contracts, Unit, Integration, Architecture & Publish and Coverage.
+The pure validator independently requires the exact job and artifact inventories,
+recomputes their expected conclusions from the complete plan, and rejects absent,
+unknown, duplicate, stale-head, wrong-run, failed, cancelled, skipped-required or
+unbound records. A supplied top-level `conclusion: success` cannot override a failed
+job.
+
+The complete matrix deliberately skips the component jobs. #535 independently
+requires `shared`, `cameraagent`, `combined`, and `delivery`; a separate LogicHost
+component rerun is not part of the standalone CameraAgent claim. Produce the four
+exact-head replacements on a clean bound head with the repository-owned runner:
+
+```bash
+./scripts/record:cameraagent-final-head-components-535 \
+  --bound-head <40-char-sha> \
+  --catalog-bundle <verified-hyg-v42-bundle> \
+  --output-dir TestResults/issue-535/<head>/<campaign>/components
+```
+
+The runner executes each lane's existing component restore/build, exact Unit and
+Integration selections, strict TRX result and counter checks, component coverage
+enforcement, and required publish operation. It cleans shared result roots between
+lanes, archives only the resulting evidence, and emits `components.json` after the
+source remains clean and unchanged. The final aggregate cites those four archives;
+the validator and immutable-generation recorder bind their actual bytes.
 
 ## Extending it
 

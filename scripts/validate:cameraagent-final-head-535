@@ -59,6 +59,33 @@ jq --exit-status 'type == "object"' "$evidence" > /dev/null 2>&1 || {
     exit 1
 }
 
+evidence_dir="$(cd "$(dirname "$evidence")" && pwd)"
+support_problems="$(mktemp)"
+trap 'rm -f "$support_problems" /tmp/hvo-535-jq-error' EXIT
+: > "$support_problems"
+declare -A support_paths=()
+while IFS=$'\t' read -r path bytes sha; do
+    [[ -n "$path" ]] || continue
+    if [[ -n "${support_paths[$path]+set}" ]]; then
+        jq -cn --arg path "$path" '{id:"support-file-duplicated",detail:($path + ": support path is duplicated across evidence sections")}' >> "$support_problems"
+        continue
+    fi
+    support_paths["$path"]=1
+    if [[ "$path" == /* || "$path" == ../* || "$path" == *'/../'* || "$path" == *$'\n'* ]]; then
+        jq -cn --arg path "$path" '{id:"support-file-unsafe",detail:($path + ": support path is not safe and relative")}' >> "$support_problems"
+        continue
+    fi
+    file="$evidence_dir/$path"
+    if [[ ! -f "$file" || -L "$file" || "$(stat -c %h "$file" 2>/dev/null || printf 0)" != 1 ]]; then
+        jq -cn --arg path "$path" '{id:"support-file-missing",detail:($path + ": support file is absent, linked, or not private")}' >> "$support_problems"
+        continue
+    fi
+    actual_bytes="$(stat -c %s "$file")"
+    actual_sha="$(sha256sum "$file" | cut -d' ' -f1)"
+    [[ "$actual_bytes" == "$bytes" ]] || jq -cn --arg path "$path" '{id:"support-file-length-mismatch",detail:($path + ": support byte length does not match")}' >> "$support_problems"
+    [[ "$actual_sha" == "$sha" ]] || jq -cn --arg path "$path" '{id:"support-file-digest-mismatch",detail:($path + ": support SHA-256 does not match")}' >> "$support_problems"
+done < <(jq -r '[(.ci.artifacts[]? | [.path,.bytes,.sha256]),(.components.records[]? | [.path,.bytes,.sha256])] | .[] | @tsv' "$evidence")
+
 if ! result="$(jq --sort-keys \
     --arg bound "$bound_head" \
     --arg mode "$mode" \
@@ -70,7 +97,10 @@ if ! result="$(jq --sort-keys \
     rm -f /tmp/hvo-535-jq-error
     exit 1
 fi
-rm -f /tmp/hvo-535-jq-error
+result="$(jq -nS --argjson result "$result" --slurpfile support "$support_problems" '
+  ($result.problems + $support) as $problems |
+  $result + {problems:$problems,localReady:(($problems|length)==0),acceptanceReady:((($problems|length)==0) and $result.mode=="final")}
+')"
 
 printf '%s\n' "$result"
 

@@ -106,11 +106,52 @@ expect local replay-nodes-absent.json       1 "replay-nodes-absent,replay-nodes-
 expect final replay-nodes-absent.json       1 "replay-nodes-absent,replay-nodes-absent"
 expect final replay-nodes-reordered.json    1 "replay-nodes-not-canonical"
 
-# A deferral is not a neutral state. A record carrying imported CI slots is
-# refused, because a shape-only check in a file named for provenance is how a
-# later reader mistakes one for the other.
-expect local ci-slots-present.json       1 "ci-slots-unverifiable"
-expect final ci-slots-present.json       1 "ci-slots-unverifiable"
+# Local staging may omit CI, but final evidence cannot. A malformed caller-owned
+# CI record is rejected rather than trusted because it says success.
+expect local ci-slots-present.json       1 "ci-artifacts-incomplete,ci-jobs-incomplete,ci-plan-invalid,ci-projection-invalid,ci-repository-invalid,ci-run-invalid,ci-schema-invalid,ci-workflow-invalid"
+expect final ci-slots-present.json       1 "ci-artifacts-incomplete,ci-jobs-incomplete,ci-plan-invalid,ci-projection-invalid,ci-repository-invalid,ci-run-invalid,ci-schema-invalid,ci-workflow-invalid"
+
+without_ci="$(mktemp "$FIXTURES/.without-ci.XXXXXX")"
+trap 'rm -f "$without_ci"' EXIT
+jq 'del(.ci)' "$FIXTURES/green.json" > "$without_ci"
+cases=$((cases + 1))
+without_ci_out="$("$VALIDATE" final --evidence "$without_ci" --bound-head "$BOUND_HEAD" 2>/dev/null || true)"
+without_ci_ids="$(jq -r '[.problems[]?.id] | sort | join(",")' <<< "$without_ci_out")"
+if [[ "$without_ci_ids" != "ci-absent" ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL final valid evidence without CI: expected [ci-absent], got [%s]\n' "$without_ci_ids" >&2
+fi
+
+failed_ci="$(mktemp "$FIXTURES/.failed-ci.XXXXXX")"
+trap 'rm -f "$without_ci" "$failed_ci"' EXIT
+jq '(.ci.jobs[] | select(.key == "quality").conclusion) = "failure"' "$FIXTURES/green.json" > "$failed_ci"
+cases=$((cases + 1))
+failed_ci_out="$("$VALIDATE" final --evidence "$failed_ci" --bound-head "$BOUND_HEAD" 2>/dev/null || true)"
+failed_ci_ids="$(jq -r '[.problems[]?.id] | sort | join(",")' <<< "$failed_ci_out")"
+if [[ "$failed_ci_ids" != "ci-job-result-invalid" ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL final CI with failed Quality: expected [ci-job-result-invalid], got [%s]\n' "$failed_ci_ids" >&2
+fi
+
+without_components="$(mktemp "$FIXTURES/.without-components.XXXXXX")"
+bad_ci_type="$(mktemp "$FIXTURES/.bad-ci-type.XXXXXX")"
+trap 'rm -f "$without_ci" "$failed_ci" "$without_components" "$bad_ci_type"' EXIT
+jq 'del(.components)' "$FIXTURES/green.json" > "$without_components"
+cases=$((cases + 1))
+component_out="$("$VALIDATE" final --evidence "$without_components" --bound-head "$BOUND_HEAD" 2>/dev/null || true)"
+component_ids="$(jq -r '[.problems[]?.id] | sort | join(",")' <<< "$component_out")"
+if [[ "$component_ids" != "component-evidence-absent" ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL final evidence without components: expected [component-evidence-absent], got [%s]\n' "$component_ids" >&2
+fi
+jq '.ci.workflow.id="https://example.invalid/?token=synthetic"' "$FIXTURES/green.json" > "$bad_ci_type"
+cases=$((cases + 1))
+bad_ci_out="$("$VALIDATE" final --evidence "$bad_ci_type" --bound-head "$BOUND_HEAD" 2>/dev/null || true)"
+bad_ci_ids="$(jq -r '[.problems[]?.id] | sort | join(",")' <<< "$bad_ci_out")"
+if [[ "$bad_ci_ids" != "ci-workflow-invalid" ]]; then
+    failures=$((failures + 1))
+    printf 'FAIL malformed nested CI type: expected [ci-workflow-invalid], got [%s]\n' "$bad_ci_ids" >&2
+fi
 
 # Paths. Filesystem facts — symlinks, hard links, ownership, mode — are not
 # asserted here; they belong to the compiled helper, and claiming them in jq would

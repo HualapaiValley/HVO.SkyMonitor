@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+set -f
+umask 077
+
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+command -v unzip >/dev/null 2>&1 || fail 'unzip is required to verify artifact producer provenance.'
+
+repo="${GH_REPO:-}"
+run_id=""
+attempt=""
+bound_head=""
+output=""
+fixture=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo) repo="${2:-}"; shift ;;
+        --run) run_id="${2:-}"; shift ;;
+        --attempt) attempt="${2:-}"; shift ;;
+        --bound-head) bound_head="${2:-}"; shift ;;
+        --output) output="${2:-}"; shift ;;
+        --fixture) fixture="${2:-}"; shift ;;
+        *) fail "Unknown argument: $1" ;;
+    esac
+    shift
+done
+
+[[ "$bound_head" =~ ^[0-9a-f]{40}$ ]] || fail '--bound-head must be a full lowercase commit SHA.'
+[[ -n "$output" ]] || fail '--output is required.'
+[[ -z "$run_id" || -z "$fixture" ]] || fail 'Use either --run or --fixture, not both.'
+[[ -n "$run_id" || -n "$fixture" ]] || fail 'Use --run ID or --fixture DIR.'
+[[ -n "$fixture" || "$run_id" =~ ^[1-9][0-9]*$ ]] || fail '--run must be a positive integer.'
+[[ "$attempt" == "1" ]] || fail '--attempt must be 1; GitHub artifact metadata does not identify rerun attempts.'
+[[ "$(basename "$output")" == "ci.json" ]] || fail '--output must end in a dedicated ci.json namespace.'
+
+reject_symlink_components() {
+    local path="$1" current=""
+    [[ "$path" == /* ]] || path="$(pwd)/$path"
+    IFS='/' read -r -a parts <<< "${path#/}"
+    for part in "${parts[@]}"; do
+        [[ -n "$part" ]] || continue
+        current="$current/$part"
+        [[ ! -L "$current" ]] || fail "Output path contains a symbolic link: $current"
+    done
+}
+
+output_dir="$(dirname "$output")"
+output_parent="$(dirname "$output_dir")"
+[[ -d "$output_parent" ]] || fail "Output parent does not exist: $output_parent"
+reject_symlink_components "$output_parent"
+[[ ! -e "$output_dir" && ! -L "$output_dir" ]] || fail "Output namespace already exists: $output_dir"
+output_parent="$(realpath -e -- "$output_parent")"
+output_dir="$output_parent/$(basename "$output_dir")"
+output="$output_dir/ci.json"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+run_file="$work/run.json"
+workflow_file="$work/workflow.json"
+content_file="$work/workflow-content.json"
+jobs_file="$work/jobs.json"
+artifacts_file="$work/artifacts.json"
+classification_file="$work/classification.log"
+downloads="$work/downloads"
+mkdir -m 700 "$downloads"
+
+if [[ -n "$fixture" ]]; then
+    for required in run.json workflow.json workflow-content.json jobs.json artifacts.json classification.log; do
+        [[ -f "$fixture/$required" ]] || fail "Fixture is missing $required."
+        cp "$fixture/$required" "$work/$required"
+    done
+    [[ -d "$fixture/downloads" ]] || fail 'Fixture is missing downloads/.'
+    cp -a "$fixture/downloads/." "$downloads/"
+else
+    [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail '--repo must be OWNER/REPO.'
+    gh api --method GET "repos/$repo/actions/runs/$run_id" > "$run_file" || fail 'Could not read workflow run.'
+    workflow_id="$(jq -er '.workflow_id' "$run_file")"
+    gh api --method GET "repos/$repo/actions/workflows/$workflow_id" > "$workflow_file" || fail 'Could not read workflow metadata.'
+    gh api --method GET "repos/$repo/contents/.github/workflows/ci.yml?ref=$bound_head" > "$content_file" || fail 'Could not read workflow content identity.'
+    gh api --method GET --paginate --slurp \
+        "repos/$repo/actions/runs/$run_id/attempts/$attempt/jobs?per_page=100" |
+        jq -e 'if length == 0 or ([.[].total_count] | unique | length) != 1 then error("job pages disagree")
+               else {total_count:.[0].total_count,jobs:[.[].jobs[]]} end' > "$jobs_file" || fail 'Could not read complete exact-attempt jobs.'
+    gh api --method GET --paginate --slurp "repos/$repo/actions/runs/$run_id/artifacts?per_page=100" |
+        jq -e 'if length == 0 or ([.[].total_count] | unique | length) != 1 then error("artifact pages disagree")
+               else {total_count:.[0].total_count,artifacts:[.[].artifacts[]]} end' > "$artifacts_file" || fail 'Could not read complete artifacts.'
+    change_job_id="$(jq -er '[.jobs[] | select(.name == "Change Classification")][0].id' "$jobs_file")"
+    gh run view --repo "$repo" "$run_id" --job "$change_job_id" --log > "$classification_file" || fail 'Could not read classification log.'
+fi
+
+jq -e --arg head "$bound_head" --argjson run "${run_id:-0}" '
+  type == "object" and .run_attempt == 1 and .head_sha == $head and .status == "completed" and .conclusion == "success" and
+  (.event == "workflow_dispatch") and (.path == ".github/workflows/ci.yml") and
+  (.id | type == "number") and .id > 0 and (.id | floor) == .id and ($run == 0 or .id == $run) and
+  (.repository.id | type == "number") and .repository.id > 0 and (.repository.id | floor) == .repository.id and
+  .repository.id == .head_repository.id' "$run_file" >/dev/null || fail 'Run identity or terminal state is invalid.'
+jq -e '(.id | type == "number") and .id > 0 and (.id | floor) == .id and .path == ".github/workflows/ci.yml" and .state == "active"' "$workflow_file" >/dev/null || fail 'Workflow metadata is invalid.'
+jq -e '.path == ".github/workflows/ci.yml" and .type == "file" and (.sha | test("^[0-9a-f]{40}$"))' "$content_file" >/dev/null || fail 'Workflow content identity is invalid.'
+jq -e '.total_count == (.jobs | length) and .total_count > 0 and ([.jobs[].id] | length == (unique | length))' "$jobs_file" >/dev/null || fail 'Job pagination is incomplete or duplicated.'
+jq -e '.total_count == (.artifacts | length) and ([.artifacts[].id] | length == (unique | length))' "$artifacts_file" >/dev/null || fail 'Artifact pagination is incomplete or duplicated.'
+
+classification_lines="$(grep -F 'CI classification:' "$classification_file" || true)"
+[[ "$(printf '%s\n' "$classification_lines" | grep -c . || true)" == 1 ]] || fail 'Classification log must contain exactly one classification record.'
+classification="${classification_lines#*CI classification: }"
+declare -A raw_plan=()
+for token in $classification; do
+    [[ "$token" != reason=* ]] || break
+    [[ "$token" == *=* ]] || continue
+    key="${token%%=*}"
+    [[ -z "${raw_plan[$key]+set}" ]] || fail "Classification contains duplicate $key."
+    raw_plan["$key"]="${token#*=}"
+done
+plan_keys=(mode deployment complete shared cameraagent logichost combined delivery)
+for key in "${plan_keys[@]}"; do [[ -n "${raw_plan[$key]:-}" ]] || fail "Classification is missing $key."; done
+[[ "${raw_plan[mode]}" == full ]] || fail 'Campaign CI requires mode=full.'
+for key in deployment complete shared cameraagent logichost combined delivery; do
+    [[ "${raw_plan[$key]}" == true ]] || fail "Campaign CI requires $key=true."
+done
+
+job_map='{
+  "Change Classification":"changes","Quality":"quality","Catalog Contracts":"catalog-contracts",
+  "Deployment Contracts":"deployment-contracts","Build":"build","Architecture & Publish":"architecture",
+  "Coverage Policy":"coverage-policy","CameraAgent Migrations":"migrations-cameraagent",
+  "LogicHost Migrations":"migrations-logichost","Unit Tests":"unit","Integration Tests":"integration",
+  "Coverage":"coverage","Shared Libraries":"shared-libraries","CameraAgent Component":"cameraagent-component",
+  "LogicHost Component":"logichost-component","Combined Protocol & Integration":"combined-integration",
+  "Delivery Component":"delivery-component","Required CI":"required"}'
+job_expectations='{
+  "changes":"success","quality":"success","catalog-contracts":"success","deployment-contracts":"success",
+  "build":"success","architecture":"success","coverage-policy":"success","migrations-cameraagent":"success",
+  "migrations-logichost":"success","unit":"success","integration":"success","coverage":"success",
+  "shared-libraries":"skipped","cameraagent-component":"skipped","logichost-component":"skipped",
+  "combined-integration":"skipped","delivery-component":"skipped","required":"success"}'
+jobs_projection="$(jq -ce --arg head "$bound_head" --argjson map "$job_map" --argjson expected "$job_expectations" '
+  [.jobs[] | select($map[.name] != null) |
+    {key:$map[.name],id,runId:.run_id,attempt:.run_attempt,headSha:.head_sha,status,conclusion}]
+  | if length != 18 or ([.[].key] | length != (unique | length)) then error("required job inventory is incomplete")
+    elif any(.[]; .runId != $ENV_RUN or .attempt != 1 or .headSha != $head or .status != "completed") then error("job identity mismatch")
+    elif any(.[]; .conclusion != $expected[.key]) then error("job result disagrees with the complete campaign plan")
+    else sort_by(.key) end' --argjson ENV_RUN "$(jq '.id' "$run_file")" "$jobs_file")" || fail 'Required job projection is invalid.'
+
+expected_artifacts='{
+  "hyg-v42-contracts":"catalog-contracts","package-audit":"quality","deployment-contract-logs":"deployment-contracts",
+  "unit-test-evidence":"unit","integration-test-evidence":"integration","architecture-unit-evidence":"architecture",
+  "architecture-test-evidence":"architecture","publish-evidence":"architecture","coverage-report":"coverage"}'
+jq -e --argjson expected "$expected_artifacts" '
+  .total_count == 9 and (.artifacts|length) == 9 and
+  ([.artifacts[].name]|sort) == ($expected|keys|sort) and
+  ([.artifacts[].name]|length) == ([.artifacts[].name]|unique|length) and
+  all(.artifacts[]; (.id|type)=="number" and .id>0 and (.id|floor)==.id and
+    (.size_in_bytes|type)=="number" and .size_in_bytes>0 and .size_in_bytes<=1073741824)
+' "$artifacts_file" >/dev/null || fail 'Artifact metadata inventory is invalid.'
+if [[ -z "$fixture" ]]; then
+    while IFS=$'\t' read -r id; do
+        gh api --method GET "repos/$repo/actions/artifacts/$id/zip" > "$downloads/$id.zip" || fail "Could not download required artifact $id."
+    done < <(jq -r '.artifacts[].id' "$artifacts_file")
+fi
+artifact_rows="$work/artifact-rows.jsonl"
+: > "$artifact_rows"
+while IFS=$'\t' read -r id name bytes digest expired api_run api_repo api_head_repo api_head; do
+    [[ "$expired" == false ]] || fail "Artifact $name is expired."
+    [[ "$api_run" == "$(jq -r '.id' "$run_file")" && "$api_repo" == "$api_head_repo" && "$api_head" == "$bound_head" ]] || fail "Artifact $name has mismatched workflow identity."
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "Artifact $name has no SHA-256 digest."
+    [[ -f "$downloads/$id.zip" && ! -L "$downloads/$id.zip" ]] || fail "Artifact $name download is missing or linked."
+    actual_bytes="$(stat -c %s "$downloads/$id.zip")"
+    actual_sha="$(sha256sum "$downloads/$id.zip" | cut -d' ' -f1)"
+    [[ "$actual_bytes" == "$bytes" && "$actual_sha" == "${digest#sha256:}" ]] || fail "Artifact $name bytes or digest do not match GitHub metadata."
+    job_key="$(jq -er --arg name "$name" '.[$name]' <<< "$expected_artifacts")" || fail "Unexpected artifact $name."
+    mapfile -t provenance_entries < <(unzip -Z1 "$downloads/$id.zip" | grep -E '(^|/)ci-artifact-provenance\.json$' || true)
+    [[ "${#provenance_entries[@]}" == 1 ]] || fail "Artifact $name does not contain exactly one producer provenance record."
+    provenance="$work/provenance-$id.json"
+    unzip -p "$downloads/$id.zip" "${provenance_entries[0]}" > "$provenance"
+    jq -e --arg artifact "$name" --arg job "$job_key" --arg head "$bound_head" --argjson run "$(jq '.id' "$run_file")" '
+      (keys|sort) == (["artifact","attempt","headSha","jobKey","runId","schemaVersion","workflowPath"]|sort) and
+      .schemaVersion == "hvo-ci-artifact-provenance-v1" and .artifact == $artifact and .jobKey == $job and
+      .runId == $run and .attempt == 1 and .headSha == $head and .workflowPath == ".github/workflows/ci.yml"
+    ' "$provenance" >/dev/null || fail "Artifact $name producer provenance is invalid."
+    jq -cn --arg key "$name" --argjson id "$id" --arg name "$name" --arg path "ci-artifacts/$id.zip" \
+      --argjson bytes "$bytes" --arg sha "$actual_sha" --arg jobKey "$job_key" \
+      '{key:$key,id:$id,jobKey:$jobKey,name:$name,path:$path,bytes:$bytes,sha256:$sha}' >> "$artifact_rows"
+done < <(jq -r '.artifacts[] | [.id,.name,.size_in_bytes,.digest,.expired,.workflow_run.id,.workflow_run.repository_id,.workflow_run.head_repository_id,.workflow_run.head_sha] | @tsv' "$artifacts_file")
+artifacts_projection="$(jq -sc --argjson expected "$expected_artifacts" '
+  if length != 9 or ([.[].key] | sort) != ($expected | keys | sort) or ([.[].id] | length != (unique | length))
+  then error("artifact inventory is incomplete or duplicated") else sort_by(.key) end' "$artifact_rows")" || fail 'Required artifact projection is invalid.'
+
+repo_owner="$(jq -er '.repository.owner.login' "$run_file")"
+repo_name="$(jq -er '.repository.name' "$run_file")"
+repo_id="$(jq -er '.repository.id' "$run_file")"
+run_value="$(jq -er '.id' "$run_file")"
+workflow_id="$(jq -er '.id' "$workflow_file")"
+workflow_sha="$(jq -er '.sha' "$content_file")"
+
+projection="$(jq -nS --arg owner "$repo_owner" --arg name "$repo_name" --argjson repoId "$repo_id" \
+  --argjson workflowId "$workflow_id" --arg workflowSha "$workflow_sha" --argjson runId "$run_value" \
+  --arg head "$bound_head" --argjson jobs "$jobs_projection" --argjson artifacts "$artifacts_projection" \
+  '{schemaVersion:"issue-535-ci-import-v1",repository:{owner:$owner,name:$name,id:$repoId},
+    workflow:{id:$workflowId,path:".github/workflows/ci.yml",blobSha:$workflowSha},
+    run:{id:$runId,attempt:1,event:"workflow_dispatch",headSha:$head,status:"completed",conclusion:"success"},
+    plan:{mode:"full",deployment:true,complete:true,shared:true,cameraagent:true,logichost:true,combined:true,delivery:true},
+    jobs:$jobs,artifacts:$artifacts}')"
+
+staging="$(mktemp -d "$output_parent/.ci-import.XXXXXX")"
+mkdir "$staging/ci-artifacts"
+while IFS= read -r id; do
+    cp -- "$downloads/$id.zip" "$staging/ci-artifacts/$id.zip"
+    chmod 600 "$staging/ci-artifacts/$id.zip"
+done < <(jq -r '.[].id' <<< "$artifacts_projection")
+printf '%s\n' "$projection" > "$staging/ci.json"
+chmod 600 "$staging/ci.json"
+mv -T --no-clobber -- "$staging" "$output_dir"
+[[ ! -e "$staging" ]] || fail 'CI import publication did not move its staging directory.'

@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+bound_head=""
+output_dir=""
+catalog_bundle=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --bound-head) bound_head="${2:-}"; shift ;;
+    --output-dir) output_dir="${2:-}"; shift ;;
+    --catalog-bundle) catalog_bundle="${2:-}"; shift ;;
+    *) fail "Unknown argument: $1" ;;
+  esac
+  shift
+done
+[[ "$bound_head" =~ ^[0-9a-f]{40}$ ]] || fail '--bound-head must be a full lowercase commit SHA.'
+[[ -n "$output_dir" && -n "$catalog_bundle" ]] || fail '--output-dir and --catalog-bundle are required.'
+[[ -d "$(dirname "$output_dir")" && ! -e "$output_dir" && ! -L "$output_dir" ]] || fail 'Output namespace must be absent beneath an existing parent.'
+[[ -f "$catalog_bundle" && ! -L "$catalog_bundle" ]] || fail 'Catalog bundle is missing or linked.'
+cd "$repo_root"
+[[ "$(git rev-parse HEAD)" == "$bound_head" && -z "$(git status --porcelain)" ]] || fail 'Component evidence requires the clean bound head.'
+
+# shellcheck source=lib/trx-evidence.sh
+source "$repo_root/scripts/lib/trx-evidence.sh"
+unit_filter='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware'
+integration_filter='TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware'
+staging="$(mktemp -d "$(dirname "$output_dir")/.components.XXXXXX")"
+trap 'rm -rf "$staging"' EXIT
+rows="$staging/records.jsonl"
+: > "$rows"
+
+run_test() {
+  local project="$1" filter="$2" slot="$3" trx="$4"
+  dotnet test "$project" --no-build --configuration Release --filter "$filter" \
+    --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" \
+    --results-directory "$slot" --logger "trx;LogFileName=$trx"
+  trx_assert_executed_and_passed "$slot/$trx" "$slot"
+  trx_assert_counters_executed_and_passed "$slot/$trx" "$slot"
+}
+
+run_component() {
+  local component="$1" component_root="$staging/$component" archive="$staging/$component.tar"
+  rm -rf TestResults/unit TestResults/integration TestResults/publish/component "coverage-report/$component"
+  mkdir -p "$component_root/receipts"
+  ./scripts/ci:component-build "$component" > "$component_root/receipts/build.log" 2>&1
+  case "$component" in
+    shared)
+      run_test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj "$unit_filter" TestResults/unit/astronomy unit-astronomy.trx
+      run_test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj "$unit_filter" TestResults/unit/imaging unit-imaging.trx
+      run_test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj "$unit_filter" TestResults/unit/processing unit-processing.trx
+      run_test tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj "$unit_filter" TestResults/unit/processing-runner unit-processing-runner.trx
+      run_test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj "$unit_filter" TestResults/unit/catalog-sqlite unit-catalog-sqlite.trx
+      run_test tests/HVO.SkyMonitor.Storage.FileSystem.Tests/HVO.SkyMonitor.Storage.FileSystem.Tests.csproj "$unit_filter" TestResults/unit/storage-filesystem unit-storage-filesystem.trx
+      run_test tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj "$unit_filter" TestResults/unit/agent-core unit-agent-core.trx
+      run_test tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj "$unit_filter" TestResults/unit/common unit-common.trx
+      run_test tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj "$unit_filter" TestResults/unit/fleet-contracts unit-fleet-contracts.trx
+      run_test tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj "$unit_filter" TestResults/unit/test-support unit-test-support.trx
+      run_test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj "$integration_filter" TestResults/integration/astronomy integration-astronomy.trx
+      ./scripts/ci:component-publish shared > "$component_root/receipts/publish.log" 2>&1 ;;
+    cameraagent)
+      run_test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj "$unit_filter" TestResults/unit/cameraagent unit-cameraagent.trx
+      run_test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj "$unit_filter" TestResults/unit/cameraagent-acceptance unit-cameraagent-acceptance.trx
+      run_test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj "$integration_filter" TestResults/integration/cameraagent-storage integration-cameraagent-storage.trx
+      run_test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj "$integration_filter" TestResults/integration/cameraagent-standalone integration-cameraagent-standalone.trx
+      run_test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj "$integration_filter" TestResults/integration/cameraagent integration-cameraagent.trx
+      ./scripts/ci:component-publish cameraagent > "$component_root/receipts/publish.log" 2>&1 ;;
+    combined)
+      run_test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj "$unit_filter" TestResults/unit/cameraagent-logichost unit-cameraagent-logichost.trx
+      run_test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj "$integration_filter" TestResults/integration/cameraagent-logichost integration-cameraagent-logichost.trx ;;
+    delivery)
+      export HVO_PRODUCTION_CATALOG_BUNDLE="$catalog_bundle"
+      run_test tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj "$unit_filter" TestResults/unit/deployment-cli unit-deployment-cli.trx
+      run_test tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj "$unit_filter" TestResults/unit/deployment-distribution unit-deployment-distribution.trx
+      ./scripts/ci:component-publish delivery > "$component_root/receipts/publish.log" 2>&1 ;;
+  esac
+  dotnet tool restore > "$component_root/receipts/tool-restore.log" 2>&1
+  ./scripts/coverage:component "$component" > "$component_root/receipts/coverage.log" 2>&1
+  cp -a TestResults/unit "$component_root/unit"
+  [[ ! -d TestResults/integration ]] || cp -a TestResults/integration "$component_root/integration"
+  [[ ! -d TestResults/publish/component ]] || cp -a TestResults/publish/component "$component_root/publish"
+  cp -a "coverage-report/$component" "$component_root/coverage"
+  tree="$(git rev-parse HEAD^{tree})"
+  jq -nS --arg component "$component" --arg head "$bound_head" --arg tree "$tree" \
+    '{schemaVersion:"issue-535-local-component-gate-v1",component:$component,headSha:$head,sourceTree:$tree,
+      buildPassed:true,testsPassed:true,coveragePassed:true,publishRequired:($component!="combined"),publishPassed:true}' > "$component_root/manifest.json"
+  tar -cf "$archive" -C "$component_root" .
+  jq -cn --arg component "$component" --arg path "component-evidence/$component.tar" --arg head "$bound_head" \
+    --argjson bytes "$(stat -c %s "$archive")" --arg sha "$(sha256sum "$archive" | cut -d' ' -f1)" \
+    '{component:$component,path:$path,bytes:$bytes,sha256:$sha,headSha:$head}' >> "$rows"
+}
+
+for component in shared cameraagent combined delivery; do run_component "$component"; done
+mkdir "$staging/component-evidence"
+for component in shared cameraagent combined delivery; do mv "$staging/$component.tar" "$staging/component-evidence/"; rm -rf "$staging/$component"; done
+jq -sS '{schemaVersion:"issue-535-component-evidence-v1",records:sort_by(.component)}' "$rows" > "$staging/components.json"
+rm "$rows"
+[[ "$(git rev-parse HEAD)" == "$bound_head" && -z "$(git status --porcelain)" ]] || fail 'Source changed during component evidence execution.'
+mv -T --no-clobber "$staging" "$output_dir"
