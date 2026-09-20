@@ -803,7 +803,7 @@ test ! -e "$upload_path"
 jq -e 'length == 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
 run_deploy_mode up "$deploy_case" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and ([.targets[].target] | unique | length) == 3 and
-  ([.resources[].kind] | sort) == ["existing-services","logic-initializer"]' "$TEMP_DIR/output/$deploy_case-state/up-ledger.json" >/dev/null
+  ([.resources[].kind] | sort) == ["existing-services","logic-initializer","object-store"]' "$TEMP_DIR/output/$deploy_case-state/up-ledger.json" >/dev/null
 jq -e --slurpfile preflight "$TEMP_DIR/output/$deploy_case-state/manifest.json" '
   . as $catalog |
   ($preflight[0].targets | map(select(.architecture == "arm64") | .name)) as $arm64 |
@@ -915,8 +915,8 @@ jq --arg product "$legacy_path_product" --arg bundle "$legacy_path_source" --arg
   .cameraAgents |= map(.runtimeRoot=($product+"/cameraagents/"+.instanceId)) |
   .deployment.resources.project=$run | .deployment.resources.sqlDatabase=$run | .deployment.services.sql.database=$run |
   .deployment.resources.redisPrefix=($run+":") | .deployment.services.redis.prefix=($run+":") |
-  .deployment.resources.artifactBucket=($run+"-artifacts") | .deployment.services.minio.artifactBucket=($run+"-artifacts") |
-  .deployment.resources.diagnosticsBucket=($run+"-diagnostics") | .deployment.services.minio.diagnosticsBucket=($run+"-diagnostics")' \
+  .deployment.resources.artifactBucket=($run+"-artifacts") | .deployment.services.objectStore.artifactBucket=($run+"-artifacts") |
+  .deployment.resources.diagnosticsBucket=($run+"-diagnostics") | .deployment.services.objectStore.diagnosticsBucket=($run+"-diagnostics")' \
   "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
 deploy_case="$legacy_path_case"
 mkdir -p "$legacy_path_product/logichosts" "$legacy_path_product/cameraagents" "$legacy_path_product/catalogs"
@@ -1012,8 +1012,8 @@ jq --arg run "$same_host_case" --arg product "$same_host_product" --argjson east
   .cameraAgents[1].ports=[$westPort] | .cameraAgents[1].internalEndpoint=("http://127.0.0.1:"+($westPort|tostring)) |
   .deployment.resources.project=$run | .deployment.resources.sqlDatabase=$run | .deployment.services.sql.database=$run |
   .deployment.resources.redisPrefix=($run+":") | .deployment.services.redis.prefix=($run+":") |
-  .deployment.resources.artifactBucket=($run+"-artifacts") | .deployment.services.minio.artifactBucket=($run+"-artifacts") |
-  .deployment.resources.diagnosticsBucket=($run+"-diagnostics") | .deployment.services.minio.diagnosticsBucket=($run+"-diagnostics")' \
+  .deployment.resources.artifactBucket=($run+"-artifacts") | .deployment.services.objectStore.artifactBucket=($run+"-artifacts") |
+  .deployment.resources.diagnosticsBucket=($run+"-diagnostics") | .deployment.services.objectStore.diagnosticsBucket=($run+"-diagnostics")' \
   "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
 mkdir -p "$same_host_product/logichosts" "$same_host_product/cameraagents" "$same_host_product/catalogs" "$same_host_product/cameraagents/sibling-preserved"
 chmod 700 "$same_host_product" "$same_host_product/logichosts" "$same_host_product/cameraagents" "$same_host_product/catalogs" "$same_host_product/cameraagents/sibling-preserved"

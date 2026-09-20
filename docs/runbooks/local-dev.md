@@ -13,10 +13,11 @@ toolchain for cloud or isolated workspaces.
 - Access to development shared-service credentials.
 - An ignored root `.env` based on `.env.template`.
 
-Redis, MinIO, and Mailpit topology is defined by
+Redis and Mailpit topology is defined by
 `deploy/hvo-docker/docker-compose.shared-services.yml` and normally runs
 persistently on `hvo-docker.hvo.lan`. SQL Server is provisioned separately on
-that host.
+that host. LogicHost object storage is local to the LogicHost host and is
+created by `with-env` under `HVO_OBJECT_STORE_ROOT` for direct runs.
 
 ## Environment Setup
 
@@ -136,7 +137,7 @@ developer state.
 | Symptom | Action |
 | --- | --- |
 | Database migration fails | Verify `SQLSERVER_*` endpoint/database/login values in `.env` and confirm the login owns approved migration rights on `SkyMonitor`. |
-| MinIO authorization fails | Verify `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` and the scoped policy for the two approved buckets. Root credentials are not application credentials. |
+| Object-store access fails | Verify `HVO_OBJECT_STORE_ROOT` exists with both `skymonitor-artifacts` and `skymonitor-diagnostics` directories, is writable by the running user, and is not held by another LogicHost process. |
 | Redis connection times out | Verify `REDIS_*`, the selected endpoint, and the `skymonitor:` instance prefix. |
 | SMTP email is missing | Verify `SMTP_*`, then inspect the configured Mailpit instance without retaining confirmation links. |
 | CameraAgent startup rejects configuration | Set `CAMERA_AGENT_ADMIN_PASSWORD` for Compose or `LocalIdentity:AdminPassword` in CameraAgent User Secrets. |

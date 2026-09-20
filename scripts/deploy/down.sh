@@ -90,7 +90,7 @@ deploy_down_require_service_absent() {
 
 deploy_down_require_shared_services() {
     local expected="$1" target="$2" context="$3" project="$4" env_file="$5" service
-    for service in sqlserver redis minio mailpit; do
+    for service in sqlserver redis mailpit; do
         if [[ "$expected" == stopped ]]; then
             deploy_down_require_service_stopped "$target" "$context" "$project" "$env_file" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" "$service" || return 1
         else
@@ -452,7 +452,7 @@ deploy_run_down() {
           printf 'services\t%s\t%s\t%s\n' "$context" "$state_project-services" "$shared"
         )
         context="$(jq -r '.dockerContext' <<< "$shared")"
-        for entry in "sql:${state_project}-services_sql-data" "redis:${state_project}-services_redis-data" "minio:${state_project}-services_minio-data"; do
+        for entry in "sql:${state_project}-services_sql-data" "redis:${state_project}-services_redis-data"; do
             name="${entry%%:*}"; volume="${entry#*:}"
             prior_status="$(jq -r --arg resource "$name:$volume" '.resources[]? | select(.resource == $resource and .action == "delete-volume") | .status' <<< "$DEPLOY_DOWN_JSON")"
             if [[ "$prior_status" == completed ]]; then

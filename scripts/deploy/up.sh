@@ -141,10 +141,10 @@ deploy_up_stage_target() {
         binding_state=none
     fi
     deploy_transport_remote_directories "$ssh" "$config_root" "$secrets_root" "$config_root/initializer-secrets" "$config_root/runtime-secrets" \
-      "$config_root/certificates" "$config_root/sql" "$config_root/minio" "$config_root/minio-output" "$config_root/private" "$config_root/private/mc" "$state_root" \
+      "$config_root/certificates" "$config_root/sql" "$config_root/private" "$state_root" \
       "$state_root/data-protection" "$state_root/identity" "$state_root/provisioning" "$state_root/raw" "$state_root/archive" \
-      "$state_root/sql" "$state_root/redis" "$state_root/minio" || return 1
-    deploy_transport_remote_seed_state "$ssh" "$state_root/sql" "$state_root/redis" "$state_root/minio" || return 1
+      "$state_root/sql" "$state_root/redis" || return 1
+    deploy_transport_remote_seed_state "$ssh" "$state_root/sql" "$state_root/redis" || return 1
     deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
     if [[ "$component" == logicHost ]]; then while IFS= read -r mapping; do
         reference="$(jq -r '.reference' <<< "$mapping")"; key="$(jq -r '.key' <<< "$mapping")"
@@ -156,8 +156,6 @@ deploy_up_stage_target() {
             secret_destinations=("$config_root/initializer-secrets" "$config_root/runtime-secrets")
             [[ "$key" != ConnectionStrings__skymonitordb-migrations ]] || secret_destinations=("$config_root/initializer-secrets")
             [[ "$key" != ConnectionStrings__skymonitordb ]] || secret_destinations=("$config_root/runtime-secrets")
-            [[ "$key" != ObjectStorage__AccessKey && "$key" != ObjectStorage__SecretKey && "$key" != ObjectStorage__SessionToken ]] ||
-              secret_destinations=("$config_root/runtime-secrets")
         fi
         for destination in "${secret_destinations[@]}"; do
             deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || { rm -f -- "$local_secret"; return 1; }
@@ -173,11 +171,8 @@ deploy_up_stage_target() {
             deploy_up_stage_value "$target" "$render_root" "$destination" OpenIddictCertificates__SigningPath /run/hvo-certificates/signing.pfx || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" OpenIddictCertificates__EncryptionPath /run/hvo-certificates/encryption.pfx || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Redis__InstanceName "$(jq -r '.deployment.services.redis.prefix' "$inventory")" || return 1
-            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__ServiceEndpoint "$(jq -r '.deployment.services.minio.host' "$inventory"):$(jq -r '.deployment.services.minio.port' "$inventory")" || return 1
-            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__Region us-east-1 || return 1
-            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__UseTls "$(jq -r '.deployment.services.minio.useSsl' "$inventory")" || return 1
-            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__AddressingStyle Path || return 1
-            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__CredentialMode Static || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__Provider Filesystem || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__Filesystem__Root /var/lib/hvo/object-store || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__ArtifactBucket "$(jq -r '.deployment.resources.artifactBucket' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__DiagnosticsBucket "$(jq -r '.deployment.resources.diagnosticsBucket' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Catalog__Root /app/catalog || return 1
@@ -268,12 +263,19 @@ deploy_up_stage_target() {
       "$run_id" "$(jq -S -c . "$inventory" | sha256sum | cut -d' ' -f1)" \
       "$image_key" "$image" > "$env_file")
     DEPLOY_UP_ENV_FILE="$env_file"; DEPLOY_UP_CONFIG_ROOT="$config_root"; DEPLOY_UP_STATE_ROOT="$state_root"
+    # The object-store owner is declared in the inventory and proven by the qualifier that runs
+    # before the LogicHost containers start, so the compose identity comes from the same source.
+    if [[ "$component" == logicHost ]]; then
+        (umask 077; jq -r '"HVO_OBJECT_STORE_ROOT="+.deployment.services.objectStore.root,
+          "HVO_RUNTIME_UID="+(.deployment.services.objectStore.uid|tostring),
+          "HVO_RUNTIME_GID="+(.deployment.services.objectStore.gid|tostring)' "$inventory" >> "$env_file")
+    fi
     deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
 }
 
 deploy_run_up() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6"
-    local state_dir evidence_dir render_root images mode_services project now target agent name context ssh component image endpoint path shared_context shared_env shared_target minio_response minio_runtime_access minio_runtime_secret runtime_identity runtime_uid runtime_gid value root_access root_secret mc_config provisioning_gate upload_enabled
+    local state_dir evidence_dir render_root images mode_services project now target agent name context ssh component image endpoint path shared_context shared_env shared_target runtime_identity runtime_uid runtime_gid value provisioning_gate upload_enabled object_store_preflight
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/prepare-manifest.json" up "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/catalog-manifest.json" up "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
@@ -292,9 +294,12 @@ deploy_run_up() {
           .servicesMode == $services and .project == $project and
           (.phaseStatus == "running" or .phaseStatus == "failed" or .phaseStatus == "passed") and
           (.resources | type == "array" and length == ([.[].kind] | unique | length) and all(.[];
-            (keys | sort) == (["kind","status"] | sort) and
+            ((.kind == "object-store" and (keys | sort) == (["kind","preflight","status"] | sort)) or
+             (.kind != "object-store" and (keys | sort) == (["kind","status"] | sort))) and
             ((.kind == "shared-services" and .status == "started" and $services == "deploy") or
              (.kind == "existing-services" and .status == "validated" and $services == "existing") or
+             (.kind == "object-store" and .status == "qualified" and
+               .preflight.schema == "hvo-filesystem-object-store-preflight-v1") or
              (.kind == "logic-initializer" and .status == "completed") or
              (.kind == "runtime-role" and .status == "applied" and $services == "deploy")))) and
           (.targets | type == "array" and length == ([.[].target] | unique | length) and all(.[];
@@ -306,6 +311,7 @@ deploy_run_up() {
           (if .phaseStatus == "passed" then
              ([.targets[].target] | sort) == ([$inventory.logicHost.name] + [$inventory.cameraAgents[].name] | sort) and
              ([.resources[].kind] | index("logic-initializer") != null) and
+             ([.resources[].kind] | index("object-store") != null) and
              (if $services == "deploy" then ([.resources[].kind] | index("shared-services") != null and index("runtime-role") != null)
               else ([.resources[].kind] | index("existing-services") != null) end)
            else true end)' "$DEPLOY_UP_LEDGER" >/dev/null 2>&1 ||
@@ -334,10 +340,6 @@ deploy_run_up() {
         deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/secrets" \
           "$(jq -r '.deployment.services.redis.adminSecretReference' "$inventory")" REDIS_PASSWORD || { deploy_fail up services secret-stage-failed; return 1; }
         deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/secrets" \
-          "$(jq -r '.deployment.services.minio.rootAccessKeyReference' "$inventory")" MINIO_ACCESS_KEY || { deploy_fail up services secret-stage-failed; return 1; }
-        deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/secrets" \
-          "$(jq -r '.deployment.services.minio.rootSecretKeyReference' "$inventory")" MINIO_SECRET_KEY || { deploy_fail up services secret-stage-failed; return 1; }
-        deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/secrets" \
           "$(jq -r '.deployment.services.sql.initializerSecretReference' "$inventory")" SQL_INITIALIZER_PASSWORD || { deploy_fail up services secret-stage-failed; return 1; }
         deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/secrets" \
           "$(jq -r '.deployment.services.sql.runtimeSecretReference' "$inventory")" SQL_RUNTIME_PASSWORD || { deploy_fail up services secret-stage-failed; return 1; }
@@ -350,33 +352,20 @@ deploy_run_up() {
         deploy_transport_copy_private_file "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$ssh" "$DEPLOY_UP_CONFIG_ROOT/sql/provision.sh" || return 1
         deploy_transport_copy_private_file "$REPO_ROOT/deploy/sql/logichost-migration-role.sql" "$ssh" "$DEPLOY_UP_CONFIG_ROOT/sql/migration-role.sql" || return 1
         deploy_transport_copy_private_file "$REPO_ROOT/deploy/sql/logichost-runtime-role.sql" "$ssh" "$DEPLOY_UP_CONFIG_ROOT/sql/runtime-role.sql" || return 1
-        deploy_transport_copy_private_file "$REPO_ROOT/deploy/split-host/provision-minio.sh" "$ssh" "$DEPLOY_UP_CONFIG_ROOT/minio/provision.sh" || return 1
-        deploy_transport_copy_private_file "$REPO_ROOT/deploy/split-host/minio-policy.template.json" "$ssh" "$DEPLOY_UP_CONFIG_ROOT/minio/policy.template.json" || return 1
-        root_access="$(deploy_secret_value "$(jq -r '.secretSource.path' "$inventory")" "$(jq -r '.deployment.services.minio.rootAccessKeyReference' "$inventory")")" || return 1
-        root_secret="$(deploy_secret_value "$(jq -r '.secretSource.path' "$inventory")" "$(jq -r '.deployment.services.minio.rootSecretKeyReference' "$inventory")")" || { unset root_access; return 1; }
-        mc_config="$(jq -cn --arg access "$root_access" --arg secret "$root_secret" \
-          '{version:"10",aliases:{local:{url:"http://minio:9000",accessKey:$access,secretKey:$secret,api:"S3v4",path:"auto"}}}')" || { unset root_access root_secret; return 1; }
-        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/private/mc" account "$root_access" || { unset root_access root_secret mc_config; return 1; }
-        unset root_access root_secret
-        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/private/mc" config.json "$mc_config" || { unset mc_config; return 1; }
-        unset mc_config
         runtime_identity="$(deploy_transport_owner_identity "$ssh" "$(jq -r '.runtimeOwner' <<< "$target")")" || { deploy_fail up services runtime-owner-identity-failed; return 1; }
         IFS=$'\t' read -r runtime_uid runtime_gid <<< "$runtime_identity"
         [[ "$runtime_uid" =~ ^[0-9]+$ && "$runtime_gid" =~ ^[0-9]+$ ]] || { deploy_fail up services runtime-owner-identity-invalid; return 1; }
-        deploy_transport_validate_private_file_identity "$ssh" "$DEPLOY_UP_CONFIG_ROOT/private/mc/config.json" "$runtime_uid" "$runtime_gid" ||
-          { deploy_fail up services minio-client-config-ownership-invalid; return 1; }
         shared_env="$render_root/shared.env"
         (umask 077; jq -r --arg config "$DEPLOY_UP_CONFIG_ROOT" --arg state "$DEPLOY_UP_STATE_ROOT" '
           ["HVO_CONFIG_ROOT="+$config,"HVO_STATE_ROOT="+$state,
            "SQLSERVER_PORT="+(.deployment.services.sql.port|tostring),"REDIS_PORT="+(.deployment.services.redis.port|tostring),
-            "MINIO_PORT="+(.deployment.services.minio.port|tostring),"SMTP_PORT="+(.deployment.services.smtp.ports[0]|tostring),
+            "SMTP_PORT="+(.deployment.services.smtp.ports[0]|tostring),
             "MAILPIT_HTTP_PORT="+((.deployment.services.smtp.ports[1] // 0)|tostring),
            "SQLSERVER_IMAGE="+.deployment.services.images.sqlServer,"REDIS_IMAGE="+.deployment.services.images.redis,
-            "MINIO_IMAGE="+.deployment.services.images.minio,"MINIO_CLIENT_IMAGE="+.deployment.services.images.minioClient,"MAILPIT_IMAGE="+(.deployment.services.images.mailpit // "unused"),
+            "MAILPIT_IMAGE="+(.deployment.services.images.mailpit // "unused"),
             "SQL_DATABASE="+.deployment.services.sql.database,"SQL_ADMIN_USER="+.deployment.services.sql.adminUser,
             "SQL_INITIALIZER_USER="+.deployment.services.sql.initializerUser,"SQL_RUNTIME_USER="+.deployment.services.sql.runtimeUser,
             "REDIS_RUNTIME_USER="+.deployment.services.redis.user,"REDIS_PREFIX="+.deployment.services.redis.prefix,
-             "MINIO_ARTIFACT_BUCKET="+.deployment.services.minio.artifactBucket,"MINIO_DIAGNOSTICS_BUCKET="+.deployment.services.minio.diagnosticsBucket,
               "HVO_CPUS="+(.deployment.limits.cpus // "2"),"HVO_MEMORY="+(.deployment.limits.memory // "2G"),
               "HVO_SQL_MEMORY="+.deployment.limits.sqlMemory,
               "MSSQL_MEMORY_LIMIT_MB="+(.deployment.limits.sqlMemoryLimitMb|tostring)][]' "$inventory" > "$shared_env")
@@ -386,18 +375,10 @@ deploy_run_up() {
         if [[ "$(jq -r '.deployment.services.smtp.kind' "$inventory")" == mailpit ]]; then
             deploy_up_compose_mutation "$target" "$context" "$project-services" "$shared_env" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" --profile test-smtp up -d --wait || return 1
         else
-            deploy_up_compose_mutation "$target" "$context" "$project-services" "$shared_env" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" up -d --wait sqlserver redis minio || return 1
+            deploy_up_compose_mutation "$target" "$context" "$project-services" "$shared_env" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" up -d --wait sqlserver redis || return 1
         fi
         deploy_up_compose_mutation "$target" "$context" "$project-services" "$shared_env" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" --profile provision run --rm -e SQL_PROVISION_PHASE=before sql-provision || { deploy_fail up services sql-provision-failed; return 1; }
         deploy_up_compose_mutation "$target" "$context" "$project-services" "$shared_env" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" --profile provision run --rm redis-provision || { deploy_fail up services redis-provision-failed; return 1; }
-        deploy_up_compose_mutation "$target" "$context" "$project-services" "$shared_env" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" --profile provision run --rm minio-provision || { deploy_fail up services minio-provision-failed; return 1; }
-        minio_response="$render_root/minio-runtime.json"
-        deploy_transport_fetch_private_file "$ssh" "$DEPLOY_UP_CONFIG_ROOT/minio-output/minio-runtime.json" "$minio_response" "$runtime_uid" "$runtime_gid" || { deploy_fail up services minio-credential-fetch-failed; return 1; }
-        if ! minio_runtime_access="$(jq -er '.accessKey | strings | select(test("^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"))' "$minio_response" 2>/dev/null)" ||
-          ! minio_runtime_secret="$(jq -er '.secretKey | strings | select(length >= 8 and length <= 256 and (test("[[:cntrl:]]") | not))' "$minio_response" 2>/dev/null)"; then
-            rm -f -- "$minio_response"; deploy_fail up services minio-credential-response-invalid; return 1
-        fi
-        rm -f -- "$minio_response"
         shared_context="$context"
         deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         DEPLOY_UP_JSON="$(jq -c '.resources = ([.resources[] | select(.kind != "shared-services")] + [{kind:"shared-services",status:"started"}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"
@@ -407,17 +388,23 @@ deploy_run_up() {
             [[ "$(deploy_transport_ssh_tcp "$ssh" "$(jq -r '.host' <<< "$endpoint")" "$(jq -r '.port' <<< "$endpoint")")" == reachable ]] ||
               { deploy_fail up existing-service unreachable; return 1; }
         done < <(jq -c '.deployment.services as $services |
-          [$services.sql,$services.redis,$services.minio,($services.smtp + {port:$services.smtp.ports[0]})][]' "$inventory")
+          [$services.sql,$services.redis,($services.smtp + {port:$services.smtp.ports[0]})][]' "$inventory")
         DEPLOY_UP_JSON="$(jq -c '.resources = ([.resources[] | select(.kind != "existing-services")] + [{kind:"existing-services",status:"validated"}])' <<< "$DEPLOY_UP_JSON")"
     fi
     target="$(jq -c '.logicHost' "$inventory")"; name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
     image="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .reference' <<< "$images")"
     deploy_up_stage_target "$inventory" "$target" "$run_id" "$render_root" "$image" logicHost || return 1
-    if [[ "$mode_services" == deploy ]]; then
-        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/runtime-secrets" ObjectStorage__AccessKey "$minio_runtime_access" || return 1
-        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/runtime-secrets" ObjectStorage__SecretKey "$minio_runtime_secret" || return 1
-        unset minio_runtime_access minio_runtime_secret
-    fi
+    object_store_preflight="$(deploy_transport_qualify_object_store "$ssh" "$REPO_ROOT/scripts/qualify:filesystem-object-store" \
+      "$(jq -r '.deployment.services.objectStore.root' "$inventory")" \
+      "$(jq -r '.deployment.services.objectStore.uid' "$inventory")" \
+      "$(jq -r '.deployment.services.objectStore.gid' "$inventory")" \
+      "$(jq -r '.deployment.services.objectStore.filesystemUuid' "$inventory")" \
+      "$(jq -r '.deployment.services.objectStore.minimumFreeBytes' "$inventory")" \
+      "$(jq -r '.deployment.services.objectStore.minimumFreeInodes' "$inventory")")" ||
+      { deploy_fail up logic object-store-qualification-failed; return 1; }
+    jq -e '.schema == "hvo-filesystem-object-store-preflight-v1"' <<< "$object_store_preflight" >/dev/null 2>&1 ||
+      { deploy_fail up logic object-store-qualification-invalid; return 1; }
+    DEPLOY_UP_JSON="$(jq -c --argjson preflight "$object_store_preflight" '.resources = ([.resources[] | select(.kind != "object-store")] + [{kind:"object-store",status:"qualified",preflight:$preflight}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"
     deploy_up_compose_mutation "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" --profile initialize run --rm logic-init || { deploy_fail up logic initializer-failed; return 1; }
     DEPLOY_UP_JSON="$(jq -c '.resources = ([.resources[] | select(.kind != "logic-initializer")] + [{kind:"logic-initializer",status:"completed"}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"
     if [[ "$mode_services" == deploy ]]; then

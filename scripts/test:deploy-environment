@@ -549,6 +549,16 @@ if [[ "${FAKE_CAPTURE_REMOTE_SCRIPTS:-false}" == true ]]; then
 fi
 if [[ "$prepare" == true ]]; then /usr/bin/cat "$script" >> "${FAKE_PREPARE_REMOTE_LOG:?}"; fi
 if [[ -n "${FAKE_SSH_FAIL_UPLOAD_MOVE_MATCH:-}" && $# -eq 2 && "$2" == *"$FAKE_SSH_FAIL_UPLOAD_MOVE_MATCH"* ]]; then exit 73; fi
+# The object-store qualifier is piped to the target host. The fixture has no qualified
+# filesystem, so the declared topology is echoed back as the preflight document it emits.
+if (( $# == 6 )) && [[ "$1" == /* && "$2" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ && "$4" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+  /usr/bin/cat >/dev/null
+  [[ "${FAKE_OBJECT_STORE_QUALIFY_FAIL:-}" != "$host" ]] || exit 1
+  /usr/bin/jq -cn --arg root "$1" --argjson uid "$2" --argjson gid "$3" --arg uuid "$4" \
+    '{schema:"hvo-filesystem-object-store-preflight-v1",root:$root,uid:$uid,gid:$gid,
+      mount:{uuid:$uuid,filesystem:"ext4"},buckets:["skymonitor-artifacts","skymonitor-diagnostics"]}'
+  exit 0
+fi
 remote_path="${FAKE_REMOTE_BIN:?}"
 [[ "${FAKE_MISSING_SS_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_SS:?}"
 [[ "${FAKE_MISSING_CURL_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_CURL:?}"
@@ -926,14 +936,6 @@ elif [[ "$3" == compose ]]; then
     printf 'abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\n'
   elif [[ "$*" == *" logs --no-color "* ]]; then
     printf 'cameraagent | {"event":"capture-complete","runId":"%s","status":"ok"}\n' "$(/usr/bin/grep '^HVO_RUN_ID=' "$env_file" | /usr/bin/cut -d= -f2-)"
-  elif [[ "$*" == *"minio-provision"* ]]; then
-    config_root="$(/usr/bin/grep '^HVO_CONFIG_ROOT=' "$env_file" | /usr/bin/cut -d= -f2-)"
-    /usr/bin/jq -e '.version == "10" and .aliases.local.url == "http://minio:9000" and
-      .aliases.local.accessKey == "fixture-minio-root" and .aliases.local.secretKey == "fixture:/@\"minio-root-never-print"' \
-      "$config_root/private/mc/config.json" >/dev/null
-    /usr/bin/jq -cn --arg secret 'generated:/@"minio-secret-never-print' \
-      '{accessKey:"generated-minio-access",secretKey:$secret}' > "$config_root/minio-output/minio-runtime.json"
-    chmod 600 "$config_root/minio-output/minio-runtime.json"
   elif [[ "$*" == *" up -d"* ]]; then
     run_id="$(/usr/bin/grep '^HVO_RUN_ID=' "$env_file" | /usr/bin/cut -d= -f2-)"
     inventory_hash="$(/usr/bin/grep '^HVO_INVENTORY_SHA256=' "$env_file" | /usr/bin/cut -d= -f2-)"
@@ -942,8 +944,8 @@ elif [[ "$3" == compose ]]; then
     printf '{"name":"%s","project":"%s","network":"default","runId":"%s","inventorySha256":"%s"}\n' \
       "$network" "$project" "$run_id" "$inventory_hash" > "${FAKE_IMAGE_STATE:?}/network-$context-$network"
     if [[ "$project" == *-services ]]; then
-      for service in sqlserver redis minio mailpit; do set_service "$service" true; done
-      for binding in sql-data:sql redis-data:redis minio-data:minio; do
+      for service in sqlserver redis mailpit; do set_service "$service" true; done
+      for binding in sql-data:sql redis-data:redis; do
         volume="${project}_${binding%%:*}"
         printf '{"runId":"%s","inventorySha256":"%s","device":"%s/%s"}\n' \
           "$run_id" "$inventory_hash" "$state_root" "${binding#*:}" > "${FAKE_IMAGE_STATE:?}/volume-$context-$volume"
@@ -952,12 +954,12 @@ elif [[ "$3" == compose ]]; then
     else set_service cameraagent true; fi
     printf 'v2.39.1\n'
   elif [[ "$*" == *" stop -t 60"* ]]; then
-    if [[ "$project" == *-services ]]; then for service in sqlserver redis minio mailpit; do [[ ! -f "${FAKE_IMAGE_STATE:?}/service-$context-$project-$service" ]] || set_service "$service" false; done
+    if [[ "$project" == *-services ]]; then for service in sqlserver redis mailpit; do [[ ! -f "${FAKE_IMAGE_STATE:?}/service-$context-$project-$service" ]] || set_service "$service" false; done
     elif [[ "$project" == *-logic ]]; then [[ ! -f "${FAKE_IMAGE_STATE:?}/service-$context-$project-logichost" ]] || set_service logichost false
     else [[ ! -f "${FAKE_IMAGE_STATE:?}/service-$context-$project-cameraagent" ]] || set_service cameraagent false; fi
     printf 'v2.39.1\n'
   elif [[ "$*" == *" rm -f"* ]]; then
-    if [[ "$project" == *-services ]]; then for service in sqlserver redis minio mailpit; do remove_service "$service"; done
+    if [[ "$project" == *-services ]]; then for service in sqlserver redis mailpit; do remove_service "$service"; done
     elif [[ "$project" == *-logic ]]; then remove_service logichost
     else remove_service cameraagent; fi
     printf 'v2.39.1\n'
@@ -1092,11 +1094,6 @@ if [[ "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" &&
     %u) printf '%s\n' "${FAKE_RUNTIME_UID:?}"; exit 0 ;;
     %u:%h:%a) printf '%s:%s\n' "${FAKE_RUNTIME_UID:?}" "$(/usr/bin/stat -c '%h:%a' "$path")"; exit 0 ;;
   esac
-fi
-if [[ "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" &&
-      ( "$path" == */minio-output/minio-runtime.json || "$path" == */private/mc/config.json ) && "$*" == *"%u:%g:%h:%a"* ]]; then
-  printf '%s:%s:1:600\n' "${FAKE_RUNTIME_UID:?}" "${FAKE_RUNTIME_GID:?}"
-  exit 0
 fi
 if [[ "${FAKE_REMOTE_PREPARE:-false}" == true ]]; then
   if [[ "${2:-}" == %a && "${FAKE_PREPARE_UNSAFE_MODE_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ]]; then printf '777\n'; exit 0; fi
@@ -1707,7 +1704,7 @@ export FAKE_ARTIFACT_SHA FAKE_ARTIFACT_BYTES FAKE_RAW_ARTIFACT_SHA FAKE_RIG_HASH
 if shard_enabled preflight; then . "$REPO_ROOT/scripts/deploy-contracts/preflight-1.sh"; fi
 
 # shellcheck disable=SC2016 # The literal shell syntax verifies secrets are never evaluated.
-printf 'SQL_PASSWORD=fixture-secret-never-print\nMINIO_ROOT_ACCESS=fixture-minio-root\nMINIO_ROOT_SECRET=fixture:/@"minio-root-never-print\nOWNER_API_KEY=owner-api-key-never-print\nEAST_PASSWORD=east-owner-never-print\nWEST_PASSWORD=west-owner-never-print\nOAUTH_SECRET=malicious-$(touch /tmp/must-not-run)-never-print\n' > "$SECRET_FILE"
+printf 'SQL_PASSWORD=fixture-secret-never-print\nOWNER_API_KEY=owner-api-key-never-print\nEAST_PASSWORD=east-owner-never-print\nWEST_PASSWORD=west-owner-never-print\nOAUTH_SECRET=malicious-$(touch /tmp/must-not-run)-never-print\n' > "$SECRET_FILE"
 chmod 600 "$SECRET_FILE"
 
 write_inventory() {
@@ -1718,7 +1715,7 @@ write_inventory() {
       --argjson logicPort "$HTTP_PORT" --argjson eastPort "$EAST_PORT" --argjson westPort "$WEST_PORT" '{
       schemaVersion:8, environment:"test-observatory", installationId:"test-installation",productRoot:($root+"/skymonitor"),
       source:{revision:$revision,dirtyDisposition:"allow-dirty"},
-      secretSource:{path:$secret,requiredReferences:["SQL_PASSWORD","MINIO_ROOT_ACCESS","MINIO_ROOT_SECRET","OWNER_API_KEY","EAST_PASSWORD","WEST_PASSWORD","OAUTH_SECRET"]},
+      secretSource:{path:$secret,requiredReferences:["SQL_PASSWORD","OWNER_API_KEY","EAST_PASSWORD","WEST_PASSWORD","OAUTH_SECRET"]},
       observatory:{name:"Test Observatory",latitudeDegrees:19.5,longitudeDegrees:-155.5,elevationMeters:1000,timeZoneId:"Pacific/Honolulu"},
       logicHost:{name:"logic",friendlyName:"Test LogicHost",instanceId:"11111111-1111-4111-8111-111111111111",applicationIdentity:"test-logic",catalogId:"test-production",cookieName:"hvo.skymonitor.11111111111141118111111111111111",sshHost:"logic@example",dockerContext:"logic-context",expectedArchitecture:"amd64",expectedHostName:"logic-node",
         expectedHostIdentity:"logic-machine",expectedDockerDaemonIdentity:"logic-daemon",runtimeRoot:($root+"/skymonitor/logichosts/11111111-1111-4111-8111-111111111111"),runtimeOwner:$owner,
@@ -1740,17 +1737,16 @@ write_inventory() {
         services:{mode:"existing",
           sql:{host:"127.0.0.1",port:1433,database:"hvo-test",adminUser:"sa",adminSecretReference:"SQL_PASSWORD",initializerUser:"hvo-init",initializerSecretReference:"SQL_PASSWORD",initializerConnectionReference:"SQL_PASSWORD",runtimeUser:"hvo-runtime",runtimeSecretReference:"SQL_PASSWORD",runtimeConnectionReference:"SQL_PASSWORD"},
           redis:{host:"127.0.0.1",port:6379,prefix:"hvo-test:",adminSecretReference:"SQL_PASSWORD",user:"hvo-runtime",secretReference:"SQL_PASSWORD"},
-          minio:{host:"127.0.0.1",port:9000,useSsl:false,artifactBucket:"hvo-test-artifacts",diagnosticsBucket:"hvo-test-diagnostics",rootAccessKeyReference:"MINIO_ROOT_ACCESS",rootSecretKeyReference:"MINIO_ROOT_SECRET",accessKeyReference:"SQL_PASSWORD",secretKeyReference:"SQL_PASSWORD"},
+          objectStore:{root:"/var/lib/hvo/object-store",uid:4242,gid:4343,filesystemUuid:"fa678c86-1c12-4eba-8f04-c84256772089",minimumFreeBytes:10737418240,minimumFreeInodes:1048576,artifactBucket:"hvo-test-artifacts",diagnosticsBucket:"hvo-test-diagnostics"},
           smtp:{kind:"production",host:"127.0.0.1",ports:[2525,null],usernameReference:null,passwordReference:null},
-          images:{sqlServer:null,redis:null,minio:null,minioClient:null,mailpit:null}},
+          images:{sqlServer:null,redis:null,mailpit:null}},
         resources:{project:"hvo-test",sqlDatabase:"hvo-test",redisPrefix:"hvo-test:",artifactBucket:"hvo-test-artifacts",diagnosticsBucket:"hvo-test-diagnostics"},
         certificates:{signingPath:($root+"/signing.pfx"),encryptionPath:($root+"/encryption.pfx"),signingPasswordReference:null,encryptionPasswordReference:null},
         automation:{ownerApiKeySecretReference:"OWNER_API_KEY"},
         deviceBootstrap:{clientId:"system-camera-agent",clientSecretReference:"SQL_PASSWORD",scopes:["api.camera"]},
         transient:{mode:"Off"},
         workload:{kind:"W0",durationSeconds:120,sustainedArmOptIn:true},
-        secretMappings:[{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb"},{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb-migrations"},
-          {reference:"SQL_PASSWORD",key:"ObjectStorage__AccessKey"},{reference:"SQL_PASSWORD",key:"ObjectStorage__SecretKey"}],
+        secretMappings:[{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb"},{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb-migrations"}],
           limits:{cpus:null,memory:null,sqlMemory:null,sqlMemoryLimitMb:null}}
     }' > "$INVENTORY"
     cp "$INVENTORY" "$BASE_INVENTORY"

@@ -13,7 +13,7 @@ for capabilities that are not implemented.
 | OAuth | Authorization-code with PKCE, client credentials, password, and refresh-token grants through `/connect/authorize` and `/connect/token`. |
 | Devices | Registration at `/devices/register`, inventory and revocation at `/devices`, and CameraAgent import at `/devices/bootstrap`. |
 | Local CameraAgent users | SQLite-backed local Identity and one configuration-seeded site owner. This identity is separate from LogicHost. |
-| Runtime state | SQL Server `SkyMonitor`, the two approved MinIO buckets, prefixed Redis cache keys, both hosts' Data Protection keys, CameraAgent local Identity, and CameraAgent provisioning files. |
+| Runtime state | SQL Server `SkyMonitor`, the two approved object-store buckets, prefixed Redis cache keys, both hosts' Data Protection keys, CameraAgent local Identity, and CameraAgent provisioning files. |
 | Observability | `/alive`, `/health`, `/metrics`, structured token/API-key events, and ASP.NET request traces. |
 
 The repository provides production OpenIddict signing and encryption certificate
@@ -44,12 +44,12 @@ implemented and tested.
    keys, or full environment dumps in tickets, logs, shell history, or retained
    evidence.
 2. Use only the `SkyMonitor` SQL Server database, Redis keys beginning with
-   `skymonitor:`, and MinIO buckets `skymonitor-diagnostics` and
+   `skymonitor:`, and object-store buckets `skymonitor-diagnostics` and
    `skymonitor-artifacts`.
 3. Never clear a Redis database. Redis is not the Identity or OpenIddict store,
    so deleting Redis data does not revoke cookies or tokens.
-4. Never use MinIO root credentials from an application. They are reserved for
-   provisioning the scoped application service account.
+4. Never write into the object-store root from anything other than the single
+   LogicHost writer. External mutation is unqualified.
 5. Preserve evidence and obtain an approved backup before reset, deletion, or
    credential revocation. Record the operator, approver, UTC time, affected
    identity, reason, validation result, and rollback decision without recording
@@ -447,8 +447,8 @@ explicit reset deletes the selected host's keys.
 | State | Authority | Required recovery owner |
 | --- | --- | --- |
 | SQL Server `SkyMonitor` | Users, API keys, OpenIddict, registrations, metadata | SQL Server operator; use an approved SQL Server backup with encryption, retention, and restore verification. |
-| `skymonitor-artifacts` | Immutable artifact payloads | MinIO operator; preserve object keys, metadata, checksums, and version/lifecycle state. |
-| `skymonitor-diagnostics` | Diagnostic objects | MinIO operator; retain only as required by policy. |
+| `skymonitor-artifacts` | Immutable artifact payloads | Application operator; use a completed LogicHost object-store backup and preserve keys, descriptors, and checksums. |
+| `skymonitor-diagnostics` | Diagnostic objects | Application operator; retain only as required by policy. |
 | Redis `skymonitor:*` | Disposable cache | No identity restore dependency; rebuild from authoritative state. |
 | LogicHost Data Protection | Cookies and protected envelopes | Application operator; back up with restricted permissions. |
 | CameraAgent Identity, Data Protection, provisioning | Local users and encrypted device credentials | Site operator; back up and restore as one consistency unit. |
@@ -458,9 +458,9 @@ explicit reset deletes the selected host's keys.
 SQL Server is provisioned separately from repository Compose. The SQL Server
 operator must provide the exact instance/container, backup destination,
 encryption, retention, and tested restore command. Do not substitute a command
-for another database engine. Likewise, MinIO backup must use the approved
-site-specific replication or snapshot procedure; copying SQL metadata without
-the corresponding objects is not a complete backup.
+for another database engine. Likewise, the object store must be backed up with
+the LogicHost offline object-store backup and verify modes; copying SQL metadata
+without the corresponding objects is not a complete backup.
 
 The application connection must use a login scoped to `SkyMonitor`, never `sa`
 or another instance administrator. Production separates the one-shot
@@ -483,12 +483,12 @@ destination outside the runtime data root:
 The script stops both applications, archives only the supported LogicHost and
 CameraAgent application paths, creates a versioned internal inventory and an
 adjacent relocatable one-line `.sha256` checksum, and leaves both applications
-stopped for coordinated SQL Server and MinIO backups. It never archives the
+stopped for coordinated SQL Server and object-store backups. It never archives the
 catalog or arbitrary runtime-root content. Do not print or attach the archive,
 inventory, or checksum. Start applications only after all authoritative
 backups complete.
 
-After the SQL Server and MinIO operator restores are staged, restore application
+After the SQL Server and object-store restores are staged, restore application
 state with:
 
 ```bash
@@ -520,8 +520,9 @@ Restore order is:
 1. Validate recovery-set authorization, the target environment, and all
    operator-managed backup evidence.
 2. Stop both applications and keep them stopped through shared-service restore.
-3. Restore MinIO buckets and verify object inventory and checksums.
-4. Restore SQL Server, run database consistency checks, and validate its MinIO
+3. Restore the object store with `--host-mode=object-store-restore` and verify
+   its inventory and checksums.
+4. Restore SQL Server, run database consistency checks, and validate its
    object references.
 5. Run `infra:restore-app-state` to validate and install, through staged
    same-filesystem renames and a durable phase marker, both hosts' Data
@@ -530,12 +531,12 @@ Restore order is:
 6. Allow the script to start LogicHost, wait for LogicHost `/health`, start
    CameraAgent, and wait for CameraAgent `/health`.
 7. Run authentication smoke checks and verify users, clients, API-key state,
-   registration state, MinIO object references, and direct credential
+   registration state, object references, and direct credential
    rejection/acceptance without exposing secrets.
 8. Confirm durable fleet heartbeats resume, pending heartbeat delivery drains,
    and fleet-heartbeat health returns to its expected state.
 9. Wait for the central recovery inventory to complete or explicitly disposition
-   its bounded findings. Verify SQL rows, MinIO objects, checksums, derivative
+   its bounded findings. Verify SQL rows, stored objects, checksums, derivative
    jobs, lineage, and retention references before deleting rollback or
    quarantine state.
 
@@ -555,9 +556,9 @@ These commands are destructive and have no automatic rollback:
 Protection keys and its Development certificate store. `--reset cameraagent`
 removes local Identity, Data Protection,
 provisioning, packaged sample payload, archive, and outbox state. Shared SQL
-Server, Redis, MinIO, and Mailpit data are never deleted by these scripts.
+Server, Redis, Mailpit, and object-store data are never deleted by these scripts.
 
-## Redis and MinIO Safety
+## Redis and Object-Store Safety
 
 Redis is currently a cache, not an authentication/session authority. To inspect
 repository-owned keys, use cursor-based scanning with the password supplied
@@ -586,11 +587,11 @@ not revoke Identity cookies, OpenIddict tokens, API keys, or device keys. Delete
 the manifest securely after approved review; do not retain it in a support
 bundle.
 
-LogicHost uses `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY`. The root account is
-used only by `./scripts/infra:provision-minio-account`. The current provisioning
-script does not rotate an existing service-account secret, so MinIO credential
-rotation requires an operator-owned MinIO procedure and validation with the
-scoped policy before applications are restarted.
+The object store has no credential. Its authorization boundary is ownership
+`4242:4343` and mode `0750` on the root and both bucket directories, and a
+single LogicHost writer holding an exclusive root lock. Reassert ownership and
+mode and rerun `./scripts/qualify:filesystem-object-store` after any operator
+action that could change them, before applications are restarted.
 
 ## Incident Response
 
@@ -647,7 +648,7 @@ as a metric label.
 | Owner recovery returns unsupported or a public recovery route returns `404` | Confirm the command runs as the installed runtime user on the installed Linux host, the lifecycle-control token and mirror still match the manifest, runtime password authority is removed, and `<state-root>/identity/owner.sock` is the expected owner-only socket. Never retry against a TCP URL or paste the token into a request. |
 | Owner recovery reports a conflict | Inspect owner/bootstrap ambiguity and retained manifest correlation. Do not modify Identity SQLite. |
 | CameraAgent starts without an owner password | This is valid only with a durable owner and explicit `AllowMissingAdminPassword=true`. Initial seeding still requires a temporary password. |
-| MinIO access fails | Check scoped application credentials and the two approved buckets; do not switch the application to root credentials. |
+| Object-store access fails | Check root and bucket ownership `4242:4343`, mode `0750`, both bucket directories, and that no second writer holds the root. |
 
 ## Validation Evidence
 
@@ -662,7 +663,7 @@ bash -n scripts/identity:smoke scripts/infra:start scripts/infra:reset \
 
 Behavioral evidence is provided by the existing Unit and Integration suites for
 token issuance, API-key/bearer protection, client reconciliation, device
-credential validation, CameraAgent bootstrap, dependency health, Redis, MinIO,
-and Mailpit. See [CI pipeline](../runbooks/ci-pipeline.md) for the canonical
+credential validation, CameraAgent bootstrap, dependency health, Redis, object
+storage, and Mailpit. See [CI pipeline](../runbooks/ci-pipeline.md) for the canonical
 commands and [secrets guidance](../security/secrets.md) for the configuration
 catalog.

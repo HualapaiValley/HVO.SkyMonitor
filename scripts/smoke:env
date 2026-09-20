@@ -10,15 +10,14 @@ readonly SMOKE_ENVIRONMENT_VARIABLES=(
     SMOKETEST_CONFIRM_SHARED_DATA_RESET SMOKETEST_BOOTSTRAP_MODE
     SMOKETEST_RUN_STATE_PATH SMOKETEST_EVIDENCE_ROOT
     SMOKETEST_COMPOSE_PROJECT SMOKETEST_REDIS_PREFIX
-    SMOKETEST_MINIO_ARTIFACT_BUCKET SMOKETEST_MINIO_DIAGNOSTICS_BUCKET
+    SMOKETEST_OBJECT_STORE_ARTIFACT_BUCKET SMOKETEST_OBJECT_STORE_DIAGNOSTICS_BUCKET
     SMOKETEST_DOCKER_HOST_NAME SMOKETEST_DOCKER_HOST_ADDRESS
     SMOKETEST_CONTROL_REPO_PATH SMOKETEST_REPO_HOST_PATH HVO_RUNTIME_DATA_ROOT
     LOGIC_HOST_HTTP_PORT CAMERA_AGENT_HTTP_PORT
     SMOKETEST_LOGIC_HOST_PUBLIC_URL SMOKETEST_CAMERA_AGENT_PUBLIC_URL
     SQLSERVER_HOST SQLSERVER_PORT SQLSERVER_DATABASE SQLSERVER_USER SQLSERVER_PASSWORD
     REDIS_HOST REDIS_PORT REDIS_USER REDIS_PASSWORD
-    MINIO_HOST MINIO_API_PORT MINIO_CONSOLE_PORT MINIO_ROOT_USER MINIO_ROOT_PASSWORD
-    MINIO_ACCESS_KEY MINIO_SECRET_KEY SMTP_HOST SMTP_PORT SMTP_WEB_PORT SMTP_FROM
+    HVO_OBJECT_STORE_ROOT SMTP_HOST SMTP_PORT SMTP_WEB_PORT SMTP_FROM
     OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL
     LOGIC_HOST_SMOKE_OWNER_EMAIL LOGIC_HOST_SMOKE_OWNER_USERNAME
     LOGIC_HOST_SMOKE_OWNER_PASSWORD LOGIC_HOST_SMOKE_API_KEY
@@ -84,8 +83,7 @@ is_smoke_variable() {
         SMOKETEST_*|HVO_RUNTIME_DATA_ROOT|LOGIC_HOST_HTTP_PORT|CAMERA_AGENT_HTTP_PORT|\
         SQLSERVER_HOST|SQLSERVER_PORT|SQLSERVER_DATABASE|SQLSERVER_USER|SQLSERVER_PASSWORD|\
         REDIS_HOST|REDIS_PORT|REDIS_USER|REDIS_PASSWORD|\
-        MINIO_HOST|MINIO_API_PORT|MINIO_CONSOLE_PORT|MINIO_ROOT_USER|MINIO_ROOT_PASSWORD|\
-        MINIO_ACCESS_KEY|MINIO_SECRET_KEY|SMTP_HOST|SMTP_PORT|SMTP_WEB_PORT|SMTP_FROM|\
+        HVO_OBJECT_STORE_ROOT|SMTP_HOST|SMTP_PORT|SMTP_WEB_PORT|SMTP_FROM|\
         OTEL_EXPORTER_OTLP_ENDPOINT|OTEL_EXPORTER_OTLP_PROTOCOL|\
         LOGIC_HOST_SMOKE_OWNER_EMAIL|LOGIC_HOST_SMOKE_OWNER_USERNAME|\
         LOGIC_HOST_SMOKE_OWNER_PASSWORD|LOGIC_HOST_SMOKE_API_KEY|\
@@ -194,13 +192,13 @@ initialize() {
     local bucket_token="${SMOKETEST_RUN_ID,,}"
     SMOKETEST_COMPOSE_PROJECT="${SMOKETEST_COMPOSE_PROJECT:-hvo-smoke-$bucket_token}"
     SMOKETEST_REDIS_PREFIX="${SMOKETEST_REDIS_PREFIX:-skymonitor:}"
-    SMOKETEST_MINIO_ARTIFACT_BUCKET="${SMOKETEST_MINIO_ARTIFACT_BUCKET:-skymonitor-artifacts}"
-    SMOKETEST_MINIO_DIAGNOSTICS_BUCKET="${SMOKETEST_MINIO_DIAGNOSTICS_BUCKET:-skymonitor-diagnostics}"
+    SMOKETEST_OBJECT_STORE_ARTIFACT_BUCKET="${SMOKETEST_OBJECT_STORE_ARTIFACT_BUCKET:-skymonitor-artifacts}"
+    SMOKETEST_OBJECT_STORE_DIAGNOSTICS_BUCKET="${SMOKETEST_OBJECT_STORE_DIAGNOSTICS_BUCKET:-skymonitor-diagnostics}"
     if [[ "$SMOKETEST_DATA_POLICY" == "isolated" ]]; then
         SQLSERVER_DATABASE="SkyMonitorSmoke_$namespace_token"
         SMOKETEST_REDIS_PREFIX="skymonitor:$SMOKETEST_RUN_ID:"
-        SMOKETEST_MINIO_ARTIFACT_BUCKET="hvo-$bucket_token-artifacts"
-        SMOKETEST_MINIO_DIAGNOSTICS_BUCKET="hvo-$bucket_token-diagnostics"
+        SMOKETEST_OBJECT_STORE_ARTIFACT_BUCKET="hvo-$bucket_token-artifacts"
+        SMOKETEST_OBJECT_STORE_DIAGNOSTICS_BUCKET="hvo-$bucket_token-diagnostics"
     fi
     LOGIC_HOST_SMOKE_OWNER_PASSWORD="${LOGIC_HOST_SMOKE_OWNER_PASSWORD:-$(generate_password)}"
     LOGIC_HOST_SMOKE_API_KEY="${LOGIC_HOST_SMOKE_API_KEY:-$(generate_key)}"
@@ -321,12 +319,12 @@ validate_loaded() {
     local required=(
         SMOKETEST_SCHEMA_VERSION SMOKETEST_RUN_ID SMOKETEST_DATA_POLICY SMOKETEST_BOOTSTRAP_MODE
         SMOKETEST_RUN_STATE_PATH SMOKETEST_EVIDENCE_ROOT SMOKETEST_COMPOSE_PROJECT
-        SMOKETEST_REDIS_PREFIX SMOKETEST_MINIO_ARTIFACT_BUCKET SMOKETEST_MINIO_DIAGNOSTICS_BUCKET
+        SMOKETEST_REDIS_PREFIX SMOKETEST_OBJECT_STORE_ARTIFACT_BUCKET SMOKETEST_OBJECT_STORE_DIAGNOSTICS_BUCKET
         SMOKETEST_DOCKER_HOST_NAME
         SMOKETEST_DOCKER_HOST_ADDRESS SMOKETEST_CONTROL_REPO_PATH SMOKETEST_REPO_HOST_PATH
         HVO_RUNTIME_DATA_ROOT SMOKETEST_LOGIC_HOST_PUBLIC_URL SMOKETEST_CAMERA_AGENT_PUBLIC_URL
         SQLSERVER_HOST SQLSERVER_DATABASE SQLSERVER_USER SQLSERVER_PASSWORD REDIS_HOST REDIS_USER
-        REDIS_PASSWORD MINIO_HOST MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_ACCESS_KEY MINIO_SECRET_KEY
+        REDIS_PASSWORD HVO_OBJECT_STORE_ROOT
         SMTP_HOST SMTP_FROM OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL
         LOGIC_HOST_SMOKE_OWNER_EMAIL LOGIC_HOST_SMOKE_OWNER_USERNAME LOGIC_HOST_SMOKE_OWNER_PASSWORD
         LOGIC_HOST_SMOKE_API_KEY CAMERA_AGENT_ADMIN_EMAIL CAMERA_AGENT_ADMIN_PASSWORD
@@ -357,17 +355,17 @@ validate_loaded() {
     if [[ "$SMOKETEST_DATA_POLICY" == "isolated" ]]; then
         [[ "$SQLSERVER_DATABASE" == "SkyMonitorSmoke_$namespace_token" ]] || fail "isolated SQL database must equal the run-owned canonical name"
         [[ "$SMOKETEST_REDIS_PREFIX" == "skymonitor:$SMOKETEST_RUN_ID:" ]] || fail "isolated Redis prefix must equal the run-owned canonical prefix"
-        [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" == "hvo-$bucket_token-artifacts" ]] || fail "isolated artifact bucket must equal the run-owned canonical name"
-        [[ "$SMOKETEST_MINIO_DIAGNOSTICS_BUCKET" == "hvo-$bucket_token-diagnostics" ]] || fail "isolated diagnostics bucket must equal the run-owned canonical name"
+        [[ "$SMOKETEST_OBJECT_STORE_ARTIFACT_BUCKET" == "hvo-$bucket_token-artifacts" ]] || fail "isolated artifact bucket must equal the run-owned canonical name"
+        [[ "$SMOKETEST_OBJECT_STORE_DIAGNOSTICS_BUCKET" == "hvo-$bucket_token-diagnostics" ]] || fail "isolated diagnostics bucket must equal the run-owned canonical name"
     else
         [[ "$SQLSERVER_DATABASE" == "SkyMonitor" ]] || fail "$SMOKETEST_DATA_POLICY SQL database must be SkyMonitor"
         [[ "$SMOKETEST_REDIS_PREFIX" == "skymonitor:" ]] || fail "$SMOKETEST_DATA_POLICY Redis prefix must be skymonitor:"
-        [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" == "skymonitor-artifacts" ]] || fail "$SMOKETEST_DATA_POLICY artifact bucket must be skymonitor-artifacts"
-        [[ "$SMOKETEST_MINIO_DIAGNOSTICS_BUCKET" == "skymonitor-diagnostics" ]] || fail "$SMOKETEST_DATA_POLICY diagnostics bucket must be skymonitor-diagnostics"
+        [[ "$SMOKETEST_OBJECT_STORE_ARTIFACT_BUCKET" == "skymonitor-artifacts" ]] || fail "$SMOKETEST_DATA_POLICY artifact bucket must be skymonitor-artifacts"
+        [[ "$SMOKETEST_OBJECT_STORE_DIAGNOSTICS_BUCKET" == "skymonitor-diagnostics" ]] || fail "$SMOKETEST_DATA_POLICY diagnostics bucket must be skymonitor-diagnostics"
     fi
     [[ "$SMOKETEST_COMPOSE_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Compose project name must contain only lowercase letters, digits, hyphens, and underscores"
-    [[ "$SMOKETEST_MINIO_ARTIFACT_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || fail "artifact bucket name is invalid"
-    [[ "$SMOKETEST_MINIO_DIAGNOSTICS_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || fail "diagnostics bucket name is invalid"
+    [[ "$SMOKETEST_OBJECT_STORE_ARTIFACT_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || fail "artifact bucket name is invalid"
+    [[ "$SMOKETEST_OBJECT_STORE_DIAGNOSTICS_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || fail "diagnostics bucket name is invalid"
     [[ "$SMOKETEST_BOOTSTRAP_MODE" == "manual" || "$SMOKETEST_BOOTSTRAP_MODE" == "automated" ]] ||
         fail "SMOKETEST_BOOTSTRAP_MODE must be manual or automated"
     [[ "$SMOKETEST_CADENCE_MODE" == "MinimumStartInterval" ]] || fail "smoke cadence must use MinimumStartInterval"
@@ -381,7 +379,7 @@ validate_loaded() {
     require_identity_password CAMERA_AGENT_ADMIN_PASSWORD
     [[ "$OTEL_EXPORTER_OTLP_PROTOCOL" == "http/protobuf" ]] || fail "OTEL_EXPORTER_OTLP_PROTOCOL must be http/protobuf"
 
-    for name in LOGIC_HOST_HTTP_PORT CAMERA_AGENT_HTTP_PORT SQLSERVER_PORT REDIS_PORT MINIO_API_PORT MINIO_CONSOLE_PORT SMTP_PORT SMTP_WEB_PORT; do
+    for name in LOGIC_HOST_HTTP_PORT CAMERA_AGENT_HTTP_PORT SQLSERVER_PORT REDIS_PORT SMTP_PORT SMTP_WEB_PORT; do
         require_port "$name"
     done
     for name in SMOKETEST_EXPECTED_WIDTH_PIXELS SMOKETEST_EXPECTED_HEIGHT_PIXELS SMOKETEST_CATALOG_ROW_COUNT; do
@@ -539,7 +537,8 @@ preflight() {
     fi
     probe_tcp "SQL Server" "$SQLSERVER_HOST" "$SQLSERVER_PORT"
     probe_tcp "Redis" "$REDIS_HOST" "$REDIS_PORT"
-    probe_tcp "MinIO" "$MINIO_HOST" "$MINIO_API_PORT"
+    [[ "$HVO_OBJECT_STORE_ROOT" == /* ]] ||
+        fail "HVO_OBJECT_STORE_ROOT must be an absolute path on the LogicHost host"
     probe_tcp "SMTP" "$SMTP_HOST" "$SMTP_PORT"
     local otel_authority otel_host otel_port require_port_value
     otel_authority="${OTEL_EXPORTER_OTLP_ENDPOINT#*://}"
