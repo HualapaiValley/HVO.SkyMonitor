@@ -820,10 +820,10 @@ orphan, and tamper rejection for the four phase files. They also reject
 mirror-only, tampered, and unsafe smoke quartets and verify inventory hash drift
 cannot create acceptance files or alter topology projected from a prior snapshot.
 
-The runtime inventory now has 111 rows. The separate definition-only contract at
+The runtime inventory now has 116 rows. The separate definition-only contract at
 `deploy/split-host/acceptance/phase14-evidence-contract.json` binds that count and
 the canonical inventory digest without changing runtime ledger compatibility. It
-maps 103 test-backed rows to future source-family import, the two supported
+maps 108 test-backed rows to future source-family import, the two supported
 campaigns to executable manifests, two unsupported campaigns to explicit
 deferment, and four separately labeled gates to exclusion. See
 `docs/planning/phase14-evidence-campaign.md` for workload values, artifact
@@ -888,8 +888,8 @@ Every `;case=` value must exactly equal the fragment's retained selector. A
 passing method TRX cannot replace a missing fragment. When one scenario has
 multiple data-row or boundary observations, their assertion and measurement
 schemas must be identical; the imported evidence records their count. The
-importer generates assembly provenance itself, publishes 25 method bundles and
-103 runtime-compatible scenario artifacts atomically beneath
+importer generates assembly provenance itself, publishes 29 method bundles and
+108 runtime-compatible scenario artifacts atomically beneath
 `source-import/`, and binds every bundle, assembly, sanitized TRX,
 source-evidence file, and artifact by byte length where applicable and SHA-256.
 Each source bundle requires `trialResults`. Standard methods retain one

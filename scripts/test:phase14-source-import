@@ -246,10 +246,10 @@ export HVO_DERIVATIVE_PERF_SMOKE=1 HVO_DERIVATIVE_P5_DIAGNOSTIC_TRIAL=1 \
   VSTEST_TESTCASE_FILTER=ambient PHASE14_INFRASTRUCTURE_SENTINEL=inherited
 phase14_source_collect "$REPO_ROOT" "$COLLECT_OUTPUT" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
 [[ "$(grep -c '^build' "$COLLECTION_LOG")" == 2 ]] || fail 'Collector did not build exactly two standard projects.'
-[[ "$(grep -c '^test' "$COLLECTION_LOG")" == 25 ]] || fail 'Collector did not execute exactly 25 standard methods.'
+[[ "$(grep -c '^test' "$COLLECTION_LOG")" == 28 ]] || fail 'Collector did not execute exactly 28 standard methods.'
 [[ "$(sed -n '1p' "$COLLECTION_LOG")" == build$'\t'tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj ]] ||
   fail 'Collector did not build before standard executions.'
-[[ "$(grep -n '^build' "$COLLECTION_LOG" | sed -n '2p' | cut -d: -f1)" -lt "$(grep -n '^test' "$COLLECTION_LOG" | sed -n '20p' | cut -d: -f1)" ]] ||
+[[ "$(grep -n '^build' "$COLLECTION_LOG" | sed -n '2p' | cut -d: -f1)" -lt "$(grep -n '^test' "$COLLECTION_LOG" | sed -n '23p' | cut -d: -f1)" ]] ||
   fail 'Second project was not built before its executions.'
 while IFS= read -r expected_fqn; do
     [[ "$(grep -F -c $'\tFullyQualifiedName='"$expected_fqn" "$COLLECTION_LOG")" == 1 ]] || fail 'Collector filter was not exact.'
@@ -370,15 +370,15 @@ chmod 600 "$first_method/fragments/$first_scenario--$second_hash.json"
 
 phase14_source_import "$REPO_ROOT" "$INPUT" "$OUTPUT" "$harness_revision" "$contract" "$inventory"
 publication="$OUTPUT/source-import"
-jq -e '.status == "recorded" and .campaignStatus == "not-run" and (.entries | length) == 105 and
-  ([.entries[].scenarioId] | length == (unique | length)) and (.methodBundles | length) == 26 and
+jq -e '.status == "recorded" and .campaignStatus == "not-run" and (.entries | length) == 108 and
+  ([.entries[].scenarioId] | length == (unique | length)) and (.methodBundles | length) == 29 and
   all(.entries[]; .status == "recorded")' \
   "$publication/source-import-index.json" >/dev/null || fail 'Positive import counts or statuses are wrong.'
 first_artifact="$(jq -r --arg scenario "$first_scenario" '.entries[] | select(.scenarioId == $scenario) | .artifactRelativePath' "$publication/source-import-index.json")"
 jq -e '.measurements | any(.id == "observation-count" and .value == 2 and .unit == "count")' "$publication/$first_artifact" >/dev/null ||
   fail 'Multiple observations were not aggregated.'
-[[ "$(find "$publication/methods" -name source-bundle.json | wc -l)" == 26 ]] || fail 'Positive import method count is wrong.'
-[[ "$(find "$publication" -type f -name '*.trx' | wc -l)" == 56 ]] || fail 'Sanitized TRX count is wrong.'
+[[ "$(find "$publication/methods" -name source-bundle.json | wc -l)" == 29 ]] || fail 'Positive import method count is wrong.'
+[[ "$(find "$publication" -type f -name '*.trx' | wc -l)" == 62 ]] || fail 'Sanitized TRX count is wrong.'
 [[ "$(grep -rl 'raw private trx' "$publication" | wc -l)" == 0 ]] || fail 'Raw TRX was retained.'
 before="$(phase14_source_hash "$publication/source-import-index.json")"
 phase14_source_import "$REPO_ROOT" "$INPUT" "$OUTPUT" "$harness_revision" "$contract" "$inventory"

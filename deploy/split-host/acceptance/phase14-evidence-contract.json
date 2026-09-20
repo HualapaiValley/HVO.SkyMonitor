@@ -8,8 +8,8 @@
   "inventory": {
     "relativePath": "deploy/split-host/acceptance/phase14-scenarios.json",
     "schemaVersion": 2,
-    "scenarioCount": 113,
-    "canonicalSha256": "7d9b300d7e6d24d82e6b9123b1cd1884d096141fb3b45b09199a615626b751f0",
+    "scenarioCount": 116,
+    "canonicalSha256": "5b1fbd3750e9f87bb485ef78e2f77603644f8bfcb900488a2b8f7ede884695ec",
     "reconciliation": "The raw-boundary-payload-partially-written row added by a2e61a1bbff5decf454151ddae9eef72934d6113 remains distinct from payload-written; calibration-before-bundle-write and calibration-bundle-publication cover the canonical envelope boundaries introduced by issue 470."
   },
   "gateDisposition": {
@@ -21,7 +21,7 @@
   },
   "dispositionSummary": {
     "accepted-current-head": 0,
-    "source-family-import": 105,
+    "source-family-import": 108,
     "real-campaign": 2,
     "deferred": 2,
     "excluded": 4
@@ -62,8 +62,8 @@
       "id": "cameraagent-tests",
       "evidenceSourcePrefix": "test:HVO.SkyMonitor.CameraAgent.Tests.",
       "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
-      "scenarioCount": 77,
-      "uniqueMethodCount": 19,
+      "scenarioCount": 80,
+      "uniqueMethodCount": 22,
       "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"ee117c1e8cf3e04998825d366da663e16c2b95ed\" && test \"$(git rev-parse HEAD^{tree})\" = \"17a0ad69452d710c82847f9a515022de05ebfaa5\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --no-restore -p:NoIncremental=true -p:PathMap=\"$(pwd)=hvo-source\" --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/ee117c1e8cf3e04998825d366da663e16c2b95ed/cameraagent-tests/{method-id} --logger \"trx;LogFileName=result.trx\"",
       "input": "One clean-revision TRX and one strict scenario-evidence entry per mapped scenario; case selectors address source evidence, never a TRX data row.",
       "sanitizer": "phase14-trx-sanitizer-v1",

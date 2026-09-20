@@ -69,6 +69,7 @@ deploy_acceptance_required_ids() {
       "logichost-network-outage","object-store-failure","sql-failure","worker-before-output-crash",
       "worker-after-output-before-completion-crash","out-of-order-upload","permanent-upload-rejection","disk-pressure",
       "optional-lane-backlog","duplicate-delivery","corrupt-delivery","lease-crash-before-work","lease-crash-after-work","bounded-shutdown",
+      "raw-boundary-before-identity-reservation","raw-boundary-after-identity-reservation","raw-boundary-before-initialization-lifecycle-lock",
       "raw-boundary-payload-partially-written","raw-boundary-payload-written","raw-boundary-payload-flushed","raw-boundary-payload-published","raw-boundary-before-journal-commit",
       "raw-boundary-after-journal-commit","raw-boundary-before-wakeup","raw-boundary-sidecar-directory-sync",
       "raw-boundary-migration-transaction-began","raw-boundary-before-migration-commit","raw-boundary-validation-completed",
