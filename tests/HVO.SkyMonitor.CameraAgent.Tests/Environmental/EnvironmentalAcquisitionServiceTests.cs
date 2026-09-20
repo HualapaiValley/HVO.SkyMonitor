@@ -34,7 +34,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
             options,
             TimeProvider.System);
         var retention = new FailOnceRetentionStore();
-        var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
+        using var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
         using var telemetry = new EnvironmentalAcquisitionTelemetry();
         using var service = new EnvironmentalAcquisitionService(
             coordinator,
@@ -87,7 +87,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
                 options,
                 TimeProvider.System,
                 stateStore);
-            var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
+            using var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
             using var telemetry = new EnvironmentalAcquisitionTelemetry();
             using var service = new EnvironmentalAcquisitionService(
                 coordinator,
@@ -115,6 +115,162 @@ public sealed class EnvironmentalAcquisitionServiceTests
         }
     }
 
+    [TestMethod]
+    public async Task PeriodicStartup_WithSharedSqlitePersistenceAndRetention_HasNoUnexpectedFailure()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-environmental-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var services = new ServiceCollection().BuildServiceProvider();
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
+                {
+                    Enabled = true,
+                    MaximumConcurrency = 4,
+                    QueueCapacity = 32,
+                    SourceTimeoutMilliseconds = 5_000,
+                    Sources = StartupSourceKinds.Select((kind, index) => Source(kind, index)).ToArray()
+                }
+            });
+            using var store = new SqliteEnvironmentalObservationOutbox();
+            var factory = new EnvironmentalSourceFactory(
+                services,
+                [new EnvironmentalSourceRegistration(
+                    "VirtualEnvironment", typeof(VirtualEnvironmentalSource), typeof(VirtualEnvironmentalSourceOptions))]);
+            using var coordinator = new EnvironmentalAcquisitionCoordinator(
+                factory,
+                new StorePublisher(store, root),
+                new FixedDeploymentLocationStore(Location()),
+                options,
+                TimeProvider.System,
+                store);
+            using var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
+            using var telemetry = new EnvironmentalAcquisitionTelemetry();
+            using var service = new EnvironmentalAcquisitionService(
+                coordinator, store, store, telemetry, TimeProvider.System, options, logger);
+
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                await WaitForAttemptsAsync(store, root, StartupSourceKinds.Length).ConfigureAwait(false);
+                var attempts = await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false);
+                var snapshot = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
+                Assert.HasCount(StartupSourceKinds.Length, attempts);
+                Assert.AreEqual(StartupSourceKinds.Length, snapshot.StoredCount);
+                Assert.IsFalse(logger.Events.Any(static entry => entry.EventId == 2522));
+            }
+            finally
+            {
+                await service.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task PeriodicFailure_RecordsTheCaughtExceptionOnEvent2522()
+    {
+        var exception = new InvalidOperationException("Injected periodic persistence failure.");
+        var stateStore = new ThrowingAttemptStateStore(exception);
+        var fixture = CreateFailureService(
+            [EnvironmentalAcquisitionTrigger.Periodic], stateStore);
+        try
+        {
+            await fixture.StartAsync().ConfigureAwait(false);
+            var logged = await fixture.Logger.WaitForAsync(2522, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreSame(exception, logged.Exception);
+        }
+        finally
+        {
+            await fixture.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task QueuedFailure_RecordsTheCaughtExceptionOnEvent2522()
+    {
+        var exception = new InvalidOperationException("Injected queued persistence failure.");
+        var stateStore = new ThrowingAttemptStateStore(exception);
+        var fixture = CreateFailureService(
+            [EnvironmentalAcquisitionTrigger.OnDemand], stateStore);
+        try
+        {
+            await fixture.StartAsync().ConfigureAwait(false);
+            Assert.IsTrue(fixture.Service.TryEnqueue(new EnvironmentalTriggerRequest(
+                EnvironmentalAcquisitionTrigger.OnDemand, Epoch)));
+            var logged = await fixture.Logger.WaitForAsync(2522, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreSame(exception, logged.Exception);
+        }
+        finally
+        {
+            await fixture.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static FailureServiceFixture CreateFailureService(
+        IReadOnlyList<EnvironmentalAcquisitionTrigger> triggers,
+        IEnvironmentalAcquisitionStateStore stateStore)
+    {
+        var services = new ServiceCollection().BuildServiceProvider();
+        var source = Source(EnvironmentalObservationKind.AirTemperature, 0, triggers);
+        var options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = Path.Combine(Path.GetTempPath(), $"hvo-environmental-{Guid.NewGuid():N}"),
+            EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
+            {
+                Enabled = true,
+                QueueCapacity = 4,
+                Sources = [source]
+            }
+        });
+        var factory = new EnvironmentalSourceFactory(
+            services,
+            [new EnvironmentalSourceRegistration(
+                "VirtualEnvironment", typeof(VirtualEnvironmentalSource), typeof(VirtualEnvironmentalSourceOptions))]);
+        var coordinator = new EnvironmentalAcquisitionCoordinator(
+            factory,
+            new ConcurrentPublisher(),
+            new FixedDeploymentLocationStore(Location()),
+            options,
+            TimeProvider.System,
+            stateStore);
+        var telemetry = new EnvironmentalAcquisitionTelemetry();
+        var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
+        var service = new EnvironmentalAcquisitionService(
+            coordinator,
+            stateStore,
+            new NoopRetentionStore(),
+            telemetry,
+            TimeProvider.System,
+            options,
+            logger);
+        return new FailureServiceFixture(services, coordinator, telemetry, logger, service);
+    }
+
+    private static async Task WaitForAttemptsAsync(
+        SqliteEnvironmentalObservationOutbox store,
+        string root,
+        int count)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            var attempts = await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false);
+            if (attempts.Count >= count)
+            {
+                return;
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(25)).ConfigureAwait(false);
+        }
+        Assert.Fail($"Timed out waiting for {count} environmental startup attempts.");
+    }
+
     private static readonly EnvironmentalObservationKind[] StartupSourceKinds =
     [
         EnvironmentalObservationKind.AirTemperature,
@@ -131,7 +287,10 @@ public sealed class EnvironmentalAcquisitionServiceTests
         EnvironmentalObservationKind.CameraSensorTemperature
     ];
 
-    private static EnvironmentalSourceConfiguration Source(EnvironmentalObservationKind kind, int index)
+    private static EnvironmentalSourceConfiguration Source(
+        EnvironmentalObservationKind kind,
+        int index,
+        IReadOnlyList<EnvironmentalAcquisitionTrigger>? triggers = null)
     {
         var isBoolean = kind == EnvironmentalObservationKind.RainState;
         return new EnvironmentalSourceConfiguration
@@ -140,7 +299,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
             Type = "VirtualEnvironment",
             Kind = kind,
             Required = true,
-            Triggers = [EnvironmentalAcquisitionTrigger.Periodic],
+            Triggers = triggers ?? [EnvironmentalAcquisitionTrigger.Periodic],
             ScheduleEpochUtc = Epoch,
             PeriodSeconds = 30,
             EveryNthCapture = 3,
@@ -212,6 +371,22 @@ public sealed class EnvironmentalAcquisitionServiceTests
         }
     }
 
+    private sealed class StorePublisher(SqliteEnvironmentalObservationOutbox store, string root)
+        : IEnvironmentalObservationPublisher
+    {
+        public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(
+            EnvironmentalObservationFactV1 fact,
+            CancellationToken cancellationToken = default)
+        {
+            var result = await store.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
+            return new EnvironmentalObservationPublishResult(
+                result.Disposition == LocalEnvironmentalObservationCommitDisposition.Committed
+                    ? EnvironmentalObservationPublishDisposition.Enqueued
+                    : EnvironmentalObservationPublishDisposition.Duplicate,
+                null);
+        }
+    }
+
     private sealed class FirstBusyPerSourceStateStore(int expectedReceipts) : IEnvironmentalAcquisitionStateStore
     {
         private readonly ConcurrentDictionary<string, int> _calls = new(StringComparer.Ordinal);
@@ -272,6 +447,32 @@ public sealed class EnvironmentalAcquisitionServiceTests
             => ValueTask.FromResult(new LocalEnvironmentalRetentionResult(0, 0, 0, 0));
     }
 
+    private sealed class ThrowingAttemptStateStore(Exception exception) : IEnvironmentalAcquisitionStateStore
+    {
+        public ValueTask RecordAttemptAsync(
+            string root, EnvironmentalSourceDescriptor source, EnvironmentalAcquisitionReceipt receipt,
+            long? captureSequence, Guid? captureId, CancellationToken cancellationToken)
+            => ValueTask.FromException(exception);
+
+        public ValueTask<bool> RecordCaptureRegimeAsync(
+            string root, long captureSequence, Guid captureId, CaptureSolarRegime regime,
+            DateTimeOffset observedAtUtc, CancellationToken cancellationToken)
+            => ValueTask.FromResult(false);
+
+        public ValueTask UpdateSourceScheduleAsync(
+            string root, EnvironmentalSourceDescriptor source, DateTimeOffset nextPollUtc,
+            CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+
+        public ValueTask<IReadOnlyList<EnvironmentalSourceRuntimeState>> ReadSourceStatesAsync(
+            string root, CancellationToken cancellationToken)
+            => ValueTask.FromResult<IReadOnlyList<EnvironmentalSourceRuntimeState>>([]);
+
+        public ValueTask<IReadOnlyList<EnvironmentalAcquisitionAttemptRecord>> ReadAttemptsAsync(
+            string root, int maximumResults, CancellationToken cancellationToken)
+            => ValueTask.FromResult<IReadOnlyList<EnvironmentalAcquisitionAttemptRecord>>([]);
+    }
+
     private sealed class FixedDeploymentLocationStore(DeploymentLocationSnapshot active) : IDeploymentLocationStore
     {
         public DeploymentLocationSnapshot? Active { get; } = active;
@@ -281,9 +482,25 @@ public sealed class EnvironmentalAcquisitionServiceTests
             CaptureLocationProvenance provenance, DateTimeOffset? effectiveUtc = null) => Active!;
     }
 
-    private sealed class RecordingLogger<T> : ILogger<T>
+    private sealed class RecordingLogger<T> : ILogger<T>, IDisposable
     {
-        public ConcurrentQueue<(LogLevel Level, int EventId)> Events { get; } = new();
+        public ConcurrentQueue<(LogLevel Level, int EventId, Exception? Exception)> Events { get; } = new();
+        private readonly SemaphoreSlim _signal = new(0);
+
+        public async Task<(LogLevel Level, int EventId, Exception? Exception)> WaitForAsync(
+            int eventId,
+            TimeSpan timeout)
+        {
+            using var cancellation = new CancellationTokenSource(timeout);
+            while (true)
+            {
+                if (Events.FirstOrDefault(entry => entry.EventId == eventId) is { EventId: not 0 } found)
+                {
+                    return found;
+                }
+                await _signal.WaitAsync(cancellation.Token).ConfigureAwait(false);
+            }
+        }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -295,6 +512,61 @@ public sealed class EnvironmentalAcquisitionServiceTests
             TState state,
             Exception? exception,
             Func<TState, Exception?, string> formatter)
-            => Events.Enqueue((logLevel, eventId.Id));
+        {
+            Events.Enqueue((logLevel, eventId.Id, exception));
+            _signal.Release();
+        }
+
+        public void Dispose() => _signal.Dispose();
+    }
+
+    private sealed class FailureServiceFixture : IAsyncDisposable
+    {
+        private bool _started;
+
+        public FailureServiceFixture(
+            ServiceProvider services,
+            EnvironmentalAcquisitionCoordinator coordinator,
+            EnvironmentalAcquisitionTelemetry telemetry,
+            RecordingLogger<EnvironmentalAcquisitionService> logger,
+            EnvironmentalAcquisitionService service)
+        {
+            Services = services;
+            Coordinator = coordinator;
+            Telemetry = telemetry;
+            Logger = logger;
+            Service = service;
+        }
+
+        private ServiceProvider Services { get; }
+        private EnvironmentalAcquisitionCoordinator Coordinator { get; }
+        private EnvironmentalAcquisitionTelemetry Telemetry { get; }
+        public RecordingLogger<EnvironmentalAcquisitionService> Logger { get; }
+        public EnvironmentalAcquisitionService Service { get; }
+
+        public async Task StartAsync()
+        {
+            await Service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            _started = true;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                if (_started)
+                {
+                    await Service.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                Service.Dispose();
+                Logger.Dispose();
+                Telemetry.Dispose();
+                Coordinator.Dispose();
+                Services.Dispose();
+            }
+        }
     }
 }

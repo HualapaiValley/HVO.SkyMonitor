@@ -184,6 +184,106 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         Assert.AreEqual(3, stateStore.AttemptCount);
     }
 
+    [TestMethod]
+    public async Task ConcurrentPeriodicStartup_WithTheSharedSqliteStore_CommitsEveryObservationAndAttempt()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-environmental-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var services = new ServiceCollection().BuildServiceProvider();
+            var configurations = StartupKinds.Select((kind, index) => StartupSource(kind, index)).ToArray();
+            var factory = new EnvironmentalSourceFactory(
+                services,
+                [new EnvironmentalSourceRegistration(
+                    "VirtualEnvironment", typeof(VirtualEnvironmentalSource), typeof(VirtualEnvironmentalSourceOptions))]);
+            using var coordinator = new EnvironmentalAcquisitionCoordinator(
+                factory,
+                new StorePublisher(store, root),
+                new FixedDeploymentLocationStore(Location()),
+                Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = root,
+                    EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
+                    {
+                        Enabled = true,
+                        MaximumConcurrency = 4,
+                        SourceTimeoutMilliseconds = 5_000,
+                        Sources = configurations
+                    }
+                }),
+                TimeProvider.System,
+                store);
+
+            var receipts = await coordinator.AcquireTriggerAsync(
+                EnvironmentalAcquisitionTrigger.Periodic,
+                DateTimeOffset.UtcNow,
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
+            var attempts = await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false);
+            var snapshot = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.HasCount(StartupKinds.Length, receipts);
+            Assert.IsTrue(receipts.All(static receipt => receipt.Disposition == EnvironmentalAcquisitionDisposition.Produced));
+            Assert.HasCount(StartupKinds.Length, attempts);
+            Assert.AreEqual(StartupKinds.Length, snapshot.StoredCount);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static readonly EnvironmentalObservationKind[] StartupKinds =
+    [
+        EnvironmentalObservationKind.AirTemperature,
+        EnvironmentalObservationKind.RelativeHumidity,
+        EnvironmentalObservationKind.AtmosphericPressure,
+        EnvironmentalObservationKind.WindSpeed,
+        EnvironmentalObservationKind.WindDirection,
+        EnvironmentalObservationKind.WindGust,
+        EnvironmentalObservationKind.PrecipitationRate,
+        EnvironmentalObservationKind.RainState,
+        EnvironmentalObservationKind.SkyBrightness,
+        EnvironmentalObservationKind.SkyQuality,
+        EnvironmentalObservationKind.CloudCover,
+        EnvironmentalObservationKind.CameraSensorTemperature
+    ];
+
+    private static EnvironmentalSourceConfiguration StartupSource(EnvironmentalObservationKind kind, int index)
+    {
+        var boolean = kind == EnvironmentalObservationKind.RainState;
+        var numeric = kind switch
+        {
+            EnvironmentalObservationKind.RelativeHumidity => 45,
+            EnvironmentalObservationKind.AtmosphericPressure => 101_325,
+            EnvironmentalObservationKind.WindDirection => 180,
+            EnvironmentalObservationKind.PrecipitationRate => 0,
+            EnvironmentalObservationKind.SkyBrightness or EnvironmentalObservationKind.SkyQuality => 21,
+            EnvironmentalObservationKind.CloudCover => 0.2,
+            _ => 10 + index
+        };
+        return new EnvironmentalSourceConfiguration
+        {
+            Id = $"startup-{kind}",
+            Type = "VirtualEnvironment",
+            Kind = kind,
+            Required = true,
+            Triggers = [EnvironmentalAcquisitionTrigger.Periodic],
+            ScheduleEpochUtc = Epoch,
+            PeriodSeconds = 30,
+            EveryNthCapture = 3,
+            ValidForSeconds = 120,
+            StaleAfterSeconds = 45,
+            RigId = kind == EnvironmentalObservationKind.CameraSensorTemperature ? "rig-1" : null,
+            Options = CaptureContractJson.SerializeToElement(new VirtualEnvironmentalSourceOptions(
+                400 + index,
+                Epoch,
+                boolean ? null : numeric,
+                boolean ? false : null))
+        };
+    }
+
     private static EnvironmentalAcquisitionCoordinator CreateCoordinator(
         IEnvironmentalObservationPublisher publisher,
         int delayMilliseconds = 0,
