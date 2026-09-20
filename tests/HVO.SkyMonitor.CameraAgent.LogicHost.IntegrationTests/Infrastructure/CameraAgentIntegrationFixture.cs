@@ -358,8 +358,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 ["CentralTransient:Mode"] = "Hybrid",
                 ["CentralTransient:SourceRole"] = "Raw"
             },
-            suppressRecurringWorkers,
-            useEphemeralMinioStorage: true);
+            suppressRecurringWorkers);
     }
 
     /// <summary>

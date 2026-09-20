@@ -197,7 +197,7 @@ validate_evidence_contract() {
         "campaignIndexContract","statusContract","followUpFamilies"] | sort) and
       .issues == {definition:318,parent:305} and
       .inventory.relativePath == "deploy/split-host/acceptance/phase14-scenarios.json" and
-      .inventory.schemaVersion == $campaign.schemaVersion and .inventory.scenarioCount == 113 and
+      .inventory.schemaVersion == $campaign.schemaVersion and .inventory.scenarioCount == 116 and
       (.inventory.canonicalSha256 | digest) and
       (.inventory.reconciliation | contains("raw-boundary-payload-partially-written") and
         contains("a2e61a1bbff5decf454151ddae9eef72934d6113")) and
@@ -212,7 +212,7 @@ validate_evidence_contract() {
         "real-campaign":([$campaign.scenarios[] | select((matches($root; .)[0].disposition) == "real-campaign")] | length),
         "deferred":([$campaign.scenarios[] | select((matches($root; .)[0].disposition) == "deferred")] | length),
         "excluded":([$campaign.scenarios[] | select((matches($root; .)[0].disposition) == "excluded")] | length)
-      } and ([.dispositionSummary[]] | add) == 113 and
+      } and ([.dispositionSummary[]] | add) == 116 and
       ([.sourceFamilies[].id] | length) == ([.sourceFamilies[].id] | unique | length) and
       all(.sourceFamilies[]; . as $family |
         ($family.id | safe) and ($family.project | safe_path) and ($family.project | endswith(".csproj")) and
@@ -443,7 +443,7 @@ jq -e --argjson required "$required_ids" '
     .executionClass == "component-automated" or .executionClass == "real-campaign") and
   all(.scenarios[] | select(.source | startswith("boundary:")); .evidenceSource | startswith("test:")) and
   ([.scenarios[] | select(.id == "cameraagent-host-failure" or .id == "logichost-host-failure" or .id == "network-failure" or
-    .id == "sql-failure" or .id == "redis-failure" or .id == "minio-failure" or .id == "smtp-failure") | .id] | length) == 7
+    .id == "sql-failure" or .id == "redis-failure" or .id == "object-store-failure" or .id == "smtp-failure") | .id] | length) == 7
 ' "$campaign" >/dev/null
 jq 'del(.scenarios[0])' "$campaign" > "$TEMP_DIR/missing-scenario.json"
 expect_rejected 'A campaign manifest missing a required scenario was accepted.' \

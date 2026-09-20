@@ -269,7 +269,7 @@ public sealed class CentralRecoveryPerformanceTests
         {
             var artifactId = Guid.NewGuid();
             table.Rows.Add(Guid.NewGuid(), frameId, artifactId, devicePublicId, "Preview", "w3m-v1", "legacy",
-                "application/octet-stream", 1L, new string('A', 64), $"s3://legacy-w3m/{runId}/{index:D5}",
+                "application/octet-stream", 1L, new string('A', 64), $"object://legacy-w3m/{runId}/{index:D5}",
                 DateTimeOffset.UnixEpoch, Convert.ToHexString(SHA256.HashData(artifactId.ToByteArray())),
                 "Available", "Complete", 0, 0L, 0);
         }
@@ -311,7 +311,7 @@ public sealed class CentralRecoveryPerformanceTests
                 MediaType = "application/octet-stream",
                 ByteLength = payload.LongLength,
                 ChecksumSha256 = checksum,
-                StorageReference = $"s3://{Bucket}/{key}",
+                StorageReference = $"object://{Bucket}/{key}",
                 ReceivedAtUtc = DateTimeOffset.UnixEpoch,
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 ObjectState = CentralArtifactObjectState.Pending,

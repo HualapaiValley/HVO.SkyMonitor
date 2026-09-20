@@ -13,11 +13,44 @@ internal enum ObjectStoreConformanceFault
     AmbiguousDelete
 }
 
+/// <summary>
+/// Which injectable faults a provider harness can produce. Every provider must classify the
+/// universal outcomes (missing object, missing bucket, caller cancellation, caller-callback
+/// failure); only a networked transport can be made to authenticate badly, throttle, time
+/// out at the wire, or lose a response after a delete. A filesystem harness declares none
+/// of these, and the suite skips exactly those assertions rather than the whole test, so a
+/// provider cannot pass by declaring nothing while still being held to the universal set.
+/// </summary>
+[Flags]
+internal enum ObjectStoreConformanceCapabilities
+{
+    None = 0,
+    InjectAuthentication = 1 << 0,
+    InjectAuthorization = 1 << 1,
+    InjectThrottled = 1 << 2,
+    InjectTimeout = 1 << 3,
+    InjectUnavailable = 1 << 4,
+    InjectAmbiguousDelete = 1 << 5,
+    NetworkedTransport = InjectAuthentication | InjectAuthorization | InjectThrottled
+        | InjectTimeout | InjectUnavailable | InjectAmbiguousDelete
+}
+
+/// <summary>
+/// The universal <c>IObjectStore</c> contract every provider must satisfy: streaming
+/// publication at the maximum size, conditional read by generation, ordinal complete listing
+/// across provider pages, universal failure classification, caller-failure preservation, and
+/// (where the transport can lose a response) ambiguous-delete convergence. A provider's
+/// conformance test class constructs one of these with its own store, its own fault factory
+/// for the faults it declares, and runs each method. Provider-specific behaviour (S3 request
+/// signing, region and addressing configuration, SDK exception mapping) is tested beside the
+/// provider, not here.
+/// </summary>
 internal sealed class ObjectStoreConformanceSuite(
     IObjectStore store,
     Func<ObjectStoreConformanceFault, IObjectStore> createFaultedStore,
     string bucket,
-    string prefix)
+    string prefix,
+    ObjectStoreConformanceCapabilities capabilities = ObjectStoreConformanceCapabilities.NetworkedTransport)
 {
     public async Task CleanupAsync()
     {
@@ -126,16 +159,31 @@ internal sealed class ObjectStoreConformanceSuite(
             () => store.StatAsync(missingBucket, "missing.bin", CancellationToken.None)).ConfigureAwait(false);
         Assert.AreEqual(ObjectStoreFailureKind.MissingBucket, bucketFailure.Kind);
 
-        await AssertFailureKindAsync(ObjectStoreConformanceFault.Authentication, ObjectStoreFailureKind.Authentication)
-            .ConfigureAwait(false);
-        await AssertFailureKindAsync(ObjectStoreConformanceFault.Authorization, ObjectStoreFailureKind.Authorization)
-            .ConfigureAwait(false);
-        await AssertFailureKindAsync(ObjectStoreConformanceFault.Throttled, ObjectStoreFailureKind.Throttled)
-            .ConfigureAwait(false);
-        await AssertFailureKindAsync(ObjectStoreConformanceFault.Timeout, ObjectStoreFailureKind.Timeout)
-            .ConfigureAwait(false);
-        await AssertFailureKindAsync(ObjectStoreConformanceFault.Unavailable, ObjectStoreFailureKind.Transient)
-            .ConfigureAwait(false);
+        if (capabilities.HasFlag(ObjectStoreConformanceCapabilities.InjectAuthentication))
+        {
+            await AssertFailureKindAsync(ObjectStoreConformanceFault.Authentication, ObjectStoreFailureKind.Authentication)
+                .ConfigureAwait(false);
+        }
+        if (capabilities.HasFlag(ObjectStoreConformanceCapabilities.InjectAuthorization))
+        {
+            await AssertFailureKindAsync(ObjectStoreConformanceFault.Authorization, ObjectStoreFailureKind.Authorization)
+                .ConfigureAwait(false);
+        }
+        if (capabilities.HasFlag(ObjectStoreConformanceCapabilities.InjectThrottled))
+        {
+            await AssertFailureKindAsync(ObjectStoreConformanceFault.Throttled, ObjectStoreFailureKind.Throttled)
+                .ConfigureAwait(false);
+        }
+        if (capabilities.HasFlag(ObjectStoreConformanceCapabilities.InjectTimeout))
+        {
+            await AssertFailureKindAsync(ObjectStoreConformanceFault.Timeout, ObjectStoreFailureKind.Timeout)
+                .ConfigureAwait(false);
+        }
+        if (capabilities.HasFlag(ObjectStoreConformanceCapabilities.InjectUnavailable))
+        {
+            await AssertFailureKindAsync(ObjectStoreConformanceFault.Unavailable, ObjectStoreFailureKind.Transient)
+                .ConfigureAwait(false);
+        }
 
         using var cancellation = new CancellationTokenSource();
         await cancellation.CancelAsync().ConfigureAwait(false);
@@ -165,6 +213,11 @@ internal sealed class ObjectStoreConformanceSuite(
 
     public async Task AmbiguousDeleteConvergesOnRetryAsync()
     {
+        if (!capabilities.HasFlag(ObjectStoreConformanceCapabilities.InjectAmbiguousDelete))
+        {
+            Assert.Inconclusive("This provider's transport cannot lose a response after a delete; ambiguity is not a reachable state.");
+        }
+
         var key = prefix + "ambiguous-delete.bin";
         using (var content = new MemoryStream([42], writable: false))
         {

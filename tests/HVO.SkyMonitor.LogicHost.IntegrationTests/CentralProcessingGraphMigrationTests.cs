@@ -9,8 +9,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
-using Minio;
-using Minio.DataModel.Args;
 using System.Collections.Immutable;
 using System.Data.Common;
 using System.Security.Cryptography;
@@ -116,7 +114,7 @@ public sealed class CentralProcessingGraphMigrationTests
                 MediaType = "application/octet-stream",
                 ByteLength = 1,
                 ChecksumSha256 = new string('A', 64),
-                StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}",
+                StorageReference = $"object://skymonitor-artifacts/{Guid.NewGuid():N}",
                 IdempotencyKey = Guid.NewGuid().ToString("N"),
                 ReceivedAtUtc = now.AddMinutes(-1),
                 CreatedUtc = now.AddMinutes(-1),
@@ -311,7 +309,7 @@ public sealed class CentralProcessingGraphMigrationTests
                 MediaType = "application/octet-stream",
                 ByteLength = 1,
                 ChecksumSha256 = new string('B', 64),
-                StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}",
+                StorageReference = $"object://skymonitor-artifacts/{Guid.NewGuid():N}",
                 IdempotencyKey = Guid.NewGuid().ToString("N"),
                 ReceivedAtUtc = now,
                 CreatedUtc = now,
@@ -1952,9 +1950,10 @@ public sealed class CentralProcessingGraphMigrationTests
                 .ConfigureAwait(false);
             artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
             artifact.RetentionDeletionToken.Should().BeNull();
-            (await GetFixtureMinio().StatObjectAsync(new StatObjectArgs()
-                .WithBucket(FenceBucket)
-                .WithObject(raw.StorageReference[FenceBucketPrefix.Length..])).ConfigureAwait(false)).Size
+            (await GetFixtureObjectStore().StatAsync(
+                FenceBucket,
+                raw.StorageReference[FenceBucketPrefix.Length..],
+                CancellationToken.None).ConfigureAwait(false)).ContentLength
                 .Should().Be(raw.ByteLength, "the fenced source object survives the concurrent release");
         }
         finally
@@ -2238,10 +2237,10 @@ public sealed class CentralProcessingGraphMigrationTests
             NullLogger<ProcessingGraphCatalogService>.Instance);
 
     private const string FenceBucket = "skymonitor-artifacts";
-    private const string FenceBucketPrefix = "s3://" + FenceBucket + "/";
+    private const string FenceBucketPrefix = "object://" + FenceBucket + "/";
 
-    private static IMinioClient GetFixtureMinio()
-        => AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+    private static IObjectStore GetFixtureObjectStore()
+        => AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
 
     /// <summary>
     /// Seeds a camera, a Raw source whose object really exists in the fixture object store (so retention can delete
@@ -2265,19 +2264,12 @@ public sealed class CentralProcessingGraphMigrationTests
         };
         var payload = new byte[] { 7, 11, 13, 17 };
         var objectKey = $"artifacts/graph-fence/{Guid.NewGuid():N}/{slug}.bin";
-        var minio = GetFixtureMinio();
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(FenceBucket)).ConfigureAwait(false))
-        {
-            await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(FenceBucket)).ConfigureAwait(false);
-        }
+        var objectStore = GetFixtureObjectStore();
         await using (var stream = new MemoryStream(payload, writable: false))
         {
-            await minio.PutObjectAsync(new PutObjectArgs()
-                .WithBucket(FenceBucket)
-                .WithObject(objectKey)
-                .WithStreamData(stream)
-                .WithObjectSize(payload.Length)
-                .WithContentType("application/octet-stream")).ConfigureAwait(false);
+            await objectStore.PutAsync(
+                FenceBucket, objectKey, stream, payload.Length, "application/octet-stream", CancellationToken.None)
+                .ConfigureAwait(false);
         }
         var raw = CreateSourceArtifact(camera, FrameArtifactRole.Raw, 'A', now.AddMinutes(-1));
         raw.ByteLength = payload.Length;
@@ -2313,7 +2305,7 @@ public sealed class CentralProcessingGraphMigrationTests
         var processor = new CentralArtifactRetentionProcessor(
             db,
             references,
-            ObjectStoreTestClient.Create(GetFixtureMinio()),
+            GetFixtureObjectStore(),
             TimeProvider.System,
             telemetry,
             NullLogger<CentralArtifactRetentionProcessor>.Instance);
@@ -3431,7 +3423,7 @@ public sealed class CentralProcessingGraphMigrationTests
             MediaType = "application/octet-stream",
             ByteLength = 1,
             ChecksumSha256 = new string(checksumDigit, 64),
-            StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}",
+            StorageReference = $"object://skymonitor-artifacts/{Guid.NewGuid():N}",
             IdempotencyKey = Guid.NewGuid().ToString("N"),
             ReceivedAtUtc = receivedAtUtc,
             CreatedUtc = receivedAtUtc,

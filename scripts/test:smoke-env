@@ -102,8 +102,6 @@ HVO_RUNTIME_DATA_ROOT=./data
 SMOKETEST_CATALOG_ROOT_CONTROL=$TEMP_DIR/catalog
 SQLSERVER_PASSWORD=sql-secret-value
 REDIS_PASSWORD=redis-secret-value
-MINIO_ROOT_PASSWORD=minio-root-secret-value
-MINIO_SECRET_KEY=minio-app-secret-value
 CAMERA_AGENT_ADMIN_PASSWORD=Camera-Agent-A1-secret!
 EOF
 printf 'CAMERA_AGENT_OAUTH_CLIENT_SECRET=' >> "$BASE_ENV"
@@ -139,7 +137,7 @@ cmp -s "$PRISTINE_ENV" "$SMOKE_ENV" || fail "Instrumented initialization changed
 mkdir -p "$TEMP_DIR/bin"
 cat > "$TEMP_DIR/bin/docker" <<'EOF'
 #!/usr/bin/env bash
-for name in SQLSERVER_PASSWORD REDIS_PASSWORD MINIO_ROOT_PASSWORD MINIO_SECRET_KEY CAMERA_AGENT_ADMIN_PASSWORD CAMERA_AGENT_OAUTH_CLIENT_SECRET; do
+for name in SQLSERVER_PASSWORD REDIS_PASSWORD CAMERA_AGENT_ADMIN_PASSWORD CAMERA_AGENT_OAUTH_CLIENT_SECRET; do
     [[ ! -v "$name" ]] || exit 97
 done
 printf 'docker\n' >> "${TOOL_LOG:?}"

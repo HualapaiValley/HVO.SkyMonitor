@@ -73,11 +73,11 @@ as non-secret evidence fields.
 Schema v8 also declares the observatory, agent friendly names, owner automation
 credential reference, workload selection, service ownership, distinct SQL
 administrator/initializer/runtime users, Redis administrator/runtime identities
-and key prefix, MinIO root/runtime identities and buckets, certificate paths,
+and key prefix, the qualified object-store root/owner/filesystem and buckets, certificate paths,
 KeyPerFile mappings, and resource limits. Application memory remains independent
 from the SQL Server container and internal memory ceilings. `existing` service
 mode never provisions those services. `deploy` requires an explicit shared-services target
-and digest references for SQL Server, Redis, MinIO, the MinIO client, and optional
+and digest references for SQL Server, Redis, and optional
 Mailpit. Mailpit is accepted only for isolated deployment.
 
 The shared-services target may be co-located with LogicHost on one physical host
@@ -547,18 +547,22 @@ requires a production catalog and HTTPS application authorities.
 ```
 
 For `services.mode: deploy`, the command starts digest-pinned SQL Server, Redis,
-MinIO, and optionally Mailpit on the shared target. It creates the run database,
-distinct migration/runtime SQL users and roles, a prefix-scoped Redis ACL user,
-two buckets, and a bucket-scoped MinIO user. Administrator credentials stay in
-the shared-service configuration and are never mounted in application
-containers. MinIO client credentials are JSON-escaped into an owner-only client
-configuration; the provisioning container runs as the declared SSH UID/GID and
-atomically publishes its generated application credentials with mode `0600`.
-SQL Server, Redis, and MinIO run as that same declared UID/GID and retain their
+and optionally Mailpit on the shared target. It creates the run database and
+distinct migration/runtime SQL users and roles, plus a prefix-scoped Redis ACL
+user. Administrator credentials stay in the shared-service configuration and are
+never mounted in application containers.
+SQL Server and Redis run as the declared UID/GID and retain their
 project-scoped named-volume identities, labels, and teardown checks. Each named
 volume is backed by its exact run-owned bind directory beneath
-`<shared runtimeRoot>/application/{sql,redis,minio}` rather than Docker's ambient
+`<shared runtimeRoot>/application/{sql,redis}` rather than Docker's ambient
 data root.
+
+Object storage is not started as a service. Before the LogicHost containers run,
+the up phase executes `scripts/qualify:filesystem-object-store` on the LogicHost
+host against the declared `objectStore` root, owner, filesystem UUID, and free
+space/inode floors, and records the returned preflight document in the up
+ledger. The root and both bucket directories must already exist with owner
+`4242:4343` and mode `0750`.
 SQL Server uses the inventory's dedicated container memory limit and
 `MSSQL_MEMORY_LIMIT_MB` ceiling. The production-like W2 profile uses a `4G`
 container budget and `3072` MB internal ceiling, leaving process overhead while
@@ -594,7 +598,7 @@ mode never stages that exception and reaches the HTTPS authority through the
 declared TLS proxy.
 
 Each CameraAgent receives separate Identity, Data Protection, provisioning, raw,
-and archive roots, but no central SQL/Redis/MinIO credentials. Fresh durable
+and archive roots, but no central SQL/Redis credentials. Fresh durable
 capture state is paused and upload is disabled; central integration remains
 enabled so the supported bootstrap workflow can reach LogicHost. `/alive` and
 `/health` prove provisioning-gated startup only; they do not claim bootstrap or
@@ -783,7 +787,7 @@ and `AfterHandler` execution hooks are not labeled commit boundaries; the
 separate lease-crash scenarios cover them. Processing `BeforeNodeExecution` is
 likewise an execution hook used by pressure/shutdown campaigns, not a publication
 boundary. CameraAgent host, LogicHost host, network, SQL,
-Redis, MinIO, and SMTP failures are distinct scenarios. `executionClass`
+Redis, object-store, and SMTP failures are distinct scenarios. `executionClass`
 distinguishes existing component automation from boundaries requiring the real
 campaign; external, soak, Stellarium, and future-hardware remain separate gates.
 Every test evidence source uses an existing public MSTest fully-qualified method
@@ -816,10 +820,10 @@ orphan, and tamper rejection for the four phase files. They also reject
 mirror-only, tampered, and unsafe smoke quartets and verify inventory hash drift
 cannot create acceptance files or alter topology projected from a prior snapshot.
 
-The runtime inventory now has 111 rows. The separate definition-only contract at
+The runtime inventory now has 116 rows. The separate definition-only contract at
 `deploy/split-host/acceptance/phase14-evidence-contract.json` binds that count and
 the canonical inventory digest without changing runtime ledger compatibility. It
-maps 103 test-backed rows to future source-family import, the two supported
+maps 108 test-backed rows to future source-family import, the two supported
 campaigns to executable manifests, two unsupported campaigns to explicit
 deferment, and four separately labeled gates to exclusion. See
 `docs/planning/phase14-evidence-campaign.md` for workload values, artifact
@@ -884,8 +888,8 @@ Every `;case=` value must exactly equal the fragment's retained selector. A
 passing method TRX cannot replace a missing fragment. When one scenario has
 multiple data-row or boundary observations, their assertion and measurement
 schemas must be identical; the imported evidence records their count. The
-importer generates assembly provenance itself, publishes 25 method bundles and
-103 runtime-compatible scenario artifacts atomically beneath
+importer generates assembly provenance itself, publishes 29 method bundles and
+108 runtime-compatible scenario artifacts atomically beneath
 `source-import/`, and binds every bundle, assembly, sanitized TRX,
 source-evidence file, and artifact by byte length where applicable and SHA-256.
 Each source bundle requires `trialResults`. Standard methods retain one
@@ -1028,7 +1032,7 @@ dotnet build tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.Logi
 The command accepts no scenario, artifact, workload, alternate component, test
 name, or source-evidence option. It runs exactly the Manual
 `LogicHostDependencyOutageAcceptanceTests.Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound`
-test against SQL Server, Redis, MinIO, and SMTP Testcontainers. The test emits
+test against SQL Server, Redis, and SMTP Testcontainers and the filesystem object store. The test emits
 strict v2 evidence bound by `EvidenceSourceIdentity` to the requested current
 revision, clean tree, Release test/LogicHost/TestSupport assemblies, and explicit
 healthy-operation, outage-operation, and recovered-operation assertions. The
@@ -1037,15 +1041,15 @@ exception text, or credentials.
 
 Before recording anything, the importer requires exactly one passing TRX for
 that fully qualified test and exactly four evidence entries. It sanitizes only
-`minio-failure`, `sql-failure`, `redis-failure`, and `smtp-failure` into the
+`object-store-failure`, `sql-failure`, `redis-failure`, and `smtp-failure` into the
 existing acceptance artifact schema. Source evidence, TRX, sanitized artifacts,
 and their lengths/SHA-256 values are committed as one owner-only, atomically
 renamed bundle beneath
 `state/acceptance-component-logichost-dependencies/bundle`. The bundle manifest
 is itself digest-bound by `bundle-commit.json`.
 
-Recording occurs only after the complete bundle validates, in fixed MinIO, SQL
-Server, Redis, SMTP order. An interrupted invocation can reuse a valid committed
+Recording occurs only after the complete bundle validates, in fixed object-store,
+SQL Server, Redis, SMTP order. An interrupted invocation can reuse a valid committed
 bundle without rerunning the test; unsafe, malformed, context-mismatched, or
 digest-tampered bundles fail closed and are never rebuilt in place. Source HEAD,
 tree, and cleanliness are checked before execution, before bundle publication,

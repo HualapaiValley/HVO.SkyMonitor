@@ -18,8 +18,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -485,7 +483,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         using var crossDevice = await SendAsync(client, otherDevice, DeviceKey, crossDeviceEnvelope).ConfigureAwait(false);
         crossDevice.StatusCode.Should().Be(HttpStatusCode.NotFound);
         var crossDeviceBody = await crossDevice.Content.ReadAsStringAsync().ConfigureAwait(false);
-        crossDeviceBody.Should().NotContain(DeviceKey).And.NotContain("s3://").And.NotContain("integration/");
+        crossDeviceBody.Should().NotContain(DeviceKey).And.NotContain("object://").And.NotContain("integration/");
 
         var independentDevice = await CreateScenarioAsync().ConfigureAwait(false);
         var sharedEventCandidate = Reidentify(independentDevice.Envelope.Candidate) with
@@ -582,16 +580,11 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             source.ObjectState = CentralArtifactObjectState.Available;
             source.ReconstructionState = CentralReconstructionState.Complete;
             await db.SaveChangesAsync().ConfigureAwait(false);
-            var objectKey = storageReference["s3://skymonitor-artifacts/".Length..];
+            var objectKey = storageReference["object://skymonitor-artifacts/".Length..];
             await using var corrupt = new MemoryStream(new byte[checked((int)byteLength)], writable: false);
-            await restoreScope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(
-                new PutObjectArgs()
-                    .WithBucket("skymonitor-artifacts")
-                    .WithObject(objectKey)
-                    .WithStreamData(corrupt)
-                    .WithObjectSize(byteLength)
-                    .WithContentType("application/x-hvo-linear-frame"),
-                CancellationToken.None).ConfigureAwait(false);
+            await restoreScope.ServiceProvider.GetRequiredService<IObjectStore>().PutAsync(
+                "skymonitor-artifacts", objectKey, corrupt, byteLength, "application/x-hvo-linear-frame", CancellationToken.None)
+                .ConfigureAwait(false);
         }
         var corruptEnvelope = CreateEnvelope(Reidentify(scenario.Envelope.Candidate));
         using var corruptResponse = await SendAsync(client, scenario.DeviceId, DeviceKey, corruptEnvelope)
@@ -625,7 +618,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             timeoutClient, timeoutScenario.DeviceId, DeviceKey, timeoutScenario.Envelope).ConfigureAwait(false);
         timeoutResponse.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         (await timeoutResponse.Content.ReadAsStringAsync().ConfigureAwait(false))
-            .Should().NotContain(DeviceKey).And.NotContain("s3://");
+            .Should().NotContain(DeviceKey).And.NotContain("object://");
         await using var timeoutScope = timeoutFactory.Services.CreateAsyncScope();
         (await timeoutScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
             .CentralTransientSubmissionAudits.AnyAsync(item =>

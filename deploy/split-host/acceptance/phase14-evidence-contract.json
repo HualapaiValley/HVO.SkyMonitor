@@ -8,8 +8,8 @@
   "inventory": {
     "relativePath": "deploy/split-host/acceptance/phase14-scenarios.json",
     "schemaVersion": 2,
-    "scenarioCount": 113,
-    "canonicalSha256": "4f7dde2ac91448ac8c218329013af31fb3f91ce9ad8f6a9f3b43ae18a3fa6b93",
+    "scenarioCount": 116,
+    "canonicalSha256": "5b1fbd3750e9f87bb485ef78e2f77603644f8bfcb900488a2b8f7ede884695ec",
     "reconciliation": "The raw-boundary-payload-partially-written row added by a2e61a1bbff5decf454151ddae9eef72934d6113 remains distinct from payload-written; calibration-before-bundle-write and calibration-bundle-publication cover the canonical envelope boundaries introduced by issue 470."
   },
   "gateDisposition": {
@@ -21,7 +21,7 @@
   },
   "dispositionSummary": {
     "accepted-current-head": 0,
-    "source-family-import": 105,
+    "source-family-import": 108,
     "real-campaign": 2,
     "deferred": 2,
     "excluded": 4
@@ -62,8 +62,8 @@
       "id": "cameraagent-tests",
       "evidenceSourcePrefix": "test:HVO.SkyMonitor.CameraAgent.Tests.",
       "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
-      "scenarioCount": 77,
-      "uniqueMethodCount": 19,
+      "scenarioCount": 80,
+      "uniqueMethodCount": 22,
       "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"ee117c1e8cf3e04998825d366da663e16c2b95ed\" && test \"$(git rev-parse HEAD^{tree})\" = \"17a0ad69452d710c82847f9a515022de05ebfaa5\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --no-restore -p:NoIncremental=true -p:PathMap=\"$(pwd)=hvo-source\" --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/ee117c1e8cf3e04998825d366da663e16c2b95ed/cameraagent-tests/{method-id} --logger \"trx;LogFileName=result.trx\"",
       "input": "One clean-revision TRX and one strict scenario-evidence entry per mapped scenario; case selectors address source evidence, never a TRX data row.",
       "sanitizer": "phase14-trx-sanitizer-v1",
@@ -312,7 +312,7 @@
         "environment": ["os","architecture","cpu","memory","storage","sdk-runtime","release-configuration","container-mode","service-versions"],
         "workload": ["workload-id","dimensions","formats","frame-count","recipe","concurrency","total-bytes","fixture-seed-version"],
         "method": ["command","warm-up","repetitions","sampling-interval","counters-tools"],
-        "io": ["filesystem","sqlite","sql-server","minio","network","transaction-checkpoint-fsync-batching"],
+        "io": ["filesystem","sqlite","sql-server","object-store","network","transaction-checkpoint-fsync-batching"],
         "cpu": ["process-time","operation-time","hot-paths","complexity"],
         "memory": ["allocated-bytes","allocation-rate","loh","working-set","peak-temporary","retained-buffers","queue-window-size"],
         "latency": ["median","p95-from-at-least-30-operations","bounded-worst-case"],
@@ -365,7 +365,7 @@
         "environment": ["os","architecture","cpu","memory","storage","sdk-runtime","release-configuration","container-mode","service-versions"],
         "workload": ["workload-id","dimensions","formats","frame-count","recipe","concurrency","total-bytes","fixture-seed-version"],
         "method": ["command","warm-up","repetitions","sampling-interval","counters-tools"],
-        "io": ["filesystem","sqlite","sql-server","minio","network","transaction-checkpoint-fsync-batching"],
+        "io": ["filesystem","sqlite","sql-server","object-store","network","transaction-checkpoint-fsync-batching"],
         "cpu": ["process-time","operation-time","hot-paths","complexity"],
         "memory": ["allocated-bytes","allocation-rate","loh","working-set","peak-temporary","retained-buffers","queue-window-size"],
         "latency": ["median","p95-from-at-least-30-operations","bounded-worst-case"],

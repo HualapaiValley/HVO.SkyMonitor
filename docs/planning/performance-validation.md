@@ -295,7 +295,7 @@ line/90 percent branch floors, and renderer/catalog paths retain 90/85 floors. T
 native JPEG wrapper retains 95/80 because defensive null/failure branches inside
 successful Skia factory and codec calls cannot be induced deterministically.
 
-ReportGenerator is the single authoritative merger. CI collects 22 explicit
+ReportGenerator is the single authoritative merger. CI collects 23 explicit
 Unit, Integration, and architecture reports, creates one canonical Cobertura
 report, and enforces and publishes that same result. Pull requests cannot remove
 risk paths, lower thresholds, or widen tolerance relative to the target branch.

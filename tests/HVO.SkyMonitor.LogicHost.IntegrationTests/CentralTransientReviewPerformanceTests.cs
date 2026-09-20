@@ -93,7 +93,7 @@ public sealed class CentralTransientReviewPerformanceTests
                     AvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
                     Storage = "Docker-backed SQL Server and MinIO Testcontainers",
                     SqlServer = builder.DataSource,
-                    fixture.MinioEndpoint
+                    IntegrationTestFixture.ExternalS3Endpoint
                 },
                 Workloads = new
                 {
@@ -131,10 +131,10 @@ public sealed class CentralTransientReviewPerformanceTests
             if (await db.Database.CanConnectAsync().ConfigureAwait(false))
             {
                 var derivativeReferences = await db.CentralTransientDerivativeOutputIntents.AsNoTracking()
-                    .Where(item => item.StorageReference.StartsWith("s3://skymonitor-artifacts/"))
+                    .Where(item => item.StorageReference.StartsWith("object://skymonitor-artifacts/"))
                     .Select(item => item.StorageReference).ToArrayAsync().ConfigureAwait(false);
                 publishedKeys.AddRange(derivativeReferences.Select(item =>
-                    item["s3://skymonitor-artifacts/".Length..]));
+                    item["object://skymonitor-artifacts/".Length..]));
             }
             foreach (var objectKey in publishedKeys)
             {
@@ -230,7 +230,7 @@ public sealed class CentralTransientReviewPerformanceTests
             .ConfigureAwait(false);
         foreach (var artifact in seeded.Artifacts)
         {
-            var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
+            var objectKey = artifact.StorageReference["object://skymonitor-artifacts/".Length..];
             var payload = fixture.Payloads[artifact.ArtifactId];
             await using var stream = new MemoryStream(payload, writable: false);
             await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(objectKey)

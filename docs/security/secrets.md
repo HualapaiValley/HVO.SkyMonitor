@@ -17,9 +17,9 @@ Later .NET providers override earlier providers:
 
 Repository helpers also load the ignored root `.env` and optional ignored
 `.devcontainer/devcontainer.local.env`. Root `.env` names such as
-`MINIO_ACCESS_KEY` are a Compose/script contract; Compose and
+`REDIS_PASSWORD` are a Compose/script contract; Compose and
 `./scripts/with-env` translate them to .NET names such as
-`ObjectStorage__AccessKey`.
+`Redis__Configuration`.
 
 `CAMERA_AGENT_LOGIC_BASEURL` is the container-internal LogicHost URL.
 `CAMERA_AGENT_PUBLIC_LOGIC_BASEURL` is the agent-reachable URL embedded by a
@@ -93,8 +93,7 @@ project for LogicHost keys.
 | `SQLSERVER_PASSWORD` / `ConnectionStrings:skymonitordb` | LogicHost SQL Server `SkyMonitor` runtime principal | Ignored `.env`; direct nested environment override |
 | `ConnectionStrings:skymonitordb-migrations` | LogicHost controlled database-initialization principal | Deployment secret store; expose only to the one-shot initialization command |
 | `REDIS_PASSWORD` / `Redis:Configuration` | LogicHost prefixed distributed cache | Ignored `.env`; direct nested environment override |
-| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | MinIO administration and service-account provisioning only | Ignored `.env` available only to operator scripts |
-| `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` / `ObjectStorage:AccessKey`, `ObjectStorage:SecretKey` | LogicHost access to the two approved buckets | Ignored `.env`; direct nested environment override |
+| `HVO_OBJECT_STORE_ROOT` | LogicHost object-store root path; not a credential. Access is filesystem ownership and mode only | Ignored `.env`; declared in the split-host inventory |
 | `Smtp:Username`, `Smtp:Password` | Authenticated SMTP where required | User Secrets or environment variables |
 | `DatabaseSeed:Users:*:Password` | Optional configured LogicHost seed users | User Secrets or environment variables |
 | `DatabaseSeed:ApiKeys:*:RawKey` | Optional configured integration keys | User Secrets or environment variables |
@@ -112,8 +111,8 @@ project for LogicHost keys.
 | `GIST_TOKEN` | Optional CI coverage badge publication to the public aggregate-metrics Gist | Repository-level GitHub Actions secret; owner recovery copy in `hvo-central-kv` as `HVO-SkyMonitor--GitHub--GistToken` |
 | `COVERAGE_GIST_ID` | Public identifier selecting the coverage badge Gist; not a credential | Repository-level GitHub Actions variable; recovery mirror in `hvo-central-kv` as `HVO-SkyMonitor--GitHub--CoverageGistId` |
 
-Application appsettings contain no usable owner password, API key, OAuth client
-secret, or MinIO credential. Integration tests inject isolated fixture
+Application appsettings contain no usable owner password, API key, or OAuth
+client secret. Integration tests inject isolated fixture
 credentials. Compose requires explicit CameraAgent owner and fleet OAuth client
 secrets from the ignored `.env`.
 
@@ -180,15 +179,13 @@ also sensitive operational state.
   with administrative and dangerous command categories denied. Keep
   `Redis:InstanceName=skymonitor:` aligned with that ACL. Redis is not an
   identity authority or session revocation store.
-- LogicHost uses only `skymonitor-diagnostics` and
-  `skymonitor-artifacts` through the scoped MinIO application account.
-- MinIO root credentials never belong in LogicHost configuration.
-- Split-host MinIO provisioning stores root credentials only in an owner-only,
-  correctly JSON-escaped `mc` configuration. It does not place credential URLs
-  in arguments or environment variables, and generated credentials are
-  atomically published by the declared SSH UID/GID.
+- LogicHost uses only `skymonitor-diagnostics` and `skymonitor-artifacts`
+  inside the qualified object-store root.
+- The object store has no credential of any kind. Its authorization boundary is
+  ownership `4242:4343` and mode `0750` on the root and both bucket
+  directories, enforced by `./scripts/qualify:filesystem-object-store`.
 - Split-host secret sources reject every control character, including carriage
-  return, before any KeyPerFile, Redis, SQL, MinIO, client, or certificate
+  return, before any KeyPerFile, Redis, SQL, client, or certificate
   configuration is rendered.
 - Every secret-source reference must occur exactly once. Duplicate required or
   unrequired names and missing required names are rejected before host contact;
@@ -208,7 +205,7 @@ also sensitive operational state.
 | Device key | Central revocation and full re-registration only; renewal/overlap is not implemented. |
 | Confidential OAuth client | Startup replaces a changed secret immediately; use coordinated downtime or a new client ID because same-client overlap is not implemented. |
 | Fleet bootstrap OAuth client | Change affects newly issued envelopes; existing agents require reprovisioning. |
-| MinIO application account | Operator-owned; current provisioning script does not update an existing secret. |
+| Object store | No credential to rotate. Reassert root and bucket ownership/mode and rerun the qualifier after any operator action that could change them. |
 | SQL Server or Redis password | Rotate server side using the service owner's procedure, update the secret source, then restart and validate applications. Repository code does not orchestrate overlap. |
 | OpenIddict signing/encryption certificate | Split-host production loading is implemented; coordinated overlap/automatic rotation is not. |
 | TLS certificate | Owned by the actual TLS terminator, which repository Compose does not define. |
@@ -261,7 +258,7 @@ development sessions and reprovision or discard protected local state.
 | Token acquisition fails | Verify configured service URL, client ID, grant permissions, scopes, and secret presence; inspect status-only logs. |
 | API key fails | Use `/api/v1.0/status/detailed`, verify active/expiry/access state, and inspect key-ID audit events. |
 | CameraAgent secrets cannot decrypt | Restore matching provisioning and Data Protection state; do not fall back silently to fixture credentials. |
-| MinIO authorization fails | Verify the scoped application account and approved bucket policy, not the root account. |
+| Object-store access fails | Verify root and bucket ownership `4242:4343` and mode `0750`, that both buckets exist, and that no second writer holds the root. |
 | Cookies fail after recreation | Verify the correct Data Protection bind mount exists and is readable by the container. |
 
 Run `./scripts/docs:audit-operations` after changing identity routes,

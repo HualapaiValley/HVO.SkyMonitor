@@ -50,7 +50,7 @@ deploy_acceptance_component_validate_source() {
           (.InformationalVersion | type == "string" and length <= 512 and contains($revision)) and
           (.AssemblyWrittenUtc | type == "string" and length > 0 and length <= 64) and
           (.LatestSourceWriteUtc | type == "string" and length > 0 and length <= 64))) and
-      ([.Dependencies[].Dependency] == ["Minio","SqlServer","Redis","Smtp"]) and
+      ([.Dependencies[].Dependency] == ["ObjectStore","SqlServer","Redis","Smtp"]) and
       (.Dependencies | length == 4 and all(.[];
         (keys | sort) == (["Dependency","StartedAt","CompletedAt","InitialHealthStatus","OutageStatus","RecoveryStatus",
           "InitialOperationPassed","OutageOperationFailed","RecoveryOperationPassed","OutageMilliseconds","RecoveryMilliseconds",
@@ -149,8 +149,8 @@ deploy_acceptance_component_validate_bundle() {
       .inventorySha256 == $hash and .sourceRevision == $revision and .sourceTree == $tree and .testFullyQualifiedName == $test and
       (keys | sort) == (["schemaVersion","componentFamily","runId","mode","inventorySha256","sourceRevision","sourceTree",
         "testFullyQualifiedName","files"] | sort) and
-      ([.files[].id] == ["source-evidence","test-result","minio-failure","sql-failure","redis-failure","smtp-failure"]) and
-      ([.files[].relativePath] == ["dependency-outages.json","component.trx","artifacts/minio-failure.json",
+      ([.files[].id] == ["source-evidence","test-result","object-store-failure","sql-failure","redis-failure","smtp-failure"]) and
+      ([.files[].relativePath] == ["dependency-outages.json","component.trx","artifacts/object-store-failure.json",
         "artifacts/sql-failure.json","artifacts/redis-failure.json","artifacts/smtp-failure.json"]) and
       all(.files[]; (keys | sort) == ["byteLength","id","relativePath","sha256"] and
         (.byteLength | numbers) > 0 and (.byteLength | floor) == .byteLength and (.sha256 | test("^[0-9a-f]{64}$")))
@@ -165,7 +165,7 @@ deploy_acceptance_component_validate_bundle() {
     done < <(jq -c '.files[]' <<< "$manifest")
     deploy_acceptance_component_validate_source "$bundle/dependency-outages.json" "$revision" || return 1
     deploy_acceptance_component_verify_trx "$bundle" || { deploy_fail acceptance-component trx invalid; return 1; }
-    for scenario_id in minio-failure sql-failure redis-failure smtp-failure; do
+    for scenario_id in object-store-failure sql-failure redis-failure smtp-failure; do
         deploy_acceptance_validate_artifact_json "$bundle/artifacts/$scenario_id.json" "$ledger" \
           "$(jq -c --arg id "$scenario_id" '.scenarios[] | select(.id == $id)' <<< "$ledger")" ||
           { deploy_fail acceptance-component artifact invalid; return 1; }
@@ -193,9 +193,9 @@ deploy_acceptance_component_create_bundle() {
     chmod 600 "$source" "$trx_dir/component.trx" || { rm -rf -- "$stage"; return 1; }
     deploy_acceptance_component_verify_trx "$trx_dir" || { rm -rf -- "$stage"; deploy_fail acceptance-component trx invalid; return 1; }
     deploy_acceptance_component_validate_source "$source" "$revision" || { rm -rf -- "$stage"; return 1; }
-    for scenario_id in minio-failure sql-failure redis-failure smtp-failure; do
+    for scenario_id in object-store-failure sql-failure redis-failure smtp-failure; do
         case "$scenario_id" in
-            minio-failure) dependency=Minio ;;
+            object-store-failure) dependency=ObjectStore ;;
             sql-failure) dependency=SqlServer ;;
             redis-failure) dependency=Redis ;;
             smtp-failure) dependency=Smtp ;;
@@ -211,7 +211,7 @@ deploy_acceptance_component_create_bundle() {
     while IFS='|' read -r metadata; do files="$(jq -c --argjson item "$metadata" '. + [$item]' <<< "$files")"; done < <(
       deploy_acceptance_component_file_metadata source-evidence dependency-outages.json "$stage"
       deploy_acceptance_component_file_metadata test-result component.trx "$stage"
-      for scenario_id in minio-failure sql-failure redis-failure smtp-failure; do
+      for scenario_id in object-store-failure sql-failure redis-failure smtp-failure; do
           deploy_acceptance_component_file_metadata "$scenario_id" "artifacts/$scenario_id.json" "$stage"
       done)
     [[ "$(jq 'length' <<< "$files")" == 6 ]] || { rm -rf -- "$stage"; return 1; }
@@ -252,7 +252,7 @@ deploy_run_acceptance_component() {
         deploy_acceptance_component_validate_bundle "$bundle" "$run_id" "$mode" "$hash" "$revision" "$tree" "$ledger" || return 1
     fi
     deploy_acceptance_component_verify_source "$revision" "$tree" || return 1
-    for scenario_id in minio-failure sql-failure redis-failure smtp-failure; do
+    for scenario_id in object-store-failure sql-failure redis-failure smtp-failure; do
         deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$hash" "$revision" "$worktree" "$tree" "$scenario_id" \
           "$bundle/artifacts/$scenario_id.json" || return 1
     done

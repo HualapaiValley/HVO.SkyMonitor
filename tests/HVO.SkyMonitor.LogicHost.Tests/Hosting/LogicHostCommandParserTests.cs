@@ -40,4 +40,29 @@ public sealed class LogicHostCommandParserTests
 
         StringAssert.Contains(exception.Message, "host mode", StringComparison.OrdinalIgnoreCase);
     }
+
+    [TestMethod]
+    [DataRow("--host-mode=object-store-backup", "ObjectStoreBackup")]
+    [DataRow("--host-mode=object-store-restore", "ObjectStoreRestore")]
+    [DataRow("--host-mode=object-store-verify", "ObjectStoreVerify")]
+    public void ObjectStoreModes_RequirePathAndKeepItOutOfForwardedArguments(string argument, string expected)
+    {
+        var command = LogicHostCommandParser.Parse([argument, "--path=/var/backups/objects", "--environment=Production"]);
+        Assert.AreEqual(expected, command.Mode.ToString());
+        Assert.AreEqual("/var/backups/objects", command.Path);
+        CollectionAssert.AreEqual(new[] { "--environment=Production" }, command.ForwardedArguments.ToArray());
+
+        var missing = Assert.ThrowsExactly<ArgumentException>(() => LogicHostCommandParser.Parse([argument]));
+        StringAssert.Contains(missing.Message, "--path");
+    }
+
+    [TestMethod]
+    [DataRow("--path=/x")]
+    [DataRow("--host-mode=database-initialize", "--path=/x")]
+    [DataRow("--host-mode=object-store-backup", "--path=")]
+    [DataRow("--host-mode=object-store-backup", "--path=/a", "--path=/b")]
+    public void PathArgument_IsOnlyForObjectStoreModesAndOnlyOnce(params string[] arguments)
+    {
+        Assert.ThrowsExactly<ArgumentException>(() => LogicHostCommandParser.Parse(arguments));
+    }
 }

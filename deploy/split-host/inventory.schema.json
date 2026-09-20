@@ -102,8 +102,9 @@
           "required": ["project", "sqlDatabase", "redisPrefix", "artifactBucket", "diagnosticsBucket"],
           "properties": {
             "project": { "$ref": "#/$defs/name" }, "sqlDatabase": { "$ref": "#/$defs/name" },
-            "redisPrefix": { "type": "string" }, "artifactBucket": { "$ref": "#/$defs/name" },
-            "diagnosticsBucket": { "$ref": "#/$defs/name" }
+            "redisPrefix": { "type": "string" },
+            "artifactBucket": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" },
+            "diagnosticsBucket": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
           }
         },
         "certificates": {
@@ -205,12 +206,25 @@
     },
     "deploymentServices": {
       "type": "object", "additionalProperties": false,
-      "required": ["mode", "sql", "redis", "minio", "smtp", "images"],
+      "required": ["mode", "sql", "redis", "objectStore", "smtp", "images"],
       "properties": {
         "mode": { "enum": ["existing", "deploy"] },
         "sql": { "type": "object", "additionalProperties": false, "required": ["host", "port", "database", "adminUser", "adminSecretReference", "initializerUser", "initializerSecretReference", "initializerConnectionReference", "runtimeUser", "runtimeSecretReference", "runtimeConnectionReference"] },
         "redis": { "type": "object", "additionalProperties": false, "required": ["host", "port", "prefix", "adminSecretReference", "user", "secretReference"] },
-        "minio": { "type": "object", "additionalProperties": false, "required": ["host", "port", "useSsl", "artifactBucket", "diagnosticsBucket", "rootAccessKeyReference", "rootSecretKeyReference", "accessKeyReference", "secretKeyReference"] },
+        "objectStore": {
+          "type": "object", "additionalProperties": false,
+          "required": ["root", "uid", "gid", "filesystemUuid", "minimumFreeBytes", "minimumFreeInodes", "artifactBucket", "diagnosticsBucket"],
+          "properties": {
+            "root": { "type": "string", "pattern": "^/[^\\u0000]*$" },
+            "uid": { "type": "integer", "minimum": 1, "maximum": 4294967294 },
+            "gid": { "type": "integer", "minimum": 1, "maximum": 4294967294 },
+            "filesystemUuid": { "type": "string", "pattern": "^[0-9a-fA-F-]{36}$" },
+            "minimumFreeBytes": { "type": "integer", "minimum": 1 },
+            "minimumFreeInodes": { "type": "integer", "minimum": 1 },
+            "artifactBucket": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" },
+            "diagnosticsBucket": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
+          }
+        },
         "smtp": {
           "type": "object", "additionalProperties": false,
           "required": ["kind", "host", "ports", "usernameReference", "passwordReference"],
@@ -232,7 +246,7 @@
           "then": { "properties": { "ports": { "prefixItems": [true, { "type": "integer", "minimum": 1, "maximum": 65535 }] } } },
           "else": { "properties": { "ports": { "prefixItems": [true, { "type": "null" }] } } }
         },
-        "images": { "type": "object", "additionalProperties": false, "required": ["sqlServer", "redis", "minio", "minioClient", "mailpit"] }
+        "images": { "type": "object", "additionalProperties": false, "required": ["sqlServer", "redis", "mailpit"] }
       }
     },
     "builder": {

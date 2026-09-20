@@ -293,7 +293,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 ServerGarbageCollection = GCSettings.IsServerGC,
                 TotalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
                 SqlServer = DescribeSqlEndpoint(fixture.SqlServerConnectionString),
-                fixture.MinioEndpoint
+                IntegrationTestFixture.ExternalS3Endpoint
             },
             UnavailableEvidence = new
             {
@@ -1145,7 +1145,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 MediaType = "application/octet-stream",
                 ByteLength = workload.ByteLength,
                 ChecksumSha256 = workload.ChecksumSha256,
-                StorageReference = $"s3://{ArtifactBucket}/{workload.ObjectKey}",
+                StorageReference = $"object://{ArtifactBucket}/{workload.ObjectKey}",
                 ReceivedAtUtc = captured,
                 IdempotencyKey = HashText($"{scenario}-source-{index}"),
                 SourceId = "issue-100-performance",
@@ -1278,7 +1278,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                     MediaType = "application/octet-stream",
                     ByteLength = queuePayload.LongLength,
                     ChecksumSha256 = queueChecksum,
-                    StorageReference = $"s3://{ArtifactBucket}/{queueObjectKey}",
+                    StorageReference = $"object://{ArtifactBucket}/{queueObjectKey}",
                     ReceivedAtUtc = captured,
                     IdempotencyKey = HashText($"{scenario}-queue-source-{index}"),
                     SourceId = "issue-100-queue",
@@ -1570,7 +1570,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             Assert.AreEqual(CentralArtifactObjectState.Available, artifact.ObjectState);
             Assert.AreEqual(CentralReconstructionState.Complete, artifact.ReconstructionState);
             string? checksum = null;
-            var objectKey = artifact.StorageReference[$"s3://{ArtifactBucket}/".Length..];
+            var objectKey = artifact.StorageReference[$"object://{ArtifactBucket}/".Length..];
             await minio.GetObjectAsync(new GetObjectArgs()
                 .WithBucket(ArtifactBucket)
                 .WithObject(objectKey)
@@ -1752,8 +1752,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         {
             services.RemoveAll<IMinioClient>();
             services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                .WithEndpoint(fixture.MinioEndpoint)
-                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+                .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
                 .WithHttpClient(new HttpClient(outage, disposeHandler: false), disposeHttpClient: true)
                 .Build());
             ObjectStoreTestClient.Replace(services);
@@ -1775,8 +1775,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             });
             services.RemoveAll<IMinioClient>();
             services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                .WithEndpoint(fixture.MinioEndpoint)
-                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+                .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
                 .WithHttpClient(new HttpClient(protocol.Http, disposeHandler: false), disposeHttpClient: true)
                 .Build());
             ObjectStoreTestClient.Replace(services);
@@ -1795,8 +1795,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 services.AddSingleton(handler);
                 services.RemoveAll<IMinioClient>();
                 services.AddSingleton<IMinioClient>(provider => new MinioClient()
-                    .WithEndpoint(fixture.MinioEndpoint)
-                    .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                    .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+                    .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
                     .WithHttpClient(
                         new HttpClient(provider.GetRequiredService<PublicationFaultHandler>(), disposeHandler: false),
                         disposeHttpClient: true)

@@ -37,8 +37,8 @@ public sealed partial class S3ObjectStorePerformanceTests
         using var handler = new CountingHandler { InnerHandler = new SocketsHttpHandler() };
         using var httpClient = new HttpClient(handler, disposeHandler: false);
         var client = new MinioClient()
-            .WithEndpoint(AssemblyHooks.Fixture.MinioEndpoint)
-            .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+            .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+            .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
             .WithHttpClient(httpClient, disposeHttpClient: false)
             .Build();
         var options = CreateS3Options();
@@ -147,13 +147,13 @@ public sealed partial class S3ObjectStorePerformanceTests
     private static CentralObjectStorageOptions CreateS3Options()
         => new()
         {
-            ServiceEndpoint = AssemblyHooks.Fixture.MinioEndpoint,
+            ServiceEndpoint = IntegrationTestFixture.ExternalS3Endpoint,
             Region = "us-east-1",
             UseTls = false,
             AddressingStyle = ObjectStorageAddressingStyle.Path,
             CredentialMode = ObjectStorageCredentialMode.Static,
-            AccessKey = IntegrationTestFixture.MinioAccessKey,
-            SecretKey = IntegrationTestFixture.MinioSecretKey
+            AccessKey = IntegrationTestFixture.ExternalS3AccessKey,
+            SecretKey = IntegrationTestFixture.ExternalS3SecretKey
         };
 
     private static async Task<UploadMeasurement> MeasureUploadAsync(

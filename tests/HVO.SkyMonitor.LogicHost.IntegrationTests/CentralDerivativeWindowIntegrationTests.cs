@@ -2,6 +2,7 @@ using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
@@ -12,8 +13,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Data.SqlClient;
-using Minio;
-using Minio.DataModel.Args;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Data.Common;
@@ -238,7 +237,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                             RetentionDeletionToken = operationToken,
                             RetentionDeletionRequestedAtUtc = now
                         };
-                        var objectKey = blockedReference[$"s3://{Bucket}/".Length..];
+                        var objectKey = blockedReference[$"object://{Bucket}/".Length..];
                         var disposition = new CentralObjectRecoveryDisposition
                         {
                             SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
@@ -335,7 +334,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                         RetentionDeletionToken = operationToken,
                         RetentionDeletionRequestedAtUtc = now
                     };
-                    var objectKey = blockedReference[$"s3://{Bucket}/".Length..];
+                    var objectKey = blockedReference[$"object://{Bucket}/".Length..];
                     var disposition = new CentralObjectRecoveryDisposition
                     {
                         SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
@@ -383,14 +382,16 @@ public sealed class CentralDerivativeWindowIntegrationTests
                         .ConfigureAwait(false);
                 }
             }
-            using (var copyFault = new FailCanonicalCopyHandler(2) { InnerHandler = new SocketsHttpHandler() })
-            using (var faultMinio = CreateMinio(copyFault))
+            using (var copyFault = new FailCanonicalCopyHandler(2))
             await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
             {
+                var faultStore = ObjectStoreTestClient.Create(
+                    AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>(), copyFault);
+                using var ownedFaultStore = (IDisposable)faultStore;
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var writer = new CentralTransientDerivativeOutputWriter(
                     db,
-                    ObjectStoreTestClient.Create(faultMinio),
+                    faultStore,
                     new CentralTransientEventVersionAppender(db),
                     TimeProvider.System);
                 var action = () => writer.PersistAsync(
@@ -507,20 +508,72 @@ public sealed class CentralDerivativeWindowIntegrationTests
                     }
                     if (intent.Id == intents[0].Id)
                     {
-                        var objectKey = intent.StorageReference[$"s3://{Bucket}/".Length..];
-                        var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
-                        await using (var corrupt = new MemoryStream(new byte[derivativeBytes.Length], writable: false))
+                        var objectKey = intent.StorageReference[$"object://{Bucket}/".Length..];
+                        var minio = scope.ServiceProvider.GetRequiredService<IObjectStore>();
+                        _ = await minio.StatAsync(Bucket, objectKey, CancellationToken.None).ConfigureAwait(false);
+                        var keyHash = FilesystemObjectLayout.KeyHash(objectKey);
+                        var descriptorPath = Path.Combine(
+                            AssemblyHooks.Fixture.ObjectStorageRoot,
+                            FilesystemObjectLayout.DescriptorRelativePath(Bucket, keyHash));
+                        var descriptor = JsonSerializer.Deserialize<FilesystemObjectDescriptor>(
+                            await File.ReadAllBytesAsync(descriptorPath).ConfigureAwait(false),
+                            FilesystemObjectLayout.DescriptorJson)!;
+                        var dataPath = Path.Combine(
+                            AssemblyHooks.Fixture.ObjectStorageRoot,
+                            FilesystemObjectLayout.DataRelativePath(
+                                Bucket,
+                                keyHash,
+                                descriptor.Generation));
+                        File.Exists(dataPath).Should().BeTrue("the committed descriptor must name the faulted data file");
+                        File.Delete(dataPath);
+                        await using (var missing = await retrieval.GetAsync(
+                                         principal, eventId, intent.DerivativeId, CancellationToken.None).ConfigureAwait(false))
                         {
-                            await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(objectKey)
-                                .WithStreamData(corrupt).WithObjectSize(corrupt.Length)
-                                .WithContentType(intent.MediaType), CancellationToken.None).ConfigureAwait(false);
+                            missing.Status.Should().Be(CentralTransientDerivativeLookupStatus.Found);
+                            var copy = () => retrieval.CopyToAsync(
+                                missing, new MemoryStream(), null, CancellationToken.None);
+                            // A committed descriptor whose data file was removed out of band is local
+                            // corruption, not a missing object: the key still exists and resolves.
+                            (await copy.Should().ThrowAsync<ObjectStoreException>().ConfigureAwait(false))
+                                .Which.Kind.Should().Be(ObjectStoreFailureKind.CorruptState);
                         }
-                        (await retrieval.GetAsync(principal, eventId, intent.DerivativeId, CancellationToken.None)
-                            .ConfigureAwait(false)).Status.Should().Be(CentralTransientDerivativeLookupStatus.IntegrityFailure);
-                        await using var restore = new MemoryStream(derivativeBytes, writable: false);
-                        await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(objectKey)
-                            .WithStreamData(restore).WithObjectSize(restore.Length)
-                            .WithContentType(intent.MediaType), CancellationToken.None).ConfigureAwait(false);
+                        await File.WriteAllBytesAsync(dataPath, derivativeBytes).ConfigureAwait(false);
+
+                        var keyDirectory = Path.GetDirectoryName(dataPath)!;
+                        var generationsBefore = Directory.GetFiles(
+                            keyDirectory, keyHash + ".*" + FilesystemObjectLayout.DataSuffix).ToHashSet(StringComparer.Ordinal);
+                        try
+                        {
+                            await using var replacement = new MemoryStream(derivativeBytes, writable: false);
+                            await minio.PutAsync(Bucket, objectKey, replacement, replacement.Length, intent.MediaType,
+                                CancellationToken.None).ConfigureAwait(false);
+                            (await retrieval.GetAsync(principal, eventId, intent.DerivativeId, CancellationToken.None)
+                                .ConfigureAwait(false)).Status.Should().Be(CentralTransientDerivativeLookupStatus.IntegrityFailure);
+                        }
+                        finally
+                        {
+                            var restorePath = descriptorPath + ".restore-" + Guid.NewGuid().ToString("N");
+                            try
+                            {
+                                await File.WriteAllBytesAsync(
+                                    restorePath,
+                                    JsonSerializer.SerializeToUtf8Bytes(descriptor, FilesystemObjectLayout.DescriptorJson))
+                                    .ConfigureAwait(false);
+                                File.Move(restorePath, descriptorPath, overwrite: true);
+                            }
+                            finally
+                            {
+                                File.Delete(restorePath);
+                                foreach (var generationPath in Directory.GetFiles(
+                                             keyDirectory, keyHash + ".*" + FilesystemObjectLayout.DataSuffix))
+                                {
+                                    if (!generationsBefore.Contains(generationPath))
+                                    {
+                                        File.Delete(generationPath);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 (await retrieval.GetAsync(
@@ -636,14 +689,10 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 var db = corruptScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var source = await db.CentralArtifacts.AsNoTracking()
                     .SingleAsync(item => item.Id == sources[100]).ConfigureAwait(false);
-                var objectName = source.StorageReference[$"s3://{Bucket}/".Length..];
+                var objectName = source.StorageReference[$"object://{Bucket}/".Length..];
                 await using var corrupt = new MemoryStream(CreatePayload(101), writable: false);
-                await corruptScope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(new PutObjectArgs()
-                    .WithBucket(Bucket)
-                    .WithObject(objectName)
-                    .WithStreamData(corrupt)
-                    .WithObjectSize(corrupt.Length)
-                    .WithContentType(source.MediaType), CancellationToken.None).ConfigureAwait(false);
+                await corruptScope.ServiceProvider.GetRequiredService<IObjectStore>().PutAsync(
+                    Bucket, objectName, corrupt, corrupt.Length, source.MediaType, CancellationToken.None).ConfigureAwait(false);
             }
 
             async Task InvalidateFromRetrievalAsync()
@@ -1436,7 +1485,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
             sourceChecksum,
             storageReference,
             devicePublicId.ToString("D"),
-            IntegrationTestFixture.MinioAccessKey
+            IntegrationTestFixture.ExternalS3AccessKey
         }.Concat(privateEventIds.Select(value => value.ToString("D"))))
         {
             Assert.IsFalse(signalText.Contains(forbidden, StringComparison.OrdinalIgnoreCase),
@@ -1560,14 +1609,11 @@ public sealed class CentralDerivativeWindowIntegrationTests
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var storageReference = await db.CentralArtifacts.Where(item => item.Id == sources[99])
                 .Select(item => item.StorageReference).SingleAsync().ConfigureAwait(false);
-            var objectName = storageReference[$"s3://{Bucket}/".Length..];
+            var objectName = storageReference[$"object://{Bucket}/".Length..];
             await using var corrupt = new MemoryStream(CreatePayload(101), writable: false);
-            await scope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(new PutObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(objectName)
-                .WithStreamData(corrupt)
-                .WithObjectSize(corrupt.Length)
-                .WithContentType("application/x-hvo-linear-frame"), CancellationToken.None).ConfigureAwait(false);
+            await scope.ServiceProvider.GetRequiredService<IObjectStore>().PutAsync(
+                Bucket, objectName, corrupt, corrupt.Length, "application/x-hvo-linear-frame", CancellationToken.None)
+                .ConfigureAwait(false);
         }
 
         await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
@@ -2222,22 +2268,17 @@ public sealed class CentralDerivativeWindowIntegrationTests
         var objectKey = objectKeyOverride ?? $"integration/{scenario}/{sequence:D8}.raw";
         var checksum = Convert.ToHexString(SHA256.HashData(payload));
         await using var uploadScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
-        var minio = uploadScope.ServiceProvider.GetRequiredService<IMinioClient>();
+        var objectStore = uploadScope.ServiceProvider.GetRequiredService<IObjectStore>();
         if (publishPayload)
         {
-            if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(Bucket), CancellationToken.None)
-                .ConfigureAwait(false))
-            {
-                await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(Bucket), CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
             await using var stream = new MemoryStream(payload, writable: false);
-            await minio.PutObjectAsync(new PutObjectArgs()
-                    .WithBucket(Bucket)
-                    .WithObject(objectKey)
-                    .WithStreamData(stream)
-                    .WithObjectSize(payload.Length)
-                    .WithContentType("application/x-hvo-linear-frame"), CancellationToken.None)
+            await objectStore.PutAsync(
+                    Bucket,
+                    objectKey,
+                    stream,
+                    payload.Length,
+                    "application/x-hvo-linear-frame",
+                    CancellationToken.None)
                 .ConfigureAwait(false);
         }
 
@@ -2445,7 +2486,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
             MediaType = "application/x-hvo-linear-frame",
             ByteLength = payload.Length,
             ChecksumSha256 = checksum,
-            StorageReference = $"s3://{Bucket}/{objectKey}",
+            StorageReference = $"object://{Bucket}/{objectKey}",
             ReceivedAtUtc = receivedAtUtc ?? DateTimeOffset.UtcNow,
             IdempotencyKey = HashText($"{scenario}-{sequence}"),
             SourceId = "window-integration",
@@ -2722,13 +2763,6 @@ public sealed class CentralDerivativeWindowIntegrationTests
         }
         return false;
     }
-
-    private static IMinioClient CreateMinio(HttpMessageHandler handler)
-        => new MinioClient()
-            .WithEndpoint(AssemblyHooks.Fixture.MinioEndpoint)
-            .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
-            .WithHttpClient(new HttpClient(handler, disposeHandler: false), disposeHttpClient: true)
-            .Build();
 
     private sealed class FailCanonicalCopyHandler(int failureNumber) : DelegatingHandler
     {

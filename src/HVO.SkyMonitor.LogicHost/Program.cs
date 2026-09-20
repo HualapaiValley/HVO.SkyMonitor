@@ -51,11 +51,19 @@ namespace HVO.SkyMonitor.LogicHost;
 
 public sealed partial class Program
 {
-    public static async Task Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
         var command = LogicHostCommandParser.Parse(args);
         var builder = WebApplication.CreateBuilder(command.ForwardedArguments.ToArray());
         DeploymentKeyPerFile.AddConfiguredDirectory(builder.Configuration);
+
+        if (command.Mode is LogicHostHostMode.ObjectStoreBackup or LogicHostHostMode.ObjectStoreRestore or LogicHostHostMode.ObjectStoreVerify)
+        {
+            // Offline object-store maintenance: no services, no database, no listener. Runs
+            // against the same configuration the runtime would use so the root and bucket
+            // names cannot drift from what the host serves.
+            return await RunObjectStoreMaintenanceAsync(command, builder.Configuration).ConfigureAwait(false);
+        }
 
         var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
         if (reverseProxy.Enabled)
@@ -227,7 +235,7 @@ public sealed partial class Program
 
         if (objectStorageConfigured)
         {
-            healthChecks.AddCheck<ObjectStoreHealthCheck>("s3-object-store", tags: ["dependency"]);
+            healthChecks.AddCheck<ObjectStoreHealthCheck>("object-store", tags: ["dependency"]);
         }
 
         if (!string.IsNullOrWhiteSpace(smtpHost))
@@ -391,6 +399,10 @@ public sealed partial class Program
                 "ObjectStorage:ServiceEndpoint must be a host name with an optional port and no URI scheme.")
             .Validate(HasValidObjectStorageCredentials,
                 "ObjectStorage credentials do not match the configured CredentialMode.")
+            .Validate(HasExclusiveProviderSettings,
+                "ObjectStorage:Provider selects one provider; settings for the other provider must not be present.")
+            .Validate(HasValidFilesystemRoot,
+                "ObjectStorage:Filesystem:Root must be an absolute path when ObjectStorage:Provider is Filesystem.")
             .ValidateOnStart();
         builder.Services.AddSingleton<CentralObjectStorageNames>();
         builder.Services.AddSingleton<ObjectStoreTelemetry>();
@@ -955,7 +967,7 @@ public sealed partial class Program
         if (command.Mode == LogicHostHostMode.DatabaseInitialize)
         {
             await app.DisposeAsync().ConfigureAwait(false);
-            return;
+            return 0;
         }
         _ = app.Services.GetRequiredService<CatalogSnapshotResult>();
 
@@ -1079,6 +1091,55 @@ public sealed partial class Program
         app.MapSkyMonitorHealthEndpoints();
 
         await app.RunAsync().ConfigureAwait(false);
+        return 0;
+    }
+
+    private static async Task<int> RunObjectStoreMaintenanceAsync(LogicHostCommand command, ConfigurationManager configuration)
+    {
+        var options = configuration.GetSection(CentralObjectStorageOptions.SectionName).Get<CentralObjectStorageOptions>() ?? new();
+        if (options.Provider != ObjectStorageProvider.Filesystem || !HasValidFilesystemRoot(options))
+        {
+            await Console.Error.WriteLineAsync("Object-store backup, restore and verify apply only when ObjectStorage:Provider is Filesystem with a valid ObjectStorage:Filesystem:Root; the S3 provider's backup belongs to the object-storage service's own runbook.").ConfigureAwait(false);
+            return 2;
+        }
+        var buckets = new[] { options.ArtifactBucket, options.DiagnosticsBucket };
+        var path = Path.GetFullPath(command.Path!);
+        var root = Path.GetFullPath(options.Filesystem.Root!);
+        if (path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal) || string.Equals(path, root, StringComparison.Ordinal))
+        {
+            await Console.Error.WriteLineAsync("The backup path must be outside the object-store root.").ConfigureAwait(false);
+            return 2;
+        }
+        try
+        {
+            switch (command.Mode)
+            {
+                case LogicHostHostMode.ObjectStoreBackup:
+                    {
+                        var inventory = await FilesystemObjectBackup.BackupAsync(root, buckets, path, TimeProvider.System, CancellationToken.None).ConfigureAwait(false);
+                        await Console.Out.WriteLineAsync($"object-store-backup ok objects={inventory.ObjectCount} bytes={inventory.TotalBytes} buckets={string.Join(",", inventory.Buckets)} path={path}").ConfigureAwait(false);
+                        return 0;
+                    }
+                case LogicHostHostMode.ObjectStoreRestore:
+                    {
+                        var inventory = await FilesystemObjectBackup.RestoreAsync(path, root, buckets, CancellationToken.None).ConfigureAwait(false);
+                        var mismatches = await FilesystemObjectBackup.VerifyAsync(path, root, CancellationToken.None).ConfigureAwait(false);
+                        await Console.Out.WriteLineAsync($"object-store-restore ok objects={inventory.ObjectCount} bytes={inventory.TotalBytes} verifiedMismatches={mismatches}").ConfigureAwait(false);
+                        return mismatches == 0 ? 0 : 1;
+                    }
+                default:
+                    {
+                        var mismatches = await FilesystemObjectBackup.VerifyAsync(path, root, CancellationToken.None).ConfigureAwait(false);
+                        await Console.Out.WriteLineAsync($"object-store-verify {(mismatches == 0 ? "ok" : "MISMATCH")} mismatches={mismatches}").ConfigureAwait(false);
+                        return mismatches == 0 ? 0 : 1;
+                    }
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or UnauthorizedAccessException or HVO.SkyMonitor.Storage.FileSystem.FileSystemFaultException)
+        {
+            await Console.Error.WriteLineAsync($"object-store maintenance failed: {exception.Message}").ConfigureAwait(false);
+            return 1;
+        }
     }
 
     private static bool HasUsableDeviceBootstrapCredentials(DeviceBootstrapSecretsOptions options)
@@ -1192,6 +1253,25 @@ public sealed partial class Program
             && string.IsNullOrEmpty(endpoint.Query)
             && string.IsNullOrEmpty(endpoint.Fragment);
     }
+
+    // Provider settings are mutually exclusive and fail closed: a deployment that names one
+    // provider while carrying the other's settings is half-migrated, and starting it would
+    // silently serve the wrong provider. The S3 group is only checked when Filesystem is
+    // selected, because S3 is the default and its defaults are indistinguishable from
+    // "unset"; a Filesystem root under an S3 selection is always a contradiction.
+    internal static bool HasExclusiveProviderSettings(CentralObjectStorageOptions options)
+        => options.Provider switch
+        {
+            ObjectStorageProvider.Filesystem => !options.HasS3Settings,
+            ObjectStorageProvider.S3 => !options.HasFilesystemSettings,
+            _ => false
+        };
+
+    internal static bool HasValidFilesystemRoot(CentralObjectStorageOptions options)
+        => options.Provider != ObjectStorageProvider.Filesystem
+            || (!string.IsNullOrWhiteSpace(options.Filesystem.Root)
+                && Path.IsPathRooted(options.Filesystem.Root)
+                && options.Filesystem.Root == Path.GetFullPath(options.Filesystem.Root));
 
     internal static bool HasValidObjectStorageCredentials(CentralObjectStorageOptions options)
         => options.CredentialMode switch

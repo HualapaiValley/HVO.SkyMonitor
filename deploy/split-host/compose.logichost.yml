@@ -4,6 +4,7 @@ services:
     image: ${LOGICHOST_IMAGE:?digest reference required}
     profiles: [initialize]
     command: ["--host-mode=database-initialize"]
+    user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_GID:?runtime gid required}"
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       HVO_KEY_PER_FILE_DIRECTORY: /run/hvo-secrets
@@ -12,6 +13,11 @@ services:
       - ${HVO_CONFIG_ROOT}/certificates:/run/hvo-certificates:ro
       - ${HVO_CATALOG_ROOT:?catalog root required}:/app/catalog:ro
       - ${HVO_STATE_ROOT:?state root required}/data-protection:/app/DataProtection-Keys
+      - type: bind
+        source: ${HVO_OBJECT_STORE_ROOT:?object store root required}
+        target: /var/lib/hvo/object-store
+        bind:
+          create_host_path: false
     read_only: true
     tmpfs: [/tmp]
     restart: "no"
@@ -21,6 +27,7 @@ services:
   logichost:
     container_name: ${HVO_CONTAINER_NAME:?container name required}
     image: ${LOGICHOST_IMAGE:?digest reference required}
+    user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_GID:?runtime gid required}"
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:8080
@@ -32,6 +39,11 @@ services:
       - ${HVO_CONFIG_ROOT}/certificates:/run/hvo-certificates:ro
       - ${HVO_CATALOG_ROOT:?catalog root required}:/app/catalog:ro
       - ${HVO_STATE_ROOT:?state root required}/data-protection:/app/DataProtection-Keys
+      - type: bind
+        source: ${HVO_OBJECT_STORE_ROOT:?object store root required}
+        target: /var/lib/hvo/object-store
+        bind:
+          create_host_path: false
     read_only: true
     tmpfs: [/tmp]
     restart: unless-stopped

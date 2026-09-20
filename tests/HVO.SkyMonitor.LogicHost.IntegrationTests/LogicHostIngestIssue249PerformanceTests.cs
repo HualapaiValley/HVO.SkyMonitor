@@ -79,7 +79,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         await ExecuteAcceptedAsync(client, allUploads, 4, null, null).ConfigureAwait(false);
         var initialState = await ReadIssue249InitialStateAsync(fixture, allUploads).ConfigureAwait(false);
 
-        using var protocolCounter = new ProtocolCounter(fixture.MinioEndpoint);
+        using var protocolCounter = new ProtocolCounter(IntegrationTestFixture.ExternalS3Endpoint);
         var duplicateMeasurements = new List<IngestMeasurement>();
         foreach (var scenario in scenarios)
         {
@@ -489,8 +489,8 @@ public sealed partial class LogicHostIngestPerformanceTests
             services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(connectionString));
             services.RemoveAll<IMinioClient>();
             services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                .WithEndpoint(fixture.MinioEndpoint)
-                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+                .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
                 .WithHttpClient(new HttpClient(handler, disposeHandler: false), disposeHttpClient: true)
                 .Build());
             ObjectStoreTestClient.Replace(services);
@@ -730,7 +730,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             Assert.IsNull(artifact.ObjectVerificationRequestedAtUtc);
             Assert.AreEqual(0, artifact.ObjectVerificationRetryCount);
             Assert.IsNull(artifact.ObjectVerificationRetryAtUtc);
-            var objectKey = artifact.StorageReference[$"s3://{ArtifactBucket}/".Length..];
+            var objectKey = artifact.StorageReference[$"object://{ArtifactBucket}/".Length..];
             var stat = await minio.StatObjectAsync(new StatObjectArgs()
                 .WithBucket(ArtifactBucket)
                 .WithObject(objectKey)).ConfigureAwait(false);
@@ -841,12 +841,12 @@ public sealed partial class LogicHostIngestPerformanceTests
     {
         var forbidden = new[]
         {
-            IntegrationTestFixture.MinioAccessKey,
-            IntegrationTestFixture.MinioSecretKey,
+            IntegrationTestFixture.ExternalS3AccessKey,
+            IntegrationTestFixture.ExternalS3SecretKey,
             fixture.SqlServerConnectionString,
             "Authorization",
             "AccessToken",
-            "s3://skymonitor-artifacts/"
+            "object://skymonitor-artifacts/"
         };
         foreach (var value in forbidden.Where(static value => !string.IsNullOrEmpty(value)))
         {

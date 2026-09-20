@@ -268,7 +268,7 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
                 Topology = "In-process LogicHost with shared SQL Server and MinIO Testcontainers; fixture startup excluded",
                 WorkspaceStorage = "N/A: container workspace storage is bind-mounted and the physical media/type is not attributable",
                 IntegrationTestFixture.SqlServerImage,
-                IntegrationTestFixture.MinioImage,
+                IntegrationTestFixture.ExternalS3ImageLabel,
                 ContainerCpuAndRss = "N/A: shared dependency containers are not process-attributable; service protocol, waits and I/O are recorded",
                 ConnectionPool = "Application-name-attributed SQL sessions/open transactions/granted application locks are the declared proxy; exact SqlClient pool occupancy is unavailable"
             },
@@ -372,8 +372,8 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
                 .AddInterceptors(collector.Commands, collector.Transactions));
             services.RemoveAll<IMinioClient>();
             services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                .WithEndpoint(fixture.MinioEndpoint)
-                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+                .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
                 .WithHttpClient(new HttpClient(collector.Http, disposeHandler: false), disposeHttpClient: true)
                 .Build());
             ObjectStoreTestClient.Replace(services);
@@ -409,7 +409,7 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
                 MediaType = "application/octet-stream",
                 ByteLength = payload.LongLength,
                 ChecksumSha256 = checksum,
-                StorageReference = $"s3://{Bucket}/{key}",
+                StorageReference = $"object://{Bucket}/{key}",
                 ReceivedAtUtc = DateTimeOffset.UnixEpoch,
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 ObjectState = CentralArtifactObjectState.Available,
@@ -1427,7 +1427,7 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
             executingSdk,
             dockerVersion,
             IntegrationTestFixture.SqlServerImage,
-            IntegrationTestFixture.MinioImage);
+            IntegrationTestFixture.ExternalS3ImageLabel);
         return new Issue246EnvironmentFacts(
             cpuModel,
             checked(memoryKilobytes * 1024),
@@ -1485,11 +1485,11 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
         var json = Encoding.UTF8.GetString(evidenceBytes);
         var keyValues = keys.ToArray();
         var forbidden = keyValues
-            .Concat(keyValues.Select(key => $"s3://{Bucket}/{key}"))
+            .Concat(keyValues.Select(key => $"object://{Bucket}/{key}"))
             .Concat(entityIds.SelectMany(id => new[] { id.ToString("D"), id.ToString("N") }))
             .Concat([
-                IntegrationTestFixture.MinioAccessKey,
-                IntegrationTestFixture.MinioSecretKey,
+                IntegrationTestFixture.ExternalS3AccessKey,
+                IntegrationTestFixture.ExternalS3SecretKey,
                 connectionString,
                 new SqlConnectionStringBuilder(connectionString).Password,
                 repositoryRoot

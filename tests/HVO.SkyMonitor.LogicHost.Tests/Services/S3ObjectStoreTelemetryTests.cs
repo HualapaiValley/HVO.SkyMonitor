@@ -79,10 +79,13 @@ public sealed class S3ObjectStoreTelemetryTests
                 "object_store.operation",
                 "object_store.outcome",
                 "object_store.bucket_role",
+                "object_store.provider",
                 "object_store.addressing_style"
             },
             activity.TagObjects.Select(tag => tag.Key).ToArray());
         Assert.IsFalse(ContainsForbiddenValue(activity.TagObjects.Select(tag => tag.Value)));
+        // The provider tag is bounded to the enum's names; it can never carry an endpoint or a path.
+        Assert.AreEqual("s3", activity.GetTagItem("object_store.provider"));
 
         bool ContainsForbiddenValue(IEnumerable<object?> values)
             => values.Select(value => value?.ToString()).Any(value => value is not null

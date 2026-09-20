@@ -24,7 +24,7 @@ roles receive none of these permissions.
 | Instance configuration owner | `ALTER SETTINGS` | Set and restore `blocked process threshold (s)`. This is not granted to the collector. |
 | Recovery operator | Dedicated, audited, time-limited membership in `sysadmin` | Fail if the exact backup already exists; read the explicit invariant columns; identify exact backup/media metadata; run backup, `RESTORE VERIFYONLY`, isolated restore, `DBCC CHECKDB`, invariant comparison, and drop. Testing proved that `BACKUP DATABASE` plus `CREATE ANY DATABASE` is insufficient because restore preserves the source owner and the restoring login cannot run CHECKDB as `db_owner`. Remove the login or role membership immediately after the drill. |
 | SQL service account owner | Write/read/delete on the approved encrypted SQL backup directory and XE directory | SQL Server performs file I/O. The database login does not receive operating-system access. |
-| MinIO backup owner | Read and restore the versioned MinIO backup set and manifest | Coordinates object consistency with the SQL recovery operator. No SQL permission is implied. |
+| Object-store backup owner | Read and restore the versioned LogicHost object-store backup set and manifest | Coordinates object consistency with the SQL recovery operator. No SQL permission is implied. |
 
 Permission setup is platform-owned, not an application migration. Do not add
 these grants to `hvo_logichost_runtime`, `hvo_logichost_migrator`, startup, or EF
@@ -291,12 +291,12 @@ storage, index, or isolation settings.
 
 ## Backup And Consistency Fence
 
-SQL rows and MinIO objects form one application state but are not one atomic
+SQL rows and stored objects form one application state but are not one atomic
 backup. The incident/change owner establishes this consistency fence:
 
 1. Quiesce LogicHost writers and workers, verify no attributed active request or
    open transaction, and record the fence start UTC.
-2. The MinIO owner snapshots/version-locks the owned buckets and records the
+2. The object-store owner produces a verified LogicHost object-store backup and records the
    manifest revision and completion UTC. Never place SQL backups in an
    application bucket.
 3. The ephemeral recovery operator runs `backup-restore-checkdb.sql` with the
@@ -316,9 +316,9 @@ backup. The incident/change owner establishes this consistency fence:
 4. Record backup completion, bytes, actual restore completion, CHECKDB result,
    invariant result, and fence end UTC. Resume writers only after both owners
    sign the same fence record.
-5. Measure RPO as the age of the newest jointly restorable SQL/MinIO fence at the
+5. Measure RPO as the age of the newest jointly restorable SQL/object-store fence at the
    incident time. Measure RTO from restore authorization through SQL restore,
-   CHECKDB, MinIO restore, reconciliation, and service-ready verification. Do not
+   CHECKDB, object-store restore, reconciliation, and service-ready verification. Do not
    publish a target as achieved without this measured drill.
 6. Retain the encrypted backup under the approved backup policy, or have the SQL
    service account owner delete that one exact run-owned `.bak` after an
@@ -374,8 +374,8 @@ accepted recovery invariant. Safe failure output reports only the script and a
 bounded stage number; detailed SQL diagnostics stay in the restricted server
 boundary.
 
-Never substitute `RESTORE VERIFYONLY` for an actual restore or skip MinIO
-ownership. A SQL-only or MinIO-only backup is not a consistent SkyMonitor
+Never substitute `RESTORE VERIFYONLY` for an actual restore or skip object-store
+ownership. A SQL-only or object-store-only backup is not a consistent SkyMonitor
 recovery point.
 
 ## Statistics, Indexes, And Isolation

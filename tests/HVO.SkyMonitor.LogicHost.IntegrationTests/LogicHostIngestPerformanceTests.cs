@@ -64,7 +64,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             string.Join(' ', TestClients.SystemCameraAgent.Scopes)).ConfigureAwait(false);
         SetAuthorization(client, token.AccessToken);
 
-        using var protocolCounter = new ProtocolCounter(fixture.MinioEndpoint);
+        using var protocolCounter = new ProtocolCounter(IntegrationTestFixture.ExternalS3Endpoint);
         var allocator = new UploadAllocator(w1, w2);
         var successfulUploads = new List<ExpectedUpload>();
         var steadyState = new List<IngestMeasurement>();
@@ -553,8 +553,8 @@ public sealed partial class LogicHostIngestPerformanceTests
             {
                 var httpClient = new HttpClient(faultHandler, disposeHandler: false);
                 return new MinioClient()
-                    .WithEndpoint(fixture.MinioEndpoint)
-                    .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
+                    .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
+                    .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
                     .WithHttpClient(httpClient, disposeHttpClient: true)
                     .Build();
             });
@@ -947,7 +947,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             Assert.IsNotNull(frame);
             Assert.AreEqual(expected.Workload.Payload.LongLength, frame.PixelData.Length);
 
-            var objectKey = artifact.StorageReference[$"s3://{ArtifactBucket}/".Length..];
+            var objectKey = artifact.StorageReference[$"object://{ArtifactBucket}/".Length..];
             string? objectChecksum = null;
             var objectInfo = await minio.StatObjectAsync(new StatObjectArgs()
                 .WithBucket(ArtifactBucket).WithObject(objectKey)).ConfigureAwait(false);

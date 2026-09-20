@@ -90,16 +90,16 @@
       "artifactPath": "acceptance-artifacts/logichost-network-outage.json"
     },
     {
-      "id": "minio-failure",
-      "title": "Normative row 5: MinIO failure",
+      "id": "object-store-failure",
+      "title": "Normative row 5: object-store failure",
       "classification": "fault",
       "executionClass": "component-automated",
       "source": "project-plan:phase-14-fault-row-5",
-      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDependencyOutageAcceptanceTests.Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound;case=Minio",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDependencyOutageAcceptanceTests.Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound;case=ObjectStore",
       "workloads": [
         "W0"
       ],
-      "artifactPath": "acceptance-artifacts/minio-failure.json"
+      "artifactPath": "acceptance-artifacts/object-store-failure.json"
     },
     {
       "id": "sql-failure",
@@ -244,6 +244,42 @@
         "W0"
       ],
       "artifactPath": "acceptance-artifacts/bounded-shutdown.json"
+    },
+    {
+      "id": "raw-boundary-before-identity-reservation",
+      "title": "Raw ingress before identity reservation",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:BeforeIdentityReservation",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_CallerCancellationBeforeIdentityReservationDoesNotConsumeSequence",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-before-identity-reservation.json"
+    },
+    {
+      "id": "raw-boundary-after-identity-reservation",
+      "title": "Raw ingress after identity reservation",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:AfterIdentityReservation",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_CallerCancellationAfterIdentityReservationCompletesAContiguousWindow;case=AfterIdentityReservation",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-after-identity-reservation.json"
+    },
+    {
+      "id": "raw-boundary-before-initialization-lifecycle-lock",
+      "title": "Raw ingress before forced initialization lifecycle lock",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:BeforeInitializationLifecycleLock",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.InitializeAsync_ForcedWhilePayloadPublicationIsInFlight_WaitsAndPreservesExactEvidenceAsync",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-before-initialization-lifecycle-lock.json"
     },
     {
       "id": "raw-boundary-payload-partially-written",

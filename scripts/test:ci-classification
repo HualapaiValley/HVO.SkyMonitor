@@ -173,6 +173,8 @@ verify_component_plan "src/HVO.SkyMonitor.Processing/Recipe.cs"                 
 verify_component_plan "src/HVO.SkyMonitor.ProcessingRunner/Program.cs"                 full false false true  true  true  true  true
 verify_component_plan "src/HVO.SkyMonitor.ProcessingRunner.Contracts/Contract.cs"      full false false true  true  true  true  true
 verify_component_plan "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs"                   full false false true  true  true  true  true
+verify_component_plan "src/HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs"          full false false true  true  true  true  true
+verify_component_plan "tests/HVO.SkyMonitor.Storage.FileSystem.Tests/RootTests.cs"     full false false true  true  true  true  true
 verify_component_plan "src/HVO.SkyMonitor.Common/Security/ApiKey.cs"                   full false false true  true  true  true  true
 verify_component_plan "src/HVO.SkyMonitor.Fleet.Contracts/Registration.cs"             full false false true  true  true  true  true
 verify_component_plan "src/HVO.SkyMonitor.TestSupport/Fixture.cs"                      full false false true  true  true  true  true
@@ -532,6 +534,8 @@ deployment_paths=(
   "scripts/test:deployment-installer-qualification"
   "scripts/test:deployment-logichost-outage-contract"
   "scripts/test:deployment-normal-flow-contract"
+  "scripts/qualify:filesystem-object-store"
+  "scripts/test:filesystem-object-store-qualification"
   "scripts/catalog:install"
   "scripts/infra:operation-lock"
   "deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml"
@@ -580,6 +584,8 @@ verify_targeted_suites "scripts/lib/deploy-test-lifecycle.sh" false true true
 verify_targeted_suites "scripts/test:deployment-installer" false false true
 verify_targeted_suites "scripts/test:deployment-installer-qualification" false false true
 verify_targeted_suites "scripts/test:deployment-normal-flow-contract" false false false
+verify_targeted_suites "scripts/qualify:filesystem-object-store" false false false
+verify_targeted_suites "scripts/test:filesystem-object-store-qualification" false false false
 
 # The complete fallback matrix.
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
@@ -835,7 +841,6 @@ for suite in catalog shards installer; do
     exit 1
   }
 done
-
 extract_workflow_job() {
   local target="$1" line job_name capturing=false
   while IFS= read -r line; do
@@ -852,6 +857,12 @@ extract_workflow_job() {
       printf '%s\n' "$line"
     fi
   done < "$workflow"
+}
+
+deployment_job="$(extract_workflow_job deployment-contracts)"
+grep -Fq './scripts/test:filesystem-object-store-qualification' <<< "$deployment_job" || {
+  printf 'Deployment Contracts must run the filesystem object-store qualification fixture.\n' >&2
+  exit 1
 }
 
 grep -Fq 'types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]' "$workflow" || {
@@ -1122,8 +1133,8 @@ while IFS= read -r component; do
   done < <("$repo_root/scripts/coverage:component" --list-slots "$component")
 done < <("$repo_root/scripts/coverage:component" --list-components)
 
-if (( slot_count != 20 )); then
-  printf 'Expected 20 component coverage slots across the five lanes, found %s.\n' "$slot_count" >&2
+if (( slot_count != 21 )); then
+  printf 'Expected 21 component coverage slots across the five lanes, found %s.\n' "$slot_count" >&2
   exit 1
 fi
 

@@ -2785,6 +2785,12 @@ public sealed class RawCaptureIngressTests
                 .ConfigureAwait(false);
             Assert.IsNotNull(receipt);
             Assert.AreEqual(1L, receipt.Manifest.Descriptor.Capture.CaptureSequence);
+            await Phase14ScenarioEvidence.RecordAsync(
+                "raw-boundary-before-identity-reservation",
+                "caller-cancellation-before-identity-reservation",
+                caseSelector: null,
+                ["cancellation-observed", "identity-not-reserved", "sequence-not-consumed"])
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -2853,6 +2859,15 @@ public sealed class RawCaptureIngressTests
             Assert.HasCount(2, window, point.ToString());
             CollectionAssert.AreEqual(new[] { -1, 0 }, window.Select(static input => input.WindowPosition).ToArray(), point.ToString());
             CollectionAssert.AreEqual(new long[] { 1, 2 }, window.Select(static input => input.Descriptor.Capture.CaptureSequence).ToArray(), point.ToString());
+            if (point == RawIngressFaultPoint.AfterIdentityReservation)
+            {
+                await Phase14ScenarioEvidence.RecordAsync(
+                    "raw-boundary-after-identity-reservation",
+                    "caller-cancellation-after-identity-reservation",
+                    RawIngressFaultPoint.AfterIdentityReservation.ToString(),
+                    ["reservation-committed", "contiguous-window-preserved", "retry-is-existing"])
+                    .ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -3122,6 +3137,12 @@ public sealed class RawCaptureIngressTests
             Assert.AreEqual(0L, state.Snapshot.QuarantineCount);
             Assert.IsEmpty(Directory.EnumerateFiles(Path.Combine(root, "quarantine"), "*", SearchOption.AllDirectories));
             Assert.IsEmpty(Directory.EnumerateFiles(Path.Combine(root, "frames"), "*.tmp", SearchOption.AllDirectories));
+            await Phase14ScenarioEvidence.RecordAsync(
+                "raw-boundary-before-initialization-lifecycle-lock",
+                "forced-initialization-waits-for-publication",
+                caseSelector: null,
+                ["lifecycle-lock-requested", "initialization-waited", "published-evidence-preserved"])
+                .ConfigureAwait(false);
 
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {

@@ -10,8 +10,6 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -24,7 +22,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
     {
         await using var database = CreateDatabase("Issue243PayloadRelease");
         var publishedKeys = new List<string>();
-        var fixtureMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>();
+        var fixtureMinio = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>();
         try
         {
             await database.Context.Database.MigrateAsync().ConfigureAwait(false);
@@ -68,23 +66,14 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             database.Context.ChangeTracker.Clear();
             var reviewedCurrent = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
                 .ConfigureAwait(false);
-            if (!await fixtureMinio.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-artifacts"))
-                    .ConfigureAwait(false))
-            {
-                await fixtureMinio.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-artifacts"))
-                    .ConfigureAwait(false);
-            }
             foreach (var artifact in seeded.Artifacts)
             {
-                var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
+                var objectKey = artifact.StorageReference["object://skymonitor-artifacts/".Length..];
                 var payload = fixture.Payloads[artifact.ArtifactId];
                 await using var stream = new MemoryStream(payload, writable: false);
-                await fixtureMinio.PutObjectAsync(new PutObjectArgs()
-                    .WithBucket("skymonitor-artifacts")
-                    .WithObject(objectKey)
-                    .WithStreamData(stream)
-                    .WithObjectSize(payload.LongLength)
-                    .WithContentType("application/octet-stream")).ConfigureAwait(false);
+                await fixtureMinio.PutAsync(
+                    "skymonitor-artifacts", objectKey, stream, payload.LongLength, "application/octet-stream", CancellationToken.None)
+                    .ConfigureAwait(false);
                 publishedKeys.Add(objectKey);
             }
 
@@ -95,15 +84,11 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             }.ConnectionString;
             await using var subjectDb = CreateContext(subjectConnection);
             using var handler = new BlockingDeleteHandler { InnerHandler = new SocketsHttpHandler() };
-            var minio = new MinioClient()
-                .WithEndpoint(AssemblyHooks.Fixture.MinioEndpoint)
-                .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
-                .WithHttpClient(new HttpClient(handler, disposeHandler: false), disposeHttpClient: true)
-                .Build();
+            var minio = ObjectStoreTestClient.Create(fixtureMinio, handler);
             var service = new CentralTransientPayloadReleaseService(
                 subjectDb,
                 new CentralArtifactRetentionReferences(subjectDb),
-                ObjectStoreTestClient.Create(minio),
+                minio,
                 Options.Create(new CentralTransientPayloadReleaseOptions
                 {
                     Enabled = true,
@@ -151,7 +136,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 var recovery = new CentralTransientPayloadReleaseService(
                     recoveryDb,
                     new CentralArtifactRetentionReferences(recoveryDb),
-                    ObjectStoreTestClient.Create(fixtureMinio),
+                    fixtureMinio,
                     Options.Create(new CentralTransientPayloadReleaseOptions
                     {
                         Enabled = true,
@@ -173,10 +158,9 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             CollectionAssert.AreEquivalent(expectedArtifactIds, expiredArtifactIds);
             foreach (var objectKey in publishedKeys)
             {
-                Func<Task> stat = () => fixtureMinio.StatObjectAsync(new StatObjectArgs()
-                    .WithBucket("skymonitor-artifacts")
-                    .WithObject(objectKey));
-                await stat.Should().ThrowAsync<Minio.Exceptions.ObjectNotFoundException>().ConfigureAwait(false);
+                Func<Task> stat = () => fixtureMinio.StatAsync("skymonitor-artifacts", objectKey, CancellationToken.None);
+                (await stat.Should().ThrowAsync<ObjectStoreException>().ConfigureAwait(false))
+                    .Which.Kind.Should().Be(ObjectStoreFailureKind.MissingObject);
             }
 
             var repositoryRoot = FindIssue243PayloadRepositoryRoot();
@@ -230,9 +214,8 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         {
             foreach (var objectKey in publishedKeys)
             {
-                await fixtureMinio.RemoveObjectAsync(new RemoveObjectArgs()
-                    .WithBucket("skymonitor-artifacts")
-                    .WithObject(objectKey)).ConfigureAwait(false);
+                await fixtureMinio.DeleteAsync("skymonitor-artifacts", objectKey, CancellationToken.None)
+                    .ConfigureAwait(false);
             }
             await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
         }

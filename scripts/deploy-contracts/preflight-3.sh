@@ -195,10 +195,10 @@ done < <(jq -r '.profiles[] | [.sourcePath,.sourceSha256,.configurationIdentityS
   if deploy_validate_inventory "$TEMP_DIR/arbitrary-workload-inventory.json" isolated >/dev/null 2>&1; then exit 100; fi
   jq --arg owner "$(id -un)" '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",
     expectedHostName:"shared-node",expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:"/srv/hvo/shared",
-    runtimeOwner:$owner,ports:[1433,6379,9000,2525,8025]} |
+    runtimeOwner:$owner,ports:[1433,6379,2525,8025]} |
     .deployment.services.mode="deploy" | .deployment.services.smtp.kind="mailpit" | .deployment.services.smtp.ports=[2525,8025] |
     .deployment.services.images={sqlServer:("registry.example/sql@sha256:"+("a"*64)),redis:("registry.example/redis@sha256:"+("b"*64)),
-      minio:("registry.example/minio@sha256:"+("c"*64)),minioClient:("registry.example/mc@sha256:"+("d"*64)),mailpit:("registry.example/mailpit@sha256:"+("e"*64))} |
+      mailpit:("registry.example/mailpit@sha256:"+("e"*64))} |
     .deployment.limits.sqlMemory="4G" | .deployment.limits.sqlMemoryLimitMb=3072' "$BASE_INVENTORY" > "$TEMP_DIR/shared-valid.json"
   deploy_validate_inventory "$TEMP_DIR/shared-valid.json" isolated
   jq '.deployment.limits.sqlMemory=null' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-memory-invalid.json"
@@ -245,7 +245,13 @@ done < <(jq -r '.profiles[] | [.sourcePath,.sourceSha256,.configurationIdentityS
   done
   jq '.catalogs[0].version="catalog:v1"' "$BASE_INVENTORY" > "$TEMP_DIR/catalog.json"
   if deploy_validate_inventory "$TEMP_DIR/catalog.json" isolated >/dev/null 2>&1; then exit 93; fi
-  jq '.deployment.secretMappings |= map(select(.key != "ObjectStorage__AccessKey"))' "$BASE_INVENTORY" > "$TEMP_DIR/mapping-invalid.json"
+  for bucket_name in hvo.main.artifacts abcdefghijklmnopqrstuvwxyz0123456789-artifacts; do
+    jq --arg bucket "$bucket_name" '.deployment.services.objectStore.artifactBucket=$bucket |
+      .deployment.resources.artifactBucket=$bucket' "$BASE_INVENTORY" > "$TEMP_DIR/bucket.json"
+    deploy_validate_inventory "$TEMP_DIR/bucket.json" isolated
+  done
+  # The filesystem provider takes no transport credentials, so routing one is a rejection.
+  jq '.deployment.secretMappings += [{reference:"SQL_PASSWORD",key:"ObjectStorage__AccessKey"}]' "$BASE_INVENTORY" > "$TEMP_DIR/mapping-invalid.json"
   if deploy_validate_inventory "$TEMP_DIR/mapping-invalid.json" isolated >/dev/null 2>&1; then exit 96; fi
 )
 runtime_pattern="$(jq -r '."$defs".runtimeRoot.pattern' "$REPO_ROOT/deploy/split-host/inventory.schema.json")"
@@ -382,14 +388,13 @@ jq '.images.registryImmutableTags=false' "$BASE_INVENTORY" > "$INVENTORY"; expec
 jq '.images.builder.endpoint="remote-context"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' declared-remote-builder
 
 # Duplicate secret entries are rejected globally before transport for every controlled secret class.
-for secret_case in sql redis minio certificate owner bootstrap; do
+for secret_case in sql redis certificate owner bootstrap; do
     duplicate_reference="DUPLICATE_${secret_case^^}"
     cp "$SECRET_FILE" "$TEMP_DIR/duplicate-secret.base"
     printf '%s=first\n%s=second\n' "$duplicate_reference" "$duplicate_reference" >> "$SECRET_FILE"
     case "$secret_case" in
       sql) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.sql.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
       redis) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.redis.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
-      minio) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.minio.rootSecretKeyReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
       certificate) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] |
         .deployment.certificates.signingPasswordReference=$reference |
         .deployment.secretMappings += [{reference:$reference,key:"OpenIddictCertificates__SigningPassword"}]' "$BASE_INVENTORY" > "$INVENTORY" ;;
@@ -420,14 +425,13 @@ mv "$TEMP_DIR/duplicate-secret.base" "$SECRET_FILE"
 )
 
 # Every secret class rejects carriage returns and other control bytes before rendering.
-for secret_case in sql redis minio client certificate; do
+for secret_case in sql redis client certificate; do
     control_reference="CONTROL_${secret_case^^}"
     cp "$SECRET_FILE" "$TEMP_DIR/control-secret.base"
     printf '%s=before\rafter\n' "$control_reference" >> "$SECRET_FILE"
     case "$secret_case" in
       sql) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.sql.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
       redis) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.redis.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
-      minio) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.minio.rootSecretKeyReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
       client) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.deviceBootstrap.clientSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
       certificate) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] |
         .deployment.certificates.signingPasswordReference=$reference |

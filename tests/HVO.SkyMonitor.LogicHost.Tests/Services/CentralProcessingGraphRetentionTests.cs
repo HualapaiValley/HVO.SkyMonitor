@@ -192,7 +192,7 @@ public sealed class CentralProcessingGraphRetentionTests
             MediaType = "application/octet-stream",
             ByteLength = 1,
             ChecksumSha256 = new string('A', 64),
-            StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}",
+            StorageReference = $"object://skymonitor-artifacts/{Guid.NewGuid():N}",
             IdempotencyKey = Guid.NewGuid().ToString("N"),
             ReceivedAtUtc = DateTimeOffset.UtcNow,
             ObjectState = CentralArtifactObjectState.Available,

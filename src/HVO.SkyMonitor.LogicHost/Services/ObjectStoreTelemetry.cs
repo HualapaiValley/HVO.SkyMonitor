@@ -35,6 +35,7 @@ internal sealed class ObjectStoreTelemetry
         var activity = ActivitySource.StartActivity("object-store.request", ActivityKind.Client);
         activity?.SetTag("object_store.operation", operation);
         activity?.SetTag("object_store.bucket_role", GetBucketRole(bucket));
+        activity?.SetTag("object_store.provider", GetProvider());
         activity?.SetTag("object_store.addressing_style", GetAddressingStyle());
         return activity;
     }
@@ -81,6 +82,18 @@ internal sealed class ObjectStoreTelemetry
             ? "diagnostics"
             : "artifact";
 
+    // Provider-neutral tag: every adapter reports which provider served the operation.
+    private string GetProvider()
+        => _options.Provider switch
+        {
+            ObjectStorageProvider.Filesystem => "filesystem",
+            ObjectStorageProvider.S3 => "s3",
+            _ => "unknown"
+        };
+
+    // Transport-specific tag; meaningful only for S3 and reported as such for other providers.
     private string GetAddressingStyle()
-        => _options.AddressingStyle == ObjectStorageAddressingStyle.Path ? "path" : "virtual-host";
+        => _options.Provider != ObjectStorageProvider.S3
+            ? "n/a"
+            : _options.S3.AddressingStyle == ObjectStorageAddressingStyle.Path ? "path" : "virtual-host";
 }

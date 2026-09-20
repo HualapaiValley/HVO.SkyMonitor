@@ -757,7 +757,7 @@ internal sealed partial class ArtifactIngestService(
         string bucket = Configuration.CentralObjectStorageOptions.DefaultArtifactBucket)
     {
         var mediaTypeKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(manifest.MediaType)));
-        return $"s3://{bucket}/artifacts/{devicePublicId:N}/{manifest.CapturedAtUtc:yyyy/MM/dd}/{manifest.IdempotencyKey}-{manifest.ChecksumSha256.ToUpperInvariant()}-{mediaTypeKey}.bin";
+        return $"{Configuration.CentralObjectStorageOptions.LogicalScheme}{bucket}/artifacts/{devicePublicId:N}/{manifest.CapturedAtUtc:yyyy/MM/dd}/{manifest.IdempotencyKey}-{manifest.ChecksumSha256.ToUpperInvariant()}-{mediaTypeKey}.bin";
     }
 
     private async Task EnsureV2IntentAsync(

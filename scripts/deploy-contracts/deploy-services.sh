@@ -17,17 +17,17 @@ jq --arg root "$TEMP_DIR/remote/$deploy_services-skymonitor" --arg endpoint "htt
   .productRoot=$root | .catalogs |= map(.installRoot=($root+"/catalogs/"+.catalogId)) |
   .deployment.services.mode="deploy" | .deployment.services.smtp.kind="mailpit" |
   .deployment.transient.mode="Hybrid" |
-  .deployment.services.sql.port=1433 | .deployment.services.redis.port=6379 | .deployment.services.minio.port=9000 | .deployment.services.smtp.ports=[2525,8025] |
+  .deployment.services.sql.port=1433 | .deployment.services.redis.port=6379 | .deployment.services.smtp.ports=[2525,8025] |
   .deployment.services.images={sqlServer:("registry.example/sql@sha256:"+("1"*64)),redis:("registry.example/redis@sha256:"+("2"*64)),
-    minio:("registry.example/minio@sha256:"+("3"*64)),minioClient:("registry.example/mc@sha256:"+("4"*64)),mailpit:("registry.example/mailpit@sha256:"+("5"*64))} |
+    mailpit:("registry.example/mailpit@sha256:"+("5"*64))} |
   .deployment.services.sql.database="hvo-deploy-services" | .deployment.resources.sqlDatabase="hvo-deploy-services" |
   .deployment.services.redis.prefix="hvo-deploy-services:" | .deployment.resources.redisPrefix="hvo-deploy-services:" |
-  .deployment.services.minio.artifactBucket="hvo-deploy-services-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-services-artifacts" |
-  .deployment.services.minio.diagnosticsBucket="hvo-deploy-services-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-services-diagnostics" |
+  .deployment.services.objectStore.artifactBucket="hvo-deploy-services-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-services-artifacts" |
+  .deployment.services.objectStore.diagnosticsBucket="hvo-deploy-services-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-services-diagnostics" |
   .deployment.resources.project="hvo-deploy-services" |
   .deployment.limits.sqlMemory="4G" | .deployment.limits.sqlMemoryLimitMb=3072 |
   .sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",expectedHostName:"shared-node",
-    expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:($root+"/shared-services"),runtimeOwner:$owner,ports:[1433,6379,9000,2525,8025]} |
+    expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:($root+"/shared-services"),runtimeOwner:$owner,ports:[1433,6379,2525,8025]} |
   .logicHost.runtimeRoot=($root+"/logichosts/"+.logicHost.instanceId) | .logicHost.internalEndpoint=$endpoint | .logicHost.ports=[$port] |
   (.cameraAgents[0].runtimeRoot)=($root+"/cameraagents/"+.cameraAgents[0].instanceId) | (.cameraAgents[0].internalEndpoint)=$endpoint | (.cameraAgents[0].ports)=[$port] |
   (.cameraAgents[1].runtimeRoot)=($root+"/cameraagents/"+.cameraAgents[1].instanceId) | (.cameraAgents[1].internalEndpoint)=$endpoint | (.cameraAgents[1].ports)=[$port]' \
@@ -57,30 +57,42 @@ jq -e '.phaseStatus == "failed" and ([.targets[].target] | sort) == ["east","log
 jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_services-evidence/catalog.json" >/dev/null
 run_deploy_mode catalog "$deploy_services" isolated >/dev/null
 export FAKE_RUNTIME_UID_HOST=shared FAKE_RUNTIME_UID=4242 FAKE_RUNTIME_GID=4343
+if FAKE_OBJECT_STORE_QUALIFY_FAIL=logic run_deploy_mode up "$deploy_services" isolated > "$TEMP_DIR/up-object-store-qualifier-failure.log" 2>&1; then
+  fail 'Up accepted a failed object-store qualification.'
+fi
+grep -Fq 'reason=object-store-qualification-failed' "$TEMP_DIR/up-object-store-qualifier-failure.log"
+if FAKE_OBJECT_STORE_QUALIFY_MALFORMED=logic run_deploy_mode up "$deploy_services" isolated > "$TEMP_DIR/up-object-store-qualifier-malformed.log" 2>&1; then
+  fail 'Up accepted an incomplete object-store preflight document.'
+fi
+grep -Fq 'reason=object-store-qualification-invalid' "$TEMP_DIR/up-object-store-qualifier-malformed.log"
+if FAKE_RUNTIME_UID=4343 run_deploy_mode up "$deploy_services" isolated > "$TEMP_DIR/up-object-store-owner-mismatch.log" 2>&1; then
+  fail 'Up accepted an object-store owner that differs from runtimeOwner.'
+fi
+grep -Fq 'reason=object-store-owner-mismatch' "$TEMP_DIR/up-object-store-owner-mismatch.log"
 if FAKE_COMPOSE_FAIL_MATCH="hvo-deploy-services-22222222222242228222222222222222" run_deploy_mode up "$deploy_services" isolated > "$TEMP_DIR/up-failure.log" 2>&1; then fail 'Up partial failure passed.'; fi
 jq -e '.phaseStatus == "failed" and ([.targets[].target] | sort) == ["logic"] and
-  ([.resources[].kind] | sort) == ["logic-initializer","runtime-role","shared-services"]' "$TEMP_DIR/output/$deploy_services-state/up-ledger.json" >/dev/null
+  ([.resources[].kind] | sort) == ["logic-initializer","object-store","runtime-role","shared-services"]' "$TEMP_DIR/output/$deploy_services-state/up-ledger.json" >/dev/null
 jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_services-evidence/up.json" >/dev/null
 run_deploy_mode up "$deploy_services" isolated >/dev/null
-jq -e '.phaseStatus == "passed" and ([.resources[].kind] | sort) == ["logic-initializer","runtime-role","shared-services"] and (.targets | length) == 3' \
+jq -e '.phaseStatus == "passed" and ([.resources[].kind] | sort) == ["logic-initializer","object-store","runtime-role","shared-services"] and (.targets | length) == 3' \
   "$TEMP_DIR/output/$deploy_services-state/up-ledger.json" >/dev/null
-object_storage_endpoint="$(jq -r '.deployment.services.minio.host + ":" + (.deployment.services.minio.port | tostring)' "$INVENTORY")"
-object_storage_tls="$(jq -r '.deployment.services.minio.useSsl' "$INVENTORY")"
 for object_storage_config in "$logic_runtime_root/config/initializer-secrets" "$logic_runtime_root/config/runtime-secrets"; do
-  test "$(<"$object_storage_config/ObjectStorage__ServiceEndpoint")" = "$object_storage_endpoint"
-  test "$(<"$object_storage_config/ObjectStorage__Region")" = us-east-1
-  test "$(<"$object_storage_config/ObjectStorage__UseTls")" = "$object_storage_tls"
-  test "$(<"$object_storage_config/ObjectStorage__AddressingStyle")" = Path
-  test "$(<"$object_storage_config/ObjectStorage__CredentialMode")" = Static
+  test "$(<"$object_storage_config/ObjectStorage__Provider")" = Filesystem
+  test "$(<"$object_storage_config/ObjectStorage__Filesystem__Root")" = /var/lib/hvo/object-store
   test "$(<"$object_storage_config/ObjectStorage__ArtifactBucket")" = hvo-deploy-services-artifacts
   test "$(<"$object_storage_config/ObjectStorage__DiagnosticsBucket")" = hvo-deploy-services-diagnostics
+  test ! -e "$object_storage_config/ObjectStorage__ServiceEndpoint"
+  test ! -e "$object_storage_config/ObjectStorage__AccessKey"
+  test ! -e "$object_storage_config/ObjectStorage__SecretKey"
   test ! -e "$object_storage_config/ObjectStorage__SessionToken"
 done
-test ! -e "$logic_runtime_root/config/initializer-secrets/ObjectStorage__AccessKey"
-test ! -e "$logic_runtime_root/config/initializer-secrets/ObjectStorage__SecretKey"
-test ! -e "$logic_runtime_root/config/initializer-secrets/ObjectStorage__SessionToken"
-test "$(<"$logic_runtime_root/config/runtime-secrets/ObjectStorage__AccessKey")" = generated-minio-access
-test "$(<"$logic_runtime_root/config/runtime-secrets/ObjectStorage__SecretKey")" = 'generated:/@"minio-secret-never-print'
+jq -e '.resources[] | select(.kind == "object-store") |
+  .status == "qualified" and .preflight.schema == "hvo-filesystem-object-store-preflight-v1"' \
+  "$TEMP_DIR/output/$deploy_services-state/up-ledger.json" >/dev/null
+logic_render_env="$TEMP_DIR/output/$deploy_services-state/up-rendered/logic.env"
+grep -Fxq 'HVO_OBJECT_STORE_ROOT=/var/lib/hvo/object-store' "$logic_render_env"
+grep -Fxq 'HVO_RUNTIME_UID=4242' "$logic_render_env"
+grep -Fxq 'HVO_RUNTIME_GID=4343' "$logic_render_env"
 test "$(<"$logic_runtime_root/config/runtime-secrets/CentralTransient__Mode")" = Off
 test "$(<"$logic_runtime_root/config/runtime-secrets/TransientPayloadRelease__Enabled")" = false
 test "$(<"$east_runtime_root/config/secrets/CameraAgent__TransientDetection__Mode")" = Off
@@ -134,25 +146,25 @@ absent_helper_cid="$(printf 'a%.0s' {1..64})"
     [[ "$status" == 1 ]] || exit 94
   done
 )
-for service in sql redis minio; do
+for service in sql redis; do
   test -d "$shared_runtime_root/state/$service"
   jq -e --arg device "$shared_runtime_root/state/$service" '.device == $device' \
     "$FAKE_IMAGE_STATE/volume-shared-context-hvo-deploy-services-services_$service-data" >/dev/null
 done
 test "$(grep -Fc 'user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_GID:?runtime gid required}"' \
-  "$REPO_ROOT/deploy/split-host/compose.shared-services.yml")" -eq 6
+  "$REPO_ROOT/deploy/split-host/compose.shared-services.yml")" -eq 4
 sqlserver_block="$(sed -n '/^  sqlserver:/,/^  sql-provision:/p' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml")"
 grep -Fq 'user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_GID:?runtime gid required}"' <<< "$sqlserver_block"
 grep -Fq 'HOME: /var/opt/mssql' <<< "$sqlserver_block"
 grep -Fq 'MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:?SQL memory ceiling required}' <<< "$sqlserver_block"
 grep -Fq 'mem_limit: ${HVO_SQL_MEMORY:?SQL container memory required}' <<< "$sqlserver_block"
 grep -Fq 'dir /data' "$shared_runtime_root/config/private/redis.conf"
-for service in sql redis minio; do
+for service in sql redis; do
   test -f "$shared_runtime_root/state/$service/.hvo-seed"
 done
-test "$(grep -Fc 'o: bind' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml")" -eq 3
+test "$(grep -Fc 'o: bind' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml")" -eq 2
 grep -Fq '127.0.0.1:${MAILPIT_HTTP_PORT:?Mailpit HTTP port required}:8025' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml"
-for service in sql redis minio; do
+for service in sql redis; do
   grep -Fq 'device: ${HVO_STATE_ROOT:?state root required}/'"$service" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml"
 done
 normalize_fixture="$TEMP_DIR/bootstrap-pascal-response.json"
@@ -180,21 +192,17 @@ grep -Fq $'ssh\t-o\tBatchMode=yes\t-o\tConnectTimeout=8\t--\tshared@example' "$L
 grep -Fq $'docker\t--context\tshared-context\tcompose' "$LOG"
 if grep -Fq '+@all' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml"; then fail 'Redis deploy ACL grants all commands.'; fi
 if grep -Eq 'sqlcmd[^\n]*[[:space:]]-P|redis-cli[^\n]*[[:space:]]-a|mc alias set|MC_HOST_' \
-  "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$REPO_ROOT/deploy/split-host/provision-minio.sh"; then
+  "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" "$REPO_ROOT/deploy/split-host/provision-sql.sh"; then
   fail 'Provisioning places a credential in process arguments.'
 fi
-grep -Fq 'cp /run/hvo-mc/config.json "$config_dir/config.json"' "$REPO_ROOT/deploy/split-host/provision-minio.sh"
-grep -Fq 'account=$(cat /run/hvo-mc/account)' "$REPO_ROOT/deploy/split-host/provision-minio.sh"
-grep -Fq 'add local "$account" --policy "$policy"' "$REPO_ROOT/deploy/split-host/provision-minio.sh"
-if grep -Fq -- '--config-dir /run/hvo-mc' "$REPO_ROOT/deploy/split-host/provision-minio.sh"; then fail 'MinIO provisioning writes auxiliary state to its read-only credential mount.'; fi
-if grep -Fq '${policy_content//' "$REPO_ROOT/deploy/split-host/provision-minio.sh"; then fail 'MinIO provisioning uses non-POSIX shell substitution.'; fi
-grep -Fq 'status=$?' "$REPO_ROOT/deploy/split-host/provision-minio.sh"
-grep -Fq 'exit "$status"' "$REPO_ROOT/deploy/split-host/provision-minio.sh"
-if grep -Fq 'sed ' "$REPO_ROOT/deploy/split-host/provision-minio.sh"; then fail 'MinIO provisioning depends on a tool absent from the pinned client image.'; fi
-if grep -Eq 'fixture-secret-never-print|minio-root-never-print|minio-secret-never-print|east-owner-never-print|west-owner-never-print' "$LOG" ||
-  grep -R -Eq 'fixture-secret-never-print|minio-root-never-print|minio-secret-never-print|east-owner-never-print|west-owner-never-print' \
+# The object store is a host filesystem root qualified before the hosts start, so there is
+# no object-storage provisioning container and no client credential material to assert on.
+if [[ -e "$REPO_ROOT/deploy/split-host/provision-minio.sh" ]]; then
+  fail 'Split-host deployment still ships MinIO provisioning.'
+fi
+if grep -Eq 'fixture-secret-never-print|east-owner-never-print|west-owner-never-print' "$LOG" ||
+  grep -R -Eq 'fixture-secret-never-print|east-owner-never-print|west-owner-never-print' \
     "$TEMP_DIR/output/$deploy_services-evidence" "$TEMP_DIR/output/$deploy_services-state/up-rendered"; then fail 'Deploy-mode command/evidence/rendering exposed a secret.'; fi
-test ! -e "$TEMP_DIR/output/$deploy_services-state/up-rendered/minio-runtime.json"
 
 # Run-owned isolated deletion removes explicit containers, named volumes, and marker-validated roots only.
 FAKE_VOLUME_HASH="$(jq -S -c . "$INVENTORY" | sha256sum | cut -d' ' -f1)"
@@ -523,8 +531,11 @@ grep -Fq 'reason=identity-invalid' "$TEMP_DIR/down-volume-foreign.log"
 cp "$TEMP_DIR/redis-volume.valid" "$redis_volume_state"; chmod 600 "$redis_volume_state"
 jq -c '.inventorySha256=("f" * 64)' "$redis_volume_state" > "$redis_volume_state.changed" && mv "$redis_volume_state.changed" "$redis_volume_state"
 rm "$redis_volume_state"
+# The run-owned Redis volume is restored so the interrupted-delete failpoint below has a
+# volume to act on; MinIO no longer contributes one.
+cp "$TEMP_DIR/redis-volume.valid" "$redis_volume_state"; chmod 600 "$redis_volume_state"
 for down_failpoint in \
-  'after-delete-volume-mutation-minio:hvo-deploy-services-services_minio-data' \
+  'after-delete-volume-mutation-redis:hvo-deploy-services-services_redis-data' \
   'after-delete-mutation-runtime-root:logic'; do
   if DEPLOY_TEST_FAILPOINT="$down_failpoint" run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-resume.log" 2>&1; then
     fail "Down failpoint $down_failpoint passed."
