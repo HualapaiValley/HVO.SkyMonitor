@@ -552,15 +552,21 @@ public sealed class EnvironmentalAcquisitionServiceTests
 
         public async ValueTask DisposeAsync()
         {
-            if (_started)
+            try
             {
-                await Service.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                if (_started)
+                {
+                    await Service.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                }
             }
-            Service.Dispose();
-            Logger.Dispose();
-            Telemetry.Dispose();
-            Coordinator.Dispose();
-            Services.Dispose();
+            finally
+            {
+                Service.Dispose();
+                Logger.Dispose();
+                Telemetry.Dispose();
+                Coordinator.Dispose();
+                Services.Dispose();
+            }
         }
     }
 }
