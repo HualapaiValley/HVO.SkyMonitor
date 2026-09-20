@@ -20,7 +20,7 @@ done
 [[ "$bound_head" =~ ^[0-9a-f]{40}$ ]] || fail '--bound-head must be a full lowercase commit SHA.'
 [[ -n "$output_dir" && -n "$catalog_bundle" ]] || fail '--output-dir and --catalog-bundle are required.'
 [[ -d "$(dirname "$output_dir")" && ! -e "$output_dir" && ! -L "$output_dir" ]] || fail 'Output namespace must be absent beneath an existing parent.'
-[[ -f "$catalog_bundle" && ! -L "$catalog_bundle" ]] || fail 'Catalog bundle is missing or linked.'
+[[ -d "$catalog_bundle" && ! -L "$catalog_bundle" ]] || fail 'Catalog bundle directory is missing or linked.'
 cd "$repo_root"
 [[ "$(git rev-parse HEAD)" == "$bound_head" && -z "$(git status --porcelain)" ]] || fail 'Component evidence requires the clean bound head.'
 
