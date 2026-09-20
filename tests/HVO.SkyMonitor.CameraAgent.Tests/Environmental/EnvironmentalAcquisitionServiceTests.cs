@@ -147,20 +147,25 @@ public sealed class EnvironmentalAcquisitionServiceTests
                 options,
                 TimeProvider.System,
                 store);
-            var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
+            using var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
             using var telemetry = new EnvironmentalAcquisitionTelemetry();
             using var service = new EnvironmentalAcquisitionService(
                 coordinator, store, store, telemetry, TimeProvider.System, options, logger);
 
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
-            await WaitForAttemptsAsync(store, root, StartupSourceKinds.Length).ConfigureAwait(false);
-            await service.StopAsync(CancellationToken.None).ConfigureAwait(false);
-
-            var attempts = await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false);
-            var snapshot = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
-            Assert.HasCount(StartupSourceKinds.Length, attempts);
-            Assert.AreEqual(StartupSourceKinds.Length, snapshot.StoredCount);
-            Assert.IsFalse(logger.Events.Any(static entry => entry.EventId == 2522));
+            try
+            {
+                await WaitForAttemptsAsync(store, root, StartupSourceKinds.Length).ConfigureAwait(false);
+                var attempts = await store.ReadAttemptsAsync(root, 100, CancellationToken.None).ConfigureAwait(false);
+                var snapshot = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
+                Assert.HasCount(StartupSourceKinds.Length, attempts);
+                Assert.AreEqual(StartupSourceKinds.Length, snapshot.StoredCount);
+                Assert.IsFalse(logger.Events.Any(static entry => entry.EventId == 2522));
+            }
+            finally
+            {
+                await service.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -173,15 +178,18 @@ public sealed class EnvironmentalAcquisitionServiceTests
     {
         var exception = new InvalidOperationException("Injected periodic persistence failure.");
         var stateStore = new ThrowingAttemptStateStore(exception);
-        var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
-        using var fixture = CreateFailureService(
-            [EnvironmentalAcquisitionTrigger.Periodic], stateStore, logger);
-
-        await fixture.Service.StartAsync(CancellationToken.None).ConfigureAwait(false);
-        var logged = await logger.WaitForAsync(2522, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        await fixture.Service.StopAsync(CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreSame(exception, logged.Exception);
+        var fixture = CreateFailureService(
+            [EnvironmentalAcquisitionTrigger.Periodic], stateStore);
+        try
+        {
+            await fixture.StartAsync().ConfigureAwait(false);
+            var logged = await fixture.Logger.WaitForAsync(2522, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreSame(exception, logged.Exception);
+        }
+        finally
+        {
+            await fixture.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [TestMethod]
@@ -189,23 +197,25 @@ public sealed class EnvironmentalAcquisitionServiceTests
     {
         var exception = new InvalidOperationException("Injected queued persistence failure.");
         var stateStore = new ThrowingAttemptStateStore(exception);
-        var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
-        using var fixture = CreateFailureService(
-            [EnvironmentalAcquisitionTrigger.OnDemand], stateStore, logger);
-
-        await fixture.Service.StartAsync(CancellationToken.None).ConfigureAwait(false);
-        Assert.IsTrue(fixture.Service.TryEnqueue(new EnvironmentalTriggerRequest(
-            EnvironmentalAcquisitionTrigger.OnDemand, Epoch)));
-        var logged = await logger.WaitForAsync(2522, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        await fixture.Service.StopAsync(CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreSame(exception, logged.Exception);
+        var fixture = CreateFailureService(
+            [EnvironmentalAcquisitionTrigger.OnDemand], stateStore);
+        try
+        {
+            await fixture.StartAsync().ConfigureAwait(false);
+            Assert.IsTrue(fixture.Service.TryEnqueue(new EnvironmentalTriggerRequest(
+                EnvironmentalAcquisitionTrigger.OnDemand, Epoch)));
+            var logged = await fixture.Logger.WaitForAsync(2522, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreSame(exception, logged.Exception);
+        }
+        finally
+        {
+            await fixture.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private static FailureServiceFixture CreateFailureService(
         IReadOnlyList<EnvironmentalAcquisitionTrigger> triggers,
-        IEnvironmentalAcquisitionStateStore stateStore,
-        RecordingLogger<EnvironmentalAcquisitionService> logger)
+        IEnvironmentalAcquisitionStateStore stateStore)
     {
         var services = new ServiceCollection().BuildServiceProvider();
         var source = Source(EnvironmentalObservationKind.AirTemperature, 0, triggers);
@@ -231,6 +241,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
             TimeProvider.System,
             stateStore);
         var telemetry = new EnvironmentalAcquisitionTelemetry();
+        var logger = new RecordingLogger<EnvironmentalAcquisitionService>();
         var service = new EnvironmentalAcquisitionService(
             coordinator,
             stateStore,
@@ -239,7 +250,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
             TimeProvider.System,
             options,
             logger);
-        return new FailureServiceFixture(services, coordinator, telemetry, service);
+        return new FailureServiceFixture(services, coordinator, telemetry, logger, service);
     }
 
     private static async Task WaitForAttemptsAsync(
@@ -509,15 +520,44 @@ public sealed class EnvironmentalAcquisitionServiceTests
         public void Dispose() => _signal.Dispose();
     }
 
-    private sealed record FailureServiceFixture(
-        ServiceProvider Services,
-        EnvironmentalAcquisitionCoordinator Coordinator,
-        EnvironmentalAcquisitionTelemetry Telemetry,
-        EnvironmentalAcquisitionService Service) : IDisposable
+    private sealed class FailureServiceFixture : IAsyncDisposable
     {
-        public void Dispose()
+        private bool _started;
+
+        public FailureServiceFixture(
+            ServiceProvider services,
+            EnvironmentalAcquisitionCoordinator coordinator,
+            EnvironmentalAcquisitionTelemetry telemetry,
+            RecordingLogger<EnvironmentalAcquisitionService> logger,
+            EnvironmentalAcquisitionService service)
         {
+            Services = services;
+            Coordinator = coordinator;
+            Telemetry = telemetry;
+            Logger = logger;
+            Service = service;
+        }
+
+        private ServiceProvider Services { get; }
+        private EnvironmentalAcquisitionCoordinator Coordinator { get; }
+        private EnvironmentalAcquisitionTelemetry Telemetry { get; }
+        public RecordingLogger<EnvironmentalAcquisitionService> Logger { get; }
+        public EnvironmentalAcquisitionService Service { get; }
+
+        public async Task StartAsync()
+        {
+            await Service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            _started = true;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_started)
+            {
+                await Service.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
             Service.Dispose();
+            Logger.Dispose();
             Telemetry.Dispose();
             Coordinator.Dispose();
             Services.Dispose();
