@@ -141,6 +141,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
                 rollback.CommandText = "ROLLBACK;";
                 await rollback.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
+            stateStore.ReleaseFailure();
 
             var receipt = await acquisition.ConfigureAwait(false);
             var attempts = await store.ReadAttemptsAsync(
@@ -356,10 +357,12 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         : IEnvironmentalAcquisitionStateStore
     {
         private readonly TaskCompletionSource _firstLockFailure = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseFailure = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _attemptCount;
 
         public Task FirstLockFailure => _firstLockFailure.Task;
         public int AttemptCount => Volatile.Read(ref _attemptCount);
+        public void ReleaseFailure() => _releaseFailure.TrySetResult();
 
         public async ValueTask RecordAttemptAsync(
             string root,
@@ -379,6 +382,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
                 exception.SqliteErrorCode is SQLitePCL.raw.SQLITE_BUSY or SQLitePCL.raw.SQLITE_LOCKED)
             {
                 _firstLockFailure.TrySetResult();
+                await _releaseFailure.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
                 throw;
             }
         }
