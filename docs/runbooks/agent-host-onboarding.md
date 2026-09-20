@@ -40,7 +40,7 @@ Do this before any agent session starts. None of it requires the agent.
   does not distinguish agents sharing that account.
 - **GitHub CLI.** Install `gh` and authenticate it. Confirm with a read that
   costs nothing, such as listing open pull requests.
-- **Docker.** Integration selections start real SQL Server, Redis, MinIO and
+- **Docker.** Integration selections start real SQL Server, Redis and
   Mailpit containers through Testcontainers. A machine without a working Docker
   daemon can run the unit selection but not the integration one, and must say so
   rather than reporting a partial run as a pass.
@@ -49,8 +49,8 @@ Do this before any agent session starts. None of it requires the agent.
   from protected CI on such a host, and a failure there is not evidence about
   the change.
 - **Shared-service environment.** Copy `.env.template` to `.env` and fill it in.
-  `scripts/with-env` and the infrastructure scripts read the SQL Server, Redis,
-  MinIO and Mailpit endpoints and credentials from it, and they abort on an
+  `scripts/with-env` and the infrastructure scripts read the SQL Server, Redis
+  and Mailpit endpoints and credentials plus the object-store root from it, and they abort on an
   unbound variable rather than degrading, so a machine without `.env` looks ready
   until the first host or infrastructure command fails with no obvious cause. The
   values come from the operator; the file is intentionally ignored and is never
