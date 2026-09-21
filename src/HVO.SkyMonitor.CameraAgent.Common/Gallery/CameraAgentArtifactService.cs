@@ -812,10 +812,16 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             Cache = SqliteCacheMode.Private,
             Pooling = false
         }.ToString());
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA query_only=ON; PRAGMA busy_timeout={checked(_busyTimeoutSeconds * 1000)};";
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await Sqlite.SqliteConnectionConfigurationGate.OpenAndConfigureAsync(
+            connection,
+            async (configuredConnection, token) =>
+        {
+            using var command = configuredConnection.CreateCommand();
+            command.CommandText = "PRAGMA query_only=ON;";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = $"PRAGMA busy_timeout={checked(_busyTimeoutSeconds * 1000)};";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
         return connection;
     }
 

@@ -1592,7 +1592,7 @@ internal sealed class SqliteRawCaptureJournal(
         }
         catch
         {
-            await connection.DisposeAsync().ConfigureAwait(false);
+            await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
             throw;
         }
     }
@@ -1607,9 +1607,17 @@ internal sealed class SqliteRawCaptureJournal(
             Pooling = true,
             DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        EnsureDatabaseFilesArePhysical();
-        return connection;
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            EnsureDatabaseFilesArePhysical();
+            return connection;
+        }
+        catch
+        {
+            await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
+            throw;
+        }
     }
 
     private async Task<(long Version, long SchemaObjectCount)> InspectExistingDatabaseAsync(
@@ -1638,16 +1646,18 @@ internal sealed class SqliteRawCaptureJournal(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        await ExecuteNonQueryAsync(connection, null, $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
-        await ExecuteNonQueryAsync(connection, null, "PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
-        var journalMode = await ExecuteScalarStringAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
+        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
         {
-            await connection.DisposeAsync().ConfigureAwait(false);
-            throw new InvalidOperationException("Raw ingress SQLite journal could not enter WAL mode.");
-        }
-        await ExecuteNonQueryAsync(connection, null, "PRAGMA synchronous = FULL;", cancellationToken).ConfigureAwait(false);
-        await ExecuteNonQueryAsync(connection, null, "PRAGMA wal_autocheckpoint = 1000;", cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, null, $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, null, "PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
+            var journalMode = await ExecuteScalarStringAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Raw ingress SQLite journal could not enter WAL mode.");
+            }
+            await ExecuteNonQueryAsync(connection, null, "PRAGMA synchronous = FULL;", cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, null, "PRAGMA wal_autocheckpoint = 1000;", cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private void EnsureDatabaseFilesArePhysical()
