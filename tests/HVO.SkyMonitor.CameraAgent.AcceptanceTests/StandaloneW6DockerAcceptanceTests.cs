@@ -987,37 +987,54 @@ public sealed class StandaloneW6DockerAcceptanceTests
             darkExposure = TimeSpan.FromSeconds(2),
             flatExposure = TimeSpan.FromMilliseconds(100),
             defectExposure = TimeSpan.FromMilliseconds(3),
-            applicableLightExposure = TimeSpan.FromMilliseconds(32),
+            applicableLightExposure = TimeSpan.FromSeconds(5),
             effectiveFromUtc = DateTimeOffset.UtcNow.AddDays(-1),
             effectiveUntilUtc = DateTimeOffset.UtcNow.AddYears(1),
-            sourceModel = new VirtualCalibrationSourceModelV1 { Seed = 947 },
+            sourceModel = new VirtualCalibrationSourceModelV1(),
             reason = "issue-947 canonical replay calibration"
         });
-        using var acquireResponse = await client.SendAsync(acquireRequest).ConfigureAwait(false);
-        acquireResponse.EnsureSuccessStatusCode();
-        var acquisition = JsonNode.Parse(
-            await acquireResponse.Content.ReadAsStringAsync().ConfigureAwait(false))!.AsObject();
-        var bundleId = acquisition["bundleId"]!.GetValue<string>();
-        Assert.IsFalse(string.IsNullOrWhiteSpace(bundleId));
-
-        status = await client.GetFromJsonAsync<JsonObject>(
-            "/api/v1/operations/calibration/status").ConfigureAwait(false);
-        Assert.IsNotNull(status);
-        using var activateRequest = new HttpRequestMessage(
-            HttpMethod.Post,
-            new Uri($"/api/v1/operations/calibration/bundles/{bundleId}/activate", UriKind.Relative));
-        activateRequest.Headers.Add("RequestVerificationToken", token);
-        activateRequest.Headers.Add("Idempotency-Key", $"issue-947-replay-activate-{Guid.NewGuid():N}");
-        activateRequest.Content = JsonContent.Create(new
+        var originalTimeout = client.Timeout;
+        HttpResponseMessage acquireResponse;
+        try
         {
-            expectedVersion = status["version"]!.GetValue<long>(),
-            reason = "issue-947 canonical replay calibration"
-        });
-        using var activateResponse = await client.SendAsync(activateRequest).ConfigureAwait(false);
-        activateResponse.EnsureSuccessStatusCode();
-        var activated = JsonNode.Parse(
-            await activateResponse.Content.ReadAsStringAsync().ConfigureAwait(false))!.AsObject();
-        Assert.AreEqual(bundleId, activated["activeBundle"]?["bundleId"]?.GetValue<string>());
+            client.Timeout = TimeSpan.FromMinutes(5);
+            acquireResponse = await client.SendAsync(acquireRequest).ConfigureAwait(false);
+        }
+        finally
+        {
+            client.Timeout = originalTimeout;
+        }
+        using (acquireResponse)
+        {
+            var acquireBody = await acquireResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.IsTrue(
+                acquireResponse.IsSuccessStatusCode,
+                $"Calibration acquisition failed with {(int)acquireResponse.StatusCode}: {acquireBody}");
+            var acquisition = JsonNode.Parse(acquireBody)!.AsObject();
+            var bundleId = acquisition["bundleId"]!.GetValue<string>();
+            Assert.IsFalse(string.IsNullOrWhiteSpace(bundleId));
+
+            status = await client.GetFromJsonAsync<JsonObject>(
+                "/api/v1/operations/calibration/status").ConfigureAwait(false);
+            Assert.IsNotNull(status);
+            using var activateRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                new Uri($"/api/v1/operations/calibration/bundles/{bundleId}/activate", UriKind.Relative));
+            activateRequest.Headers.Add("RequestVerificationToken", token);
+            activateRequest.Headers.Add("Idempotency-Key", $"issue-947-replay-activate-{Guid.NewGuid():N}");
+            activateRequest.Content = JsonContent.Create(new
+            {
+                expectedVersion = status["version"]!.GetValue<long>(),
+                reason = "issue-947 canonical replay calibration"
+            });
+            using var activateResponse = await client.SendAsync(activateRequest).ConfigureAwait(false);
+            var activateBody = await activateResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.IsTrue(
+                activateResponse.IsSuccessStatusCode,
+                $"Calibration activation failed with {(int)activateResponse.StatusCode}: {activateBody}");
+            var activated = JsonNode.Parse(activateBody)!.AsObject();
+            Assert.AreEqual(bundleId, activated["activeBundle"]?["bundleId"]?.GetValue<string>());
+        }
     }
 
     /// <summary>
