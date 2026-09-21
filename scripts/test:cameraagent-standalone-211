@@ -22,6 +22,7 @@ readonly MONO_CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraa
 readonly DEFAULT_RESULTS_BASE="$REPO_ROOT/TestResults/issue-211"
 readonly W6_IDENTITY_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity.jq"
 readonly W6_IDENTITY_GATE_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity-gate.jq"
+readonly CENTRAL_TRAFFIC_SUMMARY_PROGRAM="$SCRIPT_DIR/issue-211-central-traffic-summary.jq"
 readonly BIND_LOCAL_ROOT="$REPO_ROOT/data/agent/issue-211"
 readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6'
 readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
@@ -431,6 +432,10 @@ cleanup() {
 trap cleanup EXIT
 
 run_profile_trial() {
+    if (($# != 15)); then
+        printf 'run_profile_trial requires exactly 15 arguments; received %s.\n' "$#" >&2
+        return 1
+    fi
     local trial="$1"
     local config_template="$2"
     local agent_id="$3"
@@ -453,16 +458,7 @@ run_profile_trial() {
     # Whether this invocation hands its durable root to a later one. The last invocation over a
     # shared root is the one that deletes it.
     local retain_state="${14:-false}"
-    local trial_kind="${15:-}"
-    if [[ -z "$trial_kind" ]]; then
-        if [[ "$state_key" != "$trial" ]]; then
-            trial_kind='replay'
-        elif [[ "$calibration_required" == true ]]; then
-            trial_kind='w6'
-        else
-            trial_kind='mono8'
-        fi
-    fi
+    local trial_kind="${15}"
     case "$trial_kind" in
         w6|mono8|replay) ;;
         *) printf 'Unknown trial kind %s for %s.\n' "$trial_kind" "$trial" >&2; return 1 ;;
@@ -1441,46 +1437,17 @@ readonly EXPECTED_CENTRAL_TRAFFIC_TRIALS
 # below passes. An event count is a non-negative whole number, and that is now the requirement.
 # `passed` is recomputed here from the five counters the trial derived it from, rather than read
 # back as a flag that a corrupted document keeps after its counters have stopped supporting it.
-jq -s --argjson expectedTrials "$EXPECTED_CENTRAL_TRAFFIC_TRIALS" '
-  def is_count: (type == "number") and (isnan | not) and (isinfinite | not)
-    and (. >= 0) and (. == floor);
-  def require_count($field): if is_count then . else
-    error("a central-traffic-gate.json has \($field) = \(tojson), which is not a non-negative whole count") end;
-  def recomputed_passed:
-    ((.inTestCountersApplicable == true and
-      ((.inTestCentralTrafficAttempts | require_count("inTestCentralTrafficAttempts")) == 0) and
-      ((.inTestCentralHandlerAttempts | require_count("inTestCentralHandlerAttempts")) == 0)) or
-     (.trialKind == "replay" and .inTestCountersApplicable == false and
-      .inTestCentralTrafficAttempts == null and .inTestCentralHandlerAttempts == null and
-      .inTestCountersReason == "Replay evidence schema does not record in-test central traffic counters."))
-    and ((.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) == 0)
-    and ((.finalCentralHandlerReadyRecords | require_count("finalCentralHandlerReadyRecords")) >= 1)
-    and ((.finalDenyHits | require_count("finalDenyHits")) == 0);
-  {
-    schemaVersion: "issue-211-final-central-traffic-summary-v5",
-    gateCount: length,
-    trialLabels: ([.[].trial] | sort),
-    expectedTrialLabels: ($expectedTrials | sort),
-    trialsIdentified: (([.[] | .trial | select(type == "string" and length > 0)] | sort)
-      == ($expectedTrials | sort)),
-    trials: (sort_by(.trial) | map(.recordedPassed = .passed | .passed = recomputed_passed)),
-    centralHandlerAttempts:
-      (map(select(.inTestCountersApplicable == true) |
-        .inTestCentralHandlerAttempts | require_count("inTestCentralHandlerAttempts")) | add // 0),
-    finalCentralHandlerAttempts:
-      (map(.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) | add // 0),
-    finalDenyHits: (map(.finalDenyHits | require_count("finalDenyHits")) | add // 0),
-    recordedFlagsAgreeWithCounters: (length > 0 and all(.passed == recomputed_passed)),
-    allPassed: (length > 0 and all(recomputed_passed))
-  }
-' "$RESULTS"/*/evidence/central-traffic-gate.json > "$RESULTS/final-central-traffic-summary.json"
+jq -s -f "$CENTRAL_TRAFFIC_SUMMARY_PROGRAM" \
+    --argjson expectedTrials "$EXPECTED_CENTRAL_TRAFFIC_TRIALS" \
+    "$RESULTS"/*/evidence/central-traffic-gate.json > "$RESULTS/final-central-traffic-summary.json"
 
 # Issue #770, correction round 3. The aggregate above established that a recorded flag disagreed
 # with its own counters, wrote the disagreement into the summary, and passed anyway, because
 # nothing read the field. A fail-open with a witness is worse than not having looked, since the
 # document then carries a false assurance that the disagreement was weighed. It is read here, at
 # the point of production, together with the trial identity the same aggregate now records.
-jq --exit-status '.trialsIdentified == true and .recordedFlagsAgreeWithCounters == true' \
+jq --exit-status '.trialsIdentified == true and .trialKindsMatchLabels == true and
+    .recordedFlagsAgreeWithCounters == true and .allPassed == true' \
     "$RESULTS/final-central-traffic-summary.json" >/dev/null \
     || gate_failed 'final central-traffic aggregate' "$RESULTS/final-central-traffic-summary.json"
 
@@ -1791,6 +1758,8 @@ jq -s \
         ($finalCentralTraffic[0].recordedFlagsAgreeWithCounters == true),
       finalDenyGateTrialsIdentified:
         ($finalCentralTraffic[0].trialsIdentified == true),
+      finalDenyGateTrialKindsMatchLabels:
+        ($finalCentralTraffic[0].trialKindsMatchLabels == true),
       normalizedRegressionWithinFifteenPercent:
         all($normalized_percent_changes[]; . <= 15),
       retainedFilesystemWithinDeclaredBound:
@@ -1812,6 +1781,7 @@ jq -s \
       $durable_queues_recorded_within_bounds and
       ($finalCentralTraffic[0].recordedFlagsAgreeWithCounters == true) and
       ($finalCentralTraffic[0].trialsIdentified == true) and
+      ($finalCentralTraffic[0].trialKindsMatchLabels == true) and
       all($normalized_percent_changes[]; . <= 15) and
       all((.performance.peakFilesystemBytes | is_byte_count)
         and (.performance.retainedFilesystemBytes | is_byte_count)

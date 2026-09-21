@@ -309,15 +309,23 @@ readonly REPLAY_PAIR_PROGRAM="$SCRIPT_DIR/issue-719-replay-pair.jq"
 [[ -f "$REPLAY_PAIR_PROGRAM" ]] || fail "missing $REPLAY_PAIR_PROGRAM"
 readonly CENTRAL_GATE_PROGRAM="$SCRIPT_DIR/issue-211-central-traffic-gate.jq"
 [[ -f "$CENTRAL_GATE_PROGRAM" ]] || fail "missing $CENTRAL_GATE_PROGRAM"
+readonly CENTRAL_SUMMARY_PROGRAM="$SCRIPT_DIR/issue-211-central-traffic-summary.jq"
+[[ -f "$CENTRAL_SUMMARY_PROGRAM" ]] || fail "missing $CENTRAL_SUMMARY_PROGRAM"
 
-REPLAY_EXECUTION="$(jq -nc '{
+REPLAY_NODES="$(jq -nc '[
+  "calibrated-preview", "calibration", "cloud", "cloud-presentation", "combined-preview",
+  "environment-presentation", "overlay-manifest", "presentation-materializer", "projected-scene",
+  "quality", "rolling", "scene-presentation", "storage", "telemetry"
+]')"
+readonly REPLAY_NODES
+REPLAY_EXECUTION="$(jq -nc --argjson nodes "$REPLAY_NODES" '{
   executionId: "11111111-1111-1111-1111-111111111111", status: 2,
   acceptedUtc: "2026-09-21T00:00:00Z", startedUtc: "2026-09-21T00:00:01Z",
   completedUtc: "2026-09-21T00:00:02Z", startIntervalMilliseconds: 1000,
   graphIntervalMilliseconds: 1000,
   graphDefinitionIdentitySha256: ("A" * 64), sharedPlanIdentitySha256: ("B" * 64),
   localPlanIdentitySha256: ("C" * 64), attemptCount: 1,
-  nodes: [{nodeId: "decode", required: true, status: "Completed", outputs: 1}]
+  nodes: [$nodes[] | {nodeId: ., required: true, status: "Completed", outputs: 1}]
 }')"
 readonly REPLAY_EXECUTION
 jq -n --argjson execution "$REPLAY_EXECUTION" '{
@@ -332,7 +340,7 @@ jq -n --argjson execution "$REPLAY_EXECUTION" '{
 LOCAL_REPLAY_EXECUTION="$(jq -c '.executionId = "55555555-5555-5555-5555-555555555555"' \
     <<< "$REPLAY_EXECUTION")"
 readonly LOCAL_REPLAY_EXECUTION
-jq -n --argjson execution "$LOCAL_REPLAY_EXECUTION" '{
+jq -n --argjson execution "$LOCAL_REPLAY_EXECUTION" --argjson nodes "$REPLAY_NODES" '{
   schemaVersion: "issue-719-replay-evidence-v1", profile: "LocalRunner", stateKey: "replay-719",
   stateReused: true, declaredProfile: "LocalRunner", result: {passed: true},
   replay: {role: "compare", readFrom: "durable state",
@@ -341,7 +349,8 @@ jq -n --argjson execution "$LOCAL_REPLAY_EXECUTION" '{
     liveExecutionId: "44444444-4444-4444-4444-444444444444",
     inProcessExecutionId: "11111111-1111-1111-1111-111111111111",
     localRunnerExecutionId: "55555555-5555-5555-5555-555555555555", replay: $execution,
-    identity: {comparedNodes: 1, comparedOutputs: 1, outputs: {decode: [("D" * 64)]}}}}
+    identity: {comparedNodes: 14, comparedOutputs: 14,
+      outputs: (reduce $nodes[] as $node ({}; .[$node] = [("D" * 64)]))}}}
 ' > "$WORK/replay-localrunner.json"
 
 replay_gate() {
@@ -361,10 +370,16 @@ declare -a REPLAY_MUTATIONS=(
     '.replay.captureCount = 5'
     '.replay.sourceCaptureId = ""'
     '.replay.replay.nodes = []'
+    '.replay.replay.nodes = [.replay.replay.nodes[0]]'
+    '.replay.replay.nodes[1].nodeId = .replay.replay.nodes[0].nodeId'
+    '.replay.replay.nodes[0].nodeId = "arbitrary"'
     '.replay.replay.nodes[0].status = "Skipped"'
+    '.replay.replay.nodes[].outputs = 0'
+    '.replay.replay.nodes[0].outputs = 0.5'
     '.replay.replay.startIntervalMilliseconds = 12001'
     '.replay.replay.graphIntervalMilliseconds = 180001'
     '.replay.replay.executionId = .replay.liveExecutionId'
+    '.replay.identity = {}'
 )
 for index in "${!REPLAY_MUTATIONS[@]}"; do
     jq "${REPLAY_MUTATIONS[$index]}" "$WORK/replay-inprocess.json" > "$WORK/replay-inprocess-$index.json"
@@ -376,8 +391,11 @@ done
 declare -a LOCAL_REPLAY_MUTATIONS=(
     '.replay.role = "establish"'
     '.replay.inProcessExecutionId = .replay.localRunnerExecutionId'
-    '.replay.identity.comparedOutputs = 2'
-    '.replay.identity.outputs.decode = []'
+    '.replay.identity.comparedOutputs = 15'
+    '.replay.identity.outputs["calibration"] = []'
+    'del(.replay.identity.outputs["calibration"])'
+    '.replay.replay.nodes[0].outputs = 2'
+    '.replay.identity.comparedNodes = 13'
     '.replay.replay.executionId = .replay.inProcessExecutionId'
     '.replay.liveExecutionId = .replay.localRunnerExecutionId'
 )
@@ -459,9 +477,68 @@ for central_mutation in "$WORK"/central-{wrong-reason,wrong-kind,nonboolean-appl
         || fail "central gate mutation ${central_mutation##*/} was accepted"
 done
 
+CENTRAL_SUMMARY_LABELS='["mono8-control","replay-inprocess","replay-localrunner","trial-1","trial-2","trial-3","trial-4","trial-5"]'
+readonly CENTRAL_SUMMARY_LABELS
+mkdir -p "$WORK/central-summary"
+for label in mono8-control replay-inprocess replay-localrunner trial-1 trial-2 trial-3 trial-4 trial-5; do
+    kind=w6
+    applicable=true
+    reason='Recorded by the profile evidence schema.'
+    traffic=0
+    handler=0
+    if [[ "$label" == mono8-control ]]; then
+        kind=mono8
+    elif [[ "$label" == replay-* ]]; then
+        kind=replay
+        applicable=false
+        reason='Replay evidence schema does not record in-test central traffic counters.'
+        traffic=null
+        handler=null
+    fi
+    central_gate_case "$label" "$kind" "$reason" "$applicable" "$traffic" "$handler" 0 1 0 \
+        > "$WORK/central-summary/$label.json"
+done
+
+central_summary_gate() {
+    local directory="$1" output="$2"
+    jq -s -f "$CENTRAL_SUMMARY_PROGRAM" --argjson expectedTrials "$CENTRAL_SUMMARY_LABELS" \
+        "$directory"/*.json > "$output" || return 1
+    jq -e '.trialsIdentified == true and .trialKindsMatchLabels == true and
+        .recordedFlagsAgreeWithCounters == true and .allPassed == true' "$output" >/dev/null
+}
+
+central_summary_gate "$WORK/central-summary" "$WORK/central-summary-control.json" \
+    || fail 'valid eight-document central aggregate was refused'
+
+central_summary_mutation() {
+    local name="$1" filter="$2" source="$3"
+    local directory="$WORK/central-summary-$name"
+    cp -R "$WORK/central-summary" "$directory"
+    jq "$filter" "$directory/$source.json" > "$directory/$source.tmp"
+    mv "$directory/$source.tmp" "$directory/$source.json"
+    if central_summary_gate "$directory" "$WORK/central-summary-$name.json"; then
+        fail "central aggregate mutation $name was accepted"
+    fi
+}
+
+central_summary_mutation replay-marked-w6 '.trialKind = "w6"' replay-inprocess
+central_summary_mutation w6-marked-replay-na \
+    '.trialKind = "replay" | .inTestCountersApplicable = false |
+     .inTestCountersReason = "Replay evidence schema does not record in-test central traffic counters." |
+     .inTestCentralTrafficAttempts = null | .inTestCentralHandlerAttempts = null' trial-1
+central_summary_mutation wrong-schema '.schemaVersion = "issue-211-central-traffic-gate-v1"' trial-1
+central_summary_mutation recorded-flag-mismatch '.passed = false' trial-1
+
+cp -R "$WORK/central-summary" "$WORK/central-summary-duplicate"
+cp "$WORK/central-summary-duplicate/trial-1.json" "$WORK/central-summary-duplicate/trial-2.json"
+central_summary_gate "$WORK/central-summary-duplicate" "$WORK/central-summary-duplicate.json" &&
+    fail 'central aggregate accepted duplicate and missing labels'
+
 campaign_contract() {
     local script="$1" validation stop marker manifest sanitization down deletion reset up test pair health process
     local stats names cleanup
+    grep -Fq 'if (($# != 15)); then' "$script" || return 1
+    grep -Eq '^[[:space:]]*if[[:space:]]+false;[[:space:]]*then|^[[:space:]]*:;([[:space:]]|$)' "$script" && return 1
     validation="$(grep -n -m1 "issue-719-replay-evidence.jq" "$script" | cut -d: -f1)" || return 1
     stop="$(grep -n -m1 'docker stop --timeout 30' "$script" | cut -d: -f1)" || return 1
     manifest="$(grep -n -m1 '> "$trial_result/evidence/evidence-manifest.json"' "$script" | cut -d: -f1)" || return 1
@@ -490,6 +567,17 @@ campaign_contract() {
     grep -q 'expected_process_lines=3' "$script" || return 1
     grep -q 'Replay process snapshot omitted a required container' "$script" || return 1
     invocation_matches "$script"
+}
+
+run_profile_trial_boundary_matches() {
+    local script="$1" function_file="$WORK/run-profile-trial-function"
+    awk '/^run_profile_trial\(\) \{$/{copy=1} copy{print} copy && /^}$/{exit}' \
+        "$script" > "$function_file"
+    grep -Fq 'run_profile_trial() {' "$function_file" || return 1
+    local output status=0
+    output="$(bash -u -c 'source "$1"; run_profile_trial a b c d e f g h i j k l m n' \
+        boundary "$function_file" 2>&1)" || status=$?
+    [[ "$status" -eq 1 && "$output" == 'run_profile_trial requires exactly 15 arguments; received 14.' ]]
 }
 
 invocation_matches() {
@@ -546,6 +634,8 @@ invocation_matches() {
 }
 
 campaign_contract "$CAMPAIGN_SCRIPT" || fail 'campaign replay wiring contract failed'
+run_profile_trial_boundary_matches "$CAMPAIGN_SCRIPT" \
+    || fail 'run_profile_trial did not behaviorally enforce its exact 15-argument boundary'
 cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
 sed -i 's/issue-719-replay-${replay_profile}.json/issue-211-w6.json/' "$WORK/campaign"
 campaign_contract "$WORK/campaign" && fail 'campaign accepted replay W6 evidence lookup mutation'
@@ -587,5 +677,24 @@ campaign_contract "$WORK/campaign" && fail 'campaign accepted docker stats sampl
 cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
 sed -i '/rm -f "$trial_result\/evidence\/.process-names"/d' "$WORK/campaign"
 campaign_contract "$WORK/campaign" && fail 'campaign accepted process snapshot temporary files in retained evidence'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i 's/if (($# != 15)); then/if (($# < 14)); then/' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted removal of the exact 15-argument boundary'
+run_profile_trial_boundary_matches "$WORK/campaign" &&
+    fail 'behavioral boundary guard accepted removal of the exact 15-argument check'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i "/'replay-localrunner'/,/    'replay'$/ { /    'replay'$/d; }" "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted removal of argument 15 from a call'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/jq --exit-status -f "$SCRIPT_DIR\/issue-719-replay-evidence.jq"/i\        if false; then' "$WORK/campaign"
+sed -i "/gate_failed 'replay profile evidence'/a\\        fi" "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted replay validation wrapped in if false'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/jq -n -f "$SCRIPT_DIR\/issue-719-replay-pair.jq"/i\        if false; then' "$WORK/campaign"
+sed -i "/assert_gate \"\$pair_summary\" 'replay pair'/a\\        fi" "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted replay pair validation wrapped in if false'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/jq --exit-status -f "$SCRIPT_DIR\/issue-719-replay-evidence.jq"/i\        :;' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted a no-op wrapper at replay validation'
 
 printf 'Replay evidence and driver contract: controls accepted, all mutations refused.\n'

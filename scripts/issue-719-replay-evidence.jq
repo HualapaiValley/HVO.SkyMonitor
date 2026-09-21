@@ -1,22 +1,31 @@
 def nonempty_string: type == "string" and length > 0;
 def uuid: nonempty_string and test("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$");
 def sha256: nonempty_string and test("^[0-9A-Fa-f]{64}$");
+def canonical_nodes: [
+  "calibrated-preview", "calibration", "cloud", "cloud-presentation", "combined-preview",
+  "environment-presentation", "overlay-manifest", "presentation-materializer", "projected-scene",
+  "quality", "rolling", "scene-presentation", "storage", "telemetry"
+];
+def whole_count: type == "number" and (isnan | not) and (isinfinite | not) and . >= 0 and . == floor;
 def execution:
   (.executionId | uuid) and
   (.status == 2) and
   (.acceptedUtc | nonempty_string) and
   (.startedUtc | nonempty_string) and
   (.completedUtc | nonempty_string) and
-  (.startIntervalMilliseconds | type == "number" and . >= 0 and . <= 12000) and
-  (.graphIntervalMilliseconds | type == "number" and . >= 0 and . <= 180000) and
+  (.startIntervalMilliseconds | whole_count and . <= 12000) and
+  (.graphIntervalMilliseconds | whole_count and . <= 180000) and
   (.graphDefinitionIdentitySha256 | sha256) and
   (.sharedPlanIdentitySha256 | sha256) and
   (.localPlanIdentitySha256 | sha256) and
-  (.attemptCount | type == "number" and . >= 1 and . == floor) and
-  (.nodes | type == "array" and length > 0 and all(.[];
+  (.attemptCount | whole_count and . >= 1) and
+  (.nodes | type == "array" and length == 14 and
+    ([.[].nodeId] | sort) == canonical_nodes and
+    ([.[].nodeId] | unique | length) == 14 and all(.[];
     (.nodeId | nonempty_string) and (.required | type == "boolean") and
     .status == "Completed" and
-    (.outputs | type == "number" and . >= 0 and . == floor)));
+    (.outputs | whole_count)) and
+    ([.[].outputs] | add) > 0);
 
 .schemaVersion == "issue-719-replay-evidence-v1" and
 .profile == $replayProfile and
@@ -29,7 +38,7 @@ def execution:
   .replay.captureCount == $measuredCaptureCount and
   (.replay.graphRevisionId | nonempty_string) and
   (.replay.sourceCaptureId | uuid) and
-  (.replay.sourceCaptureSequence | type == "number" and . >= 0 and . == floor) and
+  (.replay.sourceCaptureSequence | whole_count) and
   (.replay.primaryArtifactId | uuid) and
   (.replay.liveExecutionId | uuid) and
   (.replay.replay | execution) and
@@ -49,11 +58,15 @@ elif $replayProfile == "LocalRunner" then
   (.replay.liveExecutionId != .replay.localRunnerExecutionId) and
   (.replay.liveExecutionId != .replay.inProcessExecutionId) and
   (.replay.replay | execution) and
-  (.replay.identity.comparedNodes | type == "number" and . > 0 and . == floor) and
-  (.replay.identity.comparedOutputs | type == "number" and . > 0 and . == floor) and
+  .replay.identity.comparedNodes == 14 and
+  (.replay.identity.comparedOutputs | whole_count and . > 0) and
   (.replay.identity.comparedNodes) as $comparedNodes |
   (.replay.identity.comparedOutputs) as $comparedOutputs |
   (.replay.identity.outputs | type == "object" and length == $comparedNodes) and
+  (.replay.identity.outputs | keys | sort) == canonical_nodes and
   ([.replay.identity.outputs[] | length] | add == $comparedOutputs) and
-  all(.replay.identity.outputs[]; type == "array" and all(.[]; sha256))
-else false end)
+  all(.replay.identity.outputs[]; type == "array" and all(.[]; sha256)) and
+  ([.replay.replay.nodes[] as $node |
+    (.replay.identity.outputs[$node.nodeId] | length) == $node.outputs] | all)
+else false end) and
+(if $replayProfile == "InProcess" then (.replay | has("identity") | not) else true end)
