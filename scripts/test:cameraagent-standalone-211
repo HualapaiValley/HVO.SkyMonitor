@@ -23,9 +23,19 @@ readonly DEFAULT_RESULTS_BASE="$REPO_ROOT/TestResults/issue-211"
 readonly W6_IDENTITY_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity.jq"
 readonly W6_IDENTITY_GATE_PROGRAM="$SCRIPT_DIR/issue-211-w6-identity-gate.jq"
 readonly CENTRAL_TRAFFIC_SUMMARY_PROGRAM="$SCRIPT_DIR/issue-211-central-traffic-summary.jq"
+# shellcheck disable=SC2034 # These programs are read by the sourced replay receipt implementation.
+readonly REPLAY_EVIDENCE_PROGRAM="$SCRIPT_DIR/issue-719-replay-evidence.jq"
+# shellcheck disable=SC2034 # Read by the sourced replay receipt implementation.
+readonly REPLAY_PAIR_PROGRAM="$SCRIPT_DIR/issue-719-replay-pair.jq"
+# shellcheck disable=SC2034 # Read by the sourced replay receipt implementation.
+readonly REPLAY_PROFILE_GATE_PROGRAM="$SCRIPT_DIR/issue-719-replay-profile-gate.jq"
+# shellcheck disable=SC2034 # Read by the sourced replay receipt implementation.
+readonly REPLAY_FINAL_PROGRAM="$SCRIPT_DIR/issue-719-replay-final.jq"
 readonly BIND_LOCAL_ROOT="$REPO_ROOT/data/agent/issue-211"
 readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6'
 readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
+# shellcheck source=lib/replay-receipts.sh
+source "$SCRIPT_DIR/lib/replay-receipts.sh"
 readonly HTTP_PORT="${HVO_ISSUE_211_HTTP_PORT:-52110}"
 readonly TRIAL_COUNT="${HVO_ISSUE_211_TRIAL_COUNT:-5}"
 readonly WARMUP_CAPTURE_COUNT=2
@@ -63,7 +73,7 @@ if [[ "$TRIAL_COUNT" != 5 ]]; then
     printf 'HVO_ISSUE_211_TRIAL_COUNT must be exactly 5.\n' >&2
     exit 2
 fi
-for command in cat chmod cp curl date dirname docker dotnet env flock git hostname id jq mkdir mv openssl realpath rg rm sha256sum stat tr; do
+for command in cat chmod cmp cp curl date dirname docker dotnet env find flock git hostname id jq mkdir mktemp mv openssl realpath rg rm sha256sum sort stat tr; do
     command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
 done
 LOCAL_UID="$(id -u)"
@@ -379,6 +389,82 @@ assert_gate() {
     fi
 }
 
+verify_current_replay_semantics() {
+    local temporary
+    temporary="$(mktemp -d)"
+    replay_receipt_track "$temporary"
+    local in_process_evidence='replay-inprocess/evidence/issue-719-replay-InProcess.json'
+    local local_runner_evidence='replay-localrunner/evidence/issue-719-replay-LocalRunner.json'
+    local in_process_gate='replay-inprocess/evidence/replay-profile-gate.json'
+    local local_runner_gate='replay-localrunner/evidence/replay-profile-gate.json'
+    local pair='replay-pair-summary.json'
+    local trial_pair='replay-localrunner/evidence/replay-pair.json'
+
+    emit_replay_profile_receipt \
+        "$RESULTS/$in_process_evidence" "$temporary/in-process-gate.json" \
+        replay-inprocess InProcess false "$in_process_evidence" 6 \
+        || { rm -rf -- "$temporary"; return 1; }
+    verify_replay_profile_receipt "$temporary/in-process-gate.json" \
+        "$RESULTS/$in_process_evidence" replay-inprocess InProcess false "$in_process_evidence" 6 \
+        || { rm -rf -- "$temporary"; return 1; }
+    cmp --silent "$temporary/in-process-gate.json" "$RESULTS/$in_process_gate" \
+        || { rm -rf -- "$temporary"; return 1; }
+    emit_replay_profile_receipt \
+        "$RESULTS/$local_runner_evidence" "$temporary/local-runner-gate.json" \
+        replay-localrunner LocalRunner true "$local_runner_evidence" 6 \
+        || { rm -rf -- "$temporary"; return 1; }
+    verify_replay_profile_receipt "$temporary/local-runner-gate.json" \
+        "$RESULTS/$local_runner_evidence" replay-localrunner LocalRunner true "$local_runner_evidence" 6 \
+        || { rm -rf -- "$temporary"; return 1; }
+    cmp --silent "$temporary/local-runner-gate.json" "$RESULTS/$local_runner_gate" \
+        || { rm -rf -- "$temporary"; return 1; }
+
+    emit_replay_pair_summary \
+        "$RESULTS/$in_process_evidence" "$RESULTS/$local_runner_evidence" \
+        "$RESULTS/$in_process_gate" "$RESULTS/$local_runner_gate" \
+        "$temporary/replay-pair.json" \
+        || { rm -rf -- "$temporary"; return 1; }
+    cmp --silent "$temporary/replay-pair.json" "$RESULTS/$pair" \
+        || { rm -rf -- "$temporary"; return 1; }
+    cmp --silent "$temporary/replay-pair.json" "$RESULTS/$trial_pair" \
+        || { rm -rf -- "$temporary"; return 1; }
+
+    rm -rf -- "$temporary"
+}
+
+verify_terminal_replay_evidence() {
+    local temporary
+    temporary="$(mktemp -d)"
+    replay_receipt_track "$temporary"
+    local in_process_evidence='replay-inprocess/evidence/issue-719-replay-InProcess.json'
+    local local_runner_evidence='replay-localrunner/evidence/issue-719-replay-LocalRunner.json'
+    local in_process_gate='replay-inprocess/evidence/replay-profile-gate.json'
+    local local_runner_gate='replay-localrunner/evidence/replay-profile-gate.json'
+    local pair='replay-pair-summary.json'
+    local trial_pair='replay-localrunner/evidence/replay-pair.json'
+    local replay_final='replay-final-summary.json'
+    local final_acceptance='final-acceptance-summary.json'
+
+    verify_current_replay_semantics || { rm -rf -- "$temporary"; return 1; }
+
+    emit_replay_final_summary \
+        "$RESULTS/$in_process_evidence" "$RESULTS/$local_runner_evidence" \
+        "$RESULTS/$in_process_gate" "$RESULTS/$local_runner_gate" \
+        "$RESULTS/$pair" "$temporary/replay-final.json" \
+        || { rm -rf -- "$temporary"; return 1; }
+    jq --exit-status '.passed == true' "$temporary/replay-final.json" >/dev/null \
+        || { rm -rf -- "$temporary"; return 1; }
+    cmp --silent "$temporary/replay-final.json" "$RESULTS/$replay_final" \
+        || { rm -rf -- "$temporary"; return 1; }
+
+    verify_replay_run_manifest "$RESULTS" \
+        "$in_process_evidence" "$local_runner_evidence" \
+        "$in_process_gate" "$local_runner_gate" \
+        "$pair" "$trial_pair" "$replay_final" "$final_acceptance" \
+        || { rm -rf -- "$temporary"; return 1; }
+    rm -rf -- "$temporary"
+}
+
 assert_trial_executed_and_passed() {
     local trx="$1"
     local label="$2"
@@ -401,6 +487,7 @@ active_owner_email=""
 active_owner_password=""
 active_replay_auth_key=""
 cleanup() {
+    replay_receipt_cleanup
     if [[ -n "$active_project" ]]; then
         local failure_log="$RESULTS/failure-$active_project.log"
         while IFS= read -r line; do
@@ -642,13 +729,10 @@ EOF
         replay) profile_evidence_file="issue-719-replay-${replay_profile}.json" ;;
     esac
     if [[ "$trial_kind" == replay ]]; then
-        jq --exit-status -f "$SCRIPT_DIR/issue-719-replay-evidence.jq" \
-            --arg replayProfile "$replay_profile" \
-            --arg stateKey "$state_key" \
-            --argjson stateReused "$reuse_state" \
-            --argjson measuredCaptureCount "$measured_capture_count" \
-            "$trial_result/evidence/$profile_evidence_file" >/dev/null \
-            || gate_failed 'replay profile evidence' "$trial_result/evidence/$profile_evidence_file"
+        local profile_evidence_path="${trial_result#"$RESULTS/"}/evidence/$profile_evidence_file"
+        local profile_gate_file
+        profile_gate_file="$trial_result/evidence/replay-profile-gate.json"
+        replay_profile_post_test_gate "$trial_result/evidence/$profile_evidence_file" "$profile_gate_file" "$trial" "$replay_profile" "$reuse_state" "$profile_evidence_path" "$measured_capture_count" || gate_failed 'replay profile evidence and receipt' "$trial_result/evidence/$profile_evidence_file"
         local camera_state replay_runner_state='null' replay_stats
         camera_state="$(docker inspect "hvo211-$suffix-camera" --format '{{json .State}}')"
         if [[ "$replay_profile" == LocalRunner ]]; then
@@ -1196,6 +1280,17 @@ EOF
       (.excessiveMetricCardinality | length) == 0
     ' "$trial_result/evidence/runtime/telemetry-scan.json" >/dev/null || gate_failed 'telemetry scan' "$trial_result/evidence/runtime/telemetry-scan.json"
     rm -f "$raw_logs"
+    if [[ "$trial_kind" == replay && "$replay_profile" == LocalRunner ]]; then
+        local pair_summary="$trial_result/evidence/replay-pair.json"
+        emit_replay_pair_summary \
+            "$RESULTS/replay-inprocess/evidence/issue-719-replay-InProcess.json" \
+            "$trial_result/evidence/issue-719-replay-LocalRunner.json" \
+            "$RESULTS/replay-inprocess/evidence/replay-profile-gate.json" \
+            "$trial_result/evidence/replay-profile-gate.json" \
+            "$pair_summary"
+        assert_gate "$pair_summary" 'replay pair' '.passed == true and ([.bindings[]] | all)'
+        replay_atomic_copy "$pair_summary" "$RESULTS/replay-pair-summary.json"
+    fi
     local sanitization_scan="$trial_result/evidence/runtime/sanitization-scan.json"
     local sanitization_matches="$trial_local/.sanitization-matches"
     local matched_paths=()
@@ -1247,18 +1342,6 @@ EOF
     if ((collector_rg_status > 1)); then
         printf 'Unable to scan the collector log for %s (rg exit %s).\n' "$trial" "$collector_rg_status" >&2
         return 1
-    fi
-    if [[ "$trial_kind" == replay && "$replay_profile" == LocalRunner ]]; then
-        local pair_summary="$trial_result/evidence/replay-pair.json"
-        jq -n -f "$SCRIPT_DIR/issue-719-replay-pair.jq" \
-            --slurpfile inProcess "$RESULTS/replay-inprocess/evidence/issue-719-replay-InProcess.json" \
-            --slurpfile localRunner "$trial_result/evidence/issue-719-replay-LocalRunner.json" \
-            --arg stateKey "$state_key" \
-            --arg inProcessPath 'replay-inprocess/evidence/issue-719-replay-InProcess.json' \
-            --arg localRunnerPath 'replay-localrunner/evidence/issue-719-replay-LocalRunner.json' \
-            > "$pair_summary"
-        assert_gate "$pair_summary" 'replay pair' '.passed == true and ([.bindings[]] | all)'
-        cp "$pair_summary" "$RESULTS/replay-pair-summary.json"
     fi
     local inventory_rows="$trial_result/evidence/.inventory.jsonl"
     : > "$inventory_rows"
@@ -1413,6 +1496,17 @@ run_profile_trial \
     'replay-719' \
     'false' \
     'replay'
+
+verify_current_replay_semantics \
+    || gate_failed 'current replay profile and pair semantics' "$RESULTS/replay-pair-summary.json"
+emit_replay_final_summary \
+    "$RESULTS/replay-inprocess/evidence/issue-719-replay-InProcess.json" \
+    "$RESULTS/replay-localrunner/evidence/issue-719-replay-LocalRunner.json" \
+    "$RESULTS/replay-inprocess/evidence/replay-profile-gate.json" \
+    "$RESULTS/replay-localrunner/evidence/replay-profile-gate.json" \
+    "$RESULTS/replay-pair-summary.json" \
+    "$RESULTS/replay-final-summary.json"
+assert_gate "$RESULTS/replay-final-summary.json" 'replay final binding' '.passed == true'
 
 # Issue #770, correction round 3. The original six central-traffic documents were counted and never
 # identified, so replacing trial 2's document with a copy of trial 1's left the count unchanged and
@@ -1892,6 +1986,7 @@ jq -n \
     --slurpfile mono "$RESULTS/mono8-control/evidence/issue-211-mono8.json" \
     --slurpfile monoTraffic "$RESULTS/mono8-control/evidence/central-traffic-gate.json" \
     --slurpfile replayPair "$RESULTS/replay-pair-summary.json" \
+    --slurpfile replayFinal "$RESULTS/replay-final-summary.json" \
     --slurpfile sanitization "$RESULTS/root-sanitization-scan.json" \
     --slurpfile telemetry "$RESULTS/telemetry-summary.json" \
     --slurpfile trialSanitization "$RESULTS/trial-sanitization-summary.json" \
@@ -1905,6 +2000,7 @@ jq -n \
       mono8: ($mono[0].result.passed == true and ($mono[0].captures | length) == 5),
       mono8CentralIsolation: $monoTraffic[0].passed,
       replayPair: ($replayPair[0].passed == true and ([ $replayPair[0].bindings[] ] | all)),
+      replayFinal: $replayFinal[0].passed,
       telemetry: $telemetry[0].passed,
       trialSanitization: $trialSanitization[0].passed,
       retainedEvidenceSanitized: $sanitization[0].passed,
@@ -1918,6 +2014,7 @@ jq -n \
       $monoTraffic[0].passed and
       $replayPair[0].passed == true and
       ([ $replayPair[0].bindings[] ] | all) and
+      $replayFinal[0].passed and
       $telemetry[0].passed and
       $trialSanitization[0].passed and
       $sanitization[0].passed and
@@ -1927,40 +2024,8 @@ jq -n \
 ' > "$RESULTS/final-acceptance-summary.json"
 jq --exit-status '.acceptanceReady == true and ([.gates[]] | all)' \
     "$RESULTS/final-acceptance-summary.json" >/dev/null || gate_failed 'final acceptance summary' "$RESULTS/final-acceptance-summary.json"
-run_inventory="$RESULTS/.run-manifest.jsonl"
-: > "$run_inventory"
-shopt -s globstar nullglob dotglob
-for retained_output in "$RESULTS"/**/*; do
-    [[ -f "$retained_output" && "$retained_output" != "$run_inventory" &&
-        "$retained_output" != "$RESULTS/run-manifest.json" ]] || continue
-    read -r retained_sha _ < <(sha256sum "$retained_output")
-    retained_bytes="$(stat --format='%s' "$retained_output")"
-    retained_relative="${retained_output#"$RESULTS/"}"
-    jq -cn \
-        --arg path "$retained_relative" \
-        --arg sha256 "$retained_sha" \
-        --argjson bytes "$retained_bytes" \
-        '{path: $path, bytes: $bytes, sha256: ($sha256 | ascii_upcase)}' >> "$run_inventory"
-done
-jq -s \
-    --arg fingerprint "$WORKTREE_FINGERPRINT" \
-    --arg runId "$RUN_ID" \
-    --arg revision "$REVISION" \
-    --arg dirtyStateSha256 "$DIRTY_SHA256" \
-    --arg cameraImage "$CAMERA_AGENT_IMAGE" '
-  {
-    schemaVersion: "issue-211-run-manifest-v1",
-    worktreeFingerprint: $fingerprint,
-    runId: $runId,
-    revision: $revision,
-    dirtyStateSha256: ($dirtyStateSha256 | ascii_upcase),
-    cameraImage: $cameraImage,
-    excludedSelf: "run-manifest.json",
-    retainedOutputs: sort_by(.path),
-    totalBytes: (map(.bytes) | add // 0)
-  }
-' "$run_inventory" > "$RESULTS/run-manifest.json"
-rm -f "$run_inventory"
+publish_replay_run_manifest "$RESULTS" "$WORKTREE_FINGERPRINT" "$RUN_ID" \
+    "$REVISION" "$DIRTY_SHA256" "$CAMERA_AGENT_IMAGE"
 assert_worktree_unchanged
 [[ "$(sha256sum "$TEST_ASSEMBLY" | cut -d' ' -f1)" == "$TEST_ASSEMBLY_SHA256" ]] || {
     printf 'Acceptance test assembly changed after the no-build trials.\n' >&2
@@ -1987,4 +2052,6 @@ if ((final_root_scan_status == 0 || final_root_scan_status > 1)); then
         "$final_root_scan_status" >&2
     exit 1
 fi
+verify_terminal_replay_evidence \
+    || gate_failed 'terminal replay semantics, bindings, and run manifest' "$RESULTS/run-manifest.json"
 printf 'Issue #211 W6 evidence: %s\n' "$RESULTS/final-acceptance-summary.json"

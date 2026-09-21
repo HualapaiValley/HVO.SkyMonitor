@@ -53,7 +53,9 @@ fail() { printf '%s\n' "$*" >&2; exit 1; }
 for required in "$CAMPAIGN_SCRIPT" "$IDENTITY_PROGRAM" "$IDENTITY_GATE_PROGRAM"; do
     [[ -f "$required" ]] || fail "missing $required"
 done
-command -v jq >/dev/null || fail 'jq is required'
+for command in jq ln mkfifo; do
+    command -v "$command" >/dev/null || fail "$command is required"
+done
 
 # The constants are READ OUT of the campaign script rather than restated here. Restating them
 # would make this file a second declaration of the campaign's shape, and two declarations of
@@ -305,8 +307,16 @@ printf '\nW6 evidence identity gate: control accepted, every constructed cut ref
 # that merely finds a token cannot report success after the load-bearing ordering is broken.
 readonly REPLAY_PROGRAM="$SCRIPT_DIR/issue-719-replay-evidence.jq"
 [[ -f "$REPLAY_PROGRAM" ]] || fail "missing $REPLAY_PROGRAM"
+# shellcheck disable=SC2034 # Read by the sourced replay receipt implementation.
+readonly REPLAY_EVIDENCE_PROGRAM="$REPLAY_PROGRAM"
 readonly REPLAY_PAIR_PROGRAM="$SCRIPT_DIR/issue-719-replay-pair.jq"
 [[ -f "$REPLAY_PAIR_PROGRAM" ]] || fail "missing $REPLAY_PAIR_PROGRAM"
+readonly REPLAY_PROFILE_GATE_PROGRAM="$SCRIPT_DIR/issue-719-replay-profile-gate.jq"
+[[ -f "$REPLAY_PROFILE_GATE_PROGRAM" ]] || fail "missing $REPLAY_PROFILE_GATE_PROGRAM"
+readonly REPLAY_FINAL_PROGRAM="$SCRIPT_DIR/issue-719-replay-final.jq"
+[[ -f "$REPLAY_FINAL_PROGRAM" ]] || fail "missing $REPLAY_FINAL_PROGRAM"
+# shellcheck source=lib/replay-receipts.sh
+source "$SCRIPT_DIR/lib/replay-receipts.sh"
 readonly CENTRAL_GATE_PROGRAM="$SCRIPT_DIR/issue-211-central-traffic-gate.jq"
 [[ -f "$CENTRAL_GATE_PROGRAM" ]] || fail "missing $CENTRAL_GATE_PROGRAM"
 readonly CENTRAL_SUMMARY_PROGRAM="$SCRIPT_DIR/issue-211-central-traffic-summary.jq"
@@ -365,6 +375,76 @@ replay_gate "$WORK/replay-inprocess.json" InProcess false \
 replay_gate "$WORK/replay-localrunner.json" LocalRunner true \
     || fail 'valid LocalRunner replay evidence was refused'
 
+profile_receipt() {
+    local evidence="$1" output="$2" trial="$3" profile="$4" reused="$5" path="$6"
+    emit_replay_profile_receipt "$evidence" "$output" "$trial" "$profile" "$reused" "$path" 6
+}
+
+profile_post_test_gate() {
+    local evidence="$1" output="$2" trial="$3" profile="$4" reused="$5" path="$6"
+    replay_profile_post_test_gate "$evidence" "$output" "$trial" "$profile" "$reused" "$path" 6
+}
+
+profile_receipt_gate() {
+    local receipt="$1" evidence="$2" trial="$3" profile="$4" reused="$5" path="$6"
+    verify_replay_profile_receipt "$receipt" "$evidence" "$trial" "$profile" "$reused" "$path" 6
+}
+
+profile_post_test_gate "$WORK/replay-inprocess.json" "$WORK/replay-inprocess-gate.json" \
+    replay-inprocess InProcess false replay-inprocess/evidence/issue-719-replay-InProcess.json
+profile_post_test_gate "$WORK/replay-localrunner.json" "$WORK/replay-localrunner-gate.json" \
+    replay-localrunner LocalRunner true replay-localrunner/evidence/issue-719-replay-LocalRunner.json
+profile_receipt_gate "$WORK/replay-inprocess-gate.json" "$WORK/replay-inprocess.json" \
+    replay-inprocess InProcess false replay-inprocess/evidence/issue-719-replay-InProcess.json \
+    || fail 'valid InProcess replay profile receipt was refused'
+profile_receipt_gate "$WORK/replay-localrunner-gate.json" "$WORK/replay-localrunner.json" \
+    replay-localrunner LocalRunner true replay-localrunner/evidence/issue-719-replay-LocalRunner.json \
+    || fail 'valid LocalRunner replay profile receipt was refused'
+profile_receipt_gate "$WORK/missing-profile-gate.json" "$WORK/replay-inprocess.json" \
+    replay-inprocess InProcess false replay-inprocess/evidence/issue-719-replay-InProcess.json \
+    >/dev/null 2>&1 && fail 'missing replay profile receipt was accepted'
+
+jq '.replay.replay.nodes = []' "$WORK/replay-inprocess.json" > "$WORK/replay-invalid-semantic.json"
+profile_post_test_gate "$WORK/replay-invalid-semantic.json" "$WORK/replay-invalid-semantic-gate.json" \
+    replay-inprocess InProcess false replay-inprocess/evidence/issue-719-replay-InProcess.json \
+    >/dev/null 2>&1 && fail 'invalid replay graph emitted a semantic profile receipt'
+[[ ! -e "$WORK/replay-invalid-semantic-gate.json" ]] \
+    || fail 'failed semantic profile validation retained a receipt'
+compgen -G "$WORK/replay-invalid-semantic-gate.json.pending.*" >/dev/null &&
+    fail 'failed semantic profile validation retained a pending receipt'
+jq --arg sha "$(sha256sum "$WORK/replay-invalid-semantic.json" | cut -d' ' -f1)" \
+    '.evidenceSha256 = ($sha | ascii_upcase)' "$WORK/replay-inprocess-gate.json" \
+    > "$WORK/replay-invalid-semantic-forged-gate.json"
+profile_receipt_gate "$WORK/replay-invalid-semantic-forged-gate.json" \
+    "$WORK/replay-invalid-semantic.json" replay-inprocess InProcess false \
+    replay-inprocess/evidence/issue-719-replay-InProcess.json >/dev/null 2>&1 &&
+    fail 'profile receipt helper accepted forged receipt for semantically invalid evidence'
+
+tracked_cleanup_path="$(mktemp -d)"
+replay_receipt_track "$tracked_cleanup_path"
+replay_receipt_cleanup
+[[ ! -e "$tracked_cleanup_path" ]] || fail 'replay receipt cleanup retained a tracked temporary path'
+
+cp "$WORK/replay-inprocess.json" "$WORK/replay-inprocess-stale.json"
+profile_receipt "$WORK/replay-inprocess-stale.json" "$WORK/replay-inprocess-stale-gate.json" \
+    replay-inprocess InProcess false replay-inprocess/evidence/issue-719-replay-InProcess.json
+jq '.replay.note = "mutated after validation"' "$WORK/replay-inprocess-stale.json" \
+    > "$WORK/replay-inprocess-stale.tmp"
+mv "$WORK/replay-inprocess-stale.tmp" "$WORK/replay-inprocess-stale.json"
+profile_receipt_gate "$WORK/replay-inprocess-stale-gate.json" "$WORK/replay-inprocess-stale.json" \
+    replay-inprocess InProcess false replay-inprocess/evidence/issue-719-replay-InProcess.json &&
+    fail 'profile receipt accepted evidence mutated after validation'
+for mutation in \
+    '.replayProfile = "LocalRunner"' \
+    '.stateKey = "wrong-state"' \
+    '.evidence = "wrong/path.json"' \
+    '.evidenceSha256 = ("0" * 64)'; do
+    jq "$mutation" "$WORK/replay-inprocess-gate.json" > "$WORK/replay-profile-mutated.json"
+    profile_receipt_gate "$WORK/replay-profile-mutated.json" "$WORK/replay-inprocess.json" \
+        replay-inprocess InProcess false replay-inprocess/evidence/issue-719-replay-InProcess.json &&
+        fail "profile receipt mutation was accepted: $mutation"
+done
+
 declare -a REPLAY_MUTATIONS=(
     '.profile = "LocalRunner"'
     '.replay.captureCount = 5'
@@ -407,15 +487,34 @@ for index in "${!LOCAL_REPLAY_MUTATIONS[@]}"; do
 done
 
 replay_pair_gate() {
+    local in_process_sha local_runner_sha in_process_gate_sha local_runner_gate_sha
+    read -r in_process_sha _ < <(sha256sum "$1")
+    read -r local_runner_sha _ < <(sha256sum "$2")
+    read -r in_process_gate_sha _ < <(sha256sum "$3")
+    read -r local_runner_gate_sha _ < <(sha256sum "$4")
     jq -n -f "$REPLAY_PAIR_PROGRAM" \
         --slurpfile inProcess "$1" --slurpfile localRunner "$2" \
-        --arg stateKey replay-719 --arg inProcessPath replay-inprocess.json \
-        --arg localRunnerPath replay-localrunner.json
+        --arg stateKey replay-719 \
+        --arg inProcessPath replay-inprocess/evidence/issue-719-replay-InProcess.json \
+        --arg inProcessSha256 "$in_process_sha" \
+        --arg localRunnerPath replay-localrunner/evidence/issue-719-replay-LocalRunner.json \
+        --arg localRunnerSha256 "$local_runner_sha" \
+        --arg inProcessGatePath replay-inprocess/evidence/replay-profile-gate.json \
+        --arg inProcessGateSha256 "$in_process_gate_sha" \
+        --arg localRunnerGatePath replay-localrunner/evidence/replay-profile-gate.json \
+        --arg localRunnerGateSha256 "$local_runner_gate_sha"
 }
 replay_pair_gate "$WORK/replay-inprocess.json" "$WORK/replay-localrunner.json" \
+    "$WORK/replay-inprocess-gate.json" "$WORK/replay-localrunner-gate.json" \
     > "$WORK/replay-pair-control.json"
 jq -e '.passed == true and ([.bindings[]] | all)' "$WORK/replay-pair-control.json" >/dev/null \
     || fail 'valid replay pair was refused'
+jq -e 'keys == (["bindings", "inProcessEvidence", "inProcessProfileGate", "localRunnerEvidence",
+    "localRunnerProfileGate", "passed", "schemaVersion", "stateKey"] | sort) and
+    (.bindings | keys) == (["graphDefinitionIdentity", "graphRevisionId", "inProcessExecutionId",
+      "liveExecutionId", "localPlanIdentity", "localRunnerExecutionId", "primaryArtifactId",
+      "sharedPlanIdentity", "sourceCaptureId"] | sort)' "$WORK/replay-pair-control.json" >/dev/null \
+    || fail 'replay pair did not emit the exact v2 key set'
 declare -a PAIR_MUTATIONS=(
     '.replay.sourceCaptureId = "66666666-6666-6666-6666-666666666666"'
     '.replay.primaryArtifactId = "66666666-6666-6666-6666-666666666666"'
@@ -428,10 +527,268 @@ declare -a PAIR_MUTATIONS=(
 for index in "${!PAIR_MUTATIONS[@]}"; do
     jq "${PAIR_MUTATIONS[$index]}" "$WORK/replay-localrunner.json" > "$WORK/replay-pair-mutated-$index.json"
     replay_pair_gate "$WORK/replay-inprocess.json" "$WORK/replay-pair-mutated-$index.json" \
+        "$WORK/replay-inprocess-gate.json" "$WORK/replay-localrunner-gate.json" \
         > "$WORK/replay-pair-result-$index.json"
     jq -e '.passed == false' "$WORK/replay-pair-result-$index.json" >/dev/null \
         || fail "replay pair mutation $index was accepted"
 done
+
+replay_final_gate() {
+    local in_process="$1" local_runner="$2" in_process_gate="$3" local_runner_gate="$4"
+    local pair="$5" output="$6"
+    local in_process_sha local_runner_sha in_process_gate_sha local_runner_gate_sha pair_sha validator_sha
+    read -r in_process_sha _ < <(sha256sum "$in_process")
+    read -r local_runner_sha _ < <(sha256sum "$local_runner")
+    read -r in_process_gate_sha _ < <(sha256sum "$in_process_gate")
+    read -r local_runner_gate_sha _ < <(sha256sum "$local_runner_gate")
+    read -r pair_sha _ < <(sha256sum "$pair")
+    read -r validator_sha _ < <(sha256sum "$REPLAY_PROGRAM")
+    jq -n -f "$REPLAY_FINAL_PROGRAM" \
+        --slurpfile inProcessEvidence "$in_process" --slurpfile localRunnerEvidence "$local_runner" \
+        --slurpfile inProcessGate "$in_process_gate" --slurpfile localRunnerGate "$local_runner_gate" \
+        --slurpfile pair "$pair" --arg stateKey replay-719 \
+        --arg inProcessEvidencePath replay-inprocess/evidence/issue-719-replay-InProcess.json \
+        --arg inProcessEvidenceSha256 "$in_process_sha" \
+        --arg localRunnerEvidencePath replay-localrunner/evidence/issue-719-replay-LocalRunner.json \
+        --arg localRunnerEvidenceSha256 "$local_runner_sha" \
+        --arg inProcessGatePath replay-inprocess/evidence/replay-profile-gate.json \
+        --arg inProcessGateSha256 "$in_process_gate_sha" \
+        --arg localRunnerGatePath replay-localrunner/evidence/replay-profile-gate.json \
+        --arg localRunnerGateSha256 "$local_runner_gate_sha" \
+        --arg pairPath replay-pair-summary.json --arg pairSha256 "$pair_sha" \
+        --arg validatorPath scripts/issue-719-replay-evidence.jq \
+        --arg validatorSha256 "$validator_sha" > "$output"
+    jq -e '.passed == true' "$output" >/dev/null
+}
+
+replay_final_gate "$WORK/replay-inprocess.json" "$WORK/replay-localrunner.json" \
+    "$WORK/replay-inprocess-gate.json" "$WORK/replay-localrunner-gate.json" \
+    "$WORK/replay-pair-control.json" "$WORK/replay-final-control.json" \
+    || fail 'valid replay final binding was refused'
+
+jq '.inProcessProfileGate.sha256 = ("0" * 64)' "$WORK/replay-pair-control.json" \
+    > "$WORK/replay-pair-wrong-receipt-hash.json"
+replay_final_gate "$WORK/replay-inprocess.json" "$WORK/replay-localrunner.json" \
+    "$WORK/replay-inprocess-gate.json" "$WORK/replay-localrunner-gate.json" \
+    "$WORK/replay-pair-wrong-receipt-hash.json" "$WORK/replay-final-wrong-pair.json" &&
+    fail 'final replay gate accepted a pair with the wrong receipt hash'
+jq '.inProcessEvidence.sha256 = ("0" * 64)' "$WORK/replay-pair-control.json" \
+    > "$WORK/replay-pair-wrong-evidence-hash.json"
+replay_final_gate "$WORK/replay-inprocess.json" "$WORK/replay-localrunner.json" \
+    "$WORK/replay-inprocess-gate.json" "$WORK/replay-localrunner-gate.json" \
+    "$WORK/replay-pair-wrong-evidence-hash.json" "$WORK/replay-final-wrong-evidence.json" &&
+    fail 'final replay gate accepted a pair with the wrong evidence hash'
+jq '.evidenceSha256 = ("0" * 64)' "$WORK/replay-inprocess-gate.json" \
+    > "$WORK/replay-inprocess-gate-mutated.json"
+replay_final_gate "$WORK/replay-inprocess.json" "$WORK/replay-localrunner.json" \
+    "$WORK/replay-inprocess-gate-mutated.json" "$WORK/replay-localrunner-gate.json" \
+    "$WORK/replay-pair-control.json" "$WORK/replay-final-mutated-profile.json" &&
+    fail 'final replay gate accepted a mutated profile receipt'
+replay_final_gate "$WORK/replay-inprocess.json" "$WORK/replay-localrunner.json" \
+    "$WORK/missing-profile-gate.json" "$WORK/replay-localrunner-gate.json" \
+    "$WORK/replay-pair-control.json" "$WORK/replay-final-missing-profile.json" >/dev/null 2>&1 &&
+    fail 'final replay gate accepted a missing profile receipt'
+
+terminal_replay_gate() {
+    local root="$1" temporary="$WORK/terminal-replay"
+    local in_process='replay-inprocess/evidence/issue-719-replay-InProcess.json'
+    local local_runner='replay-localrunner/evidence/issue-719-replay-LocalRunner.json'
+    local in_process_gate='replay-inprocess/evidence/replay-profile-gate.json'
+    local local_runner_gate='replay-localrunner/evidence/replay-profile-gate.json'
+    local pair='replay-pair-summary.json' trial_pair='replay-localrunner/evidence/replay-pair.json'
+    local final='replay-final-summary.json'
+    local acceptance='final-acceptance-summary.json' path
+    rm -rf "$temporary"
+    mkdir -p "$temporary"
+    for path in "$in_process" "$local_runner" "$in_process_gate" "$local_runner_gate" \
+        "$pair" "$trial_pair" "$final" "$acceptance" run-manifest.json; do
+        [[ -s "$root/$path" ]] || return 1
+    done
+    profile_receipt "$root/$in_process" "$temporary/in-process-gate.json" \
+        replay-inprocess InProcess false "$in_process" || return 1
+    cmp -s "$temporary/in-process-gate.json" "$root/$in_process_gate" || return 1
+    profile_receipt "$root/$local_runner" "$temporary/local-runner-gate.json" \
+        replay-localrunner LocalRunner true "$local_runner" || return 1
+    cmp -s "$temporary/local-runner-gate.json" "$root/$local_runner_gate" || return 1
+    emit_replay_pair_summary "$root/$in_process" "$root/$local_runner" \
+        "$root/$in_process_gate" "$root/$local_runner_gate" "$temporary/pair.json" || return 1
+    cmp -s "$temporary/pair.json" "$root/$pair" || return 1
+    cmp -s "$temporary/pair.json" "$root/$trial_pair" || return 1
+    emit_replay_final_summary "$root/$in_process" "$root/$local_runner" \
+        "$root/$in_process_gate" "$root/$local_runner_gate" "$root/$pair" "$temporary/final.json" \
+        || return 1
+    cmp -s "$temporary/final.json" "$root/$final" || return 1
+    verify_replay_run_manifest "$root" "$in_process" "$local_runner" \
+        "$in_process_gate" "$local_runner_gate" "$pair" "$trial_pair" "$final" "$acceptance"
+}
+
+make_terminal_fixture() {
+    local root="$1" path sha bytes
+    mkdir -p "$root/replay-inprocess/evidence" "$root/replay-localrunner/evidence"
+    cp "$WORK/replay-inprocess.json" "$root/replay-inprocess/evidence/issue-719-replay-InProcess.json"
+    cp "$WORK/replay-localrunner.json" "$root/replay-localrunner/evidence/issue-719-replay-LocalRunner.json"
+    cp "$WORK/replay-inprocess-gate.json" "$root/replay-inprocess/evidence/replay-profile-gate.json"
+    cp "$WORK/replay-localrunner-gate.json" "$root/replay-localrunner/evidence/replay-profile-gate.json"
+    cp "$WORK/replay-pair-control.json" "$root/replay-pair-summary.json"
+    cp "$WORK/replay-pair-control.json" "$root/replay-localrunner/evidence/replay-pair.json"
+    cp "$WORK/replay-final-control.json" "$root/replay-final-summary.json"
+    jq -n '{gates: {replayFinal: true}, acceptanceReady: true}' > "$root/final-acceptance-summary.json"
+    printf '%s\n' 'unrelated retained output' > "$root/.unrelated-retained.txt"
+    : > "$root/.manifest.jsonl"
+    for path in \
+        replay-inprocess/evidence/issue-719-replay-InProcess.json \
+        replay-localrunner/evidence/issue-719-replay-LocalRunner.json \
+        replay-inprocess/evidence/replay-profile-gate.json \
+        replay-localrunner/evidence/replay-profile-gate.json \
+        replay-pair-summary.json replay-localrunner/evidence/replay-pair.json \
+        replay-final-summary.json final-acceptance-summary.json .unrelated-retained.txt; do
+        read -r sha _ < <(sha256sum "$root/$path")
+        bytes="$(stat --format='%s' "$root/$path")"
+        jq -cn --arg path "$path" --arg sha "$sha" --argjson bytes "$bytes" \
+            '{path: $path, bytes: $bytes, sha256: ($sha | ascii_upcase)}' >> "$root/.manifest.jsonl"
+    done
+    jq -s '{schemaVersion: "issue-211-run-manifest-v1", worktreeFingerprint: "fixture",
+      runId: "fixture", revision: "fixture", dirtyStateSha256: ("A" * 64), cameraImage: "fixture",
+      excludedSelf: "run-manifest.json", retainedOutputs: ., totalBytes: (map(.bytes) | add // 0)}' \
+        "$root/.manifest.jsonl" > "$root/run-manifest.json"
+    rm "$root/.manifest.jsonl"
+}
+
+make_terminal_fixture "$WORK/terminal-control"
+terminal_replay_gate "$WORK/terminal-control" || fail 'valid terminal replay fixture was refused'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-forged-receipt"
+jq '.replay.replay.nodes = []' \
+    "$WORK/terminal-forged-receipt/replay-inprocess/evidence/issue-719-replay-InProcess.json" \
+    > "$WORK/terminal-forged-receipt/invalid.json"
+mv "$WORK/terminal-forged-receipt/invalid.json" \
+    "$WORK/terminal-forged-receipt/replay-inprocess/evidence/issue-719-replay-InProcess.json"
+read -r forged_sha _ < <(sha256sum \
+    "$WORK/terminal-forged-receipt/replay-inprocess/evidence/issue-719-replay-InProcess.json")
+jq --arg sha "$forged_sha" '.evidenceSha256 = ($sha | ascii_upcase)' \
+    "$WORK/terminal-forged-receipt/replay-inprocess/evidence/replay-profile-gate.json" \
+    > "$WORK/terminal-forged-receipt/forged.json"
+mv "$WORK/terminal-forged-receipt/forged.json" \
+    "$WORK/terminal-forged-receipt/replay-inprocess/evidence/replay-profile-gate.json"
+terminal_replay_gate "$WORK/terminal-forged-receipt" >/dev/null 2>&1 &&
+    fail 'terminal verifier accepted a forged receipt for semantically invalid evidence'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-missing-receipt"
+rm "$WORK/terminal-missing-receipt/replay-inprocess/evidence/replay-profile-gate.json"
+terminal_replay_gate "$WORK/terminal-missing-receipt" >/dev/null 2>&1 &&
+    fail 'terminal verifier accepted missing replay profile receipt'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-reduced-pair"
+jq 'del(.bindings.sourceCaptureId)' "$WORK/terminal-reduced-pair/replay-pair-summary.json" \
+    > "$WORK/terminal-reduced-pair/reduced.json"
+mv "$WORK/terminal-reduced-pair/reduced.json" "$WORK/terminal-reduced-pair/replay-pair-summary.json"
+terminal_replay_gate "$WORK/terminal-reduced-pair" &&
+    fail 'terminal verifier accepted reduced replay pair bindings'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-forged-pair"
+jq '.bindings.sourceCaptureId = false | .passed = true' \
+    "$WORK/terminal-forged-pair/replay-pair-summary.json" > "$WORK/terminal-forged-pair/forged.json"
+mv "$WORK/terminal-forged-pair/forged.json" "$WORK/terminal-forged-pair/replay-pair-summary.json"
+terminal_replay_gate "$WORK/terminal-forged-pair" &&
+    fail 'terminal verifier accepted forged replay pair bindings'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-stale"
+jq '.replay.note = "mutated after replay final"' \
+    "$WORK/terminal-stale/replay-inprocess/evidence/issue-719-replay-InProcess.json" \
+    > "$WORK/terminal-stale/stale.json"
+mv "$WORK/terminal-stale/stale.json" \
+    "$WORK/terminal-stale/replay-inprocess/evidence/issue-719-replay-InProcess.json"
+terminal_replay_gate "$WORK/terminal-stale" &&
+    fail 'terminal verifier accepted evidence mutated after replay final'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-missing-manifest"
+jq 'del(.retainedOutputs[] | select(.path == ".unrelated-retained.txt")) |
+    .totalBytes = ([.retainedOutputs[].bytes] | add // 0)' \
+    "$WORK/terminal-missing-manifest/run-manifest.json" > "$WORK/terminal-missing-manifest/manifest.json"
+mv "$WORK/terminal-missing-manifest/manifest.json" "$WORK/terminal-missing-manifest/run-manifest.json"
+terminal_replay_gate "$WORK/terminal-missing-manifest" &&
+    fail 'terminal verifier accepted an omitted unrelated retained file'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-wrong-manifest"
+jq '(.retainedOutputs[] | select(.path == ".unrelated-retained.txt").sha256) = ("0" * 64)' \
+    "$WORK/terminal-wrong-manifest/run-manifest.json" > "$WORK/terminal-wrong-manifest/manifest.json"
+mv "$WORK/terminal-wrong-manifest/manifest.json" "$WORK/terminal-wrong-manifest/run-manifest.json"
+terminal_replay_gate "$WORK/terminal-wrong-manifest" &&
+    fail 'terminal verifier accepted a wrong unrelated retained-file hash'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-wrong-manifest-bytes"
+jq '(.retainedOutputs[] | select(.path == ".unrelated-retained.txt").bytes) += 1 | .totalBytes += 1' \
+    "$WORK/terminal-wrong-manifest-bytes/run-manifest.json" > "$WORK/terminal-wrong-manifest-bytes/manifest.json"
+mv "$WORK/terminal-wrong-manifest-bytes/manifest.json" "$WORK/terminal-wrong-manifest-bytes/run-manifest.json"
+terminal_replay_gate "$WORK/terminal-wrong-manifest-bytes" &&
+    fail 'terminal verifier accepted wrong unrelated retained-file bytes'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-nonexistent-manifest-entry"
+jq '.retainedOutputs += [{path: "nonexistent.txt", bytes: 0, sha256: ("0" * 64)}]' \
+    "$WORK/terminal-nonexistent-manifest-entry/run-manifest.json" \
+    > "$WORK/terminal-nonexistent-manifest-entry/manifest.json"
+mv "$WORK/terminal-nonexistent-manifest-entry/manifest.json" \
+    "$WORK/terminal-nonexistent-manifest-entry/run-manifest.json"
+terminal_replay_gate "$WORK/terminal-nonexistent-manifest-entry" &&
+    fail 'terminal verifier accepted a nonexistent manifest entry'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-added-after-manifest"
+printf '%s\n' 'added after manifest publication' > "$WORK/terminal-added-after-manifest/late-output.txt"
+terminal_replay_gate "$WORK/terminal-added-after-manifest" &&
+    fail 'terminal verifier accepted an actual file added after manifest publication'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-symlink"
+ln -s .unrelated-retained.txt "$WORK/terminal-symlink/retained-link"
+if terminal_replay_gate "$WORK/terminal-symlink"; then
+    rm -f -- "$WORK/terminal-symlink/retained-link"
+    fail 'terminal verifier accepted a symlink in the retained tree'
+fi
+rm -f -- "$WORK/terminal-symlink/retained-link"
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-fifo"
+mkfifo "$WORK/terminal-fifo/retained-fifo"
+if terminal_replay_gate "$WORK/terminal-fifo"; then
+    rm -f -- "$WORK/terminal-fifo/retained-fifo"
+    fail 'terminal verifier accepted a FIFO in the retained tree'
+fi
+rm -f -- "$WORK/terminal-fifo/retained-fifo"
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-wrong-manifest-total"
+jq '.totalBytes += 1' "$WORK/terminal-wrong-manifest-total/run-manifest.json" \
+    > "$WORK/terminal-wrong-manifest-total/manifest.json"
+mv "$WORK/terminal-wrong-manifest-total/manifest.json" \
+    "$WORK/terminal-wrong-manifest-total/run-manifest.json"
+terminal_replay_gate "$WORK/terminal-wrong-manifest-total" &&
+    fail 'terminal verifier accepted a wrong run-manifest total'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-extra-manifest-key"
+jq '(.retainedOutputs[] | select(.path == ".unrelated-retained.txt")).extra = true' \
+    "$WORK/terminal-extra-manifest-key/run-manifest.json" > "$WORK/terminal-extra-manifest-key/manifest.json"
+mv "$WORK/terminal-extra-manifest-key/manifest.json" "$WORK/terminal-extra-manifest-key/run-manifest.json"
+terminal_replay_gate "$WORK/terminal-extra-manifest-key" &&
+    fail 'terminal verifier accepted an extra replay run-manifest entry key'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-duplicate-manifest"
+jq '.retainedOutputs += [.retainedOutputs[] | select(.path == ".unrelated-retained.txt")] |
+    .totalBytes = ([.retainedOutputs[].bytes] | add)' \
+    "$WORK/terminal-duplicate-manifest/run-manifest.json" > "$WORK/terminal-duplicate-manifest/manifest.json"
+mv "$WORK/terminal-duplicate-manifest/manifest.json" "$WORK/terminal-duplicate-manifest/run-manifest.json"
+terminal_replay_gate "$WORK/terminal-duplicate-manifest" &&
+    fail 'terminal verifier accepted a duplicate replay run-manifest path'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-wrong-manifest-schema"
+jq '.schemaVersion = "wrong"' "$WORK/terminal-wrong-manifest-schema/run-manifest.json" \
+    > "$WORK/terminal-wrong-manifest-schema/manifest.json"
+mv "$WORK/terminal-wrong-manifest-schema/manifest.json" "$WORK/terminal-wrong-manifest-schema/run-manifest.json"
+terminal_replay_gate "$WORK/terminal-wrong-manifest-schema" &&
+    fail 'terminal verifier accepted a wrong replay run-manifest schema'
+
+cp -R "$WORK/terminal-control" "$WORK/terminal-extra-manifest-top-level"
+jq '.extra = true' "$WORK/terminal-extra-manifest-top-level/run-manifest.json" \
+    > "$WORK/terminal-extra-manifest-top-level/manifest.json"
+mv "$WORK/terminal-extra-manifest-top-level/manifest.json" "$WORK/terminal-extra-manifest-top-level/run-manifest.json"
+terminal_replay_gate "$WORK/terminal-extra-manifest-top-level" &&
+    fail 'terminal verifier accepted an extra replay run-manifest top-level key'
 
 replay_central_gate() {
     jq -n -f "$CENTRAL_GATE_PROGRAM" --arg trial replay-inprocess --arg trialKind replay \
@@ -535,14 +892,10 @@ central_summary_gate "$WORK/central-summary-duplicate" "$WORK/central-summary-du
     fail 'central aggregate accepted duplicate and missing labels'
 
 campaign_contract() {
-    local script="$1" validation stop marker manifest sanitization down deletion reset up test pair health process
-    local stats names cleanup
+    local script="$1" receipt stop marker manifest sanitization down deletion reset up test
+    local pair health process stats names cleanup final final_acceptance localrunner_call run_manifest final_scan terminal
     grep -Fq 'if (($# != 15)); then' "$script" || return 1
-    command_directly_in_if "$script" 'if [[ "$trial_kind" == replay ]]; then' \
-        'jq --exit-status -f "$SCRIPT_DIR/issue-719-replay-evidence.jq"' || return 1
-    command_directly_in_if "$script" 'if [[ "$trial_kind" == replay && "$replay_profile" == LocalRunner ]]; then' \
-        'jq -n -f "$SCRIPT_DIR/issue-719-replay-pair.jq"' || return 1
-    validation="$(grep -n -m1 "issue-719-replay-evidence.jq" "$script" | cut -d: -f1)" || return 1
+    receipt="$(grep -n -m1 '^        replay_profile_post_test_gate ' "$script" | cut -d: -f1)" || return 1
     stop="$(grep -n -m1 'docker stop --timeout 30' "$script" | cut -d: -f1)" || return 1
     manifest="$(grep -n -m1 '> "$trial_result/evidence/evidence-manifest.json"' "$script" | cut -d: -f1)" || return 1
     sanitization="$(grep -n -m1 'The final retained trial tree failed sanitization' "$script" | cut -d: -f1)" || return 1
@@ -552,23 +905,42 @@ campaign_contract() {
     reset="$(grep -n -m1 'rm -rf -- "$trial_local/telemetry"' "$script" | cut -d: -f1)" || return 1
     up="$(grep -n -m1 '"${active_compose_files\[@\]}" up --detach' "$script" | cut -d: -f1)" || return 1
     test="$(grep -n -m1 'dotnet test "$PROJECT"' "$script" | cut -d: -f1)" || return 1
-    pair="$(grep -n -m1 'issue-719-replay-pair.jq' "$script" | cut -d: -f1)" || return 1
+    pair="$(grep -n -m1 '^        emit_replay_pair_summary \\' "$script" | cut -d: -f1)" || return 1
     health="$(grep -n -m1 'issue-719-replay-runtime-status-v1' "$script" | cut -d: -f1)" || return 1
     process="$(grep -n -m1 'issue-719-replay-process-snapshot-v1' "$script" | cut -d: -f1)" || return 1
     stats="$(awk '/replay_stats=.*docker stats/ && index($0, "${replay_process_containers[@]}") { print NR; exit }' "$script")"
     [[ -n "$stats" ]] || return 1
     names="$(grep -n -m1 'cmp --silent "$trial_result/evidence/.expected-process-names"' "$script" | cut -d: -f1)" || return 1
     cleanup="$(grep -n -m1 'rm -f "$trial_result/evidence/.process-names"' "$script" | cut -d: -f1)" || return 1
-    ((reset < up && reset < test && validation < health && health < stats && stats < process && process < stop &&
+    localrunner_call="$(grep -n -m1 "    'replay-localrunner'" "$script" | cut -d: -f1)" || return 1
+    final="$(grep -n -m1 '^emit_replay_final_summary \\' "$script" | cut -d: -f1)" || return 1
+    final_acceptance="$(grep -n -m1 -- '--slurpfile replayFinal' "$script" | cut -d: -f1)" || return 1
+    run_manifest="$(grep -n -m1 '^publish_replay_run_manifest ' "$script" | cut -d: -f1)" || return 1
+    final_scan="$(grep -n -m1 'The final retained run tree contains the synthetic owner identity' "$script" | cut -d: -f1)" || return 1
+    terminal="$(grep -n -m1 '^verify_terminal_replay_evidence \\' "$script" | cut -d: -f1)" || return 1
+    ((reset < up && reset < test && receipt < health && health < stats && stats < process && process < stop &&
       process < names && names < cleanup && cleanup < manifest &&
-      pair < manifest && manifest < sanitization && sanitization < down && down < marker && down < deletion)) || return 1
+      pair < manifest && manifest < sanitization && sanitization < down && down < marker && down < deletion &&
+      localrunner_call < final && final < final_acceptance && final_acceptance < run_manifest &&
+      run_manifest < final_scan && final_scan < terminal)) || return 1
     grep -q 'profile_evidence_file="issue-719-replay-${replay_profile}.json"' "$script" || return 1
     grep -q 'Replay evidence schema does not record in-test central traffic counters.' "$script" || return 1
     grep -q 'rm -f -- "$trial_local/runtime/central-http-attempts.log"' "$script" || return 1
     grep -q "assert_gate \"\$pair_summary\" 'replay pair'" "$script" || return 1
+    grep -q 'replay_atomic_copy "$pair_summary" "$RESULTS/replay-pair-summary.json"' "$script" || return 1
+    grep -q '^    replay_receipt_cleanup$' "$script" || return 1
+    grep -q "assert_gate \"\$RESULTS/replay-final-summary.json\" 'replay final binding'" "$script" || return 1
+    grep -q 'replayFinal: $replayFinal\[0\].passed' "$script" || return 1
+    grep -q '\$replayFinal\[0\].passed and' "$script" || return 1
     grep -q 'replay_process_containers+=("hvo211-$suffix-replay")' "$script" || return 1
     grep -q 'expected_process_lines=3' "$script" || return 1
     grep -q 'Replay process snapshot omitted a required container' "$script" || return 1
+    grep -q 'terminal replay semantics, bindings, and run manifest' "$script" || return 1
+    command_directly_in_if "$script" 'if [[ "$trial_kind" == replay ]]; then' \
+        'replay_profile_post_test_gate ' || return 1
+    command_directly_in_if "$script" \
+        'if [[ "$trial_kind" == replay && "$replay_profile" == LocalRunner ]]; then' \
+        'emit_replay_pair_summary \' || return 1
     invocation_matches "$script"
 }
 
@@ -590,7 +962,7 @@ command_directly_in_if() {
           }
           next
         }
-        if (active && index(line, command) > 0) {
+        if (active && index(line, command) == 1) {
           found = 1
           direct = (depth == parent_depth)
         }
@@ -674,9 +1046,6 @@ cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
 sed -i 's/issue-719-replay-${replay_profile}.json/issue-211-w6.json/' "$WORK/campaign"
 campaign_contract "$WORK/campaign" && fail 'campaign accepted replay W6 evidence lookup mutation'
 cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
-sed -i '/issue-719-replay-evidence.jq/,+5d' "$WORK/campaign"
-campaign_contract "$WORK/campaign" && fail 'campaign accepted missing pre-stop replay validation mutation'
-cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
 sed -i '/: > "$trial_local\/.state-established"/d' "$WORK/campaign"
 campaign_contract "$WORK/campaign" && fail 'campaign accepted missing post-gate state marker mutation'
 cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
@@ -719,24 +1088,24 @@ run_profile_trial_boundary_matches "$WORK/campaign" &&
 cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
 sed -i "/'replay-localrunner'/,/    'replay'$/ { /    'replay'$/d; }" "$WORK/campaign"
 campaign_contract "$WORK/campaign" && fail 'campaign accepted removal of argument 15 from a call'
-cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
-sed -i '/jq --exit-status -f "$SCRIPT_DIR\/issue-719-replay-evidence.jq"/i\        if false; then' "$WORK/campaign"
-sed -i "/gate_failed 'replay profile evidence'/a\\        fi" "$WORK/campaign"
-campaign_contract "$WORK/campaign" && fail 'campaign accepted replay validation wrapped in if false'
-cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
-sed -i '/jq -n -f "$SCRIPT_DIR\/issue-719-replay-pair.jq"/i\        if false; then' "$WORK/campaign"
-sed -i "/assert_gate \"\$pair_summary\" 'replay pair'/a\\        fi" "$WORK/campaign"
-campaign_contract "$WORK/campaign" && fail 'campaign accepted replay pair validation wrapped in if false'
 for dead_condition in 'false' '((0))' '((1 == 0))' '[ 0 -eq 1 ]' '[[ 0 == 1 ]]' '[[ "$trial" == never ]]'; do
     cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
-    sed -i "/jq --exit-status -f \"\$SCRIPT_DIR\\/issue-719-replay-evidence.jq\"/i\\        if $dead_condition; then" "$WORK/campaign"
-    sed -i "/gate_failed 'replay profile evidence'/a\\        fi" "$WORK/campaign"
-    campaign_contract "$WORK/campaign" && fail "campaign accepted replay validation wrapped in if $dead_condition"
+    sed -i "/replay_profile_post_test_gate /i\\        if $dead_condition; then" "$WORK/campaign"
+    sed -i "/replay_profile_post_test_gate /a\\        fi" "$WORK/campaign"
+    campaign_contract "$WORK/campaign" &&
+        fail "campaign accepted replay post-test gate wrapped in if $dead_condition"
 
     cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
-    sed -i "/jq -n -f \"\$SCRIPT_DIR\\/issue-719-replay-pair.jq\"/i\\        if $dead_condition; then" "$WORK/campaign"
-    sed -i "/assert_gate \"\$pair_summary\" 'replay pair'/a\\        fi" "$WORK/campaign"
-    campaign_contract "$WORK/campaign" && fail "campaign accepted replay pair validation wrapped in if $dead_condition"
+    sed -i "/^        emit_replay_pair_summary \\\\/i\\        if $dead_condition; then" "$WORK/campaign"
+    sed -i "/replay_atomic_copy \"\$pair_summary\"/a\\        fi" "$WORK/campaign"
+    campaign_contract "$WORK/campaign" &&
+        fail "campaign accepted replay pair publication wrapped in if $dead_condition"
 done
 
+# Source reachability is only the first layer: a skipped post-test emitter leaves no receipt,
+# and the artifact-level terminal gate above proves that state cannot reach acceptance.
+cp -R "$WORK/terminal-control" "$WORK/terminal-dead-emitter-effect"
+rm -f -- "$WORK/terminal-dead-emitter-effect/replay-inprocess/evidence/replay-profile-gate.json"
+terminal_replay_gate "$WORK/terminal-dead-emitter-effect" >/dev/null 2>&1 &&
+    fail 'terminal verifier accepted the artifact effect of a dead-wrapped profile emitter'
 printf 'Replay evidence and driver contract: controls accepted, all mutations refused.\n'

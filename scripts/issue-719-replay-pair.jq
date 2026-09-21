@@ -1,10 +1,18 @@
 ($inProcess[0]) as $first |
 ($localRunner[0]) as $second |
+def uppercase_sha256: type == "string" and test("^[0-9A-F]{64}$");
+def binding_keys: [
+  "graphDefinitionIdentity", "graphRevisionId", "inProcessExecutionId",
+  "liveExecutionId", "localPlanIdentity", "localRunnerExecutionId",
+  "primaryArtifactId", "sharedPlanIdentity", "sourceCaptureId"
+];
 {
-  schemaVersion: "issue-719-replay-pair-v1",
+  schemaVersion: "issue-719-replay-pair-v2",
   stateKey: $stateKey,
-  inProcessEvidence: $inProcessPath,
-  localRunnerEvidence: $localRunnerPath,
+  inProcessEvidence: {path: $inProcessPath, sha256: ($inProcessSha256 | ascii_upcase)},
+  localRunnerEvidence: {path: $localRunnerPath, sha256: ($localRunnerSha256 | ascii_upcase)},
+  inProcessProfileGate: {path: $inProcessGatePath, sha256: ($inProcessGateSha256 | ascii_upcase)},
+  localRunnerProfileGate: {path: $localRunnerGatePath, sha256: ($localRunnerGateSha256 | ascii_upcase)},
   bindings: {
     sourceCaptureId: ($second.replay.sourceCaptureId == $first.replay.sourceCaptureId),
     primaryArtifactId: ($second.replay.primaryArtifactId == $first.replay.primaryArtifactId),
@@ -21,6 +29,14 @@
   },
   passed: (
     ($inProcess | length) == 1 and ($localRunner | length) == 1 and
+    ($inProcessSha256 | ascii_upcase | uppercase_sha256) and
+    ($localRunnerSha256 | ascii_upcase | uppercase_sha256) and
+    ($inProcessGateSha256 | ascii_upcase | uppercase_sha256) and
+    ($localRunnerGateSha256 | ascii_upcase | uppercase_sha256) and
+    ($inProcessPath | type == "string" and length > 0) and
+    ($localRunnerPath | type == "string" and length > 0) and
+    ($inProcessGatePath | type == "string" and length > 0) and
+    ($localRunnerGatePath | type == "string" and length > 0) and
     $first.schemaVersion == "issue-719-replay-evidence-v1" and
     $second.schemaVersion == "issue-719-replay-evidence-v1" and
     $first.profile == "InProcess" and $first.declaredProfile == "InProcess" and
@@ -41,3 +57,4 @@
     $second.replay.replay.sharedPlanIdentitySha256 == $first.replay.replay.sharedPlanIdentitySha256 and
     $second.replay.replay.localPlanIdentitySha256 == $first.replay.replay.localPlanIdentitySha256)
 }
+| .passed = (.passed and (.bindings | keys | sort) == binding_keys)
