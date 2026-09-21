@@ -2712,7 +2712,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         }
         catch
         {
-            await connection.DisposeAsync().ConfigureAwait(false);
+            await TryDisposeAfterConfigurationFailureAsync(connection).ConfigureAwait(false);
             throw;
         }
     }
@@ -2763,6 +2763,19 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         using var command = connection.CreateCommand();
         command.CommandText = commandText;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Connection cleanup must not replace the configuration failure being propagated to diagnostics.")]
+    private static async ValueTask TryDisposeAfterConfigurationFailureAsync(SqliteConnection connection)
+    {
+        try
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
     }
 
     private async ValueTask<EnvironmentalSchemaInspection> InspectExistingDatabaseAsync(
