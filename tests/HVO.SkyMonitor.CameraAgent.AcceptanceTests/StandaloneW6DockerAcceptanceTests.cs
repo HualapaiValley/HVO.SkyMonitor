@@ -1517,7 +1517,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private static async Task SetCaptureStateAsync(IPage page, bool pause)
     {
-        await page.GotoAsync("/operations").ConfigureAwait(false);
+        await PlaywrightNavigation.NavigateOrJoinAsync(page, "/operations").ConfigureAwait(false);
         var action = page.Locator("#capture-action");
         await action.WaitForAsync().ConfigureAwait(false);
         var expected = pause ? "Review pause" : "Review resume";
