@@ -538,7 +538,10 @@ campaign_contract() {
     local script="$1" validation stop marker manifest sanitization down deletion reset up test pair health process
     local stats names cleanup
     grep -Fq 'if (($# != 15)); then' "$script" || return 1
-    grep -Eq '^[[:space:]]*if[[:space:]]+(false|\(\(0\)\)|\[[[:space:]]+0[[:space:]]+-eq[[:space:]]+1[[:space:]]+\]|\[\[[[:space:]]+0[[:space:]]+==[[:space:]]+1[[:space:]]+\]\]);[[:space:]]*then|^[[:space:]]*:;([[:space:]]|$)' "$script" && return 1
+    command_directly_in_if "$script" 'if [[ "$trial_kind" == replay ]]; then' \
+        'jq --exit-status -f "$SCRIPT_DIR/issue-719-replay-evidence.jq"' || return 1
+    command_directly_in_if "$script" 'if [[ "$trial_kind" == replay && "$replay_profile" == LocalRunner ]]; then' \
+        'jq -n -f "$SCRIPT_DIR/issue-719-replay-pair.jq"' || return 1
     validation="$(grep -n -m1 "issue-719-replay-evidence.jq" "$script" | cut -d: -f1)" || return 1
     stop="$(grep -n -m1 'docker stop --timeout 30' "$script" | cut -d: -f1)" || return 1
     manifest="$(grep -n -m1 '> "$trial_result/evidence/evidence-manifest.json"' "$script" | cut -d: -f1)" || return 1
@@ -567,6 +570,37 @@ campaign_contract() {
     grep -q 'expected_process_lines=3' "$script" || return 1
     grep -q 'Replay process snapshot omitted a required container' "$script" || return 1
     invocation_matches "$script"
+}
+
+command_directly_in_if() {
+    local script="$1" parent="$2" command="$3"
+    awk -v parent="$parent" -v command="$command" '
+      function trimmed(value) {
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        return value
+      }
+      {
+        line = trimmed($0)
+        if (line ~ /^if[[:space:]].*;[[:space:]]*then$/) {
+          depth++
+          if (line == parent) {
+            parent_depth = depth
+            active = 1
+          }
+          next
+        }
+        if (active && index(line, command) > 0) {
+          found = 1
+          direct = (depth == parent_depth)
+        }
+        if (line == "fi") {
+          if (active && depth == parent_depth) active = 0
+          depth--
+        }
+      }
+      END { exit !(found && direct) }
+    ' "$script"
 }
 
 run_profile_trial_boundary_matches() {
@@ -693,10 +727,7 @@ cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
 sed -i '/jq -n -f "$SCRIPT_DIR\/issue-719-replay-pair.jq"/i\        if false; then' "$WORK/campaign"
 sed -i "/assert_gate \"\$pair_summary\" 'replay pair'/a\\        fi" "$WORK/campaign"
 campaign_contract "$WORK/campaign" && fail 'campaign accepted replay pair validation wrapped in if false'
-cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
-sed -i '/jq --exit-status -f "$SCRIPT_DIR\/issue-719-replay-evidence.jq"/i\        :;' "$WORK/campaign"
-campaign_contract "$WORK/campaign" && fail 'campaign accepted a no-op wrapper at replay validation'
-for dead_condition in '((0))' '[ 0 -eq 1 ]' '[[ 0 == 1 ]]'; do
+for dead_condition in 'false' '((0))' '((1 == 0))' '[ 0 -eq 1 ]' '[[ 0 == 1 ]]' '[[ "$trial" == never ]]'; do
     cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
     sed -i "/jq --exit-status -f \"\$SCRIPT_DIR\\/issue-719-replay-evidence.jq\"/i\\        if $dead_condition; then" "$WORK/campaign"
     sed -i "/gate_failed 'replay profile evidence'/a\\        fi" "$WORK/campaign"
