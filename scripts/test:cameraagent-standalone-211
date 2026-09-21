@@ -1051,10 +1051,16 @@ EOF
         "hvo.transient.operator.query.duration": "ms",
         "hvo.transient.operator.response.bytes": "By"
       };
-      def allowed_metric_keys: ["action", "association_status", "boundary", "cadence", "command", "execution.class", "kind",
+      def allowed_metric_keys: ["action", "association_status", "boundary", "cadence", "command", "direction",
+        "execution.class", "kind",
         "lane", "mode", "observation_kind", "operation", "outcome", "phase", "reason", "recipe", "regime",
         "required", "result", "role", "root", "schema", "segment", "source", "stage", "state", "step",
         "target", "trigger", "variant"];
+      # The LocalRunner invocation captures nothing by contract (#959): it reads the InProcess capture
+      # from durable state and dispatches the replay to the runner process, and capture admission is
+      # still paused from the InProcess window. Its requirement set is therefore the replay execution
+      # path plus proof that the runner executed the work, not the capture path it never exercises.
+      def local_runner_replay: ($trialKind == "replay" and $replayProfile == "LocalRunner");
        (if $trialKind == "w6" then
         ["capture-cycle", "capture-control", "capture-ingress-handoff",
          "raw-ingress.initialize", "raw-ingress.reconcile", "raw-ingress.accept", "payload.publish",
@@ -1066,10 +1072,13 @@ EOF
          "environment.local.commit", "environment.associate", "environment.history.query",
          "transient.causal", "transient.centered", "transient.operator.query"] +
          (if $trial == "trial-1" then ["processing-graph.recover"] else [] end)
+         elif local_runner_replay then
+           ["raw-ingress.initialize", "raw-ingress.reconcile", "capture-lanes.initialize", "capture-lanes.claim",
+            "processing-graph.validate", "processing-graph.execute", "processing-step.execute",
+            "processing-artifact.persist", "deployment-location.initialize"]
          elif $trialKind == "replay" then
            ["capture-cycle", "capture-ingress-handoff", "raw-ingress.accept", "capture-lanes.process",
-            "processing-graph.execute"] +
-           (if $replayProfile == "InProcess" then ["calibration.acquire", "calibration.activate"] else [] end)
+            "processing-graph.execute", "calibration.acquire", "calibration.activate"]
          else ["capture-cycle", "capture-ingress-handoff", "raw-ingress.accept", "capture-lanes.process",
            "processing-graph.execute"] end) as $required_spans |
        (if $trialKind == "w6" then
@@ -1090,13 +1099,17 @@ EOF
          "camera_agent.processing.comparison.duration", "camera_agent.processing.comparison.output.bytes",
          "hvo.transient.operator.queries", "hvo.transient.operator.query.duration",
          "hvo.transient.operator.response.bytes"]
+         elif local_runner_replay then
+           ["camera_agent.processing.graphs", "camera_agent.processing.graph.duration",
+            "camera_agent.processing.output.bytes", "camera_agent.processing.replay.dispositions",
+            "camera_agent.replay_runner.jobs", "camera_agent.replay_runner.dispatch.duration",
+            "camera_agent.replay_runner.execution.duration", "camera_agent.replay_runner.transfer.bytes",
+            "camera_agent.replay_runner.payload.frames"]
          elif $trialKind == "replay" then
            ["camera_agent.capture.count", "camera_agent.ingress.committed",
             "camera_agent.processing.graphs", "camera_agent.processing.graph.duration",
-            "camera_agent.processing.output.bytes"] +
-           (if $replayProfile == "InProcess" then
-             ["camera_agent.calibration.acquisitions", "camera_agent.calibration.acquisition.duration"]
-            else [] end)
+            "camera_agent.processing.output.bytes",
+            "camera_agent.calibration.acquisitions", "camera_agent.calibration.acquisition.duration"]
          else ["camera_agent.capture.count", "camera_agent.ingress.committed",
            "camera_agent.processing.graphs"] end) as $required_metrics |
        (if $trialKind == "w6" then
@@ -1105,25 +1118,33 @@ EOF
          "HVO.SkyMonitor.CameraAgent.ProcessingGraph", "HVO.SkyMonitor.CameraAgent.Calibration",
          "HVO.SkyMonitor.CameraAgent.EnvironmentalAcquisition", "HVO.SkyMonitor.CameraAgent.Transients",
          "HVO.SkyMonitor.CameraAgent.Outbox", "HVO.SkyMonitor.CameraAgent.Operator"]
+        elif local_runner_replay then
+          ["HVO.SkyMonitor.CameraAgent.RawIngress", "HVO.SkyMonitor.CameraAgent.CaptureLanes",
+           "HVO.SkyMonitor.CameraAgent.ProcessingGraph", "HVO.SkyMonitor.CameraAgent.ReplayRunner"]
         elif $trialKind == "replay" then
           ["HVO.SkyMonitor.CameraAgent.Capture", "HVO.SkyMonitor.CameraAgent.CaptureControl",
            "HVO.SkyMonitor.CameraAgent.RawIngress", "HVO.SkyMonitor.CameraAgent.CaptureLanes",
-           "HVO.SkyMonitor.CameraAgent.ProcessingGraph"] +
-          (if $replayProfile == "InProcess" then ["HVO.SkyMonitor.CameraAgent.Calibration"] else [] end)
+           "HVO.SkyMonitor.CameraAgent.ProcessingGraph", "HVO.SkyMonitor.CameraAgent.Calibration"]
         else ["HVO.SkyMonitor.CameraAgent.Capture", "HVO.SkyMonitor.CameraAgent.CaptureControl",
          "HVO.SkyMonitor.CameraAgent.RawIngress", "HVO.SkyMonitor.CameraAgent.CaptureLanes",
          "HVO.SkyMonitor.CameraAgent.ProcessingGraph"] end) as $required_scopes |
        (if $trialKind == "w6" then required_units
-        elif $trialKind == "replay" then ({
+        elif local_runner_replay then {
+         "camera_agent.processing.graph.duration": "s",
+         "camera_agent.processing.output.bytes": "By",
+         "camera_agent.replay_runner.dispatch.duration": "s",
+         "camera_agent.replay_runner.execution.duration": "s",
+         "camera_agent.replay_runner.transfer.bytes": "By"
+        }
+        elif $trialKind == "replay" then {
          "camera_agent.capture.interval_ms": "ms",
          "camera_agent.ingress.committed.bytes": "By",
          "camera_agent.ingress.commit.duration": "s",
          "camera_agent.lanes.processing.duration": "s",
          "camera_agent.processing.graph.duration": "s",
-         "camera_agent.processing.output.bytes": "By"
-        } + (if $replayProfile == "InProcess" then {
+         "camera_agent.processing.output.bytes": "By",
          "camera_agent.calibration.acquisition.duration": "ms"
-        } else {} end)) else {
+        } else {
         "camera_agent.capture.interval_ms": "ms",
         "camera_agent.ingress.committed.bytes": "By",
         "camera_agent.ingress.commit.duration": "s",
@@ -1162,7 +1183,11 @@ EOF
           {name: "capture-lanes", present: any($event_ids[]; . >= 2050 and . <= 2063)},
           {name: "processing-graph", present: any($event_ids[]; . >= 2064 and . <= 2075)},
           {name: "catalog", present: any($event_ids[]; . == 3000)},
-          {name: "deployment-location", present: any($event_ids[]; . == 7301)}
+          # 7301 is "version appended" and fires once when the deployment location is first written.
+          # The LocalRunner invocation reuses the InProcess root, so its history is read back as 7302
+          # "loaded from protected history"; requiring 7301 there demanded a second first write (#959).
+          {name: "deployment-location", present: any($event_ids[];
+            . == (if $replayProfile == "LocalRunner" then 7302 else 7301 end))}
         ] + (if $replayProfile == "InProcess" then [
           {name: "calibration", present: any($event_ids[]; . >= 2610 and . <= 2617)}
         ] else [] end)) else [
@@ -1189,7 +1214,15 @@ EOF
           ] + (if $replayProfile == "LocalRunner" then [
             {name: "calibration.acquire", reason: "LocalRunner reuses the calibration established by InProcess."},
             {name: "calibration.activate", reason: "LocalRunner reuses the calibration established by InProcess."},
-            {name: "camera_agent.calibration.acquisitions", reason: "LocalRunner does not reacquire calibration."}
+            {name: "camera_agent.calibration.acquisitions", reason: "LocalRunner does not reacquire calibration."},
+            {name: "capture-cycle", reason: "LocalRunner replays the InProcess capture from durable state and admits no new capture."},
+            {name: "capture-ingress-handoff", reason: "LocalRunner replays the InProcess capture from durable state and admits no new capture."},
+            {name: "raw-ingress.accept", reason: "LocalRunner replays the InProcess capture from durable state and admits no new capture."},
+            {name: "capture-lanes.process", reason: "LocalRunner dispatches replay work through the runner; live lane processing is not exercised."},
+            {name: "camera_agent.capture.count", reason: "LocalRunner admits no new capture."},
+            {name: "camera_agent.ingress.committed", reason: "LocalRunner commits no new raw capture."},
+            {name: "HVO.SkyMonitor.CameraAgent.Capture", reason: "LocalRunner admits no new capture."},
+            {name: "HVO.SkyMonitor.CameraAgent.CaptureControl", reason: "Capture admission stays paused from the InProcess window."}
           ] else [] end)) else [
             {name: "transient.*", reason: "The Mono8 control runs with transient processing disabled."}
           ] end),
