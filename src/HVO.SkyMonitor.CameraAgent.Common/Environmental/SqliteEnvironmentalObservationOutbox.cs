@@ -1781,10 +1781,6 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 {
                     throw new InvalidOperationException("Environmental observation SQLite journal could not enter WAL mode.");
                 }
-                await ExecuteNonQueryAsync(
-                    connection, $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
-                await ExecuteNonQueryAsync(connection, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
-                await ExecuteNonQueryAsync(connection, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
             }, cancellationToken).ConfigureAwait(false);
             lock (_initializedLock)
             {
@@ -2708,19 +2704,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     }
 
     private async ValueTask<SqliteConnection> OpenAsync(string root, CancellationToken cancellationToken)
-    {
-        var connection = await OpenUnconfiguredAsync(root, cancellationToken, pooled: true).ConfigureAwait(false);
-        try
-        {
-            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-            return connection;
-        }
-        catch
-        {
-            await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
-            throw;
-        }
-    }
+        => await OpenUnconfiguredAsync(root, cancellationToken, pooled: true).ConfigureAwait(false);
 
     private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(
         string root,
@@ -2748,19 +2732,6 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
             throw;
         }
-    }
-
-    private async ValueTask ConfigureConnectionAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken)
-    {
-        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
-        {
-            await ExecuteNonQueryAsync(
-                connection, $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
-            await ExecuteNonQueryAsync(connection, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
-            await ExecuteNonQueryAsync(connection, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
-        }, cancellationToken).ConfigureAwait(false);
     }
 
     private static async ValueTask ExecuteNonQueryAsync(
