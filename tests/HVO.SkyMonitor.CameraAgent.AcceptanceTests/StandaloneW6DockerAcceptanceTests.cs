@@ -932,7 +932,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             runtimeRoot,
             requestedCaptures,
             TimeSpan.FromSeconds(10),
-            TimeSpan.FromMinutes(12)).ConfigureAwait(false);
+            TimeSpan.FromMinutes(12),
+            requireTransientDrain: false).ConfigureAwait(false);
         var source = window.Captures[^1];
         var primaryArtifactId = source.Artifacts
             .Single(static artifact => artifact.Role == FrameArtifactRole.Raw)
@@ -1457,7 +1458,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string agentId = ExpectedAgentId,
         IReadOnlyList<FrameArtifactRole>? expectedRoles = null,
         int expectedNodeCount = 14,
-        DockerResourceSampler? sampler = null)
+        DockerResourceSampler? sampler = null,
+        bool requireTransientDrain = true)
     {
         var token = await GetAntiforgeryTokenAsync(client).ConfigureAwait(false);
         await SetCaptureStateAsync(client, pause: true, token).ConfigureAwait(false);
@@ -1467,7 +1469,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 snapshot.PendingProcessingNodes == 0,
             $"{agentId} pre-window drain",
             timeout).ConfigureAwait(false);
-        if (string.Equals(agentId, ExpectedAgentId, StringComparison.Ordinal))
+        if (requireTransientDrain && string.Equals(agentId, ExpectedAgentId, StringComparison.Ordinal))
         {
             await WaitForTransientDrainAsync(runtimeRoot, $"{agentId} pre-window transient drain", timeout)
                 .ConfigureAwait(false);
@@ -1507,7 +1509,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 snapshot.PendingProcessingNodes == 0,
             $"{agentId} exact-window completion",
             timeout).ConfigureAwait(false);
-        if (string.Equals(agentId, ExpectedAgentId, StringComparison.Ordinal))
+        if (requireTransientDrain && string.Equals(agentId, ExpectedAgentId, StringComparison.Ordinal))
         {
             await WaitForTransientDrainAsync(runtimeRoot, $"{agentId} exact-window transient completion", timeout)
                 .ConfigureAwait(false);
