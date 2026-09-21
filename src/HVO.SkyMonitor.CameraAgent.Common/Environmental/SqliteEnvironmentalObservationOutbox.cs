@@ -39,6 +39,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _initializationGates = new(PathComparer);
     private readonly HashSet<string> _initializedRoots = new(PathComparer);
     private readonly object _initializedLock = new();
+    private readonly SemaphoreSlim _connectionConfigurationGate = new(1, 1);
 
     public ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalAsync(
         string root,
@@ -2704,8 +2705,16 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     private async ValueTask<SqliteConnection> OpenAsync(string root, CancellationToken cancellationToken)
     {
         var connection = await OpenUnconfiguredAsync(root, cancellationToken, pooled: true).ConfigureAwait(false);
-        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-        return connection;
+        try
+        {
+            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(
@@ -2732,10 +2741,18 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        await ExecuteNonQueryAsync(
-            connection, $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
-        await ExecuteNonQueryAsync(connection, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
-        await ExecuteNonQueryAsync(connection, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
+        await _connectionConfigurationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ExecuteNonQueryAsync(
+                connection, $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _connectionConfigurationGate.Release();
+        }
     }
 
     private static async ValueTask ExecuteNonQueryAsync(
@@ -3069,6 +3086,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
 
     public void Dispose()
     {
+        _connectionConfigurationGate.Dispose();
         foreach (var gate in _initializationGates.Values)
         {
             gate.Dispose();
