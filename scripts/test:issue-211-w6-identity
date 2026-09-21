@@ -582,7 +582,7 @@ cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
 sed -i '/replay_process_containers+=("hvo211-\$suffix-replay")/d' "$WORK/campaign"
 campaign_contract "$WORK/campaign" && fail 'campaign accepted LocalRunner process snapshot without replay runner'
 cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
-sed -i '/replay_stats=.*docker stats/c\        replay_stats="$(docker stats --no-stream --format '\''{{json .}}'\'' "hvo211-$suffix-camera")"' "$WORK/campaign"
+sed -i '/replay_stats=.*docker stats/d' "$WORK/campaign"
 campaign_contract "$WORK/campaign" && fail 'campaign accepted docker stats sampling only CameraAgent'
 cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
 sed -i '/rm -f "$trial_result\/evidence\/.process-names"/d' "$WORK/campaign"
