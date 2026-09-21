@@ -705,6 +705,85 @@ public sealed class ProcessingGraphOperationsTests
         }
     }
 
+    private static readonly string[] ReplayTriggerReferences = ["issue-956-InProcess", "issue-956-LocalRunner"];
+
+    /// <summary>
+    /// Durable state admits one replay execution per (capture, revision, trigger kind, trigger
+    /// reference). A second submission of the same capture and revision under a fresh idempotency
+    /// key but the same trigger tuple is a conflict, not a new execution and not an idempotent
+    /// receipt; a distinct trigger reference is accepted as a new execution. The canonical #719
+    /// campaign replays one capture under two profiles and relies on the second half (#956).
+    /// </summary>
+    [TestMethod]
+    public async Task ReplayTriggerTupleIsUniquePerCaptureAndRevision()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-trigger");
+        try
+        {
+            using var provider = CreateProvider(root, new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressSqliteBusyTimeoutSeconds"] = "2",
+                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
+            });
+            var rawIngress = provider.GetRequiredService<IRawCaptureIngress>();
+            await rawIngress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var configuration = CreateConfiguration();
+            var registry = await operations.EnsureConfiguredBasicAsync(
+                configuration, CancellationToken.None).ConfigureAwait(false);
+            var receipt = await rawIngress.AcceptAsync(
+                configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            Assert.AreEqual(RawIngressOutcome.Committed, receipt.Outcome);
+            var captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
+            var artifactId = receipt.Manifest.Descriptor.Artifact.ArtifactId;
+
+            var first = await operations.SubmitReplayAsync(
+                new ProcessingReplaySubmission(
+                    captureId, registry.ActiveRevisionId, artifactId, TriggerReference: "issue-956-InProcess"),
+                "trigger-first-key",
+                "owner-test",
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(first.Replayed);
+
+            // Same trigger tuple, different idempotency key: the idempotency layer does not answer
+            // it, and the durable uniqueness rejects it as a conflict rather than inserting a
+            // second execution or silently returning the first.
+            var conflict = await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(
+                        captureId, registry.ActiveRevisionId, artifactId, TriggerReference: "issue-956-InProcess"),
+                    "trigger-conflict-key",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual("The replay trigger already identifies a different execution.", conflict.Message);
+
+            // Same capture, artifact and revision under a distinct trigger reference: a new execution.
+            var second = await operations.SubmitReplayAsync(
+                new ProcessingReplaySubmission(
+                    captureId, registry.ActiveRevisionId, artifactId, TriggerReference: "issue-956-LocalRunner"),
+                "trigger-second-key",
+                "owner-test",
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(second.Replayed);
+            Assert.AreNotEqual(first.Execution.ExecutionId, second.Execution.ExecutionId);
+            Assert.AreEqual(first.Execution.CaptureId, second.Execution.CaptureId);
+            Assert.AreEqual(first.Execution.GraphRevisionId, second.Execution.GraphRevisionId);
+
+            var replays = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadExecutionsAsync(
+                ProcessingGraphExecutionClass.Replay, 10, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(2, replays);
+            CollectionAssert.AreEquivalent(
+                ReplayTriggerReferences,
+                replays.Select(static execution => execution.TriggerReference).ToArray());
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestMethod]
     public async Task NamedRevisionLifecycleUsesOptimisticVersionAndIdempotency()
     {
