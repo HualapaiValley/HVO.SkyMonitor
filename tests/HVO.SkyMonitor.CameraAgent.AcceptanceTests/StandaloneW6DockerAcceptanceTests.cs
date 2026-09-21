@@ -1136,7 +1136,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
         // A submission answered from the idempotency cache returns the earlier execution instead of
         // creating one. Every later comparison would then hold, for the wrong reason.
-        Assert.IsTrue(
+        Assert.IsFalse(
             result.Replayed,
             "The replay submission was answered from the idempotency cache, so it created no new execution.");
         return result.Execution;
