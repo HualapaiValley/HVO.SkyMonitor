@@ -550,6 +550,12 @@ run_profile_trial() {
         w6|mono8|replay) ;;
         *) printf 'Unknown trial kind %s for %s.\n' "$trial_kind" "$trial" >&2; return 1 ;;
     esac
+    # The telemetry scan selects its requirement set by profile name, so a third value must fail
+    # here rather than fall into whichever branch happens to be the else.
+    case "$replay_profile" in
+        InProcess|LocalRunner) ;;
+        *) printf 'Unknown replay profile %s for %s.\n' "$replay_profile" "$trial" >&2; return 1 ;;
+    esac
     assert_worktree_unchanged
     local trial_result="$RESULTS/$trial"
     local trial_local="$BIND_LOCAL_ROOT/$state_key"
@@ -1101,7 +1107,8 @@ EOF
          "hvo.transient.operator.response.bytes"]
          elif local_runner_replay then
            ["camera_agent.processing.graphs", "camera_agent.processing.graph.duration",
-            "camera_agent.processing.output.bytes", "camera_agent.processing.replay.dispositions",
+            "camera_agent.processing.output.bytes", "camera_agent.processing.execution.starts",
+            "camera_agent.processing.replay.dispositions",
             "camera_agent.replay_runner.jobs", "camera_agent.replay_runner.dispatch.duration",
             "camera_agent.replay_runner.execution.duration", "camera_agent.replay_runner.transfer.bytes",
             "camera_agent.replay_runner.payload.frames"]
@@ -1220,7 +1227,11 @@ EOF
             {name: "raw-ingress.accept", reason: "LocalRunner replays the InProcess capture from durable state and admits no new capture."},
             {name: "capture-lanes.process", reason: "LocalRunner dispatches replay work through the runner; live lane processing is not exercised."},
             {name: "camera_agent.capture.count", reason: "LocalRunner admits no new capture."},
+            {name: "camera_agent.capture.interval_ms", reason: "LocalRunner admits no new capture."},
             {name: "camera_agent.ingress.committed", reason: "LocalRunner commits no new raw capture."},
+            {name: "camera_agent.ingress.committed.bytes", reason: "LocalRunner commits no new raw capture."},
+            {name: "camera_agent.ingress.commit.duration", reason: "LocalRunner commits no new raw capture."},
+            {name: "camera_agent.lanes.processing.duration", reason: "LocalRunner dispatches replay work through the runner; live lane processing is not exercised."},
             {name: "HVO.SkyMonitor.CameraAgent.Capture", reason: "LocalRunner admits no new capture."},
             {name: "HVO.SkyMonitor.CameraAgent.CaptureControl", reason: "Capture admission stays paused from the InProcess window."}
           ] else [] end)) else [
@@ -1254,7 +1265,7 @@ EOF
             {name: "transient-worker", reason: "Replay trials disable transient processing."},
             {name: "environmental-acquisition", reason: "Replay validates archived processing rather than environmental acquisition."}
           ] + (if $replayProfile == "LocalRunner" then [
-            {name: "calibration", reason: "LocalRunner reuses the calibration established by InProcess."}
+            {name: "calibration", reason: "LocalRunner selects the bundle InProcess established; acquisition and activation are not repeated."}
          ] else [] end)) else [
            {name: "artifact-outbox", reason: "Successful outbox work is debug-level; warning events indicate failure."},
            {name: "capture-control", reason: "Fixed Mono8 control decisions are debug-level."},

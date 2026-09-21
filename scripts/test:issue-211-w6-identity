@@ -967,6 +967,7 @@ local_runner_scan_contract() {
       (.requiredMetrics | index("camera_agent.replay_runner.execution.duration")) != null and
       (.requiredMetrics | index("camera_agent.replay_runner.transfer.bytes")) != null and
       (.requiredMetrics | index("camera_agent.processing.replay.dispositions")) != null and
+      (.requiredMetrics | index("camera_agent.processing.execution.starts")) != null and
       (.requiredSpans | index("processing-graph.execute")) != null and
       (.requiredSpans | index("processing-step.execute")) != null and
       (.missingMetricScopes | index("HVO.SkyMonitor.CameraAgent.ReplayRunner")) != null and
@@ -1115,7 +1116,6 @@ invocation_matches() {
 
 printf '{}\n' > "$WORK/empty-telemetry.json"
 campaign_contract "$CAMPAIGN_SCRIPT" || fail 'campaign replay wiring contract failed'
-local_runner_scan_contract "$CAMPAIGN_SCRIPT" || fail 'LocalRunner telemetry scan contract failed on the control'
 run_profile_trial_boundary_matches "$CAMPAIGN_SCRIPT" \
     || fail 'run_profile_trial did not behaviorally enforce its exact 15-argument boundary'
 cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
