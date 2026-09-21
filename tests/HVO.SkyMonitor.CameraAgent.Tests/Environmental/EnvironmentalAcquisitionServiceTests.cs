@@ -123,6 +123,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
         try
         {
             using var services = new ServiceCollection().BuildServiceProvider();
+            var startupEpoch = DateTimeOffset.UtcNow;
             var options = Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = root,
@@ -132,7 +133,8 @@ public sealed class EnvironmentalAcquisitionServiceTests
                     MaximumConcurrency = 4,
                     QueueCapacity = 32,
                     SourceTimeoutMilliseconds = 5_000,
-                    Sources = StartupSourceKinds.Select((kind, index) => Source(kind, index)).ToArray()
+                    Sources = StartupSourceKinds.Select((kind, index) => Source(
+                        kind, index, scheduleEpochUtc: startupEpoch, periodSeconds: 86_400)).ToArray()
                 }
             });
             using var store = new SqliteEnvironmentalObservationOutbox();
@@ -290,7 +292,9 @@ public sealed class EnvironmentalAcquisitionServiceTests
     private static EnvironmentalSourceConfiguration Source(
         EnvironmentalObservationKind kind,
         int index,
-        IReadOnlyList<EnvironmentalAcquisitionTrigger>? triggers = null)
+        IReadOnlyList<EnvironmentalAcquisitionTrigger>? triggers = null,
+        DateTimeOffset? scheduleEpochUtc = null,
+        int periodSeconds = 30)
     {
         var isBoolean = kind == EnvironmentalObservationKind.RainState;
         return new EnvironmentalSourceConfiguration
@@ -300,8 +304,8 @@ public sealed class EnvironmentalAcquisitionServiceTests
             Kind = kind,
             Required = true,
             Triggers = triggers ?? [EnvironmentalAcquisitionTrigger.Periodic],
-            ScheduleEpochUtc = Epoch,
-            PeriodSeconds = 30,
+            ScheduleEpochUtc = scheduleEpochUtc ?? Epoch,
+            PeriodSeconds = periodSeconds,
             EveryNthCapture = 3,
             ValidForSeconds = 120,
             StaleAfterSeconds = 45,

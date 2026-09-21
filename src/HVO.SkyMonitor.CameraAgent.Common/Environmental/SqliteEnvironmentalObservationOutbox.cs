@@ -1773,6 +1773,12 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             {
                 await ValidateSchemaAsync(connection, null, cancellationToken).ConfigureAwait(false);
             }
+            var journalMode = await ExecuteScalarStringAsync(
+                connection, "PRAGMA journal_mode=WAL;", null, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Environmental observation SQLite journal could not enter WAL mode.");
+            }
             await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
             lock (_initializedLock)
             {
@@ -2726,8 +2732,19 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
+        await ExecuteNonQueryAsync(
+            connection, $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
+        await ExecuteNonQueryAsync(connection, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
+        await ExecuteNonQueryAsync(connection, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask ExecuteNonQueryAsync(
+        SqliteConnection connection,
+        string commandText,
+        CancellationToken cancellationToken)
+    {
         using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout={busyTimeoutSeconds * 1000};";
+        command.CommandText = commandText;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
