@@ -39,66 +39,7 @@ public sealed class SqliteConnectionConfigurationInventoryTests
             var relativePath = Path.GetRelativePath(sourceRoot, sourcePath)
                 .Replace(Path.DirectorySeparatorChar, '/');
 
-            foreach (var callable in root.DescendantNodes().Where(static node =>
-                node is BaseMethodDeclarationSyntax or LocalFunctionStatementSyntax))
-            {
-                var pragmaValues = callable.DescendantNodes()
-                    .OfType<LiteralExpressionSyntax>()
-                    .Where(static literal => literal.IsKind(SyntaxKind.StringLiteralExpression))
-                    .Select(static literal => literal.Token.ValueText)
-                    .Where(IsConnectionConfigurationPragma)
-                    .ToArray();
-                if (pragmaValues.Length == 0)
-                {
-                    continue;
-                }
-
-                var name = callable switch
-                {
-                    BaseMethodDeclarationSyntax method => method switch
-                    {
-                        MethodDeclarationSyntax declaration => declaration.Identifier.ValueText,
-                        ConstructorDeclarationSyntax constructor => constructor.Identifier.ValueText,
-                        _ => method.Kind().ToString()
-                    },
-                    LocalFunctionStatementSyntax local => local.Identifier.ValueText,
-                    _ => callable.Kind().ToString()
-                };
-                candidates.Add($"{relativePath}:{name}");
-
-                var usesGate = callable.DescendantNodes()
-                    .OfType<InvocationExpressionSyntax>()
-                    .Select(static invocation => invocation.Expression.ToString())
-                    .Any(static expression =>
-                        expression.EndsWith("SqliteConnectionConfigurationGate.RunAsync", StringComparison.Ordinal) ||
-                        expression.EndsWith("SqliteConnectionConfigurationGate.OpenAndConfigureAsync", StringComparison.Ordinal));
-                if (!usesGate)
-                {
-                    violations.Add($"{relativePath}:{name} configures a SQLite connection without the process-wide gate.");
-                }
-
-                foreach (var pragma in pragmaValues)
-                {
-                    if (CountConfigurationPragmas(pragma) > 1)
-                    {
-                        violations.Add($"{relativePath}:{name} combines connection-configuration PRAGMAs in one string value.");
-                    }
-                }
-
-                foreach (var expression in callable.DescendantNodes().OfType<ExpressionSyntax>())
-                {
-                    if (expression is not BinaryExpressionSyntax and not InvocationExpressionSyntax)
-                    {
-                        continue;
-                    }
-
-                    var combinedValue = TryEvaluateConstantString(expression);
-                    if (combinedValue is not null && CountConfigurationPragmas(combinedValue) > 1)
-                    {
-                        violations.Add($"{relativePath}:{name} combines connection-configuration PRAGMAs in one string expression.");
-                    }
-                }
-            }
+            AnalyzeRoot(root, relativePath, candidates, violations);
         }
 
         Assert.IsGreaterThanOrEqualTo(
@@ -147,20 +88,127 @@ public sealed class SqliteConnectionConfigurationInventoryTests
                 }
             }
             """";
-        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
-        var callables = root.DescendantNodes().Where(static node =>
-            node is BaseMethodDeclarationSyntax or LocalFunctionStatementSyntax).ToArray();
+        const string additionalSource = """
+            partial class Fixture
+            {
+                void InterpolatedOnly()
+                {
+                    SqliteConnectionConfigurationGate.RunAsync(async () =>
+                    {
+                        command.CommandText = $"PRAGMA busy_timeout={timeout};";
+                    }, token);
+                }
 
-        Assert.IsTrue(callables.OfType<LocalFunctionStatementSyntax>().Any(static node => node.Identifier.ValueText == "Local"));
-        Assert.IsFalse(callables.OfType<MethodDeclarationSyntax>().Any(static node => node.Identifier.ValueText == "Fake"));
+                void DiagnosticOnly()
+                {
+                    var message = "Example: PRAGMA foreign_keys=ON;";
+                    SqliteConnectionConfigurationGate.RunAsync(() => default, token);
+                }
+            }
+            """;
+        var root = CSharpSyntaxTree.ParseText(string.Concat(source, additionalSource)).GetRoot();
+        var candidates = new List<string>();
+        var violations = new List<string>();
+        AnalyzeRoot(root, "fixture.cs", candidates, violations);
 
-        var combinedExpressions = callables
-            .SelectMany(static callable => callable.DescendantNodes().OfType<ExpressionSyntax>())
-            .Select(TryEvaluateConstantString)
-            .Where(static value => value is not null && CountConfigurationPragmas(value) > 1)
-            .ToArray();
-        Assert.HasCount(3, combinedExpressions);
+        CollectionAssert.Contains(candidates, "fixture.cs:Local");
+        CollectionAssert.Contains(candidates, "fixture.cs:InterpolatedOnly");
+        CollectionAssert.DoesNotContain(candidates, "fixture.cs:Outer");
+        CollectionAssert.DoesNotContain(candidates, "fixture.cs:Fake");
+        CollectionAssert.DoesNotContain(candidates, "fixture.cs:DiagnosticOnly");
+        Assert.HasCount(3, violations.Where(static violation =>
+            violation.Contains("combines connection-configuration PRAGMAs", StringComparison.Ordinal)));
+        Assert.HasCount(3, violations.Where(static violation =>
+            violation.Contains("without the process-wide gate", StringComparison.Ordinal)));
     }
+
+    private static void AnalyzeRoot(
+        SyntaxNode root,
+        string relativePath,
+        List<string> candidates,
+        List<string> violations)
+    {
+        foreach (var expression in FindCommandTextExpressions(root))
+        {
+            var value = TryEvaluateConstantString(expression);
+            if (value is null || !IsConnectionConfigurationPragma(value))
+            {
+                continue;
+            }
+
+            var callable = expression.Ancestors().FirstOrDefault(static node =>
+                node is BaseMethodDeclarationSyntax or LocalFunctionStatementSyntax);
+            if (callable is null)
+            {
+                violations.Add($"{relativePath} contains a connection-configuration PRAGMA outside a callable.");
+                continue;
+            }
+
+            var candidate = $"{relativePath}:{CallableName(callable)}";
+            candidates.Add(candidate);
+            if (!OwnDescendants(callable).OfType<InvocationExpressionSyntax>().Any(IsGateInvocation))
+            {
+                violations.Add($"{candidate} configures a SQLite connection without the process-wide gate.");
+            }
+            if (CountConfigurationPragmas(value) > 1)
+            {
+                violations.Add($"{candidate} combines connection-configuration PRAGMAs in one string expression.");
+            }
+        }
+    }
+
+    private static IEnumerable<ExpressionSyntax> FindCommandTextExpressions(SyntaxNode root)
+    {
+        foreach (var assignment in root.DescendantNodes().OfType<AssignmentExpressionSyntax>())
+        {
+            if (assignment.Left is MemberAccessExpressionSyntax member &&
+                member.Name.Identifier.ValueText == "CommandText")
+            {
+                yield return assignment.Right;
+            }
+        }
+
+        foreach (var invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            var invokedName = invocation.Expression switch
+            {
+                IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+                MemberAccessExpressionSyntax member => member.Name.Identifier.ValueText,
+                _ => string.Empty
+            };
+            if (!invokedName.Contains("Execute", StringComparison.Ordinal) &&
+                !invokedName.Contains("Configure", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            foreach (var argument in invocation.ArgumentList.Arguments)
+            {
+                yield return argument.Expression;
+            }
+        }
+    }
+
+    private static IEnumerable<SyntaxNode> OwnDescendants(SyntaxNode callable)
+        => callable.DescendantNodes(node =>
+            ReferenceEquals(node, callable) ||
+            node is not BaseMethodDeclarationSyntax and not LocalFunctionStatementSyntax);
+
+    private static bool IsGateInvocation(InvocationExpressionSyntax invocation)
+    {
+        var expression = invocation.Expression.ToString();
+        return expression.EndsWith("SqliteConnectionConfigurationGate.RunAsync", StringComparison.Ordinal) ||
+            expression.EndsWith("SqliteConnectionConfigurationGate.OpenAndConfigureAsync", StringComparison.Ordinal);
+    }
+
+    private static string CallableName(SyntaxNode callable)
+        => callable switch
+        {
+            MethodDeclarationSyntax method => method.Identifier.ValueText,
+            ConstructorDeclarationSyntax constructor => constructor.Identifier.ValueText,
+            LocalFunctionStatementSyntax local => local.Identifier.ValueText,
+            _ => callable.Kind().ToString()
+        };
 
     private static bool IsConnectionConfigurationPragma(string value)
         => ConfigurationPragmas.Any(pragma =>
@@ -181,6 +229,15 @@ public sealed class SqliteConnectionConfigurationInventoryTests
         if (expression is LiteralExpressionSyntax literal && literal.IsKind(SyntaxKind.StringLiteralExpression))
         {
             return literal.Token.ValueText;
+        }
+        if (expression is InterpolatedStringExpressionSyntax interpolated)
+        {
+            return string.Concat(interpolated.Contents.Select(static content => content switch
+            {
+                InterpolatedStringTextSyntax text => text.TextToken.ValueText,
+                InterpolationSyntax => "{value}",
+                _ => string.Empty
+            }));
         }
         if (expression is ParenthesizedExpressionSyntax parenthesized)
         {
