@@ -1418,27 +1418,27 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         // between opens, and the WAL and shared-memory files carry committed data just as the database does.
         EnsureDatabaseFilesArePhysical(path);
         var connection = new SqliteConnection(ResolveConnectionString());
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        using (var settings = connection.CreateCommand())
+        await Sqlite.SqliteConnectionConfigurationGate.OpenAndConfigureAsync(
+            connection,
+            async (configuredConnection, token) =>
         {
-            settings.CommandText =
-                $"PRAGMA busy_timeout = {_options.RawIngressSqliteBusyTimeoutSeconds * 1000};"
-                + " PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;";
-            await settings.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        using (var journal = connection.CreateCommand())
-        {
-            journal.CommandText = "PRAGMA journal_mode = WAL;";
+            using var command = configuredConnection.CreateCommand();
+            command.CommandText = $"PRAGMA busy_timeout = {_options.RawIngressSqliteBusyTimeoutSeconds * 1000};";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = "PRAGMA synchronous = FULL;";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = "PRAGMA foreign_keys = ON;";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = "PRAGMA journal_mode = WAL;";
             // The PRAGMA reports the mode actually in force; a silent fallback to rollback journaling
             // would lose the atomicity this contract depends on, so it is asserted rather than assumed.
-            var mode = await journal.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+            var mode = await command.ExecuteScalarAsync(token).ConfigureAwait(false) as string;
             if (!string.Equals(mode, "wal", StringComparison.OrdinalIgnoreCase))
             {
-                await connection.DisposeAsync().ConfigureAwait(false);
                 throw new InvalidDataException(
                     "Local automation SQLite storage could not enable write-ahead logging.");
             }
-        }
+        }, cancellationToken).ConfigureAwait(false);
         return connection;
     }
 

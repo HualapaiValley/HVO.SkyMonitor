@@ -1880,8 +1880,16 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
     private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
-        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-        return connection;
+        try
+        {
+            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
+            throw;
+        }
     }
 
     private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(CancellationToken cancellationToken)
@@ -1895,13 +1903,21 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             Pooling = true,
             DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        EnsureDatabaseFilesArePhysical();
-        connection.CreateFunction<string?, string>(
-            "hvo_sha256",
-            static value => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty))),
-            isDeterministic: true);
-        return connection;
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            EnsureDatabaseFilesArePhysical();
+            connection.CreateFunction<string?, string>(
+                "hvo_sha256",
+                static value => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty))),
+                isDeterministic: true);
+            return connection;
+        }
+        catch
+        {
+            await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
+            throw;
+        }
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The busy timeout is a validated integer option; no SQL value is user supplied.")]
@@ -1909,9 +1925,16 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000}; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;";
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000};";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            command.CommandText = "PRAGMA foreign_keys = ON;";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            command.CommandText = "PRAGMA synchronous = FULL;";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     internal static async ValueTask ValidateExistingRuntimeSchemaAsync(

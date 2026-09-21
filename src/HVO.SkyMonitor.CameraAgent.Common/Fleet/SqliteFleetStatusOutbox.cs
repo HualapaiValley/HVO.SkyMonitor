@@ -506,10 +506,20 @@ public sealed class SqliteFleetStatusOutbox(
             DefaultTimeout = busyTimeoutSeconds
         };
         var connection = new SqliteConnection(builder.ToString());
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout={busyTimeoutSeconds * 1000}; PRAGMA foreign_keys=ON;";
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await Sqlite.SqliteConnectionConfigurationGate.OpenAndConfigureAsync(
+            connection,
+            async (configuredConnection, token) =>
+        {
+            using var command = configuredConnection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode=WAL;";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = "PRAGMA synchronous=FULL;";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = "PRAGMA foreign_keys=ON;";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
         return connection;
     }
 

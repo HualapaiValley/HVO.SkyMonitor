@@ -3366,8 +3366,16 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
-        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-        return connection;
+        try
+        {
+            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
+            throw;
+        }
     }
 
     private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(CancellationToken cancellationToken)
@@ -3384,9 +3392,17 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             Pooling = false,
             DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        EnsureDatabaseFilesArePhysical();
-        return connection;
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            EnsureDatabaseFilesArePhysical();
+            return connection;
+        }
+        catch
+        {
+            await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
+            throw;
+        }
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated value is a validated integer host option used only for SQLite PRAGMA configuration.")]
@@ -3394,15 +3410,22 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        var journalMode = await ExecuteScalarStringAsync(
-            connection, "PRAGMA journal_mode=WAL;", cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
+        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
         {
-            throw new InvalidOperationException("Capture processing SQLite journal could not enter WAL mode.");
-        }
-        using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout={checked(_busyTimeoutSeconds * 1000)};";
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            var journalMode = await ExecuteScalarStringAsync(
+                connection, "PRAGMA journal_mode=WAL;", cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Capture processing SQLite journal could not enter WAL mode.");
+            }
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA synchronous=FULL;";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            command.CommandText = "PRAGMA foreign_keys=ON;";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            command.CommandText = $"PRAGMA busy_timeout={checked(_busyTimeoutSeconds * 1000)};";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private void EnsureDatabaseFilesArePhysical()

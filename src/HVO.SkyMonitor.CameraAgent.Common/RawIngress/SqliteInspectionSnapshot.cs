@@ -57,6 +57,10 @@ internal static class SqliteInspectionSnapshot
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Security",
+        "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "The busy timeout is a validated integer option; no SQL value is user supplied.")]
     private static async ValueTask<TResult> InspectOnceAsync<TResult>(
         string databasePath,
         int busyTimeoutSeconds,
@@ -75,19 +79,26 @@ internal static class SqliteInspectionSnapshot
             Pooling = false,
             DefaultTimeout = busyTimeoutSeconds
         }.ToString());
-        await source.OpenAsync(cancellationToken).ConfigureAwait(false);
-        ensureDatabaseFilesArePhysical();
-        var configurationResult = SQLitePCL.raw.sqlite3_db_config(
-            source.Handle,
-            SqliteDbConfigNoCheckpointOnClose,
-            1,
-            out var checkpointDisabled);
-        if (configurationResult != SQLitePCL.raw.SQLITE_OK || checkpointDisabled != 1)
-        {
-            throw new InvalidOperationException(
-                $"Raw ingress SQLite inspection could not disable checkpoint-on-close for '{databasePath}'.");
-        }
-        await ConfigureBusyTimeoutAsync(source, busyTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+        await Sqlite.SqliteConnectionConfigurationGate.OpenAndConfigureAsync(
+            source,
+            async (connection, token) =>
+            {
+                ensureDatabaseFilesArePhysical();
+                var configurationResult = SQLitePCL.raw.sqlite3_db_config(
+                    connection.Handle,
+                    SqliteDbConfigNoCheckpointOnClose,
+                    1,
+                    out var checkpointDisabled);
+                if (configurationResult != SQLitePCL.raw.SQLITE_OK || checkpointDisabled != 1)
+                {
+                    throw new InvalidOperationException(
+                        $"Raw ingress SQLite inspection could not disable checkpoint-on-close for '{databasePath}'.");
+                }
+                using var command = connection.CreateCommand();
+                command.CommandText = $"PRAGMA busy_timeout = {busyTimeoutSeconds * 1000};";
+                await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
         // Coherence does not come from holding this connection open: it comes from the read transaction that the
         // backup step below opens, which yields one committed image of the database however the write-ahead log has
         // moved in the meantime. This is why no side file is copied and why nothing here needs an explicit
@@ -107,8 +118,15 @@ internal static class SqliteInspectionSnapshot
                 Pooling = false,
                 DefaultTimeout = busyTimeoutSeconds
             }.ToString());
-            await snapshot.OpenAsync(cancellationToken).ConfigureAwait(false);
-            await ConfigureBusyTimeoutAsync(snapshot, busyTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+            await Sqlite.SqliteConnectionConfigurationGate.OpenAndConfigureAsync(
+                snapshot,
+                async (connection, token) =>
+                {
+                    using var command = connection.CreateCommand();
+                    command.CommandText = $"PRAGMA busy_timeout = {busyTimeoutSeconds * 1000};";
+                    await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                },
+                cancellationToken).ConfigureAwait(false);
             source.BackupDatabase(snapshot);
             return await inspectAsync(snapshot, cancellationToken).ConfigureAwait(false);
         }
@@ -116,20 +134,6 @@ internal static class SqliteInspectionSnapshot
         {
             DeleteSnapshotRoot(snapshotRoot);
         }
-    }
-
-    [System.Diagnostics.CodeAnalysis.SuppressMessage(
-        "Security",
-        "CA2100:Review SQL queries for security vulnerabilities",
-        Justification = "The busy timeout is a validated integer option; no SQL value is user supplied.")]
-    private static async ValueTask ConfigureBusyTimeoutAsync(
-        SqliteConnection connection,
-        int busyTimeoutSeconds,
-        CancellationToken cancellationToken)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA busy_timeout = {busyTimeoutSeconds * 1000};";
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static void DeleteSnapshotRoot(DirectoryInfo? snapshotRoot)

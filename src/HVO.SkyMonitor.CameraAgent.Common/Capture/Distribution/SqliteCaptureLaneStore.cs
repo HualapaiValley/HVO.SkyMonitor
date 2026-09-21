@@ -1267,16 +1267,22 @@ LIMIT 1;
             Pooling = true,
             DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        connection.CreateFunction<string?, string>(
+        await Sqlite.SqliteConnectionConfigurationGate.OpenAndConfigureAsync(
+            connection,
+            async (configuredConnection, token) =>
+        {
+            configuredConnection.CreateFunction<string?, string>(
             "hvo_sha256",
             static value => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty))),
             isDeterministic: true);
-        using (var command = connection.CreateCommand())
-        {
-            command.CommandText = $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000}; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;";
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
+            using var command = configuredConnection.CreateCommand();
+            command.CommandText = $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000};";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = "PRAGMA foreign_keys = ON;";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = "PRAGMA synchronous = FULL;";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
         return connection;
     }
 

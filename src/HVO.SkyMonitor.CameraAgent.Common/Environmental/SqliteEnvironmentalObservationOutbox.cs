@@ -39,7 +39,6 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _initializationGates = new(PathComparer);
     private readonly HashSet<string> _initializedRoots = new(PathComparer);
     private readonly object _initializedLock = new();
-    private readonly SemaphoreSlim _connectionConfigurationGate = new(1, 1);
 
     public ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalAsync(
         string root,
@@ -1774,13 +1773,16 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             {
                 await ValidateSchemaAsync(connection, null, cancellationToken).ConfigureAwait(false);
             }
-            var journalMode = await ExecuteScalarStringAsync(
-                connection, "PRAGMA journal_mode=WAL;", null, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
+            await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
             {
-                throw new InvalidOperationException("Environmental observation SQLite journal could not enter WAL mode.");
-            }
-            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+                var journalMode = await ExecuteScalarStringAsync(
+                    connection, "PRAGMA journal_mode=WAL;", null, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("Environmental observation SQLite journal could not enter WAL mode.");
+                }
+                await ConfigureConnectionCoreAsync(connection, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
             lock (_initializedLock)
             {
                 _initializedRoots.Add(root);
@@ -2712,7 +2714,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         }
         catch
         {
-            await TryDisposeAfterConfigurationFailureAsync(connection).ConfigureAwait(false);
+            await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
             throw;
         }
     }
@@ -2732,27 +2734,36 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             DefaultTimeout = busyTimeoutSeconds
         };
         var connection = new SqliteConnection(builder.ToString());
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        EnsureDatabaseFilesArePhysical(root);
-        return connection;
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            EnsureDatabaseFilesArePhysical(root);
+            return connection;
+        }
+        catch
+        {
+            await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
+            throw;
+        }
     }
 
     private async ValueTask ConfigureConnectionAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        await _connectionConfigurationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await ExecuteNonQueryAsync(
-                connection, $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
-            await ExecuteNonQueryAsync(connection, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
-            await ExecuteNonQueryAsync(connection, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            _connectionConfigurationGate.Release();
-        }
+        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(
+            () => ConfigureConnectionCoreAsync(connection, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask ConfigureConnectionCoreAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await ExecuteNonQueryAsync(
+            connection, $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
+        await ExecuteNonQueryAsync(connection, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
+        await ExecuteNonQueryAsync(connection, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
     }
 
     private static async ValueTask ExecuteNonQueryAsync(
@@ -2763,19 +2774,6 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         using var command = connection.CreateCommand();
         command.CommandText = commandText;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "Connection cleanup must not replace the configuration failure being propagated to diagnostics.")]
-    private static async ValueTask TryDisposeAfterConfigurationFailureAsync(SqliteConnection connection)
-    {
-        try
-        {
-            await connection.DisposeAsync().ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-        }
     }
 
     private async ValueTask<EnvironmentalSchemaInspection> InspectExistingDatabaseAsync(
@@ -3099,7 +3097,6 @@ public sealed class SqliteEnvironmentalObservationOutbox(
 
     public void Dispose()
     {
-        _connectionConfigurationGate.Dispose();
         foreach (var gate in _initializationGates.Values)
         {
             gate.Dispose();
