@@ -33,4 +33,14 @@ public sealed class PlaywrightNavigationTests
 
         Assert.IsFalse(PlaywrightNavigation.IsSameDestinationInterruption(message, Operations));
     }
+
+    [TestMethod]
+    [DataRow("Navigation to \"http://127.0.0.1:80/operations\" is interrupted by another navigation to \"http://127.0.0.1:52110/operations\"")]
+    [DataRow("prefix Navigation to \"http://127.0.0.1:52110/operations\" is interrupted by another navigation to \"http://127.0.0.1:52110/operations\"")]
+    [DataRow("Navigation to \"http://127.0.0.1:52110/operations\" is interrupted by another navigation to \"http://127.0.0.1:52110/operations\" suffix")]
+    [DataRow("Navigation to \"http://127.0.0.1:52110/operations\" is interrupted by another navigation to \"http://127.0.0.1:52110/operations\"\nCall log:")]
+    public void CanonicalOrWrappedVariantsAreRejected(string message)
+    {
+        Assert.IsFalse(PlaywrightNavigation.IsSameDestinationInterruption(message, Operations));
+    }
 }

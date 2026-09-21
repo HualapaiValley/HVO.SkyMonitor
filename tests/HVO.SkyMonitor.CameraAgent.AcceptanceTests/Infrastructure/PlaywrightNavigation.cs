@@ -32,13 +32,12 @@ internal static partial class PlaywrightNavigation
 
         var match = InterruptedNavigation().Match(message);
         return match.Success &&
-            Uri.TryCreate(match.Groups["requested"].Value, UriKind.Absolute, out var requested) &&
-            Uri.TryCreate(match.Groups["replacement"].Value, UriKind.Absolute, out var replacement) &&
-            requested == expected && replacement == expected;
+            string.Equals(match.Groups["requested"].Value, expected.AbsoluteUri, StringComparison.Ordinal) &&
+            string.Equals(match.Groups["replacement"].Value, expected.AbsoluteUri, StringComparison.Ordinal);
     }
 
     [GeneratedRegex(
-        "Navigation to \\\"(?<requested>[^\\\"]+)\\\" is interrupted by another navigation to \\\"(?<replacement>[^\\\"]+)\\\"",
+        "\\ANavigation to \\\"(?<requested>[^\\\"\\r\\n]+)\\\" is interrupted by another navigation to \\\"(?<replacement>[^\\\"\\r\\n]+)\\\"\\z",
         RegexOptions.CultureInvariant)]
     private static partial Regex InterruptedNavigation();
 }
