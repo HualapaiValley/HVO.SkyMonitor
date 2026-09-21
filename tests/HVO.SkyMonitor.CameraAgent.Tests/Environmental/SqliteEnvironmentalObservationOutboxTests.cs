@@ -833,6 +833,8 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         Assert.AreEqual("wal", (string)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "PRAGMA synchronous;";
         Assert.AreEqual(2L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
+        command.CommandText = "PRAGMA foreign_keys;";
+        Assert.AreEqual(1L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'environmental_observation_outbox';";
         StringAssert.Contains((string)(await command.ExecuteScalarAsync().ConfigureAwait(false))!, "STRICT", StringComparison.Ordinal);
         command.CommandText = "SELECT group_concat(name, ',') FROM pragma_table_info('environmental_observation_outbox');";
