@@ -1781,7 +1781,10 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 {
                     throw new InvalidOperationException("Environmental observation SQLite journal could not enter WAL mode.");
                 }
-                await ConfigureConnectionCoreAsync(connection, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(
+                    connection, $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
             }, cancellationToken).ConfigureAwait(false);
             lock (_initializedLock)
             {
@@ -2751,19 +2754,13 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(
-            () => ConfigureConnectionCoreAsync(connection, cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-    }
-
-    private async ValueTask ConfigureConnectionCoreAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken)
-    {
-        await ExecuteNonQueryAsync(
-            connection, $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
-        await ExecuteNonQueryAsync(connection, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
-        await ExecuteNonQueryAsync(connection, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
+        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
+        {
+            await ExecuteNonQueryAsync(
+                connection, $"PRAGMA busy_timeout={busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private static async ValueTask ExecuteNonQueryAsync(

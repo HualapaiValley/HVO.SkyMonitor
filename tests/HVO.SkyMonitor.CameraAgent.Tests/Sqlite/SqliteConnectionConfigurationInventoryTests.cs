@@ -8,98 +8,77 @@ public sealed partial class SqliteConnectionConfigurationInventoryTests
 {
     private const string SolutionFileName = "HVO.SkyMonitor.v9.slnx";
 
-    private static readonly (string Path, string Surface, string GateApi)[] ConfigurationSurfaces =
-    [
-        ("Automation/SqliteLocalAutomationStore.cs", "OpenAsync", "OpenAndConfigureAsync"),
-        ("Capture/Calibration/SqliteCalibrationLibraryStore.cs", "OpenAsync", "OpenAndConfigureAsync"),
-        ("Capture/CaptureAdmissionCoordinator.cs", "OpenAsync", "OpenAndConfigureAsync"),
-        ("Capture/Distribution/SqliteCaptureLaneStore.cs", "OpenAsync", "OpenAndConfigureAsync"),
-        ("Capture/Processing/SqliteCaptureProcessingStore.cs", "ConfigureConnectionAsync", "RunAsync"),
-        ("Environmental/SqliteEnvironmentalObservationOutbox.cs", "ConfigureConnectionAsync", "RunAsync"),
-        ("Evidence/SqliteExecutionEvidenceOutbox.cs", "OpenAsync", "OpenAndConfigureAsync"),
-        ("Fleet/SqliteFleetStatusOutbox.cs", "OpenAsync", "OpenAndConfigureAsync"),
-        ("Gallery/CameraAgentArtifactService.cs", "OpenReadOnlyAsync", "OpenAndConfigureAsync"),
-        ("Gallery/SqliteCameraAgentGallery.cs", "OpenReadOnlyAsync", "OpenAndConfigureAsync"),
-        ("RawIngress/SqliteInspectionSnapshot.cs", "InspectOnceAsync", "OpenAndConfigureAsync"),
-        ("RawIngress/SqliteRawCaptureJournal.cs", "ConfigureConnectionAsync", "RunAsync"),
-        ("Scheduling/SqliteCaptureScheduleStore.cs", "OpenAsync", "OpenAndConfigureAsync"),
-        ("Transients/SqliteCameraAgentTransientOperatorProjection.cs", "OpenReadOnlyAsync", "OpenAndConfigureAsync"),
-        ("Transients/SqliteTransientCandidateJournal.cs", "OpenAsync", "OpenAndConfigureAsync"),
-        ("Transients/SqliteTransientRuntimeStore.cs", "ConfigureConnectionAsync", "RunAsync"),
-        ("Upload/SqliteArtifactOutbox.cs", "OpenAsync", "OpenAndConfigureAsync"),
-    ];
-
     [TestMethod]
-    public void KnownConfigurationSurfacesUseProcessWideGateAndSeparatePragmaCommands()
+    public void EveryConnectionConfigurationPragmaUsesTheProcessWideGateAndOneStatementPerCommand()
     {
         var sourceRoot = Path.Combine(
             FindRepositoryRoot(),
             "src",
             "HVO.SkyMonitor.CameraAgent.Common");
+        var candidates = new List<(string Path, string Method)>();
         var violations = new List<string>();
 
-        foreach (var surface in ConfigurationSurfaces)
+        foreach (var sourcePath in Directory.EnumerateFiles(sourceRoot, "*.cs", SearchOption.AllDirectories))
         {
-            var sourcePath = Path.Combine(sourceRoot, surface.Path.Replace('/', Path.DirectorySeparatorChar));
-            if (!File.Exists(sourcePath))
-            {
-                violations.Add($"Missing inventory file: {surface.Path}");
-                continue;
-            }
-
             var source = File.ReadAllText(sourcePath);
-            var methodBody = FindMethodBody(source, surface.Surface);
-            if (methodBody is null)
+            foreach (var method in FindMethodBodies(source))
             {
-                violations.Add($"{surface.Path} no longer contains the inventoried {surface.Surface} surface.");
-                continue;
-            }
-            if (!methodBody.Contains(
-                $"SqliteConnectionConfigurationGate.{surface.GateApi}",
-                StringComparison.Ordinal))
-            {
-                violations.Add($"{surface.Path}:{surface.Surface} must use {surface.GateApi}.");
-            }
-            if (CombinedConfigurationPragmas().IsMatch(methodBody))
-            {
-                violations.Add($"{surface.Path} combines configuration PRAGMAs in one command string.");
+                if (!ConnectionConfigurationPragma().IsMatch(method.Body))
+                {
+                    continue;
+                }
+
+                var relativePath = Path.GetRelativePath(sourceRoot, sourcePath)
+                    .Replace(Path.DirectorySeparatorChar, '/');
+                candidates.Add((relativePath, method.Name));
+
+                if (!method.Body.Contains("SqliteConnectionConfigurationGate.RunAsync", StringComparison.Ordinal) &&
+                    !method.Body.Contains("SqliteConnectionConfigurationGate.OpenAndConfigureAsync", StringComparison.Ordinal))
+                {
+                    violations.Add($"{relativePath}:{method.Name} configures a SQLite connection without the process-wide gate.");
+                }
+
+                var normalized = CSharpStringSyntax().Replace(method.Body, string.Empty);
+                if (CombinedConfigurationPragmas().IsMatch(normalized))
+                {
+                    violations.Add($"{relativePath}:{method.Name} combines connection-configuration PRAGMAs in one command string.");
+                }
             }
         }
 
+        Assert.IsGreaterThanOrEqualTo(
+            17,
+            candidates.Count,
+            "The discovered SQLite connection-configuration surface unexpectedly shrank; inspect renamed or removed stores.");
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
 
-    private static string? FindMethodBody(string source, string methodName)
+    private static List<(string Name, string Body)> FindMethodBodies(string source)
     {
-        var declaration = Regex.Match(
-            source,
-            $@"\b(?:private|internal|public)\b[^;{{}}]*\b{Regex.Escape(methodName)}(?:<[^>]+>)?\s*\(",
-            RegexOptions.CultureInvariant);
-        if (!declaration.Success)
+        var methods = new List<(string Name, string Body)>();
+        foreach (Match declaration in MethodDeclaration().Matches(source))
         {
-            return null;
-        }
-
-        var bodyStart = source.IndexOf('{', declaration.Index + declaration.Length);
-        if (bodyStart < 0)
-        {
-            return null;
-        }
-
-        var depth = 0;
-        for (var index = bodyStart; index < source.Length; index++)
-        {
-            if (source[index] == '{')
+            var bodyStart = source.IndexOf('{', declaration.Index + declaration.Length);
+            if (bodyStart < 0)
             {
-                depth++;
+                continue;
             }
-            else if (source[index] == '}' && --depth == 0)
+
+            var depth = 0;
+            for (var index = bodyStart; index < source.Length; index++)
             {
-                return source[bodyStart..(index + 1)];
+                if (source[index] == '{')
+                {
+                    depth++;
+                }
+                else if (source[index] == '}' && --depth == 0)
+                {
+                    methods.Add((declaration.Groups["name"].Value, source[bodyStart..(index + 1)]));
+                    break;
+                }
             }
         }
-
-        return null;
+        return methods;
     }
 
     private static string FindRepositoryRoot()
@@ -116,6 +95,24 @@ public sealed partial class SqliteConnectionConfigurationInventoryTests
             $"No ancestor of {AppContext.BaseDirectory} contains {SolutionFileName}.");
     }
 
-    [GeneratedRegex("(?:\\$?\"[^\"\\r\\n]*PRAGMA[^\"\\r\\n]*;\\s*PRAGMA)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(
+        @"\b(?:private|internal|public)\b[^;{}]*?\b(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>{}]+>)?\s*\([^;{}]*\)\s*(?:where\s+[^{}]+)?",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex MethodDeclaration();
+
+    [GeneratedRegex(
+        @"PRAGMA\s+(?:busy_timeout\s*=|foreign_keys\s*=\s*ON|synchronous\s*=\s*FULL|journal_mode\s*=\s*WAL|query_only\s*=\s*ON|wal_autocheckpoint\s*=)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ConnectionConfigurationPragma();
+
+    // Remove only C# string-expression syntax and whitespace. Separate command assignments retain
+    // their intervening C# statements, while concatenated and raw literals collapse to
+    // PRAGMA...;PRAGMA... and are rejected by CombinedConfigurationPragmas.
+    [GeneratedRegex("[\\s\\\"@$+]", RegexOptions.CultureInvariant)]
+    private static partial Regex CSharpStringSyntax();
+
+    [GeneratedRegex(
+        @"PRAGMA[^;]*;PRAGMA(?:busy_timeout|foreign_keys|synchronous|journal_mode|query_only|wal_autocheckpoint)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex CombinedConfigurationPragmas();
 }
