@@ -909,6 +909,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             existingReplays,
             $"The durable root '{stateKey}' already holds {existingReplays.Count} replay executions before the first #719 invocation.");
 
+        await EnsureReplayCalibrationAsync(session).ConfigureAwait(false);
         await ActivateCanonicalCaptureProfileAsync(session).ConfigureAwait(false);
         var registry = await session
             .GetFromJsonAsync<ProcessingGraphRegistryState>("/api/v1/operations/processing-graphs/")
@@ -958,6 +959,65 @@ public sealed class StandaloneW6DockerAcceptanceTests
             replay = DescribeExecution(detail),
             note = "The three-way identity is asserted by the LocalRunner invocation, which is the only one that can read all three output sets."
         };
+    }
+
+    private static async Task EnsureReplayCalibrationAsync(HttpClient client)
+    {
+        var status = await client.GetFromJsonAsync<JsonObject>(
+            "/api/v1/operations/calibration/status").ConfigureAwait(false);
+        Assert.IsNotNull(status);
+        if (status["activeBundle"] is not null)
+        {
+            return;
+        }
+
+        var token = await GetAntiforgeryTokenAsync(client).ConfigureAwait(false);
+        using var acquireRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/calibration/acquisitions", UriKind.Relative));
+        acquireRequest.Headers.Add("RequestVerificationToken", token);
+        acquireRequest.Headers.Add("Idempotency-Key", $"issue-947-replay-calibration-{Guid.NewGuid():N}");
+        acquireRequest.Content = JsonContent.Create(new
+        {
+            expectedVersion = status["version"]!.GetValue<long>(),
+            gain = 82,
+            offset = 1,
+            temperatureC = -10,
+            biasExposure = TimeSpan.FromMilliseconds(1),
+            darkExposure = TimeSpan.FromSeconds(2),
+            flatExposure = TimeSpan.FromMilliseconds(100),
+            defectExposure = TimeSpan.FromMilliseconds(3),
+            applicableLightExposure = TimeSpan.FromMilliseconds(32),
+            effectiveFromUtc = DateTimeOffset.UtcNow.AddDays(-1),
+            effectiveUntilUtc = DateTimeOffset.UtcNow.AddYears(1),
+            sourceModel = new VirtualCalibrationSourceModelV1 { Seed = 947 },
+            reason = "issue-947 canonical replay calibration"
+        });
+        using var acquireResponse = await client.SendAsync(acquireRequest).ConfigureAwait(false);
+        acquireResponse.EnsureSuccessStatusCode();
+        var acquisition = JsonNode.Parse(
+            await acquireResponse.Content.ReadAsStringAsync().ConfigureAwait(false))!.AsObject();
+        var bundleId = acquisition["bundleId"]!.GetValue<string>();
+        Assert.IsFalse(string.IsNullOrWhiteSpace(bundleId));
+
+        status = await client.GetFromJsonAsync<JsonObject>(
+            "/api/v1/operations/calibration/status").ConfigureAwait(false);
+        Assert.IsNotNull(status);
+        using var activateRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri($"/api/v1/operations/calibration/bundles/{bundleId}/activate", UriKind.Relative));
+        activateRequest.Headers.Add("RequestVerificationToken", token);
+        activateRequest.Headers.Add("Idempotency-Key", $"issue-947-replay-activate-{Guid.NewGuid():N}");
+        activateRequest.Content = JsonContent.Create(new
+        {
+            expectedVersion = status["version"]!.GetValue<long>(),
+            reason = "issue-947 canonical replay calibration"
+        });
+        using var activateResponse = await client.SendAsync(activateRequest).ConfigureAwait(false);
+        activateResponse.EnsureSuccessStatusCode();
+        var activated = JsonNode.Parse(
+            await activateResponse.Content.ReadAsStringAsync().ConfigureAwait(false))!.AsObject();
+        Assert.AreEqual(bundleId, activated["activeBundle"]?["bundleId"]?.GetValue<string>());
     }
 
     /// <summary>
