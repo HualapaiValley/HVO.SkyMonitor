@@ -453,6 +453,20 @@ run_profile_trial() {
     # Whether this invocation hands its durable root to a later one. The last invocation over a
     # shared root is the one that deletes it.
     local retain_state="${14:-false}"
+    local trial_kind="${15:-}"
+    if [[ -z "$trial_kind" ]]; then
+        if [[ "$state_key" != "$trial" ]]; then
+            trial_kind='replay'
+        elif [[ "$calibration_required" == true ]]; then
+            trial_kind='w6'
+        else
+            trial_kind='mono8'
+        fi
+    fi
+    case "$trial_kind" in
+        w6|mono8|replay) ;;
+        *) printf 'Unknown trial kind %s for %s.\n' "$trial_kind" "$trial" >&2; return 1 ;;
+    esac
     assert_worktree_unchanged
     local trial_result="$RESULTS/$trial"
     local trial_local="$BIND_LOCAL_ROOT/$state_key"
@@ -465,6 +479,15 @@ run_profile_trial() {
         reuse_state=true
     fi
     mkdir -p "$trial_result/evidence" "$trial_local"/{config,runtime/home,dataprotection,secrets,telemetry,catalog}
+    if [[ "$reuse_state" == true ]]; then
+        # Durable replay state lives under runtime, calibration, and the databases. Telemetry is
+        # invocation evidence, not durable state, so LocalRunner must not inherit InProcess signals.
+        rm -rf -- "$trial_local/telemetry"
+        mkdir -p "$trial_local/telemetry"
+    fi
+    # The acceptance handler appends its startup ready record and attempts. Each invocation gets a
+    # fresh log while retaining every other file in the durable runtime root.
+    rm -f -- "$trial_local/runtime/central-http-attempts.log"
     jq '
       .schedule.blackouts = [{
         "id": "w6-bootstrap-closed",
@@ -616,9 +639,76 @@ EOF
         chmod 600 -- "$HVO_PHASE14_TRX_ROOT/$trial/result.trx"
     fi
 
-    local profile_evidence_file='issue-211-w6.json'
-    if [[ "$calibration_required" != true ]]; then
-        profile_evidence_file='issue-211-mono8.json'
+    local profile_evidence_file
+    case "$trial_kind" in
+        w6) profile_evidence_file='issue-211-w6.json' ;;
+        mono8) profile_evidence_file='issue-211-mono8.json' ;;
+        replay) profile_evidence_file="issue-719-replay-${replay_profile}.json" ;;
+    esac
+    if [[ "$trial_kind" == replay ]]; then
+        jq --exit-status -f "$SCRIPT_DIR/issue-719-replay-evidence.jq" \
+            --arg replayProfile "$replay_profile" \
+            --arg stateKey "$state_key" \
+            --argjson stateReused "$reuse_state" \
+            --argjson measuredCaptureCount "$measured_capture_count" \
+            "$trial_result/evidence/$profile_evidence_file" >/dev/null \
+            || gate_failed 'replay profile evidence' "$trial_result/evidence/$profile_evidence_file"
+        local camera_state replay_runner_state='null' replay_stats
+        camera_state="$(docker inspect "hvo211-$suffix-camera" --format '{{json .State}}')"
+        if [[ "$replay_profile" == LocalRunner ]]; then
+            replay_runner_state="$(docker inspect "hvo211-$suffix-replay" --format '{{json .State}}')"
+        fi
+        jq -n \
+            --arg trial "$trial" \
+            --arg replayProfile "$replay_profile" \
+            --argjson cameraState "$camera_state" \
+            --argjson replayRunnerState "$replay_runner_state" '
+          {
+            schemaVersion: "issue-719-replay-runtime-status-v1",
+            trial: $trial,
+            replayProfile: $replayProfile,
+            cameraAgent: {
+              running: $cameraState.Running,
+              status: $cameraState.Status,
+              healthStatus: ($cameraState.Health.Status // "not-configured")
+            },
+            replayRunner: (if $replayProfile == "LocalRunner" then {
+              running: $replayRunnerState.Running,
+              status: $replayRunnerState.Status,
+              healthStatus: ($replayRunnerState.Health.Status // null)
+            } else null end),
+            passed: ($cameraState.Running == true and $cameraState.Status == "running" and
+              ($cameraState.Health == null or $cameraState.Health.Status == "healthy") and
+              ($replayProfile != "LocalRunner" or
+                ($replayRunnerState.Running == true and $replayRunnerState.Status == "running" and
+                 $replayRunnerState.Health.Status == "healthy")))
+          }
+        ' > "$trial_result/evidence/health.json"
+        assert_gate "$trial_result/evidence/health.json" 'replay runtime health' '.passed == true'
+        local replay_process_containers=("hvo211-$suffix-camera")
+        if [[ "$replay_profile" == LocalRunner ]]; then
+            replay_process_containers+=("hvo211-$suffix-replay")
+        fi
+        replay_stats="$(docker stats --no-stream --format '{{json .}}' "${replay_process_containers[@]}")"
+        [[ -n "$replay_stats" ]] || { printf 'Replay process snapshot is empty for %s.\n' "$trial" >&2; return 1; }
+        printf '%s\n' 'schemaVersion,trial,replayProfile,containerId,name,cpuPercent,memoryUsage,memoryPercent,netIO,blockIO,pids' \
+            > "$trial_result/evidence/process.csv"
+        jq -r --arg trial "$trial" --arg replayProfile "$replay_profile" '
+          ["issue-719-replay-process-snapshot-v1", $trial, $replayProfile, .Container, .Name,
+           .CPUPerc, .MemUsage, .MemPerc, .NetIO, .BlockIO, .PIDs] | @csv
+        ' <<< "$replay_stats" >> "$trial_result/evidence/process.csv"
+        local expected_process_lines=2
+        if [[ "$replay_profile" == LocalRunner ]]; then
+            expected_process_lines=3
+        fi
+        [[ "$(wc -l < "$trial_result/evidence/process.csv")" -eq "$expected_process_lines" ]] \
+            || { printf 'Replay process snapshot is malformed for %s.\n' "$trial" >&2; return 1; }
+        cut -d, -f5 "$trial_result/evidence/process.csv" | tr -d '"' | tail -n +2 | sort \
+            > "$trial_result/evidence/.process-names"
+        printf '%s\n' "${replay_process_containers[@]}" | sort > "$trial_result/evidence/.expected-process-names"
+        cmp --silent "$trial_result/evidence/.expected-process-names" "$trial_result/evidence/.process-names" \
+            || { printf 'Replay process snapshot omitted a required container for %s.\n' "$trial" >&2; return 1; }
+        rm -f "$trial_result/evidence/.process-names" "$trial_result/evidence/.expected-process-names"
     fi
     docker stop --timeout 30 "hvo211-$suffix-camera" >/dev/null
     cp "$trial_local/runtime/central-http-attempts.log" \
@@ -676,31 +766,29 @@ EOF
         printf 'The final central-handler log has no ready record for %s.\n' "$trial" >&2
         return 1
     fi
-    local in_test_central_attempts
-    in_test_central_attempts="$(jq -er '.centralTrafficAttempts | select(type == "number")' \
-        "$trial_result/evidence/$profile_evidence_file")"
-    local in_test_central_handler_attempts
-    in_test_central_handler_attempts="$(jq -er '.centralHandlerAttempts | select(type == "number")' \
-        "$trial_result/evidence/$profile_evidence_file")"
-    jq -n \
+    local in_test_central_attempts='null'
+    local in_test_central_handler_attempts='null'
+    local in_test_counters_applicable=false
+    local in_test_counters_reason='Replay evidence schema does not record in-test central traffic counters.'
+    if [[ "$trial_kind" != replay ]]; then
+        in_test_central_attempts="$(jq -er '.centralTrafficAttempts | select(type == "number")' \
+            "$trial_result/evidence/$profile_evidence_file")"
+        in_test_central_handler_attempts="$(jq -er '.centralHandlerAttempts | select(type == "number")' \
+            "$trial_result/evidence/$profile_evidence_file")"
+        in_test_counters_applicable=true
+        in_test_counters_reason='Recorded by the profile evidence schema.'
+    fi
+    jq -n -f "$SCRIPT_DIR/issue-211-central-traffic-gate.jq" \
         --arg trial "$trial" \
+        --arg trialKind "$trial_kind" \
+        --arg inTestCountersReason "$in_test_counters_reason" \
+        --argjson inTestCountersApplicable "$in_test_counters_applicable" \
         --argjson inTestCentralTrafficAttempts "$in_test_central_attempts" \
         --argjson inTestCentralHandlerAttempts "$in_test_central_handler_attempts" \
         --argjson finalCentralHandlerAttempts "$final_central_handler_attempts" \
         --argjson finalCentralHandlerReadyRecords "$final_handler_ready_count" \
-        --argjson finalDenyHits "$final_deny_hits" '
-      {
-        schemaVersion: "issue-211-central-traffic-gate-v1",
-        trial: $trial,
-        inTestCentralTrafficAttempts: $inTestCentralTrafficAttempts,
-        inTestCentralHandlerAttempts: $inTestCentralHandlerAttempts,
-        finalCentralHandlerAttempts: $finalCentralHandlerAttempts,
-        finalCentralHandlerReadyRecords: $finalCentralHandlerReadyRecords,
-        finalDenyHits: $finalDenyHits,
-        passed: ($inTestCentralTrafficAttempts == 0 and $inTestCentralHandlerAttempts == 0 and
-          $finalCentralHandlerAttempts == 0 and $finalCentralHandlerReadyRecords >= 1 and $finalDenyHits == 0)
-      }
-    ' > "$trial_result/evidence/central-traffic-gate.json"
+        --argjson finalDenyHits "$final_deny_hits" \
+        > "$trial_result/evidence/central-traffic-gate.json"
     docker stop --timeout 10 "hvo211-$suffix-collector" "hvo211-$suffix-central-deny" >/dev/null
     assert_gate "$trial_result/evidence/central-traffic-gate.json" 'central traffic' '.passed == true'
     cp -a "$trial_local/telemetry" "$trial_result/evidence/runtime"
@@ -769,9 +857,11 @@ EOF
     cp "$trial_result/evidence/health.json" "$trial_result/evidence/runtime/health.json"
     cp "$trial_result/evidence/process.csv" "$trial_result/evidence/runtime/process.csv"
     jq -n \
-        --argjson strict "$calibration_required" \
+        --argjson strict "$([[ "$trial_kind" == w6 ]] && printf true || printf false)" \
         --argjson phase14 "$collect_phase14" \
         --arg trial "$trial" \
+        --arg trialKind "$trial_kind" \
+        --arg replayProfile "$replay_profile" \
         --slurpfile traces "$trial_result/evidence/runtime/traces.jsonl" \
         --slurpfile metrics "$trial_result/evidence/runtime/metrics.json" \
         --slurpfile logs "$raw_logs" '
@@ -885,7 +975,7 @@ EOF
         "lane", "mode", "observation_kind", "operation", "outcome", "phase", "reason", "recipe", "regime",
         "required", "result", "role", "root", "schema", "segment", "source", "stage", "state", "step",
         "target", "trigger", "variant"];
-      (if $strict then
+       (if $trialKind == "w6" then
         ["capture-cycle", "capture-control", "capture-ingress-handoff",
          "raw-ingress.initialize", "raw-ingress.reconcile", "raw-ingress.accept", "payload.publish",
          "sidecar.publish", "sqlite.commit", "capture-lanes.initialize", "capture-lanes.claim",
@@ -896,9 +986,13 @@ EOF
          "environment.local.commit", "environment.associate", "environment.history.query",
          "transient.causal", "transient.centered", "transient.operator.query"] +
          (if $trial == "trial-1" then ["processing-graph.recover"] else [] end)
-        else ["capture-cycle", "capture-ingress-handoff", "raw-ingress.accept", "capture-lanes.process",
-          "processing-graph.execute"] end) as $required_spans |
-      (if $strict then
+         elif $trialKind == "replay" then
+           ["capture-cycle", "capture-ingress-handoff", "raw-ingress.accept", "capture-lanes.process",
+            "processing-graph.execute"] +
+           (if $replayProfile == "InProcess" then ["calibration.acquire", "calibration.activate"] else [] end)
+         else ["capture-cycle", "capture-ingress-handoff", "raw-ingress.accept", "capture-lanes.process",
+           "processing-graph.execute"] end) as $required_spans |
+       (if $trialKind == "w6" then
         ["camera_agent.capture.count", "camera_agent.capture.interval_ms",
          "camera_agent.capture_control.cycles", "camera_agent.capture_control.cycle.duration",
          "camera_agent.ingress.committed",
@@ -916,18 +1010,40 @@ EOF
          "camera_agent.processing.comparison.duration", "camera_agent.processing.comparison.output.bytes",
          "hvo.transient.operator.queries", "hvo.transient.operator.query.duration",
          "hvo.transient.operator.response.bytes"]
-        else ["camera_agent.capture.count", "camera_agent.ingress.committed",
-          "camera_agent.processing.graphs"] end) as $required_metrics |
-      (if $strict then
+         elif $trialKind == "replay" then
+           ["camera_agent.capture.count", "camera_agent.ingress.committed",
+            "camera_agent.processing.graphs", "camera_agent.processing.graph.duration",
+            "camera_agent.processing.output.bytes"] +
+           (if $replayProfile == "InProcess" then
+             ["camera_agent.calibration.acquisitions", "camera_agent.calibration.acquisition.duration"]
+            else [] end)
+         else ["camera_agent.capture.count", "camera_agent.ingress.committed",
+           "camera_agent.processing.graphs"] end) as $required_metrics |
+       (if $trialKind == "w6" then
         ["HVO.SkyMonitor.CameraAgent.Capture", "HVO.SkyMonitor.CameraAgent.CaptureControl",
          "HVO.SkyMonitor.CameraAgent.RawIngress", "HVO.SkyMonitor.CameraAgent.CaptureLanes",
          "HVO.SkyMonitor.CameraAgent.ProcessingGraph", "HVO.SkyMonitor.CameraAgent.Calibration",
          "HVO.SkyMonitor.CameraAgent.EnvironmentalAcquisition", "HVO.SkyMonitor.CameraAgent.Transients",
          "HVO.SkyMonitor.CameraAgent.Outbox", "HVO.SkyMonitor.CameraAgent.Operator"]
-       else ["HVO.SkyMonitor.CameraAgent.Capture", "HVO.SkyMonitor.CameraAgent.CaptureControl",
+        elif $trialKind == "replay" then
+          ["HVO.SkyMonitor.CameraAgent.Capture", "HVO.SkyMonitor.CameraAgent.CaptureControl",
+           "HVO.SkyMonitor.CameraAgent.RawIngress", "HVO.SkyMonitor.CameraAgent.CaptureLanes",
+           "HVO.SkyMonitor.CameraAgent.ProcessingGraph"] +
+          (if $replayProfile == "InProcess" then ["HVO.SkyMonitor.CameraAgent.Calibration"] else [] end)
+        else ["HVO.SkyMonitor.CameraAgent.Capture", "HVO.SkyMonitor.CameraAgent.CaptureControl",
          "HVO.SkyMonitor.CameraAgent.RawIngress", "HVO.SkyMonitor.CameraAgent.CaptureLanes",
          "HVO.SkyMonitor.CameraAgent.ProcessingGraph"] end) as $required_scopes |
-      (if $strict then required_units else {
+       (if $trialKind == "w6" then required_units
+        elif $trialKind == "replay" then ({
+         "camera_agent.capture.interval_ms": "ms",
+         "camera_agent.ingress.committed.bytes": "By",
+         "camera_agent.ingress.commit.duration": "s",
+         "camera_agent.lanes.processing.duration": "s",
+         "camera_agent.processing.graph.duration": "s",
+         "camera_agent.processing.output.bytes": "By"
+        } + (if $replayProfile == "InProcess" then {
+         "camera_agent.calibration.acquisition.duration": "ms"
+        } else {} end)) else {
         "camera_agent.capture.interval_ms": "ms",
         "camera_agent.ingress.committed.bytes": "By",
         "camera_agent.ingress.commit.duration": "s",
@@ -939,7 +1055,7 @@ EOF
        (telemetry_dimensions) as $telemetry_dimensions | (log_records) as $log_records |
        ([$log_records[] | log_event_id | select(. != null)] | unique) as $event_ids |
        (warning_limits) as $warning_limits |
-       (if $strict then [
+        (if $trialKind == "w6" then [
           {name: "configuration", present: any($event_ids[]; . == 2002 or . == 2003)},
           {name: "camera-module", present: any($event_ids[]; . == 2009 or . == 2011)},
           {name: "raw-ingress", present: any($event_ids[]; . >= 2040 and . <= 2049)},
@@ -959,7 +1075,17 @@ EOF
           {name: "calibration", present: any($event_ids[]; . >= 2610 and . <= 2617)},
           {name: "catalog", present: any($event_ids[]; . == 3000)},
           {name: "deployment-location", present: any($event_ids[]; . == 7301)}
-        ] else [
+        ] elif $trialKind == "replay" then ([
+          {name: "configuration", present: any($event_ids[]; . == 2002 or . == 2003)},
+          {name: "camera-module", present: any($event_ids[]; . == 2009 or . == 2011)},
+          {name: "raw-ingress", present: any($event_ids[]; . >= 2040 and . <= 2049)},
+          {name: "capture-lanes", present: any($event_ids[]; . >= 2050 and . <= 2063)},
+          {name: "processing-graph", present: any($event_ids[]; . >= 2064 and . <= 2075)},
+          {name: "catalog", present: any($event_ids[]; . == 3000)},
+          {name: "deployment-location", present: any($event_ids[]; . == 7301)}
+        ] + (if $replayProfile == "InProcess" then [
+          {name: "calibration", present: any($event_ids[]; . >= 2610 and . <= 2617)}
+        ] else [] end)) else [
           {name: "configuration", present: any($event_ids[]; . == 2002 or . == 2003)},
           {name: "camera-module", present: any($event_ids[]; . == 2009 or . == 2011)},
           {name: "raw-ingress", present: any($event_ids[]; . >= 2040 and . <= 2049)},
@@ -970,31 +1096,53 @@ EOF
         ] end) as $required_event_families |
       {
         schemaVersion: "issue-211-telemetry-scan-v1",
-        notApplicableSignals: (if $strict then ([
+        trialKind: $trialKind,
+        replayProfile: (if $trialKind == "replay" then $replayProfile else null end),
+        notApplicableSignals: (if $trialKind == "w6" then ([
             {name: "capture-meter", reason: "W6 uses fixed setpoints without adaptive metering."},
             {name: "camera_agent.capture_control.metering.scanned", reason: "W6 uses fixed setpoints without adaptive metering."},
             {name: "transient.handoff", reason: "W6 runs the Edge transient mode without central handoff."}
           ] + (if $trial == "trial-1" then [] else [
             {name: "processing-graph.recover", reason: "The semantic restart/fault matrix runs once in trial-1."}
-          ] end)) else [
+          ] end)) elif $trialKind == "replay" then ([
+            {name: "transient.*", reason: "Replay trials run with transient processing disabled."}
+          ] + (if $replayProfile == "LocalRunner" then [
+            {name: "calibration.acquire", reason: "LocalRunner reuses the calibration established by InProcess."},
+            {name: "calibration.activate", reason: "LocalRunner reuses the calibration established by InProcess."},
+            {name: "camera_agent.calibration.acquisitions", reason: "LocalRunner does not reacquire calibration."}
+          ] else [] end)) else [
             {name: "transient.*", reason: "The Mono8 control runs with transient processing disabled."}
           ] end),
         requiredSpans: $required_spans,
         missingSpans: ($required_spans - $spans),
         requiredMetricScopes: $required_scopes,
         missingMetricScopes: ($required_scopes - $scopes),
-        requiredMetrics: $required_metrics,
-        missingMetrics: ($required_metrics - $metric_surface),
+         requiredMetrics: $required_metrics,
+         replayMetricAlternatives: (if $trialKind == "replay" then
+           ["camera_agent.processing.replay.terminal", "camera_agent.processing.replay.dispositions"] else [] end),
+         missingMetrics: (($required_metrics - $metric_surface) +
+           (if $trialKind == "replay" and
+             (($metric_surface | index("camera_agent.processing.replay.terminal")) == null) and
+             (($metric_surface | index("camera_agent.processing.replay.dispositions")) == null)
+            then ["camera_agent.processing.replay.terminal|camera_agent.processing.replay.dispositions"]
+            else [] end)),
         unitMismatches: [$required_unit_map | to_entries[] |
           select($units[.key] != .value) | {metric: .key, expected: .value, actual: ($units[.key] // null)}],
          severeLogs: severe_logs,
          observedEventIds: $event_ids,
          requiredEventFamilies: $required_event_families,
          missingEventFamilies: ($required_event_families | map(select(.present | not) | .name)),
-         notApplicableEventFamilies: (if $strict then [
+         notApplicableEventFamilies: (if $trialKind == "w6" then [
            {name: "artifact-outbox", reason: "Successful outbox work is debug-level; warning events indicate failure."},
            {name: "capture-control", reason: "Fixed W6 control decisions are debug-level."}
-         ] else [
+          ] elif $trialKind == "replay" then ([
+            {name: "artifact-outbox", reason: "Successful outbox work is debug-level; warning events indicate failure."},
+            {name: "capture-control", reason: "Replay uses fixed capture control decisions that are debug-level."},
+            {name: "transient-worker", reason: "Replay trials disable transient processing."},
+            {name: "environmental-acquisition", reason: "Replay validates archived processing rather than environmental acquisition."}
+          ] + (if $replayProfile == "LocalRunner" then [
+            {name: "calibration", reason: "LocalRunner reuses the calibration established by InProcess."}
+         ] else [] end)) else [
            {name: "artifact-outbox", reason: "Successful outbox work is debug-level; warning events indicate failure."},
            {name: "capture-control", reason: "Fixed Mono8 control decisions are debug-level."},
            {name: "transient-worker", reason: "Mono8 control disables transient processing."},
@@ -1104,6 +1252,18 @@ EOF
         printf 'Unable to scan the collector log for %s (rg exit %s).\n' "$trial" "$collector_rg_status" >&2
         return 1
     fi
+    if [[ "$trial_kind" == replay && "$replay_profile" == LocalRunner ]]; then
+        local pair_summary="$trial_result/evidence/replay-pair.json"
+        jq -n -f "$SCRIPT_DIR/issue-719-replay-pair.jq" \
+            --slurpfile inProcess "$RESULTS/replay-inprocess/evidence/issue-719-replay-InProcess.json" \
+            --slurpfile localRunner "$trial_result/evidence/issue-719-replay-LocalRunner.json" \
+            --arg stateKey "$state_key" \
+            --arg inProcessPath 'replay-inprocess/evidence/issue-719-replay-InProcess.json' \
+            --arg localRunnerPath 'replay-localrunner/evidence/issue-719-replay-LocalRunner.json' \
+            > "$pair_summary"
+        assert_gate "$pair_summary" 'replay pair' '.passed == true and ([.bindings[]] | all)'
+        cp "$pair_summary" "$RESULTS/replay-pair-summary.json"
+    fi
     local inventory_rows="$trial_result/evidence/.inventory.jsonl"
     : > "$inventory_rows"
     shopt -s globstar nullglob dotglob
@@ -1187,7 +1347,11 @@ for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
         "$MEASURED_CAPTURE_COUNT" \
         'Edge' \
         'true' \
-        "$PHASE14_ENABLED"
+        "$PHASE14_ENABLED" \
+        'InProcess' \
+        "trial-$trial_number" \
+        'false' \
+        'w6'
 done
 
 run_profile_trial \
@@ -1201,7 +1365,11 @@ run_profile_trial \
     5 \
     'Off' \
     'false' \
-    'false'
+    'false' \
+    'InProcess' \
+    'mono8-control' \
+    'false' \
+    'mono8'
 
 # Issue #719. Two invocations over one durable root, named 'replay-719'. The first establishes the
 # capture and replays it in process and retains the root; the second recreates only CameraAgent
@@ -1230,7 +1398,8 @@ run_profile_trial \
     'false' \
     'InProcess' \
     'replay-719' \
-    'true'
+    'true' \
+    'replay'
 
 run_profile_trial \
     'replay-localrunner' \
@@ -1246,10 +1415,11 @@ run_profile_trial \
     'false' \
     'LocalRunner' \
     'replay-719' \
-    'false'
+    'false' \
+    'replay'
 
-# Issue #770, correction round 3. The six central-traffic documents were counted and never
-# identified, so replacing trial 2's document with a copy of trial 1's left the count at six and
+# Issue #770, correction round 3. The original six central-traffic documents were counted and never
+# identified, so replacing trial 2's document with a copy of trial 1's left the count unchanged and
 # every gate passing while the summary printed trial 1 twice in its own output. The labels the
 # campaign actually ran are built here, outside any document, and the documents must name exactly
 # that set.
@@ -1257,7 +1427,7 @@ EXPECTED_W6_TRIALS="$(jq -nc --argjson trialCount "$TRIAL_COUNT" \
     '[range(1; $trialCount + 1) | "trial-\(.)"]')"
 readonly EXPECTED_W6_TRIALS
 EXPECTED_CENTRAL_TRAFFIC_TRIALS="$(jq -nc --argjson expectedW6Trials "$EXPECTED_W6_TRIALS" \
-    '["mono8-control"] + $expectedW6Trials')"
+    '["mono8-control", "replay-inprocess", "replay-localrunner"] + $expectedW6Trials')"
 readonly EXPECTED_CENTRAL_TRAFFIC_TRIALS
 
 # Issue #770. `add` over a list of nulls is null and `// 0` turned that into a clean zero, so a
@@ -1277,13 +1447,17 @@ jq -s --argjson expectedTrials "$EXPECTED_CENTRAL_TRAFFIC_TRIALS" '
   def require_count($field): if is_count then . else
     error("a central-traffic-gate.json has \($field) = \(tojson), which is not a non-negative whole count") end;
   def recomputed_passed:
-    ((.inTestCentralTrafficAttempts | require_count("inTestCentralTrafficAttempts")) == 0)
-    and ((.inTestCentralHandlerAttempts | require_count("inTestCentralHandlerAttempts")) == 0)
+    ((.inTestCountersApplicable == true and
+      ((.inTestCentralTrafficAttempts | require_count("inTestCentralTrafficAttempts")) == 0) and
+      ((.inTestCentralHandlerAttempts | require_count("inTestCentralHandlerAttempts")) == 0)) or
+     (.trialKind == "replay" and .inTestCountersApplicable == false and
+      .inTestCentralTrafficAttempts == null and .inTestCentralHandlerAttempts == null and
+      .inTestCountersReason == "Replay evidence schema does not record in-test central traffic counters."))
     and ((.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) == 0)
     and ((.finalCentralHandlerReadyRecords | require_count("finalCentralHandlerReadyRecords")) >= 1)
     and ((.finalDenyHits | require_count("finalDenyHits")) == 0);
   {
-    schemaVersion: "issue-211-final-central-traffic-summary-v4",
+    schemaVersion: "issue-211-final-central-traffic-summary-v5",
     gateCount: length,
     trialLabels: ([.[].trial] | sort),
     expectedTrialLabels: ($expectedTrials | sort),
@@ -1291,7 +1465,8 @@ jq -s --argjson expectedTrials "$EXPECTED_CENTRAL_TRAFFIC_TRIALS" '
       == ($expectedTrials | sort)),
     trials: (sort_by(.trial) | map(.recordedPassed = .passed | .passed = recomputed_passed)),
     centralHandlerAttempts:
-      (map(.inTestCentralHandlerAttempts | require_count("inTestCentralHandlerAttempts")) | add // 0),
+      (map(select(.inTestCountersApplicable == true) |
+        .inTestCentralHandlerAttempts | require_count("inTestCentralHandlerAttempts")) | add // 0),
     finalCentralHandlerAttempts:
       (map(.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) | add // 0),
     finalDenyHits: (map(.finalDenyHits | require_count("finalDenyHits")) | add // 0),
@@ -1607,8 +1782,8 @@ jq -s \
       allFiveTestResultsPassed: (length == 5 and all(.result.passed == true)),
       zeroCentralTrafficAttempts: ($central_traffic_attempts == 0),
       zeroCentralHandlerAttempts: ($central_handler_attempts == 0),
-      sixFinalDenyChecksPassed:
-        (($final_central_traffic | length) == 6 and all($final_central_traffic[]; .passed == true)),
+      eightFinalDenyChecksPassed:
+        (($final_central_traffic | length) == 8 and all($final_central_traffic[]; .passed == true)),
       zeroFinalDenyHits: ($final_deny_hits == 0),
       durableQueuesWithinDeclaredBounds: $durable_queues_within_bounds,
       durableQueuesRecordedWithinDeclaredBounds: $durable_queues_recorded_within_bounds,
@@ -1630,7 +1805,7 @@ jq -s \
       all(.result.passed == true) and
       $central_traffic_attempts == 0 and
       $central_handler_attempts == 0 and
-      ($final_central_traffic | length) == 6 and
+      ($final_central_traffic | length) == 8 and
       all($final_central_traffic[]; .passed == true) and
       $final_deny_hits == 0 and
       $durable_queues_within_bounds and
@@ -1650,7 +1825,7 @@ jq --exit-status --argjson declaredBoundedTrialFootprintBytes "$DECLARED_BOUNDED
      .peakFilesystemBytes.minimum >= 0 and
      .peakFilesystemBytes.maximum <= $declaredBoundedTrialFootprintBytes and
      .centralTrafficAttempts == 0 and .centralHandlerAttempts == 0 and
-     .finalDenyGateCount == 6 and .finalDenyHits == 0 and
+     .finalDenyGateCount == 8 and .finalDenyHits == 0 and
      .allPassed == true and .retainedFilesystemWithinDeclaredBound == true and
      ([.candidateGates[]] | all) and .w6Ready == true' \
     "$RESULTS/five-trial-summary.json" >/dev/null || gate_failed 'five-trial summary' "$RESULTS/five-trial-summary.json"
@@ -1677,7 +1852,7 @@ jq -s '
       (.value.unsupportedMetricKeys | length) != 0 or
       (.value.forbiddenMetricValues | length) != 0 or
       (.value.excessiveMetricCardinality | length) != 0) | .key],
-    passed: (length == 6 and all(.[];
+  passed: (length == 8 and all(.[];
       (.missingSpans | length) == 0 and
       (.missingMetricScopes | length) == 0 and
       (.missingMetrics | length) == 0 and
@@ -1695,7 +1870,7 @@ jq -s '
 ' "$RESULTS"/*/evidence/runtime/telemetry-scan.json > "$RESULTS/telemetry-summary.json"
 jq -s '{schemaVersion: "issue-211-trial-sanitization-summary-v1", trialCount: length,
   failedTrials: [to_entries[] | select(.value.passed != true) | .key],
-  passed: (length == 6 and all(.[]; .passed == true))}' \
+  passed: (length == 8 and all(.[]; .passed == true))}' \
   "$RESULTS"/*/evidence/runtime/sanitization-scan.json > "$RESULTS/trial-sanitization-summary.json"
 assert_gate "$RESULTS/telemetry-summary.json" 'telemetry summary' '.passed == true'
 assert_gate "$RESULTS/trial-sanitization-summary.json" 'trial sanitization summary' '.passed == true'
@@ -1746,6 +1921,7 @@ jq -n \
     --slurpfile w6 "$RESULTS/five-trial-summary.json" \
     --slurpfile mono "$RESULTS/mono8-control/evidence/issue-211-mono8.json" \
     --slurpfile monoTraffic "$RESULTS/mono8-control/evidence/central-traffic-gate.json" \
+    --slurpfile replayPair "$RESULTS/replay-pair-summary.json" \
     --slurpfile sanitization "$RESULTS/root-sanitization-scan.json" \
     --slurpfile telemetry "$RESULTS/telemetry-summary.json" \
     --slurpfile trialSanitization "$RESULTS/trial-sanitization-summary.json" \
@@ -1758,6 +1934,7 @@ jq -n \
       w6: $w6[0].w6Ready,
       mono8: ($mono[0].result.passed == true and ($mono[0].captures | length) == 5),
       mono8CentralIsolation: $monoTraffic[0].passed,
+      replayPair: ($replayPair[0].passed == true and ([ $replayPair[0].bindings[] ] | all)),
       telemetry: $telemetry[0].passed,
       trialSanitization: $trialSanitization[0].passed,
       retainedEvidenceSanitized: $sanitization[0].passed,
@@ -1769,6 +1946,8 @@ jq -n \
       $mono[0].result.passed == true and
       ($mono[0].captures | length) == 5 and
       $monoTraffic[0].passed and
+      $replayPair[0].passed == true and
+      ([ $replayPair[0].bindings[] ] | all) and
       $telemetry[0].passed and
       $trialSanitization[0].passed and
       $sanitization[0].passed and

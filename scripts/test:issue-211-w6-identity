@@ -298,3 +298,294 @@ if [[ "$failures" -ne 0 ]]; then
 fi
 
 printf '\nW6 evidence identity gate: control accepted, every constructed cut refused.\n'
+
+# Issue #953 extends this Docker-free guard because the campaign driver is the contract under
+# test, and the replay evidence validator is shared with the live run. Controls must pass and
+# mutations must be refused; source wiring mutations are checked the same way so an assertion
+# that merely finds a token cannot report success after the load-bearing ordering is broken.
+readonly REPLAY_PROGRAM="$SCRIPT_DIR/issue-719-replay-evidence.jq"
+[[ -f "$REPLAY_PROGRAM" ]] || fail "missing $REPLAY_PROGRAM"
+readonly REPLAY_PAIR_PROGRAM="$SCRIPT_DIR/issue-719-replay-pair.jq"
+[[ -f "$REPLAY_PAIR_PROGRAM" ]] || fail "missing $REPLAY_PAIR_PROGRAM"
+readonly CENTRAL_GATE_PROGRAM="$SCRIPT_DIR/issue-211-central-traffic-gate.jq"
+[[ -f "$CENTRAL_GATE_PROGRAM" ]] || fail "missing $CENTRAL_GATE_PROGRAM"
+
+REPLAY_EXECUTION="$(jq -nc '{
+  executionId: "11111111-1111-1111-1111-111111111111", status: 2,
+  acceptedUtc: "2026-09-21T00:00:00Z", startedUtc: "2026-09-21T00:00:01Z",
+  completedUtc: "2026-09-21T00:00:02Z", startIntervalMilliseconds: 1000,
+  graphIntervalMilliseconds: 1000,
+  graphDefinitionIdentitySha256: ("A" * 64), sharedPlanIdentitySha256: ("B" * 64),
+  localPlanIdentitySha256: ("C" * 64), attemptCount: 1,
+  nodes: [{nodeId: "decode", required: true, status: "Completed", outputs: 1}]
+}')"
+readonly REPLAY_EXECUTION
+jq -n --argjson execution "$REPLAY_EXECUTION" '{
+  schemaVersion: "issue-719-replay-evidence-v1", profile: "InProcess", stateKey: "replay-719",
+  stateReused: false, declaredProfile: "InProcess", result: {passed: true},
+  replay: {role: "establish", graphRevisionId: "canonical-v1", captureCount: 6,
+    sourceCaptureId: "22222222-2222-2222-2222-222222222222", sourceCaptureSequence: 6,
+    primaryArtifactId: "33333333-3333-3333-3333-333333333333",
+    liveExecutionId: "44444444-4444-4444-4444-444444444444", replay: $execution,
+    note: "LocalRunner performs the three-way comparison."}}
+' > "$WORK/replay-inprocess.json"
+LOCAL_REPLAY_EXECUTION="$(jq -c '.executionId = "55555555-5555-5555-5555-555555555555"' \
+    <<< "$REPLAY_EXECUTION")"
+readonly LOCAL_REPLAY_EXECUTION
+jq -n --argjson execution "$LOCAL_REPLAY_EXECUTION" '{
+  schemaVersion: "issue-719-replay-evidence-v1", profile: "LocalRunner", stateKey: "replay-719",
+  stateReused: true, declaredProfile: "LocalRunner", result: {passed: true},
+  replay: {role: "compare", readFrom: "durable state",
+    sourceCaptureId: "22222222-2222-2222-2222-222222222222",
+    primaryArtifactId: "33333333-3333-3333-3333-333333333333", graphRevisionId: "canonical-v1",
+    liveExecutionId: "44444444-4444-4444-4444-444444444444",
+    inProcessExecutionId: "11111111-1111-1111-1111-111111111111",
+    localRunnerExecutionId: "55555555-5555-5555-5555-555555555555", replay: $execution,
+    identity: {comparedNodes: 1, comparedOutputs: 1, outputs: {decode: [("D" * 64)]}}}}
+' > "$WORK/replay-localrunner.json"
+
+replay_gate() {
+    local file="$1" profile="$2" reused="$3"
+    jq --exit-status -f "$REPLAY_PROGRAM" --arg replayProfile "$profile" \
+        --arg stateKey replay-719 --argjson stateReused "$reused" \
+        --argjson measuredCaptureCount 6 "$file" >/dev/null
+}
+
+replay_gate "$WORK/replay-inprocess.json" InProcess false \
+    || fail 'valid InProcess replay evidence was refused'
+replay_gate "$WORK/replay-localrunner.json" LocalRunner true \
+    || fail 'valid LocalRunner replay evidence was refused'
+
+declare -a REPLAY_MUTATIONS=(
+    '.profile = "LocalRunner"'
+    '.replay.captureCount = 5'
+    '.replay.sourceCaptureId = ""'
+    '.replay.replay.nodes = []'
+    '.replay.replay.nodes[0].status = "Skipped"'
+    '.replay.replay.startIntervalMilliseconds = 12001'
+    '.replay.replay.graphIntervalMilliseconds = 180001'
+    '.replay.replay.executionId = .replay.liveExecutionId'
+)
+for index in "${!REPLAY_MUTATIONS[@]}"; do
+    jq "${REPLAY_MUTATIONS[$index]}" "$WORK/replay-inprocess.json" > "$WORK/replay-inprocess-$index.json"
+    if replay_gate "$WORK/replay-inprocess-$index.json" InProcess false; then
+        fail "InProcess replay mutation $index was accepted"
+    fi
+done
+
+declare -a LOCAL_REPLAY_MUTATIONS=(
+    '.replay.role = "establish"'
+    '.replay.inProcessExecutionId = .replay.localRunnerExecutionId'
+    '.replay.identity.comparedOutputs = 2'
+    '.replay.identity.outputs.decode = []'
+    '.replay.replay.executionId = .replay.inProcessExecutionId'
+    '.replay.liveExecutionId = .replay.localRunnerExecutionId'
+)
+for index in "${!LOCAL_REPLAY_MUTATIONS[@]}"; do
+    jq "${LOCAL_REPLAY_MUTATIONS[$index]}" "$WORK/replay-localrunner.json" > "$WORK/replay-localrunner-$index.json"
+    if replay_gate "$WORK/replay-localrunner-$index.json" LocalRunner true; then
+        fail "LocalRunner replay mutation $index was accepted"
+    fi
+done
+
+replay_pair_gate() {
+    jq -n -f "$REPLAY_PAIR_PROGRAM" \
+        --slurpfile inProcess "$1" --slurpfile localRunner "$2" \
+        --arg stateKey replay-719 --arg inProcessPath replay-inprocess.json \
+        --arg localRunnerPath replay-localrunner.json
+}
+replay_pair_gate "$WORK/replay-inprocess.json" "$WORK/replay-localrunner.json" \
+    > "$WORK/replay-pair-control.json"
+jq -e '.passed == true and ([.bindings[]] | all)' "$WORK/replay-pair-control.json" >/dev/null \
+    || fail 'valid replay pair was refused'
+declare -a PAIR_MUTATIONS=(
+    '.replay.sourceCaptureId = "66666666-6666-6666-6666-666666666666"'
+    '.replay.primaryArtifactId = "66666666-6666-6666-6666-666666666666"'
+    '.replay.graphRevisionId = "other-revision"'
+    '.replay.liveExecutionId = "66666666-6666-6666-6666-666666666666"'
+    '.replay.inProcessExecutionId = "66666666-6666-6666-6666-666666666666"'
+    '.replay.replay.sharedPlanIdentitySha256 = ("E" * 64)'
+    '.stateReused = false'
+)
+for index in "${!PAIR_MUTATIONS[@]}"; do
+    jq "${PAIR_MUTATIONS[$index]}" "$WORK/replay-localrunner.json" > "$WORK/replay-pair-mutated-$index.json"
+    replay_pair_gate "$WORK/replay-inprocess.json" "$WORK/replay-pair-mutated-$index.json" \
+        > "$WORK/replay-pair-result-$index.json"
+    jq -e '.passed == false' "$WORK/replay-pair-result-$index.json" >/dev/null \
+        || fail "replay pair mutation $index was accepted"
+done
+
+replay_central_gate() {
+    jq -n -f "$CENTRAL_GATE_PROGRAM" --arg trial replay-inprocess --arg trialKind replay \
+        --arg inTestCountersReason 'Replay evidence schema does not record in-test central traffic counters.' \
+        --argjson inTestCountersApplicable false --argjson inTestCentralTrafficAttempts null \
+        --argjson inTestCentralHandlerAttempts null --argjson finalCentralHandlerAttempts "$1" \
+        --argjson finalCentralHandlerReadyRecords "$2" --argjson finalDenyHits "$3"
+}
+replay_central_gate 0 1 0 > "$WORK/replay-central-control.json"
+jq -e '.passed == true and .inTestCountersApplicable == false and
+    .inTestCentralTrafficAttempts == null and .inTestCentralHandlerAttempts == null' \
+    "$WORK/replay-central-control.json" >/dev/null || fail 'valid replay final-log central gate was refused'
+for mutation in '1 1 0' '0 0 0' '0 1 1' '-1 1 0' '0 1.5 0' '0 1 -1'; do
+    read -r attempts ready deny <<< "$mutation"
+    replay_central_gate "$attempts" "$ready" "$deny" > "$WORK/replay-central-$attempts-$ready-$deny.json"
+    jq -e '.passed == false' "$WORK/replay-central-$attempts-$ready-$deny.json" >/dev/null \
+        || fail "replay central gate accepted final-log mutation $mutation"
+done
+
+central_gate_case() {
+    jq -n -f "$CENTRAL_GATE_PROGRAM" --arg trial "${1}" --arg trialKind "${2}" \
+        --arg inTestCountersReason "${3}" --argjson inTestCountersApplicable "${4}" \
+        --argjson inTestCentralTrafficAttempts "${5}" --argjson inTestCentralHandlerAttempts "${6}" \
+        --argjson finalCentralHandlerAttempts "${7}" --argjson finalCentralHandlerReadyRecords "${8}" \
+        --argjson finalDenyHits "${9}"
+}
+central_gate_case trial-1 w6 'Recorded by the profile evidence schema.' true 0 0 0 1 0 \
+    > "$WORK/w6-central-control.json"
+jq -e '.passed == true' "$WORK/w6-central-control.json" >/dev/null || fail 'valid W6 central gate was refused'
+central_gate_case replay-inprocess replay wrong-reason false null null 0 1 0 > "$WORK/central-wrong-reason.json"
+central_gate_case replay-inprocess other \
+    'Replay evidence schema does not record in-test central traffic counters.' \
+    false null null 0 1 0 > "$WORK/central-wrong-kind.json"
+central_gate_case replay-inprocess replay \
+    'Replay evidence schema does not record in-test central traffic counters.' \
+    1 null null 0 1 0 > "$WORK/central-nonboolean-applicability.json"
+central_gate_case trial-1 w6 'Recorded by the profile evidence schema.' true -1 0 0 1 0 \
+    > "$WORK/central-negative-in-test.json"
+central_gate_case trial-1 w6 'Recorded by the profile evidence schema.' true 0 0.5 0 1 0 \
+    > "$WORK/central-fractional-in-test.json"
+for central_mutation in "$WORK"/central-{wrong-reason,wrong-kind,nonboolean-applicability,negative-in-test,fractional-in-test}.json; do
+    jq -e '.passed == false' "$central_mutation" >/dev/null \
+        || fail "central gate mutation ${central_mutation##*/} was accepted"
+done
+
+campaign_contract() {
+    local script="$1" validation stop marker manifest sanitization down deletion reset up test pair health process
+    local stats names cleanup
+    validation="$(grep -n -m1 "issue-719-replay-evidence.jq" "$script" | cut -d: -f1)" || return 1
+    stop="$(grep -n -m1 'docker stop --timeout 30' "$script" | cut -d: -f1)" || return 1
+    manifest="$(grep -n -m1 '> "$trial_result/evidence/evidence-manifest.json"' "$script" | cut -d: -f1)" || return 1
+    sanitization="$(grep -n -m1 'The final retained trial tree failed sanitization' "$script" | cut -d: -f1)" || return 1
+    down="$(grep -n -m1 'down --volumes --remove-orphans$' "$script" | cut -d: -f1)" || return 1
+    marker="$(grep -n -m1 ': > \"\$trial_local/.state-established\"' "$script" | cut -d: -f1)" || return 1
+    deletion="$(grep -n -m1 'rm -rf -- "$trial_local"' "$script" | cut -d: -f1)" || return 1
+    reset="$(grep -n -m1 'rm -rf -- "$trial_local/telemetry"' "$script" | cut -d: -f1)" || return 1
+    up="$(grep -n -m1 '"${active_compose_files\[@\]}" up --detach' "$script" | cut -d: -f1)" || return 1
+    test="$(grep -n -m1 'dotnet test "$PROJECT"' "$script" | cut -d: -f1)" || return 1
+    pair="$(grep -n -m1 'issue-719-replay-pair.jq' "$script" | cut -d: -f1)" || return 1
+    health="$(grep -n -m1 'issue-719-replay-runtime-status-v1' "$script" | cut -d: -f1)" || return 1
+    process="$(grep -n -m1 'issue-719-replay-process-snapshot-v1' "$script" | cut -d: -f1)" || return 1
+    stats="$(awk '/replay_stats=.*docker stats/ && index($0, "${replay_process_containers[@]}") { print NR; exit }' "$script")"
+    [[ -n "$stats" ]] || return 1
+    names="$(grep -n -m1 'cmp --silent "$trial_result/evidence/.expected-process-names"' "$script" | cut -d: -f1)" || return 1
+    cleanup="$(grep -n -m1 'rm -f "$trial_result/evidence/.process-names"' "$script" | cut -d: -f1)" || return 1
+    ((reset < up && reset < test && validation < health && health < stats && stats < process && process < stop &&
+      process < names && names < cleanup && cleanup < manifest &&
+      pair < manifest && manifest < sanitization && sanitization < down && down < marker && down < deletion)) || return 1
+    grep -q 'profile_evidence_file="issue-719-replay-${replay_profile}.json"' "$script" || return 1
+    grep -q 'Replay evidence schema does not record in-test central traffic counters.' "$script" || return 1
+    grep -q 'rm -f -- "$trial_local/runtime/central-http-attempts.log"' "$script" || return 1
+    grep -q "assert_gate \"\$pair_summary\" 'replay pair'" "$script" || return 1
+    grep -q 'replay_process_containers+=("hvo211-$suffix-replay")' "$script" || return 1
+    grep -q 'expected_process_lines=3' "$script" || return 1
+    grep -q 'Replay process snapshot omitted a required container' "$script" || return 1
+    invocation_matches "$script"
+}
+
+invocation_matches() {
+    local script="$1" line collecting=false
+    local -a args=() w6=() inprocess=() localrunner=() mono=()
+    local invocation_ordinal=0
+    while IFS= read -r line; do
+        local trimmed="${line#${line%%[![:space:]]*}}"
+        if [[ "$trimmed" == 'run_profile_trial \' ]]; then
+            collecting=true
+            args=()
+            invocation_ordinal=$((invocation_ordinal + 1))
+            continue
+        fi
+        [[ "$collecting" == true ]] || continue
+        line="${line#${line%%[![:space:]]*}}"
+        local continued=false
+        if [[ "$line" == *' \' ]]; then
+            continued=true
+            line="${line% \\}"
+        fi
+        if [[ "$line" == \'*\' ]]; then
+            line="${line#\'}"
+            line="${line%\'}"
+        elif [[ "$line" == \"*\" ]]; then
+            line="${line#\"}"
+            line="${line%\"}"
+        fi
+        args+=("$line")
+        if [[ "$continued" == false ]]; then
+            collecting=false
+            if [[ "$invocation_ordinal" -eq 1 ]]; then
+                w6=("${args[@]}")
+            fi
+            case "${args[0]}" in
+                replay-inprocess) inprocess=("${args[@]}") ;;
+                replay-localrunner) localrunner=("${args[@]}") ;;
+                mono8-control) mono=("${args[@]}") ;;
+            esac
+        fi
+    done < "$script"
+    ((${#w6[@]} == 15 && ${#inprocess[@]} == 15 && ${#localrunner[@]} == 15 && ${#mono[@]} == 15)) || return 1
+    [[ "${w6[0]}" == 'trial-$trial_number' && "${w6[8]}" == Edge &&
+       "${w6[11]}" == InProcess && "${w6[12]}" == 'trial-$trial_number' &&
+       "${w6[13]}" == false && "${w6[14]}" == w6 ]] || return 1
+    [[ "${inprocess[0]}" == replay-inprocess && "${inprocess[8]}" == Off &&
+       "${inprocess[11]}" == InProcess && "${inprocess[12]}" == replay-719 &&
+       "${inprocess[13]}" == true && "${inprocess[14]}" == replay ]] || return 1
+    [[ "${localrunner[0]}" == replay-localrunner && "${localrunner[8]}" == Off &&
+       "${localrunner[11]}" == LocalRunner && "${localrunner[12]}" == replay-719 &&
+       "${localrunner[13]}" == false && "${localrunner[14]}" == replay ]] || return 1
+    [[ "${mono[11]}" == InProcess && "${mono[12]}" == mono8-control &&
+       "${mono[13]}" == false && "${mono[14]}" == mono8 ]] || return 1
+}
+
+campaign_contract "$CAMPAIGN_SCRIPT" || fail 'campaign replay wiring contract failed'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i 's/issue-719-replay-${replay_profile}.json/issue-211-w6.json/' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted replay W6 evidence lookup mutation'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/issue-719-replay-evidence.jq/,+5d' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted missing pre-stop replay validation mutation'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/: > "$trial_local\/.state-established"/d' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted missing post-gate state marker mutation'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i "/'replay-inprocess'/,/'replay-localrunner'/ s/    'replay'$/    'w6'/" "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted replay trial-kind mutation'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i "/'replay-inprocess'/,/'replay-localrunner'/ s/    'true'/    'SWAPPED'/" "$WORK/campaign"
+sed -i "/'replay-inprocess'/,/'replay-localrunner'/ s/    'replay'$/    'true'/" "$WORK/campaign"
+sed -i "/'replay-inprocess'/,/'replay-localrunner'/ s/    'SWAPPED'/    'replay'/" "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted swapped retain-state/trial-kind arguments'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i "/'replay-localrunner'/,/    'replay'$/ s/    'LocalRunner'/    'InProcess'/" "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted wrong LocalRunner profile argument'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/rm -rf -- "$trial_local\/telemetry"/d' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted missing telemetry isolation reset'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/: > "$trial_local\/.state-established"/{h;d};/> "$trial_result\/evidence\/evidence-manifest.json"/{x;p;x}' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted marker before evidence manifest'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/issue-719-replay-runtime-status-v1/,+30d' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted missing replay runtime health evidence'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/issue-719-replay-process-snapshot-v1/d' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted missing replay process snapshot evidence'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/replay_process_containers+=("hvo211-\$suffix-replay")/d' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted LocalRunner process snapshot without replay runner'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/replay_stats=.*docker stats/c\        replay_stats="$(docker stats --no-stream --format '\''{{json .}}'\'' "hvo211-$suffix-camera")"' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted docker stats sampling only CameraAgent'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/rm -f "$trial_result\/evidence\/.process-names"/d' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted process snapshot temporary files in retained evidence'
+
+printf 'Replay evidence and driver contract: controls accepted, all mutations refused.\n'
