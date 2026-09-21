@@ -936,12 +936,87 @@ campaign_contract() {
     grep -q 'expected_process_lines=3' "$script" || return 1
     grep -q 'Replay process snapshot omitted a required container' "$script" || return 1
     grep -q 'terminal replay semantics, bindings, and run manifest' "$script" || return 1
+    local_runner_scan_contract "$script" || return 1
     command_directly_in_if "$script" 'if [[ "$trial_kind" == replay ]]; then' \
         'replay_profile_post_test_gate ' || return 1
     command_directly_in_if "$script" \
         'if [[ "$trial_kind" == replay && "$replay_profile" == LocalRunner ]]; then' \
         'emit_replay_pair_summary \' || return 1
     invocation_matches "$script"
+}
+
+# The LocalRunner telemetry scan proves the runner executed the replay (#959). The scan is one jq
+# program inside the campaign script, so the guard extracts that program and evaluates its
+# requirement sets against a minimal synthetic surface rather than pattern-matching the source:
+# a LocalRunner scan that no longer requires the runner scope, its job counter, or its transfer
+# unit must fail here, and the InProcess set must still demand the capture path.
+local_runner_scan_contract() {
+    local script="$1" program="$WORK/telemetry-scan-program.jq" start end
+    start="$(grep -n -m1 '^      def attribute_values: .value | .. | scalars | tostring;$' "$script" | cut -d: -f1)" || return 1
+    end="$(grep -n -m1 "^    ' > \"\$trial_result/evidence/runtime/telemetry-scan.json\"$" "$script" | cut -d: -f1)" || return 1
+    ((start > 0 && end > start)) || return 1
+    sed -n "${start},$((end - 1))p" "$script" > "$program"
+    local scan
+    scan="$(jq -n --argjson strict false --argjson phase14 false --arg trial replay-localrunner \
+        --arg trialKind replay --arg replayProfile LocalRunner \
+        --slurpfile traces "$WORK/empty-telemetry.json" --slurpfile metrics "$WORK/empty-telemetry.json" \
+        --slurpfile logs "$WORK/empty-telemetry.json" -f "$program" 2>/dev/null)" || return 1
+    jq -e '
+      (.requiredMetricScopes | index("HVO.SkyMonitor.CameraAgent.ReplayRunner")) != null and
+      (.requiredMetrics | index("camera_agent.replay_runner.jobs")) != null and
+      (.requiredMetrics | index("camera_agent.replay_runner.execution.duration")) != null and
+      (.requiredMetrics | index("camera_agent.replay_runner.transfer.bytes")) != null and
+      (.requiredMetrics | index("camera_agent.processing.replay.dispositions")) != null and
+      (.requiredMetrics | index("camera_agent.processing.execution.starts")) != null and
+      (.requiredSpans | index("processing-graph.execute")) != null and
+      (.requiredSpans | index("processing-step.execute")) != null and
+      (.missingMetricScopes | index("HVO.SkyMonitor.CameraAgent.ReplayRunner")) != null and
+      (.missingMetrics | index("camera_agent.replay_runner.jobs")) != null and
+      ([.unitMismatches[] | select(.metric == "camera_agent.replay_runner.transfer.bytes" and .expected == "By")] | length) == 1 and
+      ([.unitMismatches[] | select(.metric == "camera_agent.replay_runner.execution.duration" and .expected == "s")] | length) == 1 and
+      ([.requiredEventFamilies[] | select(.name == "deployment-location")] | length) == 1 and
+      (.missingEventFamilies | index("deployment-location")) != null and
+      ([.notApplicableSignals[] | select(.name == "capture-cycle")] | length) == 1 and
+      (.requiredSpans | index("capture-cycle")) == null and
+      (.requiredMetrics | index("camera_agent.capture.count")) == null and
+      (.requiredMetricScopes | index("HVO.SkyMonitor.CameraAgent.Capture")) == null
+    ' <<< "$scan" >/dev/null || return 1
+    scan="$(jq -n --argjson strict false --argjson phase14 false --arg trial replay-inprocess \
+        --arg trialKind replay --arg replayProfile InProcess \
+        --slurpfile traces "$WORK/empty-telemetry.json" --slurpfile metrics "$WORK/empty-telemetry.json" \
+        --slurpfile logs "$WORK/empty-telemetry.json" -f "$program" 2>/dev/null)" || return 1
+    jq -e '
+      (.requiredSpans | index("capture-cycle")) != null and
+      (.requiredSpans | index("calibration.acquire")) != null and
+      (.requiredMetrics | index("camera_agent.capture.count")) != null and
+      (.requiredMetrics | index("camera_agent.calibration.acquisitions")) != null and
+      (.requiredMetricScopes | index("HVO.SkyMonitor.CameraAgent.Capture")) != null and
+      (.requiredMetricScopes | index("HVO.SkyMonitor.CameraAgent.Calibration")) != null and
+      (.requiredMetricScopes | index("HVO.SkyMonitor.CameraAgent.ReplayRunner")) == null and
+      ([.requiredEventFamilies[] | select(.name == "calibration")] | length) == 1
+    ' <<< "$scan" >/dev/null || return 1
+    # The deployment-location family must key on the profile: 7302 (loaded) for the reused
+    # LocalRunner root, 7301 (appended) for the fresh InProcess root.
+    local loaded_only appended_only
+    loaded_only="$(jq -nc '{resourceLogs: [{scopeLogs: [{logRecords: [{severityNumber: 9, attributes: [{key: "EventId", value: {intValue: "7302"}}]}]}]}]}')"
+    appended_only="$(jq -nc '{resourceLogs: [{scopeLogs: [{logRecords: [{severityNumber: 9, attributes: [{key: "EventId", value: {intValue: "7301"}}]}]}]}]}')"
+    printf '%s\n' "$loaded_only" > "$WORK/loaded-only.json"
+    printf '%s\n' "$appended_only" > "$WORK/appended-only.json"
+    jq -n --argjson strict false --argjson phase14 false --arg trial replay-localrunner \
+        --arg trialKind replay --arg replayProfile LocalRunner \
+        --slurpfile traces "$WORK/empty-telemetry.json" --slurpfile metrics "$WORK/empty-telemetry.json" \
+        --slurpfile logs "$WORK/loaded-only.json" -f "$program" 2>/dev/null |
+        jq -e '(.missingEventFamilies | index("deployment-location")) == null' >/dev/null || return 1
+    jq -n --argjson strict false --argjson phase14 false --arg trial replay-localrunner \
+        --arg trialKind replay --arg replayProfile LocalRunner \
+        --slurpfile traces "$WORK/empty-telemetry.json" --slurpfile metrics "$WORK/empty-telemetry.json" \
+        --slurpfile logs "$WORK/appended-only.json" -f "$program" 2>/dev/null |
+        jq -e '(.missingEventFamilies | index("deployment-location")) != null' >/dev/null || return 1
+    jq -n --argjson strict false --argjson phase14 false --arg trial replay-inprocess \
+        --arg trialKind replay --arg replayProfile InProcess \
+        --slurpfile traces "$WORK/empty-telemetry.json" --slurpfile metrics "$WORK/empty-telemetry.json" \
+        --slurpfile logs "$WORK/appended-only.json" -f "$program" 2>/dev/null |
+        jq -e '(.missingEventFamilies | index("deployment-location")) == null' >/dev/null || return 1
 }
 
 command_directly_in_if() {
@@ -1039,6 +1114,7 @@ invocation_matches() {
        "${mono[13]}" == false && "${mono[14]}" == mono8 ]] || return 1
 }
 
+printf '{}\n' > "$WORK/empty-telemetry.json"
 campaign_contract "$CAMPAIGN_SCRIPT" || fail 'campaign replay wiring contract failed'
 run_profile_trial_boundary_matches "$CAMPAIGN_SCRIPT" \
     || fail 'run_profile_trial did not behaviorally enforce its exact 15-argument boundary'
@@ -1088,6 +1164,27 @@ run_profile_trial_boundary_matches "$WORK/campaign" &&
 cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
 sed -i "/'replay-localrunner'/,/    'replay'$/ { /    'replay'$/d; }" "$WORK/campaign"
 campaign_contract "$WORK/campaign" && fail 'campaign accepted removal of argument 15 from a call'
+# LocalRunner telemetry scan mutations (#959): dropping the runner scope, its job counter, the
+# transfer unit, the profile-keyed deployment-location event, or the InProcess capture path.
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i 's/"HVO.SkyMonitor.CameraAgent.ProcessingGraph", "HVO.SkyMonitor.CameraAgent.ReplayRunner"\]/"HVO.SkyMonitor.CameraAgent.ProcessingGraph"]/' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted LocalRunner scan without the replay runner scope'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i 's/            "camera_agent.replay_runner.jobs", "camera_agent.replay_runner.dispatch.duration",/            "camera_agent.replay_runner.dispatch.duration",/' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted LocalRunner scan without the replay runner job counter'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i '/         "camera_agent.replay_runner.transfer.bytes": "By"$/d' "$WORK/campaign"
+sed -i 's/         "camera_agent.replay_runner.execution.duration": "s",$/         "camera_agent.replay_runner.execution.duration": "s"/' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted LocalRunner scan without the transfer byte unit'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i 's/            . == (if $replayProfile == "LocalRunner" then 7302 else 7301 end))}/            . == 7301)}/' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted LocalRunner scan demanding a first deployment-location write'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i 's/            . == (if $replayProfile == "LocalRunner" then 7302 else 7301 end))}/            . == 7302)}/' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted InProcess scan without the first deployment-location write'
+cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
+sed -i 's/      def local_runner_replay: ($trialKind == "replay" and $replayProfile == "LocalRunner");/      def local_runner_replay: ($trialKind == "replay");/' "$WORK/campaign"
+campaign_contract "$WORK/campaign" && fail 'campaign accepted the LocalRunner requirement set applied to InProcess'
 for dead_condition in 'false' '((0))' '((1 == 0))' '[ 0 -eq 1 ]' '[[ 0 == 1 ]]' '[[ "$trial" == never ]]'; do
     cp "$CAMPAIGN_SCRIPT" "$WORK/campaign"
     sed -i "/replay_profile_post_test_gate /i\\        if $dead_condition; then" "$WORK/campaign"
