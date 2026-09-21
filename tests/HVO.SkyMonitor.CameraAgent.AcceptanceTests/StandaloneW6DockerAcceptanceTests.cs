@@ -865,7 +865,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         }
         var evidence = stateReused
             ? await AssertLocalRunnerReplayAsync(session, profile, stateKey).ConfigureAwait(false)
-            : await AssertInProcessReplayAsync(session, runtimeRoot, profile, stateKey).ConfigureAwait(false);
+            : await AssertInProcessReplayAsync(
+                session, baseUri, readyPassword, runtimeRoot, profile, stateKey).ConfigureAwait(false);
 
         // The profile name goes into the filename verbatim rather than lower-cased, because the two
         // invocations must write distinct files and a case fold is one more thing to keep in step
@@ -896,6 +897,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
     /// </summary>
     private static async Task<object> AssertInProcessReplayAsync(
         HttpClient session,
+        Uri baseUri,
+        string ownerPassword,
         string runtimeRoot,
         string profile,
         string stateKey)
@@ -909,6 +912,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             existingReplays,
             $"The durable root '{stateKey}' already holds {existingReplays.Count} replay executions before the first #719 invocation.");
 
+        await EnsureReplayCalibrationAsync(session, baseUri, ownerPassword).ConfigureAwait(false);
         await ActivateCanonicalCaptureProfileAsync(session).ConfigureAwait(false);
         var registry = await session
             .GetFromJsonAsync<ProcessingGraphRegistryState>("/api/v1/operations/processing-graphs/")
@@ -958,6 +962,78 @@ public sealed class StandaloneW6DockerAcceptanceTests
             replay = DescribeExecution(detail),
             note = "The three-way identity is asserted by the LocalRunner invocation, which is the only one that can read all three output sets."
         };
+    }
+
+    private static async Task EnsureReplayCalibrationAsync(
+        HttpClient client,
+        Uri baseUri,
+        string ownerPassword)
+    {
+        var status = await client.GetFromJsonAsync<JsonObject>(
+            "/api/v1/operations/calibration/status").ConfigureAwait(false);
+        Assert.IsNotNull(status);
+        if (status["activeBundle"] is not null)
+        {
+            return;
+        }
+
+        using var acquisitionClient = await LoginAsync(
+            baseUri, ownerPassword, TimeSpan.FromMinutes(5)).ConfigureAwait(false);
+        var acquisitionToken = await GetAntiforgeryTokenAsync(acquisitionClient).ConfigureAwait(false);
+        using var acquireRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/calibration/acquisitions", UriKind.Relative));
+        acquireRequest.Headers.Add("RequestVerificationToken", acquisitionToken);
+        acquireRequest.Headers.Add("Idempotency-Key", $"issue-947-replay-calibration-{Guid.NewGuid():N}");
+        acquireRequest.Content = JsonContent.Create(new
+        {
+            expectedVersion = status["version"]!.GetValue<long>(),
+            gain = 82,
+            offset = 1,
+            temperatureC = -10,
+            biasExposure = TimeSpan.FromMilliseconds(1),
+            darkExposure = TimeSpan.FromSeconds(2),
+            flatExposure = TimeSpan.FromMilliseconds(100),
+            defectExposure = TimeSpan.FromMilliseconds(3),
+            applicableLightExposure = TimeSpan.FromSeconds(5),
+            effectiveFromUtc = DateTimeOffset.UtcNow.AddDays(-1),
+            effectiveUntilUtc = DateTimeOffset.UtcNow.AddYears(1),
+            sourceModel = new VirtualCalibrationSourceModelV1(),
+            reason = "issue-947 canonical replay calibration"
+        });
+        using (var acquireResponse = await acquisitionClient.SendAsync(acquireRequest).ConfigureAwait(false))
+        {
+            var acquireBody = await acquireResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.IsTrue(
+                acquireResponse.IsSuccessStatusCode,
+                $"Calibration acquisition failed with {(int)acquireResponse.StatusCode}: {acquireBody}");
+            var acquisition = JsonNode.Parse(acquireBody)!.AsObject();
+            var bundleId = acquisition["bundleId"]!.GetValue<string>();
+            Assert.IsFalse(string.IsNullOrWhiteSpace(bundleId));
+
+            status = await client.GetFromJsonAsync<JsonObject>(
+                "/api/v1/operations/calibration/status").ConfigureAwait(false);
+            Assert.IsNotNull(status);
+            using var activateRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                new Uri($"/api/v1/operations/calibration/bundles/{bundleId}/activate", UriKind.Relative));
+            activateRequest.Headers.Add(
+                "RequestVerificationToken",
+                await GetAntiforgeryTokenAsync(client).ConfigureAwait(false));
+            activateRequest.Headers.Add("Idempotency-Key", $"issue-947-replay-activate-{Guid.NewGuid():N}");
+            activateRequest.Content = JsonContent.Create(new
+            {
+                expectedVersion = status["version"]!.GetValue<long>(),
+                reason = "issue-947 canonical replay calibration"
+            });
+            using var activateResponse = await client.SendAsync(activateRequest).ConfigureAwait(false);
+            var activateBody = await activateResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.IsTrue(
+                activateResponse.IsSuccessStatusCode,
+                $"Calibration activation failed with {(int)activateResponse.StatusCode}: {activateBody}");
+            var activated = JsonNode.Parse(activateBody)!.AsObject();
+            Assert.AreEqual(bundleId, activated["activeBundle"]?["bundleId"]?.GetValue<string>());
+        }
     }
 
     /// <summary>
@@ -1366,7 +1442,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned client owns its handler.")]
-    private static async Task<HttpClient> LoginAsync(Uri baseUri, string password)
+    private static async Task<HttpClient> LoginAsync(
+        Uri baseUri,
+        string password,
+        TimeSpan? timeout = null)
     {
         var handler = new HttpClientHandler
         {
@@ -1374,7 +1453,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
             CookieContainer = new CookieContainer(),
             CheckCertificateRevocationList = true
         };
-        var client = new HttpClient(handler) { BaseAddress = baseUri, Timeout = TimeSpan.FromMinutes(3) };
+        var client = new HttpClient(handler)
+        {
+            BaseAddress = baseUri,
+            Timeout = timeout ?? TimeSpan.FromMinutes(3)
+        };
         using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
         login.EnsureSuccessStatusCode();
         var token = OwnerBootstrapSession.ExtractAntiforgeryToken(
