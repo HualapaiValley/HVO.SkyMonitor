@@ -705,6 +705,8 @@ public sealed class ProcessingGraphOperationsTests
         }
     }
 
+    private static readonly string[] ReplayTriggerReferences = ["issue-956-InProcess", "issue-956-LocalRunner"];
+
     /// <summary>
     /// Durable state admits one replay execution per (capture, revision, trigger kind, trigger
     /// reference). A second submission of the same capture and revision under a fresh idempotency
@@ -712,8 +714,6 @@ public sealed class ProcessingGraphOperationsTests
     /// receipt; a distinct trigger reference is accepted as a new execution. The canonical #719
     /// campaign replays one capture under two profiles and relies on the second half (#956).
     /// </summary>
-    private static readonly string[] ReplayTriggerReferences = ["issue-956-InProcess", "issue-956-LocalRunner"];
-
     [TestMethod]
     public async Task ReplayTriggerTupleIsUniquePerCaptureAndRevision()
     {
