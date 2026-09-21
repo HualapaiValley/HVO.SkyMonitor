@@ -105,6 +105,12 @@ expect final central-traffic-nonzero.json   1 "central-traffic-observed"
 expect local replay-nodes-absent.json       1 "replay-nodes-absent,replay-nodes-absent"
 expect final replay-nodes-absent.json       1 "replay-nodes-absent,replay-nodes-absent"
 expect final replay-nodes-reordered.json    1 "replay-nodes-not-canonical"
+# The W6 template's definition order, which this literal carried until #961. Same
+# fourteen nodes, `combined-preview` before `quality` and `cloud` rather than after
+# them; no producer has ever emitted it. It is refused so the literal cannot drift
+# back to an order nobody records, and so that "same set, different order" stays a
+# refusal rather than becoming a sorted comparison.
+expect final replay-nodes-definition-order.json 1 "replay-nodes-not-canonical"
 
 # Local staging may omit CI, but final evidence cannot. A malformed caller-owned
 # CI record is rejected rather than trusted because it says success.

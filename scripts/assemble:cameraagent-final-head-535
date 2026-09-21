@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+# Assembles the issue #535 final-head evidence aggregate from its producers.
+#
+# The validator (validate:cameraagent-final-head-535) exists so that a release
+# claim is recomputed from evidence rather than read from a writer's own verdict.
+# An aggregate typed in by hand defeats that: every field would be an assertion by
+# the person who wants the answer to be yes. This script therefore derives every
+# value from a named file or a git fact, refuses when a source is absent or does
+# not support the derivation, and accepts no value from its arguments that a
+# producer could have recorded. It validates what it assembled before writing it,
+# and a refusal writes nothing.
+#
+#   --bound-head SHA       the clean reviewed head; HEAD must equal it and be clean
+#   --campaign-root DIR    one issue-211 campaign run root: the directory holding
+#                          run-manifest.json and final-acceptance-summary.json
+#   --dual-agent FILE      the #197 five-trial-summary.json produced in final mode
+#   --components FILE      components.json from record:cameraagent-final-head-components-535;
+#                          its component-evidence/ directory is copied beside the output
+#   --ci FILE              ci.json from import:cameraagent-final-head-ci-535; its
+#                          ci-artifacts/ directory is copied beside the output.
+#                          Required in final mode, optional in local mode.
+#   --command-log FILE     one recorded command per line:
+#                          <commandId> TAB <exitCode> TAB <receiptPath> TAB <argv>
+#                          receiptPath is relative to the campaign root and is hashed;
+#                          argv is hashed and not carried, because final evidence
+#                          refuses free text.
+#   --output FILE          the aggregate; its directory must exist inside the repository
+#                          and be ignored by git, and neither it nor a sibling
+#                          ci-artifacts/ or component-evidence/ may already exist
+#   --mode local|final     default final
+#   --repo-root DIR        the repository to read git facts and the acceptance assembly
+#                          from; defaults to the repository this script lives in. The
+#                          deterministic gate points it at a fixture repository.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly VALIDATE="$SCRIPT_DIR/validate:cameraagent-final-head-535"
+readonly IDENTITY="$SCRIPT_DIR/lib/assembly-identity.fsx"
+readonly SCHEMA_REPLAY_PROFILE="issue-535-w6-replay-profile-v1"
+readonly ACCEPTANCE_ASSEMBLY="tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll"
+
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  assemble:cameraagent-final-head-535 --bound-head SHA --campaign-root DIR \
+      --dual-agent FILE --components FILE [--ci FILE] --command-log FILE \
+      --output FILE [--mode local|final] [--repo-root DIR]
+EOF
+    exit 2
+}
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+sha256_of() { sha256sum -- "$1" | cut -d' ' -f1; }
+bytes_of() { stat -c %s -- "$1"; }
+
+# The same path discipline as the recorder: every component is checked before
+# canonicalization, because resolving first would hide a linked ancestor.
+reject_symlink_components() {
+    local path="$1" part current=""
+    [[ "$path" == /* ]] || path="$PWD/$path"
+    [[ ! "$path" =~ [[:cntrl:]] ]] || die "Control characters are not allowed in paths"
+    local -a parts
+    IFS='/' read -r -a parts <<< "$path"
+    for part in "${parts[@]}"; do
+        case "$part" in
+            ''|.) continue ;;
+            ..) die "Parent traversal is not allowed: $path" ;;
+        esac
+        current="$current/$part"
+        [[ ! -L "$current" ]] || die "Symlink path is not allowed: $current"
+    done
+}
+require_regular_file() {
+    reject_symlink_components "$1"
+    [[ -f "$1" ]] || die "Path must be a regular file: $1"
+    [[ "$(stat -c '%h' -- "$1")" == 1 ]] || die "Hard-linked file is not allowed: $1"
+}
+require_directory() {
+    reject_symlink_components "$1"
+    [[ -d "$1" ]] || die "Path must be a directory: $1"
+}
+require_json_object() {
+    require_regular_file "$1"
+    [[ -s "$1" ]] || die "File is empty: $1"
+    jq --exit-status --slurp 'length == 1 and (.[0] | type == "object")' "$1" >/dev/null 2>&1 || die "File is not one JSON object: $1"
+}
+# One OTLP export batch per line, every line an object.
+require_json_lines() {
+    require_regular_file "$1"
+    [[ -s "$1" ]] || die "File is empty: $1"
+    jq --exit-status --slurp 'length >= 1 and all(.[]; type == "object")' "$1" >/dev/null 2>&1 || die "File is not a sequence of JSON objects: $1"
+}
+
+bound_head="" campaign_root="" dual_agent="" components="" ci="" command_log="" output="" mode="final" repo_root=""
+while (($# > 0)); do
+    case "$1" in
+        --bound-head) bound_head="${2:-}"; shift 2 || usage ;;
+        --campaign-root) campaign_root="${2:-}"; shift 2 || usage ;;
+        --dual-agent) dual_agent="${2:-}"; shift 2 || usage ;;
+        --components) components="${2:-}"; shift 2 || usage ;;
+        --ci) ci="${2:-}"; shift 2 || usage ;;
+        --command-log) command_log="${2:-}"; shift 2 || usage ;;
+        --output) output="${2:-}"; shift 2 || usage ;;
+        --mode) mode="${2:-}"; shift 2 || usage ;;
+        --repo-root) repo_root="${2:-}"; shift 2 || usage ;;
+        *) usage ;;
+    esac
+done
+[[ -n "$bound_head" && -n "$campaign_root" && -n "$dual_agent" && -n "$components" && -n "$command_log" && -n "$output" ]] || usage
+case "$mode" in local|final) ;; *) die "Mode must be local or final: $mode" ;; esac
+[[ "$mode" == local || -n "$ci" ]] || die "final mode requires --ci"
+[[ "$bound_head" =~ ^[0-9a-f]{40}$ ]] || die "Bound head must be a full 40-character lowercase commit SHA: $bound_head"
+[[ "$(uname -s)" == Linux ]] || die "Assembler requires Linux and GNU coreutils"
+command -v jq >/dev/null || die "jq is required"
+command -v dotnet >/dev/null || die "dotnet is required to read assembly identity"
+[[ -f "$VALIDATE" && -f "$IDENTITY" ]] || die "Validator or identity reader is missing beside this script"
+[[ -n "$repo_root" ]] || repo_root="$(cd "$SCRIPT_DIR/.." && pwd)"
+require_directory "$repo_root"
+repo_root="$(realpath -e -- "$repo_root")"
+
+# --- source identity ----------------------------------------------------------
+# The bound head is the tree the campaign executed, and that tree must be clean
+# now: an assembler that ran against modified sources would stamp every artefact
+# with a commit it did not read. Both facts come from git, not from arguments.
+cd "$repo_root"
+[[ "$(git rev-parse --show-toplevel 2>/dev/null)" == "$repo_root" ]] || die "Repository root is not the top level of a git working tree: $repo_root"
+[[ "$(git rev-parse HEAD)" == "$bound_head" ]] || die "HEAD is $(git rev-parse HEAD), not the bound head $bound_head"
+[[ -z "$(git status --porcelain)" ]] || die "The working tree is not clean; final evidence cannot be assembled from a dirty tree"
+bound_tree="$(git rev-parse 'HEAD^{tree}')"
+readonly bound_tree
+
+# The dirty-state digest the campaign records is sha256 over `git diff --binary
+# HEAD` plus every untracked path and blob. On a clean tree that is sha256 of
+# nothing, which is the one value that proves cleanliness rather than stability.
+empty_sha256="$(printf '' | sha256sum | cut -d' ' -f1)"
+readonly empty_sha256
+
+# --- output placement ---------------------------------------------------------
+reject_symlink_components "$output"
+output_dir="$(dirname -- "$output")"
+[[ -d "$output_dir" ]] || die "Output directory does not exist: $output_dir"
+output_dir="$(realpath -e -- "$output_dir")"
+case "$output_dir" in
+    "$repo_root"/*) ;;
+    *) die "Output must live inside the repository so the recorder can record it by relative path: $output" ;;
+esac
+git check-ignore -q -- "$output_dir" || die "Output directory must be ignored by git, or writing it would dirty the tree: $output_dir"
+output_name="$(basename -- "$output")"
+[[ "$output_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]] || die "Output file name must be a safe .json name: $output_name"
+[[ ! -e "$output_dir/$output_name" && ! -L "$output_dir/$output_name" ]] || die "Output already exists: $output"
+[[ ! -e "$output_dir/ci-artifacts" && ! -L "$output_dir/ci-artifacts" ]] || die "ci-artifacts already exists beside the output: $output_dir/ci-artifacts"
+[[ ! -e "$output_dir/component-evidence" && ! -L "$output_dir/component-evidence" ]] || die "component-evidence already exists beside the output: $output_dir/component-evidence"
+
+# --- campaign root ------------------------------------------------------------
+require_directory "$campaign_root"
+campaign_root="$(realpath -e -- "$campaign_root")"
+manifest="$campaign_root/run-manifest.json"
+acceptance="$campaign_root/final-acceptance-summary.json"
+source_gate="$campaign_root/source-integrity-gate.json"
+central="$campaign_root/final-central-traffic-summary.json"
+in_process="$campaign_root/replay-inprocess/evidence/issue-719-replay-InProcess.json"
+local_runner="$campaign_root/replay-localrunner/evidence/issue-719-replay-LocalRunner.json"
+trial_files=()
+for trial in trial-1 trial-2 trial-3 trial-4 trial-5; do
+    trial_files+=("$campaign_root/$trial/evidence/issue-211-w6.json")
+done
+trial_files+=("$campaign_root/mono8-control/evidence/issue-211-mono8.json")
+for file in "$manifest" "$acceptance" "$source_gate" "$central" "$in_process" "$local_runner" "${trial_files[@]}"; do
+    require_json_object "$file"
+done
+
+jq -e '.schemaVersion == "issue-211-run-manifest-v1"' "$manifest" >/dev/null || die "Run manifest schema is not issue-211-run-manifest-v1: $manifest"
+manifest_revision="$(jq -r '.revision' "$manifest")"
+[[ "$manifest_revision" == "$bound_head" ]] || die "Run manifest revision $manifest_revision is not the bound head $bound_head"
+manifest_dirty="$(jq -r '.dirtyStateSha256 | ascii_downcase' "$manifest")"
+[[ "$manifest_dirty" == "$empty_sha256" ]] || die "Run manifest dirty-state digest $manifest_dirty is not the clean-tree digest; the campaign ran on a dirty tree"
+manifest_fingerprint="$(jq -r '.worktreeFingerprint' "$manifest")"
+[[ "$manifest_fingerprint" == "${bound_head:0:12}-${empty_sha256:0:12}" ]] || die "Run manifest worktree fingerprint $manifest_fingerprint does not name the clean bound head"
+
+# The campaign's own terminal verdict is a claim the validator never reads. The
+# assembler reads it only to refuse early: every gate must be recorded as passed on
+# this fingerprint, or there is nothing here worth assembling.
+jq -e --arg fp "$manifest_fingerprint" '
+    .schemaVersion == "issue-211-final-acceptance-summary-v1" and .acceptanceReady == true and
+    (.gates | type == "object" and length == 10 and all(.[]; . == true)) and .worktreeFingerprint == $fp' "$acceptance" >/dev/null \
+    || die "The campaign's final acceptance summary does not record every gate as passed on this fingerprint: $acceptance"
+jq -e --arg fp "$manifest_fingerprint" '
+    .schemaVersion == "issue-211-source-integrity-gate-v1" and .passed == true and
+    .unchangedAfterBuildAndTrials == true and .worktreeFingerprint == $fp' "$source_gate" >/dev/null \
+    || die "The campaign's source integrity gate did not pass on this fingerprint: $source_gate"
+
+# Every retained output is re-hashed. The manifest is what the campaign's terminal
+# verification bound; re-verifying here refuses a file altered after the campaign
+# ended instead of recording it under the digest it used to have.
+[[ "$(jq '.retainedOutputs | length' "$manifest")" -gt 0 ]] || die "Run manifest records no retained outputs"
+while IFS=$'\t' read -r path bytes sha; do
+    [[ -n "$path" ]] || continue
+    [[ "$path" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || die "Retained output path is not a safe relative path: $path"
+    file="$campaign_root/$path"
+    require_regular_file "$file"
+    [[ "$(bytes_of "$file")" == "$bytes" ]] || die "Retained output length changed since the campaign: $path"
+    [[ "$(sha256_of "$file")" == "${sha,,}" ]] || die "Retained output digest changed since the campaign: $path"
+done < <(jq -r '.retainedOutputs[] | [.path, .bytes, .sha256] | @tsv' "$manifest")
+
+# --- replay profiles ----------------------------------------------------------
+# Each profile's node list is projected as recorded, in the order the producer
+# recorded it. The validator compares that order to #719's canonical order; the
+# assembler must never sort or reorder a record into shape.
+#
+# The three counters have no producer field, so each is derived from the retained
+# telemetry and refused when the telemetry cannot support the derivation.
+#   publishedOutputs      replay executions carry allow_automatic_publication = 0, and
+#                         the outbox meter proves nothing was queued for delivery:
+#                         hvo.cameraagent.outbox.pending must be recorded and every
+#                         point is summed, so a nonzero backlog is carried, not hidden.
+#   liveRunnerDispatches  the adapter routes to the runner only for Replay-class
+#                         executions. The telemetry check is that the runner's job meter
+#                         is recorded for LocalRunner with no non-completed outcome and is
+#                         absent for InProcess; with that established, live dispatches are
+#                         zero by the adapter's routing rather than by assertion here.
+#   fallbacks             camera_agent.processing.replay.retry and .terminal must be
+#                         recorded; their maxima are carried.
+replay_profile() {
+    local evidence="$1" expected_profile="$2" phase="$3" expected_reused="$4"
+    local trial_dir metrics
+    trial_dir="$(dirname -- "$(dirname -- "$evidence")")"
+    metrics="$trial_dir/evidence/runtime/metrics.json"
+    require_json_lines "$metrics"
+    jq -e --arg p "$expected_profile" --argjson reused "$expected_reused" '
+        .schemaVersion == "issue-719-replay-evidence-v1" and .profile == $p and .declaredProfile == $p and
+        .stateReused == $reused and .result.passed == true and
+        (.replay.replay.executionId | type == "string" and length > 0) and
+        (.replay.replay.status == 2) and (.replay.replay.nodes | type == "array" and length == 14) and
+        all(.replay.replay.nodes[]; .status == "Completed")' "$evidence" >/dev/null \
+        || die "Replay evidence for $expected_profile is not a passed #719 record: $evidence"
+    # metrics.json is one OTLP export batch per line, as the campaign's own scan
+    # reads it. Counters are cumulative, so a counter's value is the maximum across
+    # batches; the outbox gauge is a backlog, so its value is the maximum too, and a
+    # backlog that was ever nonzero is carried rather than averaged away.
+    local derived
+    derived="$(jq -c --slurp '
+        def points($name): [.[] | .resourceMetrics[]?.scopeMetrics[]?.metrics[]? | select(.name == $name) |
+            (.sum.dataPoints[]?, .gauge.dataPoints[]?, .histogram.dataPoints[]?)];
+        def attr($p; $k): first($p.attributes[]? | select(.key == $k) | .value.stringValue) // null;
+        def value: (.asInt // .asDouble // .count // 0) | tonumber;
+        (points("hvo.cameraagent.outbox.pending")) as $outbox |
+        (points("camera_agent.processing.replay.retry")) as $retry |
+        (points("camera_agent.processing.replay.terminal")) as $terminal |
+        (points("camera_agent.processing.replay.dispositions")) as $dispositions |
+        (points("camera_agent.replay_runner.jobs")) as $jobs |
+        {
+          outboxRecorded: ($outbox | length > 0),
+          outboxPending: ([$outbox[] | value] | max // 0),
+          retryRecorded: ($retry | length > 0),
+          retries: ([$retry[] | value] | max // 0),
+          terminalRecorded: ($terminal | length > 0),
+          terminals: ([$terminal[] | value] | max // 0),
+          completedDispositions: ([$dispositions[] | select(attr(.; "outcome") == "Completed")] | length),
+          otherDispositions: ([$dispositions[] | select(attr(.; "outcome") != "Completed")] | length),
+          runnerJobsRecorded: ($jobs | length > 0),
+          runnerNonCompleted: ([$jobs[] | select(attr(.; "outcome") != "completed")] | length)
+        }' "$metrics")"
+    jq -e '.outboxRecorded and .retryRecorded and .terminalRecorded and .completedDispositions >= 1 and .otherDispositions == 0' <<< "$derived" >/dev/null \
+        || die "Replay telemetry for $expected_profile does not record the outbox, retry, terminal and disposition meters the profile counters are derived from: $metrics"
+    if [[ "$expected_profile" == LocalRunner ]]; then
+        jq -e '.runnerJobsRecorded and .runnerNonCompleted == 0' <<< "$derived" >/dev/null \
+            || die "LocalRunner telemetry does not prove the runner completed every job: $metrics"
+    else
+        jq -e '.runnerJobsRecorded | not' <<< "$derived" >/dev/null \
+            || die "InProcess telemetry records replay runner jobs, so the profile did not run in process: $metrics"
+    fi
+    jq -cn --arg schema "$SCHEMA_REPLAY_PROFILE" --arg runner "$expected_profile" --argjson phase "$phase" \
+        --argjson derived "$derived" --slurpfile evidence "$evidence" '
+        {
+          schemaVersion: $schema,
+          runner: $runner,
+          phase: $phase,
+          nodes: [$evidence[0].replay.replay.nodes[].nodeId],
+          publishedOutputs: ($derived.outboxPending | floor),
+          liveRunnerDispatches: 0,
+          fallbacks: (($derived.retries + $derived.terminals) | floor)
+        }'
+}
+in_process_profile="$(replay_profile "$in_process" InProcess 1 false)"
+local_runner_profile="$(replay_profile "$local_runner" LocalRunner 2 true)"
+# The two invocations must be the pair the campaign bound: one capture and one
+# revision, with the second naming the first's execution as its prior.
+jq -en --slurpfile a "$in_process" --slurpfile b "$local_runner" '
+    $a[0].replay.sourceCaptureId == $b[0].replay.sourceCaptureId and
+    $a[0].replay.replay.executionId == $b[0].replay.inProcessExecutionId and
+    $b[0].replay.replay.executionId == $b[0].replay.localRunnerExecutionId and
+    $a[0].replay.graphRevisionId == $b[0].replay.graphRevisionId' >/dev/null \
+    || die "The InProcess and LocalRunner replay records are not one bound pair"
+
+# --- central traffic ----------------------------------------------------------
+# The deny sink's final counts plus every trial's recorded attempts. A nonzero
+# value is carried as-is; refusing it is the validator's job.
+jq -e '.schemaVersion == "issue-211-final-central-traffic-summary-v5"' "$central" >/dev/null \
+    || die "Final central traffic summary is not the v5 schema: $central"
+central_attempts="$(jq '(.centralHandlerAttempts | tonumber) + ((.finalCentralHandlerAttempts // 0) | tonumber) + (.finalDenyHits | tonumber)' "$central")"
+trial_attempts="$(jq -s '[.[] | ((.centralTrafficAttempts // 0) | tonumber), ((.centralHandlerAttempts // 0) | tonumber)] | add' "${trial_files[@]}")"
+central_attempts="$((central_attempts + trial_attempts))"
+
+# --- dual agent ---------------------------------------------------------------
+require_json_object "$dual_agent"
+jq -e --arg head "$bound_head" --arg clean "$empty_sha256" '
+    .schemaVersion == "issue-197-dual-agent-final-v2" and .evidenceMode == "final" and .trialCount == 5 and
+    .revision.commit == $head and .revision.clean == true and (.revision.dirtyStateSha256 | ascii_downcase) == $clean and
+    (.citable | type == "boolean")' "$dual_agent" >/dev/null \
+    || die "The #197 summary is not a final five-trial record on the clean bound head: $dual_agent"
+dual_agent_section="$(jq -c '{citable: .citable, evidenceMode: .evidenceMode}' "$dual_agent")"
+
+# --- test assemblies ----------------------------------------------------------
+# The acceptance assembly the campaign executed. The campaign hashes it before and
+# after the trials but retains neither value, so the binding is that the tree is
+# clean at the bound head and the assembly on disk is a Release build carrying that
+# head in its informational version. Identity is read from metadata; the assembly
+# is not loaded.
+assembly="$repo_root/$ACCEPTANCE_ASSEMBLY"
+require_regular_file "$assembly"
+assembly_identity="$(dotnet fsi --quiet --exec "$IDENTITY" "$assembly" 2>/dev/null)" \
+    || die "Could not read assembly identity from $assembly"
+IFS=$'\t' read -r assembly_mvid assembly_configuration assembly_version <<< "$assembly_identity"
+[[ "$assembly_mvid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "Assembly MVID is not a GUID: $assembly_mvid"
+[[ "$assembly_configuration" == Release ]] || die "Acceptance assembly on disk is a ${assembly_configuration:-<unknown>} build, not Release"
+[[ "$assembly_version" == *"+$bound_head" ]] || die "Acceptance assembly informational version ${assembly_version:-<unknown>} does not carry the bound head"
+test_assemblies="$(jq -cn --arg path "$ACCEPTANCE_ASSEMBLY" --arg sha "$(sha256_of "$assembly")" \
+    --arg mvid "$assembly_mvid" --arg configuration "$assembly_configuration" --arg version "$assembly_version" \
+    '[{configuration:$configuration, informationalVersion:$version, mvid:$mvid, path:$path, sha256:$sha}]')"
+
+# --- commands -----------------------------------------------------------------
+require_regular_file "$command_log"
+commands='[]'
+while IFS=$'\t' read -r command_id exit_code receipt_path argv_rest; do
+    [[ -n "$command_id" ]] || continue
+    [[ "$command_id" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,39}$ ]] || die "Command id is not a bounded token: $command_id"
+    [[ "$exit_code" =~ ^[0-9]+$ ]] || die "Command $command_id exit code is not a non-negative integer: $exit_code"
+    [[ "$receipt_path" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || die "Command $command_id receipt path is not a safe relative path: $receipt_path"
+    receipt="$campaign_root/$receipt_path"
+    require_regular_file "$receipt"
+    [[ -n "$argv_rest" ]] || die "Command $command_id records no argv"
+    commands="$(jq -c --arg id "$command_id" --argjson exit "$exit_code" \
+        --arg receipt "$(sha256_of "$receipt")" --arg argv "$(printf '%s' "$argv_rest" | sha256sum | cut -d' ' -f1)" \
+        '. + [{argvSha256:$argv, commandId:$id, exitCode:$exit, receiptSha256:$receipt}]' <<< "$commands")"
+done < "$command_log"
+[[ "$(jq 'length' <<< "$commands")" -gt 0 ]] || die "The command log records no commands: $command_log"
+[[ "$(jq '[.[].commandId] | length == (unique | length)' <<< "$commands")" == true ]] || die "The command log repeats a command id"
+
+# --- artifacts ----------------------------------------------------------------
+# Every retained campaign output, re-hashed above. Claimability follows the rule
+# EvidenceSourceIdentity applies: the tree is clean and the requested revision is
+# HEAD, which is the strongest state that exists and is still review-required.
+artifacts="$(jq -c --arg head "$bound_head" --arg tree "$bound_tree" '
+    [.retainedOutputs[] | {
+        admissible: true,
+        claimability: "clean-source-attributed-review-required",
+        path: .path,
+        sha256: (.sha256 | ascii_downcase),
+        sourceRevision: $head,
+        sourceTree: $tree
+    }] | sort_by(.path)' "$manifest")"
+
+# --- components and ci --------------------------------------------------------
+require_json_object "$components"
+components_dir="$(dirname -- "$(realpath -e -- "$components")")"
+jq -e --arg head "$bound_head" '
+    .schemaVersion == "issue-535-component-evidence-v1" and (.records | length) == 4 and
+    all(.records[]; .headSha == $head)' "$components" >/dev/null \
+    || die "components.json is not a four-record exact-head component projection: $components"
+require_directory "$components_dir/component-evidence"
+ci_section='null'
+if [[ -n "$ci" ]]; then
+    require_json_object "$ci"
+    ci_dir="$(dirname -- "$(realpath -e -- "$ci")")"
+    jq -e --arg head "$bound_head" '.schemaVersion == "issue-535-ci-import-v1" and .run.headSha == $head and .run.attempt == 1' "$ci" >/dev/null \
+        || die "ci.json is not a first-attempt import on the bound head: $ci"
+    require_directory "$ci_dir/ci-artifacts"
+    ci_section="$(jq -c '.' "$ci")"
+fi
+
+# --- source fingerprints ------------------------------------------------------
+# The campaign asserted the tree unchanged from build through trials and terminal
+# verification; its dirty-state digest is the fingerprint, recorded once and
+# re-verified at each checkpoint rather than recorded twice, so start and end are
+# one value by that gate's contract.
+fingerprint="${manifest_dirty^^}"
+
+# --- assemble -----------------------------------------------------------------
+staging="$(mktemp -d "$output_dir/.assemble.XXXXXX")"
+trap 'rm -rf -- "$staging"' EXIT
+cp -a -- "$components_dir/component-evidence" "$staging/component-evidence"
+if [[ -n "$ci" ]]; then
+    cp -a -- "$ci_dir/ci-artifacts" "$staging/ci-artifacts"
+fi
+find "$staging" -type f -exec chmod 600 {} +
+find "$staging" -type d -exec chmod 700 {} +
+
+# The sections travel through files rather than arguments: an aggregate over a
+# few hundred retained outputs is larger than an argument vector may be.
+sections="$staging/.sections"
+mkdir "$sections"
+printf '%s' "$artifacts" > "$sections/artifacts.json"
+printf '%s' "$commands" > "$sections/commands.json"
+printf '%s' "$dual_agent_section" > "$sections/dual-agent.json"
+printf '%s' "$in_process_profile" > "$sections/in-process.json"
+printf '%s' "$local_runner_profile" > "$sections/local-runner.json"
+printf '%s' "$test_assemblies" > "$sections/test-assemblies.json"
+printf '%s' "$ci_section" > "$sections/ci.json"
+jq -nS \
+    --slurpfile artifacts "$sections/artifacts.json" \
+    --argjson centralTrafficAttempts "$central_attempts" \
+    --slurpfile ci "$sections/ci.json" \
+    --slurpfile commands "$sections/commands.json" \
+    --slurpfile components "$components" \
+    --slurpfile dualAgent "$sections/dual-agent.json" \
+    --arg head "$bound_head" \
+    --arg fingerprint "$fingerprint" \
+    --slurpfile inProcess "$sections/in-process.json" \
+    --slurpfile localRunner "$sections/local-runner.json" \
+    --slurpfile testAssemblies "$sections/test-assemblies.json" '
+    {
+      artifacts: $artifacts[0],
+      centralTrafficAttempts: $centralTrafficAttempts,
+      commands: $commands[0],
+      components: $components[0],
+      dualAgent: $dualAgent[0],
+      heads: {aggregate: $head, candidateB: $head, execution: $head, protectedCi: $head, reviewed: $head},
+      replayProfiles: [$inProcess[0], $localRunner[0]],
+      source: {clean: true, endFingerprint: $fingerprint, startFingerprint: $fingerprint},
+      testAssemblies: $testAssemblies[0]
+    } + (if $ci[0] == null then {} else {ci: $ci[0]} end)' > "$staging/$output_name"
+rm -rf -- "$sections"
+chmod 600 "$staging/$output_name"
+
+# Validate in place before anything is published. A refusal leaves nothing behind,
+# and the validator's own document says why.
+verdict="$("$VALIDATE" "$mode" --evidence "$staging/$output_name" --bound-head "$bound_head" 2>/dev/null)" && validated=true || validated=false
+if [[ "$validated" != true ]]; then
+    printf 'The validator refused the assembled evidence in %s mode; nothing was written.\n' "$mode" >&2
+    printf '%s\n' "$verdict" >&2
+    exit 1
+fi
+
+# The tree must still be clean and at the bound head after everything was read.
+[[ "$(git rev-parse HEAD)" == "$bound_head" && -z "$(git status --porcelain)" ]] || die "Source changed during assembly"
+
+mv -T --no-clobber -- "$staging/component-evidence" "$output_dir/component-evidence"
+if [[ -n "$ci" ]]; then
+    mv -T --no-clobber -- "$staging/ci-artifacts" "$output_dir/ci-artifacts"
+fi
+mv --no-clobber -- "$staging/$output_name" "$output_dir/$output_name"
+[[ -f "$output_dir/$output_name" ]] || die "Output was not written: $output"
+printf '%s\n' "$verdict"

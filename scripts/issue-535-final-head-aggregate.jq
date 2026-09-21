@@ -372,9 +372,19 @@ def free_text_final_problems:
 # and the validator checks each profile against it rather than against the other
 # profile. If #719 changes its node set this literal must change with it, and the
 # fixture gate fails loudly when it has not.
+#
+# The order is the recorded execution order: the #719 producer projects
+# `processing_execution_nodes` by rowid, which is the order the compiled plan
+# scheduled the nodes, and both profiles on every campaign head have recorded it.
+# Until #961 this literal carried the W6 template's definition order instead, in
+# which `combined-preview` precedes `quality` and `cloud`; the plan schedules it
+# after them because it consumes their outputs. A literal in an order no producer
+# emits refuses every honest record, and re-ordering a record to satisfy it would
+# be evidence reporting an order it did not observe. The definition order is kept
+# as a fixture (`replay-nodes-definition-order`) so the distinction stays loud.
 def canonical_replay_nodes:
     ["projected-scene", "calibration", "calibrated-preview", "rolling",
-     "combined-preview", "quality", "cloud", "scene-presentation",
+     "quality", "cloud", "scene-presentation", "combined-preview",
      "cloud-presentation", "environment-presentation", "overlay-manifest",
      "presentation-materializer", "storage", "telemetry"];
 
