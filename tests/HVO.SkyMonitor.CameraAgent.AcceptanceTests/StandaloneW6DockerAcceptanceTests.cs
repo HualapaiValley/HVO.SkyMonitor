@@ -943,7 +943,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             .Single(static artifact => artifact.Role == FrameArtifactRole.Raw)
             .ArtifactId;
 
-        var submitted = await SubmitReplayAsync(session, source.CaptureId, primaryArtifactId, graphRevisionId)
+        var submitted = await SubmitReplayAsync(session, source.CaptureId, primaryArtifactId, graphRevisionId, profile)
             .ConfigureAwait(false);
         var detail = await WaitForTerminalExecutionAsync(session, submitted.ExecutionId).ConfigureAwait(false);
         AssertReplayCadence(detail.Execution, profile);
@@ -1066,7 +1066,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var liveDetail = await ReadExecutionDetailAsync(session, live.ExecutionId).ConfigureAwait(false);
 
         var submitted = await SubmitReplayAsync(
-            session, prior.CaptureId, prior.PrimaryArtifactId, prior.GraphRevisionId).ConfigureAwait(false);
+            session, prior.CaptureId, prior.PrimaryArtifactId, prior.GraphRevisionId, profile).ConfigureAwait(false);
         Assert.AreNotEqual(
             prior.ExecutionId,
             submitted.ExecutionId,
@@ -1102,12 +1102,19 @@ public sealed class StandaloneW6DockerAcceptanceTests
     /// <summary>
     /// Submits one archived replay and returns the execution the host accepted. The 202 body already
     /// carries the execution, so there is no poll to discover the identifier this call just created.
+    /// <para>
+    /// The trigger reference carries the profile. Durable state admits one replay execution per
+    /// (capture, revision, trigger kind, trigger reference), and the second invocation replays
+    /// exactly the first invocation's capture and revision by design, so a shared reference would
+    /// make the LocalRunner submission a 409 conflict rather than a new execution (#956).
+    /// </para>
     /// </summary>
     private static async Task<ProcessingGraphExecutionState> SubmitReplayAsync(
         HttpClient client,
         Guid captureId,
         Guid primaryArtifactId,
-        string graphRevisionId)
+        string graphRevisionId,
+        string profile)
     {
         var token = await GetAntiforgeryTokenAsync(client).ConfigureAwait(false);
         using var request = new HttpRequestMessage(
@@ -1121,9 +1128,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
             graphRevisionId,
             primaryArtifactId,
             triggerKind = "operator",
-            triggerReference = "issue-719",
+            triggerReference = $"issue-719-{profile}",
             priority = 0,
-            reason = "Issue #719 canonical archived replay"
+            reason = $"Issue #719 canonical archived replay ({profile})"
         });
         using var response = await client.SendAsync(request).ConfigureAwait(false);
         Assert.AreEqual(
