@@ -64,7 +64,7 @@
       "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
       "scenarioCount": 80,
       "uniqueMethodCount": 22,
-      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"ee117c1e8cf3e04998825d366da663e16c2b95ed\" && test \"$(git rev-parse HEAD^{tree})\" = \"17a0ad69452d710c82847f9a515022de05ebfaa5\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --no-restore -p:NoIncremental=true -p:PathMap=\"$(pwd)=hvo-source\" --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/ee117c1e8cf3e04998825d366da663e16c2b95ed/cameraagent-tests/{method-id} --logger \"trx;LogFileName=result.trx\"",
+      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"8388002ce69aa1fa194e7644bd8f35352ac10acf\" && test \"$(git rev-parse HEAD^{tree})\" = \"f045fcc2661ac6556d6765c13d5b03b3f223845e\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --no-restore -p:NoIncremental=true -p:PathMap=\"$(pwd)=hvo-source\" --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/8388002ce69aa1fa194e7644bd8f35352ac10acf/cameraagent-tests/{method-id} --logger \"trx;LogFileName=result.trx\"",
       "input": "One clean-revision TRX and one strict scenario-evidence entry per mapped scenario; case selectors address source evidence, never a TRX data row.",
       "sanitizer": "phase14-trx-sanitizer-v1",
       "admissibilityValidator": "phase14-source-import-v1"
@@ -75,7 +75,7 @@
       "project": "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj",
       "scenarioCount": 6,
       "uniqueMethodCount": 1,
-      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"ee117c1e8cf3e04998825d366da663e16c2b95ed\" && test \"$(git rev-parse HEAD^{tree})\" = \"17a0ad69452d710c82847f9a515022de05ebfaa5\" && test -z \"$(git status --porcelain)\" && HVO_CATALOG_PERF_ROOT={installed-catalog-root} HVO_OTEL_COLLECTOR_IMAGE={collector-image-at-reviewed-digest} HVO_ISSUE_211_TRIAL_COUNT=5 HVO_PHASE14_BUILD_PATH_MAP=\"$(pwd)=hvo-source\" ./scripts/test:cameraagent-standalone-211",
+      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"8388002ce69aa1fa194e7644bd8f35352ac10acf\" && test \"$(git rev-parse HEAD^{tree})\" = \"f045fcc2661ac6556d6765c13d5b03b3f223845e\" && test -z \"$(git status --porcelain)\" && HVO_CATALOG_PERF_ROOT={installed-catalog-root} HVO_OTEL_COLLECTOR_IMAGE={collector-image-at-reviewed-digest} HVO_ISSUE_211_TRIAL_COUNT=5 HVO_PHASE14_BUILD_PATH_MAP=\"$(pwd)=hvo-source\" ./scripts/test:cameraagent-standalone-211",
       "input": "The complete issue-211 five-trial retained bundle; each mapped selector must resolve to a strict scenario-evidence entry rather than the method-level TRX alone.",
       "sanitizer": "phase14-trx-sanitizer-v1",
       "admissibilityValidator": "phase14-source-import-v1"
@@ -86,7 +86,7 @@
       "project": "tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj",
       "scenarioCount": 22,
       "uniqueMethodCount": 6,
-      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"ee117c1e8cf3e04998825d366da663e16c2b95ed\" && test \"$(git rev-parse HEAD^{tree})\" = \"17a0ad69452d710c82847f9a515022de05ebfaa5\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --configuration Release --no-restore -p:NoIncremental=true -p:PathMap=\"$(pwd)=hvo-source\" --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/ee117c1e8cf3e04998825d366da663e16c2b95ed/logichost-integration/{method-id} --logger \"trx;LogFileName=result.trx\"",
+      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"8388002ce69aa1fa194e7644bd8f35352ac10acf\" && test \"$(git rev-parse HEAD^{tree})\" = \"f045fcc2661ac6556d6765c13d5b03b3f223845e\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --configuration Release --no-restore -p:NoIncremental=true -p:PathMap=\"$(pwd)=hvo-source\" --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/8388002ce69aa1fa194e7644bd8f35352ac10acf/logichost-integration/{method-id} --logger \"trx;LogFileName=result.trx\"",
       "input": "One clean-revision TRX and one strict scenario-evidence entry per mapped scenario; case selectors address source evidence, never a TRX data row.",
       "sanitizer": "phase14-trx-sanitizer-v1",
       "admissibilityValidator": "phase14-source-import-v1"
@@ -94,8 +94,8 @@
   ],
   "sourceEvidenceContract": {
     "schemaVersion": 2,
-    "requiredSourceRevision": "ee117c1e8cf3e04998825d366da663e16c2b95ed",
-    "requiredSourceTree": "17a0ad69452d710c82847f9a515022de05ebfaa5",
+    "requiredSourceRevision": "8388002ce69aa1fa194e7644bd8f35352ac10acf",
+    "requiredSourceTree": "f045fcc2661ac6556d6765c13d5b03b3f223845e",
     "revisionPolicy": "exact-definition-pinned-product-source-with-reviewed-clean-descendant-evidence-harness",
     "evidenceHarnessPolicy": {
       "relationship": "clean-descendant-of-required-source-revision",

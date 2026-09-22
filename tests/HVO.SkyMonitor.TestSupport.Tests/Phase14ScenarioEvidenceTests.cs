@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.Tests;
 [DoNotParallelize]
 public sealed class Phase14ScenarioEvidenceTests
 {
-    private const string Revision = "ee117c1e8cf3e04998825d366da663e16c2b95ed";
+    private const string Revision = "8388002ce69aa1fa194e7644bd8f35352ac10acf";
     private const string Tree = "0123456789abcdef0123456789abcdef01234567";
     private string? originalRoot;
     private string? originalAllowedRoot;
