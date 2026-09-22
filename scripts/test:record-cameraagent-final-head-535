@@ -655,6 +655,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' \
         continue
     fi
     # The temporary exists in the window; that is what makes the signal case real.
+    cases=$((cases + 1))
     [[ -n "$(find "$signal_tmp" -mindepth 1 -type f -print -quit)" ]] || fail "support inventory temporary was not present when $signal was sent"
     kill -s "$signal" "$verify_pid"
     # bash runs a trap only once the foreground child returns, so the held
@@ -664,6 +665,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' \
     verify_status=0; wait "$verify_pid" || verify_status=$?
     case "$signal" in INT) want=130 ;; TERM) want=143 ;; HUP) want=129 ;; esac
     assert_equal "verify dies of $signal rather than exiting normally" "$want" "$verify_status"
+    cases=$((cases + 1))
     [[ -z "$(find "$signal_tmp" -mindepth 1 -print -quit)" ]] || fail "$signal during verification leaked a support inventory temporary"
 done
 assert_equal "pointer is unchanged by interrupted verification" "$pointer_before" \
