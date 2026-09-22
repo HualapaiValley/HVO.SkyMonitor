@@ -68,7 +68,8 @@ jobs:
             # the v1 head it promoted, and its first parent is the previous promotion's merge
             # commit, which is also on main only. So a parent qualifies when it is on v1 or
             # when it is a stray already accepted as a promotion merge; the strays are walked
-            # oldest-first so the chain is accepted in order. Any other shape (a hotfix, a
+            # oldest-first so the chain is accepted in order, and each tolerated merge must
+            # carry the tree of the v1 head it promoted. Any other shape (a hotfix, a
             # mis-targeted PR, a squash, a merge with a foreign parent) is a bypass of the
             # branch model and needs a person, so halt rather than open a PR that would carry
             # it back into v1 by implication.
@@ -80,15 +81,32 @@ jobs:
                 printf '::error::%s has non-merge commit %s that %s lacks; promotion halted until %s is synchronized into %s.\n' "$TARGET" "${sha:0:8}" "$SOURCE" "$TARGET" "$SOURCE"
                 exit 1
               fi
+              source_parent=""
               for parent in $parents; do
                 [[ -z "${tolerated[$parent]+set}" ]] || continue
                 if [[ "$(gh api "repos/$REPOSITORY/compare/$SOURCE...$parent" --jq .ahead_by)" != 0 ]]; then
                   printf '::error::%s has merge commit %s with parent %s that is not on %s; promotion halted until %s is synchronized into %s.\n' "$TARGET" "${sha:0:8}" "${parent:0:8}" "$SOURCE" "$TARGET" "$SOURCE"
                   exit 1
                 fi
+                source_parent="$parent"
               done
+              # Ancestry alone admits an "evil merge": admissible parents under an
+              # arbitrary tree. A promotion merge exists only to preserve SHAs, so its
+              # tree must equal the tree of the v1 head it promoted; a merge with no
+              # parent on v1 (every parent already tolerated) has nothing it could have
+              # promoted and is refused for the same reason.
+              if [[ -z "$source_parent" ]]; then
+                printf '::error::%s has merge commit %s with no parent on %s; promotion halted until %s is synchronized into %s.\n' "$TARGET" "${sha:0:8}" "$SOURCE" "$TARGET" "$SOURCE"
+                exit 1
+              fi
+              merge_tree="$(gh api "repos/$REPOSITORY/git/commits/$sha" --jq .tree.sha)"
+              parent_tree="$(gh api "repos/$REPOSITORY/git/commits/$source_parent" --jq .tree.sha)"
+              if [[ -z "$merge_tree" || "$merge_tree" != "$parent_tree" ]]; then
+                printf '::error::%s has merge commit %s whose tree %s differs from the tree %s of its %s parent %s; promotion halted until a person reviews it.\n' "$TARGET" "${sha:0:8}" "${merge_tree:0:8}" "${parent_tree:0:8}" "$SOURCE" "${source_parent:0:8}"
+                exit 1
+              fi
               tolerated["$sha"]=1
-              printf 'Tolerating %s merge commit %s: every parent is on %s or an earlier tolerated promotion merge.\n' "$TARGET" "${sha:0:8}" "$SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
+              printf 'Tolerating %s merge commit %s: every parent is on %s or an earlier tolerated promotion merge, and its tree is the promoted %s tree.\n' "$TARGET" "${sha:0:8}" "$SOURCE" "$SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
             done <<< "$stray"
           fi
           if [[ "$ahead" == 0 ]]; then

@@ -6,7 +6,8 @@ export LC_ALL=C
 #
 # `promote-main.yml` refuses to open a promotion pull request when `main` carries
 # commits that `development/v1` lacks, unless every such commit is a promotion
-# merge whose parents are on v1 or are earlier tolerated promotion merges. PR #914
+# merge whose parents are on v1 or are earlier tolerated promotion merges and
+# whose tree is the tree of the v1 head it promoted (#972). PR #914
 # tolerated one promotion; the chain case was not written down, and the second
 # nightly promotion after it was refused because its first parent was the first
 # promotion's merge commit (#963). This gate extracts the step body from the
@@ -41,8 +42,11 @@ EOF
 grep -q 'done <<< "\$stray"' "$WORK/behind.sh" || { printf 'Could not extract the behind-check from %s.\n' "$WORKFLOW" >&2; exit 1; }
 
 # A stub gh: the compare of SOURCE...TARGET lists the stray commits as
-# "<sha> <parent-count> <parents...>", and SOURCE...<sha> reports how far a
-# commit is ahead of v1 (0 means it is on v1).
+# "<sha> <parent-count> <parents...>", SOURCE...<sha> reports how far a commit is
+# ahead of v1 (0 means it is on v1), and git/commits/<sha> reports the commit's
+# tree. TREES names each commit's tree; a promotion merge M<n> carries the tree of
+# the V<n> it promoted unless a case says otherwise.
+declare -A TREES=([P0]=tP0 [V1]=tV1 [V2]=tV2 [V3]=tV3 [M1]=tV1 [M2]=tV2 [M3]=tV3 [FOREIGN]=tF [H1]=tH1)
 stub() {
     local strays="$1"; shift
     mkdir -p "$WORK/bin"
@@ -54,6 +58,10 @@ stub() {
         local pair
         for pair in "$@"; do
             printf '  *"compare/development/v1...%s "*) echo %s;;\n' "${pair%%=*}" "${pair#*=}"
+        done
+        local name
+        for name in "${!TREES[@]}"; do
+            printf '  *"git/commits/%s "*) echo %s;;\n' "$name" "${TREES[$name]}"
         done
         printf '  *) echo "unexpected gh call: $*" >&2; exit 9;;\nesac\n'
     } > "$WORK/bin/gh"
@@ -102,6 +110,28 @@ expect "non-merge stray commit" 1 "non-merge commit H1"
 # A non-merge stray after a tolerated promotion still halts.
 stub '"M1 2 P0 V1" "H1 1 M1"' P0=0 V1=0 M1=1
 expect "non-merge stray after a promotion" 1 "non-merge commit H1"
+
+# An evil merge: admissible parents, but a tree that is not the promoted v1 tree.
+TREES[M2]=tEvil
+stub '"M1 2 P0 V1" "M2 2 M1 V2"' P0=0 V1=0 V2=0 M1=1
+expect "merge with admissible parents and a foreign tree" 1 "whose tree tEvil differs from the tree tV2"
+TREES[M2]=tV2
+
+# A merge whose tree the API cannot report is refused rather than tolerated.
+TREES[M2]=""
+stub '"M1 2 P0 V1" "M2 2 M1 V2"' P0=0 V1=0 V2=0 M1=1
+expect "merge whose tree is unavailable" 1 "whose tree  differs"
+TREES[M2]=tV2
+
+# A merge of two tolerated merges has no v1 parent and nothing it could have promoted.
+TREES[Z]=tV2
+stub '"M1 2 P0 V1" "M2 2 M1 V2" "Z 2 M2 M1"' P0=0 V1=0 V2=0 M1=1 M2=2
+expect "merge of two tolerated merges" 1 "merge commit Z with no parent on development/v1"
+unset 'TREES[Z]'
+
+# The real shape on main today: the tree of #922's merge equals its v1 parent's tree.
+stub '"M1 2 P0 V1" "M2 2 M1 V2"' P0=0 V1=0 V2=0 M1=1
+expect "chain with matching trees is the ordinary promotion shape" 0 "its tree is the promoted development/v1 tree"
 
 if ((failures > 0)); then
     printf '%s of %s promotion behind-check cases failed.\n' "$failures" "$cases" >&2
