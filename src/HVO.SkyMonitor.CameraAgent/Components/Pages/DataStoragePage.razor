@@ -11,7 +11,7 @@
 
 <div class="data-page">
     <PageHeader Eyebrow="Durable local queues" Title="Data &amp; storage" Lead="Raw ingress, capture lanes, processing, delivery outboxes, and container-visible storage as recorded by the durable stores. Storage paths are never disclosed.">
-        <button class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
+        <button class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
     </PageHeader>
 
     @if (_loading && _view is null)
@@ -21,7 +21,7 @@
     else if (_view is null)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Data and storage facts unavailable" Message="@_message">
-            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Try again</button>
+            <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Try again</button>
         </PageStateNotice>
     }
     else

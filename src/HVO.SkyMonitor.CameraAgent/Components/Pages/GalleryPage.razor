@@ -14,7 +14,7 @@
         <div class="heading-aside">
             @if (_page is not null)
             {
-                <span class="result-count">@_page.Items.Count result@(_page.Items.Count == 1 ? string.Empty : "s")</span>
+                <span class="hvo-chip hvo-chip--neutral result-count">@_page.Items.Count result@(_page.Items.Count == 1 ? string.Empty : "s")</span>
             }
             <a class="btn btn-outline-light" href="/archive/calendar">Calendar</a>
             <a class="btn btn-outline-light" href="/archive/products">Products</a>
@@ -48,7 +48,7 @@
     }
     else if (_errorMessage is not null)
     {
-        <section class="gallery-state gallery-state--error" role="alert"><div><strong>Gallery unavailable</strong><p>@_errorMessage</p></div><button type="button" class="btn btn-outline-light" @onclick="ReloadAsync">Try again</button></section>
+        <section class="gallery-state gallery-state--error" role="alert"><div><strong>Gallery unavailable</strong><p>@_errorMessage</p></div><button type="button" class="btn btn-outline-light btn-sm" @onclick="ReloadAsync">Try again</button></section>
     }
     else if (_page is null || _page.Items.Count == 0)
     {

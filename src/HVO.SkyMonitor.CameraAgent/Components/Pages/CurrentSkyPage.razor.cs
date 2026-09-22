@@ -161,11 +161,11 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private string FreshnessClass => _presentation?.ImageFreshness switch
     {
-        CameraAgentPresentationImageFreshness.Current => "status-chip--current",
+        CameraAgentPresentationImageFreshness.Current => "hvo-chip--success",
         CameraAgentPresentationImageFreshness.Delayed or CameraAgentPresentationImageFreshness.Historical =>
-            "status-chip--warning",
-        CameraAgentPresentationImageFreshness.Stale => "status-chip--danger",
-        _ => "status-chip--neutral"
+            "hvo-chip--warning",
+        CameraAgentPresentationImageFreshness.Stale => "hvo-chip--danger",
+        _ => "hvo-chip--neutral"
     };
 
     private string SystemLabel => _presentation?.System.State switch
@@ -179,11 +179,11 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private string SystemClass => _presentation?.System.State switch
     {
-        CameraAgentPresentationSystemState.Capturing => "status-chip--current",
+        CameraAgentPresentationSystemState.Capturing => "hvo-chip--success",
         CameraAgentPresentationSystemState.Standby or CameraAgentPresentationSystemState.Paused =>
-            "status-chip--warning",
-        CameraAgentPresentationSystemState.Unavailable => "status-chip--danger",
-        _ => "status-chip--neutral"
+            "hvo-chip--warning",
+        CameraAgentPresentationSystemState.Unavailable => "hvo-chip--danger",
+        _ => "hvo-chip--neutral"
     };
 
     private string SummaryEyebrow => _presentation?.ImageFreshness switch

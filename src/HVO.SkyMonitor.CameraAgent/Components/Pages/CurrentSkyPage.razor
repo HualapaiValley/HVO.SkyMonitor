@@ -15,7 +15,7 @@
             <h1 id="current-sky-heading" tabindex="-1">Current sky</h1>
             <p>The latest useful durable image leads. Image age and CameraAgent state are reported independently.</p>
         </div>
-        <button type="button" class="refresh-link" disabled="@_refreshing" @onclick="RefreshNowAsync">Refresh image</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm refresh-link" disabled="@_refreshing" @onclick="RefreshNowAsync">Refresh image</button>
     </header>
 
     @if (_errorMessage is not null)
@@ -42,13 +42,13 @@
                 <PersistentContent>
                     @if (FactCapture is not null)
                     {
-                        <a class="image-action" href="@DetailUrl">Open capture details</a>
+                        <a class="btn btn-overlay btn-sm image-action" href="@DetailUrl">Open capture details</a>
                     }
                 </PersistentContent>
                 <ChildContent>
                 @if (_presentation?.DisplayCapture is not null && SelectedSlot is not null)
                 {
-                    <button id="current-sky-view-large" type="button" class="image-action" @onclick="OpenViewer">View large image</button>
+                    <button id="current-sky-view-large" type="button" class="btn btn-overlay btn-sm image-action" @onclick="OpenViewer">View large image</button>
                 }
                 </ChildContent>
             </CaptureImage>
@@ -65,8 +65,8 @@
         <aside class="current-sky-summary" aria-label="Current sky status and capture facts"
                aria-live="polite" aria-atomic="true" aria-busy="@(_refreshing ? "true" : "false")">
             <div class="status-chips" aria-label="Independent image and system states">
-                <span class="status-chip @FreshnessClass">@FreshnessLabel</span>
-                <span class="status-chip @SystemClass">@SystemLabel</span>
+                <span class="hvo-chip status-chip @FreshnessClass">@FreshnessLabel</span>
+                <span class="hvo-chip status-chip @SystemClass">@SystemLabel</span>
             </div>
             <p class="eyebrow">@SummaryEyebrow</p>
             <h2>@SummaryHeading</h2>

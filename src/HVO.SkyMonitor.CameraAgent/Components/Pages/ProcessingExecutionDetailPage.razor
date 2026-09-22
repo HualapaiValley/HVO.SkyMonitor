@@ -11,7 +11,7 @@
 
 <div class="execution-page">
     <PageHeader Eyebrow="Immutable execution identity" Title="@(_view is null ? "Execution" : $"{_view.Execution.ExecutionClass} execution {ProcessingExecutionsPage.Short(_view.Execution.ExecutionId)}")" Lead="Graph and stage navigation over one durable execution: node dependencies and status, timing, attempts, exact inputs and outputs with checksums, and lineage back to the source capture.">
-        <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="RefreshAsync">Refresh</button>
+        <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="RefreshAsync">Refresh</button>
     </PageHeader>
 
     <nav class="execution-links" aria-label="Execution navigation">
@@ -35,7 +35,7 @@
     else if (_view is null)
     {
         <PageStateNotice Kind="@(_notFound ? PageStateNotice.PageStateKind.Info : PageStateNotice.PageStateKind.Error)" Title="@(_notFound ? "Execution not found" : "Execution unavailable")" Message="@_message">
-            @if (!_notFound) { <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="RefreshAsync">Try again</button> }
+            @if (!_notFound) { <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="RefreshAsync">Try again</button> }
         </PageStateNotice>
     }
     else

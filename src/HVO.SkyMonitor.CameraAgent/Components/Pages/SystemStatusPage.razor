@@ -21,7 +21,7 @@
     }
     else if (_errorMessage is not null || _status is null)
     {
-        <section class="system-state system-state--error" role="alert"><div><strong>System status unavailable</strong><p>@(_errorMessage ?? "The startup configuration snapshot could not be read.")</p></div><button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button></section>
+        <section class="system-state system-state--error" role="alert"><div><strong>System status unavailable</strong><p>@(_errorMessage ?? "The startup configuration snapshot could not be read.")</p></div><button type="button" class="btn btn-outline-light btn-sm" @onclick="LoadAsync">Try again</button></section>
     }
     else
     {

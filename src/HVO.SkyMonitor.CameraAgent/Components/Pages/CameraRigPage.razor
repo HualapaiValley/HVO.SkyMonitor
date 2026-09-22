@@ -11,7 +11,7 @@
 
 <div class="camera-page">
     <PageHeader Eyebrow="Immutable local profile" Title="Camera &amp; rig" Lead="Optics, orientation, exposure, and control policy of the local capture profile. Changes become a validated draft revision that is applied only at a capture boundary from the capture schedule.">
-        <button class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+        <button class="btn btn-outline-light btn-sm" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
     </PageHeader>
 
     @if (_loading)
@@ -21,7 +21,7 @@
     else if (_state is null || _model is null)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Profile unavailable" Message="@_message">
-            <button type="button" class="btn btn-outline-light" @onclick="RefreshAsync">Try again</button>
+            <button type="button" class="btn btn-outline-light btn-sm" @onclick="RefreshAsync">Try again</button>
         </PageStateNotice>
     }
     else

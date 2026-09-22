@@ -89,6 +89,149 @@ body[data-theme="hvo-dark"] .btn-link {
     color: var(--hvo-accent);
 }
 
+/* ------------------------------------------------------------------------
+   Shared control vocabulary (#984). Every interactive control on an operator
+   page is one of: .btn (action; colour variants only, one shape), .hvo-segmented
+   (mutually exclusive choice), .hvo-chip (read-only status), or a text link
+   (navigation). Pages must not define their own button shapes.
+   ------------------------------------------------------------------------ */
+
+body[data-theme="hvo-dark"] .btn {
+    min-height: 2.5rem;
+}
+
+body[data-theme="hvo-dark"] .btn.btn-sm {
+    min-height: 2.1rem;
+}
+
+/* Touch targets: every control reaches 44px on a coarse pointer, whatever its size class.
+   This is the single place that rule lives; layouts must not re-declare it. */
+@media (pointer: coarse) {
+    body[data-theme="hvo-dark"] :is(.btn, .btn.btn-sm, .hvo-segmented__option, .form-control, .form-select) {
+        min-height: 44px;
+    }
+}
+
+/* An action placed over an image: same .btn shape, darker translucent surface. */
+body[data-theme="hvo-dark"] .btn-overlay {
+    border-color: rgba(148, 163, 184, 0.35);
+    color: #f8fafc;
+    background: rgba(8, 14, 22, 0.82);
+    backdrop-filter: blur(6px);
+}
+
+body[data-theme="hvo-dark"] .btn-overlay:hover,
+body[data-theme="hvo-dark"] .btn-overlay:focus {
+    border-color: rgba(148, 163, 184, 0.55);
+    color: #f8fafc;
+    background: rgba(20, 32, 48, 0.92);
+}
+
+body[data-theme="hvo-dark"] .hvo-segmented {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: var(--hvo-action-btn-radius);
+    background: rgba(15, 23, 42, 0.6);
+    overflow: hidden;
+}
+
+body[data-theme="hvo-dark"] .hvo-segmented__option {
+    display: inline-flex;
+    min-height: 2.5rem;
+    align-items: center;
+    justify-content: center;
+    padding: var(--hvo-action-btn-padding-y) var(--hvo-action-btn-padding-x);
+    border: 0;
+    border-right: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 0;
+    color: var(--hvo-muted-strong);
+    background: transparent;
+    font-size: var(--hvo-action-btn-font-size);
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+body[data-theme="hvo-dark"] .hvo-segmented__option:last-child {
+    border-right: 0;
+}
+
+body[data-theme="hvo-dark"] .hvo-segmented__option:hover,
+body[data-theme="hvo-dark"] .hvo-segmented__option:focus-visible {
+    color: #f8fafc;
+    background: rgba(148, 163, 184, 0.15);
+}
+
+body[data-theme="hvo-dark"] .hvo-segmented__option[aria-pressed="true"],
+body[data-theme="hvo-dark"] .hvo-segmented__option--selected {
+    color: #f8fafc;
+    background: var(--hvo-accent-strong);
+}
+
+body[data-theme="hvo-dark"] .hvo-segmented__option:disabled {
+    color: var(--hvo-muted-weak);
+    background: transparent;
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+body[data-theme="hvo-dark"] .hvo-segmented__option:focus-visible {
+    outline: 2px solid var(--hvo-accent);
+    outline-offset: -2px;
+}
+
+body[data-theme="hvo-dark"] .hvo-chip {
+    display: inline-flex;
+    min-height: 1.6rem;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.15rem 0.6rem;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    border-radius: 999px;
+    color: var(--hvo-muted-strong);
+    background: rgba(148, 163, 184, 0.12);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    line-height: 1.2;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+body[data-theme="hvo-dark"] .hvo-chip--success {
+    border-color: rgba(52, 211, 153, 0.4);
+    color: var(--hvo-success-fg);
+    background: var(--hvo-success-bg);
+}
+
+body[data-theme="hvo-dark"] .hvo-chip--warning {
+    border-color: rgba(250, 204, 21, 0.4);
+    color: var(--hvo-warning-fg);
+    background: var(--hvo-warning-bg);
+}
+
+body[data-theme="hvo-dark"] .hvo-chip--danger {
+    border-color: rgba(248, 113, 113, 0.4);
+    color: var(--hvo-danger-fg);
+    background: var(--hvo-danger-bg);
+}
+
+body[data-theme="hvo-dark"] .hvo-chip--info {
+    border-color: rgba(14, 165, 233, 0.4);
+    color: var(--hvo-info-fg);
+    background: var(--hvo-info-bg);
+}
+
+body[data-theme="hvo-dark"] .hvo-chip--neutral {
+    border-color: rgba(148, 163, 184, 0.3);
+    color: var(--hvo-muted-strong);
+    background: rgba(148, 163, 184, 0.12);
+}
+
 body[data-theme="hvo-dark"] .btn-primary {
     color: #fff;
     background-color: var(--hvo-accent-strong);
@@ -870,6 +1013,42 @@ body[data-theme="hvo-dark"] .btn-outline-secondary:hover,
 body[data-theme="hvo-dark"] .btn-outline-secondary:focus {
     background: rgba(148, 163, 184, 0.15);
     color: #f8fafc;
+}
+
+/* btn-outline-light is the repository's secondary action across the operator
+   pages; Bootstrap's raw white outline is not part of the theme, so it takes the
+   secondary treatment here. */
+body[data-theme="hvo-dark"] .btn-outline-light {
+    background: transparent;
+    color: var(--hvo-muted-strong);
+    border-color: rgba(148, 163, 184, 0.4);
+}
+
+body[data-theme="hvo-dark"] .btn-outline-light:hover,
+body[data-theme="hvo-dark"] .btn-outline-light:focus,
+body[data-theme="hvo-dark"] .btn-outline-light:active {
+    background: rgba(148, 163, 184, 0.15);
+    border-color: rgba(148, 163, 184, 0.55);
+    color: #f8fafc;
+}
+
+body[data-theme="hvo-dark"] .btn-outline-light:disabled {
+    color: var(--hvo-muted-weak);
+    border-color: rgba(148, 163, 184, 0.25);
+    opacity: 0.7;
+}
+
+body[data-theme="hvo-dark"] .btn-outline-warning {
+    background: transparent;
+    color: var(--hvo-warning-fg);
+    border-color: rgba(250, 204, 21, 0.5);
+}
+
+body[data-theme="hvo-dark"] .btn-outline-warning:hover,
+body[data-theme="hvo-dark"] .btn-outline-warning:focus {
+    background: var(--hvo-warning-bg);
+    border-color: var(--hvo-warning-strong);
+    color: var(--hvo-warning-fg);
 }
 
 body[data-theme="hvo-dark"] .btn-outline-danger {

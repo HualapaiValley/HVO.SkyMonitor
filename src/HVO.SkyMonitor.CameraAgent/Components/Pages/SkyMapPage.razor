@@ -10,7 +10,7 @@
 
 <div class="sky-map-page">
     <PageHeader Eyebrow="Installed catalog and observing geometry" Title="Sky map &amp; catalog" Lead="The installed read-only catalog, the authoritative observer coordinates, and the visible scene this rig's calibrated optics produce for one UTC instant. Everything here is computed locally from durable state; no tiles, geocoding, browser location, or network access is used.">
-        <button class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
+        <button class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
     </PageHeader>
 
     <form class="instant-picker" @onsubmit="ApplyInstantAsync" @onsubmit:preventDefault>
@@ -28,7 +28,7 @@
     else if (_state is null)
     {
         <PageStateNotice Kind="@(_invalid ? PageStateNotice.PageStateKind.Info : PageStateNotice.PageStateKind.Error)" Title="@(_invalid ? "Instant outside the accepted window" : "Sky map unavailable")" Message="@_message">
-            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Try again</button>
+            <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Try again</button>
         </PageStateNotice>
     }
     else

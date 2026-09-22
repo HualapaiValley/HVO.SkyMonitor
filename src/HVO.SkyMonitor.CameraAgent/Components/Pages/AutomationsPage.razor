@@ -12,7 +12,7 @@
 
 <div class="automations-page">
     <PageHeader Eyebrow="Registered local tasks" Title="Automations" Lead="Every automated behaviour this CameraAgent runs on its own, with the durable state that drives it. Only registered task and trigger kinds appear here; nothing on this page executes arbitrary commands.">
-        <button class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
+        <button class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
     </PageHeader>
 
     @if (_loading)
@@ -24,7 +24,7 @@
         @if (_schedule is null && _environment is null && _automation is null)
         {
             <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Automations unavailable" Message="@(_message ?? "Neither the capture schedule, the environmental sources, nor the local automations could be read.")">
-                <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Try again</button>
+                <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Try again</button>
             </PageStateNotice>
         }
         else if (_message is not null)

@@ -9,6 +9,12 @@ public sealed partial class ImageStageSelector : ComponentBase
     [Parameter] public CameraAgentPresentationStage? SelectedStage { get; set; }
     [Parameter] public EventCallback<CameraAgentPresentationStage> SelectedStageChanged { get; set; }
 
+    private readonly string _unavailableId = $"stage-unavailable-{Guid.NewGuid():N}";
+
+    private string UnavailableId => _unavailableId;
+
+    private bool HasUnavailable => Stages.Any(static slot => slot.Availability != CameraAgentPresentationSlotAvailability.Available);
+
     private Task SelectAsync(CameraAgentPresentationSlot slot)
         => slot.Availability == CameraAgentPresentationSlotAvailability.Available
             ? SelectedStageChanged.InvokeAsync(slot.Stage)
