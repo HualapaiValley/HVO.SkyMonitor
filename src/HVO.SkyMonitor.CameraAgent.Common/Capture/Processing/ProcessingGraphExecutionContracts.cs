@@ -78,13 +78,15 @@ public sealed record ProcessingGraphExecutionState(
     int AttemptCount);
 
 /// <summary>
-/// One output the execution associated, with the durable publication fact for that association.
+/// One output the execution associated, with whether this execution published it.
 /// <para>
-/// <c>Published</c> is <c>processing_execution_outputs.published_flag</c>: whether this execution's
-/// association promoted the output into the capture's published view. A replay execution is inserted
-/// with automatic publication disabled, so every output it associates records <c>false</c> here even
-/// when the identical output was published by the live execution (#973). The evidence that a replay
-/// published nothing is this flag, not the delivery outbox's backlog.
+/// <c>Published</c> is the association's durable <c>published_flag</c> joined with the execution's
+/// own <c>allow_automatic_publication</c>. The flag alone is identity-level: a replay of the live
+/// revision reproduces identical output identities and its association rows inherit the live
+/// publication, so the flag alone would report a replay as having published. A replay execution is
+/// inserted with automatic publication disabled and therefore records <c>false</c> for every output
+/// here (#973). The evidence that a replay published nothing is this value, not the delivery
+/// outbox's backlog.
 /// </para>
 /// </summary>
 public sealed record ProcessingGraphExecutionOutputState(

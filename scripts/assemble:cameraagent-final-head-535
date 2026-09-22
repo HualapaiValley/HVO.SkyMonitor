@@ -245,16 +245,20 @@ done < <(jq -r '.retainedOutputs[] | [.path, .bytes, .sha256] | @tsv' "$manifest
 # The three counters are derived from the v2 #719 record (#973), which carries the
 # durable facts, with the retained telemetry required only as a consistency check.
 #   publishedOutputs      The sum of each node's publishedOutputs, which the producer
-#                         reads from published_flag on the execution's output
-#                         associations. A replay is inserted with automatic publication
-#                         disabled, so any nonzero value is carried for the validator
-#                         to refuse.
-#   liveRunnerDispatches  The count of attempts whose recorded execution route is
-#                         LocalRunner under the InProcess profile, plus every attempt
-#                         of a complementary node that recorded any route at all.
-#                         Under the LocalRunner profile every recipe-backed attempt
-#                         must have routed to the runner, and the runner's job meter
-#                         must be recorded; under InProcess it must be absent.
+#                         reads as the association's published_flag joined with the
+#                         execution's own permission to publish. A replay is inserted
+#                         with automatic publication disabled, so any nonzero value is
+#                         carried for the validator to refuse.
+#   liveRunnerDispatches  Attempts that reached the runner when they must not have: the
+#                         live execution's attempts routed LocalRunner, plus the replay's
+#                         recipe-backed attempts routed LocalRunner under the InProcess
+#                         profile, plus any complementary attempt that recorded a route.
+#                         Carried for the validator to refuse. A route is recorded when an
+#                         attempt completes, so an interrupted attempt is Unknown and only
+#                         the completing attempt is judged. A LocalRunner record whose
+#                         completing recipe attempt ran in process is refused here rather
+#                         than counted: #973 defines no counter for it, and the #719
+#                         validator refuses that record first.
 #   fallbacks             The record's attemptCount is the durable count of attempts
 #                         the execution took; fallbacks is attemptCount - 1. The sampled
 #                         replay retry and terminal backlog gauges are additionally
@@ -275,6 +279,10 @@ replay_profile() {
         all(.replay.replay.nodes[]; .status == "Completed" and
             (.publishedOutputs | type == "number" and . >= 0 and . == floor) and
             (.executionRoutes | type == "array" and length >= 1 and
+             all(.[]; . == "InProcess" or . == "LocalRunner" or . == "Unknown"))) and
+        (.replay.liveExecution.executionId == .replay.liveExecutionId) and
+        (.replay.liveExecution.nodes | type == "array" and length == 14 and
+         all(.[]; .executionRoutes | type == "array" and length >= 1 and
              all(.[]; . == "InProcess" or . == "LocalRunner" or . == "Unknown")))' "$evidence" >/dev/null \
         || die "Replay evidence for $expected_profile is not a passed v2 #719 record: $evidence"
     # metrics.json is one OTLP export batch per line, as the campaign's own scan
@@ -316,7 +324,7 @@ replay_profile() {
         def recipe_backed: ["projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud"];
         ($evidence[0].replay.replay.attemptCount) as $attempts |
         if $runner == "LocalRunner" and ([$evidence[0].replay.replay.nodes[] | select(.nodeId | IN(recipe_backed[])) |
-            .executionRoutes[] | select(. != "LocalRunner")] | length) != 0 then
+            .executionRoutes[-1] | select(. != "LocalRunner")] | length) != 0 then
             error("a LocalRunner replay attempt did not route to the runner") else . end |
         if ($attempts | type) != "number" or $attempts < 1 or $attempts != ($attempts | floor) then
             error("attemptCount is not a positive integer") else . end |
@@ -326,12 +334,14 @@ replay_profile() {
           phase: $phase,
           nodes: [$evidence[0].replay.replay.nodes[].nodeId],
           publishedOutputs: ([$evidence[0].replay.replay.nodes[].publishedOutputs] | add),
-          liveRunnerDispatches: ([$evidence[0].replay.replay.nodes[] |
-            (if (.nodeId | IN(recipe_backed[])) then
-               [.executionRoutes[] | select(. == "LocalRunner" and $runner == "InProcess")]
-             else
-               [.executionRoutes[] | select(. != "Unknown")]
-             end) | length] | add),
+          liveRunnerDispatches: (
+            ([$evidence[0].replay.liveExecution.nodes[].executionRoutes[] | select(. == "LocalRunner")] | length) +
+            ([$evidence[0].replay.replay.nodes[] |
+              (if (.nodeId | IN(recipe_backed[])) then
+                 [.executionRoutes[] | select(. == "LocalRunner" and $runner == "InProcess")]
+               else
+                 [.executionRoutes[] | select(. != "Unknown")]
+               end) | length] | add)),
           fallbacks: (($attempts - 1 + $derived.retries + $derived.terminals) | floor)
         }'
 }

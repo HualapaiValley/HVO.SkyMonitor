@@ -14,13 +14,22 @@ def recipe_backed_nodes: [
   "projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud"
 ];
 def expected_route: if $replayProfile == "LocalRunner" then "LocalRunner" else "InProcess" end;
-def node_routes_valid:
+# A route is recorded when an attempt completes; an interrupted attempt keeps Unknown, so
+# a recipe-backed node's routes are Unknown for any interrupted attempts and the expected
+# route for the one that completed. The last attempt is the completed one.
+def routes_valid($expected):
   (.executionRoutes | type == "array" and length >= 1) and
   (if (.nodeId | IN(recipe_backed_nodes[])) then
-     all(.executionRoutes[]; . == expected_route)
+     (.executionRoutes[-1] == $expected) and all(.executionRoutes[]; . == $expected or . == "Unknown")
    else
      all(.executionRoutes[]; . == "Unknown")
    end);
+def node_routes_valid: routes_valid(expected_route);
+# The live execution runs in process whatever the host's replay profile.
+def live_execution_valid:
+  (.executionId | uuid) and
+  (.nodes | type == "array" and length == 14 and ([.[].nodeId] | sort) == canonical_nodes and
+    all(.[]; routes_valid("InProcess")));
 def execution:
   (.executionId | uuid) and
   (.status == 2) and
@@ -58,6 +67,8 @@ def valid:
     (.replay.sourceCaptureSequence | whole_count) and
     (.replay.primaryArtifactId | uuid) and
     (.replay.liveExecutionId | uuid) and
+    (.replay.liveExecution | live_execution_valid) and
+    (.replay.liveExecution.executionId == .replay.liveExecutionId) and
     (.replay.replay | execution) and
     (.replay.replay.executionId != .replay.liveExecutionId) and
     (.replay.note | nonempty_string)
@@ -68,6 +79,8 @@ def valid:
     (.replay.primaryArtifactId | uuid) and
     (.replay.graphRevisionId | nonempty_string) and
     (.replay.liveExecutionId | uuid) and
+    (.replay.liveExecution | live_execution_valid) and
+    (.replay.liveExecution.executionId == .replay.liveExecutionId) and
     (.replay.inProcessExecutionId | uuid) and
     (.replay.localRunnerExecutionId | uuid) and
     (.replay.replay.executionId == .replay.localRunnerExecutionId) and

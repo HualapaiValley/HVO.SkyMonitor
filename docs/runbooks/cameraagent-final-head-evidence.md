@@ -129,16 +129,21 @@ The three replay counters are derived from the v2 #719 record
 the retained telemetry required only as a consistency check:
 
 - `publishedOutputs` is the sum of each node's `publishedOutputs`, which the
-  producer reads from `published_flag` on the execution's output associations. A
+  producer reads as the association's `published_flag` joined with the execution's
+  own permission to publish. The flag alone is identity-level (a replay of the live
+  revision reproduces identical output identities and its association rows inherit
+  the live publication), so the join is what makes it a per-execution fact. A
   replay is inserted with automatic publication disabled, so every value is zero
   on a correct run.
-- `liveRunnerDispatches` is the count of attempts whose recorded `executionRoutes`
-  entry is `LocalRunner` under the InProcess profile, plus every attempt of a
-  complementary node that recorded any route. Under the LocalRunner profile every
-  recipe-backed attempt must have routed to the runner and the runner's job meter
-  must be recorded; under InProcess that meter must be absent. The route is
-  recorded per attempt by the recipe execution adapter, not inferred from the
-  host's configured profile.
+- `liveRunnerDispatches` counts attempts that reached the runner when they must
+  not have: the live execution's attempts (recorded beside the replay's as
+  `liveExecution`) routed `LocalRunner`, the replay's recipe-backed attempts routed
+  `LocalRunner` under the InProcess profile, and any complementary attempt that
+  recorded a route. A route is recorded when an attempt completes, so an
+  interrupted attempt stays `Unknown` and only the completing attempt is judged.
+  Under the LocalRunner profile every recipe-backed node's completing attempt must
+  have routed to the runner and the runner's job meter must be recorded; under
+  InProcess that meter must be absent.
 - `fallbacks` is the record's `attemptCount - 1` (durable) plus the peak of the
   sampled replay retry-wait and terminal backlog gauges, so a retry that completed
   between telemetry samples is still counted through `attemptCount`.

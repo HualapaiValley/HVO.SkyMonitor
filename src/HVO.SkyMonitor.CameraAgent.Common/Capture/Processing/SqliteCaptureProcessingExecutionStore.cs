@@ -1393,9 +1393,14 @@ internal sealed partial class SqliteCaptureProcessingStore
     }
 
     /// <summary>
-    /// The durable publication flag of every output this execution associated for the node. Read
-    /// separately from the output rows so the shared output projection stays untouched; the
-    /// association row is the only place the fact lives.
+    /// Whether this execution published each output it associated for the node. The association
+    /// row's <c>published_flag</c> is an identity-level fact: an execution that re-associates an
+    /// output some earlier execution already published inherits <c>1</c>, so a replay of the live
+    /// revision (which reproduces identical output identities) carries the live publication on its
+    /// own rows. The per-execution fact is that flag joined with the execution's own permission to
+    /// publish; a replay is inserted with <c>allow_automatic_publication = 0</c> and so reports
+    /// <c>false</c> for every output however the identity was published. Read separately from the
+    /// output rows so the shared output projection stays untouched.
     /// </summary>
     private static async ValueTask<Dictionary<string, bool>> ReadExecutionOutputPublicationAsync(
         SqliteConnection connection,
@@ -1405,9 +1410,11 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT output_identity_sha256, published_flag
-            FROM processing_execution_outputs
-            WHERE execution_id = $execution AND node_id = $node;
+            SELECT association.output_identity_sha256,
+                   association.published_flag * execution.allow_automatic_publication
+            FROM processing_execution_outputs association
+            JOIN processing_executions execution ON execution.execution_id = association.execution_id
+            WHERE association.execution_id = $execution AND association.node_id = $node;
             """;
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         command.Parameters.AddWithValue("$node", nodeId);
