@@ -345,6 +345,18 @@ printf '%s\n' "0000000000000000000000000000000000000000000000000000000000000000"
 write_manifest "$campaign"
 expect_refusal "assembly on disk is not the executed assembly" "not the assembly the campaign executed" local
 build_campaign "$campaign"
+rm -f "$campaign/test-assembly.sha256"
+write_manifest "$campaign"
+expect_refusal "executed-assembly digest absent from the run root" "must be a regular file" local
+build_campaign "$campaign"
+# A data point without a value is an error, not a zero.
+jq -c '.resourceMetrics[0].scopeMetrics[1].metrics[0].gauge.dataPoints[0] |= del(.asInt)' \
+    <(head -n 1 "$campaign/replay-inprocess/evidence/runtime/metrics.json") > "$campaign/m"
+tail -n +2 "$campaign/replay-inprocess/evidence/runtime/metrics.json" >> "$campaign/m"
+mv "$campaign/m" "$campaign/replay-inprocess/evidence/runtime/metrics.json"
+write_manifest "$campaign"
+expect_refusal "a data point without a value" "carries no value" local
+build_campaign "$campaign"
 : > "$campaign/replay-inprocess/evidence/runtime/metrics.json"
 write_manifest "$campaign"
 expect_refusal "an empty metrics file" "File is empty" local

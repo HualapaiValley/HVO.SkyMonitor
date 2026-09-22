@@ -41,6 +41,36 @@ one-time campaign, final validation, and generation publication.
 ./scripts/test:assemble-cameraagent-final-head-535
 ```
 
+Publishing and re-reading a generation:
+
+```bash
+./scripts/record:cameraagent-final-head-535 publish --evidence EVIDENCE.json \
+    --bound-head <40-char-sha> --campaign <id> [--mode local|final]
+./scripts/record:cameraagent-final-head-535 latest --bound-head <40-char-sha> --campaign <id>
+./scripts/record:cameraagent-final-head-535 verify --bound-head <40-char-sha> --campaign <id>
+./scripts/record:cameraagent-final-head-535 clean  --bound-head <40-char-sha> --campaign <id>
+```
+
+The validator, recorder, importer and component gates run in CI in the Quality
+job's static and lightweight contract checks. The assembler gate builds a fixture
+assembly and runs `dotnet fsi`, so it runs in a separate full-mode step after the
+pinned SDK is installed.
+
+The validator is pure. It reads, recomputes and writes one canonical JSON result to
+standard output, and mutates nothing — no staging, no publication, no generation.
+Exit status is the contract: zero only when the requested mode's readiness holds.
+
+`local` requires every local predicate and yields `localReady`. `final` additionally
+requires the strongest claimability state and is the only thing that may yield
+`acceptanceReady`. **A recorder may never set `acceptanceReady`**; it is derived in
+the validator and nowhere else.
+
+The two modes diverge in four places, each with a fixture that passes one and fails
+the other: a claimability state below the ceiling, a dirty tree, a nonzero command
+receipt, and a field declared as free text. Two modes that never diverge are one
+check under two names, so each divergence is kept honest by a fixture rather than by
+the description.
+
 Assembling the aggregate from its producers:
 
 ```bash
@@ -82,13 +112,13 @@ operator's binding and are checked only for alignment with the bound head
 (`heads.execution` is the run manifest's revision and `heads.protectedCi` is
 checked against `ci.run.headSha` by the validator).
 
-The acceptance assembly the campaign executed is bound by digest when the
-campaign retained it: `scripts/test:cameraagent-standalone-211` writes
-`test-assembly.sha256` into the run root (bound by the run manifest), and the
-assembler requires the assembly it reads to have that digest. Without that file
-the binding is weaker and is said so in the assembler: a clean tree at the bound
-head and a Release build carrying that head is the same source, not provably the
-same bytes.
+The acceptance assembly the campaign executed is bound by digest:
+`scripts/test:cameraagent-standalone-211` writes `test-assembly.sha256` into the
+run root before the run manifest binds the tree, and the assembler requires that
+file and requires the assembly it reads to have that digest. A campaign root
+without it is refused rather than admitted under the weaker binding of "a Release
+build at the same head", which is the same source but not provably the same
+bytes.
 
 The three replay counters have no producer field. Each is derived from what the
 campaign retained, and each is named in the assembler for what it observes rather

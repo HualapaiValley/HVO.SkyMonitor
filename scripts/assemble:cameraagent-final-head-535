@@ -344,9 +344,10 @@ jq -en --slurpfile a "$in_process" --slurpfile b "$local_runner" '
 
 # --- central traffic ----------------------------------------------------------
 # The deny sink's final hit count, the in-test handler attempts the campaign
-# summed across every trial, and each trial's own recorded traffic attempts.
-# Every term must be a recorded integer; a nonzero total is carried as-is, and
-# refusing it is the validator's job.
+# summed across every trial, and each trial's own recorded traffic attempts. The
+# per-trial attempts and the final deny-hit count read the same deny-sink log, so
+# a hit can appear in both; the sum is a refusal signal, not a count, and the
+# validator refuses any nonzero value. Every term must be a recorded integer.
 jq -e '.schemaVersion == "issue-211-final-central-traffic-summary-v5" and .allPassed == true' "$central" >/dev/null \
     || die "Final central traffic summary is not a passed v5 record: $central"
 central_attempts=0
@@ -380,19 +381,16 @@ dual_agent_section="$(jq -c '{citable: .citable, evidenceMode: .evidenceMode}' "
 assembly="$repo_root/$ACCEPTANCE_ASSEMBLY"
 require_regular_file "$assembly"
 assembly_sha="$(sha256_of "$assembly")"
-# When the campaign retained the digest of the assembly it executed (the driver
-# writes it to HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE, conventionally
-# test-assembly.sha256 in the run root), the assembly on disk must be that one.
-# Without it the binding is weaker and is said so: a clean tree at the bound head
-# and a Release build carrying that head, which is the same source but not
-# provably the same bytes the trials ran.
+# The campaign driver writes the digest of the assembly every trial executed to
+# test-assembly.sha256 in the run root, and the run manifest binds it. The
+# assembly read here must be that one; a run root without the file is refused
+# rather than admitted under the weaker "same source" binding, because a file
+# that is optional is a file whose absence nobody notices.
 executed_sha_file="$campaign_root/test-assembly.sha256"
-if [[ -e "$executed_sha_file" ]]; then
-    require_regular_file "$executed_sha_file"
-    executed_sha="$(tr -d '[:space:]' < "$executed_sha_file")"
-    [[ "$executed_sha" =~ ^[0-9a-f]{64}$ ]] || die "Retained executed-assembly digest is not a SHA-256: $executed_sha_file"
-    [[ "$executed_sha" == "$assembly_sha" ]] || die "Acceptance assembly on disk is not the assembly the campaign executed"
-fi
+require_regular_file "$executed_sha_file"
+executed_sha="$(tr -d '[:space:]' < "$executed_sha_file")"
+[[ "$executed_sha" =~ ^[0-9a-f]{64}$ ]] || die "Retained executed-assembly digest is not a SHA-256: $executed_sha_file"
+[[ "$executed_sha" == "$assembly_sha" ]] || die "Acceptance assembly on disk is not the assembly the campaign executed"
 identity_errors="$(mktemp)"
 if ! assembly_identity="$(cd / && dotnet fsi --quiet --exec "$IDENTITY" "$assembly" 2>"$identity_errors")"; then
     cat "$identity_errors" >&2
@@ -540,13 +538,17 @@ rm -f "$validator_errors"
 # on any failure everything already moved is withdrawn before exiting. The
 # evidence file is what the recorder reads, so its absence is the whole set's
 # absence.
+moved=()
 withdraw() {
-    rm -rf -- "$output_dir/component-evidence" "$output_dir/ci-artifacts" 2>/dev/null || true
+    local path
+    for path in "${moved[@]}"; do rm -rf -- "$path"; done
     die "$1"
 }
 mv -T --no-clobber -- "$staging/component-evidence" "$output_dir/component-evidence" || withdraw "Could not publish component-evidence"
+moved+=("$output_dir/component-evidence")
 if [[ -n "$ci" ]]; then
     mv -T --no-clobber -- "$staging/ci-artifacts" "$output_dir/ci-artifacts" || withdraw "Could not publish ci-artifacts"
+    moved+=("$output_dir/ci-artifacts")
 fi
 mv --no-clobber -- "$staging/$output_name" "$output_dir/$output_name" || withdraw "Could not publish $output_name"
 [[ -f "$output_dir/$output_name" ]] || withdraw "Output was not written: $output"
