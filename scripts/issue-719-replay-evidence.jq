@@ -7,6 +7,20 @@ def canonical_nodes: [
   "quality", "rolling", "scene-presentation", "storage", "telemetry"
 ];
 def whole_count: type == "number" and (isnan | not) and (isinfinite | not) and . >= 0 and . == floor;
+# The recipe-backed nodes reach CameraAgentRecipeExecutionAdapter and record a route per
+# attempt; the complementary nodes never reach it and keep Unknown. Under LocalRunner every
+# recipe-backed attempt of a replay must have routed to the runner; under InProcess none may.
+def recipe_backed_nodes: [
+  "projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud"
+];
+def expected_route: if $replayProfile == "LocalRunner" then "LocalRunner" else "InProcess" end;
+def node_routes_valid:
+  (.executionRoutes | type == "array" and length >= 1) and
+  (if (.nodeId | IN(recipe_backed_nodes[])) then
+     all(.executionRoutes[]; . == expected_route)
+   else
+     all(.executionRoutes[]; . == "Unknown")
+   end);
 def execution:
   (.executionId | uuid) and
   (.status == 2) and
@@ -24,11 +38,13 @@ def execution:
     ([.[].nodeId] | unique | length) == 14 and all(.[];
     (.nodeId | nonempty_string) and (.required | type == "boolean") and
     .status == "Completed" and
-    (.outputs | whole_count)) and
+    (.outputs | whole_count) and
+    (.publishedOutputs == 0) and
+    node_routes_valid) and
     ([.[].outputs] | add) > 0);
 
 def valid:
-  .schemaVersion == "issue-719-replay-evidence-v1" and
+  .schemaVersion == "issue-719-replay-evidence-v2" and
   .profile == $replayProfile and
   .stateKey == $stateKey and
   .stateReused == $stateReused and

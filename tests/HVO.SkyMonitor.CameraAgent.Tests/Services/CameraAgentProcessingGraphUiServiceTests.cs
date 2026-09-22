@@ -49,7 +49,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
             new ProcessingGraphExecutionNodeState("preview", true, new string('P', 64), "Completed", "/var/lib/secret failed", 1, Now, Now,
                 [], [new ProcessingGraphNodeAttemptState(1, "runner-host-secret-7", Now, Now, "Completed", HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(1),
                     HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingNodeExecutionRoute.InProcess)],
-                [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Missing", "/var/lib/secret failed")])
+                [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Missing", "/var/lib/secret failed", false)])
         ]);
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
         operations.Setup(value => value.ReadExecutionDetailAsync(executionId, It.IsAny<CancellationToken>())).ReturnsAsync(detail);

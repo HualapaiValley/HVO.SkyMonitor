@@ -77,6 +77,16 @@ public sealed record ProcessingGraphExecutionState(
     bool CancellationRequested,
     int AttemptCount);
 
+/// <summary>
+/// One output the execution associated, with the durable publication fact for that association.
+/// <para>
+/// <c>Published</c> is <c>processing_execution_outputs.published_flag</c>: whether this execution's
+/// association promoted the output into the capture's published view. A replay execution is inserted
+/// with automatic publication disabled, so every output it associates records <c>false</c> here even
+/// when the identical output was published by the live execution (#973). The evidence that a replay
+/// published nothing is this flag, not the delivery outbox's backlog.
+/// </para>
+/// </summary>
 public sealed record ProcessingGraphExecutionOutputState(
     int Ordinal,
     string OutputIdentitySha256,
@@ -84,7 +94,8 @@ public sealed record ProcessingGraphExecutionOutputState(
     FrameArtifactRole Role,
     string Variant,
     string AvailabilityState,
-    string? AvailabilityReason);
+    string? AvailabilityReason,
+    bool Published);
 
 public enum ProcessingGraphExecutionInputKind
 {

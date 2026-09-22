@@ -124,24 +124,27 @@ without it is refused rather than admitted under the weaker binding of "a Releas
 build at the same head", which is the same source but not provably the same
 bytes.
 
-The three replay counters have no producer field. Each is derived from what the
-campaign retained, and each is named in the assembler for what it observes rather
-than for the property the field is named after:
+The three replay counters are derived from the v2 #719 record
+(`issue-719-replay-evidence-v2`, issue #973), which carries the durable facts, with
+the retained telemetry required only as a consistency check:
 
-- `fallbacks` is the #719 record's `attemptCount - 1` (durable) plus the peak of
-  the sampled replay retry-wait and terminal backlog gauges, so a retry that
-  completed between telemetry samples is still counted through `attemptCount`.
-- `publishedOutputs` is the peak delivery-outbox backlog observed. The durable
-  fact is `published_flag` on the execution's outputs, which no producer projects
-  yet; under the campaign's standalone configuration nothing is ever enqueued for
-  delivery, so a zero here says "no delivery backlog was observed", not "the replay
-  was proven unpublished".
-- `liveRunnerDispatches` is zero once the runner's job meter is recorded only for
-  the LocalRunner profile with no non-completed outcome. The adapter routes to the
-  runner only for Replay-class executions, so the value follows from routing; the
-  per-attempt execution route is durable but not projected into evidence (#799).
+- `publishedOutputs` is the sum of each node's `publishedOutputs`, which the
+  producer reads from `published_flag` on the execution's output associations. A
+  replay is inserted with automatic publication disabled, so every value is zero
+  on a correct run.
+- `liveRunnerDispatches` is the count of attempts whose recorded `executionRoutes`
+  entry is `LocalRunner` under the InProcess profile, plus every attempt of a
+  complementary node that recorded any route. Under the LocalRunner profile every
+  recipe-backed attempt must have routed to the runner and the runner's job meter
+  must be recorded; under InProcess that meter must be absent. The route is
+  recorded per attempt by the recipe execution adapter, not inferred from the
+  host's configured profile.
+- `fallbacks` is the record's `attemptCount - 1` (durable) plus the peak of the
+  sampled replay retry-wait and terminal backlog gauges, so a retry that completed
+  between telemetry samples is still counted through `attemptCount`.
 
-A nonzero value is carried, not hidden, so that the validator is what refuses it.
+A v1 record is refused; the #535 generation 1 record is v1 and remains verifiable,
+but cannot be re-assembled from its producer. A nonzero value is carried, not hidden, so that the validator is what refuses it.
 
 ### Producing the real generation
 

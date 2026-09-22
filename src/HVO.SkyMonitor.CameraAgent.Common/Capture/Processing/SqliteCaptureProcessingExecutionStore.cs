@@ -1025,6 +1025,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             }
             var durableOutputs = await ReadExecutionOutputsAsync(
                 connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
+            var published = await ReadExecutionOutputPublicationAsync(
+                connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
             var inputs = await ReadExecutionInputsAsync(
                 connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
             var outputs = durableOutputs.Select((output, ordinal) => new ProcessingGraphExecutionOutputState(
@@ -1034,7 +1036,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                 output.Artifact.Role,
                 output.Artifact.Variant,
                 output.AvailabilityState,
-                output.AvailabilityReason)).ToArray();
+                output.AvailabilityReason,
+                published.TryGetValue(output.OutputIdentitySha256, out var flag) && flag)).ToArray();
             nodes.Add(new(
                 row.NodeId, row.Required, row.Plan, row.Status, row.Reason, row.AttemptCount,
                 row.Started, row.Completed, inputs, attempts, outputs));
@@ -1387,6 +1390,34 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$node", nodeId);
         return (await ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false))
             .Select(static row => row.Output).ToArray();
+    }
+
+    /// <summary>
+    /// The durable publication flag of every output this execution associated for the node. Read
+    /// separately from the output rows so the shared output projection stays untouched; the
+    /// association row is the only place the fact lives.
+    /// </summary>
+    private static async ValueTask<Dictionary<string, bool>> ReadExecutionOutputPublicationAsync(
+        SqliteConnection connection,
+        Guid executionId,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output_identity_sha256, published_flag
+            FROM processing_execution_outputs
+            WHERE execution_id = $execution AND node_id = $node;
+            """;
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$node", nodeId);
+        var published = new Dictionary<string, bool>(StringComparer.Ordinal);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            published[reader.GetString(0)] = reader.GetInt64(1) != 0;
+        }
+        return published;
     }
 
     private async ValueTask ReleaseExecutionPinsAsync(

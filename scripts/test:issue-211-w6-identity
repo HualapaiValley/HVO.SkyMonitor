@@ -328,18 +328,29 @@ REPLAY_NODES="$(jq -nc '[
   "quality", "rolling", "scene-presentation", "storage", "telemetry"
 ]')"
 readonly REPLAY_NODES
-REPLAY_EXECUTION="$(jq -nc --argjson nodes "$REPLAY_NODES" '{
-  executionId: "11111111-1111-1111-1111-111111111111", status: 2,
-  acceptedUtc: "2026-09-21T00:00:00Z", startedUtc: "2026-09-21T00:00:01Z",
-  completedUtc: "2026-09-21T00:00:02Z", startIntervalMilliseconds: 1000,
-  graphIntervalMilliseconds: 1000,
-  graphDefinitionIdentitySha256: ("A" * 64), sharedPlanIdentitySha256: ("B" * 64),
-  localPlanIdentitySha256: ("C" * 64), attemptCount: 1,
-  nodes: [$nodes[] | {nodeId: ., required: true, status: "Completed", outputs: 1}]
-}')"
+# v2 evidence records each attempt's execution route and the outputs the execution
+# published (#973): recipe-backed nodes route to the runner under LocalRunner and in
+# process under InProcess, complementary nodes never reach the adapter, and a replay
+# publishes nothing.
+REPLAY_RECIPE_NODES="$(jq -nc '["projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud"]')"
+readonly REPLAY_RECIPE_NODES
+replay_execution() {
+    local route="$1"
+    jq -nc --argjson nodes "$REPLAY_NODES" --argjson recipe "$REPLAY_RECIPE_NODES" --arg route "$route" '{
+      executionId: "11111111-1111-1111-1111-111111111111", status: 2,
+      acceptedUtc: "2026-09-21T00:00:00Z", startedUtc: "2026-09-21T00:00:01Z",
+      completedUtc: "2026-09-21T00:00:02Z", startIntervalMilliseconds: 1000,
+      graphIntervalMilliseconds: 1000,
+      graphDefinitionIdentitySha256: ("A" * 64), sharedPlanIdentitySha256: ("B" * 64),
+      localPlanIdentitySha256: ("C" * 64), attemptCount: 1,
+      nodes: [$nodes[] | {nodeId: ., required: true, status: "Completed", outputs: 1, publishedOutputs: 0,
+        executionRoutes: [if (. | IN($recipe[])) then $route else "Unknown" end]}]
+    }'
+}
+REPLAY_EXECUTION="$(replay_execution InProcess)"
 readonly REPLAY_EXECUTION
 jq -n --argjson execution "$REPLAY_EXECUTION" '{
-  schemaVersion: "issue-719-replay-evidence-v1", profile: "InProcess", stateKey: "replay-719",
+  schemaVersion: "issue-719-replay-evidence-v2", profile: "InProcess", stateKey: "replay-719",
   stateReused: false, declaredProfile: "InProcess", result: {passed: true},
   replay: {role: "establish", graphRevisionId: "canonical-v1", captureCount: 6,
     sourceCaptureId: "22222222-2222-2222-2222-222222222222", sourceCaptureSequence: 6,
@@ -347,11 +358,10 @@ jq -n --argjson execution "$REPLAY_EXECUTION" '{
     liveExecutionId: "44444444-4444-4444-4444-444444444444", replay: $execution,
     note: "LocalRunner performs the three-way comparison."}}
 ' > "$WORK/replay-inprocess.json"
-LOCAL_REPLAY_EXECUTION="$(jq -c '.executionId = "55555555-5555-5555-5555-555555555555"' \
-    <<< "$REPLAY_EXECUTION")"
+LOCAL_REPLAY_EXECUTION="$(replay_execution LocalRunner | jq -c '.executionId = "55555555-5555-5555-5555-555555555555"')"
 readonly LOCAL_REPLAY_EXECUTION
 jq -n --argjson execution "$LOCAL_REPLAY_EXECUTION" --argjson nodes "$REPLAY_NODES" '{
-  schemaVersion: "issue-719-replay-evidence-v1", profile: "LocalRunner", stateKey: "replay-719",
+  schemaVersion: "issue-719-replay-evidence-v2", profile: "LocalRunner", stateKey: "replay-719",
   stateReused: true, declaredProfile: "LocalRunner", result: {passed: true},
   replay: {role: "compare", readFrom: "durable state",
     sourceCaptureId: "22222222-2222-2222-2222-222222222222",
@@ -374,6 +384,23 @@ replay_gate "$WORK/replay-inprocess.json" InProcess false \
     || fail 'valid InProcess replay evidence was refused'
 replay_gate "$WORK/replay-localrunner.json" LocalRunner true \
     || fail 'valid LocalRunner replay evidence was refused'
+# v2 refusals (#973): a published output, a recipe-backed node that did not route to the
+# runner under LocalRunner, a recipe-backed node that routed to the runner under InProcess, a
+# complementary node claiming a route, a v1 document.
+jq '.replay.replay.nodes[0].publishedOutputs = 1' "$WORK/replay-localrunner.json" > "$WORK/replay-published.json"
+replay_gate "$WORK/replay-published.json" LocalRunner true 2>/dev/null && fail 'replay evidence with a published output was accepted'
+jq '(.replay.replay.nodes[] | select(.nodeId == "rolling") | .executionRoutes) = ["InProcess"]' "$WORK/replay-localrunner.json" > "$WORK/replay-inprocess-under-localrunner.json"
+replay_gate "$WORK/replay-inprocess-under-localrunner.json" LocalRunner true 2>/dev/null && fail 'LocalRunner evidence with an in-process recipe attempt was accepted'
+jq '(.replay.replay.nodes[] | select(.nodeId == "rolling") | .executionRoutes) = ["LocalRunner"]' "$WORK/replay-inprocess.json" > "$WORK/replay-runner-under-inprocess.json"
+replay_gate "$WORK/replay-runner-under-inprocess.json" InProcess false 2>/dev/null && fail 'InProcess evidence with a runner-routed attempt was accepted'
+jq '(.replay.replay.nodes[] | select(.nodeId == "storage") | .executionRoutes) = ["InProcess"]' "$WORK/replay-inprocess.json" > "$WORK/replay-complementary-routed.json"
+replay_gate "$WORK/replay-complementary-routed.json" InProcess false 2>/dev/null && fail 'evidence with a routed complementary node was accepted'
+jq '(.replay.replay.nodes[] | select(.nodeId == "rolling") | .executionRoutes) = []' "$WORK/replay-inprocess.json" > "$WORK/replay-no-attempts.json"
+replay_gate "$WORK/replay-no-attempts.json" InProcess false 2>/dev/null && fail 'evidence with a node that recorded no attempt was accepted'
+jq '.schemaVersion = "issue-719-replay-evidence-v1"' "$WORK/replay-inprocess.json" > "$WORK/replay-v1.json"
+replay_gate "$WORK/replay-v1.json" InProcess false 2>/dev/null && fail 'v1 replay evidence was accepted'
+jq '.replay.replay.nodes[0] |= del(.publishedOutputs)' "$WORK/replay-inprocess.json" > "$WORK/replay-no-published.json"
+replay_gate "$WORK/replay-no-published.json" InProcess false 2>/dev/null && fail 'evidence without a published-output count was accepted'
 
 profile_receipt() {
     local evidence="$1" output="$2" trial="$3" profile="$4" reused="$5" path="$6"

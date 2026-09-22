@@ -877,7 +877,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             JsonSerializer.Serialize(
                 new
                 {
-                    schemaVersion = "issue-719-replay-evidence-v1",
+                    schemaVersion = "issue-719-replay-evidence-v2",
                     profile,
                     stateKey,
                     stateReused,
@@ -1360,8 +1360,20 @@ public sealed class StandaloneW6DockerAcceptanceTests
         detail.Execution.SharedPlanIdentitySha256,
         detail.Execution.LocalPlanIdentitySha256,
         detail.Execution.AttemptCount,
+        // v2 (#973): the route every attempt actually took and the count of outputs this execution
+        // published, both read from the durable execution detail rather than inferred from the host's
+        // configured profile or from delivery telemetry. A replay must publish nothing, and under the
+        // LocalRunner profile its recipe-backed attempts must have routed to the runner.
         nodes = detail.Nodes
-            .Select(static node => new { node.NodeId, node.Required, node.Status, outputs = node.Outputs.Count })
+            .Select(static node => new
+            {
+                node.NodeId,
+                node.Required,
+                node.Status,
+                outputs = node.Outputs.Count,
+                publishedOutputs = node.Outputs.Count(static output => output.Published),
+                executionRoutes = node.Attempts.Select(static attempt => attempt.ExecutionRoute.ToString()).ToArray()
+            })
             .ToArray()
     };
 

@@ -2373,6 +2373,13 @@ public sealed class ProcessingGraphOperationsTests
             }
 
             var replayOutput = detail!.Nodes.Single().Outputs.Single();
+            // The durable publication fact is projected per association (#973): the live execution
+            // published its output and the replay, inserted with automatic publication disabled,
+            // did not, which is what the #719 evidence and the #535 aggregate read.
+            var republishedLive = await operations.ReadExecutionDetailAsync(
+                liveLease.Context.Execution!.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(republishedLive!.Nodes.Single().Outputs.Single().Published, "the live output was published");
+            Assert.IsFalse(replayOutput.Published, "the replay output must not be published");
             Assert.AreEqual(
                 CameraAgentArtifactReadStatus.NotFound,
                 (await artifactService.OpenContentAsync(replayOutput.ArtifactId, CancellationToken.None)
