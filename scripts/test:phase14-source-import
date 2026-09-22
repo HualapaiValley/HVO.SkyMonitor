@@ -24,13 +24,13 @@ REPO_ROOT="$TEMP_DIR/repository"
 install -d -m 700 "$REPO_ROOT/deploy/split-host/acceptance" "$REPO_ROOT/docs/planning"
 install -d -m 700 \
   "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0" \
-  "$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0" \
+  "$REPO_ROOT/tests/HVO.SkyMonitor.LogicHost.IntegrationTests/bin/Release/net10.0" \
   "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0"
 cp "$SOURCE_REPO_ROOT/deploy/split-host/acceptance/phase14-evidence-contract.json" "$REPO_ROOT/deploy/split-host/acceptance/phase14-evidence-contract.json"
 cp "$SOURCE_REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json" "$REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json"
 printf 'product\n' > "$REPO_ROOT/product.txt"
 printf 'cameraagent assembly\n' > "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Tests.dll"
-printf 'logichost assembly\n' > "$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0/HVO.SkyMonitor.IntegrationTests.dll"
+printf 'logichost assembly\n' > "$REPO_ROOT/tests/HVO.SkyMonitor.LogicHost.IntegrationTests/bin/Release/net10.0/HVO.SkyMonitor.LogicHost.IntegrationTests.dll"
 printf 'acceptance assembly\n' > "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll"
 git -C "$REPO_ROOT" init --quiet
 git -C "$REPO_ROOT" config user.email phase14-source@example.invalid
@@ -38,7 +38,7 @@ git -C "$REPO_ROOT" config user.name 'Phase 14 Source Import Contract'
 git -C "$REPO_ROOT" add --all
 git -C "$REPO_ROOT" add -f \
   tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Tests.dll \
-  tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0/HVO.SkyMonitor.IntegrationTests.dll \
+  tests/HVO.SkyMonitor.LogicHost.IntegrationTests/bin/Release/net10.0/HVO.SkyMonitor.LogicHost.IntegrationTests.dll \
   tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll
 git -C "$REPO_ROOT" commit --quiet -m product
 product_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
@@ -96,7 +96,7 @@ phase14_source_resolve_target() {
     local repo="$1" project="$2"
     case "$project" in
       *CameraAgent.Tests*) printf '%s\n' "$repo/tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Tests.dll" ;;
-      *IntegrationTests*) printf '%s\n' "$repo/tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0/HVO.SkyMonitor.IntegrationTests.dll" ;;
+      *IntegrationTests*) printf '%s\n' "$repo/tests/HVO.SkyMonitor.LogicHost.IntegrationTests/bin/Release/net10.0/HVO.SkyMonitor.LogicHost.IntegrationTests.dll" ;;
       *AcceptanceTests*) printf '%s\n' "$repo/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll" ;;
       *) return 1 ;;
     esac
