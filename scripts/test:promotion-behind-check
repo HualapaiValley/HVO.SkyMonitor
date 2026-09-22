@@ -6,7 +6,8 @@ export LC_ALL=C
 #
 # `promote-main.yml` refuses to open a promotion pull request when `main` carries
 # commits that `development/v1` lacks, unless every such commit is a promotion
-# merge whose parents are on v1 or are earlier tolerated promotion merges. PR #914
+# merge whose parents are on v1 or are earlier tolerated promotion merges and
+# whose tree is the tree of the v1 head it promoted (#972). PR #914
 # tolerated one promotion; the chain case was not written down, and the second
 # nightly promotion after it was refused because its first parent was the first
 # promotion's merge commit (#963). This gate extracts the step body from the
@@ -114,6 +115,12 @@ expect "non-merge stray after a promotion" 1 "non-merge commit H1"
 TREES[M2]=tEvil
 stub '"M1 2 P0 V1" "M2 2 M1 V2"' P0=0 V1=0 V2=0 M1=1
 expect "merge with admissible parents and a foreign tree" 1 "whose tree tEvil differs from the tree tV2"
+TREES[M2]=tV2
+
+# A merge whose tree the API cannot report is refused rather than tolerated.
+TREES[M2]=""
+stub '"M1 2 P0 V1" "M2 2 M1 V2"' P0=0 V1=0 V2=0 M1=1
+expect "merge whose tree is unavailable" 1 "whose tree  differs"
 TREES[M2]=tV2
 
 # A merge of two tolerated merges has no v1 parent and nothing it could have promoted.

@@ -68,7 +68,8 @@ jobs:
             # the v1 head it promoted, and its first parent is the previous promotion's merge
             # commit, which is also on main only. So a parent qualifies when it is on v1 or
             # when it is a stray already accepted as a promotion merge; the strays are walked
-            # oldest-first so the chain is accepted in order. Any other shape (a hotfix, a
+            # oldest-first so the chain is accepted in order, and each tolerated merge must
+            # carry the tree of the v1 head it promoted. Any other shape (a hotfix, a
             # mis-targeted PR, a squash, a merge with a foreign parent) is a bypass of the
             # branch model and needs a person, so halt rather than open a PR that would carry
             # it back into v1 by implication.
