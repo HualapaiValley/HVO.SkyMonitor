@@ -604,6 +604,75 @@ for fault in interrupt collide collide-skip; do
     fi
 done
 
+# A signal during verification must not leave the support-inventory temporary in
+# TMPDIR (#934). A sha256sum wrapper holds `verify` inside the support loop, after
+# the temporary is assigned, so the signal lands in exactly the window that was
+# uncovered; the pointer is untouched because verify never publishes one.
+root="$(new_root)"
+assert_equal "signal fixture publishes generation 1" "1" "$(publish "$root" green.json CAMP)"
+signal_barrier="$WORK/signal-barrier"; mkdir -p "$signal_barrier/bin"
+real_sha256sum="$(command -v sha256sum)"
+{
+    printf '#!/usr/bin/env bash\nset -euo pipefail\nreadonly REAL=%q\n' "$real_sha256sum"
+    cat <<'WRAPPER'
+if [[ "$*" == *"/ci-artifacts/"* || "$*" == *"/component-evidence/"* ]]; then
+    touch "$SIGNAL_BARRIER/ready"
+    for ((i=0;i<400;i++)); do
+        [[ -e "$SIGNAL_BARRIER/release" ]] && exec "$REAL" "$@"
+        sleep 0.05
+    done
+    exit 98
+fi
+exec "$REAL" "$@"
+WRAPPER
+} > "$signal_barrier/bin/sha256sum"
+chmod +x "$signal_barrier/bin/sha256sum"
+pointer_before="$(sha256sum "$(campaign_dir "$root" CAMP)/$POINTER" | cut -d' ' -f1)"
+for signal in INT TERM HUP; do
+    rm -f "$signal_barrier/ready" "$signal_barrier/release"
+    signal_tmp="$WORK/signal-tmp-$signal"; mkdir -p "$signal_tmp"
+    # A background job of a non-interactive shell inherits SIGINT ignored, and a
+    # child bash cannot restore a disposition it inherited as ignored, so the INT
+    # case would pass for the wrong reason. python3 resets the dispositions before
+    # exec and gives the recorder its own session, so the signal reaches it alone.
+    TMPDIR="$signal_tmp" PATH="$signal_barrier/bin:$PATH" SIGNAL_BARRIER="$signal_barrier" \
+        python3 -c 'import os, signal, sys
+for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(s, signal.SIG_DFL)
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])' \
+        "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root" \
+        > /dev/null 2> "$WORK/signal-$signal.err" &
+    verify_pid=$!
+    for ((i=0;i<200;i++)); do
+        [[ -e "$signal_barrier/ready" ]] && break
+        sleep 0.05
+    done
+    cases=$((cases + 1))
+    if [[ ! -e "$signal_barrier/ready" ]]; then
+        fail "verify never reached the support loop before $signal"
+        kill -KILL "$verify_pid" 2>/dev/null || true; wait "$verify_pid" 2>/dev/null || true
+        continue
+    fi
+    # The temporary exists in the window; that is what makes the signal case real.
+    cases=$((cases + 1))
+    [[ -n "$(find "$signal_tmp" -mindepth 1 -type f -print -quit)" ]] || fail "support inventory temporary was not present when $signal was sent"
+    kill -s "$signal" "$verify_pid"
+    # bash runs a trap only once the foreground child returns, so the held
+    # sha256sum is released after the signal is queued; the handler then runs
+    # before the recorder's next command, which is the property under test.
+    touch "$signal_barrier/release"
+    verify_status=0; wait "$verify_pid" || verify_status=$?
+    case "$signal" in INT) want=130 ;; TERM) want=143 ;; HUP) want=129 ;; esac
+    assert_equal "verify dies of $signal rather than exiting normally" "$want" "$verify_status"
+    cases=$((cases + 1))
+    [[ -z "$(find "$signal_tmp" -mindepth 1 -print -quit)" ]] || fail "$signal during verification leaked a support inventory temporary"
+done
+assert_equal "pointer is unchanged by interrupted verification" "$pointer_before" \
+    "$(sha256sum "$(campaign_dir "$root" CAMP)/$POINTER" | cut -d' ' -f1)"
+expect_success "the interrupted generation still verifies" \
+    "$RECORD" verify --bound-head "$HEAD_SHA" --campaign CAMP --output-root "$root"
+
 if ((failures > 0)); then
     printf '%s of %s recorder cases failed.\n' "$failures" "$cases" >&2
     exit 1

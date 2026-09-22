@@ -18,6 +18,52 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestCategory("Unit")]
 public sealed class SyntheticCalibrationReferenceStoreTests
 {
+    /// <summary>
+    /// The seed-208 synthetic bundle that the Manual #208 retained-evidence harness pins is
+    /// asserted here in the Unit lane: profile identity, published bundle id, and the
+    /// digest of every evidence file, so a change to the publication-identity envelope,
+    /// the profile serialization or any descriptor serializer is caught on every pull
+    /// request. #484 changed the envelope but carried the earlier pins forward, and
+    /// nothing ran them until #968.
+    /// </summary>
+    [TestMethod]
+    public async Task CanonicalSeed208Bundle_PinsThePublishedIdentities()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-synthetic-calibration", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var model = Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.SyntheticModel(
+                Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.Seed);
+            var light = Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.SyntheticLight(model);
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var store = new SyntheticCalibrationReferenceStore(options, new CameraAgentClearReferenceLoader(options));
+
+            var bundle = await store.GetOrCreateAsync(light, model, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(
+                Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.ExpectedSyntheticProfileIdentitySha256,
+                bundle.ProfileIdentitySha256);
+            Assert.AreEqual(
+                Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.ExpectedSyntheticBundleId,
+                bundle.LibraryBundle.BundleId);
+            var expectedFiles = Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.ExpectedSyntheticFiles;
+            var actualFiles = bundle.EvidenceFiles.ToDictionary(
+                static file => Path.GetFileName(file.RelativePath),
+                static file => new Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.FileIdentity(file.Length, file.Sha256),
+                StringComparer.Ordinal);
+            CollectionAssert.AreEquivalent(expectedFiles.Keys.ToArray(), actualFiles.Keys.ToArray());
+            foreach (var file in expectedFiles)
+            {
+                Assert.AreEqual(file.Value, actualFiles[file.Key], file.Key);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestMethod]
     public async Task GetOrCreateAsync_PersistsRestartStableReferencesConsumedByCanonicalRecipe()
     {

@@ -37,8 +37,8 @@ def binding_keys: [
     ($localRunnerPath | type == "string" and length > 0) and
     ($inProcessGatePath | type == "string" and length > 0) and
     ($localRunnerGatePath | type == "string" and length > 0) and
-    $first.schemaVersion == "issue-719-replay-evidence-v1" and
-    $second.schemaVersion == "issue-719-replay-evidence-v1" and
+    $first.schemaVersion == "issue-719-replay-evidence-v2" and
+    $second.schemaVersion == "issue-719-replay-evidence-v2" and
     $first.profile == "InProcess" and $first.declaredProfile == "InProcess" and
     $first.stateKey == $stateKey and $first.stateReused == false and
     $first.replay.role == "establish" and $first.result.passed == true and

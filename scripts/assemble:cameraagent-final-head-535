@@ -242,30 +242,29 @@ done < <(jq -r '.retainedOutputs[] | [.path, .bytes, .sha256] | @tsv' "$manifest
 # recorded it. The validator compares that order to #719's canonical order; the
 # assembler must never sort or reorder a record into shape.
 #
-# The three counters have no producer field. Each is derived from what the campaign
-# retained, and the derivation is named for what it observes rather than for the
-# property the field is named after; where the two differ the difference is stated.
-#   publishedOutputs      The durable fact is published_flag on the replay execution's
-#                         outputs, which neither the #719 record nor any retained metric
-#                         carries. What is observable is hvo.cameraagent.outbox.pending,
-#                         the delivery backlog gauge: the peak across export batches is
-#                         carried. Under the campaign's standalone configuration nothing
-#                         is ever enqueued for delivery, so a zero here says "no delivery
-#                         backlog was observed", not "the replay was proven unpublished".
-#                         The gauge must be recorded; a nonzero peak is carried, not hidden.
-#   fallbacks             The #719 record's attemptCount is the durable count of attempts
+# The three counters are derived from the v2 #719 record (#973), which carries the
+# durable facts, with the retained telemetry required only as a consistency check.
+#   publishedOutputs      The sum of each node's publishedOutputs, which the producer
+#                         reads as the association's published_flag joined with the
+#                         execution's own permission to publish. A replay is inserted
+#                         with automatic publication disabled, so any nonzero value is
+#                         carried for the validator to refuse.
+#   liveRunnerDispatches  Attempts that reached the runner when they must not have: the
+#                         live execution's attempts routed LocalRunner, plus the replay's
+#                         recipe-backed attempts routed LocalRunner under the InProcess
+#                         profile, plus any complementary attempt that recorded a route.
+#                         Carried for the validator to refuse. A route is recorded when an
+#                         attempt completes, so an interrupted attempt is Unknown and only
+#                         the completing attempt is judged. A LocalRunner record whose
+#                         completing recipe attempt ran in process is refused here rather
+#                         than counted: #973 defines no counter for it, and the #719
+#                         validator refuses that record first.
+#   fallbacks             The record's attemptCount is the durable count of attempts
 #                         the execution took; fallbacks is attemptCount - 1. The sampled
 #                         replay retry and terminal backlog gauges are additionally
 #                         required to be recorded and their peaks added, so a retry that
 #                         completed between samples is still counted through attemptCount
 #                         and a terminal work item seen at any sample is not lost.
-#   liveRunnerDispatches  The adapter routes to the runner only for Replay-class
-#                         executions (CameraAgentRecipeExecutionAdapter routes on
-#                         ExecutionClass). The observable check is that the runner's job
-#                         meter is recorded for LocalRunner with no non-completed outcome
-#                         and is absent for InProcess. With that established the value is
-#                         zero by routing, not by observation of each dispatch; per-attempt
-#                         execution_route is durable but not projected into evidence (#799).
 replay_profile() {
     local evidence="$1" expected_profile="$2" phase="$3" expected_reused="$4"
     local trial_dir metrics
@@ -273,31 +272,35 @@ replay_profile() {
     metrics="$trial_dir/evidence/runtime/metrics.json"
     require_json_lines "$metrics"
     jq -e --arg p "$expected_profile" --argjson reused "$expected_reused" '
-        .schemaVersion == "issue-719-replay-evidence-v1" and .profile == $p and .declaredProfile == $p and
+        .schemaVersion == "issue-719-replay-evidence-v2" and .profile == $p and .declaredProfile == $p and
         .stateReused == $reused and .result.passed == true and
         (.replay.replay.executionId | type == "string" and length > 0) and
         (.replay.replay.status == 2) and (.replay.replay.nodes | type == "array" and length == 14) and
-        all(.replay.replay.nodes[]; .status == "Completed")' "$evidence" >/dev/null \
-        || die "Replay evidence for $expected_profile is not a passed #719 record: $evidence"
+        all(.replay.replay.nodes[]; .status == "Completed" and
+            (.publishedOutputs | type == "number" and . >= 0 and . == floor) and
+            (.executionRoutes | type == "array" and length >= 1 and
+             all(.[]; . == "InProcess" or . == "LocalRunner" or . == "Unknown"))) and
+        (.replay.liveExecution.executionId == .replay.liveExecutionId) and
+        (.replay.liveExecution.nodes | type == "array" and length == 14 and
+         all(.[]; .executionRoutes | type == "array" and length >= 1 and
+             all(.[]; . == "InProcess" or . == "LocalRunner" or . == "Unknown")))' "$evidence" >/dev/null \
+        || die "Replay evidence for $expected_profile is not a passed v2 #719 record: $evidence"
     # metrics.json is one OTLP export batch per line, as the campaign's own scan
     # reads it. The disposition and runner job counters are cumulative sums, so
-    # their value is the maximum across batches; the outbox, retry and terminal
-    # meters are backlog gauges, so their peak across batches is what is carried,
-    # and a backlog that was ever nonzero is carried rather than averaged away.
+    # their value is the maximum across batches; the retry and terminal meters are
+    # backlog gauges, so their peak across batches is what is carried, and a
+    # backlog that was ever nonzero is carried rather than averaged away.
     local derived
     derived="$(jq -c --slurp '
         def points($name): [.[] | .resourceMetrics[]?.scopeMetrics[]?.metrics[]? | select(.name == $name) |
             (.sum.dataPoints[]?, .gauge.dataPoints[]?, .histogram.dataPoints[]?)];
         def attr($p; $k): first($p.attributes[]? | select(.key == $k) | .value.stringValue) // null;
         def value: (.asInt // .asDouble // .count // error("data point carries no value")) | tonumber;
-        (points("hvo.cameraagent.outbox.pending")) as $outbox |
         (points("camera_agent.processing.replay.retry")) as $retry |
         (points("camera_agent.processing.replay.terminal")) as $terminal |
         (points("camera_agent.processing.replay.dispositions")) as $dispositions |
         (points("camera_agent.replay_runner.jobs")) as $jobs |
         {
-          outboxRecorded: ($outbox | length > 0),
-          outboxPending: ([$outbox[] | value] | max // 0),
           retryRecorded: ($retry | length > 0),
           retries: ([$retry[] | value] | max // 0),
           terminalRecorded: ($terminal | length > 0),
@@ -307,8 +310,8 @@ replay_profile() {
           runnerJobsRecorded: ($jobs | length > 0),
           runnerNonCompleted: ([$jobs[] | select(attr(.; "outcome") != "completed")] | length)
         }' "$metrics")"
-    jq -e '.outboxRecorded and .retryRecorded and .terminalRecorded and .completedDispositions >= 1 and .otherDispositions == 0' <<< "$derived" >/dev/null \
-        || die "Replay telemetry for $expected_profile does not record the outbox, retry, terminal and disposition meters the profile counters are derived from: $metrics"
+    jq -e '.retryRecorded and .terminalRecorded and .completedDispositions >= 1 and .otherDispositions == 0' <<< "$derived" >/dev/null \
+        || die "Replay telemetry for $expected_profile does not record the retry, terminal and disposition meters the fallback count is checked against: $metrics"
     if [[ "$expected_profile" == LocalRunner ]]; then
         jq -e '.runnerJobsRecorded and .runnerNonCompleted == 0' <<< "$derived" >/dev/null \
             || die "LocalRunner telemetry does not prove the runner completed every job: $metrics"
@@ -318,7 +321,11 @@ replay_profile() {
     fi
     jq -cn --arg schema "$SCHEMA_REPLAY_PROFILE" --arg runner "$expected_profile" --argjson phase "$phase" \
         --argjson derived "$derived" --slurpfile evidence "$evidence" '
+        def recipe_backed: ["projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud"];
         ($evidence[0].replay.replay.attemptCount) as $attempts |
+        if $runner == "LocalRunner" and ([$evidence[0].replay.replay.nodes[] | select(.nodeId | IN(recipe_backed[])) |
+            .executionRoutes[-1] | select(. != "LocalRunner")] | length) != 0 then
+            error("a LocalRunner replay attempt did not route to the runner") else . end |
         if ($attempts | type) != "number" or $attempts < 1 or $attempts != ($attempts | floor) then
             error("attemptCount is not a positive integer") else . end |
         {
@@ -326,8 +333,15 @@ replay_profile() {
           runner: $runner,
           phase: $phase,
           nodes: [$evidence[0].replay.replay.nodes[].nodeId],
-          publishedOutputs: ($derived.outboxPending | floor),
-          liveRunnerDispatches: 0,
+          publishedOutputs: ([$evidence[0].replay.replay.nodes[].publishedOutputs] | add),
+          liveRunnerDispatches: (
+            ([$evidence[0].replay.liveExecution.nodes[].executionRoutes[] | select(. == "LocalRunner")] | length) +
+            ([$evidence[0].replay.replay.nodes[] |
+              (if (.nodeId | IN(recipe_backed[])) then
+                 [.executionRoutes[] | select(. == "LocalRunner" and $runner == "InProcess")]
+               else
+                 [.executionRoutes[] | select(. != "Unknown")]
+               end) | length] | add)),
           fallbacks: (($attempts - 1 + $derived.retries + $derived.terminals) | floor)
         }'
 }
@@ -366,7 +380,7 @@ require_json_object "$dual_agent"
 # final mode. The per-trial issue-197-dual-agent.json records carry a different
 # schema and no citability; only the summary is the #197 producer for this section.
 jq -e --arg head "$bound_head" --arg clean "$empty_sha256" '
-    .schemaVersion == "issue-197-five-trial-summary-v2" and .evidenceMode == "final" and .trialCount == 5 and
+    .schemaVersion == "issue-197-five-trial-summary-v3" and .evidenceMode == "final" and .trialCount == 5 and
     .revision.commit == $head and .revision.clean == true and (.revision.dirtyStateSha256 | ascii_downcase) == $clean and
     (.citable | type == "boolean")' "$dual_agent" >/dev/null \
     || die "The #197 summary is not a final five-trial record on the clean bound head: $dual_agent"

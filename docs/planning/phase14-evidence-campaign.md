@@ -49,8 +49,8 @@ source-family imports until an admissible artifact exists.
 
 The contract maps every `test:` reference to exactly one project family. It pins
 product behavior to main revision
-`ee117c1e8cf3e04998825d366da663e16c2b95ed` and tree
-`17a0ad69452d710c82847f9a515022de05ebfaa5`; later importers cannot substitute
+`8388002ce69aa1fa194e7644bd8f35352ac10acf` and tree
+`f045fcc2661ac6556d6765c13d5b03b3f223845e`; later importers cannot substitute
 newer product behavior. Evidence executes from a separately reviewed clean
 descendant harness revision/tree whose complete diff is confined to the exact
 test, recorder, importer, contract, CI, and documentation allowlist. Standard
@@ -68,7 +68,7 @@ are 29 unique methods across the
 | --- | --- | ---: | ---: |
 | `cameraagent-tests` | `tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj` | 80 | 22 |
 | `cameraagent-acceptance` | `tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj` | 6 | 1 |
-| `logichost-integration` | `tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj` | 22 | 6 |
+| `logichost-integration` | `tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj` | 22 | 6 |
 
 A test citation or passing method-level TRX alone cannot become `passed`. Many
 methods exercise several fault points inside one loop, so `;case=` must exactly

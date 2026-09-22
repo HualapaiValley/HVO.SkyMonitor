@@ -1025,6 +1025,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             }
             var durableOutputs = await ReadExecutionOutputsAsync(
                 connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
+            var published = await ReadExecutionOutputPublicationAsync(
+                connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
             var inputs = await ReadExecutionInputsAsync(
                 connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
             var outputs = durableOutputs.Select((output, ordinal) => new ProcessingGraphExecutionOutputState(
@@ -1034,7 +1036,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                 output.Artifact.Role,
                 output.Artifact.Variant,
                 output.AvailabilityState,
-                output.AvailabilityReason)).ToArray();
+                output.AvailabilityReason,
+                published.TryGetValue(output.OutputIdentitySha256, out var flag) && flag)).ToArray();
             nodes.Add(new(
                 row.NodeId, row.Required, row.Plan, row.Status, row.Reason, row.AttemptCount,
                 row.Started, row.Completed, inputs, attempts, outputs));
@@ -1387,6 +1390,41 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$node", nodeId);
         return (await ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false))
             .Select(static row => row.Output).ToArray();
+    }
+
+    /// <summary>
+    /// Whether this execution published each output it associated for the node. The association
+    /// row's <c>published_flag</c> is an identity-level fact: an execution that re-associates an
+    /// output some earlier execution already published inherits <c>1</c>, so a replay of the live
+    /// revision (which reproduces identical output identities) carries the live publication on its
+    /// own rows. The per-execution fact is that flag joined with the execution's own permission to
+    /// publish; a replay is inserted with <c>allow_automatic_publication = 0</c> and so reports
+    /// <c>false</c> for every output however the identity was published. Read separately from the
+    /// output rows so the shared output projection stays untouched.
+    /// </summary>
+    private static async ValueTask<Dictionary<string, bool>> ReadExecutionOutputPublicationAsync(
+        SqliteConnection connection,
+        Guid executionId,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT association.output_identity_sha256,
+                   association.published_flag * execution.allow_automatic_publication
+            FROM processing_execution_outputs association
+            JOIN processing_executions execution ON execution.execution_id = association.execution_id
+            WHERE association.execution_id = $execution AND association.node_id = $node;
+            """;
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$node", nodeId);
+        var published = new Dictionary<string, bool>(StringComparer.Ordinal);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            published[reader.GetString(0)] = reader.GetInt64(1) != 0;
+        }
+        return published;
     }
 
     private async ValueTask ReleaseExecutionPinsAsync(

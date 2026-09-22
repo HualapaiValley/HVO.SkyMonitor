@@ -94,8 +94,12 @@ manifest, `replayProfiles[]` from the two #719 evidence records and their retain
 OTLP metrics, `centralTrafficAttempts` from the deny-sink summary plus every
 trial's recorded attempts (every term must be a recorded integer; a missing field
 is a refusal, not a zero), `dualAgent` from the #197 `five-trial-summary.json`
-(`issue-197-five-trial-summary-v2`, final mode, five trials, clean at the bound
-head), `testAssemblies[]` from the Release acceptance assembly's metadata, and
+(`issue-197-five-trial-summary-v3`, final mode, five trials, clean at the bound
+head; v3 records `environment.hostMemoryBytes` as a `{minimum, maximum}` range,
+and the #535 generation 1 document is a v2 that already carries that shape:
+its re-verification is unaffected because the validator reads only `citable`
+and `evidenceMode`, while re-assembly from that v2 producer is refused by
+design), `testAssemblies[]` from the Release acceptance assembly's metadata, and
 `source` from the manifest's dirty-state digest. The `components` and `ci`
 projections are carried verbatim and their support directories copied beside the
 output. It validates the result in the requested mode before writing; a refusal
@@ -120,24 +124,32 @@ without it is refused rather than admitted under the weaker binding of "a Releas
 build at the same head", which is the same source but not provably the same
 bytes.
 
-The three replay counters have no producer field. Each is derived from what the
-campaign retained, and each is named in the assembler for what it observes rather
-than for the property the field is named after:
+The three replay counters are derived from the v2 #719 record
+(`issue-719-replay-evidence-v2`, issue #973), which carries the durable facts, with
+the retained telemetry required only as a consistency check:
 
-- `fallbacks` is the #719 record's `attemptCount - 1` (durable) plus the peak of
-  the sampled replay retry-wait and terminal backlog gauges, so a retry that
-  completed between telemetry samples is still counted through `attemptCount`.
-- `publishedOutputs` is the peak delivery-outbox backlog observed. The durable
-  fact is `published_flag` on the execution's outputs, which no producer projects
-  yet; under the campaign's standalone configuration nothing is ever enqueued for
-  delivery, so a zero here says "no delivery backlog was observed", not "the replay
-  was proven unpublished".
-- `liveRunnerDispatches` is zero once the runner's job meter is recorded only for
-  the LocalRunner profile with no non-completed outcome. The adapter routes to the
-  runner only for Replay-class executions, so the value follows from routing; the
-  per-attempt execution route is durable but not projected into evidence (#799).
+- `publishedOutputs` is the sum of each node's `publishedOutputs`, which the
+  producer reads as the association's `published_flag` joined with the execution's
+  own permission to publish. The flag alone is identity-level (a replay of the live
+  revision reproduces identical output identities and its association rows inherit
+  the live publication), so the join is what makes it a per-execution fact. A
+  replay is inserted with automatic publication disabled, so every value is zero
+  on a correct run.
+- `liveRunnerDispatches` counts attempts that reached the runner when they must
+  not have: the live execution's attempts (recorded beside the replay's as
+  `liveExecution`) routed `LocalRunner`, the replay's recipe-backed attempts routed
+  `LocalRunner` under the InProcess profile, and any complementary attempt that
+  recorded a route. A route is recorded when an attempt completes, so an
+  interrupted attempt stays `Unknown` and only the completing attempt is judged.
+  Under the LocalRunner profile every recipe-backed node's completing attempt must
+  have routed to the runner and the runner's job meter must be recorded; under
+  InProcess that meter must be absent.
+- `fallbacks` is the record's `attemptCount - 1` (durable) plus the peak of the
+  sampled replay retry-wait and terminal backlog gauges, so a retry that completed
+  between telemetry samples is still counted through `attemptCount`.
 
-A nonzero value is carried, not hidden, so that the validator is what refuses it.
+A v1 record is refused; the #535 generation 1 record is v1 and remains verifiable,
+but cannot be re-assembled from its producer. A nonzero value is carried, not hidden, so that the validator is what refuses it.
 
 ### Producing the real generation
 

@@ -328,35 +328,66 @@ REPLAY_NODES="$(jq -nc '[
   "quality", "rolling", "scene-presentation", "storage", "telemetry"
 ]')"
 readonly REPLAY_NODES
-REPLAY_EXECUTION="$(jq -nc --argjson nodes "$REPLAY_NODES" '{
-  executionId: "11111111-1111-1111-1111-111111111111", status: 2,
-  acceptedUtc: "2026-09-21T00:00:00Z", startedUtc: "2026-09-21T00:00:01Z",
-  completedUtc: "2026-09-21T00:00:02Z", startIntervalMilliseconds: 1000,
-  graphIntervalMilliseconds: 1000,
-  graphDefinitionIdentitySha256: ("A" * 64), sharedPlanIdentitySha256: ("B" * 64),
-  localPlanIdentitySha256: ("C" * 64), attemptCount: 1,
-  nodes: [$nodes[] | {nodeId: ., required: true, status: "Completed", outputs: 1}]
-}')"
+# v2 evidence records each attempt's execution route and the outputs the execution
+# published (#973): recipe-backed nodes route to the runner under LocalRunner and in
+# process under InProcess, complementary nodes never reach the adapter, and a replay
+# publishes nothing.
+REPLAY_RECIPE_NODES="$(jq -nc '["projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud"]')"
+readonly REPLAY_RECIPE_NODES
+# The recipe-backed node set is a literal in the #719 validator, the #535 assembler and
+# the acceptance test; a drift between them would let one gate judge a node the others
+# do not. Each copy must equal this one.
+recipe_list_matches() {
+    local file="$1" extracted
+    # From the marker line to the closing bracket, drop everything up to and including
+    # the marker text itself (a C# `string[]` on the marker line would otherwise be read
+    # as an empty list), then take the first bracketed list.
+    extracted="$(sed -n "/$2/,/\]/p" "$file" | sed "1s/.*$2//" | tr -d '\n' | grep -o '\[[^]]*\]' | head -1 | jq -c 'map(.)' 2>/dev/null)" || return 1
+    [[ "$extracted" == "$REPLAY_RECIPE_NODES" ]]
+}
+recipe_list_matches "$REPLAY_PROGRAM" '^def recipe_backed_nodes' || fail 'issue-719-replay-evidence.jq recipe-backed node list drifted'
+recipe_list_matches "$SCRIPT_DIR/assemble:cameraagent-final-head-535" 'def recipe_backed:' || fail 'assemble:cameraagent-final-head-535 recipe-backed node list drifted'
+recipe_list_matches "$SCRIPT_DIR/../tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/StandaloneW6DockerAcceptanceTests.cs" 'ReplayRecipeBackedNodeIds =' || fail 'StandaloneW6DockerAcceptanceTests recipe-backed node list drifted'
+
+replay_execution() {
+    local route="$1"
+    jq -nc --argjson nodes "$REPLAY_NODES" --argjson recipe "$REPLAY_RECIPE_NODES" --arg route "$route" '{
+      executionId: "11111111-1111-1111-1111-111111111111", status: 2,
+      acceptedUtc: "2026-09-21T00:00:00Z", startedUtc: "2026-09-21T00:00:01Z",
+      completedUtc: "2026-09-21T00:00:02Z", startIntervalMilliseconds: 1000,
+      graphIntervalMilliseconds: 1000,
+      graphDefinitionIdentitySha256: ("A" * 64), sharedPlanIdentitySha256: ("B" * 64),
+      localPlanIdentitySha256: ("C" * 64), attemptCount: 1,
+      nodes: [$nodes[] | {nodeId: ., required: true, status: "Completed", outputs: 1, publishedOutputs: 0,
+        executionRoutes: [if (. | IN($recipe[])) then $route else "Unknown" end]}]
+    }'
+}
+REPLAY_EXECUTION="$(replay_execution InProcess)"
 readonly REPLAY_EXECUTION
-jq -n --argjson execution "$REPLAY_EXECUTION" '{
-  schemaVersion: "issue-719-replay-evidence-v1", profile: "InProcess", stateKey: "replay-719",
+# The live execution's routes: recipe-backed nodes in process, complementary Unknown.
+LIVE_EXECUTION="$(jq -nc --argjson nodes "$REPLAY_NODES" --argjson recipe "$REPLAY_RECIPE_NODES" '{
+  executionId: "44444444-4444-4444-4444-444444444444",
+  nodes: [$nodes[] | {nodeId: ., executionRoutes: [if (. | IN($recipe[])) then "InProcess" else "Unknown" end]}]
+}')"
+readonly LIVE_EXECUTION
+jq -n --argjson execution "$REPLAY_EXECUTION" --argjson live "$LIVE_EXECUTION" '{
+  schemaVersion: "issue-719-replay-evidence-v2", profile: "InProcess", stateKey: "replay-719",
   stateReused: false, declaredProfile: "InProcess", result: {passed: true},
   replay: {role: "establish", graphRevisionId: "canonical-v1", captureCount: 6,
     sourceCaptureId: "22222222-2222-2222-2222-222222222222", sourceCaptureSequence: 6,
     primaryArtifactId: "33333333-3333-3333-3333-333333333333",
-    liveExecutionId: "44444444-4444-4444-4444-444444444444", replay: $execution,
+    liveExecutionId: "44444444-4444-4444-4444-444444444444", liveExecution: $live, replay: $execution,
     note: "LocalRunner performs the three-way comparison."}}
 ' > "$WORK/replay-inprocess.json"
-LOCAL_REPLAY_EXECUTION="$(jq -c '.executionId = "55555555-5555-5555-5555-555555555555"' \
-    <<< "$REPLAY_EXECUTION")"
+LOCAL_REPLAY_EXECUTION="$(replay_execution LocalRunner | jq -c '.executionId = "55555555-5555-5555-5555-555555555555"')"
 readonly LOCAL_REPLAY_EXECUTION
-jq -n --argjson execution "$LOCAL_REPLAY_EXECUTION" --argjson nodes "$REPLAY_NODES" '{
-  schemaVersion: "issue-719-replay-evidence-v1", profile: "LocalRunner", stateKey: "replay-719",
+jq -n --argjson execution "$LOCAL_REPLAY_EXECUTION" --argjson nodes "$REPLAY_NODES" --argjson live "$LIVE_EXECUTION" '{
+  schemaVersion: "issue-719-replay-evidence-v2", profile: "LocalRunner", stateKey: "replay-719",
   stateReused: true, declaredProfile: "LocalRunner", result: {passed: true},
   replay: {role: "compare", readFrom: "durable state",
     sourceCaptureId: "22222222-2222-2222-2222-222222222222",
     primaryArtifactId: "33333333-3333-3333-3333-333333333333", graphRevisionId: "canonical-v1",
-    liveExecutionId: "44444444-4444-4444-4444-444444444444",
+    liveExecutionId: "44444444-4444-4444-4444-444444444444", liveExecution: $live,
     inProcessExecutionId: "11111111-1111-1111-1111-111111111111",
     localRunnerExecutionId: "55555555-5555-5555-5555-555555555555", replay: $execution,
     identity: {comparedNodes: 14, comparedOutputs: 14,
@@ -374,6 +405,35 @@ replay_gate "$WORK/replay-inprocess.json" InProcess false \
     || fail 'valid InProcess replay evidence was refused'
 replay_gate "$WORK/replay-localrunner.json" LocalRunner true \
     || fail 'valid LocalRunner replay evidence was refused'
+# v2 refusals (#973): a published output, a recipe-backed node that did not route to the
+# runner under LocalRunner, a recipe-backed node that routed to the runner under InProcess, a
+# complementary node claiming a route, a v1 document.
+jq '.replay.replay.nodes[0].publishedOutputs = 1' "$WORK/replay-localrunner.json" > "$WORK/replay-published.json"
+replay_gate "$WORK/replay-published.json" LocalRunner true 2>/dev/null && fail 'replay evidence with a published output was accepted'
+jq '(.replay.replay.nodes[] | select(.nodeId == "rolling") | .executionRoutes) = ["InProcess"]' "$WORK/replay-localrunner.json" > "$WORK/replay-inprocess-under-localrunner.json"
+replay_gate "$WORK/replay-inprocess-under-localrunner.json" LocalRunner true 2>/dev/null && fail 'LocalRunner evidence with an in-process recipe attempt was accepted'
+jq '(.replay.replay.nodes[] | select(.nodeId == "rolling") | .executionRoutes) = ["LocalRunner"]' "$WORK/replay-inprocess.json" > "$WORK/replay-runner-under-inprocess.json"
+replay_gate "$WORK/replay-runner-under-inprocess.json" InProcess false 2>/dev/null && fail 'InProcess evidence with a runner-routed attempt was accepted'
+jq '(.replay.replay.nodes[] | select(.nodeId == "storage") | .executionRoutes) = ["InProcess"]' "$WORK/replay-inprocess.json" > "$WORK/replay-complementary-routed.json"
+replay_gate "$WORK/replay-complementary-routed.json" InProcess false 2>/dev/null && fail 'evidence with a routed complementary node was accepted'
+jq '(.replay.replay.nodes[] | select(.nodeId == "rolling") | .executionRoutes) = []' "$WORK/replay-inprocess.json" > "$WORK/replay-no-attempts.json"
+replay_gate "$WORK/replay-no-attempts.json" InProcess false 2>/dev/null && fail 'evidence with a node that recorded no attempt was accepted'
+jq '.schemaVersion = "issue-719-replay-evidence-v1"' "$WORK/replay-inprocess.json" > "$WORK/replay-v1.json"
+replay_gate "$WORK/replay-v1.json" InProcess false 2>/dev/null && fail 'v1 replay evidence was accepted'
+jq '.replay.replay.nodes[0] |= del(.publishedOutputs)' "$WORK/replay-inprocess.json" > "$WORK/replay-no-published.json"
+replay_gate "$WORK/replay-no-published.json" InProcess false 2>/dev/null && fail 'evidence without a published-output count was accepted'
+# An interrupted then completed recipe attempt is a legitimate record; a completed-last attempt
+# that did not take the expected route is not; the live execution must route in process.
+jq '(.replay.replay.nodes[] | select(.nodeId == "cloud") | .executionRoutes) = ["Unknown", "LocalRunner"]' "$WORK/replay-localrunner.json" > "$WORK/replay-retried.json"
+replay_gate "$WORK/replay-retried.json" LocalRunner true || fail 'LocalRunner evidence with an interrupted then completed recipe attempt was refused'
+jq '(.replay.replay.nodes[] | select(.nodeId == "cloud") | .executionRoutes) = ["LocalRunner", "Unknown"]' "$WORK/replay-localrunner.json" > "$WORK/replay-last-unknown.json"
+replay_gate "$WORK/replay-last-unknown.json" LocalRunner true 2>/dev/null && fail 'evidence whose last recipe attempt recorded no route was accepted'
+jq '(.replay.liveExecution.nodes[] | select(.nodeId == "rolling") | .executionRoutes) = ["LocalRunner"]' "$WORK/replay-localrunner.json" > "$WORK/replay-live-routed.json"
+replay_gate "$WORK/replay-live-routed.json" LocalRunner true 2>/dev/null && fail 'evidence whose live execution dispatched to the runner was accepted'
+jq '.replay.liveExecution.executionId = "99999999-9999-9999-9999-999999999999"' "$WORK/replay-inprocess.json" > "$WORK/replay-live-mismatch.json"
+replay_gate "$WORK/replay-live-mismatch.json" InProcess false 2>/dev/null && fail 'evidence whose live execution is not the bound live id was accepted'
+jq 'del(.replay.liveExecution)' "$WORK/replay-inprocess.json" > "$WORK/replay-no-live.json"
+replay_gate "$WORK/replay-no-live.json" InProcess false 2>/dev/null && fail 'evidence without the live execution routes was accepted'
 
 profile_receipt() {
     local evidence="$1" output="$2" trial="$3" profile="$4" reused="$5" path="$6"

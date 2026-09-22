@@ -66,6 +66,20 @@ die() {
     printf '%s\n' "$*" >&2
     exit 1
 }
+# A signal after the verification temporary is assigned must not leave it in
+# TMPDIR. The handler removes it and exits with the conventional 128+signal
+# status: the status is then deterministic, the EXIT trap (the pointer
+# publication's temporary cleanup) still runs, and the caller sees the signal
+# rather than a normal exit. It is a signal trap only; it must not replace the
+# EXIT trap that publication installs.
+on_signal() {
+    local status="$1"
+    [[ -z "$verification_temp" ]] || rm -f -- "$verification_temp"
+    exit "$status"
+}
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap 'on_signal 129' HUP
 
 sha256_of() { sha256sum -- "$1" | cut -d' ' -f1; }
 bytes_of() { wc -c <"$1" | tr -d ' '; }

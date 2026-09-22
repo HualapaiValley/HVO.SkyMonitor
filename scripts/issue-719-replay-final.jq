@@ -59,12 +59,12 @@ def profile_gate($gate; $trial; $profile; $reused; $evidence_path; $evidence_sha
     ($validatorPath | type == "string" and length > 0) and
     ($validator_sha | uppercase_sha256) and
     ($pairSha256 | ascii_upcase | uppercase_sha256) and
-    $in_process_evidence.schemaVersion == "issue-719-replay-evidence-v1" and
+    $in_process_evidence.schemaVersion == "issue-719-replay-evidence-v2" and
     $in_process_evidence.profile == "InProcess" and
     $in_process_evidence.declaredProfile == "InProcess" and
     $in_process_evidence.stateKey == $stateKey and $in_process_evidence.stateReused == false and
     $in_process_evidence.result.passed == true and
-    $local_runner_evidence.schemaVersion == "issue-719-replay-evidence-v1" and
+    $local_runner_evidence.schemaVersion == "issue-719-replay-evidence-v2" and
     $local_runner_evidence.profile == "LocalRunner" and
     $local_runner_evidence.declaredProfile == "LocalRunner" and
     $local_runner_evidence.stateKey == $stateKey and $local_runner_evidence.stateReused == true and

@@ -109,7 +109,8 @@ internal static class ExecutionEvidenceTestFactory
                         new(
                             0, outputIdentity, ProcessingIdentity.CreateArtifactId(outputIdentity),
                             FrameArtifactRole.Preview, "encoded-preview", availabilityState,
-                            availabilityState == "Available" ? null : "reconciliation.checksum-mismatch")
+                            availabilityState == "Available" ? null : "reconciliation.checksum-mismatch",
+                            true)
                     ])
             ]);
     }

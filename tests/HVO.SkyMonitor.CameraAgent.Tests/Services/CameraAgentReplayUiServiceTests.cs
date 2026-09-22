@@ -358,7 +358,7 @@ public sealed class CameraAgentReplayUiServiceTests
                             AttemptRoute)],
                         [new ProcessingGraphExecutionOutputState(
                             0, new string('D', 64), ArtifactId, FrameArtifactRole.Preview, "display",
-                            "Available", null)])
+                            "Available", null, false)])
                 ]));
 
 
