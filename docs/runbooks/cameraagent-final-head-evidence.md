@@ -96,7 +96,10 @@ trial's recorded attempts (every term must be a recorded integer; a missing fiel
 is a refusal, not a zero), `dualAgent` from the #197 `five-trial-summary.json`
 (`issue-197-five-trial-summary-v3`, final mode, five trials, clean at the bound
 head; v3 records `environment.hostMemoryBytes` as a `{minimum, maximum}` range,
-and the #535 generation 1 document is a v2 that already carries that shape), `testAssemblies[]` from the Release acceptance assembly's metadata, and
+and the #535 generation 1 document is a v2 that already carries that shape:
+its re-verification is unaffected because the validator reads only `citable`
+and `evidenceMode`, while re-assembly from that v2 producer is refused by
+design), `testAssemblies[]` from the Release acceptance assembly's metadata, and
 `source` from the manifest's dirty-state digest. The `components` and `ci`
 projections are carried verbatim and their support directories copied beside the
 output. It validates the result in the requested mode before writing; a refusal
