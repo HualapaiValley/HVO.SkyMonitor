@@ -366,7 +366,7 @@ require_json_object "$dual_agent"
 # final mode. The per-trial issue-197-dual-agent.json records carry a different
 # schema and no citability; only the summary is the #197 producer for this section.
 jq -e --arg head "$bound_head" --arg clean "$empty_sha256" '
-    .schemaVersion == "issue-197-five-trial-summary-v2" and .evidenceMode == "final" and .trialCount == 5 and
+    .schemaVersion == "issue-197-five-trial-summary-v3" and .evidenceMode == "final" and .trialCount == 5 and
     .revision.commit == $head and .revision.clean == true and (.revision.dirtyStateSha256 | ascii_downcase) == $clean and
     (.citable | type == "boolean")' "$dual_agent" >/dev/null \
     || die "The #197 summary is not a final five-trial record on the clean bound head: $dual_agent"

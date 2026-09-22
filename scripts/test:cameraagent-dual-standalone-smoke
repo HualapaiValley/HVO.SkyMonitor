@@ -28,7 +28,7 @@ readonly WARMUP_CAPTURE_COUNT="${HVO_CAMERAAGENT_DUAL_STANDALONE_WARMUP_CAPTURES
 readonly MEASURED_CAPTURE_COUNT="${HVO_CAMERAAGENT_DUAL_STANDALONE_MEASURED_CAPTURES:-30}"
 if [[ "$TRIAL_COUNT" == 5 && "$WARMUP_CAPTURE_COUNT" == 5 && "$MEASURED_CAPTURE_COUNT" == 30 ]]; then
     readonly EVIDENCE_MODE='final'
-    readonly SUMMARY_SCHEMA='issue-197-five-trial-summary-v2'
+    readonly SUMMARY_SCHEMA='issue-197-five-trial-summary-v3'
     readonly SUMMARY_FILE='five-trial-summary.json'
 else
     readonly EVIDENCE_MODE='diagnostic'
@@ -500,7 +500,8 @@ jq -s --arg schema "$SUMMARY_SCHEMA" --arg mode "$EVIDENCE_MODE" --argjson basel
     # Host memory is an observation, not an identity: MemTotal moved by ~100 MB between
     # two trials of one run on one host (balloon or hotplug), and a summary that
     # treats that as "environment changed" refuses five passed trials for nothing
-    # the trials did. Every other field is identity and must not vary.
+    # the trials did. Every other field is identity and must not vary. v3 carries
+    # the range; v2 carried the scalar and refused on any difference (#974).
     environment: ((map(.environment | del(.hostMemoryBytes)) | unique |
         if length == 1 then .[0] else error("environment changed") end)
       + {hostMemoryBytes: (map(.environment.hostMemoryBytes) |
