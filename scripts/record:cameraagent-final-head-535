@@ -66,6 +66,22 @@ die() {
     printf '%s\n' "$*" >&2
     exit 1
 }
+# A signal after the verification temporary is assigned must not leave it in
+# TMPDIR. The handler removes it and exits with the conventional 128+signal
+# status so the caller still sees the signal rather than a normal exit. It
+# exits rather than re-raising because bash delivers a trapped SIGINT only after
+# the foreground child returns, and a re-raised SIGINT at that point can be
+# discarded and the script resume. It is a signal trap only: the pointer
+# publication installs its own EXIT trap and this must not replace it.
+on_signal() {
+    local signal="$1" status="$2"
+    [[ -z "$verification_temp" ]] || rm -f -- "$verification_temp"
+    trap - "$signal"
+    exit "$status"
+}
+trap 'on_signal INT 130' INT
+trap 'on_signal TERM 143' TERM
+trap 'on_signal HUP 129' HUP
 
 sha256_of() { sha256sum -- "$1" | cut -d' ' -f1; }
 bytes_of() { wc -c <"$1" | tr -d ' '; }
