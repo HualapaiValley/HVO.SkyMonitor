@@ -20,9 +20,11 @@ public sealed class SyntheticCalibrationReferenceStoreTests
 {
     /// <summary>
     /// The seed-208 synthetic bundle that the Manual #208 retained-evidence harness pins is
-    /// asserted here in the Unit lane, so a change to the profile serialization or the
-    /// publication identity envelope is caught on every pull request. #484 committed pins
-    /// that #483 had already invalidated the same day, and nothing ran them until #968.
+    /// asserted here in the Unit lane: profile identity, published bundle id, and the
+    /// digest of every evidence file, so a change to the publication-identity envelope,
+    /// the profile serialization or any descriptor serializer is caught on every pull
+    /// request. #484 changed the envelope but carried the earlier pins forward, and
+    /// nothing ran them until #968.
     /// </summary>
     [TestMethod]
     public async Task CanonicalSeed208Bundle_PinsThePublishedIdentities()
@@ -42,10 +44,19 @@ public sealed class SyntheticCalibrationReferenceStoreTests
             Assert.AreEqual(
                 Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.ExpectedSyntheticProfileIdentitySha256,
                 bundle.ProfileIdentitySha256);
-            var bundleDirectory = Path.GetFileName(Path.GetDirectoryName(bundle.EvidenceFiles[0].RelativePath))!;
             Assert.AreEqual(
                 Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.ExpectedSyntheticBundleId,
-                $"synthetic-{bundleDirectory[..32].ToUpperInvariant()}");
+                bundle.LibraryBundle.BundleId);
+            var expectedFiles = Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.ExpectedSyntheticFiles;
+            var actualFiles = bundle.EvidenceFiles.ToDictionary(
+                static file => Path.GetFileName(file.RelativePath),
+                static file => new Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.FileIdentity(file.Length, file.Sha256),
+                StringComparer.Ordinal);
+            CollectionAssert.AreEquivalent(expectedFiles.Keys.ToArray(), actualFiles.Keys.ToArray());
+            foreach (var file in expectedFiles)
+            {
+                Assert.AreEqual(file.Value, actualFiles[file.Key], file.Key);
+            }
         }
         finally
         {

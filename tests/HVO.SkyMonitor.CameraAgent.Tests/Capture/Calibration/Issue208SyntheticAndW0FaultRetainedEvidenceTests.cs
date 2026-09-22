@@ -41,20 +41,22 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
     internal const int Seed = 208;
     internal const string ExpectedSyntheticBundleId = "synthetic-2B011DA410ABD017292677DD2EC939F2";
     // The pinned identities below are the deterministic outputs for Seed 208 at
-    // 64x48 with three sources per kind. They were re-pinned under #968: the values
-    // committed by #484 predated #483's canonical processing-identity envelope
-    // (merged three hours earlier the same day), and this Manual-category test never
-    // ran in CI to notice. The raw payloads (*.bin) were unchanged by that; the
-    // JSON descriptors, the profile, the bundle and the publication-derived bundle
-    // id carry the canonicalized identities.
+    // 64x48 with three sources per kind. They were re-pinned under #968: #484
+    // changed the publication-identity envelope (agent, rig, input layout and
+    // profiles) and this harness's light descriptor, but carried the pre-#484
+    // bundle/profile pins forward, and this Manual-category test never ran in CI
+    // to notice. The raw payloads (*.bin) are unchanged; every identity derived
+    // from the publication envelope (bundle id, profile identity, descriptor
+    // artifact ids, and so the *.json digests) moved with it.
     // SyntheticCalibrationReferenceStoreTests.CanonicalSeed208Bundle_PinsThePublishedIdentities
-    // asserts these two identities in the Unit lane, so drift is caught on every pull
-    // request rather than only when this Manual harness is run.
+    // asserts the profile identity, bundle id and every evidence-file digest in
+    // the Unit lane, so drift is caught on every pull request rather than only
+    // when this harness is run.
     internal const string ExpectedSyntheticProfileIdentitySha256 =
         "32A6A5F9256FF93EC09E3ABC3FAC8876B581D0621CB527E144C66D754B62C1F5";
     private static readonly DateTimeOffset FixedUtcNow = new(2026, 7, 26, 12, 0, 0, TimeSpan.Zero);
     private static readonly JsonSerializerOptions EvidenceJsonOptions = CreateEvidenceJsonOptions();
-    private static readonly Dictionary<string, FileIdentity> ExpectedSyntheticFiles = new(StringComparer.Ordinal)
+    internal static readonly Dictionary<string, FileIdentity> ExpectedSyntheticFiles = new(StringComparer.Ordinal)
     {
         ["bias.bin"] = new(6144, "70F4CE894BD99D133E756673F14A7C61379DEBD5666B12F16C19685496999654"),
         ["bias.json"] = new(2684, "9059DB1FBD9487AD2DF7F96F29BD64A6CDCD9CED48CC7F53A3F43F8A04C910AE"),
@@ -379,7 +381,11 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
                 CorruptReconciliation = corruptReconciliation,
                 PublishedBundleCount = rows.BundleCount,
                 SelectedBundleId = selected.Bundle?.Bundle.BundleId,
-                ValidBytesAndPathsPreserved = ExpectedSyntheticFiles.SequenceEqual(validAfter),
+                // Both sides are keyed dictionaries; compare as sets, not in enumeration order,
+                // which for the expected initializer is declaration order and for the
+                // hashed directory is ordinal path order.
+                ValidBytesAndPathsPreserved = ExpectedSyntheticFiles.Count == validAfter.Count &&
+                    ExpectedSyntheticFiles.All(file => validAfter.TryGetValue(file.Key, out var after) && after == file.Value),
                 InvalidEvidencePreserved = corruptBefore.SequenceEqual(corruptAfter) &&
                     incompleteBefore.Values.OrderBy(static file => file.Sha256)
                         .SequenceEqual(incompleteAfter.Values.OrderBy(static file => file.Sha256)),
@@ -1283,7 +1289,7 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
         CalibrationPublicationFaultPoint Point,
         string RelativePathSuffix);
 
-    private sealed record FileIdentity(long Length, string Sha256);
+    internal sealed record FileIdentity(long Length, string Sha256);
 
     private sealed record SqliteSnapshot(
         long BundleCount,
