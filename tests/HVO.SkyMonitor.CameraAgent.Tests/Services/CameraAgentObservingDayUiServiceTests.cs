@@ -50,6 +50,16 @@ public sealed class CameraAgentObservingDayUiServiceTests
         CollectionAssert.AreEqual(
             new[] { (NightStart.AddHours(2), NightStart.AddHours(3)), (NightStart.AddHours(4), NightStart.AddHours(6)) },
             windows.ToArray());
+
+        // The exception window is exempt from its own day's closure only: the next local day's
+        // closed exception still closes the part of the window that crosses into it.
+        var crossing = Preview(
+            new ExpandedScheduleInterval("d1:closed", CaptureScheduleIntervalSource.DateExceptionClosed, ExpandedScheduleDisposition.Closed, localDay.Start, localDay.End, new DateOnly(2026, 7, 21), null),
+            new ExpandedScheduleInterval("d1:window", CaptureScheduleIntervalSource.DateExceptionWindow, ExpandedScheduleDisposition.Open, NightStart.AddHours(10), NightStart.AddHours(14), new DateOnly(2026, 7, 21), "night"),
+            new ExpandedScheduleInterval("d2:closed", CaptureScheduleIntervalSource.DateExceptionClosed, ExpandedScheduleDisposition.Closed, localDay.End, localDay.End.AddDays(1), new DateOnly(2026, 7, 22), null));
+        CollectionAssert.AreEqual(
+            new[] { (NightStart.AddHours(10), NightStart.AddHours(12)) },
+            CameraAgentObservingDayUiService.ClipOpenWindows(crossing, NightStart, NightEnd).ToArray());
     }
 
     [TestMethod]

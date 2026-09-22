@@ -166,11 +166,12 @@ internal sealed class CameraAgentObservingDayUiService(
         foreach (var window in open)
         {
             var pieces = new List<(DateTimeOffset, DateTimeOffset)> { (window.Start, window.End) };
-            IEnumerable<(DateTimeOffset, DateTimeOffset)> gaps = blackouts;
-            if (window.Source != CaptureScheduleIntervalSource.DateExceptionWindow)
-            {
-                gaps = gaps.Concat(exceptionDays.Select(static day => (day.StartUtc, day.EndUtc)));
-            }
+            // An exception window is exempt only from its own day's closure; the evaluator admits it
+            // only while that closure is the active one, so a window crossing midnight into another
+            // closed exception day is closed there.
+            IEnumerable<(DateTimeOffset, DateTimeOffset)> gaps = blackouts.Concat(exceptionDays
+                .Where(day => window.Source != CaptureScheduleIntervalSource.DateExceptionWindow || day.LocalDate != window.LocalDate)
+                .Select(static day => (day.StartUtc, day.EndUtc)));
             foreach (var (gapStart, gapEnd) in gaps)
             {
                 var next = new List<(DateTimeOffset, DateTimeOffset)>();
