@@ -47,7 +47,11 @@ DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_PRODUCTI
 ```
 
 The authority filter above is the historical method name at the cited candidate
-revision; it is intentionally not a current-tree test filter.
+revision; it is intentionally not a current-tree test filter. Likewise the
+project path `tests/HVO.SkyMonitor.IntegrationTests/...` is the path at the cited
+revisions; #545 later renamed the project to
+`tests/HVO.SkyMonitor.LogicHost.IntegrationTests/`, and current-tree evidence
+(`Issue170PerformanceSummaryTests`) emits the new path.
 
 Each raw file records branch, clean state, harness and production commits, assembly hashes, process start/completion bounds, environment, workload, method, I/O, CPU, 100 ms sampled allocation-rate increments with boundary uncertainty, RSS, latency samples, throughput, backlog, and correctness. Copy the baseline `TestResults/issue-170/$BASELINE_HARNESS/` directory into the candidate worktree without changing its commit-scoped path.
 
