@@ -63,12 +63,17 @@ jobs:
             echo "behind=$behind"
           } >> "$GITHUB_OUTPUT"
           if [[ "$behind" != 0 ]]; then
-            # main has commits v1 does not. After a merge-commit promotion that is expected:
-            # the merge commit itself is on main and not on v1, and every parent of it is on
-            # v1. Any other shape (a hotfix, a mis-targeted PR, a squash) is a bypass of the
+            # main has commits v1 does not. After merge-commit promotions that is expected:
+            # each promotion's merge commit is on main and not on v1, its second parent is
+            # the v1 head it promoted, and its first parent is the previous promotion's merge
+            # commit, which is also on main only. So a parent qualifies when it is on v1 or
+            # when it is a stray already accepted as a promotion merge; the strays are walked
+            # oldest-first so the chain is accepted in order. Any other shape (a hotfix, a
+            # mis-targeted PR, a squash, a merge with a foreign parent) is a bypass of the
             # branch model and needs a person, so halt rather than open a PR that would carry
             # it back into v1 by implication.
             stray="$(gh api "repos/$REPOSITORY/compare/$SOURCE...$TARGET" --paginate --jq '.commits[]|"\(.sha) \(.parents|length) \(.parents|map(.sha)|join(" "))"')"
+            declare -A tolerated=()
             while read -r sha parent_count parents; do
               [[ -n "$sha" ]] || continue
               if (( parent_count < 2 )); then
@@ -76,12 +81,14 @@ jobs:
                 exit 1
               fi
               for parent in $parents; do
+                [[ -z "${tolerated[$parent]+set}" ]] || continue
                 if [[ "$(gh api "repos/$REPOSITORY/compare/$SOURCE...$parent" --jq .ahead_by)" != 0 ]]; then
                   printf '::error::%s has merge commit %s with parent %s that is not on %s; promotion halted until %s is synchronized into %s.\n' "$TARGET" "${sha:0:8}" "${parent:0:8}" "$SOURCE" "$TARGET" "$SOURCE"
                   exit 1
                 fi
               done
-              printf 'Tolerating %s merge commit %s: every parent is on %s.\n' "$TARGET" "${sha:0:8}" "$SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
+              tolerated["$sha"]=1
+              printf 'Tolerating %s merge commit %s: every parent is on %s or an earlier tolerated promotion merge.\n' "$TARGET" "${sha:0:8}" "$SOURCE" | tee -a "$GITHUB_STEP_SUMMARY"
             done <<< "$stray"
           fi
           if [[ "$ahead" == 0 ]]; then

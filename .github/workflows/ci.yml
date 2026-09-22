@@ -128,6 +128,7 @@ jobs:
           ./scripts/test:record-cameraagent-final-head-535
           ./scripts/test:cameraagent-final-head-ci-import-535
           ./scripts/test:cameraagent-final-head-components-535
+          ./scripts/test:promotion-behind-check
           ./scripts/test:ci-artifact-provenance
           ./scripts/test:ci-shell-syntax
           ./scripts/test:ci-shellcheck
