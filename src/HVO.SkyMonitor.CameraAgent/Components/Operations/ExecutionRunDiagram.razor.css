@@ -1,13 +1,23 @@
 .run-diagram__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: var(--hvo-muted); font-size: .82rem; }
 .run-diagram__toolbar > div { display: flex; gap: .3rem; }
-.run-diagram__scroll { overflow: auto; margin-top: .75rem; border: 1px solid var(--hvo-border-muted); border-radius: .6rem; background: #080e16; }
+.run-diagram__scroll { min-height: 33rem; overflow: auto; margin-top: .75rem; border-top: 1px solid var(--run-border, #253244); border-bottom: 1px solid var(--run-border, #253244); background-color: #080e16; background-image: linear-gradient(rgba(37, 50, 68, .16) 1px, transparent 1px), linear-gradient(90deg, rgba(37, 50, 68, .16) 1px, transparent 1px); background-size: 28px 28px; }
 .run-diagram { display: block; min-width: 100%; font-family: var(--hvo-font-family); }
 .run-diagram__edge { fill: none; stroke: var(--hvo-muted-strong); stroke-width: 2; }
+.run-diagram__band rect { fill: rgba(46, 66, 88, .12); stroke: var(--hvo-border-muted); stroke-width: 1; }
+.run-diagram__band:nth-of-type(even) rect { fill: rgba(10, 22, 35, .35); }
+.run-diagram__band text { fill: var(--hvo-muted-strong); font-size: 11px; letter-spacing: .05em; }
+.run-diagram__source rect, .run-diagram__boundary rect { fill: var(--hvo-surface-elevated); stroke: var(--hvo-info-strong); }
+.run-diagram__source text, .run-diagram__boundary text { fill: var(--hvo-body-color); font-size: 12px; }
+.run-diagram__unavailable { fill: var(--hvo-muted); font-size: 12px; }
 .run-diagram__edge--optional { stroke-dasharray: 6 5; }
 .run-diagram__node { cursor: pointer; }
 .run-diagram__node rect { fill: var(--hvo-surface-elevated); stroke: var(--hvo-border-stronger); stroke-width: 2; }
 .run-diagram__node text { fill: var(--hvo-body-color); font-size: 13px; font-weight: 650; }
 .run-diagram__node .run-diagram__meta { fill: var(--hvo-muted-strong); font-size: 11px; font-weight: 400; }
+.run-diagram__node .run-diagram__status { fill: var(--hvo-success-strong); font-size: 16px; }
+.run-diagram__node--running .run-diagram__status { fill: var(--hvo-info-strong); }
+.run-diagram__node--terminalfailure .run-diagram__status, .run-diagram__node--retryablefailure .run-diagram__status { fill: var(--hvo-danger-strong); }
+.run-diagram__node .run-diagram__divider { stroke: var(--hvo-border-muted); }
 .run-diagram__node--completed rect { stroke: var(--hvo-success-strong); }
 .run-diagram__node--running rect { stroke: var(--hvo-info-strong); }
 .run-diagram__node--retryablefailure rect, .run-diagram__node--terminalfailure rect { stroke: var(--hvo-danger-strong); }

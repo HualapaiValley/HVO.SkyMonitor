@@ -123,11 +123,12 @@ public sealed class ProcessingExecutionPagesTests
                 new CameraAgentProcessingNodeView("telemetry", false, new string('T', 64), "Failed", "sensitive-tool crashed", 2, Now.AddSeconds(-3), Now, [], [], [])
             ]);
         context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService { Detail = detail });
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
 
         var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(static page => page.ExecutionId, CompletedId));
 
         cut.WaitForElement(".node-list");
-        StringAssert.Contains(cut.Find("h1").TextContent, "Replay pipeline run", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find("h1").TextContent, "Capture #42", StringComparison.Ordinal);
         Assert.HasCount(2, cut.FindAll(".run-diagram__node"));
         StringAssert.Contains(cut.Find(".transient-band").TextContent, "Disabled", StringComparison.Ordinal);
         Assert.HasCount(2, cut.FindAll(".node"));
@@ -160,7 +161,7 @@ public sealed class ProcessingExecutionPagesTests
 
         Assert.HasCount(2, cut.FindAll(".run-diagram__node"));
         Assert.HasCount(1, cut.FindAll(".run-diagram__edge--optional"));
-        Assert.HasCount(0, cut.FindAll(".run-diagram__edge:not(.run-diagram__edge--optional)"));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__edge:not(.run-diagram__edge--optional)"));
         Assert.IsTrue(cut.FindAll(".run-diagram__node")[1].ClassList.Contains("run-diagram__node--skipped"));
         cut.FindAll(".run-diagram__node")[1].KeyDown("Enter");
         Assert.AreEqual("preview", selected);
@@ -174,6 +175,7 @@ public sealed class ProcessingExecutionPagesTests
         using var context = new BunitContext();
         ConfigureTransientRun(context);
         context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService { DetailFailure = OperatorUiResult<CameraAgentProcessingExecutionDetailView>.Failure(OperatorUiResultKind.NotFound, "The execution was not found.") });
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
 
         var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(static page => page.ExecutionId, Guid.NewGuid()));
 
@@ -196,6 +198,7 @@ public sealed class ProcessingExecutionPagesTests
             DetailFailure = OperatorUiResult<CameraAgentProcessingExecutionDetailView>.Failure(OperatorUiResultKind.Unauthorized, "denied")
         };
         context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(unauthorized);
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(Now));
         var navigation = context.Services.GetRequiredService<NavigationManager>();
 

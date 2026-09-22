@@ -118,15 +118,6 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
             else if (result.IsSuccess && result.Value is not null)
             {
                 _capture = result.Value.Capture;
-                var liveRun = await GraphService.GetLiveExecutionIdAsync(CaptureId, cancellation.Token).ConfigureAwait(false);
-                if (generation != Volatile.Read(ref _generation)) return;
-                if (liveRun.Kind == OperatorUiResultKind.Unauthorized)
-                {
-                    _capture = null;
-                    NavigationManager.NavigateTo("/Account/AccessDenied");
-                    return;
-                }
-                _liveExecutionId = liveRun.IsSuccess ? liveRun.Value?.ExecutionId : null;
                 _capturePresentation = result.Value.Presentation;
                 _selectedStage = result.Value.Presentation.SelectedStage;
                 InitializeComparison();
@@ -151,6 +142,9 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
                     _presentationMessage = presentation.Message ??
                         "Structured layers were not retained for this capture.";
                 }
+                // The link is optional. Never delay the primary capture image and its layer
+                // controls for a slow execution-journal read.
+                _ = LoadLiveRunLinkAsync(CaptureId, generation, cancellation.Token);
             }
             else
             {
@@ -166,6 +160,28 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
             {
                 _isLoading = false;
             }
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "This optional link read must not fail the gallery page.")]
+    private async Task LoadLiveRunLinkAsync(Guid captureId, long generation, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(2));
+            var run = await GraphService.GetLiveExecutionIdAsync(captureId, timeout.Token).ConfigureAwait(false);
+            if (generation == Volatile.Read(ref _generation) && run.IsSuccess)
+            {
+                await InvokeAsync(() => { _liveExecutionId = run.Value?.ExecutionId; StateHasChanged(); }).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception)
+        {
+            // The gallery image and facts do not depend on a pipeline-run link.
         }
     }
 

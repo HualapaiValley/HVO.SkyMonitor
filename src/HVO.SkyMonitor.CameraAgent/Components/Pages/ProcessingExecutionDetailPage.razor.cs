@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class ProcessingExecutionDetailPage : ComponentBase
+public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyncDisposable
 {
     private CameraAgentProcessingExecutionDetailView? _view;
     private string? _message;
@@ -16,9 +16,14 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase
     private bool _notFound;
     private string? _selectedNodeId;
     private string _tab = "stage";
+    private string _runSearch = string.Empty;
+    private string _outcomeFilter = "all";
+    private bool _requiredOnly;
     private TransientCaptureRunState? _transient;
     private CameraAgentProcessingExecutionsView? _recent;
     private bool _transientUnavailable;
+    private CancellationTokenSource? _loadCancellation;
+    private long _generation;
 
     [Parameter] public Guid ExecutionId { get; set; }
 
@@ -28,11 +33,33 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase
 
     [Inject] internal ITransientRuntimeManagement TransientRuntime { get; set; } = default!;
 
+    [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
+
     [Inject] internal IOptions<CameraAgentHostOptions> HostOptions { get; set; } = default!;
 
     private bool TransientEnabled => HostOptions.Value.TransientDetection.Mode is TransientOperatingMode.Edge or TransientOperatingMode.Hybrid;
+    private string LogicHostState => HostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled
+        ? "Disabled"
+        : "No acknowledgement recorded for this execution";
+    private long? _captureSequence;
 
     private CameraAgentProcessingNodeView? SelectedNode => _view?.Nodes.FirstOrDefault(node => node.NodeId == _selectedNodeId);
+    private IReadOnlyList<CameraAgentProcessingExecutionSummary> FilteredRuns => _recent is null ? [] :
+        _recent.Live.Concat(_recent.Replay)
+            .Where(run => (_outcomeFilter == "all" || run.Status.ToString() == _outcomeFilter) &&
+                (string.IsNullOrWhiteSpace(_runSearch) ||
+                    ("Capture " + run.CaptureId + " " + run.ExecutionClass + " " + run.Status)
+                        .Contains(_runSearch, StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(static run => run.AcceptedUtc).ToArray();
+
+    private static string StatusGlyph(string status) => status switch
+    {
+        "Completed" => "✓",
+        "Running" => "●",
+        "Skipped" => "○",
+        "Failed" or "TerminalFailure" => "!",
+        _ => "·"
+    };
 
     private string TransientLabel => !TransientEnabled ? "Disabled"
         : _transientUnavailable ? "State unavailable"
@@ -45,52 +72,106 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase
 
     protected override async Task OnParametersSetAsync() => await RefreshAsync().ConfigureAwait(false);
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The transient band is optional; a failed read is shown as unavailable without concealing the execution journal.")]
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional transient, recent-run and gallery reads cannot conceal the primary execution journal.")]
     private async Task RefreshAsync()
     {
+        var generation = Interlocked.Increment(ref _generation);
+        var requestedExecution = ExecutionId;
+        var cancellation = new CancellationTokenSource();
+        var prior = Interlocked.Exchange(ref _loadCancellation, cancellation);
+        if (prior is not null)
+        {
+            await prior.CancelAsync().ConfigureAwait(false);
+            prior.Dispose();
+        }
         _loading = true;
+        _view = null;
+        _recent = null;
+        _transient = null;
+        _captureSequence = null;
         try
         {
-            var result = await GraphService.GetExecutionDetailAsync(ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            var result = await GraphService.GetExecutionDetailAsync(requestedExecution, cancellation.Token).ConfigureAwait(false);
+            if (generation != Volatile.Read(ref _generation) || requestedExecution != ExecutionId) return;
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
                 return;
             }
-            _notFound = result.Kind == OperatorUiResultKind.NotFound;
             if (result.IsSuccess && result.Value is not null)
             {
-                _view = result.Value;
-                _message = null;
-                if (_selectedNodeId is null || _view.Nodes.All(node => node.NodeId != _selectedNodeId))
-                {
-                    _selectedNodeId = _view.Nodes.Count > 0 ? _view.Nodes[0].NodeId : null;
-                }
-                _transient = null;
-                _transientUnavailable = false;
+                var detail = result.Value;
+                TransientCaptureRunState? transient = null;
+                var transientUnavailable = false;
                 if (TransientEnabled)
                 {
                     try
                     {
-                        _transient = await TransientRuntime.ReadCaptureRunAsync(_view.Execution.CaptureId, CancellationToken.None).ConfigureAwait(false);
+                        transient = await TransientRuntime.ReadCaptureRunAsync(detail.Execution.CaptureId, cancellation.Token).ConfigureAwait(false);
                     }
-                    catch (Exception)
+                    catch (Exception) when (!cancellation.IsCancellationRequested)
                     {
-                        _transientUnavailable = true;
+                        transientUnavailable = true;
                     }
                 }
-                var recent = await GraphService.GetExecutionsAsync(10, CancellationToken.None).ConfigureAwait(false);
-                _recent = recent.IsSuccess ? recent.Value : null;
+                if (generation != Volatile.Read(ref _generation)) return;
+                CameraAgentProcessingExecutionsView? recentView;
+                try
+                {
+                    var recent = await GraphService.GetExecutionsAsync(10, cancellation.Token).ConfigureAwait(false);
+                    if (generation != Volatile.Read(ref _generation)) return;
+                    recentView = recent.IsSuccess ? recent.Value : null;
+                }
+                catch (Exception) when (!cancellation.IsCancellationRequested)
+                {
+                    recentView = null;
+                }
+                long? sequence;
+                try
+                {
+                    var capture = await OperatorService.GetGalleryCaptureAsync(detail.Execution.CaptureId, cancellation.Token).ConfigureAwait(false);
+                    if (generation != Volatile.Read(ref _generation)) return;
+                    sequence = capture.IsSuccess ? capture.Value?.CaptureSequence : null;
+                }
+                catch (Exception) when (!cancellation.IsCancellationRequested)
+                {
+                    sequence = null;
+                }
+                if (generation != Volatile.Read(ref _generation) || requestedExecution != ExecutionId) return;
+                _view = detail;
+                _recent = recentView;
+                _transient = transient;
+                _transientUnavailable = transientUnavailable;
+                _captureSequence = sequence;
+                _notFound = false;
+                _message = null;
+                if (_selectedNodeId is null || detail.Nodes.All(node => node.NodeId != _selectedNodeId))
+                    _selectedNodeId = detail.Nodes.Count > 0 ? detail.Nodes[0].NodeId : null;
             }
             else
             {
+                _notFound = result.Kind == OperatorUiResultKind.NotFound;
                 _view = null;
                 _message = result.Message ?? "The execution could not be read.";
             }
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
         finally
         {
-            _loading = false;
+            if (generation == Volatile.Read(ref _generation)) _loading = false;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Interlocked.Increment(ref _generation);
+        var cancellation = Interlocked.Exchange(ref _loadCancellation, null);
+        if (cancellation is not null)
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            cancellation.Dispose();
         }
     }
 

@@ -1,5 +1,5 @@
 @page "/operations/pipeline/executions/{ExecutionId:guid}"
-@layout OperationsLayout
+@layout MainLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
 @using HVO.SkyMonitor.CameraAgent.Services
@@ -11,24 +11,6 @@
 <PageTitle>Execution detail</PageTitle>
 
 <div class="execution-page">
-    <PageHeader Eyebrow="Capture-time pipeline" Title="@(_view is null ? "Pipeline run" : $"{_view.Execution.ExecutionClass} pipeline run")" Lead="The recorded stages, dependencies and independent transient lane for this capture.">
-        <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="RefreshAsync">Refresh</button>
-    </PageHeader>
-
-    <nav class="execution-links" aria-label="Execution navigation">
-        <a href="/operations/pipeline/executions">All executions</a>
-        @if (_view is not null)
-        {
-            <a href="/gallery/@_view.Execution.CaptureId">Source capture</a>
-            <a href="/operations/pipeline/graphs">Named graphs</a>
-            @if (_view.Execution.ExecutionClass == ProcessingGraphExecutionClass.Replay)
-            {
-                <a href="/operations/pipeline/replays/@_view.Execution.ExecutionId">Replay progress and controls</a>
-            }
-            <a href="/operations/pipeline/replays/new?captureId=@_view.Execution.CaptureId">Replay this capture with another graph</a>
-        }
-    </nav>
-
     @if (_loading && _view is null)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading execution" Message="Reading the durable execution journal." />
@@ -43,30 +25,47 @@
     {
         var execution = _view.Execution;
         <section class="run-workspace" aria-label="Pipeline run">
-            <aside class="run-workspace__rail" aria-label="Recent runs">
-                <h2>Recent runs</h2>
+            <aside class="run-workspace__rail" aria-label="Pipeline navigation">
+                <header class="run-rail__heading"><div><p class="eyebrow">Local operations</p><h2>Pipeline runs</h2></div><button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="RefreshAsync" aria-label="Refresh pipeline run">↻</button></header>
+                <div class="run-rail__controls"><label><span class="visually-hidden">Filter captures</span><input type="search" placeholder="Filter captures" @bind="_runSearch" /></label><label><span class="visually-hidden">Filter by outcome</span><select @bind="_outcomeFilter"><option value="all">All outcomes</option><option value="Completed">Succeeded</option><option value="Running">In progress</option><option value="Failed">Failed</option></select></label></div>
+                <div class="run-rail__section"><div class="run-rail__label"><h3>Recent captures</h3><small>UTC</small></div>
                 @if (_recent is null)
                 {
-                    <p class="muted">Recent runs are unavailable.</p>
+                    <p class="muted">Recent captures are unavailable.</p>
                 }
                 else
                 {
-                    @foreach (var run in _recent.Live.Concat(_recent.Replay).OrderByDescending(static run => run.AcceptedUtc))
+                    @foreach (var run in FilteredRuns)
                     {
-                        <a class="@(run.ExecutionId == execution.ExecutionId ? "run-rail__item run-rail__item--selected" : "run-rail__item")" href="/operations/pipeline/executions/@run.ExecutionId"><strong>@run.ExecutionClass run</strong><span>@run.Status / @run.AcceptedUtc.ToString("g")</span></a>
+                        <a class="@(run.ExecutionId == execution.ExecutionId ? "run-rail__item run-rail__item--selected" : "run-rail__item")" href="/operations/pipeline/executions/@run.ExecutionId"><strong>@StatusGlyph(run.Status.ToString()) @run.ExecutionClass run</strong><span>@run.Status / @run.AcceptedUtc.ToString("HH:mm") UTC</span></a>
                     }
+                    @if (FilteredRuns.Count == 0) { <p class="muted">No captures match this filter.</p> }
                 }
+                </div>
+                <div class="run-rail__section"><div class="run-rail__label"><h3>All stages</h3><button type="button" class="run-rail__filter" aria-pressed="@_requiredOnly" @onclick="() => _requiredOnly = !_requiredOnly">Required only</button></div>
+                    @foreach (var node in _view.Nodes.Where(node => !_requiredOnly || node.Required))
+                    {
+                        <button type="button" class="@(node.NodeId == _selectedNodeId ? "run-rail__item run-rail__item--selected" : "run-rail__item")" @onclick="() => _selectedNodeId = node.NodeId">@StatusGlyph(node.Status) @node.NodeId <small>@node.Status / @ProcessingExecutionsPage.FormatDuration(node.StartedUtc is { } started && node.CompletedUtc is { } completed ? completed - started : null)</small></button>
+                    }
+                </div>
             </aside>
             <div class="run-workspace__main">
-                <header class="run-overview"><div><p class="eyebrow">Capture-time dependency graph</p><h2>Layered sky processing</h2></div><span class="hvo-chip @ProcessingExecutionsPage.StatusClass(execution.Status)">@execution.Status</span></header>
-                <dl class="run-overview__facts"><div><dt>Trigger</dt><dd>@execution.TriggerKind</dd></div><div><dt>Total duration</dt><dd>@ProcessingExecutionsPage.FormatDuration(execution.Duration)</dd></div><div><dt>Outputs</dt><dd>@_view.Nodes.Sum(static node => node.Outputs.Count)</dd></div><div><dt>Central delivery</dt><dd>Not recorded for this execution</dd></div></dl>
-                <ExecutionRunDiagram Nodes="@_view.Nodes" SelectedNodeId="@_selectedNodeId" NodeSelected="id => _selectedNodeId = id" />
-                <section class="transient-band" aria-label="Independent transient lane"><div><p class="eyebrow">Independent durable lane</p><h3>Transient detection</h3></div><span class="hvo-chip hvo-chip--neutral">@TransientLabel</span>
+                <header class="run-overview"><div><p class="run-breadcrumb"><a href="/operations">Operations</a> / <a href="/operations/pipeline/executions">Pipeline</a> / Run</p><div class="run-title"><span class="run-title__glyph" aria-hidden="true">@StatusGlyph(execution.Status.ToString())</span><div><h1>@(_captureSequence is { } sequence ? $"Capture #{sequence}" : "Capture pipeline run")</h1><p>@execution.Status / @execution.ExecutionClass execution</p></div></div></div><a class="btn btn-outline-light" href="/operations/pipeline/replays/new?captureId=@execution.CaptureId">Reprocess</a></header>
+                <section class="run-summary" aria-label="Run summary"><div class="run-summary__origin"><strong>Triggered by @execution.TriggerKind</strong><span>@(execution.TriggerReference ?? $"Accepted {execution.AcceptedUtc:u}")</span></div><dl class="run-overview__facts"><div><dt>Status</dt><dd>@execution.Status</dd></div><div><dt>Total duration</dt><dd>@ProcessingExecutionsPage.FormatDuration(execution.Duration)</dd></div><div><dt>Artifacts</dt><dd>@_view.Nodes.Sum(static node => node.Outputs.Count)</dd></div><div><dt>LogicHost</dt><dd>@LogicHostState</dd></div></dl></section>
+                <section class="graph-card" aria-label="Capture-time dependency graph"><header class="graph-card__heading"><div><p class="eyebrow">Capture-time dependency graph</p><h2>Layered All-Sky Processing</h2></div><div class="graph-card__legend"><span class="legend-success">● Succeeded</span><span class="legend-running">● Running</span><span class="legend-attention">! Attention</span><span>○ Skipped</span></div></header><ExecutionRunDiagram Nodes="@_view.Nodes" SelectedNodeId="@_selectedNodeId" NodeSelected="id => _selectedNodeId = id" />
+                <section class="transient-band" aria-label="Independent transient lane"><div><p class="eyebrow">Fireball / transient track</p><h3>Independent durable lane</h3></div><span class="hvo-chip hvo-chip--neutral">@TransientLabel</span>
                     @if (_transient is not null)
                     {
+                        <ol class="transient-band__stages">
+                            <li><strong>Frame admitted</strong><span>@_transient.WorkState</span></li>
+                            <li><strong>Causal scan</strong><span>@(_transient.CausalSucceeded is true ? "Succeeded" : _transient.FrameState ?? "Not recorded")</span></li>
+                            <li><strong>Candidate persistence</strong><span>@_transient.CandidateCount recorded</span></li>
+                            <li><strong>Candidate assessment</strong><span>@_transient.CompletedCandidates completed / @_transient.QuarantinedCandidates quarantined</span></li>
+                        </ol>
                         <p>Frame attempts: @_transient.FrameAttempts / causal scan: @(_transient.CausalSucceeded is true ? "succeeded" : _transient.CausalSucceeded is false ? "not succeeded" : "not recorded") / candidates: @_transient.CandidateCount (@_transient.CompletedCandidates completed, @_transient.QuarantinedCandidates quarantined).</p>
                     }
-                </section>
+                    else { <p>No per-capture transient stages can be drawn from this execution's journal.</p> }
+                </section></section>
                 <section class="run-inspector" aria-label="Selected stage">
                     <nav class="run-inspector__tabs" aria-label="Stage details">
                         <button type="button" aria-pressed="@(_tab == "stage")" @onclick="SelectStageTab">Stage summary</button>
