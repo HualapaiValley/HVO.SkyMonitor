@@ -214,12 +214,31 @@ public sealed record CameraAgentGalleryCalendar(
     bool TimeZoneFallback,
     IReadOnlyList<CameraAgentGalleryCalendarDay> Days);
 
+/// <summary>
+/// One observing night's retained facts. <c>RepresentativeCaptureId</c> is the newest capture of the
+/// night that has a published displayable preview, so a calendar cell can show the night without
+/// walking its captures; it is null when no such capture exists. Counts are of retained captures and
+/// durable local candidates only (#988).
+/// </summary>
 public sealed record CameraAgentGalleryCalendarDay(
     ObservingDay Day,
     long CaptureCount,
     long CandidateCount,
     DateTimeOffset? FirstExposureUtc,
-    DateTimeOffset? LastExposureUtc);
+    DateTimeOffset? LastExposureUtc,
+    Guid? RepresentativeCaptureId = null);
+
+/// <summary>
+/// The durable facts of one observing night for the day page: the calendar day, the night's
+/// captures in exposure order (bounded), and the total effective integration of those captures.
+/// Products, schedule coverage and automation runs are composed by the UI service from their own
+/// stores so this read model stays a gallery projection.
+/// </summary>
+public sealed record CameraAgentObservingDayDetail(
+    CameraAgentGalleryCalendarDay Day,
+    IReadOnlyList<CameraAgentGalleryCapture> Captures,
+    bool CapturesTruncated,
+    TimeSpan TotalIntegration);
 
 // Neighbours follow the gallery order under the same filters: the newer
 // capture precedes and the older capture follows the current one.
@@ -239,6 +258,11 @@ public interface ICameraAgentArchive
     ValueTask<CameraAgentGalleryNeighbours?> GetNeighboursAsync(
         Guid captureId,
         CameraAgentGalleryQuery filters,
+        CancellationToken cancellationToken);
+
+    /// <summary>Reads one observing night; null when the date resolves outside the calendar.</summary>
+    ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
+        DateOnly observingDate,
         CancellationToken cancellationToken);
 
     ValueTask<CameraAgentProductPage> GetProductPageAsync(

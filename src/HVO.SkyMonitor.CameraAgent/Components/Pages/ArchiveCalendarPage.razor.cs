@@ -5,9 +5,14 @@ using Microsoft.AspNetCore.Components;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
+/// <summary>
+/// The observing calendar as a month grid (#988, prototype <c>calendar.html</c>). Weeks start on
+/// Sunday; the grid always covers whole weeks so the month's leading and trailing days from the
+/// neighbouring months are shown muted. Every cell links to the observing-day page.
+/// </summary>
 public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposable
 {
-    internal const int RangeDays = 31;
+    internal static readonly string[] Weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentGalleryCalendar? _calendar;
     private string? _errorMessage;
@@ -18,40 +23,118 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal IObservingDayCalendarProvider ObservingDays { get; set; } = default!;
-    [Parameter, SupplyParameterFromQuery(Name = "to")] public string? To { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "month")] public string? Month { get; set; }
 
-    // The range ends on the requested date, clamped so range arithmetic never
-    // leaves the calendar, and defaults to the current observing night.
-    private DateOnly ToDate
+    internal sealed record CalendarCell(DateOnly Date, bool InMonth, bool IsToday, CameraAgentGalleryCalendarDay? Day);
+
+    private DateOnly LatestObservingDay => ObservingDays.Current.Resolve(TimeProvider.GetUtcNow()).Date;
+
+    // The month is taken from the query when it parses, otherwise the current observing day's
+    // month; clamped so grid arithmetic never leaves the calendar.
+    private DateOnly MonthStart
     {
         get
         {
-            var date = DateOnly.TryParseExact(To, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+            var date = DateOnly.TryParseExact(Month, "yyyy-MM", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
                 ? parsed
-                : ObservingDays.Current.Resolve(TimeProvider.GetUtcNow()).Date;
-            var minimum = DateOnly.MinValue.AddDays(RangeDays * 2);
-            var maximum = DateOnly.MaxValue.AddDays(-RangeDays * 2);
-            return date < minimum ? minimum : date > maximum ? maximum : date;
+                : new DateOnly(LatestObservingDay.Year, LatestObservingDay.Month, 1);
+            var minimum = new DateOnly(1, 2, 1);
+            var maximum = new DateOnly(9999, 11, 1);
+            return date < minimum ? minimum : date > maximum ? maximum : new DateOnly(date.Year, date.Month, 1);
         }
     }
 
-    // Boundaries display in the observing calendar's own zone, not the host's.
-    private string LocalTime(DateTimeOffset utc)
+    private DateOnly GridStart => MonthStart.AddDays(-(int)MonthStart.DayOfWeek);
+
+    // Whole weeks covering the month: 4, 5 or 6 rows.
+    private DateOnly GridEnd
     {
-        try
+        get
         {
-            return TimeZoneInfo.ConvertTimeBySystemTimeZoneId(utc, _calendar?.TimeZoneId ?? TimeZoneInfo.Utc.Id)
-                .ToString("HH:mm:ss", CultureInfo.InvariantCulture);
-        }
-        catch (Exception exception) when (exception is TimeZoneNotFoundException or InvalidTimeZoneException)
-        {
-            return utc.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+            var monthEnd = MonthStart.AddMonths(1).AddDays(-1);
+            return monthEnd.AddDays(6 - (int)monthEnd.DayOfWeek);
         }
     }
 
-    private DateOnly FromDate => ToDate.AddDays(-(RangeDays - 1));
+    private string MonthLabel => MonthStart.ToString("MMMM yyyy", CultureInfo.InvariantCulture);
 
-    private string RangeLabel => FormattableString.Invariant($"{FromDate:yyyy-MM-dd} to {ToDate:yyyy-MM-dd}");
+    private IReadOnlyList<CalendarCell> Cells
+    {
+        get
+        {
+            var byDate = _calendar?.Days.ToDictionary(static day => day.Day.Date) ?? [];
+            var today = LatestObservingDay;
+            var cells = new List<CalendarCell>();
+            for (var date = GridStart; date <= GridEnd; date = date.AddDays(1))
+            {
+                byDate.TryGetValue(date, out var day);
+                cells.Add(new CalendarCell(date, date.Month == MonthStart.Month, date == today, day));
+            }
+            return cells;
+        }
+    }
+
+    private IReadOnlyList<CameraAgentGalleryCalendarDay> MonthDays =>
+        _calendar?.Days.Where(day => day.Day.Date.Month == MonthStart.Month && day.Day.Date.Year == MonthStart.Year).ToArray() ?? [];
+
+    private int ObservedNights => MonthDays.Count(static day => day.CaptureCount > 0);
+
+    private long TotalCaptures => MonthDays.Sum(static day => day.CaptureCount);
+
+    private long TotalCandidates => MonthDays.Sum(static day => day.CandidateCount);
+
+    private static string CellClass(CalendarCell cell)
+    {
+        var classes = "calendar-day";
+        if (!cell.InMonth)
+        {
+            classes += " calendar-day--outside";
+        }
+        if (cell.Day is null || cell.Day.CaptureCount == 0)
+        {
+            classes += " calendar-day--empty";
+        }
+        if (cell.IsToday)
+        {
+            classes += " calendar-day--today";
+        }
+        return classes;
+    }
+
+    private static string CellDayLabel(CalendarCell cell)
+        => cell.InMonth
+            ? cell.Date.Day.ToString(CultureInfo.InvariantCulture)
+            : cell.Date.ToString("MMM d", CultureInfo.InvariantCulture);
+
+    private static string CellSummary(CalendarCell cell)
+        => cell.Day is { CaptureCount: > 0 } day
+            ? FormattableString.Invariant($"{day.CaptureCount:N0} capture{(day.CaptureCount == 1 ? "" : "s")}")
+            : "No archived session";
+
+    private static string CellAriaLabel(CalendarCell cell)
+        => cell.Day is { CaptureCount: > 0 } day
+            ? FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, {day.CaptureCount:N0} captures, {day.CandidateCount:N0} candidates")
+            : FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, no archived session");
+
+    internal static string DayUrl(DateOnly date) => FormattableString.Invariant($"/archive/day/{date:yyyy-MM-dd}");
+
+    // Day links hand the night's UTC boundaries to the filter-backed pages so
+    // the same evidence is selected there; the archive's inclusive upper bound
+    // excludes the next night's first millisecond.
+    internal static string CapturesUrl(ObservingDay day) => NavigationUrl("/gallery", day);
+
+    internal static string CandidatesUrl(ObservingDay day) => NavigationUrl("/transients", day);
+
+    private static string NavigationUrl(string path, ObservingDay day) => FormattableString.Invariant(
+        $"{path}?from={day.StartUtc.UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}&to={day.EndUtc.AddMilliseconds(-1).UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}");
+
+    internal static string ThumbnailUrl(Guid captureId) => FormattableString.Invariant($"/api/v1/operations/gallery/{captureId:D}/thumbnail");
+
+    private string MonthUrl(int direction, bool today = false)
+    {
+        var target = today ? new DateOnly(LatestObservingDay.Year, LatestObservingDay.Month, 1) : MonthStart.AddMonths(direction);
+        return NavigationManager.GetUriWithQueryParameter("month", target.ToString("yyyy-MM", CultureInfo.InvariantCulture));
+    }
 
     protected override Task OnParametersSetAsync() => LoadAsync();
 
@@ -70,7 +153,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
         try
         {
             var result = await OperatorService.GetArchiveCalendarAsync(
-                new CameraAgentGalleryCalendarQuery(FromDate, ToDate), cancellation.Token);
+                new CameraAgentGalleryCalendarQuery(GridStart, GridEnd), cancellation.Token);
             if (generation != Volatile.Read(ref _generation))
             {
                 return;
@@ -101,19 +184,6 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
             }
         }
     }
-
-    private string RangeUrl(int direction) => NavigationManager.GetUriWithQueryParameter(
-        "to", ToDate.AddDays(direction * RangeDays).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
-
-    // Day links hand the night's UTC boundaries to the filter-backed pages so
-    // the same evidence is selected there; the archive's inclusive upper bound
-    // excludes the next night's first millisecond.
-    internal static string CapturesUrl(ObservingDay day) => NavigationUrl("/gallery", day);
-
-    internal static string CandidatesUrl(ObservingDay day) => NavigationUrl("/transients", day);
-
-    private static string NavigationUrl(string path, ObservingDay day) => FormattableString.Invariant(
-        $"{path}?from={day.StartUtc.UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}&to={day.EndUtc.AddMilliseconds(-1).UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}");
 
     public async ValueTask DisposeAsync()
     {
