@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+# Deterministic gate for the promotion workflow's behind-check.
+#
+# `promote-main.yml` refuses to open a promotion pull request when `main` carries
+# commits that `development/v1` lacks, unless every such commit is a promotion
+# merge whose parents are on v1 or are earlier tolerated promotion merges. PR #914
+# tolerated one promotion; the chain case was not written down, and the second
+# nightly promotion after it was refused because its first parent was the first
+# promotion's merge commit (#963). This gate extracts the step body from the
+# workflow and runs it against a stubbed `gh`, so the accepted and refused shapes
+# are cases rather than a description. It needs bash, python3 (to slice the step
+# out of the YAML) and nothing else.
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly REPO_ROOT
+readonly WORKFLOW="$REPO_ROOT/.github/workflows/promote-main.yml"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+failures=0
+cases=0
+fail() { failures=$((failures + 1)); printf 'FAIL %s\n' "$*" >&2; }
+
+# The behind-check is the `if [[ "$behind" != 0 ]]` block of the compare step,
+# dedented from its YAML position. Extracting by its own delimiters means the
+# gate runs the lines the workflow runs, not a copy that can drift.
+python3 - "$WORKFLOW" "$WORK/behind.sh" <<'EOF'
+import sys
+source, target = sys.argv[1], sys.argv[2]
+text = open(source).read()
+start = text.index('          if [[ "$behind" != 0 ]]; then')
+end = text.index('          if [[ "$ahead" == 0 ]]; then')
+body = "\n".join(line[10:] for line in text[start:end].splitlines())
+open(target, "w").write(
+    "#!/usr/bin/env bash\nset -euo pipefail\n"
+    "SOURCE=development/v1; TARGET=main; REPOSITORY=example/repo; GITHUB_STEP_SUMMARY=/dev/null; behind=1\n"
+    + body + "\necho ACCEPTED\n")
+EOF
+grep -q 'done <<< "\$stray"' "$WORK/behind.sh" || { printf 'Could not extract the behind-check from %s.\n' "$WORKFLOW" >&2; exit 1; }
+
+# A stub gh: the compare of SOURCE...TARGET lists the stray commits as
+# "<sha> <parent-count> <parents...>", and SOURCE...<sha> reports how far a
+# commit is ahead of v1 (0 means it is on v1).
+stub() {
+    local strays="$1"; shift
+    mkdir -p "$WORK/bin"
+    {
+        printf '#!/usr/bin/env bash\ncase "$*" in\n'
+        # Patterns are anchored on the trailing space before --jq so a name cannot
+        # match a longer name it prefixes.
+        printf '  *"compare/development/v1...main "*) printf '"'"'%%s\\n'"'"' %s;;\n' "$strays"
+        local pair
+        for pair in "$@"; do
+            printf '  *"compare/development/v1...%s "*) echo %s;;\n' "${pair%%=*}" "${pair#*=}"
+        done
+        printf '  *) echo "unexpected gh call: $*" >&2; exit 9;;\nesac\n'
+    } > "$WORK/bin/gh"
+    chmod +x "$WORK/bin/gh"
+}
+
+expect() {
+    local label="$1" want_status="$2" want_text="$3"
+    cases=$((cases + 1))
+    local out status
+    set +e
+    out="$(PATH="$WORK/bin:$PATH" bash "$WORK/behind.sh" 2>&1)"; status=$?
+    set -e
+    if [[ "$status" != "$want_status" ]]; then
+        fail "$label: expected exit $want_status, got $status: $out"
+    elif [[ "$out" != *"$want_text"* ]]; then
+        fail "$label: expected output containing [$want_text], got: $out"
+    fi
+}
+
+# One promotion merge: parents are the old main tip (on v1) and the promoted v1 head.
+stub '"M1 2 P0 V1"' P0=0 V1=0
+expect "single promotion merge" 0 "ACCEPTED"
+
+# Two promotion merges in a chain: the second's first parent is the first merge,
+# which is on main only. This is the shape every promotion after the first has.
+stub '"M1 2 P0 V1" "M2 2 M1 V2"' P0=0 V1=0 V2=0 M1=1
+expect "chain of two promotion merges" 0 "ACCEPTED"
+
+# Three in a chain, to show the tolerance carries forward rather than one step.
+stub '"M1 2 P0 V1" "M2 2 M1 V2" "M3 2 M2 V3"' P0=0 V1=0 V2=0 V3=0 M1=1 M2=2
+expect "chain of three promotion merges" 0 "ACCEPTED"
+
+# A merge whose parent is neither on v1 nor a tolerated promotion: a foreign merge.
+stub '"M1 2 P0 V1" "M2 2 M1 FOREIGN"' P0=0 V1=0 M1=1 FOREIGN=3
+expect "merge with a foreign parent" 1 "merge commit M2 with parent FOREIGN that is not on development/v1"
+
+# The chain is walked in order; a later merge cannot vouch for an earlier one.
+stub '"M2 2 M1 V2" "M1 2 P0 V1"' P0=0 V1=0 V2=0 M1=1
+expect "chain listed out of order" 1 "merge commit M2 with parent M1 that is not on development/v1"
+
+# A non-merge commit on main is a bypass of the branch model regardless of parents.
+stub '"H1 1 P0"' P0=0
+expect "non-merge stray commit" 1 "non-merge commit H1"
+
+# A non-merge stray after a tolerated promotion still halts.
+stub '"M1 2 P0 V1" "H1 1 M1"' P0=0 V1=0 M1=1
+expect "non-merge stray after a promotion" 1 "non-merge commit H1"
+
+if ((failures > 0)); then
+    printf '%s of %s promotion behind-check cases failed.\n' "$failures" "$cases" >&2
+    exit 1
+fi
+printf 'All %s promotion behind-check cases passed.\n' "$cases"

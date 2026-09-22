@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The real producer is intentionally an expensive exact-head gate. This static
+# contract test keeps its closed component inventory and command ownership from
+# drifting; the local candidate evidence executes the producer itself.
+script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/record:cameraagent-final-head-components-535"
+grep -Fq 'for component in shared cameraagent combined delivery' "$script"
+! grep -Fq 'logichost)' "$script"
+grep -Fq './scripts/ci:component-build "$component"' "$script"
+grep -Fq './scripts/coverage:component "$component"' "$script"
+grep -Fq 'trx_assert_executed_and_passed' "$script"
+grep -Fq 'trx_assert_counters_executed_and_passed' "$script"
+grep -Fq './scripts/ci:component-publish shared' "$script"
+grep -Fq './scripts/ci:component-publish cameraagent' "$script"
+grep -Fq './scripts/ci:component-publish delivery' "$script"
+printf 'CameraAgent final-head component producer contract passed.\n'

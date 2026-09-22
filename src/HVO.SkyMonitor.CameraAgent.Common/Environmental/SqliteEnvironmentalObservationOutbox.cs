@@ -1773,7 +1773,15 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             {
                 await ValidateSchemaAsync(connection, null, cancellationToken).ConfigureAwait(false);
             }
-            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+            await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
+            {
+                var journalMode = await ExecuteScalarStringAsync(
+                    connection, "PRAGMA journal_mode=WAL;", null, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("Environmental observation SQLite journal could not enter WAL mode.");
+                }
+            }, cancellationToken).ConfigureAwait(false);
             lock (_initializedLock)
             {
                 _initializedRoots.Add(root);
@@ -2696,11 +2704,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     }
 
     private async ValueTask<SqliteConnection> OpenAsync(string root, CancellationToken cancellationToken)
-    {
-        var connection = await OpenUnconfiguredAsync(root, cancellationToken, pooled: true).ConfigureAwait(false);
-        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-        return connection;
-    }
+        => await OpenUnconfiguredAsync(root, cancellationToken, pooled: true).ConfigureAwait(false);
 
     private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(
         string root,
@@ -2717,17 +2721,26 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             DefaultTimeout = busyTimeoutSeconds
         };
         var connection = new SqliteConnection(builder.ToString());
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        EnsureDatabaseFilesArePhysical(root);
-        return connection;
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            EnsureDatabaseFilesArePhysical(root);
+            return connection;
+        }
+        catch
+        {
+            await Sqlite.SqliteConnectionConfigurationGate.TryDisposeAfterFailureAsync(connection).ConfigureAwait(false);
+            throw;
+        }
     }
 
-    private async ValueTask ConfigureConnectionAsync(
+    private static async ValueTask ExecuteNonQueryAsync(
         SqliteConnection connection,
+        string commandText,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout={busyTimeoutSeconds * 1000};";
+        command.CommandText = commandText;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 

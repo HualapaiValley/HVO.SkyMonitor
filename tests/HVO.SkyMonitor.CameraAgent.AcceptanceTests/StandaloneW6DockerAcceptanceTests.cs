@@ -806,7 +806,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             profile,
             $"State reuse '{stateReused}' and replay profile '{profile}' disagree about which #719 invocation this is.");
 
-        var password = (await File.ReadAllTextAsync(RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE"))
+        var passwordPath = RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE");
+        var password = (await File.ReadAllTextAsync(passwordPath)
             .ConfigureAwait(false)).Trim();
         Directory.CreateDirectory(evidenceRoot);
 
@@ -818,9 +819,54 @@ public sealed class StandaloneW6DockerAcceptanceTests
             $"The campaign asked for {profile} and the container is running {declaredProfile}.");
 
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
+        var readyPassword = await OwnerBootstrapSession.EnsureReadyOwnerAsync(
+            session, password, $"issue-719 {profile}").ConfigureAwait(false);
+        await OwnerBootstrapSession.AssertOperationsAuthorizedAsync(
+            session, $"issue-719 {profile}").ConfigureAwait(false);
+        if (stateReused)
+        {
+            Assert.IsTrue(
+                string.Equals(password, readyPassword, StringComparison.Ordinal),
+                "The reused LocalRunner state attempted a second owner-password replacement.");
+        }
+        else
+        {
+            Assert.IsFalse(
+                string.Equals(password, readyPassword, StringComparison.Ordinal),
+                "The fresh InProcess replay invocation did not replace its temporary owner password.");
+            var initialPasswordPath = Path.Combine(Path.GetDirectoryName(passwordPath)!, "owner-password-initial");
+            await File.WriteAllTextAsync(initialPasswordPath, string.Concat(password, Environment.NewLine))
+                .ConfigureAwait(false);
+            await File.WriteAllTextAsync(passwordPath, string.Concat(readyPassword, Environment.NewLine))
+                .ConfigureAwait(false);
+            if (OperatingSystem.IsLinux())
+            {
+                File.SetUnixFileMode(initialPasswordPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                File.SetUnixFileMode(passwordPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                Assert.AreEqual(
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                    File.GetUnixFileMode(initialPasswordPath));
+                Assert.AreEqual(
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                    File.GetUnixFileMode(passwordPath));
+            }
+            Assert.IsTrue(
+                string.Equals(
+                    password,
+                    (await File.ReadAllTextAsync(initialPasswordPath).ConfigureAwait(false)).Trim(),
+                    StringComparison.Ordinal),
+                "The scanner-only initial owner credential does not match the credential that was replaced.");
+            Assert.IsTrue(
+                string.Equals(
+                    readyPassword,
+                    (await File.ReadAllTextAsync(passwordPath).ConfigureAwait(false)).Trim(),
+                    StringComparison.Ordinal),
+                "The persisted ready-owner credential does not match the credential accepted by the agent.");
+        }
         var evidence = stateReused
             ? await AssertLocalRunnerReplayAsync(session, profile, stateKey).ConfigureAwait(false)
-            : await AssertInProcessReplayAsync(session, runtimeRoot, profile, stateKey).ConfigureAwait(false);
+            : await AssertInProcessReplayAsync(
+                session, baseUri, readyPassword, runtimeRoot, profile, stateKey).ConfigureAwait(false);
 
         // The profile name goes into the filename verbatim rather than lower-cased, because the two
         // invocations must write distinct files and a case fold is one more thing to keep in step
@@ -851,6 +897,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
     /// </summary>
     private static async Task<object> AssertInProcessReplayAsync(
         HttpClient session,
+        Uri baseUri,
+        string ownerPassword,
         string runtimeRoot,
         string profile,
         string stateKey)
@@ -864,6 +912,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             existingReplays,
             $"The durable root '{stateKey}' already holds {existingReplays.Count} replay executions before the first #719 invocation.");
 
+        await EnsureReplayCalibrationAsync(session, baseUri, ownerPassword).ConfigureAwait(false);
         await ActivateCanonicalCaptureProfileAsync(session).ConfigureAwait(false);
         var registry = await session
             .GetFromJsonAsync<ProcessingGraphRegistryState>("/api/v1/operations/processing-graphs/")
@@ -887,13 +936,14 @@ public sealed class StandaloneW6DockerAcceptanceTests
             runtimeRoot,
             requestedCaptures,
             TimeSpan.FromSeconds(10),
-            TimeSpan.FromMinutes(12)).ConfigureAwait(false);
+            TimeSpan.FromMinutes(12),
+            requireTransientDrain: false).ConfigureAwait(false);
         var source = window.Captures[^1];
         var primaryArtifactId = source.Artifacts
             .Single(static artifact => artifact.Role == FrameArtifactRole.Raw)
             .ArtifactId;
 
-        var submitted = await SubmitReplayAsync(session, source.CaptureId, primaryArtifactId, graphRevisionId)
+        var submitted = await SubmitReplayAsync(session, source.CaptureId, primaryArtifactId, graphRevisionId, profile)
             .ConfigureAwait(false);
         var detail = await WaitForTerminalExecutionAsync(session, submitted.ExecutionId).ConfigureAwait(false);
         AssertReplayCadence(detail.Execution, profile);
@@ -912,6 +962,78 @@ public sealed class StandaloneW6DockerAcceptanceTests
             replay = DescribeExecution(detail),
             note = "The three-way identity is asserted by the LocalRunner invocation, which is the only one that can read all three output sets."
         };
+    }
+
+    private static async Task EnsureReplayCalibrationAsync(
+        HttpClient client,
+        Uri baseUri,
+        string ownerPassword)
+    {
+        var status = await client.GetFromJsonAsync<JsonObject>(
+            "/api/v1/operations/calibration/status").ConfigureAwait(false);
+        Assert.IsNotNull(status);
+        if (status["activeBundle"] is not null)
+        {
+            return;
+        }
+
+        using var acquisitionClient = await LoginAsync(
+            baseUri, ownerPassword, TimeSpan.FromMinutes(5)).ConfigureAwait(false);
+        var acquisitionToken = await GetAntiforgeryTokenAsync(acquisitionClient).ConfigureAwait(false);
+        using var acquireRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/calibration/acquisitions", UriKind.Relative));
+        acquireRequest.Headers.Add("RequestVerificationToken", acquisitionToken);
+        acquireRequest.Headers.Add("Idempotency-Key", $"issue-947-replay-calibration-{Guid.NewGuid():N}");
+        acquireRequest.Content = JsonContent.Create(new
+        {
+            expectedVersion = status["version"]!.GetValue<long>(),
+            gain = 82,
+            offset = 1,
+            temperatureC = -10,
+            biasExposure = TimeSpan.FromMilliseconds(1),
+            darkExposure = TimeSpan.FromSeconds(2),
+            flatExposure = TimeSpan.FromMilliseconds(100),
+            defectExposure = TimeSpan.FromMilliseconds(3),
+            applicableLightExposure = TimeSpan.FromSeconds(5),
+            effectiveFromUtc = DateTimeOffset.UtcNow.AddDays(-1),
+            effectiveUntilUtc = DateTimeOffset.UtcNow.AddYears(1),
+            sourceModel = new VirtualCalibrationSourceModelV1(),
+            reason = "issue-947 canonical replay calibration"
+        });
+        using (var acquireResponse = await acquisitionClient.SendAsync(acquireRequest).ConfigureAwait(false))
+        {
+            var acquireBody = await acquireResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.IsTrue(
+                acquireResponse.IsSuccessStatusCode,
+                $"Calibration acquisition failed with {(int)acquireResponse.StatusCode}: {acquireBody}");
+            var acquisition = JsonNode.Parse(acquireBody)!.AsObject();
+            var bundleId = acquisition["bundleId"]!.GetValue<string>();
+            Assert.IsFalse(string.IsNullOrWhiteSpace(bundleId));
+
+            status = await client.GetFromJsonAsync<JsonObject>(
+                "/api/v1/operations/calibration/status").ConfigureAwait(false);
+            Assert.IsNotNull(status);
+            using var activateRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                new Uri($"/api/v1/operations/calibration/bundles/{bundleId}/activate", UriKind.Relative));
+            activateRequest.Headers.Add(
+                "RequestVerificationToken",
+                await GetAntiforgeryTokenAsync(client).ConfigureAwait(false));
+            activateRequest.Headers.Add("Idempotency-Key", $"issue-947-replay-activate-{Guid.NewGuid():N}");
+            activateRequest.Content = JsonContent.Create(new
+            {
+                expectedVersion = status["version"]!.GetValue<long>(),
+                reason = "issue-947 canonical replay calibration"
+            });
+            using var activateResponse = await client.SendAsync(activateRequest).ConfigureAwait(false);
+            var activateBody = await activateResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.IsTrue(
+                activateResponse.IsSuccessStatusCode,
+                $"Calibration activation failed with {(int)activateResponse.StatusCode}: {activateBody}");
+            var activated = JsonNode.Parse(activateBody)!.AsObject();
+            Assert.AreEqual(bundleId, activated["activeBundle"]?["bundleId"]?.GetValue<string>());
+        }
     }
 
     /// <summary>
@@ -944,7 +1066,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var liveDetail = await ReadExecutionDetailAsync(session, live.ExecutionId).ConfigureAwait(false);
 
         var submitted = await SubmitReplayAsync(
-            session, prior.CaptureId, prior.PrimaryArtifactId, prior.GraphRevisionId).ConfigureAwait(false);
+            session, prior.CaptureId, prior.PrimaryArtifactId, prior.GraphRevisionId, profile).ConfigureAwait(false);
         Assert.AreNotEqual(
             prior.ExecutionId,
             submitted.ExecutionId,
@@ -980,12 +1102,19 @@ public sealed class StandaloneW6DockerAcceptanceTests
     /// <summary>
     /// Submits one archived replay and returns the execution the host accepted. The 202 body already
     /// carries the execution, so there is no poll to discover the identifier this call just created.
+    /// <para>
+    /// The trigger reference carries the profile. Durable state admits one replay execution per
+    /// (capture, revision, trigger kind, trigger reference), and the second invocation replays
+    /// exactly the first invocation's capture and revision by design, so a shared reference would
+    /// make the LocalRunner submission a 409 conflict rather than a new execution (#956).
+    /// </para>
     /// </summary>
     private static async Task<ProcessingGraphExecutionState> SubmitReplayAsync(
         HttpClient client,
         Guid captureId,
         Guid primaryArtifactId,
-        string graphRevisionId)
+        string graphRevisionId,
+        string profile)
     {
         var token = await GetAntiforgeryTokenAsync(client).ConfigureAwait(false);
         using var request = new HttpRequestMessage(
@@ -999,9 +1128,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
             graphRevisionId,
             primaryArtifactId,
             triggerKind = "operator",
-            triggerReference = "issue-719",
+            triggerReference = $"issue-719-{profile}",
             priority = 0,
-            reason = "Issue #719 canonical archived replay"
+            reason = $"Issue #719 canonical archived replay ({profile})"
         });
         using var response = await client.SendAsync(request).ConfigureAwait(false);
         Assert.AreEqual(
@@ -1014,7 +1143,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
         // A submission answered from the idempotency cache returns the earlier execution instead of
         // creating one. Every later comparison would then hold, for the wrong reason.
-        Assert.IsTrue(
+        Assert.IsFalse(
             result.Replayed,
             "The replay submission was answered from the idempotency cache, so it created no new execution.");
         return result.Execution;
@@ -1320,7 +1449,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned client owns its handler.")]
-    private static async Task<HttpClient> LoginAsync(Uri baseUri, string password)
+    private static async Task<HttpClient> LoginAsync(
+        Uri baseUri,
+        string password,
+        TimeSpan? timeout = null)
     {
         var handler = new HttpClientHandler
         {
@@ -1328,7 +1460,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
             CookieContainer = new CookieContainer(),
             CheckCertificateRevocationList = true
         };
-        var client = new HttpClient(handler) { BaseAddress = baseUri, Timeout = TimeSpan.FromMinutes(3) };
+        var client = new HttpClient(handler)
+        {
+            BaseAddress = baseUri,
+            Timeout = timeout ?? TimeSpan.FromMinutes(3)
+        };
         using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
         login.EnsureSuccessStatusCode();
         var token = OwnerBootstrapSession.ExtractAntiforgeryToken(
@@ -1388,7 +1524,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private static async Task SetCaptureStateAsync(IPage page, bool pause)
     {
-        await page.GotoAsync("/operations").ConfigureAwait(false);
+        await PlaywrightNavigation.NavigateOrJoinAsync(page, "/operations").ConfigureAwait(false);
         var action = page.Locator("#capture-action");
         await action.WaitForAsync().ConfigureAwait(false);
         var expected = pause ? "Review pause" : "Review resume";
@@ -1412,7 +1548,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string agentId = ExpectedAgentId,
         IReadOnlyList<FrameArtifactRole>? expectedRoles = null,
         int expectedNodeCount = 14,
-        DockerResourceSampler? sampler = null)
+        DockerResourceSampler? sampler = null,
+        bool requireTransientDrain = true)
     {
         var token = await GetAntiforgeryTokenAsync(client).ConfigureAwait(false);
         await SetCaptureStateAsync(client, pause: true, token).ConfigureAwait(false);
@@ -1422,7 +1559,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 snapshot.PendingProcessingNodes == 0,
             $"{agentId} pre-window drain",
             timeout).ConfigureAwait(false);
-        if (string.Equals(agentId, ExpectedAgentId, StringComparison.Ordinal))
+        if (requireTransientDrain && string.Equals(agentId, ExpectedAgentId, StringComparison.Ordinal))
         {
             await WaitForTransientDrainAsync(runtimeRoot, $"{agentId} pre-window transient drain", timeout)
                 .ConfigureAwait(false);
@@ -1462,7 +1599,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 snapshot.PendingProcessingNodes == 0,
             $"{agentId} exact-window completion",
             timeout).ConfigureAwait(false);
-        if (string.Equals(agentId, ExpectedAgentId, StringComparison.Ordinal))
+        if (requireTransientDrain && string.Equals(agentId, ExpectedAgentId, StringComparison.Ordinal))
         {
             await WaitForTransientDrainAsync(runtimeRoot, $"{agentId} exact-window transient completion", timeout)
                 .ConfigureAwait(false);

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+artifact="${1:-}"
+job_key="${2:-}"
+output_dir="${3:-}"
+[[ "$artifact" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || { printf 'Invalid artifact name.\n' >&2; exit 2; }
+[[ "$job_key" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || { printf 'Invalid job key.\n' >&2; exit 2; }
+[[ -n "$output_dir" ]] || { printf 'Output directory is required.\n' >&2; exit 2; }
+[[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ && "${GITHUB_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] || { printf 'GitHub run identity is unavailable.\n' >&2; exit 1; }
+[[ "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || { printf 'GitHub head SHA is unavailable.\n' >&2; exit 1; }
+[[ "${GITHUB_WORKFLOW_REF:-}" == */.github/workflows/ci.yml@* ]] || { printf 'Unexpected workflow reference.\n' >&2; exit 1; }
+[[ "${GITHUB_JOB:-}" == "$job_key" ]] || { printf 'GitHub job key does not match the requested provenance key.\n' >&2; exit 1; }
+
+mkdir -p "$output_dir"
+path="$output_dir/ci-artifact-provenance.json"
+[[ ! -e "$path" && ! -L "$path" ]] || { printf 'Artifact provenance already exists.\n' >&2; exit 1; }
+jq -nS --arg artifact "$artifact" --arg job "$job_key" --argjson run "$GITHUB_RUN_ID" \
+  --argjson attempt "$GITHUB_RUN_ATTEMPT" --arg head "$GITHUB_SHA" \
+  '{schemaVersion:"hvo-ci-artifact-provenance-v1",artifact:$artifact,jobKey:$job,
+    runId:$run,attempt:$attempt,headSha:$head,workflowPath:".github/workflows/ci.yml"}' > "$path"
+chmod 600 "$path"
