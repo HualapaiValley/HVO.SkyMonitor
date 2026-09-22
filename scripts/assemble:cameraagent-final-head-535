@@ -373,11 +373,8 @@ jq -e --arg head "$bound_head" --arg clean "$empty_sha256" '
 dual_agent_section="$(jq -c '{citable: .citable, evidenceMode: .evidenceMode}' "$dual_agent")"
 
 # --- test assemblies ----------------------------------------------------------
-# The acceptance assembly the campaign executed. The campaign hashes it before and
-# after the trials but retains neither value, so the binding is that the tree is
-# clean at the bound head and the assembly on disk is a Release build carrying that
-# head in its informational version. Identity is read from metadata; the assembly
-# is not loaded.
+# The acceptance assembly the campaign executed, bound by the digest the campaign
+# retained (below) and identified from its metadata; the assembly is not loaded.
 assembly="$repo_root/$ACCEPTANCE_ASSEMBLY"
 require_regular_file "$assembly"
 assembly_sha="$(sha256_of "$assembly")"
