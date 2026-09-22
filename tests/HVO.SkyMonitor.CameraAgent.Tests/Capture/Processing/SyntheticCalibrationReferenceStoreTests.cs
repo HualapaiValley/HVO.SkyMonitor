@@ -18,6 +18,41 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestCategory("Unit")]
 public sealed class SyntheticCalibrationReferenceStoreTests
 {
+    /// <summary>
+    /// The seed-208 synthetic bundle that the Manual #208 retained-evidence harness pins is
+    /// asserted here in the Unit lane, so a change to the profile serialization or the
+    /// publication identity envelope is caught on every pull request. #484 committed pins
+    /// that #483 had already invalidated the same day, and nothing ran them until #968.
+    /// </summary>
+    [TestMethod]
+    public async Task CanonicalSeed208Bundle_PinsThePublishedIdentities()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-synthetic-calibration", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var model = Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.SyntheticModel(
+                Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.Seed);
+            var light = Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.SyntheticLight(model);
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var store = new SyntheticCalibrationReferenceStore(options, new CameraAgentClearReferenceLoader(options));
+
+            var bundle = await store.GetOrCreateAsync(light, model, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(
+                Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.ExpectedSyntheticProfileIdentitySha256,
+                bundle.ProfileIdentitySha256);
+            var bundleDirectory = Path.GetFileName(Path.GetDirectoryName(bundle.EvidenceFiles[0].RelativePath))!;
+            Assert.AreEqual(
+                Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.ExpectedSyntheticBundleId,
+                $"synthetic-{bundleDirectory[..32].ToUpperInvariant()}");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestMethod]
     public async Task GetOrCreateAsync_PersistsRestartStableReferencesConsumedByCanonicalRecipe()
     {

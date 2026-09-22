@@ -38,26 +38,36 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
     private const int Width = 64;
     private const int Height = 48;
     private const int SourcesPerKind = 3;
-    private const int Seed = 208;
-    private const string ExpectedSyntheticBundleId = "synthetic-517BBB80CB2C7BF36CEC36F5832833E7";
-    private const string ExpectedSyntheticProfileIdentitySha256 =
-        "0F37C86AC1F98FCB5EC3ADA82CCAC271A091E430D44174860ACF9D230A3B5851";
+    internal const int Seed = 208;
+    internal const string ExpectedSyntheticBundleId = "synthetic-2B011DA410ABD017292677DD2EC939F2";
+    // The pinned identities below are the deterministic outputs for Seed 208 at
+    // 64x48 with three sources per kind. They were re-pinned under #968: the values
+    // committed by #484 predated #483's canonical processing-identity envelope
+    // (merged three hours earlier the same day), and this Manual-category test never
+    // ran in CI to notice. The raw payloads (*.bin) were unchanged by that; the
+    // JSON descriptors, the profile, the bundle and the publication-derived bundle
+    // id carry the canonicalized identities.
+    // SyntheticCalibrationReferenceStoreTests.CanonicalSeed208Bundle_PinsThePublishedIdentities
+    // asserts these two identities in the Unit lane, so drift is caught on every pull
+    // request rather than only when this Manual harness is run.
+    internal const string ExpectedSyntheticProfileIdentitySha256 =
+        "32A6A5F9256FF93EC09E3ABC3FAC8876B581D0621CB527E144C66D754B62C1F5";
     private static readonly DateTimeOffset FixedUtcNow = new(2026, 7, 26, 12, 0, 0, TimeSpan.Zero);
     private static readonly JsonSerializerOptions EvidenceJsonOptions = CreateEvidenceJsonOptions();
     private static readonly Dictionary<string, FileIdentity> ExpectedSyntheticFiles = new(StringComparer.Ordinal)
     {
         ["bias.bin"] = new(6144, "70F4CE894BD99D133E756673F14A7C61379DEBD5666B12F16C19685496999654"),
-        ["bias.json"] = new(2684, "6CAF9EB53450035090406F975991BF61B979B0BCD458051EA4A8EB1B31EFAD86"),
+        ["bias.json"] = new(2684, "9059DB1FBD9487AD2DF7F96F29BD64A6CDCD9CED48CC7F53A3F43F8A04C910AE"),
         ["calibration-library-bundle.json"] = new(
             3396,
-            "9340674A51C8BEFC40AD61AF026D3B969193022978692A843CB948C499E3DB81"),
+            "CC9DE26876B994E52D5DBA283364B861D7E6A3B69F1B3941C67FF4E3646AD9CE"),
         ["reference-calibration-profile.json"] = new(1309, ExpectedSyntheticProfileIdentitySha256),
         ["dark.bin"] = new(6144, "63390266A137CE75B7206685D5EF7E4127B59CF4E15666FEE318EE08448EE545"),
-        ["dark.json"] = new(2652, "ECACFF1BB48EBF133EA8C45C2B855C0978EB6D907AD101B7270131776EDBA14C"),
+        ["dark.json"] = new(2652, "DF999EA8C67878DDE920F2B7DE0BE26657129EEB58827432BD910C468D4FC912"),
         ["defect.bin"] = new(6144, "8BBE6FB07EAB2C1D495B0ACE6EA73B0E05780594CE5D7622A507FB3375E4135A"),
-        ["defect.json"] = new(2690, "B4BDC3376265C7350D4CF429937E0626BA11D79851802927B40E5B3AAFEE3464"),
+        ["defect.json"] = new(2690, "A18641C1F11FE214DB8A6B8A0DB188F3B431F91478380C0DCD5C6F82271138A5"),
         ["flat.bin"] = new(6144, "DD9C69178B6E074F2DDAFEC3ED7EE26A107D27A3977B090BD8A94B74866DBB69"),
-        ["flat.json"] = new(2652, "69DC396CA056CB444D10E8846AAEA014B3625A37B7A486FBACB560FF60A7CBF1")
+        ["flat.json"] = new(2652, "9FBFF0AF00D0164C63417BE54A0AE3FB8B5412BDE792758C95160E490300A5E9")
     };
 
     public TestContext TestContext { get; set; } = null!;
@@ -843,7 +853,7 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
         }
     }
 
-    private static SyntheticCalibrationModelV1 SyntheticModel(int seed)
+    internal static SyntheticCalibrationModelV1 SyntheticModel(int seed)
         => new()
         {
             Seed = seed,
@@ -852,7 +862,7 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
             Defects = [new SyntheticCalibrationDefect(seed % Width, seed % Height)]
         };
 
-    private static ReconstructionDescriptor SyntheticLight(SyntheticCalibrationModelV1 model)
+    internal static ReconstructionDescriptor SyntheticLight(SyntheticCalibrationModelV1 model)
     {
         var template = ReconstructableCaptureContractTests.CreateManifest(
             CameraPixelFormat.Mono16, Width, Height, Width * 2, new byte[Width * Height * 2]).Descriptor;
