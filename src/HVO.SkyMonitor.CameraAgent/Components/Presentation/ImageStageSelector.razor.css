@@ -1,2 +1,4 @@
 .stage-selector { margin-top: .8rem; }
+.stage-selector__unavailable { display: flex; flex-wrap: wrap; gap: .25rem 1rem; margin: .45rem 0 0; color: var(--hvo-muted); font-size: .78rem; }
+.stage-selector__reason strong { color: var(--hvo-muted-strong); font-weight: 600; }
 @media (max-width: 520px) { .stage-selector { display: flex; width: 100%; } .stage-selector__button { flex: 1 1 auto; } }

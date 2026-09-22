@@ -177,6 +177,8 @@ public sealed class CameraAgentOperationsSummaryTests
         });
         var rawIngress = new RawIngressState(timeProvider);
         rawIngress.Set(RawIngressAvailability.Accepting, "accepting", 0, 0, 0, 0, null);
+        var transientWorker = new TransientWorkerState(timeProvider);
+        transientWorker.Set(TransientWorkerAvailability.Disabled, "mode-disabled", 0, 0);
         var configuration = new CameraAgentConfigurationAccessor();
         using var moduleOptions = JsonDocument.Parse("""{}""");
         configuration.SetConfiguration(CreateConfiguration(moduleOptions.RootElement.Clone()));
@@ -196,7 +198,7 @@ public sealed class CameraAgentOperationsSummaryTests
             new FleetHeartbeatState(),
             new EnvironmentalObservationDeliveryState(),
             new ExecutionEvidenceExportState(),
-            new TransientWorkerState(timeProvider),
+            transientWorker,
             new CaptureTelemetrySink(),
             configuration,
             new CameraAgentStorageResolver(configuration, options),
@@ -211,7 +213,8 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.AreEqual(OperationsFreshness.Disabled, summary.TransientWorker.Freshness);
         Assert.AreEqual(OperationsFreshness.Static, summary.Configuration.Freshness);
         Assert.AreEqual("Disabled", summary.ArtifactOutbox.Value.Availability);
-        Assert.IsNull(summary.ArtifactOutbox.ObservedUtc);
+        // The observation time survives: the deployment drain bounds the transient section by it.
+        Assert.IsNotNull(summary.TransientWorker.ObservedUtc);
         // An observed section is unaffected by the switch.
         Assert.AreEqual(OperationsFreshness.Fresh, summary.RawIngress.Freshness);
     }

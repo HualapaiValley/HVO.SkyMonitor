@@ -1,7 +1,7 @@
 @namespace HVO.SkyMonitor.CameraAgent.Components.Presentation
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
 
-<div class="stage-selector hvo-segmented" role="group" aria-label="Image stage">
+<div class="stage-selector hvo-segmented" role="group" aria-label="Image stage" aria-describedby="@(HasUnavailable ? UnavailableId : null)">
     @foreach (var slot in Stages)
     {
         var available = slot.Availability == CameraAgentPresentationSlotAvailability.Available;
@@ -16,3 +16,14 @@
         </button>
     }
 </div>
+@if (HasUnavailable)
+{
+    @* A disabled button is not focusable, so its title is mouse-only; the reason for every
+       unavailable stage is written here where it is visible and announced. *@
+    <p id="@UnavailableId" class="stage-selector__unavailable">
+        @foreach (var slot in Stages.Where(static slot => slot.Availability != CameraAgentPresentationSlotAvailability.Available))
+        {
+            <span class="stage-selector__reason"><strong>@slot.Label</strong>: @PresentationReason(slot)</span>
+        }
+    </p>
+}

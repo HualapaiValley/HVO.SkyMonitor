@@ -239,7 +239,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
         var telemetry = captureTelemetry.GetSnapshot();
         var latest = telemetry.Samples.Count == 0 ? null : telemetry.Samples[^1];
         var centralDisabled = hostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled;
-        var transientDisabled = hostOptions.Value.TransientDetection.Mode == TransientOperatingMode.Off;
+        var transientDisabled = hostOptions.Value.TransientDetection.Mode is TransientOperatingMode.Off or TransientOperatingMode.Central;
         var config = configurationAccessor.IsConfigured
             ? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false)
             : null;
@@ -354,7 +354,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 telemetry.Aggregate.AverageLoopMilliseconds, telemetry.Aggregate.CapturesPerMinute,
                 telemetry.Aggregate.DutyCycle, telemetry.Aggregate.FramesStored,
                 telemetry.Aggregate.ImmediateUploadCount)),
-            Section("validated-configuration", OperationsFreshness.Static, null, now, new OperationsConfigurationState(
+            Section("validated-configuration", OperationsFreshness.Static, null, new OperationsConfigurationState(
                 config is not null, config is null ? "unavailable" : "validated", config?.AgentId,
                 config?.ModuleType, hostOptions.Value.CentralIntegration.Mode.ToString(),
                 hostOptions.Value.TransientDetection.Mode.ToString())));
@@ -368,9 +368,12 @@ public sealed class CameraAgentOperationsSummaryProvider(
         => new(source, observedUtc, Freshness(observedUtc, now), value);
 
     /// <summary>
-    /// A section whose subsystem is switched off by configuration. Its facts are not observed and
-    /// never will be while it is off, so neither "stale" nor "unknown" describes it; the operator
-    /// reads "disabled" and the overall state does not degrade on its account.
+    /// A section whose subsystem is switched off by configuration. Its facts will not change while
+    /// it is off, so neither "stale" nor "unknown" describes it; the operator reads "disabled" and
+    /// the overall state does not degrade on its account. The observation time is kept: the
+    /// subsystem did record that it is disabled at that instant, and consumers that bound a section
+    /// by its observation time (the deployment drain reads the transient worker this way) keep
+    /// that bound.
     /// </summary>
     private static OperationsSection<T> Section<T>(
         string source,
@@ -379,7 +382,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
         DateTimeOffset now,
         T value)
         => disabled
-            ? new(source, null, OperationsFreshness.Disabled, value)
+            ? new(source, observedUtc, OperationsFreshness.Disabled, value)
             : new(source, observedUtc, Freshness(observedUtc, now), value);
 
     /// <summary>A section with an explicit freshness that is not derived from an observation time.</summary>
@@ -387,12 +390,8 @@ public sealed class CameraAgentOperationsSummaryProvider(
         string source,
         string freshness,
         DateTimeOffset? observedUtc,
-        DateTimeOffset now,
         T value)
-    {
-        _ = now;
-        return new(source, observedUtc, freshness, value);
-    }
+        => new(source, observedUtc, freshness, value);
 
     private static string Freshness(DateTimeOffset? observedUtc, DateTimeOffset now)
         => observedUtc is null

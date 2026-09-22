@@ -7,7 +7,7 @@
 .large-viewer header > div { margin-right: auto; }
 .large-viewer header p { margin: 0; color: var(--hvo-info-fg); font-size: .65rem; letter-spacing: .12em; text-transform: uppercase; }
 .large-viewer h2 { margin: .1rem 0 0; font-size: 1rem; }
-.large-viewer__close { width: 2.5rem; padding-inline: 0; }
+.large-viewer__close { width: 2.5rem; height: 2.5rem; min-height: 0; padding: 0; }
 .large-viewer__canvas { min-width: 0; min-height: 0; display: grid; place-items: center; overflow: auto; background: #010307; }
 .large-viewer__canvas img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
 .large-viewer__canvas--native { place-items: start; }

@@ -179,7 +179,4 @@
     }
 }
 
-/* Every workspace section shares the coarse-pointer target size for its controls. */
-.operations-content ::deep :is(.btn, .form-control, .form-select) {
-    min-height: 44px;
-}
+/* Control sizing, including the coarse-pointer 44px target, comes from the shared theme vocabulary. */

@@ -104,6 +104,14 @@ body[data-theme="hvo-dark"] .btn.btn-sm {
     min-height: 2.1rem;
 }
 
+/* Touch targets: every control reaches 44px on a coarse pointer, whatever its size class.
+   This is the single place that rule lives; layouts must not re-declare it. */
+@media (pointer: coarse) {
+    body[data-theme="hvo-dark"] :is(.btn, .btn.btn-sm, .hvo-segmented__option, .form-control, .form-select) {
+        min-height: 44px;
+    }
+}
+
 /* An action placed over an image: same .btn shape, darker translucent surface. */
 body[data-theme="hvo-dark"] .btn-overlay {
     border-color: rgba(148, 163, 184, 0.35);

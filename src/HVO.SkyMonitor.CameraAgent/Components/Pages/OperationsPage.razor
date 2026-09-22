@@ -88,7 +88,7 @@
                 <div class="card-actions">
                     @if (CanPause)
                     {
-                        <button id="capture-action" type="button" class="btn btn-outline-warning btn-sm" disabled="@_isSubmitting" @onclick="BeginPause">Review pause</button>
+                        <button id="capture-action" type="button" class="btn btn-outline-warning" disabled="@_isSubmitting" @onclick="BeginPause">Review pause</button>
                     }
                     else if (CanResume)
                     {
