@@ -135,19 +135,16 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
                 EnvironmentalAcquisitionTrigger.OnDemand,
                 Epoch,
                 cancellationToken: CancellationToken.None).AsTask();
-            try
-            {
-                await stateStore.FirstLockFailure.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                using var rollback = lockingConnection.CreateCommand();
-                rollback.CommandText = "ROLLBACK;";
-                await rollback.ExecuteNonQueryAsync().ConfigureAwait(false);
-            }
-            finally
-            {
-                stateStore.ReleaseFailure();
-            }
-
-            var receipt = await acquisition.ConfigureAwait(false);
+            var receipt = await ObserveAfterReleasingAsync(
+                acquisition,
+                stateStore,
+                async () =>
+                {
+                    await stateStore.FirstLockFailure.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    using var rollback = lockingConnection.CreateCommand();
+                    rollback.CommandText = "ROLLBACK;";
+                    await rollback.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }).ConfigureAwait(false);
             var attempts = await store.ReadAttemptsAsync(
                 root, 10, CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(1, attempts);
@@ -159,6 +156,152 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
             Assert.AreEqual(receipt.Disposition, attempt.Disposition);
             Assert.AreEqual(receipt.Reason, attempt.Reason);
             Assert.AreEqual(2, stateStore.AttemptCount);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Runs the test's control steps against a blocked acquisition, then releases the barrier and
+    /// observes the acquisition before returning, on every path. Without this the control steps'
+    /// failure (a wait timeout, a rollback error) would leave the released acquisition still
+    /// completing while the store, coordinator, connection and root unwound underneath it, and its
+    /// exception unobserved. The control exception stays primary; an acquisition exception that
+    /// follows it is retained as the control exception's inner exception rather than masking it.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Every control failure is retained and rethrown as the primary exception after the acquisition is observed.")]
+    private static async Task<EnvironmentalAcquisitionReceipt> ObserveAfterReleasingAsync(
+        Task<EnvironmentalAcquisitionReceipt> acquisition,
+        SignalingStateStore stateStore,
+        Func<Task> control)
+    {
+        Exception? controlFailure = null;
+        try
+        {
+            await control().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            controlFailure = exception;
+        }
+        finally
+        {
+            stateStore.ReleaseFailure();
+        }
+
+        if (controlFailure is null)
+        {
+            return await acquisition.ConfigureAwait(false);
+        }
+
+        try
+        {
+            _ = await acquisition.ConfigureAwait(false);
+        }
+        catch (Exception acquisitionFailure)
+        {
+            throw new AggregateException(
+                "The control steps failed and the released acquisition also failed; the control failure is primary.",
+                controlFailure,
+                acquisitionFailure);
+        }
+        throw new InvalidOperationException("The control steps failed; the released acquisition was observed.", controlFailure);
+    }
+
+    [TestMethod]
+    public async Task TransientWriterContention_ControlFailureStillObservesTheReleasedAcquisition()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-environmental-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var store = new SqliteEnvironmentalObservationOutbox(busyTimeoutSeconds: 1);
+            _ = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
+            var stateStore = new SignalingStateStore(store);
+            using var coordinator = CreateCoordinator(
+                new StorePublisher(store, root),
+                stateStore: stateStore,
+                root: root);
+            using var lockingConnection = new SqliteConnection(
+                $"Data Source={Path.Combine(root, ".environment", "environmental-observation-outbox.db")}");
+            await lockingConnection.OpenAsync().ConfigureAwait(false);
+            using (var lockCommand = lockingConnection.CreateCommand())
+            {
+                lockCommand.CommandText = "BEGIN IMMEDIATE;";
+                await lockCommand.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            var acquisition = coordinator.AcquireSourceAsync(
+                "temperature",
+                EnvironmentalAcquisitionTrigger.OnDemand,
+                Epoch,
+                cancellationToken: CancellationToken.None).AsTask();
+
+            // The control step fails after the barrier is reached and before the lock is released,
+            // so the released acquisition retries against a still-held lock and fails too. Both
+            // must be observed, the control failure first.
+            var failure = await Assert.ThrowsExactlyAsync<AggregateException>(async () =>
+                await ObserveAfterReleasingAsync(
+                    acquisition,
+                    stateStore,
+                    async () =>
+                    {
+                        await stateStore.FirstLockFailure.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                        throw new IOException("Injected rollback failure.");
+                    }).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.IsTrue(acquisition.IsCompleted, "The released acquisition was not observed before the harness unwound.");
+            Assert.HasCount(2, failure.InnerExceptions);
+            Assert.IsInstanceOfType<IOException>(failure.InnerExceptions[0]);
+            Assert.IsInstanceOfType<SqliteException>(failure.InnerExceptions[1]);
+
+            using (var rollback = lockingConnection.CreateCommand())
+            {
+                rollback.CommandText = "ROLLBACK;";
+                await rollback.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task TransientWriterContention_WaitFailureStillObservesTheReleasedAcquisition()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-environmental-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var store = new SqliteEnvironmentalObservationOutbox(busyTimeoutSeconds: 1);
+            _ = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
+            var stateStore = new SignalingStateStore(store);
+            using var coordinator = CreateCoordinator(
+                new StorePublisher(store, root),
+                stateStore: stateStore,
+                root: root);
+
+            // No lock is held, so the acquisition never reaches the barrier and the wait times out;
+            // releasing the barrier is then a no-op and the acquisition completes successfully,
+            // which must still be observed and reported with the wait failure primary.
+            var acquisition = coordinator.AcquireSourceAsync(
+                "temperature",
+                EnvironmentalAcquisitionTrigger.OnDemand,
+                Epoch,
+                cancellationToken: CancellationToken.None).AsTask();
+            var failure = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                await ObserveAfterReleasingAsync(
+                    acquisition,
+                    stateStore,
+                    () => stateStore.FirstLockFailure.WaitAsync(TimeSpan.FromMilliseconds(200))).ConfigureAwait(false))
+                .ConfigureAwait(false);
+
+            Assert.IsTrue(acquisition.IsCompletedSuccessfully, "The released acquisition was not observed before the harness unwound.");
+            Assert.IsInstanceOfType<TimeoutException>(failure.InnerException);
         }
         finally
         {
