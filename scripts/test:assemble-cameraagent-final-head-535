@@ -178,7 +178,7 @@ done
     jq -cn --arg c "$component" --arg p "$f" --argjson b "$(stat -c %s "$f")" --arg s "$(sha256_of "$f")" --arg h "$head" \
         '{component:$c, path:$p, bytes:$b, sha256:$s, headSha:$h}'
 done | jq -sS '{schemaVersion:"issue-535-component-evidence-v1", records:sort_by(.component)}' > components.json)
-jq -cn --arg head "$head" --arg dirty "$empty_sha256" '{schemaVersion:"issue-197-five-trial-summary-v2", evidenceMode:"final",
+jq -cn --arg head "$head" --arg dirty "$empty_sha256" '{schemaVersion:"issue-197-five-trial-summary-v3", evidenceMode:"final",
     trialCount:5, revision:{commit:$head, branch:"fixture", clean:true, dirtyStateSha256:$dirty}, citable:true}' > "$producers/dual-agent.json"
 printf 'CMD-CAMPAIGN\t0\trun-manifest.json\t./scripts/test:cameraagent-standalone-211\nCMD-TRIAL-1\t0\ttrial-1/issue-211-w6.trx\tdotnet test trial-1\n' > "$producers/commands.tsv"
 

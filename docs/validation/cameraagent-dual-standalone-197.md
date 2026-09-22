@@ -32,7 +32,9 @@ HVO_OTEL_COLLECTOR_IMAGE=otel/opentelemetry-collector-contrib@sha256:f2f01157055
 
 The runner retains five trial manifests, both agents' sanitized images,
 Prometheus scrapes, bounded container logs, separate OTLP logs/metrics/traces,
-TRX results, and `five-trial-summary.json` under
+TRX results, and `five-trial-summary.json` (`issue-197-five-trial-summary-v3`;
+host memory is recorded as a `{minimum, maximum}` range because `MemTotal` can
+move between trials of one run) under
 `TestResults/issue-197/dual-agent`. The manifest records revision and dirty-tree
 identity, exact image ID, projects/networks/mounts, catalog checksums/inodes,
 owner and agent identity separation, artifact checksums and lineage, cadence,

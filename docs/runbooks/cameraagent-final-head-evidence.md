@@ -94,8 +94,9 @@ manifest, `replayProfiles[]` from the two #719 evidence records and their retain
 OTLP metrics, `centralTrafficAttempts` from the deny-sink summary plus every
 trial's recorded attempts (every term must be a recorded integer; a missing field
 is a refusal, not a zero), `dualAgent` from the #197 `five-trial-summary.json`
-(`issue-197-five-trial-summary-v2`, final mode, five trials, clean at the bound
-head), `testAssemblies[]` from the Release acceptance assembly's metadata, and
+(`issue-197-five-trial-summary-v3`, final mode, five trials, clean at the bound
+head; v3 records `environment.hostMemoryBytes` as a `{minimum, maximum}` range,
+and the #535 generation 1 document is a v2 that already carries that shape), `testAssemblies[]` from the Release acceptance assembly's metadata, and
 `source` from the manifest's dirty-state digest. The `components` and `ci`
 projections are carried verbatim and their support directories copied beside the
 output. It validates the result in the requested mode before writing; a refusal
