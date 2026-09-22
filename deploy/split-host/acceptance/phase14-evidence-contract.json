@@ -83,10 +83,10 @@
     {
       "id": "logichost-integration",
       "evidenceSourcePrefix": "test:HVO.SkyMonitor.IntegrationTests.",
-      "project": "tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj",
+      "project": "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj",
       "scenarioCount": 22,
       "uniqueMethodCount": 6,
-      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"8388002ce69aa1fa194e7644bd8f35352ac10acf\" && test \"$(git rev-parse HEAD^{tree})\" = \"f045fcc2661ac6556d6765c13d5b03b3f223845e\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --configuration Release --no-restore -p:NoIncremental=true -p:PathMap=\"$(pwd)=hvo-source\" --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/8388002ce69aa1fa194e7644bd8f35352ac10acf/logichost-integration/{method-id} --logger \"trx;LogFileName=result.trx\"",
+      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"8388002ce69aa1fa194e7644bd8f35352ac10acf\" && test \"$(git rev-parse HEAD^{tree})\" = \"f045fcc2661ac6556d6765c13d5b03b3f223845e\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --no-restore -p:NoIncremental=true -p:PathMap=\"$(pwd)=hvo-source\" --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/8388002ce69aa1fa194e7644bd8f35352ac10acf/logichost-integration/{method-id} --logger \"trx;LogFileName=result.trx\"",
       "input": "One clean-revision TRX and one strict scenario-evidence entry per mapped scenario; case selectors address source evidence, never a TRX data row.",
       "sanitizer": "phase14-trx-sanitizer-v1",
       "admissibilityValidator": "phase14-source-import-v1"
@@ -128,11 +128,11 @@
         "tests/HVO.SkyMonitor.CameraAgent.Tests/Transients/SqliteTransientCandidateJournalTests.cs",
         "tests/HVO.SkyMonitor.CameraAgent.Tests/Transients/TransientWorkerRuntimeTests.cs",
         "tests/HVO.SkyMonitor.CameraAgent.Tests/Upload/SqliteArtifactOutboxTests.cs",
-        "tests/HVO.SkyMonitor.IntegrationTests/CentralDerivativeWindowIntegrationTests.cs",
-        "tests/HVO.SkyMonitor.IntegrationTests/LogicHostDependencyOutageAcceptanceTests.cs",
-        "tests/HVO.SkyMonitor.IntegrationTests/LogicHostDerivativeWorkerPerformanceTests.cs",
-        "tests/HVO.SkyMonitor.IntegrationTests/LogicHostIngestPerformanceTests.cs",
-        "tests/HVO.SkyMonitor.Tests/Phase14ScenarioEvidenceTests.cs"
+        "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/CentralDerivativeWindowIntegrationTests.cs",
+        "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/LogicHostDependencyOutageAcceptanceTests.cs",
+        "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/LogicHostDerivativeWorkerPerformanceTests.cs",
+        "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/LogicHostIngestPerformanceTests.cs",
+        "tests/HVO.SkyMonitor.TestSupport.Tests/Phase14ScenarioEvidenceTests.cs"
       ],
       "productPathChangesRejected": true
     },

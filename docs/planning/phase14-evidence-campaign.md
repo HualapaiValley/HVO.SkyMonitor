@@ -68,7 +68,7 @@ are 29 unique methods across the
 | --- | --- | ---: | ---: |
 | `cameraagent-tests` | `tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj` | 80 | 22 |
 | `cameraagent-acceptance` | `tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj` | 6 | 1 |
-| `logichost-integration` | `tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj` | 22 | 6 |
+| `logichost-integration` | `tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj` | 22 | 6 |
 
 A test citation or passing method-level TRX alone cannot become `passed`. Many
 methods exercise several fault points inside one loop, so `;case=` must exactly
