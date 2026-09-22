@@ -168,8 +168,9 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
     /// observes the acquisition before returning, on every path. Without this the control steps'
     /// failure (a wait timeout, a rollback error) would leave the released acquisition still
     /// completing while the store, coordinator, connection and root unwound underneath it, and its
-    /// exception unobserved. The control exception stays primary; an acquisition exception that
-    /// follows it is retained as the control exception's inner exception rather than masking it.
+    /// exception unobserved. The control exception stays primary and is rethrown with its type and
+    /// stack intact; an acquisition exception that follows it is retained beside it in an
+    /// <see cref="AggregateException"/> rather than masking it.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Every control failure is retained and rethrown as the primary exception after the acquisition is observed.")]
@@ -208,7 +209,8 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
                 controlFailure,
                 acquisitionFailure);
         }
-        throw new InvalidOperationException("The control steps failed; the released acquisition was observed.", controlFailure);
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(controlFailure);
+        throw new InvalidOperationException("Unreachable.");
     }
 
     [TestMethod]
@@ -256,7 +258,11 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
             Assert.IsTrue(acquisition.IsCompleted, "The released acquisition was not observed before the harness unwound.");
             Assert.HasCount(2, failure.InnerExceptions);
             Assert.IsInstanceOfType<IOException>(failure.InnerExceptions[0]);
-            Assert.IsInstanceOfType<SqliteException>(failure.InnerExceptions[1]);
+            var acquisitionFailure = (SqliteException)failure.InnerExceptions[1];
+            Assert.IsTrue(
+                acquisitionFailure.SqliteErrorCode is SQLitePCL.raw.SQLITE_BUSY or SQLitePCL.raw.SQLITE_LOCKED,
+                $"The released acquisition failed with {acquisitionFailure.SqliteErrorCode}, not the held lock.");
+            Assert.AreEqual(3, stateStore.AttemptCount, "The bounded retry was not exhausted against the held lock.");
 
             using (var rollback = lockingConnection.CreateCommand())
             {
@@ -293,7 +299,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
                 EnvironmentalAcquisitionTrigger.OnDemand,
                 Epoch,
                 cancellationToken: CancellationToken.None).AsTask();
-            var failure = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await Assert.ThrowsExactlyAsync<TimeoutException>(async () =>
                 await ObserveAfterReleasingAsync(
                     acquisition,
                     stateStore,
@@ -301,7 +307,6 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
                 .ConfigureAwait(false);
 
             Assert.IsTrue(acquisition.IsCompletedSuccessfully, "The released acquisition was not observed before the harness unwound.");
-            Assert.IsInstanceOfType<TimeoutException>(failure.InnerException);
         }
         finally
         {
