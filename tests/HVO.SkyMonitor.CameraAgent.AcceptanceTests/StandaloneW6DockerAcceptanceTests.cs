@@ -877,7 +877,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             JsonSerializer.Serialize(
                 new
                 {
-                    schemaVersion = "issue-719-replay-evidence-v1",
+                    schemaVersion = "issue-719-replay-evidence-v2",
                     profile,
                     stateKey,
                     stateReused,
@@ -949,6 +949,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         AssertReplayCadence(detail.Execution, profile);
         AssertReplayNodeSets(detail, profile);
         var live = await ReadLiveExecutionAsync(session, source.CaptureId).ConfigureAwait(false);
+        var liveDetail = await ReadExecutionDetailAsync(session, live.ExecutionId).ConfigureAwait(false);
 
         return new
         {
@@ -959,6 +960,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             sourceCaptureSequence = source.CaptureSequence,
             primaryArtifactId,
             liveExecutionId = live.ExecutionId,
+            liveExecution = DescribeRoutes(liveDetail),
             replay = DescribeExecution(detail),
             note = "The three-way identity is asserted by the LocalRunner invocation, which is the only one that can read all three output sets."
         };
@@ -1092,6 +1094,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             prior.PrimaryArtifactId,
             prior.GraphRevisionId,
             liveExecutionId = live.ExecutionId,
+            liveExecution = DescribeRoutes(liveDetail),
             inProcessExecutionId = prior.ExecutionId,
             localRunnerExecutionId = detail.Execution.ExecutionId,
             replay = DescribeExecution(detail),
@@ -1347,6 +1350,24 @@ public sealed class StandaloneW6DockerAcceptanceTests
         return identities;
     }
 
+    /// <summary>
+    /// The live execution's per-node attempt routes. A live execution must never dispatch to the
+    /// replay runner whatever the host's replay profile; recording its routes beside the replay's is
+    /// what lets the #535 aggregate count live dispatches from evidence rather than from the
+    /// adapter's routing rule (#973).
+    /// </summary>
+    private static object DescribeRoutes(ProcessingGraphExecutionDetail detail) => new
+    {
+        detail.Execution.ExecutionId,
+        nodes = detail.Nodes
+            .Select(static node => new
+            {
+                node.NodeId,
+                executionRoutes = node.Attempts.Select(static attempt => attempt.ExecutionRoute.ToString()).ToArray()
+            })
+            .ToArray()
+    };
+
     private static object DescribeExecution(ProcessingGraphExecutionDetail detail) => new
     {
         detail.Execution.ExecutionId,
@@ -1360,8 +1381,20 @@ public sealed class StandaloneW6DockerAcceptanceTests
         detail.Execution.SharedPlanIdentitySha256,
         detail.Execution.LocalPlanIdentitySha256,
         detail.Execution.AttemptCount,
+        // v2 (#973): the route every attempt actually took and the count of outputs this execution
+        // published, both read from the durable execution detail rather than inferred from the host's
+        // configured profile or from delivery telemetry. A replay must publish nothing, and under the
+        // LocalRunner profile its recipe-backed attempts must have routed to the runner.
         nodes = detail.Nodes
-            .Select(static node => new { node.NodeId, node.Required, node.Status, outputs = node.Outputs.Count })
+            .Select(static node => new
+            {
+                node.NodeId,
+                node.Required,
+                node.Status,
+                outputs = node.Outputs.Count,
+                publishedOutputs = node.Outputs.Count(static output => output.Published),
+                executionRoutes = node.Attempts.Select(static attempt => attempt.ExecutionRoute.ToString()).ToArray()
+            })
             .ToArray()
     };
 

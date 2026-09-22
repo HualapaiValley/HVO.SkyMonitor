@@ -336,11 +336,11 @@ public sealed class ProcessingGraphEvidenceProjectionTests
                         new(
                             0, GoldenPreviewIdentity,
                             ProcessingIdentity.CreateArtifactId(GoldenPreviewIdentity),
-                            FrameArtifactRole.Preview, "encoded-preview", "Available", null),
+                            FrameArtifactRole.Preview, "encoded-preview", "Available", null, true),
                         new(
                             1, GoldenAnnotatedIdentity,
                             ProcessingIdentity.CreateArtifactId(GoldenAnnotatedIdentity),
-                            FrameArtifactRole.AnnotatedPreview, "annotated", "Available", null)
+                            FrameArtifactRole.AnnotatedPreview, "annotated", "Available", null, true)
                     ]),
                 new(
                     "annotate",
@@ -490,7 +490,8 @@ public sealed class ProcessingGraphEvidenceProjectionTests
                             FrameArtifactRole.Preview,
                             "encoded-preview",
                             "Quarantined",
-                            "reconciliation.checksum-mismatch")
+                            "reconciliation.checksum-mismatch",
+                            true)
                     ]),
                 new(
                     "annotate",

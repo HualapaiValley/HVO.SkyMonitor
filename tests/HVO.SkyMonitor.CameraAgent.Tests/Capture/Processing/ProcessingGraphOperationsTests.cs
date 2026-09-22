@@ -2373,6 +2373,14 @@ public sealed class ProcessingGraphOperationsTests
             }
 
             var replayOutput = detail!.Nodes.Single().Outputs.Single();
+            // The per-execution publication fact (#973): the live execution published its output and
+            // this replay, inserted with automatic publication disabled, did not. This replay's output
+            // has a distinct identity; the identical-identity case is asserted below on the collision
+            // replay, whose association row inherits the live published_flag and must still report false.
+            var republishedLive = await operations.ReadExecutionDetailAsync(
+                liveLease.Context.Execution!.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(republishedLive!.Nodes.Single().Outputs.Single().Published, "the live output was published");
+            Assert.IsFalse(replayOutput.Published, "the replay output must not be published");
             Assert.AreEqual(
                 CameraAgentArtifactReadStatus.NotFound,
                 (await artifactService.OpenContentAsync(replayOutput.ArtifactId, CancellationToken.None)
@@ -2474,6 +2482,16 @@ public sealed class ProcessingGraphOperationsTests
             Assert.AreEqual(1L, reader.GetInt64(4));
             Assert.AreEqual(0L, reader.GetInt64(5));
             await reader.DisposeAsync().ConfigureAwait(false);
+            // The collision replay re-associated the live output identity, so its association row
+            // carries published_flag = 1 (asserted above); the projected per-execution fact is still
+            // false because the replay was never allowed to publish. This is the case every #719
+            // campaign replay is in, since it replays the active revision.
+            var collisionDetail = await operations.ReadExecutionDetailAsync(
+                collisionReplay.Execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(collisionDetail);
+            Assert.IsFalse(
+                collisionDetail.Nodes.Single().Outputs.Single().Published,
+                "a replay that re-associated the live output identity must not report it as published");
             var published = await store.ReadCaptureProductsAsync(
                 receipt.Manifest.Descriptor.Capture.CaptureId, null, 10, CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(1, published);

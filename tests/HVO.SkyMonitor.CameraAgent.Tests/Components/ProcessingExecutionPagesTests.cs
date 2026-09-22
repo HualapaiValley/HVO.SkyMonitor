@@ -107,7 +107,7 @@ public sealed class ProcessingExecutionPagesTests
                     "preview", true, new string('P', 64), "Completed", null, 1, Now.AddSeconds(-10), Now.AddSeconds(-4),
                     [new ProcessingGraphExecutionInputState(0, 0, ProcessingGraphExecutionInputKind.RawCapture, CaptureId, Guid.NewGuid(), new string('D', 64), new string('E', 64), null)],
                     [new CameraAgentProcessingNodeAttemptView(1, Now.AddSeconds(-10), Now.AddSeconds(-4), "Completed", "Succeeded", null, TimeSpan.FromSeconds(6), "InProcess")],
-                    [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Available", null)]),
+                    [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Available", null, true)]),
                 new CameraAgentProcessingNodeView("telemetry", false, new string('T', 64), "Failed", "sensitive-tool crashed", 2, Now.AddSeconds(-3), Now, [], [], [])
             ]);
         context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService { Detail = detail });
