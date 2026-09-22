@@ -11,7 +11,8 @@ export LC_ALL=C
 # nightly promotion after it was refused because its first parent was the first
 # promotion's merge commit (#963). This gate extracts the step body from the
 # workflow and runs it against a stubbed `gh`, so the accepted and refused shapes
-# are cases rather than a description.
+# are cases rather than a description. It needs bash, python3 (to slice the step
+# out of the YAML) and nothing else.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
@@ -47,10 +48,12 @@ stub() {
     mkdir -p "$WORK/bin"
     {
         printf '#!/usr/bin/env bash\ncase "$*" in\n'
-        printf '  *"compare/development/v1...main"*) printf '"'"'%%s\\n'"'"' %s;;\n' "$strays"
+        # Patterns are anchored on the trailing space before --jq so a name cannot
+        # match a longer name it prefixes.
+        printf '  *"compare/development/v1...main "*) printf '"'"'%%s\\n'"'"' %s;;\n' "$strays"
         local pair
         for pair in "$@"; do
-            printf '  *"compare/development/v1...%s"*) echo %s;;\n' "${pair%%=*}" "${pair#*=}"
+            printf '  *"compare/development/v1...%s "*) echo %s;;\n' "${pair%%=*}" "${pair#*=}"
         done
         printf '  *) echo "unexpected gh call: $*" >&2; exit 9;;\nesac\n'
     } > "$WORK/bin/gh"
