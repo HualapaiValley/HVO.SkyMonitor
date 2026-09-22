@@ -4,6 +4,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -27,6 +28,8 @@ internal interface ICameraAgentProcessingGraphUiService
     ValueTask<OperatorUiResult<CameraAgentProcessingExecutionDetailView>> GetExecutionDetailAsync(
         Guid executionId,
         CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentLiveRunLink>> GetLiveExecutionIdAsync(Guid captureId, CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> GetRegistryAsync(CancellationToken cancellationToken);
 
@@ -103,12 +106,14 @@ internal sealed record CameraAgentProcessingExecutionsView(
         => (executionClass == ProcessingGraphExecutionClass.Live ? Live : Replay).Count(execution => execution.Status == status);
 }
 
+internal sealed record CameraAgentLiveRunLink(Guid ExecutionId);
+
 /// <summary>
 /// One attempt as the operations read path reports it, carrying the recorded execution route so a reader can
 /// tell a node that dispatched to the local replay runner from one that ran in process (#799). Storing the route
 /// without projecting it would leave the question unanswerable from outside the database.
 /// </summary>
-internal sealed record CameraAgentProcessingNodeAttemptView(
+public sealed record CameraAgentProcessingNodeAttemptView(
     int AttemptNumber,
     DateTimeOffset StartedUtc,
     DateTimeOffset? CompletedUtc,
@@ -118,7 +123,7 @@ internal sealed record CameraAgentProcessingNodeAttemptView(
     TimeSpan? Duration,
     string ExecutionRoute);
 
-internal sealed record CameraAgentProcessingNodeView(
+public sealed record CameraAgentProcessingNodeView(
     string NodeId,
     bool Required,
     string PlanSha256,
@@ -129,7 +134,10 @@ internal sealed record CameraAgentProcessingNodeView(
     DateTimeOffset? CompletedUtc,
     IReadOnlyList<ProcessingGraphExecutionInputState> Inputs,
     IReadOnlyList<CameraAgentProcessingNodeAttemptView> Attempts,
-    IReadOnlyList<ProcessingGraphExecutionOutputState> Outputs);
+    IReadOnlyList<ProcessingGraphExecutionOutputState> Outputs)
+{
+    public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];
+}
 
 internal sealed record CameraAgentProcessingExecutionDetailView(
     DateTimeOffset ReadUtc,
@@ -202,7 +210,8 @@ internal static class CameraAgentProcessingExecutionProjection
                     CameraAgentReplayUiService.Sanitize(attempt.Reason),
                     attempt.Duration,
                     attempt.ExecutionRoute.ToString())).ToArray(),
-                node.Outputs.Select(static output => output with { AvailabilityReason = CameraAgentReplayUiService.Sanitize(output.AvailabilityReason) }).ToArray())).ToArray());
+                node.Outputs.Select(static output => output with { AvailabilityReason = CameraAgentReplayUiService.Sanitize(output.AvailabilityReason) }).ToArray())
+            { Dependencies = node.Dependencies }).ToArray());
     }
 }
 
@@ -240,6 +249,12 @@ internal sealed class CameraAgentProcessingGraphUiService(
             var detail = await operations.ReadExecutionDetailAsync(executionId, token).ConfigureAwait(false);
             return detail is null ? null : CameraAgentProcessingExecutionProjection.Detail(detail, timeProvider.GetUtcNow());
         }, "The execution could not be read.", cancellationToken, "The execution was not found.");
+
+    public ValueTask<OperatorUiResult<CameraAgentLiveRunLink>> GetLiveExecutionIdAsync(Guid captureId, CancellationToken cancellationToken)
+        => ReadAsync(async token => await operations.ReadLiveExecutionIdAsync(captureId, token).ConfigureAwait(false) is { } id
+                ? new CameraAgentLiveRunLink(id) : null,
+            "The capture's pipeline run could not be read.", cancellationToken,
+            "No live pipeline run was recorded for this capture.");
 
     public ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> GetRegistryAsync(CancellationToken cancellationToken)
         => ReadAsync(async token => await operations.GetRegistryAsync(token).ConfigureAwait(false), "Current graph registry data is unavailable.", cancellationToken);

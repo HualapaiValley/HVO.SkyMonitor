@@ -12,10 +12,13 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestCategory("Unit")]
 public sealed class GalleryDetailTests
 {
+    private static void ConfigureGraphService(BunitContext context)
+        => context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new ProcessingExecutionPagesTests.GraphUiService());
     [TestMethod]
     public void DetailLeadsWithExactStageSummaryAndLargeViewer()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var capture = OperatorUiTestData.Capture();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
@@ -56,6 +59,7 @@ public sealed class GalleryDetailTests
     public void DetailNavigationStaysWithinOriginatingBoundedArchivePage()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         var current = OperatorUiTestData.Capture();
         var newer = OperatorUiTestData.Capture(Guid.Parse("00000000-0000-0000-0000-000000000011")) with { CaptureSequence = 43 };
         var older = OperatorUiTestData.Capture(Guid.Parse("00000000-0000-0000-0000-000000000012")) with { CaptureSequence = 41 };
@@ -169,6 +173,7 @@ public sealed class GalleryDetailTests
     public void LayeredDetailRendersOneBaseOneGroupedSvgAndLocalToggleControls()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var capture = OperatorUiTestData.Capture();
         var service = new TestOperatorUiService
@@ -208,6 +213,7 @@ public sealed class GalleryDetailTests
     public async Task SaveSelectedStackUsesLocalSelectionAndReportsSuccessOrFailure()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         var capture = OperatorUiTestData.Capture();
         var selectedIdentity = new string('D', 64);
         var presentation = new CameraAgentLayeredPresentation(
@@ -263,6 +269,7 @@ public sealed class GalleryDetailTests
     public async Task NavigatingDuringLayerSelectionDoesNotSaveOrShowAStaleReceiptAsync()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         var first = OperatorUiTestData.Capture();
         var second = OperatorUiTestData.Capture(Guid.Parse("00000000-0000-0000-0000-000000000021"));
         var selectedIdentity = new string('D', 64);
@@ -320,6 +327,7 @@ public sealed class GalleryDetailTests
     public void Detail_RetainsExactLineageRecipesNodesAndDirectEndpointsInTechnicalDisclosure()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         var service = new TestOperatorUiService();
         var capture = OperatorUiTestData.Capture();
         service.DetailHandler = (_, _) => ValueTask.FromResult(
@@ -382,6 +390,7 @@ public sealed class GalleryDetailTests
     public void ReturnUrl_AllowsGalleryQueryAndRejectsExternalOrNonGalleryTargets()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         var capture = OperatorUiTestData.Capture();
@@ -408,6 +417,7 @@ public sealed class GalleryDetailTests
     public void MissingExtendedDetail_RendersExplicitUnavailableStates()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         var capture = OperatorUiTestData.Capture() with { Detail = null };
         var service = new TestOperatorUiService
         {
@@ -429,6 +439,7 @@ public sealed class GalleryDetailTests
     public void DetailWithoutDisplayableArtifact_RendersUnsupportedTextAndTechnicalDownload()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         var service = new TestOperatorUiService();
         var capture = OperatorUiTestData.Capture() with
         {
@@ -453,6 +464,7 @@ public sealed class GalleryDetailTests
     public void CurrentEvidenceDistinguishesInfrastructureAndUnexecutedNodesFromLegacyRecords()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         var baseline = OperatorUiTestData.Capture();
         var completedUtc = OperatorUiTestData.Now;
         var detail = baseline.Detail! with
@@ -496,6 +508,7 @@ public sealed class GalleryDetailTests
     public async Task DisposalCancelsPendingCaptureRead()
     {
         using var context = new BunitContext();
+        ConfigureGraphService(context);
         var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
         {

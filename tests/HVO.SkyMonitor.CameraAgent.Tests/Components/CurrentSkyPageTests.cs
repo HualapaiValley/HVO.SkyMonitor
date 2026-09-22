@@ -304,6 +304,7 @@ public sealed class CurrentSkyPageTests
                 OperatorUiTestData.CurrentImage()))
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new ProcessingExecutionPagesTests.GraphUiService());
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
         return service;
     }

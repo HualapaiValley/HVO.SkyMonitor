@@ -1,0 +1,16 @@
+.run-diagram__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: var(--hvo-muted); font-size: .82rem; }
+.run-diagram__toolbar > div { display: flex; gap: .3rem; }
+.run-diagram__scroll { overflow: auto; margin-top: .75rem; border: 1px solid var(--hvo-border-muted); border-radius: .6rem; background: #080e16; }
+.run-diagram { display: block; min-width: 100%; font-family: var(--hvo-font-family); }
+.run-diagram__edge { fill: none; stroke: var(--hvo-muted-strong); stroke-width: 2; }
+.run-diagram__edge--optional { stroke-dasharray: 6 5; }
+.run-diagram__node { cursor: pointer; }
+.run-diagram__node rect { fill: var(--hvo-surface-elevated); stroke: var(--hvo-border-stronger); stroke-width: 2; }
+.run-diagram__node text { fill: var(--hvo-body-color); font-size: 13px; font-weight: 650; }
+.run-diagram__node .run-diagram__meta { fill: var(--hvo-muted-strong); font-size: 11px; font-weight: 400; }
+.run-diagram__node--completed rect { stroke: var(--hvo-success-strong); }
+.run-diagram__node--running rect { stroke: var(--hvo-info-strong); }
+.run-diagram__node--retryablefailure rect, .run-diagram__node--terminalfailure rect { stroke: var(--hvo-danger-strong); }
+.run-diagram__node--skipped rect { stroke-dasharray: 5 4; }
+.run-diagram__node--selected rect, .run-diagram__node:focus-visible rect { stroke: var(--hvo-accent); stroke-width: 3; }
+.run-diagram__legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .5rem; color: var(--hvo-muted); font-size: .72rem; }

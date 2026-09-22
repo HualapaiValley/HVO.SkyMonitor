@@ -20,10 +20,12 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private bool _initialLoading = true;
     private bool _refreshing;
     private bool _viewerOpen;
+    private Guid? _liveExecutionId;
     private int _refreshRequested;
     private int _disposeStarted;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
+    [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
 
@@ -79,12 +81,24 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 await InvokeAsync(() => NavigationManager.NavigateTo("/Account/AccessDenied")).ConfigureAwait(false);
                 return;
             }
+            Guid? liveExecutionId = null;
+            if (result.IsSuccess && result.Value?.Presentation.DisplayCapture is { } display)
+            {
+                var run = await GraphService.GetLiveExecutionIdAsync(display.CaptureId, timeout.Token).ConfigureAwait(false);
+                if (run.Kind == OperatorUiResultKind.Unauthorized)
+                {
+                    await InvokeAsync(() => NavigationManager.NavigateTo("/Account/AccessDenied")).ConfigureAwait(false);
+                    return;
+                }
+                liveExecutionId = run.IsSuccess ? run.Value?.ExecutionId : null;
+            }
             await InvokeAsync(() =>
             {
                 if (result.IsSuccess && result.Value is not null)
                 {
                     _presentation = result.Value.Presentation;
                     _facts = result.Value.Facts;
+                    _liveExecutionId = liveExecutionId;
                     _factsUnavailableReason = result.Value.FactsUnavailableReason;
                     _selectedStage = ResolveSelection(result.Value.Presentation, _selectedStage);
                     if (_selectedStage is null)

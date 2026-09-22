@@ -3,6 +3,7 @@
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
 @using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
@@ -10,7 +11,7 @@
 <PageTitle>Execution detail</PageTitle>
 
 <div class="execution-page">
-    <PageHeader Eyebrow="Immutable execution identity" Title="@(_view is null ? "Execution" : $"{_view.Execution.ExecutionClass} execution {ProcessingExecutionsPage.Short(_view.Execution.ExecutionId)}")" Lead="Graph and stage navigation over one durable execution: node dependencies and status, timing, attempts, exact inputs and outputs with checksums, and lineage back to the source capture.">
+    <PageHeader Eyebrow="Capture-time pipeline" Title="@(_view is null ? "Pipeline run" : $"{_view.Execution.ExecutionClass} pipeline run")" Lead="The recorded stages, dependencies and independent transient lane for this capture.">
         <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="RefreshAsync">Refresh</button>
     </PageHeader>
 
@@ -41,6 +42,61 @@
     else
     {
         var execution = _view.Execution;
+        <section class="run-workspace" aria-label="Pipeline run">
+            <aside class="run-workspace__rail" aria-label="Recent runs">
+                <h2>Recent runs</h2>
+                @if (_recent is null)
+                {
+                    <p class="muted">Recent runs are unavailable.</p>
+                }
+                else
+                {
+                    @foreach (var run in _recent.Live.Concat(_recent.Replay).OrderByDescending(static run => run.AcceptedUtc))
+                    {
+                        <a class="@(run.ExecutionId == execution.ExecutionId ? "run-rail__item run-rail__item--selected" : "run-rail__item")" href="/operations/pipeline/executions/@run.ExecutionId"><strong>@run.ExecutionClass run</strong><span>@run.Status / @run.AcceptedUtc.ToString("g")</span></a>
+                    }
+                }
+            </aside>
+            <div class="run-workspace__main">
+                <header class="run-overview"><div><p class="eyebrow">Capture-time dependency graph</p><h2>Layered sky processing</h2></div><span class="hvo-chip @ProcessingExecutionsPage.StatusClass(execution.Status)">@execution.Status</span></header>
+                <dl class="run-overview__facts"><div><dt>Trigger</dt><dd>@execution.TriggerKind</dd></div><div><dt>Total duration</dt><dd>@ProcessingExecutionsPage.FormatDuration(execution.Duration)</dd></div><div><dt>Outputs</dt><dd>@_view.Nodes.Sum(static node => node.Outputs.Count)</dd></div><div><dt>Central delivery</dt><dd>Not recorded for this execution</dd></div></dl>
+                <ExecutionRunDiagram Nodes="@_view.Nodes" SelectedNodeId="@_selectedNodeId" NodeSelected="id => _selectedNodeId = id" />
+                <section class="transient-band" aria-label="Independent transient lane"><div><p class="eyebrow">Independent durable lane</p><h3>Transient detection</h3></div><span class="hvo-chip hvo-chip--neutral">@TransientLabel</span>
+                    @if (_transient is not null)
+                    {
+                        <p>Frame attempts: @_transient.FrameAttempts / causal scan: @(_transient.CausalSucceeded is true ? "succeeded" : _transient.CausalSucceeded is false ? "not succeeded" : "not recorded") / candidates: @_transient.CandidateCount (@_transient.CompletedCandidates completed, @_transient.QuarantinedCandidates quarantined).</p>
+                    }
+                </section>
+                <section class="run-inspector" aria-label="Selected stage">
+                    <nav class="run-inspector__tabs" aria-label="Stage details">
+                        <button type="button" aria-pressed="@(_tab == "stage")" @onclick="SelectStageTab">Stage summary</button>
+                        <button type="button" aria-pressed="@(_tab == "artifacts")" @onclick="SelectArtifactsTab">Artifacts</button>
+                        <button type="button" aria-pressed="@(_tab == "attempts")" @onclick="SelectAttemptsTab">Attempts</button>
+                    </nav>
+                    @if (SelectedNode is { } selected)
+                    {
+                        <h3>@selected.NodeId <span class="hvo-chip hvo-chip--neutral">@selected.Status</span></h3>
+                        @if (_tab == "stage")
+                        {
+                            <p>@(selected.Required ? "Required" : "Optional") stage / @ProcessingExecutionsPage.FormatDuration(selected.StartedUtc is { } start && selected.CompletedUtc is { } end ? end - start : null) / @selected.Outputs.Count output(s).</p>
+                            <p>Depends on: @(selected.Dependencies.Count == 0 ? "none" : string.Join(", ", selected.Dependencies.Select(static dependency => dependency.ProducerId)))</p>
+                            @if (selected.Reason is not null) { <p>@selected.Reason</p> }
+                        }
+                        else if (_tab == "artifacts")
+                        {
+                            <ul>@foreach (var output in selected.Outputs) { <li>@output.Role / @output.Variant / @output.AvailabilityState</li> }</ul>
+                            @if (selected.Outputs.Count == 0) { <p>No outputs recorded.</p> }
+                        }
+                        else
+                        {
+                            <ol>@foreach (var attempt in selected.Attempts) { <li>Attempt @attempt.AttemptNumber: @attempt.Status / @attempt.ExecutionRoute / @ProcessingExecutionsPage.FormatDuration(attempt.Duration)</li> }</ol>
+                            @if (selected.Attempts.Count == 0) { <p>No attempts recorded.</p> }
+                        }
+                    }
+                </section>
+            </div>
+        </section>
+        <details class="run-technical"><summary>Technical details and complete execution journal</summary>
         <section class="execution-summary" aria-label="Execution summary">
             <div class="execution-status"><span class="state-chip @ProcessingExecutionsPage.StatusClass(execution.Status)">@execution.Status</span>@if (execution.CancellationRequested && !execution.IsTerminal) { <span class="muted">Cancellation requested</span> }</div>
             <dl class="fact-grid">
@@ -112,5 +168,6 @@
                 }
             </ol>
         </section>
+        </details>
     }
 </div>

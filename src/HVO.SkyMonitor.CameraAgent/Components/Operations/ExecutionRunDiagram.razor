@@ -1,0 +1,113 @@
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Components.Web
+
+@if (Nodes.Count == 0)
+{
+    <p>No execution nodes were recorded.</p>
+}
+else
+{
+    <div class="run-diagram__toolbar">
+        <span>@Nodes.Count recorded stages / @Nodes.Sum(static node => node.Outputs.Count) outputs</span>
+        <div role="group" aria-label="Graph zoom">
+            <button type="button" class="btn btn-outline-light btn-sm" @onclick="() => Zoom = Math.Max(0.5, Zoom - 0.25)" aria-label="Zoom out">−</button>
+            <button type="button" class="btn btn-outline-light btn-sm" @onclick="() => Zoom = 1" aria-label="Fit graph">Fit</button>
+            <button type="button" class="btn btn-outline-light btn-sm" @onclick="() => Zoom = Math.Min(2, Zoom + 0.25)" aria-label="Zoom in">+</button>
+        </div>
+    </div>
+    <div class="run-diagram__scroll">
+        <svg class="run-diagram" style="width: @(Width * Zoom)px; height: @(Height * Zoom)px" viewBox="0 0 @Width @Height" role="group" aria-labelledby="@TitleId @DescriptionId">
+            <title id="@TitleId">Execution dependency graph</title>
+            <desc id="@DescriptionId">@string.Join(" ", Nodes.Select(node => $"{node.NodeId}: {node.Status}; {(node.Dependencies.Count == 0 ? "no dependencies" : "depends on " + string.Join(", ", node.Dependencies.Select(static dependency => dependency.ProducerId)))}."))</desc>
+            @foreach (var edge in _edges)
+            {
+                <path class="@(edge.Required ? "run-diagram__edge" : "run-diagram__edge run-diagram__edge--optional")" d="@edge.Path" />
+            }
+            @foreach (var item in _layout)
+            {
+                var node = item.Node;
+                <g class="@NodeClass(node)" role="button" tabindex="0" aria-pressed="@((SelectedNodeId == node.NodeId).ToString().ToLowerInvariant())" aria-label="@node.NodeId: @node.Status, @(node.Required ? "required" : "optional"), @node.Outputs.Count output@(node.Outputs.Count == 1 ? "" : "s"). Activate for details." @onclick="() => NodeSelected.InvokeAsync(node.NodeId)" @onkeydown="args => HandleKey(args, node.NodeId)">
+                    <rect x="@item.X" y="@item.Y" width="@NodeWidth" height="@NodeHeight" rx="8" />
+                    <text x="@(item.X + 12)" y="@(item.Y + 24)">@node.NodeId</text>
+                    <text class="run-diagram__meta" x="@(item.X + 12)" y="@(item.Y + 44)">@node.Status / @node.Outputs.Count output@(node.Outputs.Count == 1 ? "" : "s")</text>
+                </g>
+            }
+        </svg>
+    </div>
+    <div class="run-diagram__legend"><span>━ Required dependency</span><span>┄ Optional dependency</span><span>Click or press Enter on a stage for details</span></div>
+}
+
+@code {
+    private const int NodeWidth = 190;
+    private const int NodeHeight = 64;
+    private const int ColumnGap = 76;
+    private const int RowGap = 20;
+    private const int Margin = 16;
+    private static int _instances;
+    private readonly int _instance = Interlocked.Increment(ref _instances);
+    private List<PlacedNode> _layout = [];
+    private List<GraphEdge> _edges = [];
+    private double Zoom { get; set; } = 1;
+
+    [Parameter, EditorRequired] public IReadOnlyList<CameraAgentProcessingNodeView> Nodes { get; set; } = [];
+    [Parameter] public string? SelectedNodeId { get; set; }
+    [Parameter] public EventCallback<string> NodeSelected { get; set; }
+
+    private string TitleId => $"execution-graph-title-{_instance}";
+    private string DescriptionId => $"execution-graph-description-{_instance}";
+    private int Width => _layout.Count == 0 ? 0 : _layout.Max(static item => item.X) + NodeWidth + Margin;
+    private int Height => _layout.Count == 0 ? 0 : _layout.Max(static item => item.Y) + NodeHeight + Margin;
+
+    protected override void OnParametersSet()
+    {
+        var byId = Nodes.ToDictionary(static node => node.NodeId, StringComparer.Ordinal);
+        var ranks = new Dictionary<string, int>(StringComparer.Ordinal);
+        int Rank(string id, int depth)
+        {
+            if (ranks.TryGetValue(id, out var known)) return known;
+            if (depth > Nodes.Count || !byId.TryGetValue(id, out var node)) return 0;
+            var rank = 0;
+            foreach (var dependency in node.Dependencies)
+            {
+                if (byId.ContainsKey(dependency.ProducerId)) rank = Math.Max(rank, Rank(dependency.ProducerId, depth + 1) + 1);
+            }
+            return ranks[id] = rank;
+        }
+        foreach (var node in Nodes) Rank(node.NodeId, 0);
+        var columns = new Dictionary<int, int>();
+        _layout = [];
+        foreach (var node in Nodes)
+        {
+            var rank = ranks[node.NodeId];
+            var row = columns.GetValueOrDefault(rank);
+            columns[rank] = row + 1;
+            _layout.Add(new PlacedNode(node, Margin + rank * (NodeWidth + ColumnGap), Margin + row * (NodeHeight + RowGap)));
+        }
+        var positions = _layout.ToDictionary(static item => item.Node.NodeId, StringComparer.Ordinal);
+        _edges = [];
+        foreach (var target in _layout)
+        {
+            foreach (var dependency in target.Node.Dependencies)
+            {
+                if (!positions.TryGetValue(dependency.ProducerId, out var source)) continue;
+                var x1 = source.X + NodeWidth;
+                var y1 = source.Y + NodeHeight / 2;
+                var x2 = target.X;
+                var y2 = target.Y + NodeHeight / 2;
+                var middle = (x1 + x2) / 2;
+                _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", dependency.Required));
+            }
+        }
+    }
+
+    private string NodeClass(CameraAgentProcessingNodeView node) =>
+        $"run-diagram__node run-diagram__node--{node.Status.ToLowerInvariant()}{(SelectedNodeId == node.NodeId ? " run-diagram__node--selected" : "")}";
+
+    private async Task HandleKey(KeyboardEventArgs args, string id)
+    {
+        if (args.Key is "Enter" or " ") await NodeSelected.InvokeAsync(id);
+    }
+
+    private sealed record PlacedNode(CameraAgentProcessingNodeView Node, int X, int Y);
+    private sealed record GraphEdge(string Path, bool Required);
+}

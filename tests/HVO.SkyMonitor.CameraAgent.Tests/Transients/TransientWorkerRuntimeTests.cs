@@ -142,6 +142,20 @@ public sealed class TransientWorkerRuntimeTests
             var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
             await StageVirtualFramesAsync(provider, cameraConfiguration, epoch).ConfigureAwait(false);
 
+            var runtime = provider.GetRequiredService<ITransientRuntimeManagement>();
+            using (var probe = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await probe.OpenAsync().ConfigureAwait(false);
+                using var captureCommand = probe.CreateCommand();
+                captureCommand.CommandText = "SELECT capture_id FROM raw_captures ORDER BY capture_sequence LIMIT 1;";
+                var captureId = Guid.ParseExact((string)(await captureCommand.ExecuteScalarAsync().ConfigureAwait(false))!, "N");
+                var recorded = await runtime.ReadCaptureRunAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(recorded);
+                Assert.AreEqual("pending", recorded.WorkState);
+                Assert.AreEqual(0, recorded.CandidateCount);
+                Assert.IsNull(await runtime.ReadCaptureRunAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false));
+            }
+
             var worker = provider.GetRequiredService<TransientWorkerService>();
             for (var index = 0; index < 5; index++)
             {

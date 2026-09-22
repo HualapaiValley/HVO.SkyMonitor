@@ -57,6 +57,9 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
 
     /// <summary>Archive-to-replay entry point; the submit page resolves and freezes the exact inputs.</summary>
     private string ReplayUrl => $"/operations/pipeline/replays/new?captureId={CaptureId:D}";
+    private Guid? _liveExecutionId;
+
+    [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
 
     protected override Task OnParametersSetAsync() => LoadAsync();
 
@@ -90,6 +93,7 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         _capturePresentation = null;
         _presentationMessage = null;
         _capture = null;
+        _liveExecutionId = null;
         _previousCaptureId = null;
         _nextCaptureId = null;
         _selectedStage = null;
@@ -114,6 +118,15 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
             else if (result.IsSuccess && result.Value is not null)
             {
                 _capture = result.Value.Capture;
+                var liveRun = await GraphService.GetLiveExecutionIdAsync(CaptureId, cancellation.Token).ConfigureAwait(false);
+                if (generation != Volatile.Read(ref _generation)) return;
+                if (liveRun.Kind == OperatorUiResultKind.Unauthorized)
+                {
+                    _capture = null;
+                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                    return;
+                }
+                _liveExecutionId = liveRun.IsSuccess ? liveRun.Value?.ExecutionId : null;
                 _capturePresentation = result.Value.Presentation;
                 _selectedStage = result.Value.Presentation.SelectedStage;
                 InitializeComparison();

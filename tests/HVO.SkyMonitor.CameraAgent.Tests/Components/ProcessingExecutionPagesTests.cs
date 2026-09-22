@@ -1,10 +1,15 @@
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -16,6 +21,12 @@ public sealed class ProcessingExecutionPagesTests
     private static readonly Guid RunningId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid CompletedId = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid CaptureId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+
+    private static void ConfigureTransientRun(BunitContext context)
+    {
+        context.Services.AddSingleton(Options.Create(new CameraAgentHostOptions()));
+        context.Services.AddSingleton(Mock.Of<ITransientRuntimeManagement>());
+    }
 
     [TestMethod]
     public void ExecutionsPage_SeparatesLiveAndReplayAndMarksActiveWork()
@@ -97,6 +108,7 @@ public sealed class ProcessingExecutionPagesTests
     public void DetailPage_ShowsIdentityNodesInputsAttemptsAndOutputsWithoutLeaseOwners()
     {
         using var context = new BunitContext();
+        ConfigureTransientRun(context);
         var detail = new CameraAgentProcessingExecutionDetailView(
             Now,
             CameraAgentProcessingExecutionProjection.Summarize(Execution(CompletedId, ProcessingGraphExecutionClass.Replay, ProcessingGraphExecutionStatus.Completed)),
@@ -115,7 +127,9 @@ public sealed class ProcessingExecutionPagesTests
         var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(static page => page.ExecutionId, CompletedId));
 
         cut.WaitForElement(".node-list");
-        StringAssert.Contains(cut.Find("h1").TextContent, "Replay execution", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find("h1").TextContent, "Replay pipeline run", StringComparison.Ordinal);
+        Assert.HasCount(2, cut.FindAll(".run-diagram__node"));
+        StringAssert.Contains(cut.Find(".transient-band").TextContent, "Disabled", StringComparison.Ordinal);
         Assert.HasCount(2, cut.FindAll(".node"));
         Assert.IsTrue(cut.Markup.Contains(new string('O', 64), StringComparison.Ordinal));
         Assert.IsTrue(cut.Markup.Contains("Succeeded", StringComparison.Ordinal));
@@ -127,9 +141,38 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
+    public void RunDiagram_DrawsFrozenOptionalEdgeAndSelectsNodes()
+    {
+        using var context = new BunitContext();
+        string? selected = null;
+        var nodes = new CameraAgentProcessingNodeView[]
+        {
+            new("source", true, "plan", "Completed", null, 1, Now, Now, [], [], []),
+            new("preview", false, "plan", "Skipped", null, 0, null, null, [], [], [])
+            {
+                Dependencies = [new HVO.SkyMonitor.Processing.ProcessingGraphDependencyDefinition("source", Required: false),
+                    new HVO.SkyMonitor.Processing.ProcessingGraphDependencyDefinition("$raw")]
+            }
+        };
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters
+            .Add(component => component.Nodes, nodes)
+            .Add(component => component.NodeSelected, id => selected = id));
+
+        Assert.HasCount(2, cut.FindAll(".run-diagram__node"));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__edge--optional"));
+        Assert.HasCount(0, cut.FindAll(".run-diagram__edge:not(.run-diagram__edge--optional)"));
+        Assert.IsTrue(cut.FindAll(".run-diagram__node")[1].ClassList.Contains("run-diagram__node--skipped"));
+        cut.FindAll(".run-diagram__node")[1].KeyDown("Enter");
+        Assert.AreEqual("preview", selected);
+        cut.Find("button[aria-label='Zoom in']").Click();
+        StringAssert.Contains(cut.Find(".run-diagram").GetAttribute("style")!, "width:", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void DetailPage_NotFound_ShowsInfoWithoutRetry()
     {
         using var context = new BunitContext();
+        ConfigureTransientRun(context);
         context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService { DetailFailure = OperatorUiResult<CameraAgentProcessingExecutionDetailView>.Failure(OperatorUiResultKind.NotFound, "The execution was not found.") });
 
         var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(static page => page.ExecutionId, Guid.NewGuid()));
@@ -146,6 +189,7 @@ public sealed class ProcessingExecutionPagesTests
     public void Pages_WhenUnauthorized_NavigateToAccessDenied()
     {
         using var context = new BunitContext();
+        ConfigureTransientRun(context);
         var unauthorized = new GraphUiService
         {
             Failure = OperatorUiResult<CameraAgentProcessingExecutionsView>.Failure(OperatorUiResultKind.Unauthorized, "denied"),
@@ -192,6 +236,9 @@ public sealed class ProcessingExecutionPagesTests
 
         public ValueTask<OperatorUiResult<CameraAgentProcessingExecutionDetailView>> GetExecutionDetailAsync(Guid executionId, CancellationToken cancellationToken)
             => ValueTask.FromResult(DetailFailure ?? OperatorUiResult<CameraAgentProcessingExecutionDetailView>.Success(Detail!));
+
+        public ValueTask<OperatorUiResult<CameraAgentLiveRunLink>> GetLiveExecutionIdAsync(Guid captureId, CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<CameraAgentLiveRunLink>.Failure(OperatorUiResultKind.NotFound, "No live run."));
 
         public IReadOnlyList<string> StepAliases { get; set; } = ["preview", "telemetry", "calibration"];
         public ProcessingGraphRegistryState? Registry { get; set; }
