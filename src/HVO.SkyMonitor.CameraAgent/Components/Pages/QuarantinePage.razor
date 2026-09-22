@@ -38,7 +38,7 @@
     }
     else if (_errorMessage is not null)
     {
-        <section class="page-state page-state--error" role="alert"><div><strong>Quarantine unavailable</strong><p>@_errorMessage</p></div><button type="button" class="btn btn-outline-light" @onclick="ReloadAsync">Try again</button></section>
+        <section class="page-state page-state--error" role="alert"><div><strong>Quarantine unavailable</strong><p>@_errorMessage</p></div><button type="button" class="btn btn-outline-light btn-sm" @onclick="ReloadAsync">Try again</button></section>
     }
     else if (_page is not null)
     {

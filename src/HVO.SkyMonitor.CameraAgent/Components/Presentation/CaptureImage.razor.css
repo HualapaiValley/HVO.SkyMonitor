@@ -4,7 +4,7 @@
 .capture-image__state strong { color: var(--hvo-body-color); font-size: 1.05rem; }
 .capture-image__state i { font-size: 2rem; }
 .capture-image__pulse { width: 3rem; height: 3rem; border: .25rem solid var(--hvo-border-stronger); border-top-color: var(--hvo-info-strong); border-radius: 999px; animation: capture-image-spin 1.1s linear infinite; }
-.capture-image__actions { position: absolute; right: .8rem; bottom: .8rem; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .55rem; padding: .35rem; border-radius: .75rem; background: rgba(2, 6, 10, .76); backdrop-filter: blur(8px); }
+.capture-image__actions { position: absolute; right: .8rem; bottom: .8rem; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; }
 @keyframes capture-image-spin { to { transform: rotate(360deg); } }
 @media (max-width: 640px) { .capture-image { min-height: 16rem; } .capture-image__actions { position: static; width: 100%; align-self: end; justify-content: stretch; border-radius: 0; } .capture-image__actions ::deep :is(a, button) { flex: 1 1 9rem; } }
 @media (max-height: 500px) and (orientation: landscape) { .capture-image { min-height: 15rem; max-height: calc(100dvh - 6rem); } .capture-image img { max-height: calc(100dvh - 6rem); } }

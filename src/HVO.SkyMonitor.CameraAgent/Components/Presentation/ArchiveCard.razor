@@ -18,21 +18,21 @@
     <div class="capture-card__body">
         <header>
             <div><p class="eyebrow">Sequence @Capture.CaptureSequence</p><h2><a href="@DetailUrl"><time datetime="@Capture.ExposureStartedUtc.ToString("O")">@CaptureTime</time></a></h2></div>
-            <span class="evidence @EvidenceClass">@EvidenceLabel</span>
+            <span class="hvo-chip evidence @EvidenceClass">@EvidenceLabel</span>
         </header>
         <p class="capture-card__summary" aria-live="polite" aria-atomic="true"><strong>@SummaryTitle</strong><span aria-hidden="true"> / </span>@Age</p>
         <div class="capture-card__actions">
             @if (SelectedSlot?.PreviewUrl is not null && !PreviewFailed)
             {
-                <button id="@ViewerTriggerId" type="button" class="btn btn-outline-light" @onclick="ViewLargeAsync"><i class="bi bi-arrows-fullscreen" aria-hidden="true"></i> View large image</button>
+                <button id="@ViewerTriggerId" type="button" class="btn btn-outline-light btn-sm" @onclick="ViewLargeAsync"><i class="bi bi-arrows-fullscreen" aria-hidden="true"></i> View large image</button>
             }
             else if (PreviewFailed)
             {
-                <button type="button" class="btn btn-outline-light" @onclick="RetryPreview">Try preview again</button>
+                <button type="button" class="btn btn-outline-light btn-sm" @onclick="RetryPreview">Try preview again</button>
             }
             else
             {
-                <button type="button" class="btn btn-outline-light" disabled>View unavailable</button>
+                <button type="button" class="btn btn-outline-light btn-sm" disabled>View unavailable</button>
             }
         </div>
     </div>

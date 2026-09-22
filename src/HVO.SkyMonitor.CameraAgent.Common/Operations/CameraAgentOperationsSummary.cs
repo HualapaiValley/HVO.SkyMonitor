@@ -24,6 +24,21 @@ public sealed record OperationsSection<T>(
     string Freshness,
     T Value);
 
+/// <summary>
+/// The freshness vocabulary of an operations section. <c>fresh</c>/<c>stale</c> are derived from
+/// the observation time; <c>unknown</c> means an observation was expected and none exists;
+/// <c>disabled</c> means the subsystem is switched off by configuration; <c>static</c> means the
+/// value is a startup fact that is never re-observed.
+/// </summary>
+public static class OperationsFreshness
+{
+    public const string Fresh = "fresh";
+    public const string Stale = "stale";
+    public const string Unknown = "unknown";
+    public const string Disabled = "disabled";
+    public const string Static = "static";
+}
+
 public sealed record OperationsQueueState(
     string Availability,
     long PendingCount,
@@ -224,6 +239,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
         var telemetry = captureTelemetry.GetSnapshot();
         var latest = telemetry.Samples.Count == 0 ? null : telemetry.Samples[^1];
         var centralDisabled = hostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled;
+        var transientDisabled = hostOptions.Value.TransientDetection.Mode == TransientOperatingMode.Off;
         var config = configurationAccessor.IsConfigured
             ? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false)
             : null;
@@ -251,7 +267,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
             Section("durable-processing-refresh", processing.EvaluatedUtc, now, new OperationsQueueState(
                 processing.Availability.ToString(), processing.PendingCount, 0, 0, processing.RetryCount,
                 0, processing.TerminalCount, processing.OldestPendingUtc)),
-            Section("artifact-outbox-state", outbox.EvaluatedUtc, now, new OperationsQueueState(
+            Section("artifact-outbox-state", centralDisabled, outbox.EvaluatedUtc, now, new OperationsQueueState(
                 centralDisabled ? "Disabled" : outbox.Availability.ToString(),
                 centralDisabled ? 0 : outbox.PendingCount,
                 centralDisabled ? 0 : outbox.PendingBytes,
@@ -278,7 +294,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 runtime.Timings.Select(static timing => new OperationsTimingState(
                     timing.Segment.ToString(), timing.SampleCount, timing.MedianMilliseconds,
                     timing.P95Milliseconds, timing.MaximumMilliseconds)).ToArray())),
-            Section("fleet-heartbeat-state", heartbeatSnapshot.Outbox?.EvaluatedUtc, now, new OperationsHeartbeatState(
+            Section("fleet-heartbeat-state", centralDisabled, heartbeatSnapshot.Outbox?.EvaluatedUtc, now, new OperationsHeartbeatState(
                 centralDisabled ? "Disabled" : heartbeatSnapshot.Availability.ToString(),
                 centralDisabled ? null : heartbeatSnapshot.LastAcknowledgedUtc,
                 centralDisabled ? 0 : heartbeatSnapshot.Outbox?.PendingCount ?? 0,
@@ -289,7 +305,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 centralDisabled ? 0 : heartbeatSnapshot.Outbox?.OverflowCount ?? 0,
                 centralDisabled ? 0 : heartbeatSnapshot.Outbox?.BlockedCount ?? 0,
                 centralDisabled ? null : heartbeatSnapshot.Outbox?.OldestPendingUtc)),
-            Section("environmental-delivery-state", environmental.Outbox?.EvaluatedUtc, now,
+            Section("environmental-delivery-state", centralDisabled, environmental.Outbox?.EvaluatedUtc, now,
                 new OperationsEnvironmentalDeliveryState(
                     centralDisabled ? "Disabled" : environmental.Availability.ToString(),
                     centralDisabled ? null : environmental.LastAcknowledgedUtc,
@@ -303,7 +319,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                     centralDisabled ? 0 : environmental.Outbox?.TerminalCount ?? 0,
                     centralDisabled ? 0 : environmental.Outbox?.OverflowCount ?? 0,
                     centralDisabled ? null : environmental.Outbox?.OldestPendingUtc)),
-            Section("execution-evidence-export-state", evidenceExport.EvaluatedUtc, now,
+            Section("execution-evidence-export-state", centralDisabled, evidenceExport.EvaluatedUtc, now,
                 new OperationsExecutionEvidenceExportState(
                     centralDisabled ? "Disabled" : evidenceExport.Availability.ToString(),
                     centralDisabled ? ExecutionEvidenceExportReasonCodes.Disabled : evidenceExport.ReasonCode,
@@ -328,7 +344,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                     centralDisabled ? null : evidenceExport.NegotiatedSchemaVersion,
                     centralDisabled ? null : evidenceExport.LastAcknowledgementUtc,
                     centralDisabled ? null : evidenceExport.Backlog.OldestPendingUtc)),
-            Section("transient-worker-state", transient.UpdatedUtc, now, new OperationsTransientWorkerState(
+            Section("transient-worker-state", transientDisabled, transient.UpdatedUtc, now, new OperationsTransientWorkerState(
                 transient.Availability.ToString(), transient.PendingFrames, transient.PendingCandidates,
                 TransientCandidateExtractionProfiles.EdgeV1.MaximumCandidates)),
             Section("capture-telemetry-window", latest?.StartedUtc, now, new OperationsCaptureTelemetryState(
@@ -338,7 +354,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 telemetry.Aggregate.AverageLoopMilliseconds, telemetry.Aggregate.CapturesPerMinute,
                 telemetry.Aggregate.DutyCycle, telemetry.Aggregate.FramesStored,
                 telemetry.Aggregate.ImmediateUploadCount)),
-            Section("validated-configuration", null, now, new OperationsConfigurationState(
+            Section("validated-configuration", OperationsFreshness.Static, null, now, new OperationsConfigurationState(
                 config is not null, config is null ? "unavailable" : "validated", config?.AgentId,
                 config?.ModuleType, hostOptions.Value.CentralIntegration.Mode.ToString(),
                 hostOptions.Value.TransientDetection.Mode.ToString())));
@@ -351,12 +367,39 @@ public sealed class CameraAgentOperationsSummaryProvider(
         T value)
         => new(source, observedUtc, Freshness(observedUtc, now), value);
 
+    /// <summary>
+    /// A section whose subsystem is switched off by configuration. Its facts are not observed and
+    /// never will be while it is off, so neither "stale" nor "unknown" describes it; the operator
+    /// reads "disabled" and the overall state does not degrade on its account.
+    /// </summary>
+    private static OperationsSection<T> Section<T>(
+        string source,
+        bool disabled,
+        DateTimeOffset? observedUtc,
+        DateTimeOffset now,
+        T value)
+        => disabled
+            ? new(source, null, OperationsFreshness.Disabled, value)
+            : new(source, observedUtc, Freshness(observedUtc, now), value);
+
+    /// <summary>A section with an explicit freshness that is not derived from an observation time.</summary>
+    private static OperationsSection<T> Section<T>(
+        string source,
+        string freshness,
+        DateTimeOffset? observedUtc,
+        DateTimeOffset now,
+        T value)
+    {
+        _ = now;
+        return new(source, observedUtc, freshness, value);
+    }
+
     private static string Freshness(DateTimeOffset? observedUtc, DateTimeOffset now)
         => observedUtc is null
-            ? "unknown"
+            ? OperationsFreshness.Unknown
             : now - observedUtc.Value > StaleAfter
-                ? "stale"
-                : "fresh";
+                ? OperationsFreshness.Stale
+                : OperationsFreshness.Fresh;
 
     internal static DateTimeOffset? Latest(IEnumerable<DateTimeOffset?> timestamps)
         => timestamps.Max();

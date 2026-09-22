@@ -27,7 +27,7 @@
     else if (_errorMessage is not null)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Observing calendar unavailable" Message="@_errorMessage">
-            <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button>
+            <button type="button" class="btn btn-outline-light btn-sm" @onclick="LoadAsync">Try again</button>
         </PageStateNotice>
     }
     else if (_calendar is not null)

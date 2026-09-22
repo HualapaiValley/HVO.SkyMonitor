@@ -11,12 +11,11 @@
 .capture-card__body h2 { margin: 0; font-size: .98rem; }
 .capture-card__body h2 a { color: var(--hvo-body-color); text-decoration: none; }
 .eyebrow { margin: 0 0 .3rem; color: var(--hvo-info-fg); font-size: .68rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
-.evidence { display: inline-flex; align-items: center; min-height: 1.7rem; padding: .2rem .6rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; color: var(--hvo-muted-strong); font-size: .68rem; font-weight: 750; white-space: nowrap; }
-.evidence--simulated { color: var(--hvo-info-fg); background: var(--hvo-info-bg); }
-.evidence--fixture { color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
+.evidence--simulated { border-color: rgba(14, 165, 233, .4); color: var(--hvo-info-fg); background: var(--hvo-info-bg); }
+.evidence--fixture { border-color: rgba(250, 204, 21, .4); color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
 .capture-card__summary { margin: .65rem 0; color: var(--hvo-muted); font-size: .78rem; }
 .capture-card__summary strong { color: var(--hvo-body-color); }
 .capture-card__actions { margin-top: auto; }
-.capture-card__actions .btn { width: 100%; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: .4rem; }
+.capture-card__actions .btn { width: 100%; }
 :is(a, button):focus-visible { outline: 3px solid var(--hvo-info-strong); outline-offset: 3px; }
 @media (max-height: 500px) and (orientation: landscape) { .capture-card__image { max-height: 58vh; } }

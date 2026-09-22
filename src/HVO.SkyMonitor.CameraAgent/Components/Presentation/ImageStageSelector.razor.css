@@ -1,7 +1,2 @@
-.stage-selector { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .8rem; }
-.stage-selector__button { min-height: 44px; display: inline-grid; place-items: center; gap: .05rem; padding: .4rem .85rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; color: var(--hvo-muted-strong); background: var(--hvo-nav-badge-bg); }
-.stage-selector__button small { max-width: 14rem; color: inherit; font-size: .62rem; line-height: 1.15; }
-.stage-selector__button--selected { border-color: var(--hvo-info-strong); color: var(--hvo-body-color); background: rgba(37, 99, 235, .2); box-shadow: inset 0 0 0 1px var(--hvo-info-strong); }
-.stage-selector__button:disabled { opacity: .5; }
-.stage-selector__button:focus-visible { outline: 3px solid var(--hvo-info-strong); outline-offset: 3px; }
-@media (max-width: 520px) { .stage-selector__button { flex: 1 1 8rem; } }
+.stage-selector { margin-top: .8rem; }
+@media (max-width: 520px) { .stage-selector { display: flex; width: 100%; } .stage-selector__button { flex: 1 1 auto; } }

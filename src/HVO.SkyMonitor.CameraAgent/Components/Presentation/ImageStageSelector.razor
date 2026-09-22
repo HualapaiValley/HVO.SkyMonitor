@@ -1,22 +1,18 @@
 @namespace HVO.SkyMonitor.CameraAgent.Components.Presentation
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
 
-<div class="stage-selector" role="group" aria-label="Image stage">
+<div class="stage-selector hvo-segmented" role="group" aria-label="Image stage">
     @foreach (var slot in Stages)
     {
         var available = slot.Availability == CameraAgentPresentationSlotAvailability.Available;
         var selected = available && slot.Stage == SelectedStage;
         <button type="button"
-                class="@(selected ? "stage-selector__button stage-selector__button--selected" : "stage-selector__button")"
+                class="@(selected ? "hvo-segmented__option hvo-segmented__option--selected stage-selector__button stage-selector__button--selected" : "hvo-segmented__option stage-selector__button")"
                 disabled="@(!available)"
                 aria-pressed="@selected.ToString().ToLowerInvariant()"
                 title="@ReasonText(slot)"
                 @onclick="() => SelectAsync(slot)">
             <span>@slot.Label</span>
-                @if (!available)
-                {
-                    <small>@PresentationReason(slot)</small>
-            }
         </button>
     }
 </div>

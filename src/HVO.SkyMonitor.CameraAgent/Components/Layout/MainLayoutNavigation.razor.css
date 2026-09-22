@@ -93,21 +93,41 @@
     gap: 0.2rem;
 }
 
+/* Header links are plain text with one active indicator. The global theme styles
+   .nav-badge as an outlined pill for other surfaces; every property that rule sets
+   is reset here so the header does not inherit a second treatment. */
 .shell-primary ::deep .nav-badge {
     position: relative;
     display: grid;
     place-items: center;
-    padding-inline: 0.9rem;
+    padding: 0 0.9rem;
+    border: 0;
+    border-radius: 0;
     color: var(--hvo-muted-strong);
-    font-size: 0.8rem;
-    font-weight: 650;
+    background: transparent;
+    box-shadow: none;
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
     text-decoration: none;
+    text-transform: none;
+    transition: color 0.15s ease;
 }
 
 .shell-primary ::deep .nav-badge:hover,
 .shell-primary ::deep .nav-badge:focus-visible,
-.shell-primary ::deep .nav-badge.active {
+.shell-primary ::deep .nav-badge.active,
+.shell-primary ::deep .nav-badge[aria-current="page"] {
     color: var(--hvo-body-color);
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    transform: none;
+}
+
+.shell-primary ::deep .nav-badge:focus-visible {
+    outline: 2px solid var(--hvo-accent);
+    outline-offset: -2px;
 }
 
 .shell-primary ::deep .nav-badge.active::after {
@@ -326,7 +346,8 @@
         border-radius: 0.4rem;
     }
 
-    .shell-primary ::deep .nav-badge.active {
+    .shell-primary ::deep .nav-badge.active,
+    .shell-primary ::deep .nav-badge[aria-current="page"] {
         background: var(--hvo-accent-soft);
     }
 
