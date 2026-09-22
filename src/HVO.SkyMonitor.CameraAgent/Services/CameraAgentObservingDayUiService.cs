@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -17,8 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 /// </summary>
 internal sealed record CameraAgentObservingDayView(
     CameraAgentGalleryCalendarDay Day,
-    IReadOnlyList<CameraAgentGalleryCapture> Captures,
-    bool CapturesTruncated,
+    IReadOnlyList<DateTimeOffset> ExposureInstantsUtc,
     TimeSpan TotalIntegration,
     CameraAgentObservingDayScheduleView? Schedule,
     IReadOnlyList<CameraAgentTransientOperatorCandidate> Candidates,
@@ -29,10 +29,12 @@ internal sealed record CameraAgentObservingDayView(
     Guid? NextDayCaptureId);
 
 /// <summary>
-/// The active schedule's open windows intersected with the observing night, and the fraction of
-/// that expected time covered by retained captures. Windows are the currently active revision's;
-/// <c>ActiveRevisionCaveat</c> is true when the night predates that revision's activation, in which
-/// case the windows are what the schedule would open today, not what admitted captures then.
+/// The active schedule <em>definition's</em> open windows intersected with the observing night, and
+/// the fraction of that expected time covered by retained captures. This is the definition only:
+/// weekly windows, date exceptions and blackouts. Operator overrides (forced open/closed) and manual
+/// pause live in the runtime store and are not reflected, so the windows say what the schedule
+/// opens, not what admitted every capture. <c>ActiveRevisionCaveat</c> is true when the active
+/// revision was created after the night ended, in which case a different revision governed then.
 /// </summary>
 internal sealed record CameraAgentObservingDayScheduleView(
     IReadOnlyList<(DateTimeOffset StartUtc, DateTimeOffset EndUtc)> OpenWindows,
@@ -84,15 +86,14 @@ internal sealed class CameraAgentObservingDayUiService(
                 .Where(run => run.ScheduledForUtc >= day.StartUtc && run.ScheduledForUtc < day.EndUtc)
                 .OrderBy(static run => run.ScheduledForUtc)
                 .ToArray();
-            var scheduleView = BuildSchedule(day, detail.Captures);
+            var scheduleView = BuildSchedule(day, detail.ExposureInstantsUtc);
             var neighbours = await archive.GetCalendarAsync(
                 new CameraAgentGalleryCalendarQuery(observingDate.AddDays(-1), observingDate.AddDays(1)), cancellationToken).ConfigureAwait(false);
             var previous = neighbours.Days.FirstOrDefault(item => item.Day.Date == observingDate.AddDays(-1));
             var next = neighbours.Days.FirstOrDefault(item => item.Day.Date == observingDate.AddDays(1));
             return OperatorUiResult<CameraAgentObservingDayView>.Success(new CameraAgentObservingDayView(
                 detail.Day,
-                detail.Captures,
-                detail.CapturesTruncated,
+                detail.ExposureInstantsUtc,
                 detail.TotalIntegration,
                 scheduleView,
                 candidates.Items,
@@ -113,7 +114,7 @@ internal sealed class CameraAgentObservingDayUiService(
         }
     }
 
-    private CameraAgentObservingDayScheduleView? BuildSchedule(ObservingDay day, IReadOnlyList<CameraAgentGalleryCapture> captures)
+    private CameraAgentObservingDayScheduleView? BuildSchedule(ObservingDay day, IReadOnlyList<DateTimeOffset> exposures)
     {
         CaptureSchedulePreview? preview;
         try
@@ -132,50 +133,61 @@ internal sealed class CameraAgentObservingDayUiService(
         }
         var windows = ClipOpenWindows(preview, day.StartUtc, day.EndUtc);
         var expected = windows.Aggregate(TimeSpan.Zero, static (sum, window) => sum + (window.EndUtc - window.StartUtc));
-        var covered = CoveredDuration(windows, captures);
+        var covered = CoveredDuration(windows, exposures);
         var revisionCreated = schedule.Snapshot?.Revision.CreatedUtc;
         return new CameraAgentObservingDayScheduleView(windows, expected, covered, revisionCreated is { } created && created > day.EndUtc);
     }
 
     /// <summary>
-    /// Open intervals minus every closed interval (blackouts, forced-closed overrides, closed date
-    /// exceptions), clipped to the night. The expander emits both dispositions as flat intervals, so
-    /// subtraction is done here.
+    /// The definition's open time inside the night. The expander emits, per local day, a whole-day
+    /// <c>DateExceptionClosed</c> interval alongside that exception's own <c>DateExceptionWindow</c>
+    /// intervals, and the evaluator admits inside those windows; so a closed date-exception day
+    /// removes only the weekly/legacy windows of that day, while a <c>Blackout</c> removes
+    /// everything. Overrides are not in the expansion (see the view's remarks).
     /// </summary>
     internal static IReadOnlyList<(DateTimeOffset StartUtc, DateTimeOffset EndUtc)> ClipOpenWindows(
         CaptureSchedulePreview preview, DateTimeOffset nightStart, DateTimeOffset nightEnd)
     {
         var open = preview.Intervals
             .Where(static interval => interval.Disposition == ExpandedScheduleDisposition.Open)
-            .Select(interval => (Start: Max(interval.StartUtc, nightStart), End: Min(interval.EndUtc, nightEnd)))
+            .Select(interval => (interval.Source, interval.LocalDate, Start: Max(interval.StartUtc, nightStart), End: Min(interval.EndUtc, nightEnd)))
             .Where(static window => window.End > window.Start)
             .OrderBy(static window => window.Start)
             .ToList();
-        var closed = preview.Intervals
-            .Where(static interval => interval.Disposition == ExpandedScheduleDisposition.Closed)
-            .Select(static interval => (Start: interval.StartUtc, End: interval.EndUtc))
+        var blackouts = preview.Intervals
+            .Where(static interval => interval.Disposition == ExpandedScheduleDisposition.Closed && interval.Source == CaptureScheduleIntervalSource.Blackout)
+            .Select(static interval => (interval.StartUtc, interval.EndUtc))
+            .ToList();
+        var exceptionDays = preview.Intervals
+            .Where(static interval => interval.Source == CaptureScheduleIntervalSource.DateExceptionClosed)
+            .Select(static interval => (interval.LocalDate, interval.StartUtc, interval.EndUtc))
             .ToList();
         var result = new List<(DateTimeOffset StartUtc, DateTimeOffset EndUtc)>();
         foreach (var window in open)
         {
-            var pieces = new List<(DateTimeOffset, DateTimeOffset)> { window };
-            foreach (var gap in closed)
+            var pieces = new List<(DateTimeOffset, DateTimeOffset)> { (window.Start, window.End) };
+            IEnumerable<(DateTimeOffset, DateTimeOffset)> gaps = blackouts;
+            if (window.Source != CaptureScheduleIntervalSource.DateExceptionWindow)
+            {
+                gaps = gaps.Concat(exceptionDays.Select(static day => (day.StartUtc, day.EndUtc)));
+            }
+            foreach (var (gapStart, gapEnd) in gaps)
             {
                 var next = new List<(DateTimeOffset, DateTimeOffset)>();
                 foreach (var (start, end) in pieces)
                 {
-                    if (gap.End <= start || gap.Start >= end)
+                    if (gapEnd <= start || gapStart >= end)
                     {
                         next.Add((start, end));
                         continue;
                     }
-                    if (gap.Start > start)
+                    if (gapStart > start)
                     {
-                        next.Add((start, gap.Start));
+                        next.Add((start, gapStart));
                     }
-                    if (gap.End < end)
+                    if (gapEnd < end)
                     {
-                        next.Add((gap.End, end));
+                        next.Add((gapEnd, end));
                     }
                 }
                 pieces = next;
@@ -201,17 +213,17 @@ internal sealed class CameraAgentObservingDayUiService(
     /// <summary>Union of one-minute bins around each capture's exposure start, clipped to the windows.</summary>
     internal static TimeSpan CoveredDuration(
         IReadOnlyList<(DateTimeOffset StartUtc, DateTimeOffset EndUtc)> windows,
-        IReadOnlyList<CameraAgentGalleryCapture> captures)
+        IReadOnlyList<DateTimeOffset> exposures)
     {
-        if (windows.Count == 0 || captures.Count == 0)
+        if (windows.Count == 0 || exposures.Count == 0)
         {
             return TimeSpan.Zero;
         }
         var covered = TimeSpan.Zero;
         DateTimeOffset? lastEnd = null;
-        foreach (var capture in captures.OrderBy(static capture => capture.ExposureStartedUtc))
+        foreach (var exposure in exposures.Order())
         {
-            var binStart = capture.ExposureStartedUtc;
+            var binStart = exposure;
             var binEnd = binStart + CoverageBin;
             if (lastEnd is { } previous && binStart < previous)
             {

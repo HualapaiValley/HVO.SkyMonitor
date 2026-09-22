@@ -226,18 +226,19 @@ public sealed record CameraAgentGalleryCalendarDay(
     long CandidateCount,
     DateTimeOffset? FirstExposureUtc,
     DateTimeOffset? LastExposureUtc,
-    Guid? RepresentativeCaptureId = null);
+    Guid? RepresentativeCaptureId = null,
+    DateTimeOffset? RepresentativeExposureUtc = null);
 
 /// <summary>
-/// The durable facts of one observing night for the day page: the calendar day, the night's
-/// captures in exposure order (bounded), and the total effective integration of those captures.
-/// Products, schedule coverage and automation runs are composed by the UI service from their own
-/// stores so this read model stays a gallery projection.
+/// The durable facts of one observing night for the day page: the calendar day, every committed
+/// capture's exposure instant in exposure order, and the total effective integration of those
+/// captures. Exposure instants are read as a bare column so a full night is one index walk, not a
+/// hydrated page sequence. Products, schedule coverage and automation runs are composed by the UI
+/// service from their own stores so this read model stays a gallery projection.
 /// </summary>
 public sealed record CameraAgentObservingDayDetail(
     CameraAgentGalleryCalendarDay Day,
-    IReadOnlyList<CameraAgentGalleryCapture> Captures,
-    bool CapturesTruncated,
+    IReadOnlyList<DateTimeOffset> ExposureInstantsUtc,
     TimeSpan TotalIntegration);
 
 // Neighbours follow the gallery order under the same filters: the newer

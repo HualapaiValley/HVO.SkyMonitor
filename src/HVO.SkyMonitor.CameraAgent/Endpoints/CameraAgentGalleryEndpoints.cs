@@ -198,6 +198,7 @@ internal static class CameraAgentGalleryEndpoints
     /// </summary>
     private static async Task<IResult> RedirectToThumbnailAsync(
         Guid captureId,
+        HttpContext context,
         ICameraAgentGallery gallery,
         ICameraAgentCapturePresentationProjector projector,
         CancellationToken cancellationToken)
@@ -212,7 +213,14 @@ internal static class CameraAgentGalleryEndpoints
             ? presentation.Stages.FirstOrDefault(item => item.Stage == selected && item.PreviewUrl is not null)
             : null;
         slot ??= presentation.Stages.FirstOrDefault(static item => item.PreviewUrl is not null);
-        return slot?.PreviewUrl is { } url ? Results.Redirect(url.OriginalString) : Results.NotFound();
+        if (slot?.PreviewUrl is not { } url)
+        {
+            return Results.NotFound();
+        }
+        // The chosen artifact is stable for a capture once published; the redirect may be held
+        // privately for a while so a calendar of thumbnails does not re-project every cell.
+        context.Response.Headers.CacheControl = "private, max-age=300";
+        return Results.Redirect(url.OriginalString);
     }
 
     private static async Task WritePresentationAsync(

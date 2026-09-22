@@ -1074,6 +1074,7 @@ public sealed class SqliteCameraAgentGalleryTests
 
         Assert.AreEqual(3, calendar.Days[0].CaptureCount);
         Assert.AreEqual(oldest.Descriptor.Capture.CaptureId, calendar.Days[0].RepresentativeCaptureId);
+        Assert.AreEqual(oldest.Descriptor.Timing.ExposureStartedUtc, calendar.Days[0].RepresentativeExposureUtc);
         Assert.AreEqual(0, calendar.Days[1].CaptureCount);
         Assert.IsNull(calendar.Days[1].RepresentativeCaptureId);
     }
@@ -1093,15 +1094,14 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.IsNotNull(day);
         Assert.AreEqual(2, day.Day.CaptureCount);
         CollectionAssert.AreEqual(
-            new[] { earlier.Descriptor.Capture.CaptureId, later.Descriptor.Capture.CaptureId },
-            day.Captures.Select(static capture => capture.CaptureId).ToArray());
-        Assert.IsFalse(day.CapturesTruncated);
+            new[] { earlier.Descriptor.Timing.ExposureStartedUtc, later.Descriptor.Timing.ExposureStartedUtc },
+            day.ExposureInstantsUtc.ToArray());
         // The fixture manifest records a one-second effective exposure per capture.
         Assert.AreEqual(TimeSpan.FromSeconds(2), day.TotalIntegration);
         var empty = await archive.GetObservingDayAsync(new DateOnly(2026, 9, 5), CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(empty);
         Assert.AreEqual(0, empty.Day.CaptureCount);
-        Assert.IsEmpty(empty.Captures);
+        Assert.IsEmpty(empty.ExposureInstantsUtc);
         Assert.AreEqual(TimeSpan.Zero, empty.TotalIntegration);
     }
 

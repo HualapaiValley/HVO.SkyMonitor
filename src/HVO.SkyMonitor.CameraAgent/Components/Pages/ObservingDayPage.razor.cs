@@ -54,7 +54,15 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 
     private string CandidatesUrl => _view is { } view ? ArchiveCalendarPage.CandidatesUrl(view.Day.Day) : "/transients";
 
-    private string DayUrl(int direction) => ArchiveCalendarPage.DayUrl(Date.AddDays(direction));
+    // The calendar's own clamp; a step never leaves it.
+    internal static readonly DateOnly MinimumDate = new(1, 2, 1);
+    internal static readonly DateOnly MaximumDate = new(9999, 11, 30);
+
+    private string DayUrl(int direction)
+    {
+        var target = Date.AddDays(direction);
+        return ArchiveCalendarPage.DayUrl(target < MinimumDate ? MinimumDate : target > MaximumDate ? MaximumDate : target);
+    }
 
     private string LocalTime(DateTimeOffset utc)
     {
@@ -68,11 +76,20 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         }
     }
 
+    // A night is complete when captures cover at least this fraction of the scheduled window; the
+    // page states the threshold beside the label so the word carries no hidden meaning.
+    internal const double CompleteCoverageFraction = 0.9;
+
+    private static double? CoverageFraction(CameraAgentObservingDayView view) => view.Schedule is { ExpectedDuration.Ticks: > 0 } schedule
+        ? Math.Min(1, schedule.CoveredDuration.TotalSeconds / schedule.ExpectedDuration.TotalSeconds)
+        : null;
+
     private static string StateLabel(CameraAgentObservingDayView view) => view.Day.CaptureCount switch
     {
         0 => "No archived session",
-        _ when view.Schedule is { ExpectedDuration.Ticks: > 0 } schedule && schedule.CoveredDuration >= schedule.ExpectedDuration * 0.9 => "Complete",
-        _ when view.Schedule is { ExpectedDuration.Ticks: > 0 } => "Partial",
+        _ when CoverageFraction(view) is { } fraction && fraction >= CompleteCoverageFraction => "Complete",
+        _ when CoverageFraction(view) is > 0 => "Partial",
+        _ when CoverageFraction(view) is 0 => "Outside window",
         _ => "Archived session"
     };
 
@@ -80,15 +97,19 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     {
         "Complete" => "hvo-chip--success",
         "Partial" => "hvo-chip--warning",
-        "Archived session" => "hvo-chip--info",
+        "Outside window" or "Archived session" => "hvo-chip--info",
         _ => "hvo-chip--neutral"
     };
 
     private string StateDetail(CameraAgentObservingDayView view) => view.Day.CaptureCount == 0
         ? "Nothing was retained inside this observing day."
-        : view.Day is { FirstExposureUtc: { } first, LastExposureUtc: { } last }
-            ? $"Captures from {LocalTime(first)} to {LocalTime(last)}"
-            : "Captures retained.";
+        : StateLabel(view) switch
+        {
+            "Outside window" => $"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}, none inside the scheduled window.",
+            "Complete" => FormattableString.Invariant($"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}; complete means at least {CompleteCoverageFraction:P0} of the scheduled window."),
+            "Partial" => FormattableString.Invariant($"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}; under {CompleteCoverageFraction:P0} of the scheduled window."),
+            _ => $"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}"
+        };
 
     private string ScheduledWindow(CameraAgentObservingDayView view) => view.Schedule switch
     {
@@ -105,9 +126,9 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     };
 
     private static string RepresentativeCaption(CameraAgentObservingDayView view)
-        => view.Day.LastExposureUtc is { } last
-            ? FormattableString.Invariant($"Newest displayable capture, {last:yyyy-MM-dd HH:mm:ss} UTC")
-            : "Newest displayable capture";
+        => view.Day.RepresentativeExposureUtc is { } exposure
+            ? FormattableString.Invariant($"Newest capture with a published preview, {exposure:yyyy-MM-dd HH:mm:ss} UTC")
+            : "Newest capture with a published preview";
 
     internal static string FormatDuration(TimeSpan value) => value switch
     {
@@ -139,14 +160,14 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     private static string MarkerStyle(CameraAgentObservingDayView view, DateTimeOffset utc)
         => FormattableString.Invariant($"left: {Percent(view, utc):0.###}%");
 
-    /// <summary>Captures collapsed into runs where consecutive exposures are within one coverage bin.</summary>
+    /// <summary>Exposures collapsed into runs where consecutive exposures are within one coverage bin.</summary>
     internal static IReadOnlyList<CaptureSegment> CaptureSegments(CameraAgentObservingDayView view)
     {
         var segments = new List<CaptureSegment>();
         CaptureSegment? current = null;
-        foreach (var capture in view.Captures.OrderBy(static capture => capture.ExposureStartedUtc))
+        foreach (var exposure in view.ExposureInstantsUtc.Order())
         {
-            var start = capture.ExposureStartedUtc;
+            var start = exposure;
             var end = start + CameraAgentObservingDayUiService.CoverageBin;
             if (current is not null && start <= current.EndUtc)
             {
@@ -177,7 +198,8 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 
     protected override Task OnParametersSetAsync()
     {
-        if (!DateOnly.TryParseExact(DateText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+        if (!DateOnly.TryParseExact(DateText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed) ||
+            parsed < MinimumDate || parsed > MaximumDate)
         {
             _invalidDate = true;
             _isLoading = false;

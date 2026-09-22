@@ -125,9 +125,7 @@ public sealed class ArchivePagesTests
         Configure(context);
         var day = Phoenix.Resolve(new DateOnly(2026, 7, 21));
         var representative = Guid.NewGuid();
-        var captures = Enumerable.Range(0, 3)
-            .Select(index => OperatorUiTestData.Capture(Guid.NewGuid()) with { ExposureStartedUtc = day.StartUtc.AddHours(8).AddMinutes(index * 5) })
-            .ToArray();
+        var exposures = Enumerable.Range(0, 3).Select(index => day.StartUtc.AddHours(8).AddMinutes(index * 5)).ToArray();
         var windowStart = day.StartUtc.AddHours(7);
         var windowEnd = day.StartUtc.AddHours(17);
         var candidate = new CameraAgentTransientOperatorCandidate(
@@ -135,9 +133,8 @@ public sealed class ArchivePagesTests
         var dayService = new TestObservingDayUiService
         {
             Handler = (date, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
-                new CameraAgentGalleryCalendarDay(day, 3, 1, captures[0].ExposureStartedUtc, captures[^1].ExposureStartedUtc, representative),
-                captures,
-                false,
+                new CameraAgentGalleryCalendarDay(day, 3, 1, exposures[0], exposures[^1], representative, exposures[^1]),
+                exposures,
                 TimeSpan.FromSeconds(60),
                 new CameraAgentObservingDayScheduleView([(windowStart, windowEnd)], windowEnd - windowStart, TimeSpan.FromMinutes(3), false),
                 [candidate],
@@ -159,6 +156,9 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(facts, "Partial", StringComparison.Ordinal);
             StringAssert.Contains(facts, "19:00–05:00", StringComparison.Ordinal);
             StringAssert.Contains(facts, "1% of 10h 00m", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "under 90 % of the scheduled window", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "overrides and manual pause are not reflected", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".day-hero__caption").TextContent, "Newest capture with a published preview, 2026-07-22 03:10:00 UTC", StringComparison.Ordinal);
             StringAssert.Contains(facts, "Retained captures3", StringComparison.Ordinal);
             StringAssert.Contains(facts, "Current cloudNot assessed", StringComparison.Ordinal);
             StringAssert.Contains(facts, "Total integration1m 00s", StringComparison.Ordinal);
@@ -185,7 +185,7 @@ public sealed class ArchivePagesTests
         context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
         {
             Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
-                new CameraAgentGalleryCalendarDay(day, 0, 0, null, null), [], false, TimeSpan.Zero, null, [], false, [], null, null, null)))
+                new CameraAgentGalleryCalendarDay(day, 0, 0, null, null), [], TimeSpan.Zero, null, [], false, [], null, null, null)))
         });
 
         var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-07-22"));
@@ -199,6 +199,34 @@ public sealed class ArchivePagesTests
 
         var malformed = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "yesterday"));
         malformed.WaitForAssertion(() => StringAssert.Contains(malformed.Markup, "Observing day not recognised", StringComparison.Ordinal));
+        // Dates the calendar cannot step from are refused rather than throwing on the step links.
+        var edge = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "9999-12-31"));
+        edge.WaitForAssertion(() => StringAssert.Contains(edge.Markup, "Observing day not recognised", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void ObservingDay_ReportsCapturesOutsideTheScheduledWindow()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var day = Phoenix.Resolve(new DateOnly(2026, 7, 21));
+        var exposures = new[] { day.StartUtc.AddHours(2) };
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 1, 0, exposures[0], exposures[0]), exposures, TimeSpan.FromSeconds(20),
+                new CameraAgentObservingDayScheduleView([(day.StartUtc.AddHours(7), day.StartUtc.AddHours(17))], TimeSpan.FromHours(10), TimeSpan.Zero, true),
+                [], false, [], null, null, null)))
+        });
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-07-21"));
+        cut.WaitForAssertion(() =>
+        {
+            var facts = cut.Find(".day-facts").TextContent;
+            StringAssert.Contains(facts, "Outside window", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "none inside the scheduled window", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "predates the active revision", StringComparison.Ordinal);
+        });
     }
 
     [TestMethod]

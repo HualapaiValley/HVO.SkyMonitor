@@ -14,7 +14,7 @@
 <div class="day-page">
     @if (_invalidDate)
     {
-        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Observing day not recognised" Message="Use a date in the form yyyy-MM-dd.">
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Observing day not recognised" Message="Use a date in the form yyyy-MM-dd within the calendar range.">
             <a class="btn btn-outline-light btn-sm" href="/archive/calendar">Back to calendar</a>
         </PageStateNotice>
     }
@@ -82,9 +82,9 @@
                         <div><dt>Total integration</dt><dd>@FormatDuration(view.TotalIntegration)</dd></div>
                         <div><dt>Detected candidates</dt><dd>@view.Day.CandidateCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</dd></div>
                     </dl>
-                    @if (view.Schedule is { ActiveRevisionCaveat: true })
+                    @if (view.Schedule is not null)
                     {
-                        <p class="day-facts__note" role="note">The scheduled window is the currently active schedule's; this night predates its activation.</p>
+                        <p class="day-facts__note" role="note">Windows come from the active schedule definition; operator overrides and manual pause are not reflected.@(view.Schedule.ActiveRevisionCaveat ? " This night predates the active revision, which was created after it." : "")</p>
                     }
                 </aside>
             </section>
@@ -125,10 +125,6 @@
                     </div>
                 </div>
                 <div class="timeline-key"><span><i class="timeline-key__schedule"></i>Scheduled</span><span><i class="timeline-key__captures"></i>Captures (@CoverageBinMinutes-minute bins)</span><span><i class="timeline-key__event"></i>Candidate</span></div>
-                @if (view.CapturesTruncated)
-                {
-                    <p class="night-timeline__note" role="status">The timeline shows the first @view.Captures.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) captures of this night; the counts above are complete.</p>
-                }
             </section>
 
             <section class="daily-products" aria-label="Generated products">

@@ -20,9 +20,6 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
 {
     internal const int DefaultPageSize = 24;
     internal const int MaximumPageSize = 100;
-    // A night of one-per-ten-seconds captures is 8,640; the day page shows the timeline from
-    // this many and says so when the night exceeds it.
-    internal const int ObservingDayCaptureCeiling = 2_000;
     internal const int MaximumProcessingNodesPerCapture = 64;
     internal const int MaximumArtifactsPerCapture = 128;
     private const int CursorVersion = 1;
@@ -579,12 +576,13 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
                 command.Parameters.AddWithValue("$day_end", end);
                 candidates = (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 0L);
             }
-            Guid? representative = null;
+            (Guid CaptureId, DateTimeOffset ExposureUtc)? representative = null;
             if (captures > 0)
             {
                 representative = await ReadRepresentativeCaptureAsync(connection, snapshot, start, end, normalized, cancellationToken).ConfigureAwait(false);
             }
-            result[index] = new CameraAgentGalleryCalendarDay(day, captures, candidates, first, last, representative);
+            result[index] = new CameraAgentGalleryCalendarDay(
+                day, captures, candidates, first, last, representative?.CaptureId, representative?.ExposureUtc);
         }
         return new CameraAgentGalleryCalendar(calendar.TimeZoneId, calendar.TimeZoneFallback, result);
     }
@@ -595,7 +593,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     /// projector still decides the exact artifact when the capture is rendered.
     /// </summary>
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The statement is fixed apart from normalized filter clauses; values remain parameterized.")]
-    private static async Task<Guid?> ReadRepresentativeCaptureAsync(
+    private static async Task<(Guid CaptureId, DateTimeOffset ExposureUtc)?> ReadRepresentativeCaptureAsync(
         SqliteConnection connection,
         SqliteTransaction snapshot,
         long start,
@@ -605,7 +603,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     {
         using var command = connection.CreateCommand();
         command.Transaction = snapshot;
-        var sql = new StringBuilder("SELECT raw.capture_id FROM raw_captures raw INDEXED BY ix_raw_captures_gallery_time")
+        var sql = new StringBuilder("SELECT raw.capture_id, raw.exposure_started_unix_ms FROM raw_captures raw INDEXED BY ix_raw_captures_gallery_time")
             .AppendLine()
             .AppendLine("WHERE raw.exposure_started_unix_ms >= $day_start AND raw.exposure_started_unix_ms < $day_end")
             .AppendLine("AND raw.state = 'committed'")
@@ -626,8 +624,13 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         sql.AppendLine("ORDER BY raw.exposure_started_unix_ms DESC, raw.capture_sequence DESC, raw.raw_capture_row_id DESC");
         sql.AppendLine("LIMIT 1;");
         command.CommandText = sql.ToString();
-        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        return value is string text && Guid.TryParseExact(text, "N", out var id) ? id : null;
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
+            !Guid.TryParseExact(reader.GetString(0), "N", out var id))
+        {
+            return null;
+        }
+        return (id, DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1)));
     }
 
     public async ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
@@ -646,71 +649,46 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         }
         var summary = await GetCalendarAsync(new CameraAgentGalleryCalendarQuery(observingDate, observingDate), cancellationToken).ConfigureAwait(false);
         var facts = summary.Days.Count == 1 ? summary.Days[0] : new CameraAgentGalleryCalendarDay(day, 0, 0, null, null);
-        var integration = await ReadTotalIntegrationAsync(day, cancellationToken).ConfigureAwait(false);
-        // The night's captures in exposure order, bounded so a runaway night cannot pull the
-        // whole store into one response; the count above is exact regardless.
-        var captures = new List<CameraAgentGalleryCapture>();
-        var truncated = false;
-        string? cursor = null;
-        while (captures.Count < ObservingDayCaptureCeiling)
-        {
-            var page = await GetPageAsync(new CameraAgentGalleryQuery(
-                PageSize: MaximumPageSize,
-                Cursor: cursor,
-                FromUtc: day.StartUtc,
-                ToUtc: day.EndUtc.AddMilliseconds(-1)), cancellationToken).ConfigureAwait(false);
-            foreach (var capture in page.Items)
-            {
-                if (captures.Count >= ObservingDayCaptureCeiling)
-                {
-                    truncated = true;
-                    break;
-                }
-                captures.Add(capture);
-            }
-            if (truncated || page.NextCursor is null)
-            {
-                truncated |= page.NextCursor is not null;
-                break;
-            }
-            cursor = page.NextCursor;
-        }
-        // The gallery pages by capture sequence; the night reads by exposure time.
-        captures.Sort(static (left, right) => left.ExposureStartedUtc != right.ExposureStartedUtc
-            ? left.ExposureStartedUtc.CompareTo(right.ExposureStartedUtc)
-            : left.CaptureSequence.CompareTo(right.CaptureSequence));
-        return new CameraAgentObservingDayDetail(facts, captures, truncated, integration);
+        var (instants, integration) = await ReadExposuresAsync(day, cancellationToken).ConfigureAwait(false);
+        return new CameraAgentObservingDayDetail(facts, instants, integration);
     }
 
     /// <summary>
-    /// Sums the effective exposure of the night's committed captures from the manifest, where it
-    /// is recorded as an invariant <c>hh:mm:ss[.fffffff]</c> TimeSpan. Manifests without the field
-    /// contribute nothing rather than failing the night.
+    /// Every committed capture's exposure instant in the night, ascending, and the sum of their
+    /// effective exposures. The exposure is recorded in the manifest as an invariant
+    /// <c>[d.]hh:mm:ss[.fffffff]</c> TimeSpan; manifests without the field contribute nothing to
+    /// the sum rather than failing the night. One index walk; no manifest hydration beyond the
+    /// one extracted field.
     /// </summary>
-    private async Task<TimeSpan> ReadTotalIntegrationAsync(ObservingDay day, CancellationToken cancellationToken)
+    private async Task<(IReadOnlyList<DateTimeOffset> Instants, TimeSpan Integration)> ReadExposuresAsync(
+        ObservingDay day, CancellationToken cancellationToken)
     {
         using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT json_extract(raw.manifest_json, '$.descriptor.controls.effectiveExposure')
+            SELECT raw.exposure_started_unix_ms,
+                   json_extract(CAST(raw.manifest_json AS TEXT), '$.descriptor.controls.effectiveExposure')
             FROM raw_captures raw INDEXED BY ix_raw_captures_gallery_time
             WHERE raw.exposure_started_unix_ms >= $day_start AND raw.exposure_started_unix_ms < $day_end
-              AND raw.state = 'committed';
+              AND raw.state = 'committed'
+            ORDER BY raw.exposure_started_unix_ms ASC, raw.capture_sequence ASC, raw.raw_capture_row_id ASC;
             """;
         command.Parameters.AddWithValue("$day_start", day.StartUtc.ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$day_end", day.EndUtc.ToUnixTimeMilliseconds());
+        var instants = new List<DateTimeOffset>();
         var total = TimeSpan.Zero;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (!await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false) &&
-                TimeSpan.TryParse(reader.GetString(0), CultureInfo.InvariantCulture, out var exposure) &&
+            instants.Add(DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(0)));
+            if (!await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) &&
+                TimeSpan.TryParse(reader.GetString(1), CultureInfo.InvariantCulture, out var exposure) &&
                 exposure > TimeSpan.Zero)
             {
                 total += exposure;
             }
         }
-        return total;
+        return (instants, total);
     }
 
     public async ValueTask<CameraAgentGalleryNeighbours?> GetNeighboursAsync(

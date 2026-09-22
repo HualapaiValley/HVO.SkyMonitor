@@ -1,7 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
-using HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
@@ -34,24 +33,44 @@ public sealed class CameraAgentObservingDayUiServiceTests
     }
 
     [TestMethod]
+    public void ClipOpenWindows_KeepsADateExceptionsOwnWindowsWhileClosingItsWeeklyOnes()
+    {
+        // A closed date-exception day removes the weekly window on that local day but keeps the
+        // exception's own window, which the expander emits alongside the whole-day closure; a
+        // blackout removes both.
+        var localDay = (Start: NightStart.AddHours(-12), End: NightStart.AddHours(12));
+        var preview = Preview(
+            Open("weekly", NightStart.AddHours(1), NightStart.AddHours(9)),
+            new ExpandedScheduleInterval("exception:closed", CaptureScheduleIntervalSource.DateExceptionClosed, ExpandedScheduleDisposition.Closed, localDay.Start, localDay.End, new DateOnly(2026, 7, 21), null),
+            new ExpandedScheduleInterval("exception:window", CaptureScheduleIntervalSource.DateExceptionWindow, ExpandedScheduleDisposition.Open, NightStart.AddHours(2), NightStart.AddHours(6), new DateOnly(2026, 7, 21), "night"),
+            Closed("blackout", NightStart.AddHours(3), NightStart.AddHours(4)));
+
+        var windows = CameraAgentObservingDayUiService.ClipOpenWindows(preview, NightStart, NightEnd);
+
+        CollectionAssert.AreEqual(
+            new[] { (NightStart.AddHours(2), NightStart.AddHours(3)), (NightStart.AddHours(4), NightStart.AddHours(6)) },
+            windows.ToArray());
+    }
+
+    [TestMethod]
     public void CoveredDuration_UnionsOneMinuteBinsInsideTheWindowsOnly()
     {
         var windows = new[] { (NightStart.AddHours(1), NightStart.AddHours(2)) };
-        var captures = new[]
+        var exposures = new[]
         {
             // Outside every window.
-            OperatorUiTestData.Capture(Guid.NewGuid()) with { ExposureStartedUtc = NightStart },
+            NightStart,
             // Two captures 30 s apart share half a bin: 1.5 minutes, not 2.
-            OperatorUiTestData.Capture(Guid.NewGuid()) with { ExposureStartedUtc = NightStart.AddHours(1).AddMinutes(10) },
-            OperatorUiTestData.Capture(Guid.NewGuid()) with { ExposureStartedUtc = NightStart.AddHours(1).AddMinutes(10).AddSeconds(30) },
+            NightStart.AddHours(1).AddMinutes(10),
+            NightStart.AddHours(1).AddMinutes(10).AddSeconds(30),
             // Straddles the window end: only the inside 30 s count.
-            OperatorUiTestData.Capture(Guid.NewGuid()) with { ExposureStartedUtc = NightStart.AddHours(2).AddSeconds(-30) }
+            NightStart.AddHours(2).AddSeconds(-30)
         };
 
-        var covered = CameraAgentObservingDayUiService.CoveredDuration(windows, captures);
+        var covered = CameraAgentObservingDayUiService.CoveredDuration(windows, exposures);
 
         Assert.AreEqual(TimeSpan.FromSeconds(120), covered);
-        Assert.AreEqual(TimeSpan.Zero, CameraAgentObservingDayUiService.CoveredDuration([], captures));
+        Assert.AreEqual(TimeSpan.Zero, CameraAgentObservingDayUiService.CoveredDuration([], exposures));
         Assert.AreEqual(TimeSpan.Zero, CameraAgentObservingDayUiService.CoveredDuration(windows, []));
     }
 
