@@ -62,51 +62,70 @@ summary records every gate as passed on the clean bound head's fingerprint, and
 derives each aggregate section from one named source: `artifacts[]` from the run
 manifest, `replayProfiles[]` from the two #719 evidence records and their retained
 OTLP metrics, `centralTrafficAttempts` from the deny-sink summary plus every
-trial's recorded attempts, `dualAgent` from the #197 five-trial summary,
-`testAssemblies[]` from the Release acceptance assembly's metadata, `commands[]`
-from the command log with receipts hashed from the campaign tree and argv hashed
-rather than carried, and `source` from the manifest's dirty-state digest. The
-`components` and `ci` projections are carried verbatim and their support
-directories copied beside the output. It validates the result in the requested
-mode before writing; a refusal writes nothing, and the validator's document says
-why. Replay node lists are carried in the order the producer recorded them; the
-assembler never sorts a record into shape, and its gate proves that a
-definition-order record reaches the validator's refusal rather than being
-reordered on the way.
+trial's recorded attempts (every term must be a recorded integer; a missing field
+is a refusal, not a zero), `dualAgent` from the #197 `five-trial-summary.json`
+(`issue-197-five-trial-summary-v2`, final mode, five trials, clean at the bound
+head), `testAssemblies[]` from the Release acceptance assembly's metadata, and
+`source` from the manifest's dirty-state digest. The `components` and `ci`
+projections are carried verbatim and their support directories copied beside the
+output. It validates the result in the requested mode before writing; a refusal
+writes nothing, and the validator's document says why. Replay node lists are
+carried in the order the producer recorded them; the assembler never sorts a
+record into shape, and its gate proves that a definition-order record reaches
+the validator's refusal rather than being reordered on the way.
 
-The three replay counters have no producer field and are derived from telemetry:
-`publishedOutputs` is the maximum outbox backlog observed, `fallbacks` is the sum
-of the replay retry and terminal counters, and `liveRunnerDispatches` is zero once
-the telemetry shows the runner's job meter recorded only for the LocalRunner
-profile with no non-completed outcome. A nonzero value is carried, not hidden, so
-that the validator is what refuses it.
+Two inputs are operator assertions and are recorded as such. The command log's
+ids, exit codes and argv are typed by the operator; only each receipt's digest is
+derived, and argv is hashed rather than carried because final evidence refuses
+free text. `heads.reviewed` and `heads.candidateB` have no producer; they are the
+operator's binding and are checked only for alignment with the bound head
+(`heads.execution` is the run manifest's revision and `heads.protectedCi` is
+checked against `ci.run.headSha` by the validator).
 
-Publishing and re-reading a generation:
+The acceptance assembly the campaign executed is bound by digest when the
+campaign retained it: `scripts/test:cameraagent-standalone-211` writes
+`test-assembly.sha256` into the run root (bound by the run manifest), and the
+assembler requires the assembly it reads to have that digest. Without that file
+the binding is weaker and is said so in the assembler: a clean tree at the bound
+head and a Release build carrying that head is the same source, not provably the
+same bytes.
 
-```bash
-./scripts/record:cameraagent-final-head-535 publish --evidence EVIDENCE.json \
-    --bound-head <40-char-sha> --campaign <id> [--mode local|final]
-./scripts/record:cameraagent-final-head-535 latest --bound-head <40-char-sha> --campaign <id>
-./scripts/record:cameraagent-final-head-535 verify --bound-head <40-char-sha> --campaign <id>
-./scripts/record:cameraagent-final-head-535 clean  --bound-head <40-char-sha> --campaign <id>
-```
+The three replay counters have no producer field. Each is derived from what the
+campaign retained, and each is named in the assembler for what it observes rather
+than for the property the field is named after:
 
-Both gates run in CI, in the Quality job's static and lightweight contract checks.
+- `fallbacks` is the #719 record's `attemptCount - 1` (durable) plus the peak of
+  the sampled replay retry-wait and terminal backlog gauges, so a retry that
+  completed between telemetry samples is still counted through `attemptCount`.
+- `publishedOutputs` is the peak delivery-outbox backlog observed. The durable
+  fact is `published_flag` on the execution's outputs, which no producer projects
+  yet; under the campaign's standalone configuration nothing is ever enqueued for
+  delivery, so a zero here says "no delivery backlog was observed", not "the replay
+  was proven unpublished".
+- `liveRunnerDispatches` is zero once the runner's job meter is recorded only for
+  the LocalRunner profile with no non-completed outcome. The adapter routes to the
+  runner only for Replay-class executions, so the value follows from routing; the
+  per-attempt execution route is durable but not projected into evidence (#799).
 
-The validator is pure. It reads, recomputes and writes one canonical JSON result to
-standard output, and mutates nothing — no staging, no publication, no generation.
-Exit status is the contract: zero only when the requested mode's readiness holds.
+A nonzero value is carried, not hidden, so that the validator is what refuses it.
 
-`local` requires every local predicate and yields `localReady`. `final` additionally
-requires the strongest claimability state and is the only thing that may yield
-`acceptanceReady`. **A recorder may never set `acceptanceReady`**; it is derived in
-the validator and nowhere else.
+### Producing the real generation
 
-The two modes diverge in four places, each with a fixture that passes one and fails
-the other: a claimability state below the ceiling, a dirty tree, a nonzero command
-receipt, and a field declared as free text. Two modes that never diverge are one
-check under two names, so each divergence is kept honest by a fixture rather than by
-the description.
+The order that was proven end to end on `aa5ec674` (issue #961), all on one
+clean bound head with `development/v1` not advancing between steps:
+
+1. `scripts/test:cameraagent-standalone-211` — the campaign; note its run root.
+2. `scripts/test:cameraagent-dual-standalone-smoke` with the default five trials
+   (final mode; it runs the #171 baseline first). The host must be quiescent
+   (`HVO_SMOKE_QUIESCENCE_WAIT_SECONDS` raises the wait).
+3. `scripts/record:cameraagent-final-head-components-535` into
+   `TestResults/issue-535/<head>/components`.
+4. `gh workflow run ci.yml --ref <branch whose tip is the head>`, then
+   `scripts/import:cameraagent-final-head-ci-535` into
+   `TestResults/issue-535/<head>/ci/ci.json`.
+5. `scripts/assemble:cameraagent-final-head-535 --mode final` into
+   `TestResults/issue-535/<head>/<campaign>/evidence.json`.
+6. `scripts/record:cameraagent-final-head-535 publish`, then `verify` and `latest`.
 
 ## What publication guarantees
 

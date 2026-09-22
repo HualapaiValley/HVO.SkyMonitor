@@ -1,5 +1,7 @@
-// Prints one tab-separated line for a managed assembly: MVID, AssemblyConfiguration,
-// AssemblyInformationalVersion. Reads metadata only; the assembly is never loaded.
+// Prints one JSON object for a managed assembly: {"mvid","configuration",
+// "informationalVersion"}. Reads metadata only; the assembly is never loaded. A
+// missing attribute is an empty string, and JSON keeps the fields positional so a
+// missing one cannot shift its neighbour.
 //
 // Used by assemble:cameraagent-final-head-535 for testAssemblies[]. It is a script
 // rather than a project so the identity of the reader is the hash of this file and
@@ -8,6 +10,7 @@
 open System.IO
 open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
+open System.Text.Json
 
 let path = fsi.CommandLineArgs.[1]
 let stream = File.OpenRead(path)
@@ -38,4 +41,5 @@ for handle in asm.GetCustomAttributes() do
             else informational <- value
 pe.Dispose()
 stream.Dispose()
-printfn "%s\t%s\t%s" (mvid.ToString("D")) configuration informational
+let identity = dict [ "mvid", mvid.ToString("D"); "configuration", configuration; "informationalVersion", informational ]
+printfn "%s" (JsonSerializer.Serialize(identity))
