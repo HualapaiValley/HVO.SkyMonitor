@@ -1,0 +1,185 @@
+@page "/archive/day/{DateText}"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Automation
+@using HVO.SkyMonitor.CameraAgent.Common.Gallery
+@using HVO.SkyMonitor.CameraAgent.Components.Presentation
+@using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.CameraAgent.Components.Shared
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>@PageTitleText</PageTitle>
+
+<div class="day-page">
+    @if (_invalidDate)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Observing day not recognised" Message="Use a date in the form yyyy-MM-dd within the calendar range.">
+            <a class="btn btn-outline-light btn-sm" href="/archive/calendar">Back to calendar</a>
+        </PageStateNotice>
+    }
+    else
+    {
+        <header class="day-heading">
+            <div>
+                <p class="eyebrow">Observing day / @DateText</p>
+                <div class="day-title">
+                    <a class="btn btn-outline-light btn-sm day-title__step" href="@DayUrl(-1)" aria-label="Previous observing day">‹</a>
+                    <h1 id="day-heading" tabindex="-1">@DayTitle</h1>
+                    <a class="btn btn-outline-light btn-sm day-title__step" href="@DayUrl(1)" aria-label="Next observing day">›</a>
+                </div>
+                <p class="day-lead">@DayLead</p>
+            </div>
+            <div class="day-actions">
+                @if (_view is { Day.CaptureCount: > 0 })
+                {
+                    <a class="btn btn-outline-light" href="@CapturesUrl">View @_view.Day.CaptureCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) captures</a>
+                }
+                @if (_view is { Day.CandidateCount: > 0 })
+                {
+                    <a class="btn btn-outline-light" href="@CandidatesUrl">View events</a>
+                }
+                <a class="btn btn-outline-light" href="/archive/calendar?month=@Date.ToString("yyyy-MM")">Calendar</a>
+            </div>
+        </header>
+
+        @if (_isLoading)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading observing day" Message="Reading the night's retained captures, schedule and candidates." />
+        }
+        else if (_errorMessage is not null)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Observing day unavailable" Message="@_errorMessage">
+                <button type="button" class="btn btn-outline-light btn-sm" @onclick="LoadAsync">Try again</button>
+            </PageStateNotice>
+        }
+        else if (_view is { } view)
+        {
+            <section class="day-hero" aria-label="Representative capture and night facts">
+                <div class="day-hero__image">
+                    @if (view.RepresentativeCaptureId is { } representative)
+                    {
+                        <a href="/gallery/@representative.ToString("D")" aria-label="Open the representative capture">
+                            <img src="@ArchiveCalendarPage.ThumbnailUrl(representative)" alt="Representative capture of @DayTitle" />
+                        </a>
+                        <p class="day-hero__caption"><span>Representative capture</span><strong>@RepresentativeCaption(view)</strong></p>
+                    }
+                    else
+                    {
+                        <div class="day-hero__empty" role="status"><strong>No displayable capture</strong><span>@(view.Day.CaptureCount > 0 ? "Captures were retained but none has a published preview." : "No captures were retained on this observing day.")</span></div>
+                    }
+                </div>
+                <aside class="day-facts">
+                    <p class="day-facts__state">
+                        <span class="hvo-chip @StateChipClass(view)">@StateLabel(view)</span>
+                        <small>@StateDetail(view)</small>
+                    </p>
+                    <dl>
+                        <div><dt>Scheduled window</dt><dd>@ScheduledWindow(view)</dd></div>
+                        <div><dt>Capture coverage</dt><dd>@Coverage(view)</dd></div>
+                        <div><dt>Retained captures</dt><dd>@view.Day.CaptureCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</dd></div>
+                        <div><dt>Current cloud</dt><dd>Not assessed</dd></div>
+                        <div><dt>Total integration</dt><dd>@FormatDuration(view.TotalIntegration)</dd></div>
+                        <div><dt>Detected candidates</dt><dd>@view.Day.CandidateCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</dd></div>
+                    </dl>
+                    @if (view.Schedule is not null)
+                    {
+                        <p class="day-facts__note" role="note">Windows come from the active schedule definition; operator overrides and manual pause are not reflected.@(view.Schedule.ActiveRevisionCaveat ? " This night predates the active revision, which was created after it." : "")</p>
+                    }
+                </aside>
+            </section>
+
+            <section class="night-timeline" aria-label="Night timeline">
+                <header><div><h2>Night timeline</h2><p>Schedule, captures and events share one local time axis.</p></div><span class="night-timeline__range">@TimelineRange(view)</span></header>
+                <div class="timeline-tracks" style="--night-hours: @NightHours(view).ToString(System.Globalization.CultureInfo.InvariantCulture)">
+                    <div class="timeline-track" aria-label="Scheduled windows">
+                        @if (view.Schedule is { OpenWindows.Count: > 0 } schedule)
+                        {
+                            @foreach (var window in schedule.OpenWindows)
+                            {
+                                <span class="timeline-bar timeline-bar--schedule" style="@BarStyle(view, window.StartUtc, window.EndUtc)" title="Scheduled @LocalTime(window.StartUtc)–@LocalTime(window.EndUtc)"></span>
+                            }
+                        }
+                        else
+                        {
+                            <span class="timeline-track__empty">No schedule window</span>
+                        }
+                    </div>
+                    <div class="timeline-track" aria-label="Retained captures">
+                        @foreach (var segment in CaptureSegments(view))
+                        {
+                            <span class="timeline-bar timeline-bar--captures" style="@BarStyle(view, segment.StartUtc, segment.EndUtc)" title="@segment.Count captures @LocalTime(segment.StartUtc)–@LocalTime(segment.EndUtc)"></span>
+                        }
+                    </div>
+                    <div class="timeline-track timeline-track--markers" aria-label="Detected candidates">
+                        @foreach (var candidate in view.Candidates)
+                        {
+                            <a class="timeline-marker" style="@MarkerStyle(view, candidate.CreatedUtc)" href="/transients/@candidate.CandidateId.ToString("D")" title="Candidate @LocalTime(candidate.CreatedUtc)"><span>Candidate</span></a>
+                        }
+                    </div>
+                    <div class="timeline-hours" aria-hidden="true">
+                        @foreach (var tick in HourTicks(view))
+                        {
+                            <span style="left: @tick.Percent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%">@tick.Label</span>
+                        }
+                    </div>
+                </div>
+                <div class="timeline-key"><span><i class="timeline-key__schedule"></i>Scheduled</span><span><i class="timeline-key__captures"></i>Captures (@CoverageBinMinutes-minute bins)</span><span><i class="timeline-key__event"></i>Candidate</span></div>
+            </section>
+
+            <section class="daily-products" aria-label="Generated products">
+                <header><div><p class="eyebrow">Daily derivatives</p><h2>Generated products</h2></div><a href="/archive/products">View all products</a></header>
+                <div class="product-slots">
+                    @foreach (var slot in ProductSlots)
+                    {
+                        <article class="product-slot product-slot--pending">
+                            <div class="product-slot__media" aria-hidden="true"><i class="bi @slot.Icon"></i></div>
+                            <h3>@slot.Title</h3>
+                            <p>@slot.Description</p>
+                            <span class="hvo-chip hvo-chip--neutral">Not yet produced</span>
+                        </article>
+                    }
+                </div>
+            </section>
+
+            <div class="day-columns">
+                <section class="day-events" aria-label="Detected candidates">
+                    <header><h2>Detected candidates</h2><span class="hvo-chip @(view.Candidates.Count > 0 ? "hvo-chip--warning" : "hvo-chip--neutral")">@view.Candidates.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</span></header>
+                    @if (view.Candidates.Count == 0)
+                    {
+                        <p class="day-events__empty">No local candidates were recorded on this observing day.</p>
+                    }
+                    else
+                    {
+                        <ol class="candidate-list">
+                            @foreach (var candidate in view.Candidates)
+                            {
+                                <li><a href="/transients/@candidate.CandidateId.ToString("D")"><strong>@LocalTime(candidate.CreatedUtc)</strong><span>@OperationsPage.SplitWords(candidate.CandidateState)</span><small>@OperationsPage.SplitWords(candidate.WorkflowPhase)</small></a></li>
+                            }
+                        </ol>
+                        @if (view.CandidatesTruncated)
+                        {
+                            <p class="day-events__empty"><a href="@CandidatesUrl">More candidates on this night</a></p>
+                        }
+                    }
+                </section>
+                <section class="day-automations" aria-label="Scheduled automations">
+                    <header><h2>Scheduled automations</h2><a href="/operations/automations">Automation schedule</a></header>
+                    @if (view.AutomationRuns.Count == 0)
+                    {
+                        <p class="day-events__empty">No automation runs were scheduled inside this observing day@(view.AutomationRuns.Count == 0 ? " (the run history is bounded to recent runs)" : "").</p>
+                    }
+                    else
+                    {
+                        <ol class="automation-list">
+                            @foreach (var run in view.AutomationRuns)
+                            {
+                                <li class="automation-run automation-run--@run.Outcome.ToString().ToLowerInvariant()"><div><strong>@run.DefinitionId</strong><span>@OperationsPage.SplitWords(run.Outcome.ToString())@(string.IsNullOrWhiteSpace(run.Detail) ? "" : $" / {run.Detail}")</span></div><time datetime="@run.ScheduledForUtc.ToString("O")">@LocalTime(run.ScheduledForUtc)</time></li>
+                            }
+                        </ol>
+                    }
+                </section>
+            </div>
+        }
+    }
+</div>

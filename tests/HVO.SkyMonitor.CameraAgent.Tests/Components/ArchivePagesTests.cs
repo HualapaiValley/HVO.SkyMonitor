@@ -15,58 +15,82 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class ArchivePagesTests
 {
     private static readonly ObservingDayCalendar Phoenix = ObservingDayCalendar.Create("America/Phoenix");
+
+    private sealed class TestObservingDayUiService : ICameraAgentObservingDayUiService
+    {
+        public Func<DateOnly, CancellationToken, ValueTask<OperatorUiResult<CameraAgentObservingDayView>>> Handler { get; set; } =
+            static (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Failure(OperatorUiResultKind.Unavailable, "unset"));
+
+        public ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate, CancellationToken cancellationToken)
+            => Handler(observingDate, cancellationToken);
+    }
     // Affirmative claims that would imply authority CameraAgent does not have over local candidates,
     // matched against visible text so a negated disclaimer is not mistaken for a claim.
     private static readonly string[] ForbiddenCandidateClaims = ["fireball", "ground track", "impact location", "reconstructed event", "validated event", "correlated event", "published event", "multi-site", "entry speed", "peak altitude"];
 
     [TestMethod]
-    public void Calendar_ListsObservingNightsWithCountsAndDayLinks()
+    public void Calendar_RendersTheMonthAsAGridOfObservingDays()
     {
         using var context = new BunitContext();
         var service = Configure(context);
         CameraAgentGalleryCalendarQuery? observed = null;
         var night = Phoenix.Resolve(new DateOnly(2026, 7, 21));
         var emptyNight = Phoenix.Resolve(new DateOnly(2026, 7, 22));
+        var representative = Guid.NewGuid();
         service.CalendarHandler = (query, _) =>
         {
             observed = query;
             return ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Success(new("America/Phoenix", false,
             [
-                new(night, 12, 1, night.StartUtc.AddHours(2), night.EndUtc.AddHours(-3)),
+                new(night, 12, 1, night.StartUtc.AddHours(2), night.EndUtc.AddHours(-3), representative),
                 new(emptyNight, 0, 0, null, null)
             ])));
         };
 
         var navigation = context.Services.GetRequiredService<NavigationManager>();
-        navigation.NavigateTo("/archive/calendar?to=2026-07-23");
+        navigation.NavigateTo("/archive/calendar?month=2026-07");
         var cut = context.Render<ArchiveCalendarPage>();
 
         cut.WaitForAssertion(() =>
         {
-            Assert.AreEqual(new DateOnly(2026, 7, 23), observed?.ToDate);
-            Assert.AreEqual(new DateOnly(2026, 7, 23).AddDays(-(ArchiveCalendarPage.RangeDays - 1)), observed?.FromDate);
-            var nights = cut.FindAll(".night");
-            Assert.HasCount(2, nights);
-            // Newest night first.
-            StringAssert.Contains(nights[0].TextContent, "Jul 22 2026", StringComparison.Ordinal);
-            Assert.IsTrue(nights[0].ClassList.Contains("night--empty"));
-            StringAssert.Contains(nights[1].TextContent, "Jul 21 2026", StringComparison.Ordinal);
-            StringAssert.Contains(nights[1].TextContent, "Captures12", StringComparison.Ordinal);
-            StringAssert.Contains(nights[1].TextContent, "Candidates1", StringComparison.Ordinal);
-            var links = nights[1].QuerySelectorAll(".night__links a").Select(link => link.GetAttribute("href")).ToArray();
-            Assert.HasCount(2, links);
-            // Millisecond precision keeps the linked day identical to the counted day.
-            Assert.AreEqual("/gallery?from=2026-07-21T19:00:00.000&to=2026-07-22T18:59:59.999", links[0]);
-            Assert.AreEqual("/transients?from=2026-07-21T19:00:00.000&to=2026-07-22T18:59:59.999", links[1]);
-            StringAssert.Contains(nights[1].QuerySelector(".night__zone")!.TextContent, "12:00:00 → 12:00:00 America/Phoenix", StringComparison.Ordinal);
-            Assert.IsEmpty(nights[0].QuerySelectorAll(".night__links a"));
+            // July 2026 starts on a Wednesday and ends on a Friday: the grid covers whole weeks,
+            // 28 June through 1 August.
+            Assert.AreEqual(new DateOnly(2026, 6, 28), observed?.FromDate);
+            Assert.AreEqual(new DateOnly(2026, 8, 1), observed?.ToDate);
+            var cells = cut.FindAll(".calendar-day");
+            Assert.HasCount(35, cells);
+            Assert.HasCount(7, cut.FindAll(".calendar-weekdays span"));
+            Assert.IsTrue(cells[0].ClassList.Contains("calendar-day--outside"));
+            StringAssert.Contains(cells[0].TextContent, "Jun 28", StringComparison.Ordinal);
+            // 21 July is index 23 (3 outside days + 20).
+            var observedNight = cells[23];
+            Assert.IsFalse(observedNight.ClassList.Contains("calendar-day--empty"));
+            StringAssert.Contains(observedNight.TextContent, "12 captures", StringComparison.Ordinal);
+            Assert.AreEqual("/archive/day/2026-07-21", observedNight.QuerySelector("a")!.GetAttribute("href"));
+            Assert.AreEqual($"/api/v1/operations/gallery/{representative:D}/thumbnail", observedNight.QuerySelector("img.calendar-thumb")!.GetAttribute("src"));
+            Assert.IsNotNull(observedNight.QuerySelector(".calendar-products i.event"));
+            var empty = cells[24];
+            Assert.IsTrue(empty.ClassList.Contains("calendar-day--empty"));
+            StringAssert.Contains(empty.TextContent, "No archived session", StringComparison.Ordinal);
+            Assert.IsNull(empty.QuerySelector("img"));
+            Assert.AreEqual("/archive/day/2026-07-22", empty.QuerySelector("a")!.GetAttribute("href"));
+            // Now is 12:00 UTC on 23 July = 05:00 Phoenix, inside the night that began on the 22nd.
+            Assert.IsTrue(empty.ClassList.Contains("calendar-day--today"));
+            var summary = cut.Find(".calendar-summary").TextContent;
+            StringAssert.Contains(summary, "Observed nights1", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "Retained captures12", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "Detected candidates1", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "not yet generated", StringComparison.Ordinal);
             Assert.IsFalse(cut.Markup.Contains("UTC days", StringComparison.Ordinal));
         });
-        StringAssert.Contains(cut.FindAll(".range-nav a")[0].GetAttribute("href"), "to=2026-06-22", StringComparison.Ordinal);
+        var nav = cut.FindAll(".month-nav a").Select(link => link.GetAttribute("href")!).ToArray();
+        StringAssert.Contains(nav[0], "month=2026-06", StringComparison.Ordinal);
+        StringAssert.Contains(nav[1], "month=2026-08", StringComparison.Ordinal);
+        StringAssert.Contains(nav[2], "month=2026-07", StringComparison.Ordinal);
     }
 
     [TestMethod]
-    public void Calendar_DefaultsToTheCurrentObservingNightAndClampsTheRange()
+    public void Calendar_DefaultsToTheCurrentObservingMonthAndClampsTheMonth()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -78,16 +102,130 @@ public sealed class ArchivePagesTests
         };
 
         var cut = context.Render<ArchiveCalendarPage>();
-        // Now is 12:00 UTC on 23 July, 05:00 in Phoenix, inside the night that began at noon on the 22nd.
-        cut.WaitForAssertion(() => Assert.AreEqual(new DateOnly(2026, 7, 22), observed?.ToDate));
+        // July 2026: the current observing night (22 July) selects its month.
+        cut.WaitForAssertion(() => Assert.AreEqual(new DateOnly(2026, 6, 28), observed?.FromDate));
 
-        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/archive/calendar?to=0001-01-05");
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/archive/calendar?month=0001-01");
         var clamped = context.Render<ArchiveCalendarPage>();
         clamped.WaitForAssertion(() =>
         {
-            Assert.AreEqual(DateOnly.MinValue.AddDays(ArchiveCalendarPage.RangeDays * 2), observed?.ToDate);
-            Assert.AreEqual(DateOnly.MinValue.AddDays(ArchiveCalendarPage.RangeDays + 1), observed?.FromDate);
-            Assert.IsNotNull(clamped.Find(".range-nav"));
+            // Clamped to February of year 1 so the leading-week arithmetic never underflows:
+            // the queried range brackets that month.
+            Assert.IsTrue(observed!.FromDate <= new DateOnly(1, 2, 1));
+            Assert.IsTrue(observed.ToDate >= new DateOnly(1, 2, 28));
+            Assert.IsTrue(observed.ToDate.DayNumber - observed.FromDate.DayNumber < 42);
+            Assert.IsNotNull(clamped.Find(".month-nav"));
+        });
+    }
+
+    [TestMethod]
+    public void ObservingDay_RendersFactsTimelineAndHonestProductSlots()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var day = Phoenix.Resolve(new DateOnly(2026, 7, 21));
+        var representative = Guid.NewGuid();
+        var exposures = Enumerable.Range(0, 3).Select(index => day.StartUtc.AddHours(8).AddMinutes(index * 5)).ToArray();
+        var windowStart = day.StartUtc.AddHours(7);
+        var windowEnd = day.StartUtc.AddHours(17);
+        var candidate = new CameraAgentTransientOperatorCandidate(
+            Guid.NewGuid(), Guid.NewGuid(), "Extracted", "None", "CausalRetained", day.StartUtc.AddHours(9), day.StartUtc.AddHours(9), "Retained", "Pending", "Pending", "Pending");
+        var dayService = new TestObservingDayUiService
+        {
+            Handler = (date, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 3, 1, exposures[0], exposures[^1], representative, exposures[^1]),
+                exposures,
+                TimeSpan.FromSeconds(60),
+                new CameraAgentObservingDayScheduleView([(windowStart, windowEnd)], windowEnd - windowStart, TimeSpan.FromMinutes(3), false),
+                [candidate],
+                false,
+                [],
+                representative,
+                null,
+                null)))
+        };
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(dayService);
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-07-21"));
+
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find("h1").TextContent, "21 July 2026", StringComparison.Ordinal);
+            Assert.AreEqual($"/api/v1/operations/gallery/{representative:D}/thumbnail", cut.Find(".day-hero__image img").GetAttribute("src"));
+            var facts = cut.Find(".day-facts").TextContent;
+            StringAssert.Contains(facts, "Partial", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "19:00–05:00", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "1% of 10h 00m", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "under 90 % of the scheduled window", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "overrides and manual pause are not reflected", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".day-hero__caption").TextContent, "Newest capture with a published preview, 2026-07-22 03:10:00 UTC", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "Retained captures3", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "Current cloudNot assessed", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "Total integration1m 00s", StringComparison.Ordinal);
+            Assert.HasCount(1, cut.FindAll(".timeline-bar--schedule"));
+            // Three captures five minutes apart with one-minute bins do not merge.
+            Assert.HasCount(3, cut.FindAll(".timeline-bar--captures"));
+            Assert.HasCount(1, cut.FindAll(".timeline-marker"));
+            var slots = cut.FindAll(".product-slot");
+            Assert.HasCount(3, slots);
+            Assert.IsTrue(slots.All(slot => slot.TextContent.Contains("Not yet produced", StringComparison.Ordinal)));
+            StringAssert.Contains(cut.Find(".day-events").TextContent, "Extracted", StringComparison.Ordinal);
+            Assert.AreEqual("/archive/day/2026-07-20", cut.FindAll(".day-title__step")[0].GetAttribute("href"));
+            Assert.AreEqual("/archive/day/2026-07-22", cut.FindAll(".day-title__step")[1].GetAttribute("href"));
+            Assert.AreEqual("/gallery?from=2026-07-21T19:00:00.000&to=2026-07-22T18:59:59.999", cut.Find(".day-actions a").GetAttribute("href"));
+        });
+    }
+
+    [TestMethod]
+    public void ObservingDay_ReportsNoSessionAndRejectsMalformedDates()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var day = Phoenix.Resolve(new DateOnly(2026, 7, 22));
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 0, 0, null, null), [], TimeSpan.Zero, null, [], false, [], null, null, null)))
+        });
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-07-22"));
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find(".day-hero__empty").TextContent, "No captures were retained", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".day-facts").TextContent, "No archived session", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".day-facts").TextContent, "Scheduled windowSchedule unavailable", StringComparison.Ordinal);
+            Assert.IsNotNull(cut.Find(".timeline-track__empty"));
+        });
+
+        var malformed = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "yesterday"));
+        malformed.WaitForAssertion(() => StringAssert.Contains(malformed.Markup, "Observing day not recognised", StringComparison.Ordinal));
+        // Dates the calendar cannot step from are refused rather than throwing on the step links.
+        var edge = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "9999-12-31"));
+        edge.WaitForAssertion(() => StringAssert.Contains(edge.Markup, "Observing day not recognised", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void ObservingDay_ReportsCapturesOutsideTheScheduledWindow()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var day = Phoenix.Resolve(new DateOnly(2026, 7, 21));
+        var exposures = new[] { day.StartUtc.AddHours(2) };
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 1, 0, exposures[0], exposures[0]), exposures, TimeSpan.FromSeconds(20),
+                new CameraAgentObservingDayScheduleView([(day.StartUtc.AddHours(7), day.StartUtc.AddHours(17))], TimeSpan.FromHours(10), TimeSpan.Zero, true),
+                [], false, [], null, null, null)))
+        });
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-07-21"));
+        cut.WaitForAssertion(() =>
+        {
+            var facts = cut.Find(".day-facts").TextContent;
+            StringAssert.Contains(facts, "Outside window", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "none inside the scheduled window", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "predates the active revision", StringComparison.Ordinal);
         });
     }
 
@@ -130,7 +268,10 @@ public sealed class ArchivePagesTests
         cut.WaitForAssertion(() =>
         {
             StringAssert.Contains(cut.Markup, "Observing nights use UTC days", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "No retained evidence in this range", StringComparison.Ordinal);
+            // An empty month reads as zero observed nights, and every cell says so.
+            StringAssert.Contains(cut.Find(".calendar-summary").TextContent, "Observed nights0", StringComparison.Ordinal);
+            Assert.IsTrue(cut.FindAll(".calendar-day").All(cell => cell.ClassList.Contains("calendar-day--empty")));
+            StringAssert.Contains(cut.Find(".calendar-legend").TextContent, "12:00 to 12:00 UTC", StringComparison.Ordinal);
         });
 
         service.CalendarHandler = (_, _) => ValueTask.FromResult(
