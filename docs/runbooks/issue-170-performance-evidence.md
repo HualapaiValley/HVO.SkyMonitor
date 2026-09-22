@@ -39,11 +39,11 @@ Do not rebuild a worktree while trials from its current binaries are in progress
 Run each command in a new process for trial values `1` through `5`. Run bootstrap and ingest in both worktrees. Run authority only in the candidate worktree.
 
 ```bash
-DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=<harness-commit> HVO_EVIDENCE_PRODUCTION_REVISION=<production-commit> HVO_EVIDENCE_TRIAL=<trial> dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~DeviceBootstrapPerformanceTests.FreshRegistrationEnvelopeAndBootstrap_RecordsPerformanceEvidence"
+DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=<harness-commit> HVO_EVIDENCE_PRODUCTION_REVISION=<production-commit> HVO_EVIDENCE_TRIAL=<trial> dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~DeviceBootstrapPerformanceTests.FreshRegistrationEnvelopeAndBootstrap_RecordsPerformanceEvidence"
 
-DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=<harness-commit> HVO_EVIDENCE_PRODUCTION_REVISION=<production-commit> HVO_EVIDENCE_TRIAL=<trial> dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence"
+DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=<harness-commit> HVO_EVIDENCE_PRODUCTION_REVISION=<production-commit> HVO_EVIDENCE_TRIAL=<trial> dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence"
 
-DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_TRIAL=<trial> dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~DeploymentLocationAuthorityPerformanceTests.MigrationFleetReconciliationAndPaging_RecordPerformanceEvidence"
+DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_TRIAL=<trial> dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~DeploymentLocationAuthorityPerformanceTests.MigrationFleetReconciliationAndPaging_RecordPerformanceEvidence"
 ```
 
 The authority filter above is the historical method name at the cited candidate
@@ -56,7 +56,7 @@ Each raw file records branch, clean state, harness and production commits, assem
 Run the summary from a clean descendant of the candidate harness revision after both five-trial sets are present. The descendant may change only allowlisted evidence/summary support and is recorded as `SummaryCommit`; the summary resolves every revision as a Git commit, verifies ancestry, rejects overlapping processes or harness drift, applies predeclared metric-specific budgets and N/A dispositions, and creates `docs/validation/issue-170-performance-summary.json`.
 
 ```bash
-DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=$SUMMARY_REVISION HVO_EVIDENCE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_CANDIDATE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_BASELINE_REVISION=$BASELINE_HARNESS HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION=$BASELINE_PRODUCTION dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~Issue170PerformanceSummaryTests.FiveTrialEvidence_WritesDeterministicReviewedSummary"
+DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=$SUMMARY_REVISION HVO_EVIDENCE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_TRIAL=1 HVO_EVIDENCE_CANDIDATE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_BASELINE_REVISION=$BASELINE_HARNESS HVO_EVIDENCE_CANDIDATE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_BASELINE_PRODUCTION_REVISION=$BASELINE_PRODUCTION dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~Issue170PerformanceSummaryTests.FiveTrialEvidence_WritesDeterministicReviewedSummary"
 ```
 
 Review every accepted regression and residual risk in the generated summary before committing it. Any unexplained budget failure blocks merge.

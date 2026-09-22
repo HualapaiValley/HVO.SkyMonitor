@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT=$(git rev-parse --show-toplevel)
 cd "$ROOT"
 
-PROJECT="tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"
-OUTPUT_DIR="$ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0"
+PROJECT="tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj"
+OUTPUT_DIR="$ROOT/tests/HVO.SkyMonitor.LogicHost.IntegrationTests/bin/Release/net10.0"
 EVIDENCE_ROOT=${HVO_ISSUES437432_EVIDENCE_ROOT:-"$ROOT/TestResults/issues-437-432"}
 EXPECTED_BASELINE=${HVO_ISSUES437432_BASELINE:-5febc8efaa4b4b6e5e45eb45e9df0c55525bfdde}
 EXPECTED_PRODUCT=${HVO_ISSUES437432_PRODUCT_COMMIT:-63490cdfef496e2a702686c131f9689477800c95}
@@ -28,7 +28,7 @@ git merge-base --is-ancestor "$BASELINE_COMMIT" "$PRODUCT_COMMIT" || {
 }
 EXPECTED_PATHS=(
   "scripts/evidence:issues-437-432"
-  "tests/HVO.SkyMonitor.IntegrationTests/LogicHostLayeredPerformanceTests.cs"
+  "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/LogicHostLayeredPerformanceTests.cs"
 )
 mapfile -t EVIDENCE_PATHS < <(git diff --name-only "$PRODUCT_COMMIT" "$EVIDENCE_HEAD" | LC_ALL=C sort)
 [[ "${#EVIDENCE_PATHS[@]}" -eq "${#EXPECTED_PATHS[@]}" ]] || {
@@ -72,7 +72,7 @@ SOURCE_INVENTORY="$TRIAL_DIR/.source-inventory"
 git ls-files -- \
   src/HVO.SkyMonitor.AgentCore src/HVO.SkyMonitor.Common src/HVO.SkyMonitor.Imaging \
   src/HVO.SkyMonitor.LogicHost src/HVO.SkyMonitor.Processing src/HVO.SkyMonitor.TestSupport \
-  tests/HVO.SkyMonitor.IntegrationTests scripts/evidence:issues-437-432 scripts/test-categories/Program.cs \
+  tests/HVO.SkyMonitor.LogicHost.IntegrationTests scripts/evidence:issues-437-432 scripts/test-categories/Program.cs \
   Directory.Build.props Directory.Packages.props global.json HVO.SkyMonitor.v9.slnx | LC_ALL=C sort > "$SOURCE_LIST"
 SOURCE_HASH=$(inventory_hash "$ROOT" "$SOURCE_LIST" "$SOURCE_INVENTORY")
 SOURCE_COUNT=$(wc -l < "$SOURCE_LIST" | tr -d ' ')
