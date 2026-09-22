@@ -497,7 +497,14 @@ jq -s --arg schema "$SUMMARY_SCHEMA" --arg mode "$EVIDENCE_MODE" --argjson basel
     evidenceMode: $mode,
     trialCount: length,
     workload: .[0].workload,
-    environment: (map(.environment) | unique | if length == 1 then .[0] else error("environment changed") end),
+    # Host memory is an observation, not an identity: MemTotal moved by ~100 MB between
+    # two trials of one run on one host (balloon or hotplug), and a summary that
+    # treats that as "environment changed" refuses five passed trials for nothing
+    # the trials did. Every other field is identity and must not vary.
+    environment: ((map(.environment | del(.hostMemoryBytes)) | unique |
+        if length == 1 then .[0] else error("environment changed") end)
+      + {hostMemoryBytes: (map(.environment.hostMemoryBytes) |
+          if all(.[]; type == "number") then {minimum: min, maximum: max} else error("host memory unrecorded") end)}),
     revision: {
       commit: (map(.revision.commit) | unique | if length == 1 then .[0] else error("revision changed") end),
       branch: (map(.revision.branch) | unique | if length == 1 then .[0] else error("branch changed") end),

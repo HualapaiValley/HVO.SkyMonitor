@@ -141,6 +141,11 @@ jobs:
           HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_CATALOG_ROOT=/srv/hvo/catalog HVO_CONTAINER_NAME=hvo-skymonitor-11111111111141118111111111111111 HVO_PUBLIC_PORT=5174 HVO_OBJECT_STORE_ROOT=/var/lib/hvo/object-store HVO_RUNTIME_UID=4242 HVO_RUNTIME_GID=4343 LOGICHOST_IMAGE=example/logichost@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa docker compose -f deploy/split-host/compose.logichost.yml --profile initialize config --quiet
           HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_CATALOG_ROOT=/srv/hvo/catalog HVO_CONTAINER_NAME=hvo-skymonitor-22222222222242228222222222222222 HVO_PUBLIC_PORT=5130 CAMERAAGENT_IMAGE=example/cameraagent@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb docker compose -f deploy/split-host/compose.cameraagent.yml config --quiet
           docker compose --env-file deploy/acceptance/cameraagent-dual-standalone-smoke/compose.validation.env.template -f deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml config --quiet
+      - name: Run SDK-dependent contract checks
+        # The assembler gate builds a fixture assembly and runs `dotnet fsi`, so it
+        # needs the pinned SDK that only the full-mode Setup .NET step installs.
+        if: needs.changes.outputs.mode == 'full'
+        run: ./scripts/test:assemble-cameraagent-final-head-535
       - name: Audit vulnerable and deprecated packages
         if: needs.changes.outputs.mode == 'full'
         run: |

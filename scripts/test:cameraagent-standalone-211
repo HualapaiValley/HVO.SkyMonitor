@@ -2068,13 +2068,18 @@ jq -n \
 ' > "$RESULTS/final-acceptance-summary.json"
 jq --exit-status '.acceptanceReady == true and ([.gates[]] | all)' \
     "$RESULTS/final-acceptance-summary.json" >/dev/null || gate_failed 'final acceptance summary' "$RESULTS/final-acceptance-summary.json"
-publish_replay_run_manifest "$RESULTS" "$WORKTREE_FINGERPRINT" "$RUN_ID" \
-    "$REVISION" "$DIRTY_SHA256" "$CAMERA_AGENT_IMAGE"
 assert_worktree_unchanged
 [[ "$(sha256sum "$TEST_ASSEMBLY" | cut -d' ' -f1)" == "$TEST_ASSEMBLY_SHA256" ]] || {
     printf 'Acceptance test assembly changed after the no-build trials.\n' >&2
     exit 1
 }
+# The digest of the assembly every trial executed, retained inside the run tree
+# so the run manifest binds it and the #535 assembler can require the assembly
+# it reads to be this one rather than whatever a later build left on disk (#961).
+printf '%s\n' "$TEST_ASSEMBLY_SHA256" > "$RESULTS/test-assembly.sha256"
+chmod 600 "$RESULTS/test-assembly.sha256"
+publish_replay_run_manifest "$RESULTS" "$WORKTREE_FINGERPRINT" "$RUN_ID" \
+    "$REVISION" "$DIRTY_SHA256" "$CAMERA_AGENT_IMAGE"
 if [[ -n "${HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE:-}" ]]; then
     printf '%s\n' "$TEST_ASSEMBLY_SHA256" > "$HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE"
     chmod 600 "$HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE"

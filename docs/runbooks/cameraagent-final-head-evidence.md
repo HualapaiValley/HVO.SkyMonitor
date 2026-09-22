@@ -17,15 +17,18 @@ Built and usable:
 - `scripts/test:record-cameraagent-final-head-535` — the deterministic recorder gate.
 - `scripts/import:cameraagent-final-head-ci-535` — the exact-run protected-CI importer.
 - `scripts/test:cameraagent-final-head-ci-import-535` — the deterministic importer gate.
-- `tests/fixtures/issue-535/final-head/` — the fixtures both gates exercise.
+- `scripts/assemble:cameraagent-final-head-535` — the assembler that derives the
+  aggregate from its producers (issue #961).
+- `scripts/test:assemble-cameraagent-final-head-535` — the deterministic assembler gate.
+- `scripts/lib/assembly-identity.fsx` — the metadata-only reader the assembler uses
+  for a test assembly's MVID, configuration and informational version.
+- `tests/fixtures/issue-535/final-head/` — the fixtures the validator and recorder
+  gates exercise.
 
-Not built, and deliberately so: the real aggregate content. The machinery that
-records a generation is complete and gated, but the campaign it will record must be
-produced once, on the unchanged final head. PR #806 / issue #719 delivered the
-required InProcess and LocalRunner W6 replay-profile producer. Issue #535 now owns
-the one-time campaign, final validation, and generation publication. The tooling
-exists so that the generation step has something to run against and somewhere to
-put the result, not so that a real generation can be produced early.
+The real aggregate content is produced by the assembler from one campaign, on the
+unchanged final head, and never written by hand. PR #806 / issue #719 delivered the
+required InProcess and LocalRunner W6 replay-profile producer. Issue #535 owns the
+one-time campaign, final validation, and generation publication.
 
 ## Running it
 
@@ -35,6 +38,7 @@ put the result, not so that a real generation can be produced early.
 ./scripts/test:cameraagent-final-head-535
 ./scripts/test:record-cameraagent-final-head-535
 ./scripts/test:cameraagent-final-head-ci-import-535
+./scripts/test:assemble-cameraagent-final-head-535
 ```
 
 Publishing and re-reading a generation:
@@ -47,7 +51,10 @@ Publishing and re-reading a generation:
 ./scripts/record:cameraagent-final-head-535 clean  --bound-head <40-char-sha> --campaign <id>
 ```
 
-Both gates run in CI, in the Quality job's static and lightweight contract checks.
+The validator, recorder, importer and component gates run in CI in the Quality
+job's static and lightweight contract checks. The assembler gate builds a fixture
+assembly and runs `dotnet fsi`, so it runs in a separate full-mode step after the
+pinned SDK is installed.
 
 The validator is pure. It reads, recomputes and writes one canonical JSON result to
 standard output, and mutates nothing — no staging, no publication, no generation.
@@ -63,6 +70,92 @@ the other: a claimability state below the ceiling, a dirty tree, a nonzero comma
 receipt, and a field declared as free text. Two modes that never diverge are one
 check under two names, so each divergence is kept honest by a fixture rather than by
 the description.
+
+Assembling the aggregate from its producers:
+
+```bash
+./scripts/assemble:cameraagent-final-head-535 \
+    --bound-head <40-char-sha> \
+    --campaign-root <issue-211 run root holding run-manifest.json> \
+    --dual-agent TestResults/issue-197/dual-agent/five-trial-summary.json \
+    --components TestResults/issue-535/<head>/<campaign>/components/components.json \
+    --ci TestResults/issue-535/<head>/<campaign>/ci/ci.json \
+    --command-log <commandId TAB exitCode TAB receiptPath TAB argv, one per line> \
+    --output TestResults/issue-535/<head>/<campaign>/evidence.json \
+    --mode final
+```
+
+The assembler reads HEAD, the tree and cleanliness from git and refuses unless
+HEAD is the bound head and the tree is clean. It re-hashes every retained output
+the campaign's run manifest names, refuses the campaign unless its own terminal
+summary records every gate as passed on the clean bound head's fingerprint, and
+derives each aggregate section from one named source: `artifacts[]` from the run
+manifest, `replayProfiles[]` from the two #719 evidence records and their retained
+OTLP metrics, `centralTrafficAttempts` from the deny-sink summary plus every
+trial's recorded attempts (every term must be a recorded integer; a missing field
+is a refusal, not a zero), `dualAgent` from the #197 `five-trial-summary.json`
+(`issue-197-five-trial-summary-v2`, final mode, five trials, clean at the bound
+head), `testAssemblies[]` from the Release acceptance assembly's metadata, and
+`source` from the manifest's dirty-state digest. The `components` and `ci`
+projections are carried verbatim and their support directories copied beside the
+output. It validates the result in the requested mode before writing; a refusal
+writes nothing, and the validator's document says why. Replay node lists are
+carried in the order the producer recorded them; the assembler never sorts a
+record into shape, and its gate proves that a definition-order record reaches
+the validator's refusal rather than being reordered on the way.
+
+Two inputs are operator assertions and are recorded as such. The command log's
+ids, exit codes and argv are typed by the operator; only each receipt's digest is
+derived, and argv is hashed rather than carried because final evidence refuses
+free text. `heads.reviewed` and `heads.candidateB` have no producer; they are the
+operator's binding and are checked only for alignment with the bound head
+(`heads.execution` is the run manifest's revision and `heads.protectedCi` is
+checked against `ci.run.headSha` by the validator).
+
+The acceptance assembly the campaign executed is bound by digest:
+`scripts/test:cameraagent-standalone-211` writes `test-assembly.sha256` into the
+run root before the run manifest binds the tree, and the assembler requires that
+file and requires the assembly it reads to have that digest. A campaign root
+without it is refused rather than admitted under the weaker binding of "a Release
+build at the same head", which is the same source but not provably the same
+bytes.
+
+The three replay counters have no producer field. Each is derived from what the
+campaign retained, and each is named in the assembler for what it observes rather
+than for the property the field is named after:
+
+- `fallbacks` is the #719 record's `attemptCount - 1` (durable) plus the peak of
+  the sampled replay retry-wait and terminal backlog gauges, so a retry that
+  completed between telemetry samples is still counted through `attemptCount`.
+- `publishedOutputs` is the peak delivery-outbox backlog observed. The durable
+  fact is `published_flag` on the execution's outputs, which no producer projects
+  yet; under the campaign's standalone configuration nothing is ever enqueued for
+  delivery, so a zero here says "no delivery backlog was observed", not "the replay
+  was proven unpublished".
+- `liveRunnerDispatches` is zero once the runner's job meter is recorded only for
+  the LocalRunner profile with no non-completed outcome. The adapter routes to the
+  runner only for Replay-class executions, so the value follows from routing; the
+  per-attempt execution route is durable but not projected into evidence (#799).
+
+A nonzero value is carried, not hidden, so that the validator is what refuses it.
+
+### Producing the real generation
+
+The order that was proven end to end on `aa5ec674` (issue #961), all on one
+clean bound head with `development/v1` not advancing between steps:
+
+1. `scripts/test:cameraagent-standalone-211` — the campaign; note its run root.
+2. `scripts/test:cameraagent-dual-standalone-smoke` with the default five trials
+   (final mode; it runs the #171 baseline first). The host must be quiescent
+   (`HVO_SMOKE_QUIESCENCE_WAIT_SECONDS` raises the wait).
+3. `scripts/record:cameraagent-final-head-components-535` into
+   `TestResults/issue-535/<head>/components`.
+4. `gh workflow run ci.yml --ref <branch whose tip is the head>`, then
+   `scripts/import:cameraagent-final-head-ci-535` into
+   `TestResults/issue-535/<head>/ci/ci.json`.
+5. `scripts/assemble:cameraagent-final-head-535 --mode final` into
+   `TestResults/issue-535/<head>/<campaign>/evidence.json`.
+6. `scripts/record:cameraagent-final-head-535 publish`, then `verify` and `latest`.
 
 ## What publication guarantees
 
@@ -285,6 +378,19 @@ subsumes the differential one — two lists that each equal the canonical list e
 each other — so `replay-nodes-not-identical` was **deleted** rather than kept
 alongside. Two checks where one is strictly stronger is how the weaker one is later
 read as the guarantee.
+
+The order the literal carries is the **recorded execution order**: the #719
+producer projects `processing_execution_nodes` by rowid, which is the order the
+compiled plan scheduled the nodes, and both profiles on every campaign head have
+recorded it. Until #961 the literal carried the W6 template's *definition* order,
+in which `combined-preview` precedes `quality` and `cloud`; the plan schedules it
+after them because it consumes their outputs. Same fourteen nodes, different order,
+and no producer had ever emitted the literal's order — so the literal refused every
+honest record, and the only ways past it were to reorder a record into shape or to
+weaken the comparison to a sorted set. Both were rejected: the first is evidence
+reporting an order it did not observe, and the second would stop detecting a real
+reorder. The literal changed instead, and the definition order is kept as the
+fixture `replay-nodes-definition-order` so the distinction stays a refusal.
 
 
 ## The claimability ceiling is inherited, not invented
