@@ -359,15 +359,29 @@ public sealed class ProcessingExecutionPagesTests
         using var context = new BunitContext();
         var weather = new ProcessingGraphExecutionOutputState(0, new string('A', 64), Guid.NewGuid(),
             FrameArtifactRole.Preview, "weather-cloud-overlay-v1", "Available", null, false);
-        var assessment = weather with { Role = FrameArtifactRole.Metadata, Variant = "cloud-assessment-v1" };
+        var assessment = weather with { Role = FrameArtifactRole.Metadata, Variant = "custom-assessment" };
+        var contract = new HVO.SkyMonitor.Processing.ProcessingGraphProductContract(
+            FrameArtifactRole.Metadata, "custom-assessment", HVO.SkyMonitor.Processing.ProcessingProductKind.Metadata,
+            new HVO.SkyMonitor.Processing.ProcessingRecipeDefinition(
+                HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment, "1.0.0", "test", HVO.SkyMonitor.Processing.ProcessingOperationKind.Analyzer));
         var nodes = new CameraAgentProcessingNodeView[]
         {
             new("cloud-assessment", false, "plan", "Completed", null, 1, Now, Now, [], [], [weather])
+            { OutputContracts = [contract] }
         };
         var cut = context.Render<ExecutionRunDiagram>(parameters => parameters.Add(component => component.Nodes, nodes));
 
         Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
-        nodes[0] = nodes[0] with { Outputs = [assessment] };
+        nodes[0] = nodes[0] with { Outputs = [] };
+        cut.Render(parameters => parameters.Add(component => component.Nodes, nodes));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
+        nodes[0] = nodes[0] with { Outputs = [weather with { Role = FrameArtifactRole.Metadata, Variant = "custom-assessment" }], OutputContracts = [contract with { Recipe = null }] };
+        cut.Render(parameters => parameters.Add(component => component.Nodes, nodes));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
+        nodes[0] = nodes[0] with { Outputs = [assessment with { Role = FrameArtifactRole.Preview }], OutputContracts = [contract] };
+        cut.Render(parameters => parameters.Add(component => component.Nodes, nodes));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
+        nodes[0] = nodes[0] with { Outputs = [assessment], OutputContracts = [contract] };
         cut.Render(parameters => parameters.Add(component => component.Nodes, nodes));
         Assert.IsEmpty(cut.FindAll(".run-diagram__cloud-placeholder"));
     }

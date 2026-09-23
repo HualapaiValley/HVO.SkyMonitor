@@ -108,9 +108,11 @@
     private double Zoom { get; set; } = MinimumReadableScale;
     private bool _fit = true;
     private int ZoomPercent => (int)Math.Round(Zoom * 100);
-    private bool HasCloudProduct => Nodes.Any(static node => node.Outputs.Any(static output =>
-        output.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Metadata &&
-        string.Equals(output.Variant, "cloud-assessment-v1", StringComparison.Ordinal)));
+    private bool HasCloudProduct => Nodes.Any(static node => node.OutputContracts.Any(contract =>
+        contract.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Metadata &&
+        string.Equals(contract.Recipe?.Name, HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment, StringComparison.Ordinal) &&
+        node.Outputs.Any(output => output.Role == contract.Role &&
+            string.Equals(output.Variant, contract.Variant, StringComparison.Ordinal))));
 
     [Parameter, EditorRequired] public IReadOnlyList<CameraAgentProcessingNodeView> Nodes { get; set; } = [];
     [Parameter] public string? SelectedNodeId { get; set; }

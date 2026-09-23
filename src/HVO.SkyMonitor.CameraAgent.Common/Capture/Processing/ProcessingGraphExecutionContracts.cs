@@ -152,6 +152,7 @@ public sealed record ProcessingGraphExecutionNodeState(
 {
     /// <summary>Dependencies frozen with this execution, not today's active graph revision.</summary>
     public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];
+    public IReadOnlyList<ProcessingGraphProductContract> OutputContracts { get; init; } = [];
 }
 
 /// <summary>One terminal execution key and the immutable ordering value the evidence exporter sweeps by.</summary>
