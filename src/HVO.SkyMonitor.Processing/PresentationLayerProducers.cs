@@ -220,8 +220,9 @@ public static class PresentationLayerProducers
         }
         // The environment layer is produced separately; reserve its maximum corner footprint
         // before placing either cardinals or star names.
-        using (var cornerFont = PresentationFont.Create(PresentationFont.FrameScale(width, height)))
+        if (width >= 640 && height >= 480)
         {
+            using var cornerFont = PresentationFont.Create(PresentationFont.FrameScale(width, height));
             var cornerHeight = Math.Min(height / 2f, 64 +
                 (PresentationLayerPayloadV1.MaximumLinesPerBlock - 1) * (cornerFont.Size * 1.2f + 16) +
                 cornerFont.Size + PresentationFont.Halo(PresentationFont.FrameScale(width, height)));
@@ -235,7 +236,7 @@ public static class PresentationLayerProducers
             {
                 var bounds = PresentationFont.LineBounds(font, label, (float)point.X, (float)point.Y);
                 bounds.Inflate(PresentationFont.Halo(cardinalScale), PresentationFont.Halo(cardinalScale));
-                if (reserved.Any(box => Overlaps(box, bounds))) continue;
+                if (width >= 640 && height >= 480 && reserved.Any(box => Overlaps(box, bounds))) continue;
                 reserved.Add(bounds);
                 cardinalTexts.Add(new(PresentationTextAnchor.Point, point, new ReadOnlyCollection<string>([label]),
                     cardinalScale, 0, 0, cardinalColor));

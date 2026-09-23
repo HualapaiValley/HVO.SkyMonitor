@@ -253,9 +253,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 else if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
                 {
                     _layers = value;
-                    _layerMessage = ProcessedBaseSlot?.ArtifactId != value.BaseArtifactId
-                        ? "The layered base does not match the available Combined stage. Showing the unannotated base instead when available."
-                        : null;
+                    _layerMessage = null;
                     _selectedLayers = value.Layers.Where(static layer => layer.EnabledByDefault)
                         .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
                     _viewerOpen = false;
