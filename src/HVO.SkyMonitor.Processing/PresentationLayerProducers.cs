@@ -218,6 +218,18 @@ public static class PresentationLayerProducers
                 }
             }
         }
+        // The environment layer is produced separately; reserve its maximum corner footprint
+        // before placing either cardinals or star names.
+        using (var cornerFont = PresentationFont.Create(PresentationFont.FrameScale(width, height)))
+        {
+            var cornerHeight = Math.Min(height / 2f, 64 +
+                (PresentationLayerPayloadV1.MaximumLinesPerBlock - 1) * (cornerFont.Size * 1.2f + 16) +
+                cornerFont.Size + PresentationFont.Halo(PresentationFont.FrameScale(width, height)));
+            reserved.Add(new SKRect(0, 0, width / 2f, cornerHeight));
+            reserved.Add(new SKRect(width / 2f, 0, width, cornerHeight));
+            reserved.Add(new SKRect(0, height - cornerHeight, width / 2f, height));
+            reserved.Add(new SKRect(width / 2f, height - cornerHeight, width, height));
+        }
         using (var font = PresentationFont.Create(cardinalScale))
             foreach (var (label, point) in cardinalPoints)
             {
@@ -231,18 +243,6 @@ public static class PresentationLayerProducers
         if (includeLabels && style.MaximumLabelCharacters > 0)
         {
             var scale = PresentationFont.FrameScale(width, height, style.LabelScale);
-            // Corner facts are produced separately. Reserve their maximum vertical footprint and
-            // half the frame on each side before selecting stars, regardless of layer visibility.
-            using (var cornerFont = PresentationFont.Create(PresentationFont.FrameScale(width, height)))
-            {
-                var cornerHeight = Math.Min(height / 2f, 64 +
-                    (PresentationLayerPayloadV1.MaximumLinesPerBlock - 1) * (cornerFont.Size * 1.2f + 16) +
-                    cornerFont.Size + PresentationFont.Halo(PresentationFont.FrameScale(width, height)));
-                reserved.Add(new SKRect(0, 0, width / 2f, cornerHeight));
-                reserved.Add(new SKRect(width / 2f, 0, width, cornerHeight));
-                reserved.Add(new SKRect(0, height - cornerHeight, width / 2f, height));
-                reserved.Add(new SKRect(width / 2f, height - cornerHeight, width, height));
-            }
             using var font = PresentationFont.Create(scale);
             var occupied = new List<SKRect>();
             foreach (var item in annotatedObjects.OrderBy(static item => item.Magnitude)

@@ -87,7 +87,7 @@ public sealed class PresentationMetadataFactsBuilderTests
             static item => item.ContentSha256.Length == 64 && item.SourceIdentitySha256.Length == 64));
         foreach (var association in associations)
             Assert.AreEqual(association.PolicyIdentitySha256, FactFor(association.Kind).PolicyIdentitySha256);
-        var payload = PresentationLayerProducers.FromMetadataFacts(facts.Corners, 2, 2);
+        var payload = PresentationLayerProducers.FromMetadataFacts(facts.Corners, 1936, 1216);
         Assert.IsTrue(payload.TextBlocks.SelectMany(static block => block.Lines).All(
             static line => line.Length <= HVO.SkyMonitor.Imaging.PresentationLayerPayloadV1.MaximumLineCharacters));
 

@@ -299,7 +299,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         .ToString("0.########", System.Globalization.CultureInfo.InvariantCulture);
 
     private bool ShowLayeredHero => !_layerImageFailed && _selectedStage == CameraAgentPresentationStage.Annotated &&
-        _layers is not null && _layers.BaseArtifactId == ProcessedBaseSlot?.ArtifactId &&
+        _layers is not null &&
         _presentation?.DisplayCapture?.CaptureId == _layers.CaptureId &&
         SelectedSlot is not null;
 

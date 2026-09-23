@@ -486,7 +486,7 @@ public sealed class CurrentSkyPageTests
     }
 
     private static CameraAgentLayeredPresentation Layered(Guid captureId, string identity, Guid? baseArtifactId = null) => new(
-        captureId, baseArtifactId ?? Guid.Parse("00000000-0000-0000-0000-000000000103"), new string('A', 64),
+        captureId, baseArtifactId ?? Guid.Parse("00000000-0000-0000-0000-000000000104"), new string('A', 64),
         new string('B', 64), new string('C', 64), 640, 480,
         [new(identity, "scene-annotation", "hvo-layer-0", 20, true, 1_000_000, "renderer-v1", "style-v1")],
         System.Text.Encoding.UTF8.GetBytes("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 480\"><g id=\"hvo-layer-0\"></g></svg>"));
