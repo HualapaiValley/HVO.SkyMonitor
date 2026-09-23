@@ -226,10 +226,10 @@ public static class PresentationLayerProducers
             var cornerHeight = Math.Min(height / 2f, 64 +
                 (PresentationLayerPayloadV1.MaximumLinesPerBlock - 1) * (cornerFont.Size * 1.2f + 16) +
                 cornerFont.Size + PresentationFont.Halo(PresentationFont.FrameScale(width, height)));
-            reserved.Add(new SKRect(0, 0, width / 2f, cornerHeight));
-            reserved.Add(new SKRect(width / 2f, 0, width, cornerHeight));
-            reserved.Add(new SKRect(0, height - cornerHeight, width / 2f, height));
-            reserved.Add(new SKRect(width / 2f, height - cornerHeight, width, height));
+            reserved.Add(new SKRect(0, 0, width / 3f, cornerHeight));
+            reserved.Add(new SKRect(width * 2 / 3f, 0, width, cornerHeight));
+            reserved.Add(new SKRect(0, height - cornerHeight, width / 3f, height));
+            reserved.Add(new SKRect(width * 2 / 3f, height - cornerHeight, width, height));
         }
         using (var font = PresentationFont.Create(cardinalScale))
             foreach (var (label, point) in cardinalPoints)
@@ -327,7 +327,7 @@ public static class PresentationLayerProducers
         ArgumentNullException.ThrowIfNull(facts);
         var textScale = PresentationFont.FrameScale(widthPixels, heightPixels, scale);
         // The metadata payload has no knowledge of the scene. Fit its actual glyph bounds into
-        // the same corner halves reserved by the scene producer.
+        // the same outer thirds reserved by the scene producer.
         while (textScale > 1 && !Fits(textScale)) textScale--;
         if (!Fits(textScale)) throw new ArgumentException("Corner text does not fit within the frame.", nameof(facts));
         var blocks = new[]
@@ -358,8 +358,8 @@ public static class PresentationLayerProducers
                     bounds.Inflate(PresentationFont.Halo(candidate), PresentationFont.Halo(candidate));
                     var right = block.Anchor is PresentationTextAnchor.TopRight or PresentationTextAnchor.BottomRight;
                     var bottom = block.Anchor is PresentationTextAnchor.BottomLeft or PresentationTextAnchor.BottomRight;
-                    if (bounds.Left < (right ? widthPixels / 2f : 0) ||
-                        bounds.Right > (right ? widthPixels : widthPixels / 2f) ||
+                    if (bounds.Left < (right ? widthPixels * 2 / 3f : 0) ||
+                        bounds.Right > (right ? widthPixels : widthPixels / 3f) ||
                         bounds.Top < (bottom ? heightPixels / 2f : 0) ||
                         bounds.Bottom > (bottom ? heightPixels : heightPixels / 2f))
                         return false;

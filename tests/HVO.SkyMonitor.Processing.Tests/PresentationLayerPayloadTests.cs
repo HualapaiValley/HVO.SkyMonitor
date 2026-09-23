@@ -80,13 +80,13 @@ public sealed class PresentationLayerPayloadTests
     public void CornerTextFitsItsOwnFrameQuadrantOrRejectsUnrenderableFacts()
     {
         var facts = new PresentationMetadataFactsV1(new string('B', 64),
-            [new string('W', 64)], ["Right"], ["Bottom"], ["End"]);
+            [new string('W', 24)], ["Right"], ["Bottom"], ["End"]);
         var payload = PresentationLayerProducers.FromMetadataFacts(facts, 800, 600);
         Assert.IsLessThan(PresentationFont.FrameScale(800, 600), payload.TextBlocks[0].Scale);
         using var font = PresentationFont.Create(payload.TextBlocks[0].Scale);
         var block = payload.TextBlocks[0];
         var (x, y) = PresentationFont.LineOrigin(block, 800, 600, font, block.Lines[0], 0);
-        Assert.IsLessThanOrEqualTo(400, PresentationFont.LineBounds(font, block.Lines[0], x, y).Right);
+        Assert.IsLessThanOrEqualTo(800d / 3, PresentationFont.LineBounds(font, block.Lines[0], x, y).Right);
 
         Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerProducers.FromMetadataFacts(facts, 40, 30));
     }
@@ -115,7 +115,8 @@ public sealed class PresentationLayerPayloadTests
             includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false);
 
         Assert.HasCount(2, first.StarAnnotations.Markers);
-        Assert.HasCount(0, first.StarAnnotations.TextBlocks);
+        Assert.HasCount(1, first.StarAnnotations.TextBlocks);
+        Assert.AreEqual("BRIGHT", first.StarAnnotations.TextBlocks[0].Lines[0]);
         Assert.AreEqual(first.StarAnnotations.ContentIdentitySha256, repeat.StarAnnotations.ContentIdentitySha256);
         Assert.IsTrue(PresentationLayerPayloadJson.Parse(PresentationLayerPayloadJson.Serialize(first.StarAnnotations)).IsValid);
     }
@@ -123,7 +124,7 @@ public sealed class PresentationLayerPayloadTests
     [TestMethod]
     public async Task FullFrameStarLabelsAvoidAllMetadataCornersAndCardinals()
     {
-        const int width = 4000, height = 3000;
+        const int width = 1936, height = 1216;
         var utc = new DateTimeOffset(2026, 8, 25, 0, 0, 0, TimeSpan.Zero);
         var siderealHours = AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15;
         var catalog = new InMemoryCelestialCatalog([
@@ -135,8 +136,8 @@ public sealed class PresentationLayerPayloadTests
         ]);
         var visible = await new VisibleSceneBuilder(catalog).BuildAsync(new VisibleSceneRequest(utc,
             new ObserverLocation(0, 0, 0), new ProjectionContext(ProjectionModel.EquidistantFisheye,
-                width / 2, height / 2, 1400, 1400, width, height, ProjectionAperture.Circular,
-                ImageCircleRadiusPixels: 1900, BoresightAltitudeDegrees: 90),
+                 width / 2, height / 2, 568, 568, width, height, ProjectionAperture.Circular,
+                 ImageCircleRadiusPixels: 595.84, BoresightAltitudeDegrees: 90),
             new CatalogQuery(6, 10),
             new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
             projectionVersion: "perspective-v1")).ConfigureAwait(false);
@@ -148,7 +149,8 @@ public sealed class PresentationLayerPayloadTests
         var repeat = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
 
         Assert.HasCount(5, groups.StarAnnotations.Markers);
-        Assert.IsTrue(groups.CardinalDirections.TextBlocks.Count > 0);
+        CollectionAssert.AreEquivalent(new[] { "N", "E", "S", "W" },
+            groups.CardinalDirections.TextBlocks.Select(static block => block.Lines[0]).ToArray());
         Assert.HasCount(1, groups.StarAnnotations.TextBlocks);
         Assert.AreEqual("CENTER", groups.StarAnnotations.TextBlocks[0].Lines[0]);
         Assert.AreEqual(groups.StarAnnotations.ContentIdentitySha256, repeat.StarAnnotations.ContentIdentitySha256);
