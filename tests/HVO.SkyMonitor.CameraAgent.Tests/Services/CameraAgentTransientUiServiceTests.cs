@@ -63,6 +63,35 @@ public sealed class CameraAgentTransientUiServiceTests
     }
 
     [TestMethod]
+    public async Task CaptureStages_AuthorizedReadReturnsRecordedEventsAndSanitizesFailures()
+    {
+        var principal = Principal();
+        var authorization = Authorized(principal);
+        var runtime = new Mock<ITransientRuntimeManagement>(MockBehavior.Strict);
+        var captureId = Guid.NewGuid();
+        var recorded = new TransientStageEvent("causal-scan", null, "succeeded",
+            "transient_worker_frames", DateTimeOffset.UtcNow);
+        runtime.Setup(value => value.ReadCaptureStageEventsAsync(captureId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([recorded]);
+        runtime.Setup(value => value.ReadCaptureStageEventsAsync(It.Is<Guid>(id => id != captureId), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidDataException("/private/raw-ingress.db secret actor stack"));
+        using var telemetry = new CameraAgentOperatorTelemetry();
+        var service = new CameraAgentTransientUiService(new CountingAuthenticationStateProvider(principal),
+            authorization.Object, Mock.Of<ICameraAgentTransientOperatorProjection>(), runtime.Object,
+            telemetry, NullLogger<CameraAgentTransientUiService>.Instance);
+
+        var found = await service.GetCaptureStagesAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+        var failure = await service.GetCaptureStagesAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(found.IsSuccess);
+        Assert.AreEqual(captureId, found.Value!.CaptureId);
+        CollectionAssert.AreEqual(new[] { recorded }, found.Value.Events.ToArray());
+        Assert.AreEqual(OperatorUiResultKind.Unavailable, failure.Kind);
+        Assert.AreEqual("Transient stage evidence is temporarily unavailable.", failure.Message);
+        Assert.IsFalse(failure.Message!.Contains("private", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
     public async Task ProjectionFailureReturnsFixedSanitizedMessage()
     {
         var principal = Principal();

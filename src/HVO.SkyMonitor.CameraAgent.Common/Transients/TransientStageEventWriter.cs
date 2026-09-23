@@ -38,7 +38,7 @@ internal static class TransientStageEventWriter
         using var existing = connection.CreateCommand();
         existing.Transaction = transaction;
         existing.CommandText = """
-            SELECT state, source, event_unix_ms FROM raw_capture_stage_events
+            SELECT state, source FROM raw_capture_stage_events
             WHERE raw_capture_row_id = $raw AND candidate_id = $candidate AND stage_key = $stage;
             """;
         existing.Parameters.AddWithValue("$raw", rawCaptureRowId);
@@ -46,8 +46,7 @@ internal static class TransientStageEventWriter
         existing.Parameters.AddWithValue("$stage", stageKey);
         using var reader = await existing.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
-            reader.GetString(0) != state || reader.GetString(1) != source ||
-            reader.GetInt64(2) != recordedUtc.ToUnixTimeMilliseconds())
+            reader.GetString(0) != state || reader.GetString(1) != source)
         {
             throw new InvalidDataException("A transient stage event key conflicts with its durable outcome.");
         }

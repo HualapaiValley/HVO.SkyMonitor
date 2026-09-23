@@ -166,6 +166,15 @@ public sealed class SqliteTransientCandidateJournalTests
         Assert.AreEqual(discovered.ArtifactId, recovered.ArtifactId);
         await restarted.MarkCausalCompletionAsync(
             recovered.RawCaptureRowId, "test-history", succeeded: true, CancellationToken.None).ConfigureAwait(false);
+        var firstEventTime = await fixture.ScalarLongAsync(
+            "SELECT event_unix_ms FROM raw_capture_stage_events WHERE stage_key = 'causal-scan';").ConfigureAwait(false);
+        await Task.Delay(20).ConfigureAwait(false);
+        await restarted.MarkCausalCompletionAsync(
+            recovered.RawCaptureRowId, "test-history", succeeded: true, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1L, await fixture.ScalarLongAsync(
+            "SELECT COUNT(*) FROM raw_capture_stage_events WHERE stage_key = 'causal-scan';").ConfigureAwait(false));
+        Assert.AreEqual(firstEventTime, await fixture.ScalarLongAsync(
+            "SELECT event_unix_ms FROM raw_capture_stage_events WHERE stage_key = 'causal-scan';").ConfigureAwait(false));
         Assert.IsNull(await fixture.CreateRuntimeStore().ReadNextAsync(CancellationToken.None).ConfigureAwait(false));
     }
 
