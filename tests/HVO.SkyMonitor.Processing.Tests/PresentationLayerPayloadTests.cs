@@ -149,8 +149,9 @@ public sealed class PresentationLayerPayloadTests
         var repeat = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
 
         Assert.HasCount(5, groups.StarAnnotations.Markers);
-        CollectionAssert.AreEquivalent(new[] { "N", "E", "S", "W" },
-            groups.CardinalDirections.TextBlocks.Select(static block => block.Lines[0]).ToArray());
+        Assert.HasCount(4, groups.CardinalDirections.TextBlocks);
+        foreach (var direction in new[] { "N", "E", "S", "W" })
+            Assert.HasCount(1, groups.CardinalDirections.TextBlocks.Where(block => block.Lines[0] == direction));
         Assert.HasCount(1, groups.StarAnnotations.TextBlocks);
         Assert.AreEqual("CENTER", groups.StarAnnotations.TextBlocks[0].Lines[0]);
         Assert.AreEqual(groups.StarAnnotations.ContentIdentitySha256, repeat.StarAnnotations.ContentIdentitySha256);
