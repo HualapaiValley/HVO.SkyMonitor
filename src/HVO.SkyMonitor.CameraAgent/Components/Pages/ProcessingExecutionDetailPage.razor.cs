@@ -19,6 +19,7 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
     private string _runSearch = string.Empty;
     private string _outcomeFilter = "all";
     private bool _requiredOnly;
+    private Dictionary<Guid, long> _recentSequences = [];
     private TransientCaptureStageView? _transient;
     private CameraAgentProcessingExecutionsView? _recent;
     private bool _transientUnavailable;
@@ -44,6 +45,12 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
     private long? _captureSequence;
 
     private CameraAgentProcessingNodeView? SelectedNode => _view?.Nodes.FirstOrDefault(node => node.NodeId == _selectedNodeId);
+    private string RunCaptureLabel(Guid captureId) => _recentSequences.TryGetValue(captureId, out var sequence)
+        ? $"Capture #{sequence}" : $"Capture {captureId:D}";
+
+    private string GraphRevisionLabel => _view?.Execution.GraphRevisionId is { } revision
+        ? revision.Length <= 12 ? revision : revision[..12]
+        : "unavailable";
     private IReadOnlyList<CameraAgentProcessingExecutionSummary> FilteredRuns => _recent is null ? [] :
         _recent.Live.Concat(_recent.Replay)
             .Where(run => (_outcomeFilter == "all" || run.Status.ToString() == _outcomeFilter) &&
@@ -74,18 +81,6 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         : _transient is null || _transient.Events.Count == 0 ? "Not recorded for this capture"
         : $"{_transient.Events.Count} recorded milestone{(_transient.Events.Count == 1 ? "" : "s")}";
 
-    private static string TransientStageLabel(string stageKey) => stageKey switch
-    {
-        "frame-staged" => "Durable frame window",
-        "causal-scan" => "Causal candidate scan",
-        "candidate-allocated" => "Candidate identity allocated",
-        "candidate-persisted" => "Candidate persisted",
-        "event-finalized" => "Event evidence retained",
-        "relay-pending" => "Candidate relay queued",
-        "central-acknowledged" => "Central acknowledgement",
-        _ => OperationsPage.SplitWords(stageKey)
-    };
-
     private void SelectStageTab() => _tab = "stage";
     private void SelectArtifactsTab() => _tab = "artifacts";
     private void SelectAttemptsTab() => _tab = "attempts";
@@ -107,6 +102,7 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         _loading = true;
         _view = null;
         _recent = null;
+        _recentSequences = [];
         _transient = null;
         _captureSequence = null;
         try
@@ -178,6 +174,27 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                 _recent = recentView;
                 _captureSequence = sequence;
                 await InvokeAsync(StateHasChanged).ConfigureAwait(false);
+                if (recentView is not null)
+                {
+                    foreach (var run in recentView.Live.Concat(recentView.Replay).Select(static run => run.CaptureId).Distinct())
+                    {
+                        if (generation != Volatile.Read(ref _generation) || cancellation.IsCancellationRequested) return;
+                        try
+                        {
+                            var item = await OperatorService.GetGalleryCaptureAsync(run, cancellation.Token).ConfigureAwait(false);
+                            if (generation != Volatile.Read(ref _generation) || requestedExecution != ExecutionId) return;
+                            if (item.IsSuccess && item.Value is { } capture)
+                            {
+                                _recentSequences[run] = capture.CaptureSequence;
+                                await InvokeAsync(StateHasChanged).ConfigureAwait(false);
+                            }
+                        }
+                        catch (Exception) when (!cancellation.IsCancellationRequested)
+                        {
+                            // The complete capture ID remains visible when a bounded enrichment fails.
+                        }
+                    }
+                }
             }
             else
             {

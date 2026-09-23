@@ -9,6 +9,12 @@
 .run-diagram__source rect, .run-diagram__boundary rect { fill: var(--hvo-surface-elevated); stroke: var(--hvo-info-strong); }
 .run-diagram__source text, .run-diagram__boundary text { fill: var(--hvo-body-color); font-size: 12px; }
 .run-diagram__unavailable { fill: var(--hvo-muted); font-size: 12px; }
+.run-diagram__transient > rect { fill: rgba(188, 140, 255, .07); stroke: #493c61; }
+.run-diagram__transient text { fill: var(--hvo-muted-strong); font-size: 12px; }
+.run-diagram__transient .run-diagram__transient-title { fill: #bc8cff; font-size: 13px; font-weight: 700; }
+.run-diagram__transient-node rect { fill: #171624; stroke: #bc8cff; }
+.run-diagram__transient-node text { fill: var(--hvo-body-color); }
+.run-diagram__transient-edge { fill: none; stroke: #bc8cff; stroke-width: 2; }
 .run-diagram__edge--optional { stroke-dasharray: 6 5; }
 .run-diagram__node { cursor: pointer; }
 .run-diagram__node rect { fill: var(--hvo-surface-elevated); stroke: var(--hvo-border-stronger); stroke-width: 2; }

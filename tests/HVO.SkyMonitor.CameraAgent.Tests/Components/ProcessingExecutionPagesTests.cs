@@ -236,12 +236,13 @@ public sealed class ProcessingExecutionPagesTests
 
         cut.WaitForAssertion(() =>
         {
-            var stages = cut.FindAll(".transient-band__stages li");
+            var stages = cut.FindAll(".run-diagram__transient-node");
             Assert.HasCount(3, stages);
             StringAssert.Contains(stages[0].TextContent, "Durable frame window", StringComparison.Ordinal);
             StringAssert.Contains(stages[1].TextContent, "Causal candidate scan", StringComparison.Ordinal);
-            StringAssert.Contains(stages[2].TextContent, "Candidate relay queued", StringComparison.Ordinal);
-            Assert.IsFalse(cut.Find(".transient-band").TextContent.Contains("Central acknowledgement", StringComparison.Ordinal));
+            StringAssert.Contains(stages[2].TextContent, "Relay queued", StringComparison.Ordinal);
+            Assert.HasCount(2, cut.FindAll(".run-diagram__transient-label"));
+            Assert.IsFalse(cut.Find(".run-diagram__transient").TextContent.Contains("Acknowledged", StringComparison.Ordinal));
         });
     }
 

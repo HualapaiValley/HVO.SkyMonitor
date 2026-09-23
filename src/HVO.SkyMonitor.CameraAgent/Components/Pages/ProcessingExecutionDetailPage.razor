@@ -37,7 +37,7 @@
                 {
                     @foreach (var run in FilteredRuns)
                     {
-                        <a class="@(run.ExecutionId == execution.ExecutionId ? "run-rail__item run-rail__item--selected" : "run-rail__item")" href="/operations/pipeline/executions/@run.ExecutionId"><strong>@StatusGlyph(run.Status.ToString()) Capture @ProcessingExecutionsPage.Short(run.CaptureId)</strong><span>@run.ExecutionClass / @run.Status / @run.AcceptedUtc.ToString("HH:mm") UTC</span></a>
+                        <a class="@(run.ExecutionId == execution.ExecutionId ? "run-rail__item run-rail__item--selected" : "run-rail__item")" href="/operations/pipeline/executions/@run.ExecutionId"><strong>@StatusGlyph(run.Status.ToString()) @RunCaptureLabel(run.CaptureId)</strong><span>@run.ExecutionClass / @run.Status / @run.AcceptedUtc.ToString("HH:mm") UTC</span></a>
                     }
                     @if (FilteredRuns.Count == 0) { <p class="muted">No captures match this filter.</p> }
                 }
@@ -52,19 +52,9 @@
             <div class="run-workspace__main">
                 <header class="run-overview"><div><p class="run-breadcrumb"><a href="/operations">Operations</a> / <a href="/operations/pipeline/executions">Pipeline</a> / Run</p><div class="run-title"><span class="run-title__glyph @TitleStatusClass" aria-hidden="true">@StatusGlyph(execution.Status.ToString())</span><div><h1>@(_captureSequence is { } sequence ? $"Capture #{sequence}" : "Capture pipeline run")</h1><p>@execution.Status / @execution.ExecutionClass execution</p></div></div></div><a class="btn btn-outline-light" href="/operations/pipeline/replays/new?captureId=@execution.CaptureId">Reprocess</a></header>
                 <section class="run-summary" aria-label="Run summary"><div class="run-summary__origin"><strong>Triggered by @execution.TriggerKind</strong><span>@(execution.TriggerReference ?? $"Accepted {execution.AcceptedUtc:u}")</span></div><dl class="run-overview__facts"><div><dt>Status</dt><dd>@execution.Status</dd></div><div><dt>Total duration</dt><dd>@ProcessingExecutionsPage.FormatDuration(execution.Duration)</dd></div><div><dt>Artifacts</dt><dd>@_view.Nodes.Sum(static node => node.Outputs.Count)</dd></div><div><dt>LogicHost</dt><dd>@LogicHostState</dd></div></dl></section>
-                <section class="graph-card" aria-label="Capture-time dependency graph"><header class="graph-card__heading"><div><p class="eyebrow">Capture-time dependency graph</p><h2>Layered All-Sky Processing</h2></div><div class="graph-card__legend"><span class="legend-success">● Succeeded</span><span class="legend-running">● Running</span><span class="legend-attention">! Attention</span><span>○ Skipped</span></div></header><ExecutionRunDiagram Nodes="@_view.Nodes" SelectedNodeId="@_selectedNodeId" NodeSelected="id => _selectedNodeId = id" />
+                <section class="graph-card" aria-label="Capture-time dependency graph"><header class="graph-card__heading"><div><p class="eyebrow">Capture-time dependency graph</p><h2>Pipeline revision @GraphRevisionLabel</h2></div><div class="graph-card__legend"><span class="legend-success">● Succeeded</span><span class="legend-running">● Running</span><span class="legend-attention">! Attention</span><span>○ Skipped</span></div></header><ExecutionRunDiagram Nodes="@_view.Nodes" TransientEvents="@(_transient?.Events ?? [])" TransientEnabled="@TransientEnabled" TransientUnavailable="@_transientUnavailable" SelectedNodeId="@_selectedNodeId" NodeSelected="id => _selectedNodeId = id" />
                 <section class="transient-band" aria-label="Independent transient lane"><div><p class="eyebrow">Fireball / transient track</p><h3>Independent durable lane</h3></div><span class="hvo-chip hvo-chip--neutral">@TransientLabel</span>
-                    @if (_transient is { Events.Count: > 0 } transient)
-                    {
-                        <ol class="transient-band__stages" aria-label="Recorded transient milestones">
-                            @foreach (var stage in transient.Events)
-                            {
-                                <li><strong>@TransientStageLabel(stage.StageKey)</strong><span>@OperationsPage.SplitWords(stage.State)</span><time datetime="@stage.RecordedUtc.ToString("O")">@stage.RecordedUtc.ToString("HH:mm:ss.fff") UTC</time></li>
-                            }
-                        </ol>
-                        <p>Each milestone is a durable local commit. Missing stages are not inferred; a Hybrid relay-pending event does not prove central acknowledgement.</p>
-                    }
-                    else { <p>@(!TransientEnabled ? "This local detector is disabled for this CameraAgent." : "No stage events are recorded for this capture; no run outcome is inferred.")</p> }
+                    <p>@(!TransientEnabled ? "This local detector is disabled for this CameraAgent." : _transient is { Events.Count: > 0 } ? "The graph shows only committed, candidate-scoped milestones. Missing stages and central acknowledgement are not inferred." : "No stage events are recorded for this capture; no run outcome is inferred.")</p>
                 </section></section>
                 <section class="run-inspector" aria-label="Selected stage">
                     <nav class="run-inspector__tabs" aria-label="Stage details">

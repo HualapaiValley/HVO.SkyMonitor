@@ -1,8 +1,9 @@
 @using HVO.SkyMonitor.CameraAgent.Services
 @using HVO.SkyMonitor.CameraAgent.Components.Pages
+@using HVO.SkyMonitor.CameraAgent.Common.Transients
 @using Microsoft.AspNetCore.Components.Web
 
-@if (Nodes.Count == 0)
+@if (Nodes.Count == 0 && (!TransientEnabled || TransientEvents.Count == 0))
 {
     <p>No execution nodes were recorded.</p>
 }
@@ -44,6 +45,35 @@ else
             }
             <g class="run-diagram__boundary"><rect x="@PublicationX" y="@(HeaderHeight + NodeHeight / 2 - 20)" width="@SourceWidth" height="40" rx="8" /><text x="@(PublicationX + 10)" y="@(HeaderHeight + NodeHeight / 2 + 5)">Published @Nodes.Sum(static node => node.Outputs.Count(static output => output.Published))</text></g>
             <text class="run-diagram__unavailable" x="@(LogicHostX + 12)" y="@(HeaderHeight + NodeHeight / 2)">No per-run receipt</text>
+            <g class="run-diagram__transient">
+                <rect x="0" y="@TransientTop" width="@Width" height="@(Height - TransientTop)" />
+                <text class="run-diagram__transient-title" x="@Margin" y="@(TransientTop + 23)">Fireball / transient track / independent durable lane</text>
+                @if (!TransientEnabled || TransientUnavailable || TransientEvents.Count == 0)
+                {
+                    <g class="run-diagram__transient-empty"><text x="@Margin" y="@(TransientTop + 55)">@(TransientEmptyLabel)</text></g>
+                }
+                else
+                {
+                    @foreach (var lane in TransientLanes)
+                    {
+                        <g class="run-diagram__transient-label"><text x="@Margin" y="@(lane.Y + 16)">@(LaneLabel(lane.CandidateId))</text></g>
+                        @for (var i = 0; i < lane.Events.Count; i++)
+                        {
+                            var stage = lane.Events[i];
+                            var x = EdgeX + i * (NodeWidth + ColumnGap);
+                            @if (i > 0)
+                            {
+                                <path class="run-diagram__transient-edge" d="M@(x - ColumnGap),@(lane.Y + 49) H@x" />
+                            }
+                            <g class="run-diagram__transient-node" aria-label="@stage.StageKey: @stage.State, @stage.RecordedUtc.ToString("u")">
+                                <rect x="@x" y="@(lane.Y + 27)" width="@NodeWidth" height="52" rx="7" />
+                                <text x="@(x + 9)" y="@(lane.Y + 48)">@TransientName(stage.StageKey)</text>
+                                <text class="run-diagram__meta" x="@(x + 9)" y="@(lane.Y + 67)">@stage.State / @stage.RecordedUtc.ToString("HH:mm:ss") UTC</text>
+                            </g>
+                        }
+                    }
+                }
+            </g>
         </svg>
     </div>
     <div class="run-diagram__legend"><span>━ Required dependency</span><span>┄ Optional dependency</span><span>Click or press Enter on a stage for details</span></div>
@@ -68,10 +98,14 @@ else
     [Parameter, EditorRequired] public IReadOnlyList<CameraAgentProcessingNodeView> Nodes { get; set; } = [];
     [Parameter] public string? SelectedNodeId { get; set; }
     [Parameter] public EventCallback<string> NodeSelected { get; set; }
+    [Parameter] public IReadOnlyList<TransientStageEvent> TransientEvents { get; set; } = [];
+    [Parameter] public bool TransientEnabled { get; set; }
+    [Parameter] public bool TransientUnavailable { get; set; }
 
     private string TitleId => $"execution-graph-title-{_instance}";
     private string DescriptionId => $"execution-graph-description-{_instance}";
-    private int Width => LogicHostX + SourceWidth + Margin;
+    private int Width => Math.Max(LogicHostX + SourceWidth + Margin,
+        EdgeX + (TransientLanes.Count == 0 ? 0 : TransientLanes.Max(static lane => lane.Events.Count)) * (NodeWidth + ColumnGap) + Margin);
     private int EdgeX => Margin + SourceWidth + ColumnGap;
     private int PublicationX => _layout.Count == 0 ? EdgeX : _layout.Max(static item => item.X) + NodeWidth + ColumnGap;
     private int LogicHostX => PublicationX + SourceWidth + ColumnGap;
@@ -84,7 +118,33 @@ else
     private void FitGraph() { _fit = true; Zoom = 0.5; }
     private void ZoomOut() { _fit = false; Zoom = Math.Max(0.5, Zoom - 0.25); }
     private void ZoomIn() { _fit = false; Zoom = Math.Min(2, Zoom + 0.25); }
-    private int Height => _layout.Count == 0 ? 0 : _layout.Max(static item => item.Y) + NodeHeight + Margin;
+    private int TransientTop => (_layout.Count == 0 ? HeaderHeight : _layout.Max(static item => item.Y) + NodeHeight) + 60;
+    private int Height => TransientTop + 65 + Math.Max(1, TransientLanes.Count) * 112;
+    private IReadOnlyList<TransientLane> TransientLanes => TransientEvents
+        .GroupBy(static stage => stage.CandidateId)
+        .OrderBy(static group => group.Key.HasValue)
+        .ThenBy(static group => group.Key)
+        .Select((group, index) => new TransientLane(group.Key, TransientTop + 40 + index * 112,
+            group.OrderBy(static stage => stage.RecordedUtc).ThenBy(static stage => stage.StageKey, StringComparer.Ordinal).ToArray()))
+        .ToArray();
+
+    private static string TransientName(string stage) => stage switch
+    {
+        "frame-staged" => "Durable frame window",
+        "causal-scan" => "Causal candidate scan",
+        "candidate-allocated" => "Candidate allocated",
+        "candidate-persisted" => "Persist candidate",
+        "event-finalized" => "Retain event evidence",
+        "relay-pending" => "Relay queued",
+        "central-acknowledged" => "Acknowledged",
+        _ => stage
+    };
+
+    private string TransientEmptyLabel => !TransientEnabled ? "Local detector disabled"
+        : TransientUnavailable ? "Evidence unavailable" : "No stage events recorded";
+
+    private static string LaneLabel(Guid? candidateId) => candidateId is { } id
+        ? $"Candidate {id:D}" : "Capture";
 
     protected override void OnParametersSet()
     {
@@ -171,4 +231,5 @@ else
     private sealed record PlacedNode(CameraAgentProcessingNodeView Node, int X, int Y);
     private sealed record GraphEdge(string Path, bool Required);
     private sealed record GraphBand(int X, int Width, string Label);
+    private sealed record TransientLane(Guid? CandidateId, int Y, IReadOnlyList<TransientStageEvent> Events);
 }
