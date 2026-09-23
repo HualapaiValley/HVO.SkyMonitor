@@ -15,6 +15,7 @@
         <div role="group" aria-label="Graph zoom">
             <button type="button" class="btn btn-outline-light btn-sm" @onclick="ZoomOut" aria-label="Zoom out">−</button>
             <button type="button" class="btn btn-outline-light btn-sm" @onclick="FitGraph" aria-label="Fit graph">Fit</button>
+            <output class="run-diagram__zoom" aria-label="Graph zoom mode">@(_fit ? "Fit (min 85%)" : $"{ZoomPercent}%")</output>
             <button type="button" class="btn btn-outline-light btn-sm" @onclick="ZoomIn" aria-label="Zoom in">+</button>
         </div>
     </div>
@@ -29,29 +30,36 @@
             <g class="run-diagram__source"><rect x="@Margin" y="@(HeaderHeight + NodeHeight / 2 - 20)" width="@SourceWidth" height="40" rx="8" /><text x="@(Margin + 10)" y="@(HeaderHeight + NodeHeight / 2 + 5)">Raw capture</text></g>
             @foreach (var edge in _edges)
             {
-                <path class="@(edge.Required ? "run-diagram__edge" : "run-diagram__edge run-diagram__edge--optional")" d="@edge.Path" />
+                <path class="@EdgeClass(edge)" d="@edge.Path" />
             }
             @foreach (var item in _layout)
             {
                 var node = item.Node;
                 <g class="@NodeClass(node)" role="button" tabindex="0" aria-pressed="@((SelectedNodeId == node.NodeId).ToString().ToLowerInvariant())" aria-label="@node.NodeId: @node.Status, @(node.Required ? "required" : "optional"), @node.Outputs.Count output@(node.Outputs.Count == 1 ? "" : "s"). Activate for details." @onclick="() => NodeSelected.InvokeAsync(node.NodeId)" @onkeydown="args => HandleKey(args, node.NodeId)">
                     <rect x="@item.X" y="@item.Y" width="@NodeWidth" height="@NodeHeight" rx="8" />
-                    <text class="run-diagram__status" x="@(item.X + 12)" y="@(item.Y + 27)">@(StatusGlyph(node.Status))</text>
-                    <text x="@(item.X + 31)" y="@(item.Y + 27)">@(DisplayName(node.NodeId))</text>
-                    <text class="run-diagram__meta" x="@(item.X + 12)" y="@(item.Y + 48)">@node.Status / @ProcessingExecutionsPage.FormatDuration(node.StartedUtc is { } start && node.CompletedUtc is { } end ? end - start : null)</text>
-                    <path class="run-diagram__divider" d="M@(item.X + 10),@(item.Y + 65) H@(item.X + NodeWidth - 10)" />
-                    <text class="run-diagram__meta" x="@(item.X + 12)" y="@(item.Y + 85)">@node.Outputs.Count artifact@(node.Outputs.Count == 1 ? "" : "s")</text>
-                    <text class="run-diagram__meta" x="@(item.X + NodeWidth - 12)" y="@(item.Y + 85)" text-anchor="end">@(node.Required ? "REQUIRED" : "OPTIONAL")</text>
+                    <text class="run-diagram__status" x="@(item.X + 10)" y="@(item.Y + 19)">@(StatusGlyph(node.Status))</text>
+                    <text x="@(item.X + 27)" y="@(item.Y + 19)">@(DisplayName(node.NodeId))</text>
+                    <text class="run-diagram__meta" x="@(item.X + 10)" y="@(item.Y + 37)">@node.Status / @ProcessingExecutionsPage.FormatDuration(node.StartedUtc is { } start && node.CompletedUtc is { } end ? end - start : null)</text>
+                    <path class="run-diagram__divider" d="M@(item.X + 8),@(item.Y + 48) H@(item.X + NodeWidth - 8)" />
+                    <text class="run-diagram__meta" x="@(item.X + 10)" y="@(item.Y + 65)">@node.Outputs.Count artifact@(node.Outputs.Count == 1 ? "" : "s")</text>
+                    <text class="run-diagram__meta" x="@(item.X + NodeWidth - 10)" y="@(item.Y + 65)" text-anchor="end">@(node.Required ? "REQUIRED" : "OPTIONAL")</text>
                 </g>
             }
             <g class="run-diagram__boundary"><rect x="@PublicationX" y="@(HeaderHeight + NodeHeight / 2 - 20)" width="@SourceWidth" height="40" rx="8" /><text x="@(PublicationX + 10)" y="@(HeaderHeight + NodeHeight / 2 + 5)">Published @Nodes.Sum(static node => node.Outputs.Count(static output => output.Published))</text></g>
             <text class="run-diagram__unavailable" x="@(LogicHostX + 12)" y="@(HeaderHeight + NodeHeight / 2)">No per-run receipt</text>
+            @if (!HasCloudProduct)
+            {
+                <g class="run-diagram__cloud-placeholder" role="note" aria-label="Cloud assessment: not produced; no cloud product recorded">
+                    <rect x="0" y="@CloudTop" width="@Width" height="42" />
+                    <text x="@Margin" y="@(CloudTop + 26)">Cloud assessment · Not produced / no cloud product recorded</text>
+                </g>
+            }
             <g class="run-diagram__transient">
                 <rect x="0" y="@TransientTop" width="@Width" height="@(Height - TransientTop)" />
                 <text class="run-diagram__transient-title" x="@Margin" y="@(TransientTop + 23)">Fireball / transient track / independent durable lane</text>
                 @if (!TransientEnabled || TransientUnavailable || TransientEvents.Count == 0)
                 {
-                    <g class="run-diagram__transient-empty"><text x="@Margin" y="@(TransientTop + 55)">@(TransientEmptyLabel)</text></g>
+                    <g class="run-diagram__transient-empty" role="note" aria-label="Meteor detection: @TransientEmptyLabel"><text x="@Margin" y="@(TransientTop + 55)">Meteor detection · @TransientEmptyLabel</text></g>
                 }
                 else
                 {
@@ -84,13 +92,13 @@
 <div class="run-diagram__legend"><span>━ Required dependency</span><span>┄ Optional dependency</span><span>Click or press Enter on a stage for details</span></div>
 
 @code {
-    private const int NodeWidth = 204;
-    private const int NodeHeight = 100;
-    private const int ColumnGap = 76;
-    private const int RowGap = 20;
+    private const int NodeWidth = 168;
+    private const int NodeHeight = 76;
+    private const int ColumnGap = 48;
+    private const int RowGap = 12;
     private const int Margin = 16;
     private const int HeaderHeight = 32;
-    private const int SourceWidth = 148;
+    private const int SourceWidth = 132;
     private static int _instances;
     private readonly int _instance = Interlocked.Increment(ref _instances);
     private List<PlacedNode> _layout = [];
@@ -99,6 +107,12 @@
     private const double MinimumReadableScale = 0.85;
     private double Zoom { get; set; } = MinimumReadableScale;
     private bool _fit = true;
+    private int ZoomPercent => (int)Math.Round(Zoom * 100);
+    private bool HasCloudProduct => Nodes.Any(static node => node.OutputContracts.Any(contract =>
+        contract.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Metadata &&
+        string.Equals(contract.Recipe?.Name, HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment, StringComparison.Ordinal) &&
+        node.Outputs.Any(output => output.Role == contract.Role &&
+            string.Equals(output.Variant, contract.Variant, StringComparison.Ordinal))));
 
     [Parameter, EditorRequired] public IReadOnlyList<CameraAgentProcessingNodeView> Nodes { get; set; } = [];
     [Parameter] public string? SelectedNodeId { get; set; }
@@ -129,8 +143,9 @@
     private void FitGraph() { _fit = true; Zoom = MinimumReadableScale; }
     private void ZoomOut() { _fit = false; Zoom = Math.Max(0.5, Zoom - 0.25); }
     private void ZoomIn() { _fit = false; Zoom = Math.Min(2, Zoom + 0.25); }
-    private int TransientTop => (_layout.Count == 0 ? HeaderHeight : _layout.Max(static item => item.Y) + NodeHeight) + 60;
-    private int Height => TransientTop + 65 + Math.Max(1, TransientLanes.Count) * 112;
+    private int CloudTop => (_layout.Count == 0 ? HeaderHeight + NodeHeight : _layout.Max(static item => item.Y) + NodeHeight) + 18;
+    private int TransientTop => CloudTop + (HasCloudProduct ? 0 : 42) + 8;
+    private int Height => TransientTop + (TransientLanes.Count == 0 ? 86 : 65 + TransientLanes.Count * 86);
     private int CaptureLaneY => TransientTop + 40;
     private int CaptureLaneCount => TransientLanes.FirstOrDefault(static lane => lane.CandidateId is null)?.Events.Count ?? 0;
     private TransientStageEvent? CausalSuccess => TransientEvents.FirstOrDefault(static stage =>
@@ -140,7 +155,7 @@
         .OrderBy(static group => group.Key.HasValue)
         .ThenBy(static group => group.Min(static stage => stage.SlotOrdinal ?? int.MaxValue))
         .ThenBy(static group => group.Key)
-        .Select((group, index) => new TransientLane(group.Key, TransientTop + 40 + index * 112,
+        .Select((group, index) => new TransientLane(group.Key, TransientTop + 34 + index * 86,
             group.OrderBy(static stage => StageRank(stage.StageKey)).ThenBy(static stage => stage.RecordedUtc).ToArray()))
         .ToArray();
 
@@ -225,7 +240,7 @@
             if (target.Node.Dependencies.Any(static dependency => dependency.ProducerId == "$raw"))
             {
                 var y = target.Y + NodeHeight / 2;
-                _edges.Add(new GraphEdge($"M{Margin + SourceWidth},{HeaderHeight + NodeHeight / 2} C{EdgeX - 25},{HeaderHeight + NodeHeight / 2} {EdgeX - 25},{y} {target.X},{y}", true));
+                _edges.Add(new GraphEdge($"M{Margin + SourceWidth},{HeaderHeight + NodeHeight / 2} C{EdgeX - 25},{HeaderHeight + NodeHeight / 2} {EdgeX - 25},{y} {target.X},{y}", true, target.Node.NodeId == SelectedNodeId));
             }
             foreach (var dependency in target.Node.Dependencies)
             {
@@ -235,7 +250,7 @@
                 var x2 = target.X;
                 var y2 = target.Y + NodeHeight / 2;
                 var middle = (x1 + x2) / 2;
-                _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", dependency.Required));
+                _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", dependency.Required, target.Node.NodeId == SelectedNodeId || source.Node.NodeId == SelectedNodeId));
             }
         }
         foreach (var source in _layout.Where(static item => item.Node.Outputs.Any(static output => output.Published)))
@@ -245,12 +260,15 @@
             var x2 = PublicationX;
             var y2 = HeaderHeight + NodeHeight / 2;
             var middle = (x1 + x2) / 2;
-            _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", true));
+            _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", true, source.Node.NodeId == SelectedNodeId));
         }
     }
 
     private string NodeClass(CameraAgentProcessingNodeView node) =>
         $"run-diagram__node run-diagram__node--{node.Status.ToLowerInvariant()}{(SelectedNodeId == node.NodeId ? " run-diagram__node--selected" : "")}";
+
+    private static string EdgeClass(GraphEdge edge) =>
+        $"run-diagram__edge{(edge.Required ? "" : " run-diagram__edge--optional")}{(edge.Highlighted ? " run-diagram__edge--highlighted" : "")}";
 
     private static string StatusGlyph(string status) => status switch
     {
@@ -261,7 +279,7 @@
         _ => "·"
     };
 
-    private static string DisplayName(string nodeId) => nodeId.Length <= 21 ? nodeId : string.Concat(nodeId.AsSpan(0, 18), "...");
+    private static string DisplayName(string nodeId) => nodeId.Length <= 19 ? nodeId : string.Concat(nodeId.AsSpan(0, 16), "...");
 
     private async Task HandleKey(KeyboardEventArgs args, string id)
     {
@@ -269,7 +287,7 @@
     }
 
     private sealed record PlacedNode(CameraAgentProcessingNodeView Node, int X, int Y);
-    private sealed record GraphEdge(string Path, bool Required);
+    private sealed record GraphEdge(string Path, bool Required, bool Highlighted);
     private sealed record GraphBand(int X, int Width, string Label);
     private sealed record TransientLane(Guid? CandidateId, int Y, IReadOnlyList<TransientStageEvent> Events);
 }

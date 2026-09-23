@@ -322,10 +322,68 @@ public sealed class ProcessingExecutionPagesTests
         Assert.HasCount(1, cut.FindAll(".run-diagram__edge--optional"));
         Assert.HasCount(1, cut.FindAll(".run-diagram__edge:not(.run-diagram__edge--optional)"));
         Assert.IsTrue(cut.FindAll(".run-diagram__node")[1].ClassList.Contains("run-diagram__node--skipped"));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__transient-empty"));
+        Assert.IsEmpty(cut.FindAll(".run-diagram__transient-edge"));
+        Assert.AreEqual("Fit (min 85%)", cut.Find(".run-diagram__zoom").TextContent);
+        StringAssert.Contains(cut.Find(".run-diagram").GetAttribute("style")!, "width: max(100%,", StringComparison.Ordinal);
         cut.FindAll(".run-diagram__node")[1].KeyDown("Enter");
         Assert.AreEqual("preview", selected);
+        cut.Render(parameters => parameters.Add(component => component.SelectedNodeId, "preview"));
+        Assert.HasCount(2, cut.FindAll(".run-diagram__edge--highlighted"));
         cut.Find("button[aria-label='Zoom in']").Click();
-        StringAssert.Contains(cut.Find(".run-diagram").GetAttribute("style")!, "width:", StringComparison.Ordinal);
+        Assert.AreEqual("110%", cut.Find(".run-diagram__zoom").TextContent);
+        Assert.IsFalse(cut.Find(".run-diagram").GetAttribute("style")!.Contains("max(100%", StringComparison.Ordinal));
+        cut.Find("button[aria-label='Fit graph']").Click();
+        Assert.AreEqual("Fit (min 85%)", cut.Find(".run-diagram__zoom").TextContent);
+        StringAssert.Contains(cut.Find(".run-diagram").GetAttribute("style")!, "width: max(100%,", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void RunDiagram_KeepsCloudPlaceholderWhenStageHasNoProduct()
+    {
+        using var context = new BunitContext();
+        var nodes = new CameraAgentProcessingNodeView[]
+        {
+            new("cloud-assessment", false, "plan", "Completed", null, 1, Now, Now, [], [], [])
+        };
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters.Add(component => component.Nodes, nodes));
+
+        Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__node"));
+    }
+
+    [TestMethod]
+    public void RunDiagram_OnlyRecordedAssessmentProductRemovesCloudPlaceholder()
+    {
+        using var context = new BunitContext();
+        var weather = new ProcessingGraphExecutionOutputState(0, new string('A', 64), Guid.NewGuid(),
+            FrameArtifactRole.Preview, "weather-cloud-overlay-v1", "Available", null, false);
+        var assessment = weather with { Role = FrameArtifactRole.Metadata, Variant = "custom-assessment" };
+        var contract = new HVO.SkyMonitor.Processing.ProcessingGraphProductContract(
+            FrameArtifactRole.Metadata, "custom-assessment", HVO.SkyMonitor.Processing.ProcessingProductKind.Metadata,
+            new HVO.SkyMonitor.Processing.ProcessingRecipeDefinition(
+                HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment, "1.0.0", "test", HVO.SkyMonitor.Processing.ProcessingOperationKind.Analyzer));
+        var nodes = new CameraAgentProcessingNodeView[]
+        {
+            new("cloud-assessment", false, "plan", "Completed", null, 1, Now, Now, [], [], [weather])
+            { OutputContracts = [contract] }
+        };
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters.Add(component => component.Nodes, nodes));
+
+        Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
+        nodes[0] = nodes[0] with { Outputs = [] };
+        cut.Render(parameters => parameters.Add(component => component.Nodes, nodes));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
+        nodes[0] = nodes[0] with { Outputs = [weather with { Role = FrameArtifactRole.Metadata, Variant = "custom-assessment" }], OutputContracts = [contract with { Recipe = null }] };
+        cut.Render(parameters => parameters.Add(component => component.Nodes, nodes));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
+        nodes[0] = nodes[0] with { Outputs = [assessment with { Role = FrameArtifactRole.Preview }], OutputContracts = [contract] };
+        cut.Render(parameters => parameters.Add(component => component.Nodes, nodes));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
+        nodes[0] = nodes[0] with { Outputs = [assessment], OutputContracts = [contract] };
+        cut.Render(parameters => parameters.Add(component => component.Nodes, nodes));
+        Assert.IsEmpty(cut.FindAll(".run-diagram__cloud-placeholder"));
     }
 
     [TestMethod]
