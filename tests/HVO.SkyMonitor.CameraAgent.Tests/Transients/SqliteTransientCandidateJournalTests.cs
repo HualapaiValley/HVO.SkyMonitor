@@ -168,13 +168,19 @@ public sealed class SqliteTransientCandidateJournalTests
             recovered.RawCaptureRowId, "test-history", succeeded: true, CancellationToken.None).ConfigureAwait(false);
         var firstEventTime = await fixture.ScalarLongAsync(
             "SELECT event_unix_ms FROM raw_capture_stage_events WHERE stage_key = 'causal-scan';").ConfigureAwait(false);
-        await Task.Delay(20).ConfigureAwait(false);
-        await restarted.MarkCausalCompletionAsync(
+        var later = fixture.CreateRuntimeStoreAt(DateTimeOffset.FromUnixTimeMilliseconds(firstEventTime).AddSeconds(1));
+        await later.MarkCausalCompletionAsync(
             recovered.RawCaptureRowId, "test-history", succeeded: true, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(1L, await fixture.ScalarLongAsync(
             "SELECT COUNT(*) FROM raw_capture_stage_events WHERE stage_key = 'causal-scan';").ConfigureAwait(false));
         Assert.AreEqual(firstEventTime, await fixture.ScalarLongAsync(
             "SELECT event_unix_ms FROM raw_capture_stage_events WHERE stage_key = 'causal-scan';").ConfigureAwait(false));
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await later.MarkCausalCompletionAsync(
+                recovered.RawCaptureRowId, "test-history", succeeded: false, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+        Assert.AreEqual(1L, await fixture.ScalarLongAsync(
+            "SELECT causal_succeeded FROM transient_worker_frames WHERE raw_capture_row_id = " + recovered.RawCaptureRowId + ";").ConfigureAwait(false));
         Assert.IsNull(await fixture.CreateRuntimeStore().ReadNextAsync(CancellationToken.None).ConfigureAwait(false));
     }
 
@@ -1900,6 +1906,9 @@ public sealed class SqliteTransientCandidateJournalTests
 
         internal SqliteTransientRuntimeStore CreateRuntimeStore(ITransientRuntimeFaultInjector? faultInjector = null)
             => new(Options.Create(_options), new FixedTimeProvider(Now), _telemetry, faultInjector);
+
+        internal SqliteTransientRuntimeStore CreateRuntimeStoreAt(DateTimeOffset utcNow)
+            => new(Options.Create(_options), new FixedTimeProvider(utcNow), _telemetry);
 
         internal async Task ReinitializeAsync(TransientOperatingMode mode, bool required)
         {
