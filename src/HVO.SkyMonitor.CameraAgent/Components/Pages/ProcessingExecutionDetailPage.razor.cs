@@ -48,7 +48,7 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         _recent.Live.Concat(_recent.Replay)
             .Where(run => (_outcomeFilter == "all" || run.Status.ToString() == _outcomeFilter) &&
                 (string.IsNullOrWhiteSpace(_runSearch) ||
-                    ("Capture " + run.CaptureId + " " + run.ExecutionClass + " " + run.Status)
+                    ("Capture " + ProcessingExecutionsPage.Short(run.CaptureId) + " " + run.CaptureId + " " + run.ExecutionClass + " " + run.Status)
                         .Contains(_runSearch, StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(static run => run.AcceptedUtc).ToArray();
 
@@ -59,6 +59,14 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         "Skipped" => "○",
         "Failed" or "TerminalFailure" => "!",
         _ => "·"
+    };
+
+    private string TitleStatusClass => _view?.Execution.Status switch
+    {
+        ProcessingGraphExecutionStatus.Completed => "run-title__glyph--completed",
+        ProcessingGraphExecutionStatus.Running => "run-title__glyph--running",
+        ProcessingGraphExecutionStatus.Failed or ProcessingGraphExecutionStatus.Cancelled or ProcessingGraphExecutionStatus.Expired => "run-title__glyph--failed",
+        _ => "run-title__glyph--pending"
     };
 
     private string TransientLabel => !TransientEnabled ? "Disabled"
@@ -101,6 +109,13 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
             if (result.IsSuccess && result.Value is not null)
             {
                 var detail = result.Value;
+                _view = detail;
+                _notFound = false;
+                _message = null;
+                if (_selectedNodeId is null || detail.Nodes.All(node => node.NodeId != _selectedNodeId))
+                    _selectedNodeId = detail.Nodes.Count > 0 ? detail.Nodes[0].NodeId : null;
+                _loading = false;
+                await InvokeAsync(StateHasChanged).ConfigureAwait(false);
                 TransientCaptureRunState? transient = null;
                 var transientUnavailable = false;
                 if (TransientEnabled)
@@ -138,15 +153,11 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                     sequence = null;
                 }
                 if (generation != Volatile.Read(ref _generation) || requestedExecution != ExecutionId) return;
-                _view = detail;
                 _recent = recentView;
                 _transient = transient;
                 _transientUnavailable = transientUnavailable;
                 _captureSequence = sequence;
-                _notFound = false;
-                _message = null;
-                if (_selectedNodeId is null || detail.Nodes.All(node => node.NodeId != _selectedNodeId))
-                    _selectedNodeId = detail.Nodes.Count > 0 ? detail.Nodes[0].NodeId : null;
+                await InvokeAsync(StateHasChanged).ConfigureAwait(false);
             }
             else
             {

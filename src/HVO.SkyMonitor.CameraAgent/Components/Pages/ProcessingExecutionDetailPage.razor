@@ -37,7 +37,7 @@
                 {
                     @foreach (var run in FilteredRuns)
                     {
-                        <a class="@(run.ExecutionId == execution.ExecutionId ? "run-rail__item run-rail__item--selected" : "run-rail__item")" href="/operations/pipeline/executions/@run.ExecutionId"><strong>@StatusGlyph(run.Status.ToString()) @run.ExecutionClass run</strong><span>@run.Status / @run.AcceptedUtc.ToString("HH:mm") UTC</span></a>
+                        <a class="@(run.ExecutionId == execution.ExecutionId ? "run-rail__item run-rail__item--selected" : "run-rail__item")" href="/operations/pipeline/executions/@run.ExecutionId"><strong>@StatusGlyph(run.Status.ToString()) Capture @ProcessingExecutionsPage.Short(run.CaptureId)</strong><span>@run.ExecutionClass / @run.Status / @run.AcceptedUtc.ToString("HH:mm") UTC</span></a>
                     }
                     @if (FilteredRuns.Count == 0) { <p class="muted">No captures match this filter.</p> }
                 }
@@ -50,19 +50,19 @@
                 </div>
             </aside>
             <div class="run-workspace__main">
-                <header class="run-overview"><div><p class="run-breadcrumb"><a href="/operations">Operations</a> / <a href="/operations/pipeline/executions">Pipeline</a> / Run</p><div class="run-title"><span class="run-title__glyph" aria-hidden="true">@StatusGlyph(execution.Status.ToString())</span><div><h1>@(_captureSequence is { } sequence ? $"Capture #{sequence}" : "Capture pipeline run")</h1><p>@execution.Status / @execution.ExecutionClass execution</p></div></div></div><a class="btn btn-outline-light" href="/operations/pipeline/replays/new?captureId=@execution.CaptureId">Reprocess</a></header>
+                <header class="run-overview"><div><p class="run-breadcrumb"><a href="/operations">Operations</a> / <a href="/operations/pipeline/executions">Pipeline</a> / Run</p><div class="run-title"><span class="run-title__glyph @TitleStatusClass" aria-hidden="true">@StatusGlyph(execution.Status.ToString())</span><div><h1>@(_captureSequence is { } sequence ? $"Capture #{sequence}" : "Capture pipeline run")</h1><p>@execution.Status / @execution.ExecutionClass execution</p></div></div></div><a class="btn btn-outline-light" href="/operations/pipeline/replays/new?captureId=@execution.CaptureId">Reprocess</a></header>
                 <section class="run-summary" aria-label="Run summary"><div class="run-summary__origin"><strong>Triggered by @execution.TriggerKind</strong><span>@(execution.TriggerReference ?? $"Accepted {execution.AcceptedUtc:u}")</span></div><dl class="run-overview__facts"><div><dt>Status</dt><dd>@execution.Status</dd></div><div><dt>Total duration</dt><dd>@ProcessingExecutionsPage.FormatDuration(execution.Duration)</dd></div><div><dt>Artifacts</dt><dd>@_view.Nodes.Sum(static node => node.Outputs.Count)</dd></div><div><dt>LogicHost</dt><dd>@LogicHostState</dd></div></dl></section>
                 <section class="graph-card" aria-label="Capture-time dependency graph"><header class="graph-card__heading"><div><p class="eyebrow">Capture-time dependency graph</p><h2>Layered All-Sky Processing</h2></div><div class="graph-card__legend"><span class="legend-success">● Succeeded</span><span class="legend-running">● Running</span><span class="legend-attention">! Attention</span><span>○ Skipped</span></div></header><ExecutionRunDiagram Nodes="@_view.Nodes" SelectedNodeId="@_selectedNodeId" NodeSelected="id => _selectedNodeId = id" />
                 <section class="transient-band" aria-label="Independent transient lane"><div><p class="eyebrow">Fireball / transient track</p><h3>Independent durable lane</h3></div><span class="hvo-chip hvo-chip--neutral">@TransientLabel</span>
                     @if (_transient is not null)
                     {
                         <ol class="transient-band__stages">
-                            <li><strong>Frame admitted</strong><span>@_transient.WorkState</span></li>
-                            <li><strong>Causal scan</strong><span>@(_transient.CausalSucceeded is true ? "Succeeded" : _transient.FrameState ?? "Not recorded")</span></li>
-                            <li><strong>Candidate persistence</strong><span>@_transient.CandidateCount recorded</span></li>
-                            <li><strong>Candidate assessment</strong><span>@_transient.CompletedCandidates completed / @_transient.QuarantinedCandidates quarantined</span></li>
+                            <li><strong>Capture work</strong><span>@_transient.WorkState</span></li>
+                            <li><strong>Causal frame scan</strong><span>@(_transient.CausalSucceeded is true ? "Succeeded" : _transient.CausalSucceeded is false ? "Not succeeded" : "No scan result recorded")</span></li>
+                            <li><strong>Candidate records</strong><span>@_transient.CandidateCount retained</span></li>
+                            <li><strong>Candidate outcomes</strong><span>@_transient.CompletedCandidates completed / @_transient.QuarantinedCandidates quarantined</span></li>
                         </ol>
-                        <p>Frame attempts: @_transient.FrameAttempts / causal scan: @(_transient.CausalSucceeded is true ? "succeeded" : _transient.CausalSucceeded is false ? "not succeeded" : "not recorded") / candidates: @_transient.CandidateCount (@_transient.CompletedCandidates completed, @_transient.QuarantinedCandidates quarantined).</p>
+                        <p>Recorded frame state: @(_transient.FrameState ?? "not recorded") / @_transient.FrameAttempts attempt(s). These cards summarize durable facts, not separately persisted graph-node transitions.</p>
                     }
                     else { <p>No per-capture transient stages can be drawn from this execution's journal.</p> }
                 </section></section>

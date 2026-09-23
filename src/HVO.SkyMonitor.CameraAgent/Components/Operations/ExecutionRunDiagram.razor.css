@@ -14,7 +14,8 @@
 .run-diagram__node rect { fill: var(--hvo-surface-elevated); stroke: var(--hvo-border-stronger); stroke-width: 2; }
 .run-diagram__node text { fill: var(--hvo-body-color); font-size: 13px; font-weight: 650; }
 .run-diagram__node .run-diagram__meta { fill: var(--hvo-muted-strong); font-size: 11px; font-weight: 400; }
-.run-diagram__node .run-diagram__status { fill: var(--hvo-success-strong); font-size: 16px; }
+.run-diagram__node .run-diagram__status { fill: var(--hvo-muted-strong); font-size: 16px; }
+.run-diagram__node--completed .run-diagram__status { fill: var(--hvo-success-strong); }
 .run-diagram__node--running .run-diagram__status { fill: var(--hvo-info-strong); }
 .run-diagram__node--terminalfailure .run-diagram__status, .run-diagram__node--retryablefailure .run-diagram__status { fill: var(--hvo-danger-strong); }
 .run-diagram__node .run-diagram__divider { stroke: var(--hvo-border-muted); }

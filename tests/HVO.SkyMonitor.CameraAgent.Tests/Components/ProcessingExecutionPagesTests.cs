@@ -142,6 +142,54 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
+    public void DetailPage_FailedRunDoesNotUseSuccessfulTitleGlyph()
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        var failure = CameraAgentProcessingExecutionProjection.Summarize(
+            Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Failed));
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new CameraAgentProcessingExecutionDetailView(Now, failure, "shared", "local", [])
+        });
+
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsTrue(cut.Find(".run-title__glyph").ClassList.Contains("run-title__glyph--failed"));
+            Assert.IsFalse(cut.Find(".run-title__glyph").ClassList.Contains("run-title__glyph--completed"));
+        });
+    }
+
+    [TestMethod]
+    public void DetailPage_RendersJournalBeforeOptionalRecentRunsFinish()
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        var waiting = new TaskCompletionSource<OperatorUiResult<CameraAgentProcessingExecutionsView>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var completed = CameraAgentProcessingExecutionProjection.Summarize(
+            Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed));
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new CameraAgentProcessingExecutionDetailView(Now, completed, "shared", "local", []),
+            PendingExecutions = waiting.Task
+        });
+
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsNotNull(cut.Find(".graph-card"));
+            StringAssert.Contains(cut.Find(".run-workspace__rail").TextContent, "Recent captures are unavailable", StringComparison.Ordinal);
+        });
+        waiting.SetResult(OperatorUiResult<CameraAgentProcessingExecutionsView>.Success(View([], [])));
+    }
+
+    [TestMethod]
     public void RunDiagram_DrawsFrozenOptionalEdgeAndSelectsNodes()
     {
         using var context = new BunitContext();
@@ -230,11 +278,14 @@ public sealed class ProcessingExecutionPagesTests
         public CameraAgentProcessingExecutionDetailView? Detail { get; set; }
         public OperatorUiResult<CameraAgentProcessingExecutionDetailView>? DetailFailure { get; set; }
         public int ExecutionReads { get; private set; }
+        public Task<OperatorUiResult<CameraAgentProcessingExecutionsView>>? PendingExecutions { get; set; }
 
-        public ValueTask<OperatorUiResult<CameraAgentProcessingExecutionsView>> GetExecutionsAsync(int maximumPerClass, CancellationToken cancellationToken)
+        public async ValueTask<OperatorUiResult<CameraAgentProcessingExecutionsView>> GetExecutionsAsync(int maximumPerClass, CancellationToken cancellationToken)
         {
             ExecutionReads++;
-            return ValueTask.FromResult(Failure ?? OperatorUiResult<CameraAgentProcessingExecutionsView>.Success(Executions!));
+            return PendingExecutions is { } pending
+                ? await pending.ConfigureAwait(false)
+                : Failure ?? OperatorUiResult<CameraAgentProcessingExecutionsView>.Success(Executions!);
         }
 
         public ValueTask<OperatorUiResult<CameraAgentProcessingExecutionDetailView>> GetExecutionDetailAsync(Guid executionId, CancellationToken cancellationToken)

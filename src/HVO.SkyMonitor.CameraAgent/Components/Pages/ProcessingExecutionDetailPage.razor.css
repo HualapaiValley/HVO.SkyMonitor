@@ -48,7 +48,10 @@ a { color: var(--hvo-info-fg); }
 .run-overview { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0 0 1rem; padding: 0; border: 0; background: transparent; }
 .run-breadcrumb { color: var(--hvo-muted); font-size: .75rem; }
 .run-title { display: flex; align-items: center; gap: .75rem; }
-.run-title__glyph { display: grid; width: 2.4rem; height: 2.4rem; place-items: center; border-radius: 50%; color: #05070d; background: #3fb950; font-weight: 750; }
+.run-title__glyph { display: grid; width: 2.4rem; height: 2.4rem; place-items: center; border-radius: 50%; color: #05070d; background: #d29922; font-weight: 750; }
+.run-title__glyph--completed { background: #3fb950; }
+.run-title__glyph--running { background: #58a6ff; }
+.run-title__glyph--failed { background: #f85149; }
 .run-title h1 { margin: 0; font-size: clamp(1.65rem, 3vw, 2.35rem); font-weight: 700; }
 .run-title p { margin: .15rem 0 0; color: var(--hvo-muted); }
 .run-summary { display: grid; grid-template-columns: minmax(12rem, 1.3fr) minmax(0, 2fr); align-items: center; margin-bottom: 1rem; padding: 1rem; border: 1px solid var(--run-border); border-radius: .55rem; background: var(--run-surface); }
@@ -71,6 +74,7 @@ a { color: var(--hvo-info-fg); }
 .transient-band__stages { display: flex; flex-wrap: wrap; width: 100%; gap: .5rem; margin: .8rem 0 0; padding: 0; list-style: none; }
 .transient-band__stages li { display: grid; min-width: 10rem; flex: 1 1 10rem; gap: .25rem; padding: .6rem; border: 1px solid var(--hvo-border-muted); border-left: 3px solid var(--hvo-info-strong); background: var(--hvo-surface-elevated); font-size: .78rem; }
 .transient-band__stages li { border-left-color: #bc8cff; }
+.transient-band__stages li { position: relative; }
 .transient-band__stages span { color: var(--hvo-muted); }
 .run-inspector__tabs { display: flex; gap: 1rem; border-bottom: 1px solid var(--hvo-border-muted); }
 .run-inspector__tabs button { min-height: 2.75rem; padding: .5rem .25rem; border: 0; border-bottom: 2px solid transparent; color: var(--hvo-muted-strong); background: transparent; }

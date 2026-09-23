@@ -75,7 +75,11 @@ else
     private int EdgeX => Margin + SourceWidth + ColumnGap;
     private int PublicationX => _layout.Count == 0 ? EdgeX : _layout.Max(static item => item.X) + NodeWidth + ColumnGap;
     private int LogicHostX => PublicationX + SourceWidth + ColumnGap;
-    private string GraphSizeStyle => _fit ? "width: 100%; height: auto;" : $"width: {Width * Zoom}px; height: {Height * Zoom}px;";
+    // Fit never reduces the recorded graph below half-size. Wider graphs remain
+    // horizontally scrollable instead of compressing node text to illegibility.
+    private string GraphSizeStyle => _fit
+        ? $"width: max(100%, {Width * 0.5}px); height: auto;"
+        : $"width: {Width * Zoom}px; height: {Height * Zoom}px;";
 
     private void FitGraph() => _fit = true;
     private void ZoomOut() { _fit = false; Zoom = Math.Max(0.5, Zoom - 0.25); }
@@ -133,6 +137,15 @@ else
                 var middle = (x1 + x2) / 2;
                 _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", dependency.Required));
             }
+        }
+        foreach (var source in _layout.Where(static item => item.Node.Outputs.Any(static output => output.Published)))
+        {
+            var x1 = source.X + NodeWidth;
+            var y1 = source.Y + NodeHeight / 2;
+            var x2 = PublicationX;
+            var y2 = HeaderHeight + NodeHeight / 2;
+            var middle = (x1 + x2) / 2;
+            _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", true));
         }
     }
 
