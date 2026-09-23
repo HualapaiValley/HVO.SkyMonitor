@@ -181,6 +181,75 @@ public sealed class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public async Task GroupedProjectionLayersCountAndRestoreDefaultsWithoutClaimingMeasurements()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+            Layered(id, new string('D', 64))));
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".restore-layers").HasAttribute("disabled")));
+
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Catalog projection", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "not measured associations (#526)", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Associations arrive with #525", StringComparison.Ordinal);
+        Assert.HasCount(6, cut.FindAll(".unavailable-layers input:disabled"));
+        StringAssert.Contains(cut.Find(".inspector-card").TextContent, "astrometric solutions arrive with #523", StringComparison.Ordinal);
+        await cut.Find(".sky-layer-controls input").ChangeAsync(false).ConfigureAwait(false);
+        Assert.AreEqual("0 selected", cut.Find(".scene-panel header > span").TextContent);
+        await cut.Find(".restore-layers").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual("1 selected", cut.Find(".scene-panel header > span").TextContent);
+        Assert.IsTrue(cut.Find(".sky-layer-controls input").HasAttribute("checked"));
+    }
+
+    [TestMethod]
+    public void RecordedLineageUsesArtifactIdsAndDoesNotInventMissingIntegration()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var capture = OperatorUiTestData.Capture();
+        var source = Guid.Parse("00000000-0000-0000-0000-000000000101");
+        var other = Guid.Parse("00000000-0000-0000-0000-000000000111");
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(capture with
+        {
+            Artifacts = [.. capture.Artifacts, new CameraAgentGalleryArtifact(
+                Guid.Parse("00000000-0000-0000-0000-000000000103"), HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined,
+                "combine", null, OperatorUiTestData.Now, "image/jpeg", new string('A', 64), 1024, null,
+                [source, other], "combine")]
+        }, ObservingDayCalendar.Create("America/Phoenix"));
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+            new(OperatorUiTestData.CurrentImage(), facts, null)));
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".source-strip");
+
+        Assert.HasCount(2, cut.FindAll(".source-entry"));
+        StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "2", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "not a registered stack", StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll(".lineage-facts dt").Where(static dt => dt.TextContent == "Total integration"));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "Source details are unavailable", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void WithoutRetainedLayersGroupsRemainVisibleButUnselectable()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".scene-panel");
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Catalog projection", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured associations and predictions: unavailable", StringComparison.Ordinal);
+        Assert.HasCount(11, cut.FindAll(".scene-panel input:disabled"));
+        Assert.IsEmpty(cut.FindAll(".scene-panel input:not(:disabled)"));
+    }
+
+    [TestMethod]
     public async Task UnverifiedOrMismatchedLayerPreviewFallsBackAndRetriesOnlyOnManualRefresh()
     {
         using var context = new BunitContext();
