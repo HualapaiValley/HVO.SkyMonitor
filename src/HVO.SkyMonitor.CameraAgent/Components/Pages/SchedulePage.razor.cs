@@ -436,6 +436,18 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     private void AddWindow() { _model?.AddWeeklyWindow(); FormChanged(); }
 
+    private void SetWindowDay(CaptureProfileFormModel.WeeklyWindowRow row, DayOfWeek day, bool selected)
+    {
+        _model?.SetWeeklyWindowDay(row, day, selected);
+        FormChanged();
+    }
+
+    private void SplitWindow(CaptureProfileFormModel.WeeklyWindowRow row, DayOfWeek day)
+    {
+        _model?.SplitWeeklyWindow(row, day);
+        FormChanged();
+    }
+
     private void AddBlackout() { _model?.AddBlackout(); FormChanged(); }
 
     private void RemoveSetpoint(CaptureProfileFormModel.SetpointProfileRow row) { _model?.Setpoints.Remove(row); FormChanged(); }
