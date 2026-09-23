@@ -147,7 +147,7 @@ public sealed class ProcessingExecutionPagesTests
         cut.WaitForElement(".node-list");
         StringAssert.Contains(cut.Find("h1").TextContent, "Capture #42", StringComparison.Ordinal);
         Assert.HasCount(2, cut.FindAll(".run-diagram__node"));
-        StringAssert.Contains(cut.Find(".transient-band").TextContent, "Disabled", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".run-diagram__transient").TextContent, "Local detector disabled", StringComparison.Ordinal);
         Assert.HasCount(2, cut.FindAll(".node"));
         Assert.IsTrue(cut.Markup.Contains(new string('O', 64), StringComparison.Ordinal));
         Assert.IsTrue(cut.Markup.Contains("Succeeded", StringComparison.Ordinal));

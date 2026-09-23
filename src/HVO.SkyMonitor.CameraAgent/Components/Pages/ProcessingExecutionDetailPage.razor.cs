@@ -76,11 +76,6 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         _ => "run-title__glyph--pending"
     };
 
-    private string TransientLabel => !TransientEnabled ? "Disabled"
-        : _transientUnavailable ? "State unavailable"
-        : _transient is null || _transient.Events.Count == 0 ? "Not recorded for this capture"
-        : $"{_transient.Events.Count} recorded milestone{(_transient.Events.Count == 1 ? "" : "s")}";
-
     private void SelectStageTab() => _tab = "stage";
     private void SelectArtifactsTab() => _tab = "artifacts";
     private void SelectAttemptsTab() => _tab = "attempts";

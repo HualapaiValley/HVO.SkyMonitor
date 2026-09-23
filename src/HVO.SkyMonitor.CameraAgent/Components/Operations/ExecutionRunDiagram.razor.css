@@ -1,6 +1,6 @@
 .run-diagram__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: var(--hvo-muted); font-size: .82rem; }
 .run-diagram__toolbar > div { display: flex; gap: .3rem; }
-.run-diagram__scroll { min-height: 33rem; overflow: auto; margin-top: .75rem; border-top: 1px solid var(--run-border, #253244); border-bottom: 1px solid var(--run-border, #253244); background-color: #080e16; background-image: linear-gradient(rgba(37, 50, 68, .16) 1px, transparent 1px), linear-gradient(90deg, rgba(37, 50, 68, .16) 1px, transparent 1px); background-size: 28px 28px; }
+.run-diagram__scroll { overflow: auto; margin-top: .75rem; border-top: 1px solid var(--run-border, #253244); border-bottom: 1px solid var(--run-border, #253244); background-color: #080e16; background-image: linear-gradient(rgba(37, 50, 68, .16) 1px, transparent 1px), linear-gradient(90deg, rgba(37, 50, 68, .16) 1px, transparent 1px); background-size: 28px 28px; }
 .run-diagram { display: block; min-width: 100%; font-family: var(--hvo-font-family); }
 .run-diagram__edge { fill: none; stroke: var(--hvo-muted-strong); stroke-width: 2; }
 .run-diagram__band rect { fill: rgba(46, 66, 88, .12); stroke: var(--hvo-border-muted); stroke-width: 1; }
