@@ -16,6 +16,9 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private Task? _pollTask;
     private CameraAgentCurrentImagePresentation? _presentation;
     private CameraAgentCurrentSkyFacts? _facts;
+    private CameraAgentProductDetail? _combinedProduct;
+    private string? _lineageMessage;
+    private Guid? _lineageArtifactId;
     private CameraAgentLayeredPresentation? _layers;
     private CancellationTokenSource? _layerCancellation;
     private IJSObjectReference? _layerModule;
@@ -155,7 +158,19 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                     {
                         _liveExecutionId = null;
                         _runCaptureId = displayCaptureId;
+                        _combinedProduct = null;
+                        _lineageArtifactId = null;
+                        _lineageMessage = null;
                         ResetLayers(displayCaptureId, cancellationToken);
+                    }
+                    var combinedId = _facts?.CombinedLineage?.ArtifactId;
+                    if (_lineageArtifactId != combinedId)
+                    {
+                        _combinedProduct = null;
+                        _lineageMessage = null;
+                        _lineageArtifactId = combinedId;
+                        if (combinedId is { } artifactId)
+                            _ = LoadLineageAsync(artifactId, displayCaptureId, cancellationToken);
                     }
                     _factsUnavailableReason = result.Value.FactsUnavailableReason;
                     _selectedStage = ResolveSelection(result.Value.Presentation, _selectedStage);
@@ -194,6 +209,42 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     }
 
     private Guid? _runCaptureId;
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional lineage does not interrupt the current image.")]
+    private async Task LoadLineageAsync(Guid artifactId, Guid? captureId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(3));
+            var result = await OperatorService.GetProductDetailAsync(artifactId, timeout.Token).ConfigureAwait(false);
+            await InvokeAsync(() =>
+            {
+                if (_accessDenied || _disposeStarted != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
+                if (result.Kind == OperatorUiResultKind.Unauthorized)
+                {
+                    _accessDenied = true;
+                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                    return;
+                }
+                if (result.IsSuccess && result.Value is { } detail && detail.Product.ArtifactId == artifactId && detail.Product.CaptureId == captureId)
+                    _combinedProduct = detail;
+                else
+                    _lineageMessage = "Source details are unavailable; the recorded source artifact IDs remain visible.";
+                StateHasChanged();
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception)
+        {
+            await InvokeAsync(() =>
+            {
+                if (_disposeStarted != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
+                _lineageMessage = "Source details are unavailable; the recorded source artifact IDs remain visible.";
+                StateHasChanged();
+            }).ConfigureAwait(false);
+        }
+    }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "The optional read only uses the captured cancellation token; its generation guard discards late results.")]
     private void ResetLayers(Guid? captureId, CancellationToken cancellationToken)
@@ -325,6 +376,62 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         if (enabled) _selectedLayers.Add(identity);
         else _selectedLayers.Remove(identity);
     }
+
+    private void RestoreLayerDefaults()
+    {
+        if (_layers is null || !ShowLayeredHero || !_layerInteractive) return;
+        _selectedLayers = _layers.Layers.Where(static layer => layer.EnabledByDefault)
+            .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
+        _bindGeneration++;
+        _bindLayers = true;
+    }
+
+    private int SelectedLayerCount => _layers?.Layers.Count(layer => _selectedLayers.Contains(layer.IdentitySha256)) ?? 0;
+
+    private bool HasLayer(string first, string second) => _layers?.Layers.Any(layer => layer.Kind == first || layer.Kind == second) == true;
+
+    private static string LayerGroup(string kind) => kind switch
+    {
+        "scene-annotation" or "star-annotations" => "Catalog projection",
+        "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" or "scene-image-circle" or "image-circle" => "Sky context",
+        _ => "Diagnostics"
+    };
+
+    private static string LayerDescription(string kind) => kind switch
+    {
+        "scene-annotation" or "star-annotations" => "Projected catalog stars; not measured associations (#526)",
+        "scene-constellations" or "constellations" => "Projected constellation geometry",
+        "scene-cardinals" or "cardinal-directions" => "Projected rig directions",
+        "scene-image-circle" or "image-circle" => "Projected image boundary",
+        "environment" or "corner-annotations" => "Recorded frame annotations",
+        _ => "Retained presentation layer"
+    };
+
+    private static string StageCaption(CameraAgentPresentationStage stage) => stage switch
+    {
+        CameraAgentPresentationStage.Annotated or CameraAgentPresentationStage.Preview => "Presentation layers",
+        CameraAgentPresentationStage.Combined => "Causal arithmetic mean",
+        CameraAgentPresentationStage.Calibrated => "Single capture",
+        _ => "Immutable source"
+    };
+
+    private static string StageUnavailableReason(CameraAgentPresentationSlot slot) => slot.Reason switch
+    {
+        "NotProduced" => "This stage was not produced.",
+        "ProcessingFailed" => "This stage could not be created.",
+        "ProcessingSkipped" => "This stage was skipped because required input was unavailable.",
+        "ArtifactUnavailable" => "The produced artifact is unavailable.",
+        _ => "This stage is currently unavailable."
+    };
+
+    private string ImageHeading => _selectedStage switch
+    {
+        CameraAgentPresentationStage.Annotated or CameraAgentPresentationStage.Preview => "Processed presentation",
+        CameraAgentPresentationStage.Combined => "Live mean",
+        CameraAgentPresentationStage.Calibrated => "Calibrated image",
+        CameraAgentPresentationStage.Raw => "Raw source",
+        _ => "Current image"
+    };
 
     private static string LayerLabel(string kind) => kind switch
     {
