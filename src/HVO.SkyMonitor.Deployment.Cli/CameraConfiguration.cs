@@ -21,11 +21,14 @@ internal static class CameraConfiguration
     private static readonly string[] ConstellationIds = ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"];
     private static readonly string[] SolarSystemBodies = ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn"];
     private static readonly string[] RawDependency = ["$raw"];
-    private static readonly string[] CalibrationDependency = ["Calibration"];
-    private static readonly string[] PreviewDependency = ["Preview"];
-    private static readonly string[] AnnotationDependency = ["Annotation"];
+    private static readonly string[] ProjectedSceneDependency = ["ProjectedScene"];
+    private static readonly string[] RollingDependency = ["RollingCombination"];
+    private static readonly string[] CombinedPreviewDependencies = ["ProjectedScene", "CombinedPreview"];
+    private static readonly string[] ManifestDependencies = ["CombinedPreview", "ScenePresentation", "EnvironmentPresentation"];
+    private static readonly string[] MaterializerDependencies = ["CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest"];
+    private static readonly string[] PresentationDependencies = ["$raw", "ProjectedScene", "Calibration", "RollingCombination", "CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer"];
     private static readonly string[] TelemetryDependencies =
-        ["Calibration", "Preview", "Annotation", "LocalStorage", "ArchiveStorage"];
+        ["ProjectedScene", "Calibration", "RollingCombination", "CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer", "LocalStorage", "ArchiveStorage"];
 
     public static GeneratedConfiguration Generate(InstallRequest request, Guid applicationIdentity)
     {
@@ -89,14 +92,14 @@ internal static class CameraConfiguration
 
     private static CameraRigConfig CreateRig() => new(
         new SensorProfile(
-            "VirtualAsi174MmReduced",
-            484,
-            304,
+            "VirtualAsi174Mm",
+            1936,
+            1216,
             5.86,
             SensorColorMode.Mono,
             CameraPixelFormat.Mono16,
             SensorResponseMode.Monochrome,
-            968,
+            3872,
             SampleByteOrder.LittleEndian,
             "virtual-asi174mm-electron-domain-v2"),
         new OpticsProfile(
@@ -105,9 +108,9 @@ internal static class CameraConfiguration
             180,
             0,
             LensKind.Fisheye,
-            242,
-            152,
-            148.96,
+            968,
+            608,
+            595.84,
             HorizontalFlip: false,
             CalibrationVersion: "virtual-fisheye-180-equidistant-v1"),
         new RigOrientation(90, 0, 0),
@@ -132,43 +135,68 @@ internal static class CameraConfiguration
             ExposureControl = AutomaticControlOwnership.Disabled,
             GainControl = AutomaticControlOwnership.Disabled
         },
-        ProfileVersion: "installer-virtualsky-v1");
+        ProfileVersion: "installer-virtualsky-v2",
+        Readout: new SensorReadoutProfile(
+            new SensorCrop(0, 0, 1936, 1216),
+            1, 1, FrameBinningAlgorithm.IdentityV1,
+            CameraPixelFormat.Mono16, 12, 16, FrameSamplePacking.ByteAligned,
+            FrameStoredCodeTransform.RightAlignedV1, FrameLevelCodeSpace.NativeSample,
+            64, 4095, 3872));
 
     private static IReadOnlyList<CaptureProcessingStepConfig> CreateProcessingSteps() =>
     [
+        Step("ProjectedScene", "ProjectedScene", 5, new
+        {
+            outputVariant = "projected-scene-v1",
+            maximumMagnitude = 6.5,
+            maximumResults = 300,
+            constellationIds = ConstellationIds,
+            includeConstellationEndpointStars = true,
+            solarSystemBodies = SolarSystemBodies
+        }, RawDependency, durable: true),
         Step("Calibration", "Calibration", -1000, new { strategy = "None", outputVariant = "none" }, RawDependency),
-        Step("Preview", "Preview", 50, new
+        Step("RollingCombination", "RollingCombination", 25, new
+        {
+            windowSize = 5,
+            windowKind = "Trailing",
+            outputVariant = "rolling-mean"
+        }, RawDependency),
+        Step("CombinedPreview", "CombinedPreview", 50, new
         {
             recipeVersion = "mono16-asinh-v2",
+            outputVariant = "combined-preview",
             blackPercentile = 0.5,
             whitePercentile = 0.9999,
             asinhStrength = 4.0
-        }, CalibrationDependency),
-        Step("Annotation", "Annotation", 75, new
+        }, RollingDependency),
+        Step("ScenePresentation", "ScenePresentationLayer", 70, new
         {
-            markRadius = 6,
-            markerValue = 144,
-            drawLabels = true,
-            maximumLabelMagnitude = 2.5,
-            labelScale = 2,
-            drawConstellationLines = true,
-            constellationIds = ConstellationIds,
-            drawImageCircle = true,
-            drawCardinalDirections = true,
-            recipeVersion = "named-object-compass-annotation-v3"
-        }, PreviewDependency),
+            annotationOutputVariant = "scene-annotation-layer-v1",
+            cardinalOutputVariant = "scene-cardinal-layer-v1",
+            imageCircleOutputVariant = "scene-image-circle-layer-v1",
+            constellationOutputVariant = "scene-constellation-layer-v1",
+            constellationIds = ConstellationIds
+        }, ProjectedSceneDependency, durable: true),
+        Step("EnvironmentPresentation", "EnvironmentPresentationLayer", 72, new
+        {
+            widthPixels = 1936,
+            heightPixels = 1216,
+            stackPreviewVariant = "combined-preview"
+        }, CombinedPreviewDependencies, durable: true),
+        Step("OverlayManifest", "OverlayManifest", 80, new { }, ManifestDependencies, durable: true),
+        Step("PresentationMaterializer", "PresentationMaterializer", 81, new { outputVariant = "installer-annotated-preview" }, MaterializerDependencies, durable: true),
         Step(
             "LocalStorage",
             "Storage",
             100,
             new { storageRoot = "/app/data/raw", retentionDays = 7, updateLatestFrame = true, queueForUpload = false },
-            AnnotationDependency),
+            PresentationDependencies),
         Step(
             "ArchiveStorage",
             "Storage",
             110,
             new { storageRoot = "/app/data/archive", retentionDays = 30, updateLatestFrame = false, queueForUpload = false },
-            AnnotationDependency),
+            PresentationDependencies),
         Step(
             "Telemetry",
             "Telemetry",
@@ -182,8 +210,10 @@ internal static class CameraConfiguration
         string type,
         int order,
         object options,
-        IReadOnlyList<string>? dependsOn = null)
-        => new(type, id, order, JsonSerializer.SerializeToElement(options), dependsOn);
+        IReadOnlyList<string>? dependsOn = null,
+        bool durable = false)
+        => new(type, id, order, JsonSerializer.SerializeToElement(options), dependsOn,
+            Publication: durable ? new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal) : null);
 
     private static CaptureScheduleDefinition CreateSchedule()
     {

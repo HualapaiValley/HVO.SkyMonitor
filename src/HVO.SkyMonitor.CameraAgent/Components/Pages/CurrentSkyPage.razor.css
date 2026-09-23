@@ -13,6 +13,25 @@
 .lineage { margin: .9rem 0 0; padding: .6rem .75rem; border-left: 3px solid var(--hvo-info-strong); color: var(--hvo-muted); background: var(--hvo-info-bg); font-size: .85rem; }
 .lineage strong { display: block; margin-bottom: .2rem; color: var(--hvo-body-color); }
 .layers-link { display: inline-flex; align-items: center; min-height: 44px; margin-top: .5rem; color: var(--hvo-info-fg); text-decoration: underline; text-underline-offset: .2rem; }
+.sky-layer-workspace { border: 1px solid var(--hvo-border-muted); border-radius: 1rem; background: #020617; box-shadow: var(--hvo-panel-shadow); overflow: hidden; }
+.sky-layer-save small, .sky-layer-unavailable { color: var(--hvo-muted); }
+.sky-layer-canvas { position: relative; max-width: 100%; background: #020617; overflow: hidden; }
+.sky-layer-canvas > img, .sky-layer-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+.sky-layer-canvas > img { display: block; }
+.sky-layer-overlay { visibility: hidden; }
+.sky-layer-canvas--verified > .sky-layer-overlay { visibility: visible; }
+.sky-layer-overlay { pointer-events: none; }
+.sky-layer-overlay ::deep svg { display: block; width: 100%; height: 100%; }
+.sky-layer-actions { position: absolute; right: .8rem; bottom: .8rem; display: flex; flex-wrap: wrap; gap: .5rem; }
+.sky-layer-controls-wrap { margin-top: .6rem; border: 1px solid var(--hvo-border-muted); border-radius: .75rem; background: var(--hvo-card-bg); }
+.sky-layer-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .5rem; margin: 0; padding: 1rem; border: 0; }
+.sky-layer-controls legend { float: none; width: 100%; margin-bottom: .4rem; color: var(--hvo-muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .1em; }
+.sky-layer-controls label { display: grid; grid-template-columns: auto 1fr; gap: .2rem .5rem; align-items: center; min-height: 44px; padding: .5rem; background: var(--hvo-surface-elevated); }
+.sky-layer-controls small { grid-column: 2; color: var(--hvo-muted); }
+.sky-layer-save { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; padding: 0 1rem 1rem; }
+.sky-layer-result, .sky-layer-unavailable { margin: .75rem 1rem; }
+.sky-layer-result--error { color: var(--hvo-danger-fg); }
+@media (max-width: 640px) { .sky-layer-actions { right: .5rem; bottom: .5rem; left: .5rem; } .sky-layer-actions :is(a, button) { flex: 1 1 9rem; } }
 .status-chips { display: flex; flex-wrap: wrap; gap: .45rem; margin-bottom: 1.25rem; }
 .current-sky-summary dl { display: grid; gap: 0; margin: 1rem 0 0; }
 .current-sky-summary dl > div { display: grid; grid-template-columns: minmax(6rem, 1fr) minmax(0, 1.5fr); gap: .75rem; padding: .6rem 0; border-top: 1px solid var(--hvo-border-muted); }
