@@ -3,13 +3,14 @@
 @using HVO.SkyMonitor.CameraAgent.Common.Transients
 @using Microsoft.AspNetCore.Components.Web
 
-@if (Nodes.Count == 0 && (!TransientEnabled || TransientEvents.Count == 0))
-{
-    <p>No execution nodes were recorded.</p>
+@{
+    var hasProcessingNodes = Nodes.Count > 0;
 }
-else
+@if (!hasProcessingNodes)
 {
-    <div class="run-diagram__toolbar">
+    <p class="run-diagram__empty">No processing nodes were recorded; the independent transient track is shown below.</p>
+}
+<div class="run-diagram__toolbar">
         <span>@Nodes.Count recorded stages / @Nodes.Sum(static node => node.Outputs.Count) outputs</span>
         <div role="group" aria-label="Graph zoom">
             <button type="button" class="btn btn-outline-light btn-sm" @onclick="ZoomOut" aria-label="Zoom out">−</button>
@@ -60,12 +61,16 @@ else
                         @for (var i = 0; i < lane.Events.Count; i++)
                         {
                             var stage = lane.Events[i];
-                            var x = EdgeX + i * (NodeWidth + ColumnGap);
-                            @if (i > 0)
+                            var x = EdgeX + (lane.CandidateId is null ? i : CaptureLaneCount + i) * (NodeWidth + ColumnGap);
+                            @if (i > 0 && IsRecordedPredecessor(lane.Events[i - 1], stage))
                             {
                                 <path class="run-diagram__transient-edge" d="M@(x - ColumnGap),@(lane.Y + 49) H@x" />
                             }
-                            <g class="run-diagram__transient-node" aria-label="@stage.StageKey: @stage.State, @stage.RecordedUtc.ToString("u")">
+                            @if (i == 0 && lane.CandidateId is not null && CausalSuccess is not null && stage.StageKey == "candidate-allocated")
+                            {
+                                <path class="run-diagram__transient-edge" d="M@(EdgeX + (CaptureLaneCount - 1) * (NodeWidth + ColumnGap) + NodeWidth),@(CaptureLaneY + 53) C@(x - 28),@(CaptureLaneY + 53) @(x - 28),@(lane.Y + 53) @x,@(lane.Y + 53)" />
+                            }
+                            <g class="@(StageSucceeded(stage) ? "run-diagram__transient-node" : "run-diagram__transient-node run-diagram__transient-node--attention")" aria-label="@stage.StageKey: @stage.State, @stage.RecordedUtc.ToString("u")">
                                 <rect x="@x" y="@(lane.Y + 27)" width="@NodeWidth" height="52" rx="7" />
                                 <text x="@(x + 9)" y="@(lane.Y + 48)">@TransientName(stage.StageKey)</text>
                                 <text class="run-diagram__meta" x="@(x + 9)" y="@(lane.Y + 67)">@stage.State / @stage.RecordedUtc.ToString("HH:mm:ss") UTC</text>
@@ -76,8 +81,7 @@ else
             </g>
         </svg>
     </div>
-    <div class="run-diagram__legend"><span>━ Required dependency</span><span>┄ Optional dependency</span><span>Click or press Enter on a stage for details</span></div>
-}
+<div class="run-diagram__legend"><span>━ Required dependency</span><span>┄ Optional dependency</span><span>Click or press Enter on a stage for details</span></div>
 
 @code {
     private const int NodeWidth = 204;
@@ -105,7 +109,7 @@ else
     private string TitleId => $"execution-graph-title-{_instance}";
     private string DescriptionId => $"execution-graph-description-{_instance}";
     private int Width => Math.Max(LogicHostX + SourceWidth + Margin,
-        EdgeX + (TransientLanes.Count == 0 ? 0 : TransientLanes.Max(static lane => lane.Events.Count)) * (NodeWidth + ColumnGap) + Margin);
+        EdgeX + (CaptureLaneCount + (TransientLanes.Count == 0 ? 0 : TransientLanes.Where(static lane => lane.CandidateId is not null).Select(static lane => lane.Events.Count).DefaultIfEmpty().Max())) * (NodeWidth + ColumnGap) + Margin);
     private int EdgeX => Margin + SourceWidth + ColumnGap;
     private int PublicationX => _layout.Count == 0 ? EdgeX : _layout.Max(static item => item.X) + NodeWidth + ColumnGap;
     private int LogicHostX => PublicationX + SourceWidth + ColumnGap;
@@ -120,13 +124,28 @@ else
     private void ZoomIn() { _fit = false; Zoom = Math.Min(2, Zoom + 0.25); }
     private int TransientTop => (_layout.Count == 0 ? HeaderHeight : _layout.Max(static item => item.Y) + NodeHeight) + 60;
     private int Height => TransientTop + 65 + Math.Max(1, TransientLanes.Count) * 112;
+    private int CaptureLaneY => TransientTop + 40;
+    private int CaptureLaneCount => TransientLanes.FirstOrDefault(static lane => lane.CandidateId is null)?.Events.Count ?? 0;
+    private TransientStageEvent? CausalSuccess => TransientEvents.FirstOrDefault(static stage =>
+        stage.CandidateId is null && stage.StageKey == "causal-scan" && stage.State == "succeeded");
     private IReadOnlyList<TransientLane> TransientLanes => TransientEvents
         .GroupBy(static stage => stage.CandidateId)
         .OrderBy(static group => group.Key.HasValue)
         .ThenBy(static group => group.Key)
         .Select((group, index) => new TransientLane(group.Key, TransientTop + 40 + index * 112,
-            group.OrderBy(static stage => stage.RecordedUtc).ThenBy(static stage => stage.StageKey, StringComparer.Ordinal).ToArray()))
+            group.OrderBy(static stage => StageRank(stage.StageKey)).ThenBy(static stage => stage.RecordedUtc).ToArray()))
         .ToArray();
+
+    private static int StageRank(string stageKey) => stageKey switch
+    {
+        "frame-staged" => 0,
+        "causal-scan" => 1,
+        "candidate-allocated" => 2,
+        "candidate-persisted" => 3,
+        "event-finalized" or "relay-pending" => 4,
+        "central-acknowledged" => 5,
+        _ => 6
+    };
 
     private static string TransientName(string stage) => stage switch
     {
@@ -139,6 +158,19 @@ else
         "central-acknowledged" => "Acknowledged",
         _ => stage
     };
+
+    private static bool StageSucceeded(TransientStageEvent stage) => stage.State is not "not-succeeded" and not "quarantined";
+
+    private static bool IsRecordedPredecessor(TransientStageEvent previous, TransientStageEvent current)
+        => (previous.StageKey, current.StageKey) switch
+        {
+            ("frame-staged", "causal-scan") => true,
+            ("candidate-allocated", "candidate-persisted") => true,
+            ("candidate-persisted", "event-finalized") => true,
+            ("candidate-persisted", "relay-pending") => true,
+            ("relay-pending", "central-acknowledged") => true,
+            _ => false
+        } && StageSucceeded(previous);
 
     private string TransientEmptyLabel => !TransientEnabled ? "Local detector disabled"
         : TransientUnavailable ? "Evidence unavailable" : "No stage events recorded";

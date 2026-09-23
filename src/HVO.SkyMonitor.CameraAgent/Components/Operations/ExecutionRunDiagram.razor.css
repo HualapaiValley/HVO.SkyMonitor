@@ -13,6 +13,7 @@
 .run-diagram__transient text { fill: var(--hvo-muted-strong); font-size: 12px; }
 .run-diagram__transient .run-diagram__transient-title { fill: #bc8cff; font-size: 13px; font-weight: 700; }
 .run-diagram__transient-node rect { fill: #171624; stroke: #bc8cff; }
+.run-diagram__transient-node--attention rect { stroke: #d29922; stroke-dasharray: 5 4; }
 .run-diagram__transient-node text { fill: var(--hvo-body-color); }
 .run-diagram__transient-edge { fill: none; stroke: #bc8cff; stroke-width: 2; }
 .run-diagram__edge--optional { stroke-dasharray: 6 5; }

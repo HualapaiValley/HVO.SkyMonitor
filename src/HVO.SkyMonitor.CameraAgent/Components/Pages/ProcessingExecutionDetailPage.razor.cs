@@ -55,7 +55,7 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         _recent.Live.Concat(_recent.Replay)
             .Where(run => (_outcomeFilter == "all" || run.Status.ToString() == _outcomeFilter) &&
                 (string.IsNullOrWhiteSpace(_runSearch) ||
-                    ("Capture " + ProcessingExecutionsPage.Short(run.CaptureId) + " " + run.CaptureId + " " + run.ExecutionClass + " " + run.Status)
+                    (RunCaptureLabel(run.CaptureId) + " " + run.CaptureId + " " + run.ExecutionClass + " " + run.Status)
                         .Contains(_runSearch, StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(static run => run.AcceptedUtc).ToArray();
 

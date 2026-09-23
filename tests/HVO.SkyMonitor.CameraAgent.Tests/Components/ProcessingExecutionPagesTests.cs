@@ -247,6 +247,33 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
+    public void RunDiagram_ConnectsOnlyEvidencedPredecessorsWithinTheirCandidate()
+    {
+        using var context = new BunitContext();
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var events = new TransientStageEvent[]
+        {
+            new("frame-staged", null, "pending", "transient_capture_work", Now),
+            new("causal-scan", null, "not-succeeded", "transient_worker_frames", Now.AddSeconds(1)),
+            new("candidate-allocated", first, "pending", "transient_worker_candidates", Now.AddSeconds(2)),
+            new("relay-pending", first, "HandoffPending", "transient_candidates", Now.AddSeconds(3)),
+            new("candidate-allocated", second, "pending", "transient_worker_candidates", Now.AddSeconds(4))
+        };
+
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters
+            .Add(component => component.Nodes, [])
+            .Add(component => component.TransientEnabled, true)
+            .Add(component => component.TransientEvents, events));
+
+        Assert.HasCount(5, cut.FindAll(".run-diagram__transient-node"));
+        Assert.HasCount(3, cut.FindAll(".run-diagram__transient-label"));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__transient-edge"));
+        Assert.IsTrue(cut.FindAll(".run-diagram__transient-node")[1].ClassList.Contains("run-diagram__transient-node--attention"));
+        StringAssert.Contains(cut.Markup, "No processing nodes were recorded", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void RunDiagram_DrawsFrozenOptionalEdgeAndSelectsNodes()
     {
         using var context = new BunitContext();
