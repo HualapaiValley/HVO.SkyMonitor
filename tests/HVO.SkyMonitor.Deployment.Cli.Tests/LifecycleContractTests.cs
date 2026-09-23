@@ -72,6 +72,7 @@ public sealed class LifecycleContractTests
         var candidateImageId = $"sha256:{new string('9', 64)}";
         using var release = SignedImageReleaseFixture.Create(
             fixture.Root, candidateImageId, CandidateContractLabels(), publishedArchitectures: [daemonArchitecture]);
+        fixture.Runner.CandidateRawIngressSchema = "13";
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateImageId, candidateImageId, fixture.Uid, fixture.Gid);
 
@@ -786,6 +787,7 @@ public sealed class LifecycleContractTests
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
         var candidateImageId = $"sha256:{new string('9', 64)}";
         using var release = SignedImageReleaseFixture.Create(fixture.Root, candidateImageId, CandidateContractLabels());
+        fixture.Runner.CandidateRawIngressSchema = "13";
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateImageId, candidateImageId, fixture.Uid, fixture.Gid);
         var lifecycle = new FakeLifecycleClient { RejectNextResume = true };
@@ -829,6 +831,7 @@ public sealed class LifecycleContractTests
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
         var signedImageId = $"sha256:{new string('9', 64)}";
         using var release = SignedImageReleaseFixture.Create(fixture.Root, signedImageId, CandidateContractLabels());
+        fixture.Runner.CandidateRawIngressSchema = "13";
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             signedImageId, signedImageId, fixture.Uid, fixture.Gid);
         var lifecycle = new FakeLifecycleClient();
@@ -1818,7 +1821,8 @@ public sealed class LifecycleContractTests
                 daemonArchitecture, null, UpgradeCompatibility: "backward-compatible", SourceRevision: new string('8', 40),
                 Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1",
                 CatalogContract: "hyg-v42-production-p3-s2",
-                ReplayRunnerContract: localRunner ? "local-replay-runner-v1" : null);
+                ReplayRunnerContract: localRunner ? "local-replay-runner-v1" : null,
+                RawIngressSchema: "12");
             var installationId = Guid.NewGuid();
             // The bound application identity is deliberately distinct from the instance id so that
             // lifecycle verification cannot pass by comparing the wrong identity.
@@ -1903,6 +1907,7 @@ public sealed class LifecycleContractTests
         public bool OmitOwnershipLabel { get; set; }
         public bool RejectNextStop { get; set; }
         public bool RejectNextBackup { get; set; }
+        public string CandidateRawIngressSchema { get; set; } = "12";
         public Action? OnCandidateInspect { get; set; }
         public List<string> Events { get; } = [];
         public List<string> LoggedContainers { get; } = [];
@@ -1979,7 +1984,7 @@ public sealed class LifecycleContractTests
                     ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
                     ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
                     ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
-                    ["io.hvo.skymonitor.raw-ingress-schema"] = "12",
+                    ["io.hvo.skymonitor.raw-ingress-schema"] = isCandidate ? CandidateRawIngressSchema : "12",
                     ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
                     ["org.opencontainers.image.revision"] = isCandidate ? new string('9', 40) : new string('8', 40),
                     ["io.hvo.skymonitor.component"] = "CameraAgent",

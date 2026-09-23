@@ -563,14 +563,16 @@ compatibility promise:
 io.hvo.skymonitor.state-compatibility=cameraagent-state-v2
 io.hvo.skymonitor.minimum-compatible-revision=70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f
 io.hvo.skymonitor.identity-migration=20260827053715_InitialIdentity
-io.hvo.skymonitor.raw-ingress-schema=12
+io.hvo.skymonitor.raw-ingress-schema=13
 io.hvo.skymonitor.catalog-manifest-version=2
 ```
 
 **CameraAgent state produced before `70ecdd3` is an incompatible source for a direct in-place upgrade.** Those
 revisions wrote catalog manifest version 1, Identity migration `20251125021552_CreateLocalIdentity`, and
 raw-ingress schema 11. The current image requires manifest version 2, migration
-`20260827053715_InitialIdentity`, and schema 12, and there is no supported automatic migration between them.
+`20260827053715_InitialIdentity`, and schema 13. There is no supported automatic migration from
+schema 12 or earlier: a populated schema-12 journal is rejected by preflight before drain, backup,
+stop, or Compose mutation, and runtime startup also refuses it without changing its contents.
 Upgrading such an instance requires the CameraAgent-only reset below or an equivalent explicit
 state-disposition procedure. The superseded `backward-compatible` label value remains readable only so an
 already installed image stays inspectable; it is never accepted as an upgrade candidate declaration.

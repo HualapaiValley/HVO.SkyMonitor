@@ -209,6 +209,8 @@ public sealed class SqliteTransientCandidateJournalTests
 
         Assert.AreEqual(0L, await fixture.ScalarLongAsync(
             "SELECT COUNT(*) FROM transient_worker_candidates;").ConfigureAwait(false));
+        Assert.AreEqual(0L, await fixture.ScalarLongAsync(
+            "SELECT COUNT(*) FROM raw_capture_stage_events WHERE stage_key = 'candidate-allocated';").ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -237,6 +239,15 @@ public sealed class SqliteTransientCandidateJournalTests
         CollectionAssert.AreEqual(
             allocations.Select(static value => value.CandidateId).ToArray(),
             recovered.Select(static value => value.CandidateId).ToArray());
+        Assert.AreEqual(2L, await fixture.ScalarLongAsync(
+            "SELECT COUNT(*) FROM raw_capture_stage_events WHERE stage_key = 'candidate-allocated' AND state = 'pending' AND source = 'transient_worker_candidates';").ConfigureAwait(false));
+        Assert.AreEqual(2L, await fixture.ScalarLongAsync(
+            $"SELECT COUNT(DISTINCT candidate_id) FROM raw_capture_stage_events WHERE stage_key = 'candidate-allocated' AND raw_capture_row_id = {frame.RawCaptureRowId};").ConfigureAwait(false));
+        Assert.AreEqual(0L, await fixture.ScalarLongAsync("""
+            SELECT COUNT(*) FROM raw_capture_stage_events e
+            JOIN transient_worker_candidates c ON c.candidate_id = e.candidate_id
+            WHERE e.stage_key = 'candidate-allocated' AND e.raw_capture_row_id != c.target_raw_capture_row_id;
+            """).ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -342,6 +353,46 @@ public sealed class SqliteTransientCandidateJournalTests
 
         Assert.AreEqual("completed", await fixture.ScalarStringAsync(
             "SELECT state FROM transient_worker_candidates;").ConfigureAwait(false));
+        Assert.AreEqual(0L, await fixture.ScalarLongAsync(
+            $"SELECT COUNT(*) FROM raw_capture_stage_events WHERE raw_capture_row_id = {rawCaptureRowId} AND stage_key = 'causal-scan';").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_ReconcileCommittedCausalExtractionRecordsSuccessOnce()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var context = await fixture.CreateLaneContextAsync(1, 100).ConfigureAwait(false);
+        _ = await new TransientCaptureLaneHandler(fixture.Journal)
+            .HandleAsync(context, CancellationToken.None).ConfigureAwait(false);
+        var first = fixture.CreateRuntimeStore();
+        await first.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var frame = await first.ReadNextAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(frame);
+        var allocation = CreateRuntimeAllocations(frame.RawCaptureRowId, 1)[0];
+        _ = await first.AllocateBatchAsync(frame.RawCaptureRowId, [allocation], CancellationToken.None)
+            .ConfigureAwait(false);
+        var source = await fixture.AddRawSourceAsync(2, 100).ConfigureAwait(false);
+        var reservation = Fixture.CreateReservation(source) with
+        {
+            CandidateId = allocation.CandidateId,
+            EventId = allocation.EventId
+        };
+        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
+        await fixture.Journal.PersistCandidateAsync(allocation.CandidateId, allocation.EventId,
+            CreateCandidate(reservation, TransientCandidateState.Provisional), CancellationToken.None)
+            .ConfigureAwait(false);
+        await fixture.ExecuteAsync($"UPDATE transient_worker_candidates SET causal_extraction_json = x'7B7D' WHERE candidate_id = '{allocation.CandidateId:N}';")
+            .ConfigureAwait(false);
+
+        var restarted = fixture.CreateRuntimeStore();
+        await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1L, await fixture.ScalarLongAsync(
+            $"SELECT COUNT(*) FROM raw_capture_stage_events WHERE raw_capture_row_id = {frame.RawCaptureRowId} AND stage_key = 'causal-scan' AND candidate_id = '' AND state = 'succeeded' AND source = 'transient_worker_frames';")
+            .ConfigureAwait(false));
+        await fixture.CreateRuntimeStore().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1L, await fixture.ScalarLongAsync(
+            $"SELECT COUNT(*) FROM raw_capture_stage_events WHERE raw_capture_row_id = {frame.RawCaptureRowId} AND stage_key = 'causal-scan';")
+            .ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -936,7 +987,7 @@ public sealed class SqliteTransientCandidateJournalTests
 
         await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false).ConfigureAwait(false);
 
-        Assert.AreEqual(12L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(13L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await fixture.ScalarLongAsync(
             "SELECT COUNT(*) FROM pragma_table_info('transient_candidates') WHERE name = 'candidate_state';")
             .ConfigureAwait(false));
@@ -1738,8 +1789,8 @@ public sealed class SqliteTransientCandidateJournalTests
     }
 
     private static Dictionary<string, byte[]> ReadDatabaseFiles(string databasePath)
-        // -shm holds write-ahead log read marks rather than durable content, and a read-only inspection source may
-        // update them, so (as #558 established for the outbox) it is excluded from durable byte comparison.
+    // -shm holds write-ahead log read marks rather than durable content, and a read-only inspection source may
+    // update them, so (as #558 established for the outbox) it is excluded from durable byte comparison.
         => new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-journal" }
             .Where(File.Exists)
             .ToDictionary(static path => Path.GetFileName(path), File.ReadAllBytes, StringComparer.Ordinal);

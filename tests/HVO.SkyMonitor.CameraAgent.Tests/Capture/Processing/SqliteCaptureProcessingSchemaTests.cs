@@ -412,7 +412,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
             {
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 12;";
+                command.CommandText = "PRAGMA user_version = 13;";
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
