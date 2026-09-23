@@ -173,6 +173,21 @@ hvo-skymonitor cameraagent upgrade \
   --no-download
 ```
 
+The generated CameraAgent rig and pipeline are immutable instance configuration.
+The installer-virtualsky-v3 profile changes only the generated **new-install**
+20-second ASI174 combined-preview display stretch (white percentile 0.9995,
+asinh strength 10 instead of 0.9999 and 4); raw and combined Mono16 samples are
+unchanged. Upgrading the image on an existing v2 instance does **not** replace
+its rig or pipeline and therefore does not apply the new stretch to its captures.
+The scene-layer producer version changes independently: new processing with the
+new image draws star names at 14 source pixels on a 1936x1216 frame while
+retaining the same cardinal/corner text geometry, even on an existing instance;
+retained layers and previews are immutable and do not change retroactively.
+To adopt both installer defaults, provision a new isolated instance through a
+clean install and migrate operational state only under the supported lifecycle;
+do not edit an installed profile in place or treat an image upgrade as a clean
+install. These are display choices, not a physical visibility model.
+
 `cameraagent preflight` accepts the same release selectors and resolves them the same way, so a planned upgrade
 can be evaluated against persisted state first without acquiring, loading, or starting anything; see
 [State Compatibility Boundary](#state-compatibility-boundary).

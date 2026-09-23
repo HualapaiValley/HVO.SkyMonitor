@@ -45,7 +45,7 @@ public sealed class ConfigurationTests
         Assert.AreEqual(1936, sensor.GetProperty("widthPixels").GetInt32());
         Assert.AreEqual(1216, sensor.GetProperty("heightPixels").GetInt32());
         Assert.AreEqual(3872, sensor.GetProperty("strideBytes").GetInt32());
-        Assert.AreEqual("installer-virtualsky-v2", rig.GetProperty("profileVersion").GetString());
+        Assert.AreEqual("installer-virtualsky-v3", rig.GetProperty("profileVersion").GetString());
         Assert.AreEqual(1, readout.GetProperty("binX").GetInt32());
         Assert.AreEqual(1, readout.GetProperty("binY").GetInt32());
         Assert.AreEqual("IdentityV1", readout.GetProperty("binningAlgorithm").GetString());
@@ -79,6 +79,10 @@ public sealed class ConfigurationTests
         Assert.AreEqual(64, generated.Sha256.Length);
         Assert.AreEqual(64, generated.RigProfileSha256.Length);
         Assert.AreEqual(64, generated.ScheduleSha256.Length);
+        var preview = steps.Single(static step => step.GetProperty("id").GetString() == "CombinedPreview")
+            .GetProperty("options");
+        Assert.AreEqual(0.9995, preview.GetProperty("whitePercentile").GetDouble());
+        Assert.AreEqual(10.0, preview.GetProperty("asinhStrength").GetDouble());
     }
 
     private static string[] Dependencies(JsonElement step)
