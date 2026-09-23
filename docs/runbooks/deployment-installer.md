@@ -175,8 +175,8 @@ hvo-skymonitor cameraagent upgrade \
 
 The generated CameraAgent rig and pipeline are immutable instance configuration.
 The installer-virtualsky-v3 profile changes only the generated **new-install**
-20-second ASI174 combined-preview display stretch (white percentile 0.9995,
-asinh strength 10 instead of 0.9999 and 4); raw and combined Mono16 samples are
+20-second ASI174 combined-preview display stretch (white percentile 0.9997,
+asinh strength 8 instead of 0.9999 and 4); raw and combined Mono16 samples are
 unchanged. Upgrading the image on an existing v2 instance does **not** replace
 its rig or pipeline and therefore does not apply the new stretch to its captures.
 The scene-layer producer version changes independently: new processing with the

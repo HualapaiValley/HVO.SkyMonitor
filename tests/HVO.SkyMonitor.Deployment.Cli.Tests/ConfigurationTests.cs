@@ -81,8 +81,8 @@ public sealed class ConfigurationTests
         Assert.AreEqual(64, generated.ScheduleSha256.Length);
         var preview = steps.Single(static step => step.GetProperty("id").GetString() == "CombinedPreview")
             .GetProperty("options");
-        Assert.AreEqual(0.9995, preview.GetProperty("whitePercentile").GetDouble());
-        Assert.AreEqual(10.0, preview.GetProperty("asinhStrength").GetDouble());
+        Assert.AreEqual(0.9997, preview.GetProperty("whitePercentile").GetDouble());
+        Assert.AreEqual(8.0, preview.GetProperty("asinhStrength").GetDouble());
     }
 
     private static string[] Dependencies(JsonElement step)

@@ -166,8 +166,8 @@ internal static class CameraConfiguration
             recipeVersion = "mono16-asinh-v2",
             outputVariant = "combined-preview",
             blackPercentile = 0.5,
-            whitePercentile = 0.9995,
-            asinhStrength = 10.0
+            whitePercentile = 0.9997,
+            asinhStrength = 8.0
         }, RollingDependency),
         Step("ScenePresentation", "ScenePresentationLayer", 70, new
         {
