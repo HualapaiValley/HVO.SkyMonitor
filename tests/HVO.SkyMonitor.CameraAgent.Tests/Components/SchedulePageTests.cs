@@ -84,6 +84,38 @@ public sealed class SchedulePageTests
     }
 
     [TestMethod]
+    public void UncheckingLastDay_ShowsValidationAndDoesNotStage()
+    {
+        using var context = new BunitContext();
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+
+        cut.FindAll(".window-days input[type=checkbox]")[4].Change(false);
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+
+        Assert.IsTrue(cut.Markup.Contains("needs at least one day", StringComparison.Ordinal));
+        Assert.HasCount(0, service.StageCommands);
+    }
+
+    [TestMethod]
+    public void RemovingGroupedWindow_NamesAndRemovesEverySelectedDay()
+    {
+        using var context = new BunitContext();
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+
+        cut.FindAll(".window-days input[type=checkbox]")[5].Change(true);
+        cut.Find("button[aria-label='Remove window for Thursday, Friday']").Click();
+        Assert.HasCount(0, cut.FindAll(".window-item"));
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+
+        Assert.HasCount(1, service.StageCommands);
+        Assert.HasCount(0, CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload).Schedule.WeeklyWindows);
+    }
+
+    [TestMethod]
     public void PipelineToggle_ChangesOnlyV2EnabledStateAndRejectsLegacyProfile()
     {
         var options = JsonSerializer.SerializeToElement(new { outputVariant = "display" });

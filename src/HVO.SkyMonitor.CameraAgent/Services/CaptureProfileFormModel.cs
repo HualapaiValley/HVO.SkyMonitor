@@ -479,14 +479,7 @@ internal sealed class CaptureProfileFormModel
         public HashSet<DayOfWeek> Days { get; } = [];
         public Dictionary<DayOfWeek, string> DayIds { get; } = [];
         public Dictionary<DayOfWeek, int> DayOrder { get; } = [];
-        public string Id
-        {
-            get => DayIds.Count == 0 ? string.Empty : DayIds.First().Value;
-            set
-            {
-                if (DayIds.Count > 0) DayIds[DayIds.First().Key] = value;
-            }
-        }
+        public string Id => DayIds.Count == 0 ? string.Empty : DayIds[DayOrder.MinBy(static entry => entry.Value).Key];
         public CaptureScheduleBoundary? SourceStart { get; set; }
         public CaptureScheduleBoundary? SourceEnd { get; set; }
         public void AddDay(DayOfWeek day, string id, int order)
