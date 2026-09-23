@@ -88,7 +88,7 @@ public sealed class PresentationLayerPayloadTests
         var (x, y) = PresentationFont.LineOrigin(block, 800, 600, font, block.Lines[0], 0);
         Assert.IsLessThanOrEqualTo(800d / 3, PresentationFont.LineBounds(font, block.Lines[0], x, y).Right);
 
-        Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerProducers.FromMetadataFacts(facts, 40, 30));
+        Assert.IsEmpty(PresentationLayerProducers.FromMetadataFacts(facts, 40, 30).TextBlocks);
     }
 
     [TestMethod]

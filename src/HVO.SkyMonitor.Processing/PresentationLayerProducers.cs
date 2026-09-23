@@ -329,7 +329,8 @@ public static class PresentationLayerProducers
         // The metadata payload has no knowledge of the scene. Fit its actual glyph bounds into
         // the same outer thirds reserved by the scene producer.
         while (textScale > 1 && !Fits(textScale)) textScale--;
-        if (!Fits(textScale)) throw new ArgumentException("Corner text does not fit within the frame.", nameof(facts));
+        if (!Fits(textScale))
+            return PresentationLayerPayloadJson.Create(facts.SourceIdentitySha256, widthPixels, heightPixels);
         var blocks = new[]
         {
             Block(PresentationTextAnchor.TopLeft, facts.TopLeft), Block(PresentationTextAnchor.TopRight, facts.TopRight),
