@@ -18,8 +18,8 @@
 .sky-layer-canvas { position: relative; max-width: 100%; background: #020617; overflow: hidden; }
 .sky-layer-canvas > img, .sky-layer-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
 .sky-layer-canvas > img { display: block; }
-.sky-layer-canvas > img, .sky-layer-overlay { visibility: hidden; }
-.sky-layer-canvas--verified > img, .sky-layer-canvas--verified > .sky-layer-overlay { visibility: visible; }
+.sky-layer-overlay { visibility: hidden; }
+.sky-layer-canvas--verified > .sky-layer-overlay { visibility: visible; }
 .sky-layer-overlay { pointer-events: none; }
 .sky-layer-overlay ::deep svg { display: block; width: 100%; height: 100%; }
 .sky-layer-actions { position: absolute; right: .8rem; bottom: .8rem; display: flex; flex-wrap: wrap; gap: .5rem; }

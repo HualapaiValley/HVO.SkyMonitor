@@ -138,6 +138,7 @@ public sealed class CurrentSkyPageTests
     {
         using var context = new BunitContext();
         var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
         var captureId = OperatorUiTestData.CurrentImage().DisplayCapture!.CaptureId;
         var identity = new string('D', 64);
         service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
@@ -184,6 +185,7 @@ public sealed class CurrentSkyPageTests
     {
         using var context = new BunitContext();
         var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
         service.PresentationHandler = (id, _) => ValueTask.FromResult(
             OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
         var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
@@ -222,6 +224,7 @@ public sealed class CurrentSkyPageTests
     {
         using var context = new BunitContext();
         var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
         service.PresentationHandler = (id, _) => ValueTask.FromResult(
             OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
         var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
@@ -238,6 +241,7 @@ public sealed class CurrentSkyPageTests
     {
         using var context = new BunitContext();
         var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
         var reads = 0;
         service.PresentationHandler = (id, _) =>
         {
@@ -286,11 +290,88 @@ public sealed class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public async Task ProcessedLayersPendingThenUnavailableThenLateSuccessNeverShowAnnotatedArtifact()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var presentation = WithStructuredBase();
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(presentation));
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        service.PresentationHandler = (id, _) => Interlocked.Increment(ref reads) == 1
+            ? new ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>>(pending.Task)
+            : ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64),
+                Guid.Parse("00000000-0000-0000-0000-000000000103"))));
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, reads));
+        AssertBaseOnly(cut, "pending");
+        await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/preview",
+            cut.Find(".capture-image img").GetAttribute("src"));
+        await cut.Find("button[title='Show Processed image']").ClickAsync().ConfigureAwait(false);
+        AssertBaseOnly(cut, "pending");
+
+        pending.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable, "Layers unavailable"));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".sky-layer-unavailable").TextContent, "Layers unavailable", StringComparison.Ordinal));
+        cut.WaitForAssertion(() => AssertBaseOnly(cut, "unavailable"));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.Find(".sky-layer-canvas").ClassList.Contains("sky-layer-canvas--verified")));
+        Assert.AreEqual(2, reads);
+        Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000103/preview?attempt=0",
+            cut.Find(".sky-layer-canvas img").GetAttribute("src"));
+        Assert.IsEmpty(cut.FindAll(".capture-image img"));
+    }
+
+    [TestMethod]
+    public void ProcessedBaseMissingFailsOpenRatherThanShowingAnnotatedArtifact()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var presentation = WithStructuredBase() with
+        {
+            Stages = OperatorUiTestData.CurrentImage().Stages
+        };
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(presentation));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable, "Layers unavailable"));
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".stage-status").TextContent, "base is unavailable", StringComparison.Ordinal));
+        Assert.IsEmpty(cut.FindAll(".capture-image img"));
+        Assert.IsEmpty(cut.FindAll("#current-sky-view-large"));
+        StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Processed base unavailable", StringComparison.Ordinal);
+    }
+
+    private static CameraAgentCurrentImagePresentation WithStructuredBase()
+    {
+        var source = OperatorUiTestData.CurrentImage();
+        return source with
+        {
+            StructuredLayersAvailable = true,
+            Stages = source.Stages.Select(slot => slot.Stage == CameraAgentPresentationStage.Combined
+                ? new CameraAgentPresentationSlot(CameraAgentPresentationStage.Combined, "Combined", CameraAgentPresentationSlotAvailability.Available,
+                    "Available.", Guid.Parse("00000000-0000-0000-0000-000000000103"), HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined,
+                    null, "image/jpeg", new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000103/preview", UriKind.Relative))
+                : slot).ToArray()
+        };
+    }
+
+    private static void AssertBaseOnly(IRenderedComponent<CurrentSkyPage> cut, string state)
+    {
+        Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000103/preview",
+            cut.Find(".capture-image img").GetAttribute("src"));
+        Assert.IsEmpty(cut.FindAll(".sky-layer-overlay svg"));
+        StringAssert.Contains(cut.Find(".stage-status").TextContent, $"processed layers are {state}", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Unannotated Combined base", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task LayerSelectionSurvivesPollingAndResetsForNewCapture()
     {
         using var context = new BunitContext();
         var service = Configure(context);
-        var first = OperatorUiTestData.CurrentImage();
+        var first = WithStructuredBase();
         var secondId = Guid.Parse("00000000-0000-0000-0000-000000000021");
         var current = first;
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
@@ -320,7 +401,7 @@ public sealed class CurrentSkyPageTests
     {
         using var context = new BunitContext();
         var service = Configure(context);
-        var first = OperatorUiTestData.CurrentImage();
+        var first = WithStructuredBase();
         var secondId = Guid.Parse("00000000-0000-0000-0000-000000000021");
         var second = first with { DisplayCapture = first.DisplayCapture! with { CaptureId = secondId } };
         var current = first;
@@ -361,7 +442,7 @@ public sealed class CurrentSkyPageTests
     {
         using var context = new BunitContext();
         var service = Configure(context);
-        var first = OperatorUiTestData.CurrentImage();
+        var first = WithStructuredBase();
         var secondId = Guid.Parse("00000000-0000-0000-0000-000000000021");
         var current = first;
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
@@ -385,6 +466,7 @@ public sealed class CurrentSkyPageTests
     {
         using var context = new BunitContext();
         var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
         service.PresentationHandler = (id, _) => ValueTask.FromResult(
             OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
         context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
@@ -403,8 +485,8 @@ public sealed class CurrentSkyPageTests
         Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
     }
 
-    private static CameraAgentLayeredPresentation Layered(Guid captureId, string identity) => new(
-        captureId, Guid.Parse("00000000-0000-0000-0000-000000000102"), new string('A', 64),
+    private static CameraAgentLayeredPresentation Layered(Guid captureId, string identity, Guid? baseArtifactId = null) => new(
+        captureId, baseArtifactId ?? Guid.Parse("00000000-0000-0000-0000-000000000103"), new string('A', 64),
         new string('B', 64), new string('C', 64), 640, 480,
         [new(identity, "scene-annotation", "hvo-layer-0", 20, true, 1_000_000, "renderer-v1", "style-v1")],
         System.Text.Encoding.UTF8.GetBytes("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 480\"><g id=\"hvo-layer-0\"></g></svg>"));

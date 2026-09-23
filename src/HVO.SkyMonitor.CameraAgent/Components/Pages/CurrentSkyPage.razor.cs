@@ -159,7 +159,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                     }
                     _factsUnavailableReason = result.Value.FactsUnavailableReason;
                     _selectedStage = ResolveSelection(result.Value.Presentation, _selectedStage);
-                    if (_selectedStage is null || ShowLayeredHero)
+                    if (_selectedStage is null || ShowLayeredHero || ProcessedBaseFallback)
                     {
                         _viewerOpen = false;
                     }
@@ -253,7 +253,9 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 else if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
                 {
                     _layers = value;
-                    _layerMessage = null;
+                    _layerMessage = ProcessedBaseSlot?.ArtifactId != value.BaseArtifactId
+                        ? "The layered base does not match the available Combined stage. Showing the unannotated base instead when available."
+                        : null;
                     _selectedLayers = value.Layers.Where(static layer => layer.EnabledByDefault)
                         .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
                     _viewerOpen = false;
@@ -286,6 +288,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             {
                 if (generation != Volatile.Read(ref _layerGeneration) || cancellation.IsCancellationRequested) return;
                 _layerLoading = false;
+                StateHasChanged();
             }).ConfigureAwait(false);
         }
     }
@@ -296,8 +299,19 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         .ToString("0.########", System.Globalization.CultureInfo.InvariantCulture);
 
     private bool ShowLayeredHero => !_layerImageFailed && _selectedStage == CameraAgentPresentationStage.Annotated &&
-        _layers is not null && _presentation?.DisplayCapture?.CaptureId == _layers.CaptureId &&
+        _layers is not null && _layers.BaseArtifactId == ProcessedBaseSlot?.ArtifactId &&
+        _presentation?.DisplayCapture?.CaptureId == _layers.CaptureId &&
         SelectedSlot is not null;
+
+    private bool ProcessedBaseFallback => _selectedStage == CameraAgentPresentationStage.Annotated &&
+        _presentation?.StructuredLayersAvailable == true;
+
+    private CameraAgentPresentationSlot? ProcessedBaseSlot => _presentation?.Stages.SingleOrDefault(slot =>
+        slot.Stage == CameraAgentPresentationStage.Combined &&
+        slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.PreviewUrl is not null);
+
+    private CameraAgentPresentationSlot? DisplaySlot => ProcessedBaseFallback && !ShowLayeredHero
+        ? ProcessedBaseSlot : SelectedSlot;
 
     private string? SavedArtifactUrl => _savedArtifactUrl;
 
@@ -305,7 +319,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     {
         _layerInteractive = false;
         _layerImageFailed = true;
-        _layerMessage = message;
+        _layerMessage = message.Replace("Showing the standard image instead", "Showing the unannotated base instead", StringComparison.Ordinal);
     }
 
     private void SelectLayer(string identity, bool enabled)
@@ -431,7 +445,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         }
     }
 
-    private void OpenViewer() => _viewerOpen = SelectedSlot is not null && !ShowLayeredHero;
+    private void OpenViewer() => _viewerOpen = DisplaySlot is not null && !ShowLayeredHero;
 
     private CameraAgentPresentationSlot? SelectedSlot => _presentation?.Stages.SingleOrDefault(slot =>
         slot.Stage == _selectedStage && slot.Availability == CameraAgentPresentationSlotAvailability.Available);
@@ -443,9 +457,9 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         ? $"/gallery/{capture.CaptureId:D}"
         : "/gallery";
 
-    private string ViewerTitle => SelectedSlot is null ? "Large sky image" : $"{SelectedSlot.Label} sky image";
+    private string ViewerTitle => DisplaySlot is null ? "Large sky image" : $"{DisplaySlot.Label} sky image";
 
-    private string ImageAlt => _presentation?.DisplayCapture is { } capture && SelectedSlot is { } slot
+    private string ImageAlt => _presentation?.DisplayCapture is { } capture && DisplaySlot is { } slot
         ? $"{slot.Label} sky capture from {capture.ExposureStartedUtc.ToLocalTime():g}"
         : "Current sky capture";
 
@@ -511,8 +525,14 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 ? "A newer capture exists, but this is the latest retained capture that can be displayed safely."
                 : _presentation.System.Message;
 
-    private string StageStatus => ShowLayeredHero
+    private string StageStatus => ShowLayeredHero && _layerInteractive
         ? "Showing processed base image with selected presentation overlays; not the separate processed artifact."
+        : ShowLayeredHero
+        ? "Showing unannotated Combined base while processed layers are pending verification. Layer toggles do not affect this image yet."
+        : ProcessedBaseFallback && ProcessedBaseSlot is null
+        ? "Processed layers are pending or unavailable; the unannotated Combined base is unavailable. No processed image is displayed."
+        : ProcessedBaseFallback
+        ? $"Showing unannotated Combined base; processed layers are {(_layerLoading ? "pending" : "unavailable")}. Layer toggles do not affect this image."
         : SelectedSlot is { } selected
         ? $"Showing {selected.Label}."
         : "No image stage is currently displayable.";

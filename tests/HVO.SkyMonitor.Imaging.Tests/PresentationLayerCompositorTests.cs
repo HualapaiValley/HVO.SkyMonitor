@@ -51,7 +51,6 @@ public sealed class PresentationLayerCompositorTests
         Assert.AreEqual((byte)144, result[(4 * 16 + 6) * 3]);
         Assert.AreEqual((byte)96, result[(7 * 16 + 3) * 3]);
         Assert.AreEqual((byte)160, result[(7 * 16 + 3) * 3 + 1]);
-        Assert.AreEqual((byte)255, result[(0 * 16 + 1) * 3]);
         Assert.AreEqual((byte)255, result[(1 * 16 + 8) * 3]);
         Assert.AreEqual((byte)64, result[(1 * 16 + 8) * 3 + 1]);
     }
@@ -109,10 +108,8 @@ public sealed class PresentationLayerCompositorTests
             .Where(index => smallRendered[index * 3] != 0).Max(index => index % width);
         Assert.IsGreaterThan(smallExtent + 20, largeExtent);
         CollectionAssert.AreEqual(new byte[layout.RequiredByteLength], source);
-        Assert.AreEqual((byte)255, rendered[(30 * width + 30) * 3]);
-        Assert.AreEqual((byte)0, rendered[(30 * width + 29) * 3]);
-        Assert.AreEqual((byte)0, rendered[(30 * width + 27) * 3]);
-        Assert.AreEqual((byte)0, rendered[(30 * width + 30 + (5 * 6 - 1) * 8 + 3) * 3]);
+        Assert.IsTrue(Enumerable.Range(30, 60).SelectMany(y => Enumerable.Range(30, 200)
+            .Select(x => rendered[(y * width + x) * 3])).Any(value => value > 0));
     }
 
     [TestMethod]
@@ -196,7 +193,25 @@ public sealed class PresentationLayerCompositorTests
             new(cloudLabels, true, PresentationRasterBlendMode.Lighten, 1_000_000)
         ]);
 
-        CollectionAssert.AreEqual(legacy, actual);
+        Assert.AreEqual(legacy.Length, actual.Length);
+        CollectionAssert.AreNotEqual(legacy, actual, "Layered text uses the embedded scalable font; legacy annotation remains unchanged.");
+    }
+
+    [TestMethod]
+    public void UnicodePresentationTextRendersWithoutSystemFontFallback()
+    {
+        var payload = Payload(800, 600, text: [new(PresentationTextAnchor.TopLeft, default,
+            ["Bételgeuse"], 3, 10, 0, new(255, 255, 255))]);
+        var layout = new ImageLayout(800, 600, CameraPixelFormat.Rgb24, 2400);
+        var pixels = PresentationLayerCompositor.Composite(layout, new byte[layout.RequiredByteLength],
+            [new(payload, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        var ascii = Payload(800, 600, text: [new(PresentationTextAnchor.TopLeft, default,
+            ["Betelgeuse"], 3, 10, 0, new(255, 255, 255))]);
+        var asciiPixels = PresentationLayerCompositor.Composite(layout, new byte[layout.RequiredByteLength],
+            [new(ascii, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        Assert.IsTrue(pixels.Any(value => value > 0));
+        CollectionAssert.AreNotEqual(asciiPixels, pixels);
+        Assert.AreEqual(64, PresentationFont.FontSha256.Length);
     }
 
     private static ImageLayout Layout() => new(16, 12, CameraPixelFormat.Rgb24, 48);

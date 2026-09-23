@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using SkiaSharp;
 
 namespace HVO.SkyMonitor.Imaging;
 
@@ -17,7 +18,7 @@ public sealed record PresentationMarkerV1(PixelPoint Center, int Radius, Present
 public sealed record PresentationSegmentV1(PixelPoint From, PixelPoint To, int Thickness, PresentationColor Color);
 /// <summary>An ellipse in continuous top-left image pixels with positive finite radii.</summary>
 public sealed record PresentationEllipseV1(PixelPoint Center, double RadiusX, double RadiusY, PresentationColor Color);
-/// <summary>A bounded text block with scale 1 through 16 and pixel inset/spacing.</summary>
+/// <summary>A bounded text block using the embedded font at 7 * scale pixels, with pixel inset/spacing.</summary>
 public sealed record PresentationTextBlockV1(
     PresentationTextAnchor Anchor,
     PixelPoint Point,
@@ -117,7 +118,7 @@ public sealed record PresentationCompositorLayer(
 /// <summary>Rasterizes ordered typed layers into exactly one owned packed output buffer.</summary>
 public static class PresentationLayerCompositor
 {
-    public const string AlgorithmVersion = "typed-presentation-compositor-v2";
+    public const string AlgorithmVersion = "typed-presentation-compositor-v3-plex";
 
     /// <summary>
     /// Clones the borrowed immutable packed base exactly once and rasterizes ordered enabled layers into that owned
@@ -228,38 +229,55 @@ public static class PresentationLayerCompositor
     private static void DrawTextBlock(byte[] pixels, ImageLayout layout, PresentationTextBlockV1 value,
         PresentationCompositorLayer layer, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var lineHeight = 7 * value.Scale;
-        var blockHeight = value.Lines.Count == 0 ? 0 : value.Lines.Count * lineHeight + (value.Lines.Count - 1) * value.LineSpacing;
+        using var font = PresentationFont.Create(value.Scale);
         for (var index = 0; index < value.Lines.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var line = value.Lines[index];
-            var width = Math.Max(0, line.Length * 6 * value.Scale - value.Scale);
-            var x = value.Anchor switch
+            var (x, y) = PresentationFont.LineOrigin(value, layout.Width, layout.Height, font, value.Lines[index], index);
+            using var path = PresentationFont.LinePath(font, value.Lines[index], x, y);
+            var halo = PresentationFont.Halo(value.Scale);
+            var bounds = path.Bounds;
+            var left = Math.Max(0, (int)Math.Floor(bounds.Left - halo - 1));
+            var top = Math.Max(0, (int)Math.Floor(bounds.Top - halo - 1));
+            var right = Math.Min(layout.Width, (int)Math.Ceiling(bounds.Right + halo + 1));
+            var bottom = Math.Min(layout.Height, (int)Math.Ceiling(bounds.Bottom + halo + 1));
+            if (left >= right || top >= bottom) continue;
+            using var bitmap = new SKBitmap(new SKImageInfo(right - left, bottom - top, SKColorType.Rgba8888, SKAlphaType.Premul));
+            using (var canvas = new SKCanvas(bitmap))
             {
-                PresentationTextAnchor.TopRight or PresentationTextAnchor.BottomRight => layout.Width - value.Inset - width,
-                PresentationTextAnchor.Point => Round(value.Point.X),
-                _ => value.Inset
-            };
-            var y = value.Anchor switch
-            {
-                PresentationTextAnchor.BottomLeft or PresentationTextAnchor.BottomRight => layout.Height - value.Inset - blockHeight + index * (lineHeight + value.LineSpacing),
-                PresentationTextAnchor.Point => Round(value.Point.Y) + index * (lineHeight + value.LineSpacing),
-                _ => value.Inset + index * (lineHeight + value.LineSpacing)
-            };
-            if (value.Scale > 2)
-            {
-                var halo = Math.Max(1, value.Scale / 4);
-                for (var dy = -halo; dy <= halo; dy++)
+                canvas.Clear(SKColors.Transparent);
+                canvas.Translate(-left, -top);
+                if (halo > 0)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    for (var dx = -halo; dx <= halo; dx++)
-                        if (dx * dx + dy * dy <= halo * halo)
-                            DrawText(pixels, layout, x + dx, y + dy, line, value.Scale, new(0, 0, 0), layer, cancellationToken);
+                    using var outline = new SKPaint
+                    {
+                        Color = SKColors.Black,
+                        IsAntialias = true,
+                        Style = SKPaintStyle.Stroke,
+                        StrokeWidth = 2 * halo,
+                        StrokeJoin = SKStrokeJoin.Round
+                    };
+                    canvas.DrawPath(path, outline);
+                }
+                using var fill = new SKPaint
+                {
+                    Color = new SKColor(value.Color.Red, value.Color.Green, value.Color.Blue),
+                    IsAntialias = true,
+                    Style = SKPaintStyle.Fill
+                };
+                canvas.DrawPath(path, fill);
+            }
+            for (var row = 0; row < bitmap.Height; row++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                for (var column = 0; column < bitmap.Width; column++)
+                {
+                    var pixel = bitmap.GetPixel(column, row);
+                    if (pixel.Alpha == 0) continue;
+                    var color = new PresentationColor(pixel.Red, pixel.Green, pixel.Blue);
+                    Set(pixels, layout, left + column, top + row, color, layer, pixel.Alpha);
                 }
             }
-            DrawText(pixels, layout, x, y, line, value.Scale, value.Color, layer, cancellationToken);
         }
     }
 
@@ -284,82 +302,18 @@ public static class PresentationLayerCompositor
         }
     }
 
-    private static void DrawText(byte[] pixels, ImageLayout layout, int x, int y, string text, int scale,
-        PresentationColor color, PresentationCompositorLayer layer, CancellationToken cancellationToken)
-    {
-        for (var character = 0; character < text.Length; character++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var rows = Glyph(char.ToUpperInvariant(text[character]));
-            for (var row = 0; row < 7; row++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                for (var column = 0; column < 5; column++)
-                    if ((rows[row] & 1 << (4 - column)) != 0)
-                        for (var sy = 0; sy < scale; sy++) for (var sx = 0; sx < scale; sx++)
-                            Set(pixels, layout, x + character * 6 * scale + column * scale + sx, y + row * scale + sy, color, layer);
-            }
-        }
-    }
-
-    /// <summary>Returns the fixed five-column bitmap rows used by raster and vector presentation text.</summary>
-    public static ReadOnlySpan<byte> Glyph(char value) => char.ToUpperInvariant(value) switch
-    {
-        'A' => [14, 17, 17, 31, 17, 17, 17],
-        'B' => [30, 17, 17, 30, 17, 17, 30],
-        'C' => [14, 17, 16, 16, 16, 17, 14],
-        'D' => [30, 17, 17, 17, 17, 17, 30],
-        'E' => [31, 16, 16, 30, 16, 16, 31],
-        'F' => [31, 16, 16, 30, 16, 16, 16],
-        'G' => [14, 17, 16, 23, 17, 17, 15],
-        'H' => [17, 17, 17, 31, 17, 17, 17],
-        'I' => [31, 4, 4, 4, 4, 4, 31],
-        'J' => [1, 1, 1, 1, 17, 17, 14],
-        'K' => [17, 18, 20, 24, 20, 18, 17],
-        'L' => [16, 16, 16, 16, 16, 16, 31],
-        'M' => [17, 27, 21, 21, 17, 17, 17],
-        'N' => [17, 25, 21, 19, 17, 17, 17],
-        'O' => [14, 17, 17, 17, 17, 17, 14],
-        'P' => [30, 17, 17, 30, 16, 16, 16],
-        'Q' => [14, 17, 17, 17, 21, 18, 13],
-        'R' => [30, 17, 17, 30, 20, 18, 17],
-        'S' => [15, 16, 16, 14, 1, 1, 30],
-        'T' => [31, 4, 4, 4, 4, 4, 4],
-        'U' => [17, 17, 17, 17, 17, 17, 14],
-        'V' => [17, 17, 17, 17, 17, 10, 4],
-        'W' => [17, 17, 17, 21, 21, 21, 10],
-        'X' => [17, 17, 10, 4, 10, 17, 17],
-        'Y' => [17, 17, 10, 4, 4, 4, 4],
-        'Z' => [31, 1, 2, 4, 8, 16, 31],
-        '0' => [14, 17, 19, 21, 25, 17, 14],
-        '1' => [4, 12, 20, 4, 4, 4, 31],
-        '2' => [14, 17, 1, 2, 4, 8, 31],
-        '3' => [30, 1, 1, 14, 1, 1, 30],
-        '4' => [2, 6, 10, 18, 31, 2, 2],
-        '5' => [31, 16, 16, 30, 1, 1, 30],
-        '6' => [14, 16, 16, 30, 17, 17, 14],
-        '7' => [31, 1, 2, 4, 8, 8, 8],
-        '8' => [14, 17, 17, 14, 17, 17, 14],
-        '9' => [14, 17, 17, 15, 1, 1, 14],
-        '-' => [0, 0, 0, 31, 0, 0, 0],
-        '.' => [0, 0, 0, 0, 0, 12, 12],
-        ':' => [0, 12, 12, 0, 12, 12, 0],
-        '/' => [1, 2, 2, 4, 8, 8, 16],
-        '%' => [25, 26, 2, 4, 8, 11, 19],
-        _ => [0, 0, 0, 0, 0, 0, 0]
-    };
-
     private static void SetFinite(byte[] pixels, ImageLayout layout, double x, double y, PresentationColor color, PresentationCompositorLayer layer)
     { if (double.IsFinite(x) && double.IsFinite(y) && x is >= int.MinValue and <= int.MaxValue && y is >= int.MinValue and <= int.MaxValue) Set(pixels, layout, Round(x), Round(y), color, layer); }
 
-    private static void Set(byte[] pixels, ImageLayout layout, int x, int y, PresentationColor color, PresentationCompositorLayer layer)
+    private static void Set(byte[] pixels, ImageLayout layout, int x, int y, PresentationColor color,
+        PresentationCompositorLayer layer, byte coverage = 255)
     {
         if ((uint)x >= (uint)layout.Width || (uint)y >= (uint)layout.Height) return;
         var channels = layout.PixelFormat == CameraPixelFormat.Mono8 ? 1 : 3; var offset = y * layout.StrideBytes + x * channels;
-        if (channels == 1) Blend(ref pixels[offset], color.Red, layer); else { Blend(ref pixels[offset], color.Red, layer); Blend(ref pixels[offset + 1], color.Green, layer); Blend(ref pixels[offset + 2], color.Blue, layer); }
+        if (channels == 1) Blend(ref pixels[offset], color.Red, layer, coverage); else { Blend(ref pixels[offset], color.Red, layer, coverage); Blend(ref pixels[offset + 1], color.Green, layer, coverage); Blend(ref pixels[offset + 2], color.Blue, layer, coverage); }
     }
 
-    private static void Blend(ref byte destination, byte source, PresentationCompositorLayer layer)
+    private static void Blend(ref byte destination, byte source, PresentationCompositorLayer layer, byte coverage)
     {
         var blended = layer.BlendMode switch
         {
@@ -369,7 +323,8 @@ public static class PresentationLayerCompositor
             PresentationRasterBlendMode.Lighten => Math.Max(destination, source),
             _ => source
         };
-        destination = (byte)((destination * (1_000_000 - layer.OpacityMillionths) + blended * layer.OpacityMillionths + 500_000) / 1_000_000);
+        var opacity = (int)((long)layer.OpacityMillionths * coverage / 255);
+        destination = (byte)((destination * (1_000_000 - opacity) + blended * opacity + 500_000) / 1_000_000);
     }
 
     private static bool Clip(ref PixelPoint from, ref PixelPoint to, int width, int height)

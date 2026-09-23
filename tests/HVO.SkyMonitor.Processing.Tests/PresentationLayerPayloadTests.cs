@@ -63,6 +63,35 @@ public sealed class PresentationLayerPayloadTests
     }
 
     [TestMethod]
+    public void CornerTextScalesWithFrameWhilePreservingUnicode()
+    {
+        var facts = new PresentationMetadataFactsV1(new string('B', 64), ["Café"], [], [], ["Étoile"]);
+        var small = PresentationLayerProducers.FromMetadataFacts(facts, 320, 240);
+        var full = PresentationLayerProducers.FromMetadataFacts(facts, 4000, 3000);
+
+        Assert.AreEqual("Café", full.TextBlocks[0].Lines[0]);
+        Assert.AreEqual("Étoile", full.TextBlocks[3].Lines[0]);
+        Assert.AreEqual(1, small.TextBlocks[0].Scale);
+        Assert.IsGreaterThan(small.TextBlocks[0].Scale, full.TextBlocks[0].Scale);
+        Assert.AreEqual(PresentationFont.FrameScale(4000, 3000), full.TextBlocks[0].Scale);
+    }
+
+    [TestMethod]
+    public void CornerTextFitsItsOwnFrameQuadrantOrRejectsUnrenderableFacts()
+    {
+        var facts = new PresentationMetadataFactsV1(new string('B', 64),
+            [new string('W', 64)], ["Right"], ["Bottom"], ["End"]);
+        var payload = PresentationLayerProducers.FromMetadataFacts(facts, 800, 600);
+        Assert.IsLessThan(PresentationFont.FrameScale(800, 600), payload.TextBlocks[0].Scale);
+        using var font = PresentationFont.Create(payload.TextBlocks[0].Scale);
+        var block = payload.TextBlocks[0];
+        var (x, y) = PresentationFont.LineOrigin(block, 800, 600, font, block.Lines[0], 0);
+        Assert.IsLessThanOrEqualTo(400, PresentationFont.LineBounds(font, block.Lines[0], x, y).Right);
+
+        Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerProducers.FromMetadataFacts(facts, 40, 30));
+    }
+
+    [TestMethod]
     public async Task FullFrameLabelsPreferBrightestAndKeepMarkersWhenLabelsCollide()
     {
         var utc = new DateTimeOffset(2026, 8, 25, 0, 0, 0, TimeSpan.Zero);
@@ -86,15 +115,47 @@ public sealed class PresentationLayerPayloadTests
             includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false);
 
         Assert.HasCount(2, first.StarAnnotations.Markers);
-        Assert.HasCount(1, first.StarAnnotations.TextBlocks);
-        Assert.AreEqual("BRIGHT", first.StarAnnotations.TextBlocks[0].Lines[0]);
-        Assert.AreEqual(2, first.StarAnnotations.TextBlocks[0].Scale);
+        Assert.HasCount(0, first.StarAnnotations.TextBlocks);
         Assert.AreEqual(first.StarAnnotations.ContentIdentitySha256, repeat.StarAnnotations.ContentIdentitySha256);
         Assert.IsTrue(PresentationLayerPayloadJson.Parse(PresentationLayerPayloadJson.Serialize(first.StarAnnotations)).IsValid);
     }
 
     [TestMethod]
-    public void GroupedSvgUsesFixedGlyphPathsForLargeText()
+    public async Task FullFrameStarLabelsAvoidAllMetadataCornersAndCardinals()
+    {
+        const int width = 4000, height = 3000;
+        var utc = new DateTimeOffset(2026, 8, 25, 0, 0, 0, TimeSpan.Zero);
+        var siderealHours = AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15;
+        var catalog = new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("tl", "TOP LEFT", (siderealHours - 40d / 15 + 24) % 24, 30, 0),
+            new CelestialCatalogObject("tr", "TOP RIGHT", (siderealHours + 40d / 15) % 24, 30, 0.1),
+            new CelestialCatalogObject("bl", "BOTTOM LEFT", (siderealHours - 40d / 15 + 24) % 24, -30, 0.2),
+            new CelestialCatalogObject("br", "BOTTOM RIGHT", (siderealHours + 40d / 15) % 24, -30, 0.3),
+            new CelestialCatalogObject("center", "CENTER", siderealHours, 0, 1)
+        ]);
+        var visible = await new VisibleSceneBuilder(catalog).BuildAsync(new VisibleSceneRequest(utc,
+            new ObserverLocation(0, 0, 0), new ProjectionContext(ProjectionModel.EquidistantFisheye,
+                width / 2, height / 2, 1400, 1400, width, height, ProjectionAperture.Circular,
+                ImageCircleRadiusPixels: 1900, BoresightAltitudeDegrees: 90),
+            new CatalogQuery(6, 10),
+            new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
+            projectionVersion: "perspective-v1")).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(width, height),
+            new ProjectedSceneSource(Guid.NewGuid(), Guid.NewGuid(), new string('A', 64)),
+            "calibration-v1", visible.Request.ProjectionVersion);
+        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
+        var repeat = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
+
+        Assert.HasCount(5, groups.StarAnnotations.Markers);
+        Assert.IsTrue(groups.CardinalDirections.TextBlocks.Count > 0);
+        Assert.HasCount(1, groups.StarAnnotations.TextBlocks);
+        Assert.AreEqual("CENTER", groups.StarAnnotations.TextBlocks[0].Lines[0]);
+        Assert.AreEqual(groups.StarAnnotations.ContentIdentitySha256, repeat.StarAnnotations.ContentIdentitySha256);
+    }
+
+    [TestMethod]
+    public void GroupedSvgUsesEmbeddedFontOutlinesForUnicodeText()
     {
         var compatibility = new PresentationCompatibilityDescriptor(800, 600, new string('D', 64), new string('E', 64));
         var source = new PresentationProductReference(Guid.NewGuid(), new string('A', 64), "image/png", compatibility);
@@ -104,14 +165,15 @@ public sealed class PresentationLayerPayloadTests
             0, PresentationBlendMode.Normal, 1_000_000, true, options.RootElement);
         var manifest = LayeredPresentationJson.CreateManifest(source, new string('C', 64), [layer]);
         var payload = PresentationLayerPayloadJson.Create(new string('C', 64), 800, 600,
-            textBlocks: [new(PresentationTextAnchor.Point, new(30, 30), ["N"], 8, 0, 0, new(255, 255, 255))]);
+            textBlocks: [new(PresentationTextAnchor.Point, new(30, 30), ["Étoile"], 8, 0, 0, new(255, 255, 255))]);
 
         var svg = Encoding.UTF8.GetString(GroupedSvgPresentationRenderer.Render(manifest, [payload], new string('F', 64)).Svg.Span);
 
-        StringAssert.Contains(svg, "M30 30h8v8h-8z", StringComparison.Ordinal);
+        StringAssert.Contains(svg, "<path d=", StringComparison.Ordinal);
         StringAssert.Contains(svg, "stroke-width=\"4\"", StringComparison.Ordinal);
         Assert.IsFalse(svg.Contains("font-family", StringComparison.Ordinal));
         Assert.IsFalse(svg.Contains("<text", StringComparison.Ordinal));
+        Assert.IsFalse(svg.Contains("Étoile", StringComparison.Ordinal));
     }
 
     [TestMethod]

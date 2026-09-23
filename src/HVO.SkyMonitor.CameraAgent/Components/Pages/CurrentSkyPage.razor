@@ -51,7 +51,7 @@
             else
             {
             <CaptureImage Loading="@(_initialLoading && _presentation is null)"
-                          Source="@SelectedSlot?.PreviewUrl"
+                          Source="@DisplaySlot?.PreviewUrl"
                           RetryObservedUtc="@_presentation?.ObservedUtc"
                           Alt="@ImageAlt"
                           ShowPersistentContent="@(FactCapture is not null)"
@@ -64,7 +64,7 @@
                     }
                 </PersistentContent>
                 <ChildContent>
-                @if (_presentation?.DisplayCapture is not null && SelectedSlot is not null)
+                @if (_presentation?.DisplayCapture is not null && DisplaySlot is not null)
                 {
                     <button id="current-sky-view-large" type="button" class="btn btn-overlay btn-sm image-action" @onclick="OpenViewer">View large image</button>
                 }
@@ -118,7 +118,7 @@
                 <dl>
                     <div><dt>Captured</dt><dd><time datetime="@capture.ExposureStartedUtc.ToString("O")">@capture.ExposureStartedUtc.ToLocalTime().ToString("g")</time></dd></div>
                     <div><dt>Image age</dt><dd>@FormatDuration(capture.AgeSeconds)</dd></div>
-                    <div><dt>Stage</dt><dd>@(ShowLayeredHero ? "Processed base + selected overlays" : SelectedSlot?.Label ?? "Unavailable")</dd></div>
+                    <div><dt>Stage</dt><dd>@(ShowLayeredHero && _layerInteractive ? "Processed base + selected overlays" : ProcessedBaseFallback ? ProcessedBaseSlot is null ? "Processed base unavailable" : "Unannotated Combined base (processed layers pending or unavailable)" : SelectedSlot?.Label ?? "Unavailable")</dd></div>
                     <div><dt>Evidence</dt><dd>@EvidenceLabel(capture.EvidenceOrigin)</dd></div>
                     <div><dt>Observing night</dt><dd>@ObservingNightLabel</dd></div>
                     @if (_facts is { } facts)
@@ -175,7 +175,7 @@
 </div>
 
 <LargeImageViewer @bind-Open="_viewerOpen"
-                  Source="@SelectedSlot?.PreviewUrl"
+                  Source="@DisplaySlot?.PreviewUrl"
                   Title="@ViewerTitle"
                   Alt="@ImageAlt"
                   TriggerId="current-sky-view-large" />

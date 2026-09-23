@@ -113,10 +113,10 @@ public sealed class CameraAgentLayeredPresentationTests
     }
 
     [TestMethod]
-    public void ScalableSvgTextUsesDeterministicGlyphPathAndDarkHalo()
+    public void ScalableSvgTextUsesDeterministicEmbeddedOutlinesAndDarkHalo()
     {
         var payload = PresentationLayerPayloadJson.Create(new string('C', 64), 800, 600,
-            textBlocks: [new(PresentationTextAnchor.Point, new(40, 40), ["BRIGHT"], 8, 0, 0, new(255, 255, 255))]);
+            textBlocks: [new(PresentationTextAnchor.Point, new(40, 40), ["Étoile"], 8, 0, 0, new(255, 255, 255))]);
         var compatibility = new PresentationCompatibilityDescriptor(800, 600, new string('A', 64), new string('B', 64));
         var layer = LayeredPresentationJson.CreateLayer("scene-annotation",
             new(Guid.NewGuid(), payload.ContentIdentitySha256, PresentationLayerPayloadJson.MediaType, compatibility),
@@ -135,6 +135,8 @@ public sealed class CameraAgentLayeredPresentationTests
         Assert.AreEqual("4", glyphs.Attribute("stroke-width")?.Value);
         Assert.AreEqual("stroke fill", glyphs.Attribute("paint-order")?.Value);
         Assert.AreEqual(first.SvgChecksumSha256, repeat.SvgChecksumSha256);
+        Assert.IsFalse(Encoding.UTF8.GetString(first.Svg.Span).Contains("<text", StringComparison.Ordinal));
+        Assert.IsLessThan(GroupedSvgPresentationRenderer.MaximumSvgBytes, first.Svg.Length);
     }
 
     private static T AssertSingle<T>(IEnumerable<T> values)

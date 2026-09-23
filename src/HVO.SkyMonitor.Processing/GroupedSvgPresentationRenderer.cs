@@ -28,7 +28,7 @@ public static class GroupedSvgPresentationRenderer
 {
     public const int MaximumSvgBytes = 2 * 1024 * 1024;
     public const int MaximumSvgElements = 20_000;
-    public const string RendererVersion = "cameraagent-grouped-svg-v2";
+    public const string RendererVersion = "cameraagent-grouped-svg-v3-plex";
 
     public static GroupedSvgPresentation Render(
         OverlayManifestV1 manifest,
@@ -185,43 +185,20 @@ public static class GroupedSvgPresentationRenderer
             for (var lineIndex = 0; lineIndex < block.Lines.Count; lineIndex++)
             {
                 var line = block.Lines[lineIndex];
-                var scale = block.Scale;
-                var lineHeight = 7 * scale;
-                var blockHeight = block.Lines.Count * lineHeight + (block.Lines.Count - 1) * block.LineSpacing;
-                var width = (line.Length * 6 - 1) * scale;
-                var x = block.Anchor switch
-                {
-                    PresentationTextAnchor.TopRight or PresentationTextAnchor.BottomRight => payload.WidthPixels - block.Inset - width,
-                    PresentationTextAnchor.Point => Math.Round(block.Point.X, MidpointRounding.AwayFromZero),
-                    _ => block.Inset
-                };
-                var y = block.Anchor switch
-                {
-                    PresentationTextAnchor.BottomLeft or PresentationTextAnchor.BottomRight => payload.HeightPixels - block.Inset - blockHeight,
-                    PresentationTextAnchor.Point => Math.Round(block.Point.Y, MidpointRounding.AwayFromZero),
-                    _ => block.Inset
-                } + lineIndex * (lineHeight + block.LineSpacing);
-                var path = new StringBuilder();
-                for (var character = 0; character < line.Length; character++)
-                {
-                    var rows = PresentationLayerCompositor.Glyph(line[character]);
-                    for (var row = 0; row < 7; row++)
-                        for (var column = 0; column < 5; column++)
-                            if ((rows[row] & 1 << (4 - column)) != 0)
-                                path.Append('M').Append(Number(x + (character * 6 + column) * scale))
-                                    .Append(' ').Append(Number(y + row * scale))
-                                    .Append('h').Append(scale).Append('v').Append(scale)
-                                    .Append('h').Append(-scale).Append('z');
-                    if (path.Length > MaximumSvgBytes)
-                        throw new InvalidDataException("Text SVG exceeds its payload bound.");
-                }
+                using var font = PresentationFont.Create(block.Scale);
+                var (x, y) = PresentationFont.LineOrigin(block, payload.WidthPixels, payload.HeightPixels, font, line, lineIndex);
+                using var outline = PresentationFont.LinePath(font, line, x, y);
+                var path = outline.ToSvgPathData();
+                if (path.Length > MaximumSvgBytes)
+                    throw new InvalidDataException("Text SVG exceeds its payload bound.");
                 writer.WriteStartElement("path");
-                writer.WriteAttributeString("d", path.ToString());
+                writer.WriteAttributeString("d", path);
                 writer.WriteAttributeString("fill", Color(block.Color));
-                if (block.Scale > 2)
+                var halo = PresentationFont.Halo(block.Scale);
+                if (halo > 0)
                 {
                     writer.WriteAttributeString("stroke", "#000000");
-                    writer.WriteAttributeString("stroke-width", Number(2 * Math.Max(1, block.Scale / 4)));
+                    writer.WriteAttributeString("stroke-width", Number(2 * halo));
                     writer.WriteAttributeString("stroke-linejoin", "round");
                     writer.WriteAttributeString("paint-order", "stroke fill");
                 }
