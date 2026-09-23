@@ -325,7 +325,7 @@ public sealed class ProcessingExecutionPagesTests
         Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
         Assert.HasCount(1, cut.FindAll(".run-diagram__transient-empty"));
         Assert.IsEmpty(cut.FindAll(".run-diagram__transient-edge"));
-        Assert.AreEqual("85%", cut.Find(".run-diagram__zoom").TextContent);
+        Assert.AreEqual("85% min", cut.Find(".run-diagram__zoom").TextContent);
         cut.FindAll(".run-diagram__node")[1].KeyDown("Enter");
         Assert.AreEqual("preview", selected);
         cut.Render(parameters => parameters.Add(component => component.SelectedNodeId, "preview"));
@@ -334,7 +334,7 @@ public sealed class ProcessingExecutionPagesTests
         Assert.AreEqual("110%", cut.Find(".run-diagram__zoom").TextContent);
         StringAssert.Contains(cut.Find(".run-diagram").GetAttribute("style")!, "width:", StringComparison.Ordinal);
         cut.Find("button[aria-label='Fit graph']").Click();
-        Assert.AreEqual("85%", cut.Find(".run-diagram__zoom").TextContent);
+        Assert.AreEqual("85% min", cut.Find(".run-diagram__zoom").TextContent);
     }
 
     [TestMethod]

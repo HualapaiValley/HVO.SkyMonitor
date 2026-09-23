@@ -15,7 +15,7 @@
         <div role="group" aria-label="Graph zoom">
             <button type="button" class="btn btn-outline-light btn-sm" @onclick="ZoomOut" aria-label="Zoom out">−</button>
             <button type="button" class="btn btn-outline-light btn-sm" @onclick="FitGraph" aria-label="Fit graph">Fit</button>
-            <output class="run-diagram__zoom" aria-label="Graph zoom level">@ZoomPercent%</output>
+            <output class="run-diagram__zoom" aria-label="Graph zoom level">@(_fit ? $"{ZoomPercent}% min" : $"{ZoomPercent}%")</output>
             <button type="button" class="btn btn-outline-light btn-sm" @onclick="ZoomIn" aria-label="Zoom in">+</button>
         </div>
     </div>
