@@ -108,6 +108,19 @@ public sealed class TransientWorkerRuntimeTests
                 Assert.AreEqual(1L, await ScalarAsync(
                     connection, "SELECT COUNT(*) FROM transient_candidates WHERE submission_payload IS NOT NULL AND source_hold_released = 0;").ConfigureAwait(false));
             }
+            using var targetQuery = connection.CreateCommand();
+            targetQuery.CommandText = """
+                SELECT raw.capture_id FROM raw_captures raw
+                JOIN transient_worker_candidates candidate ON candidate.target_raw_capture_row_id = raw.raw_capture_row_id
+                ORDER BY candidate.allocated_unix_ms LIMIT 1;
+                """;
+            var targetId = Guid.ParseExact((string)(await targetQuery.ExecuteScalarAsync().ConfigureAwait(false))!, "N");
+            var runEvents = await provider.GetRequiredService<ITransientRuntimeManagement>()
+                .ReadCaptureStageEventsAsync(targetId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(runEvents.Any(static stage => stage.StageKey == "frame-staged"));
+            Assert.IsTrue(runEvents.Any(static stage => stage.StageKey == "candidate-allocated"));
+            Assert.IsTrue(runEvents.Any(static stage => stage.StageKey == "candidate-persisted"));
+            Assert.IsTrue(runEvents.Any(stage => stage.StageKey == (mode == TransientOperatingMode.Edge ? "event-finalized" : "relay-pending")));
         }
         finally
         {
@@ -166,6 +179,12 @@ public sealed class TransientWorkerRuntimeTests
             using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
             await connection.OpenAsync().ConfigureAwait(false);
             Assert.AreEqual(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(3L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM raw_capture_stage_events WHERE stage_key = 'causal-scan' AND state = 'succeeded';").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM raw_capture_stage_events WHERE stage_key = 'candidate-allocated';").ConfigureAwait(false));
+            Assert.AreEqual(2L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM raw_capture_stage_events WHERE stage_key = 'causal-scan' AND state = 'not-succeeded' AND candidate_id = '';").ConfigureAwait(false));
             Assert.AreEqual(2L, await ScalarAsync(connection,
                 "SELECT COUNT(*) FROM transient_worker_frames WHERE state = 'history';").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarAsync(connection,
@@ -1324,6 +1343,26 @@ public sealed class TransientWorkerRuntimeTests
             Assert.AreEqual(1L, await ScalarAsync(connection, "SELECT COUNT(DISTINCT event_id) FROM transient_candidates;").ConfigureAwait(false));
             Assert.AreEqual(expectedPhase, await ScalarStringAsync(connection, "SELECT phase FROM transient_candidates;").ConfigureAwait(false));
             Assert.AreEqual("completed", await ScalarStringAsync(connection, "SELECT state FROM transient_worker_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(connection, """
+                SELECT COUNT(*) FROM raw_capture_stage_events
+                WHERE stage_key = 'candidate-allocated' AND candidate_id = '';
+                """).ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarAsync(connection, """
+                SELECT COUNT(*) FROM raw_capture_stage_events e
+                JOIN transient_worker_candidates c ON c.candidate_id = e.candidate_id
+                WHERE e.stage_key = 'candidate-allocated' AND e.raw_capture_row_id = c.target_raw_capture_row_id;
+                """).ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(connection, """
+                SELECT COUNT(*) FROM raw_capture_stage_events e
+                JOIN transient_worker_candidates c ON c.candidate_id = e.candidate_id
+                WHERE e.raw_capture_row_id != c.target_raw_capture_row_id;
+                """).ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(connection, """
+                SELECT COUNT(*) FROM (
+                    SELECT raw_capture_row_id, candidate_id, stage_key, COUNT(*) AS copies
+                    FROM raw_capture_stage_events GROUP BY raw_capture_row_id, candidate_id, stage_key
+                    HAVING copies > 1);
+                """).ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarAsync(connection,
                 "SELECT COUNT(*) FROM transient_worker_candidates WHERE state = 'quarantined';").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarAsync(connection,
@@ -1438,6 +1477,9 @@ public sealed class TransientWorkerRuntimeTests
                         $"SELECT f.causal_succeeded FROM transient_worker_frames f JOIN raw_captures r ON r.raw_capture_row_id = f.raw_capture_row_id WHERE r.capture_sequence = {targetSequence};")
                         .ConfigureAwait(false));
                 }
+                Assert.AreEqual(committed ? 1L : 0L, await ScalarAsync(connection,
+                    $"SELECT COUNT(*) FROM raw_capture_stage_events e JOIN raw_captures r USING(raw_capture_row_id) WHERE r.capture_sequence = {targetSequence} AND e.stage_key = 'causal-scan' AND e.candidate_id = '' AND e.state = '{(expectedSucceeded ? "succeeded" : "not-succeeded")}';")
+                    .ConfigureAwait(false));
                 Assert.IsGreaterThan(0L, await ScalarAsync(
                     connection, "SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1;").ConfigureAwait(false));
                 await AssertBacklogMatchesDurableStateAsync(interrupted, connection).ConfigureAwait(false);
@@ -1458,6 +1500,11 @@ public sealed class TransientWorkerRuntimeTests
                 .RetireBeforeAsync(configuration.AgentId!, long.MaxValue, CancellationToken.None).ConfigureAwait(false);
             using var verified = await OpenAsync(root).ConfigureAwait(false);
             Assert.AreEqual(0L, await ScalarAsync(verified, "SELECT COUNT(*) FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(verified,
+                "SELECT COUNT(*) FROM raw_capture_stage_events WHERE candidate_id != '';").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarAsync(verified,
+                $"SELECT COUNT(*) FROM raw_capture_stage_events e JOIN raw_captures r USING(raw_capture_row_id) WHERE r.capture_sequence = {(expectedSucceeded ? 3 : 1)} AND e.stage_key = 'causal-scan' AND e.candidate_id = '' AND e.state = '{(expectedSucceeded ? "succeeded" : "not-succeeded")}';")
+                .ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarAsync(
                 verified, "SELECT COUNT(*) FROM transient_worker_frames WHERE state != 'completed';").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarAsync(

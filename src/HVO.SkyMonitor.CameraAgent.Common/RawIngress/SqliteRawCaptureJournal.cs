@@ -24,7 +24,7 @@ internal sealed class SqliteRawCaptureJournal(
     TransientDetectionOptions? transientOptions = null,
     Action? inspectionSourceOpenedSeam = null)
 {
-    internal const int CurrentSchemaVersion = 12;
+    internal const int CurrentSchemaVersion = 13;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(CreateCanonicalSchemaDefinitions);
     private static readonly JsonSerializerOptions ProcessingSerializerOptions = CreateProcessingSerializerOptions();
@@ -152,6 +152,7 @@ internal sealed class SqliteRawCaptureJournal(
                 using var transaction = BeginImmediate(connection);
                 _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
                 await ExecuteNonQueryAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, transaction, StageEventSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(connection, transaction, TransientSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
                     connection, transaction, TransientRuntimeOperationsSchemaSql, cancellationToken).ConfigureAwait(false);
@@ -174,7 +175,6 @@ internal sealed class SqliteRawCaptureJournal(
                 throw;
             }
         }
-
         await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
         await ValidateSchemaAsync(connection, cancellationToken, _busyTimeoutSeconds).ConfigureAwait(false);
         await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
@@ -200,7 +200,7 @@ internal sealed class SqliteRawCaptureJournal(
         var schemaObjectCount = await ExecuteScalarLongAsync(connection, """
             SELECT COUNT(*) FROM sqlite_master
             WHERE name IN (
-                'raw_capture_sequences', 'raw_capture_assignments', 'raw_captures', 'raw_ingress_reconciliation',
+                'raw_capture_sequences', 'raw_capture_assignments', 'raw_captures', 'raw_capture_stage_events', 'raw_ingress_reconciliation',
                  'ix_raw_captures_discovery', 'ix_raw_captures_backlog', 'ix_raw_captures_retention',
                  'ix_raw_captures_gallery_time', 'ix_raw_captures_gallery_sequence',
                  'ix_raw_captures_gallery_state', 'ix_raw_captures_gallery_origin',
@@ -229,11 +229,12 @@ internal sealed class SqliteRawCaptureJournal(
                   'ix_calibration_acquisition_jobs_camera', 'ux_calibration_acquisition_jobs_camera_nonterminal',
                   'ix_calibration_library_reconciliation_state');
             """, cancellationToken).ConfigureAwait(false);
-        if (schemaObjectCount != 63)
+        if (schemaObjectCount != 64)
         {
             throw new InvalidDataException("Raw ingress SQLite schema is incomplete or drifted.");
         }
         await VerifyColumnsAsync(connection, "raw_captures", RawCaptureColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "raw_capture_stage_events", StageEventColumns, cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_raw_captures_gallery_time", "exposure_started_unix_ms,capture_sequence,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_raw_captures_gallery_sequence", "capture_sequence,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_raw_captures_gallery_state", "state,capture_sequence,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
@@ -1782,6 +1783,7 @@ internal sealed class SqliteRawCaptureJournal(
         foreach (var sql in new[]
                  {
                      SchemaSql,
+                     StageEventSchemaSql,
                      TransientSchemaSql,
                      TransientRuntimeOperationsSchemaSql,
                      CaptureScheduleSchemaSql,
@@ -2106,6 +2108,8 @@ internal sealed class SqliteRawCaptureJournal(
 
     private const string RawCaptureColumns =
         "raw_capture_row_id,capture_id,raw_artifact_id,agent_id,capture_sequence,descriptor_sha256,manifest_sha256,payload_sha256,payload_length,payload_relative_path,sidecar_relative_path,manifest_json,exposure_started_unix_ms,durable_ingress_unix_ms,committed_unix_ms,state,retention_hold,failure_reason,evidence_origin";
+    private const string StageEventColumns =
+        "raw_capture_row_id,stage_key,candidate_id,state,source,event_unix_ms";
     private const string LaneDefinitionColumns =
         "lane_name,enabled,required,ordered,policy_sha256,pressure_state,created_unix_ms,updated_unix_ms";
     private const string LaneContextColumns =
@@ -2297,6 +2301,19 @@ internal sealed class SqliteRawCaptureJournal(
             changed INTEGER NOT NULL CHECK (changed IN (0, 1)),
             requested_unix_ms INTEGER NOT NULL,
             completed_unix_ms INTEGER
+        ) STRICT;
+        """;
+
+    private const string StageEventSchemaSql = """
+        CREATE TABLE raw_capture_stage_events (
+            raw_capture_row_id INTEGER NOT NULL,
+            stage_key TEXT NOT NULL CHECK (length(stage_key) BETWEEN 1 AND 128),
+            candidate_id TEXT NOT NULL DEFAULT '' CHECK (candidate_id = '' OR length(candidate_id) = 32),
+            state TEXT NOT NULL CHECK (length(state) BETWEEN 1 AND 128),
+            source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 128),
+            event_unix_ms INTEGER NOT NULL,
+            PRIMARY KEY (raw_capture_row_id, candidate_id, stage_key),
+            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id) ON DELETE CASCADE
         ) STRICT;
         """;
 

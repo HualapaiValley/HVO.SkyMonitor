@@ -137,6 +137,9 @@ public sealed class TransientPageTests
 
     private sealed class TestTransientUiService : ICameraAgentTransientUiService
     {
+        public ValueTask<OperatorUiResult<TransientCaptureStageView>> GetCaptureStagesAsync(Guid captureId, CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<TransientCaptureStageView>.Success(new(captureId, [])));
+
         internal OperatorUiResult<CameraAgentTransientOperatorPage> Page { get; init; } =
             OperatorUiResult<CameraAgentTransientOperatorPage>.Success(new([], null));
         internal OperatorUiResult<CameraAgentTransientOperatorDetail> Detail { get; init; } =
