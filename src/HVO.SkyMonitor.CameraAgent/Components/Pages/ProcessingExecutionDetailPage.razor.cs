@@ -130,6 +130,9 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                     }
                 }
                 if (generation != Volatile.Read(ref _generation)) return;
+                _transient = transient;
+                _transientUnavailable = transientUnavailable;
+                await InvokeAsync(StateHasChanged).ConfigureAwait(false);
                 CameraAgentProcessingExecutionsView? recentView;
                 try
                 {
@@ -154,8 +157,6 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                 }
                 if (generation != Volatile.Read(ref _generation) || requestedExecution != ExecutionId) return;
                 _recent = recentView;
-                _transient = transient;
-                _transientUnavailable = transientUnavailable;
                 _captureSequence = sequence;
                 await InvokeAsync(StateHasChanged).ConfigureAwait(false);
             }

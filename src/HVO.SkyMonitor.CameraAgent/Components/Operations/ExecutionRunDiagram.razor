@@ -62,7 +62,7 @@ else
     private List<PlacedNode> _layout = [];
     private List<GraphEdge> _edges = [];
     private List<GraphBand> _bands = [];
-    private double Zoom { get; set; } = 1;
+    private double Zoom { get; set; } = 0.5;
     private bool _fit = true;
 
     [Parameter, EditorRequired] public IReadOnlyList<CameraAgentProcessingNodeView> Nodes { get; set; } = [];
@@ -81,7 +81,7 @@ else
         ? $"width: max(100%, {Width * 0.5}px); height: auto;"
         : $"width: {Width * Zoom}px; height: {Height * Zoom}px;";
 
-    private void FitGraph() => _fit = true;
+    private void FitGraph() { _fit = true; Zoom = 0.5; }
     private void ZoomOut() { _fit = false; Zoom = Math.Max(0.5, Zoom - 0.25); }
     private void ZoomIn() { _fit = false; Zoom = Math.Min(2, Zoom + 0.25); }
     private int Height => _layout.Count == 0 ? 0 : _layout.Max(static item => item.Y) + NodeHeight + Margin;
