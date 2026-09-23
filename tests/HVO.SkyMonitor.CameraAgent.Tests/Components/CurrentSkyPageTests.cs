@@ -93,7 +93,7 @@ public sealed class CurrentSkyPageTests
         cut.WaitForElement(".capture-image");
         Assert.IsTrue(cut.Find("button[title='Calibrated: This stage was not produced.']").HasAttribute("disabled"));
         // A disabled button is unfocusable, so the reason must be visible text, not only a title.
-        var unavailable = cut.Find(".stage-selector__unavailable");
+        var unavailable = cut.Find(".stage-unavailable");
         StringAssert.Contains(unavailable.TextContent, "Calibrated", StringComparison.Ordinal);
         StringAssert.Contains(unavailable.TextContent, "This stage was not produced.", StringComparison.Ordinal);
         Assert.AreEqual(unavailable.Id, cut.Find(".stage-selector").GetAttribute("aria-describedby"));

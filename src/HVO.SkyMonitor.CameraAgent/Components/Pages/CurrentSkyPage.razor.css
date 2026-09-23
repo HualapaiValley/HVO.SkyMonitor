@@ -38,7 +38,7 @@
 .dashboard-stages button:last-child { border-right: 0; }.dashboard-stages button[aria-pressed="true"] { color: var(--hvo-body-color); background: var(--hvo-info-bg); }
 .dashboard-stages button[aria-pressed="true"]::after { position: absolute; bottom: 0; right: 0; left: 0; height: 2px; background: var(--hvo-info-strong); content: ""; }
 .dashboard-stages button:disabled { opacity: .4; cursor: not-allowed; }.dashboard-stages strong { font-size: .77rem; }.dashboard-stages small { font-size: .65rem; }
-.stage-unavailable, .stage-status { padding-inline: 1rem; }.stage-unavailable { margin: .3rem 0; color: var(--hvo-muted); font-size: .7rem; }
+.stage-unavailable, .stage-status { padding-inline: 1rem; }.stage-unavailable { display: flex; flex-wrap: wrap; gap: .25rem 1rem; margin: .3rem 0; color: var(--hvo-muted); font-size: .7rem; }
 .stack-lineage { padding: 1rem; border-top: 1px solid var(--hvo-border-muted); }.stack-lineage h3 { margin: 0; font-size: .92rem; }
 .source-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: .5rem; margin-top: .75rem; }
 .source-entry { min-width: 0; padding: .3rem; border: 1px solid var(--hvo-border-muted); border-radius: .35rem; background: #05080d; }
@@ -78,4 +78,4 @@
 :is(button, a):focus-visible { outline: 3px solid var(--hvo-info-strong); outline-offset: 3px; }
 @media (max-width: 760px) { .current-sky-page { padding-inline: .75rem; } .current-sky-heading { display: grid; } .current-sky-hero, .dashboard-status { grid-template-columns: minmax(0, 1fr); } .dashboard-status dl { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }.dashboard-status dl > div:nth-child(odd) { border-left: 0; padding-left: 0; } .state-notice { align-items: flex-start; flex-direction: column; gap: .25rem; } }
 @media (max-width: 520px) { .dashboard-stages { grid-template-columns: repeat(4, minmax(0, 1fr)); }.dashboard-stages button { padding: .55rem .35rem; }.dashboard-stages strong { font-size: .7rem; }.dashboard-stages small { font-size: .58rem; }.source-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-height: 500px) and (orientation: landscape) { .current-sky-page { padding: .6rem 1rem; } .current-sky-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } .current-sky-hero { grid-template-columns: minmax(0, 1.35fr) minmax(15rem, .65fr); gap: .65rem; } .current-sky-summary { max-height: calc(100dvh - 5rem); overflow-y: auto; } .status-chips { margin-bottom: .6rem; } }
+@media (max-height: 500px) and (orientation: landscape) { .current-sky-page { padding: .6rem 1rem; } .current-sky-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } .current-sky-hero { grid-template-columns: minmax(0, 1.35fr) minmax(15rem, .65fr); gap: .65rem; } .current-sky-inspector { max-height: calc(100dvh - 5rem); overflow-y: auto; } .status-chips { margin-bottom: .6rem; } }

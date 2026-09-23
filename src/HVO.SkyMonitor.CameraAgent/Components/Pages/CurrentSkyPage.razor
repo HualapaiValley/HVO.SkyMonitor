@@ -94,7 +94,7 @@
                         <button type="button" title="@(available ? $"Show {slot.Label} image" : $"{slot.Label}: {StageUnavailableReason(slot)}")" disabled="@(!available)" aria-pressed="@(available && slot.Stage == _selectedStage ? "true" : "false")" @onclick="() => SelectStage(slot.Stage)"><strong>@(slot.Stage == CameraAgentPresentationStage.Combined ? "Live mean" : slot.Label)</strong><small>@StageCaption(slot.Stage)</small></button>
                     }
                 </div>
-                <p id="stage-unavailable" class="stage-selector__unavailable">@foreach (var slot in _presentation.Stages.Where(static slot => slot.Availability != CameraAgentPresentationSlotAvailability.Available)) { <span>@slot.Label: @StageUnavailableReason(slot)</span> }</p>
+                <p id="stage-unavailable" class="stage-unavailable">@foreach (var slot in _presentation.Stages.Where(static slot => slot.Availability != CameraAgentPresentationSlotAvailability.Available)) { <span>@slot.Label: @StageUnavailableReason(slot)</span> }</p>
                 <p class="stage-status" aria-live="polite">@StageStatus</p>
                 @if (ShowLayeredHero)
                 {
@@ -147,7 +147,7 @@
                 <div class="sky-layer-controls">
                     @foreach (var group in new[] { "Catalog projection", "Sky context", "Diagnostics" })
                     {
-                        <div class="overlay-group"><h3>@group</h3>
+                        <div class="overlay-group" role="group" aria-label="@group layers"><h3>@group</h3>
                             @foreach (var layer in _layers?.Layers.Where(layer => LayerGroup(layer.Kind) == group) ?? [])
                             {
                                 <label class="layer-option"><input type="checkbox" disabled="@(!ShowLayeredHero || !_layerInteractive)" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><i class="layer-swatch @layer.Kind" aria-hidden="true"></i><span><strong>@LayerLabel(layer.Kind)</strong><small>@LayerDescription(layer.Kind)</small></span></label>
@@ -181,7 +181,7 @@
                     @if (_saveError is not null) { <p role="alert" class="sky-layer-result sky-layer-result--error">@_saveError</p> }
                 }
                 else { <p class="scene-unavailable">Selectable scene layers are unavailable for this image.</p> }
-                <div class="overlay-group unavailable-layers"><h3>Not available without retained evidence</h3>
+                <div class="overlay-group unavailable-layers" role="group" aria-label="Unavailable layers"><h3>Not available without retained evidence</h3>
                     @foreach (var unavailable in new[] { ("Deep sky", "Associations arrive with #525", "measured"), ("Expected, not detected", "Association diagnostics arrive with #526", "expected"), ("Astrometric residuals", "Solutions arrive with #523", "measured"), ("Cloud assessment", "No selectable cloud layer is retained", "measured"), ("Meteor tracks", "No measured track layer is retained", "measured"), ("Satellite tracks", "Predictions arrive with #529", "predicted") })
                     {
                         <label class="layer-option"><input type="checkbox" disabled /><i class="layer-swatch @unavailable.Item3" aria-hidden="true"></i><span><strong>@unavailable.Item1</strong><small>@unavailable.Item2</small></span></label>
