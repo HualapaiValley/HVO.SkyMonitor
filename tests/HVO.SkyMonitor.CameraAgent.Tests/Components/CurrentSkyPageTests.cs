@@ -134,6 +134,282 @@ public sealed class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public async Task FullResolutionLayersToggleAndSaveWithoutChangingSelectedStage()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var captureId = OperatorUiTestData.CurrentImage().DisplayCapture!.CaptureId;
+        var identity = new string('D', 64);
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+            Layered(id, identity)));
+        IReadOnlyList<string>? submitted = null;
+        service.MaterializationHandler = (id, selected, _) =>
+        {
+            Assert.AreEqual(captureId, id);
+            submitted = selected;
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(new(
+                id, Guid.NewGuid(), new string('F', 64), new string('A', 64), 1024, false)));
+        };
+        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".sky-layer-canvas img");
+
+        StringAssert.Contains(cut.Find(".current-sky-hero .sky-layer-canvas img").GetAttribute("src"), "/preview", StringComparison.Ordinal);
+        Assert.HasCount(1, cut.FindAll(".current-sky-hero .sky-layer-overlay svg"));
+        Assert.IsEmpty(cut.FindAll(".capture-image img"));
+        Assert.HasCount(1, cut.FindAll(".sky-layer-controls input[data-layer-target='hvo-layer-0']"));
+        Assert.AreEqual("true", cut.Find("button[title='Show Processed image']").GetAttribute("aria-pressed"));
+        StringAssert.Contains(cut.Find(".stage-status").TextContent, "processed base image with selected presentation overlays", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Processed base + selected overlays", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "Large image view is unavailable for the layered stack", StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll("#current-sky-view-large"));
+        Assert.IsEmpty(cut.FindAll(".large-viewer img"));
+        await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll(".sky-layer-canvas img"));
+        Assert.IsEmpty(cut.FindAll(".sky-layer-overlay svg"));
+        Assert.HasCount(1, cut.FindAll(".capture-image img"));
+        Assert.HasCount(1, cut.FindAll("#current-sky-view-large"));
+        await cut.Find("button[title='Show Processed image']").ClickAsync().ConfigureAwait(false);
+        cut.WaitForElement(".sky-layer-canvas img");
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled")));
+        await cut.Find(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
+        CollectionAssert.AreEqual(new[] { identity }, submitted?.ToArray());
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".sky-layer-result").TextContent, "new immutable artifact", StringComparison.Ordinal));
+        StringAssert.Contains(cut.Find(".sky-layer-result a").GetAttribute("href"), "/content", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task UnverifiedOrMismatchedLayerPreviewFallsBackAndRetriesOnlyOnManualRefresh()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        var verification = module.Setup<string>("bindLayerToggles", _ => true);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.HasCount(1, module.Invocations.Where(static call => call.Identifier == "bindLayerToggles")));
+        var invocation = module.Invocations.Single(static call => call.Identifier == "bindLayerToggles");
+        Assert.AreEqual(640, invocation.Arguments[1]);
+        Assert.AreEqual(480, invocation.Arguments[2]);
+        Assert.IsFalse(cut.Find(".sky-layer-canvas").ClassList.Contains("sky-layer-canvas--verified"));
+        Assert.IsTrue(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
+
+        verification.SetResult("mismatch");
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsEmpty(cut.FindAll(".sky-layer-canvas"));
+            Assert.IsNotNull(cut.Find(".capture-image img"));
+            StringAssert.Contains(cut.Find(".sky-layer-unavailable").TextContent, "dimensions do not match", StringComparison.Ordinal);
+            Assert.IsTrue(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
+        });
+        var calls = module.Invocations.Count(static call => call.Identifier == "bindLayerToggles");
+        await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
+        await cut.Find("button[title='Show Processed image']").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(calls, module.Invocations.Count(static call => call.Identifier == "bindLayerToggles"));
+
+        verification.SetResult("valid");
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.HasCount(calls + 1, module.Invocations.Where(static call => call.Identifier == "bindLayerToggles")));
+        StringAssert.Contains(cut.Find(".sky-layer-canvas img").GetAttribute("src"), "attempt=1", StringComparison.Ordinal);
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.Find(".sky-layer-canvas").ClassList.Contains("sky-layer-canvas--verified")));
+        Assert.IsEmpty(cut.FindAll(".sky-layer-unavailable"));
+    }
+
+    [TestMethod]
+    public async Task LayerPreviewLoadFailureUsesStandardImageUntilManualRefresh()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        module.Setup<string>("bindLayerToggles", _ => true).SetResult("unavailable");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".sky-layer-unavailable").TextContent, "could not be verified", StringComparison.Ordinal));
+        Assert.IsNotNull(cut.Find(".capture-image img"));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.HasCount(2, module.Invocations.Where(static call => call.Identifier == "bindLayerToggles")));
+    }
+
+    [TestMethod]
+    public async Task OptionalLayerFailureRetriesSameCaptureOnRefreshWithoutResettingSelection()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var reads = 0;
+        service.PresentationHandler = (id, _) =>
+        {
+            return ValueTask.FromResult(Interlocked.Increment(ref reads) == 1
+                ? OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable, "Layers unavailable")
+                : OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+        };
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Layers unavailable", StringComparison.Ordinal));
+        Assert.IsNotNull(cut.Find(".capture-image img"));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForElement(".sky-layer-canvas img");
+        Assert.AreEqual(2, reads);
+        Assert.IsEmpty(cut.FindAll(".sky-layer-unavailable"));
+        await cut.Find(".sky-layer-controls input").ChangeAsync(false).ConfigureAwait(false);
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(2, reads);
+        Assert.IsFalse(cut.Find(".sky-layer-controls input").HasAttribute("checked"));
+    }
+
+    [TestMethod]
+    public async Task PendingLayerReadIsNotDuplicatedAndAuthorizationRevocationStopsRetries()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        service.PresentationHandler = (_, _) =>
+        {
+            Interlocked.Increment(ref reads);
+            return new ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>>(pending.Task);
+        };
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, reads));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(1, reads);
+
+        pending.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unauthorized, "revoked"));
+        Assert.IsTrue(SpinWait.SpinUntil(() =>
+            new Uri(context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>().Uri).AbsolutePath == "/Account/AccessDenied",
+            TimeSpan.FromSeconds(5)));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(1, reads);
+    }
+
+    [TestMethod]
+    public async Task LayerSelectionSurvivesPollingAndResetsForNewCapture()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var first = OperatorUiTestData.CurrentImage();
+        var secondId = Guid.Parse("00000000-0000-0000-0000-000000000021");
+        var current = first;
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled")));
+
+        await cut.Find(".sky-layer-controls input").ChangeAsync(false).ConfigureAwait(false);
+        Assert.IsFalse(cut.Find(".sky-layer-controls input").HasAttribute("checked"));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.IsFalse(cut.Find(".sky-layer-controls input").HasAttribute("checked"));
+
+        current = first with { DisplayCapture = first.DisplayCapture! with { CaptureId = secondId } };
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual($"/gallery/{secondId:D}", cut.Find(".sky-layer-actions a").GetAttribute("href"));
+            Assert.IsTrue(cut.Find(".sky-layer-controls input").HasAttribute("checked"));
+        });
+    }
+
+    [TestMethod]
+    public async Task CaptureChangeDiscardsStaleLayerReadAndPendingSave()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var first = OperatorUiTestData.CurrentImage();
+        var secondId = Guid.Parse("00000000-0000-0000-0000-000000000021");
+        var second = first with { DisplayCapture = first.DisplayCapture! with { CaptureId = secondId } };
+        var current = first;
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
+        var selection = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        selection.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var firstRead = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.PresentationHandler = (id, _) => id == first.DisplayCapture!.CaptureId
+            ? new ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>>(firstRead.Task)
+            : ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('E', 64))));
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".capture-image img");
+        current = second;
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForElement(".sky-layer-workspace");
+        firstRead.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(first.DisplayCapture!.CaptureId, new string('D', 64))));
+        Assert.AreEqual(new string('E', 64), cut.Find(".sky-layer-controls input").GetAttribute("data-layer-identity"));
+        var saveCalls = 0;
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.MaterializationHandler = (_, _, _) =>
+        {
+            Interlocked.Increment(ref saveCalls);
+            return new ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>>(pending.Task);
+        };
+        var save = cut.Find(".sky-layer-save button").ClickAsync();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, saveCalls));
+        current = first;
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        pending.SetResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(new(
+            secondId, Guid.NewGuid(), new string('F', 64), new string('A', 64), 1024, false)));
+        await save.ConfigureAwait(false);
+        Assert.AreEqual(1, saveCalls);
+        Assert.IsEmpty(cut.FindAll(".sky-layer-result"));
+    }
+
+    [TestMethod]
+    public async Task StaleJsBindCannotEnableNewCaptureControls()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var first = OperatorUiTestData.CurrentImage();
+        var secondId = Guid.Parse("00000000-0000-0000-0000-000000000021");
+        var current = first;
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        var bind = module.Setup<string>("bindLayerToggles", _ => true);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.HasCount(1, module.Invocations.Where(static call => call.Identifier == "bindLayerToggles")));
+
+        current = first with { DisplayCapture = first.DisplayCapture! with { CaptureId = secondId } };
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.Find(".sky-layer-save button").HasAttribute("disabled")));
+        bind.SetResult("valid");
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled")));
+        Assert.AreEqual($"/gallery/{secondId:D}", cut.Find(".sky-layer-actions a").GetAttribute("href"));
+    }
+
+    [TestMethod]
+    public async Task SaveExceptionsAndCancellationShowSanitizedRetryableError()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled")));
+
+        service.MaterializationHandler = (_, _, _) => throw new InvalidOperationException("sensitive service details");
+        await cut.Find(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual("The presentation stack could not be saved. Please try again.", cut.Find(".sky-layer-result--error").TextContent);
+        Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
+
+        service.MaterializationHandler = (_, _, _) => throw new OperationCanceledException();
+        await cut.Find(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual("The presentation stack could not be saved. Please try again.", cut.Find(".sky-layer-result--error").TextContent);
+        Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
+    }
+
+    private static CameraAgentLayeredPresentation Layered(Guid captureId, string identity) => new(
+        captureId, Guid.Parse("00000000-0000-0000-0000-000000000102"), new string('A', 64),
+        new string('B', 64), new string('C', 64), 640, 480,
+        [new(identity, "scene-annotation", "hvo-layer-0", 20, true, 1_000_000, "renderer-v1", "style-v1")],
+        System.Text.Encoding.UTF8.GetBytes("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 480\"><g id=\"hvo-layer-0\"></g></svg>"));
+
+    [TestMethod]
     public void EmptyProjectionExplainsMissingImageWhileReportingSystemState()
     {
         using var context = new BunitContext();

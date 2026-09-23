@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
@@ -58,6 +60,77 @@ public sealed class PresentationLayerPayloadTests
         Assert.HasCount(4, payload.TextBlocks);
         Assert.IsFalse(typeof(PresentationLayerProducers).GetMethods().Any(method => method.GetParameters().Any(parameter =>
             parameter.ParameterType == typeof(ReadOnlyMemory<byte>) || parameter.ParameterType == typeof(byte[]))));
+    }
+
+    [TestMethod]
+    public async Task FullFrameLabelsPreferBrightestAndKeepMarkersWhenLabelsCollide()
+    {
+        var utc = new DateTimeOffset(2026, 8, 25, 0, 0, 0, TimeSpan.Zero);
+        var siderealHours = AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15;
+        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("z-bright", "BRIGHT", siderealHours, 0, 0),
+            new CelestialCatalogObject("a-dim", "DIM", siderealHours, 0, 1)
+        ])).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
+            new ProjectionContext(ProjectionModel.Perspective, 400, 300, 400, 400, 800, 600,
+                ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
+            new CatalogQuery(6, 10),
+            new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
+            projectionVersion: "perspective-v1")).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(800, 600),
+            new ProjectedSceneSource(Guid.NewGuid(), Guid.NewGuid(), new string('A', 64)),
+            "calibration-v1", visible.Request.ProjectionVersion);
+        var first = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene,
+            includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false);
+        var repeat = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene,
+            includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false);
+
+        Assert.HasCount(2, first.StarAnnotations.Markers);
+        Assert.HasCount(1, first.StarAnnotations.TextBlocks);
+        Assert.AreEqual("BRIGHT", first.StarAnnotations.TextBlocks[0].Lines[0]);
+        Assert.AreEqual(2, first.StarAnnotations.TextBlocks[0].Scale);
+        Assert.AreEqual(first.StarAnnotations.ContentIdentitySha256, repeat.StarAnnotations.ContentIdentitySha256);
+        Assert.IsTrue(PresentationLayerPayloadJson.Parse(PresentationLayerPayloadJson.Serialize(first.StarAnnotations)).IsValid);
+    }
+
+    [TestMethod]
+    public void GroupedSvgUsesFixedGlyphPathsForLargeText()
+    {
+        var compatibility = new PresentationCompatibilityDescriptor(800, 600, new string('D', 64), new string('E', 64));
+        var source = new PresentationProductReference(Guid.NewGuid(), new string('A', 64), "image/png", compatibility);
+        using var options = JsonDocument.Parse("{}");
+        var layer = LayeredPresentationJson.CreateLayer("labels", source, new string('C', 64),
+            PresentationCoordinateSpace.ScenePixels, GroupedSvgPresentationRenderer.RendererVersion, "style-v1",
+            0, PresentationBlendMode.Normal, 1_000_000, true, options.RootElement);
+        var manifest = LayeredPresentationJson.CreateManifest(source, new string('C', 64), [layer]);
+        var payload = PresentationLayerPayloadJson.Create(new string('C', 64), 800, 600,
+            textBlocks: [new(PresentationTextAnchor.Point, new(30, 30), ["N"], 8, 0, 0, new(255, 255, 255))]);
+
+        var svg = Encoding.UTF8.GetString(GroupedSvgPresentationRenderer.Render(manifest, [payload], new string('F', 64)).Svg.Span);
+
+        StringAssert.Contains(svg, "M30 30h8v8h-8z", StringComparison.Ordinal);
+        StringAssert.Contains(svg, "stroke-width=\"4\"", StringComparison.Ordinal);
+        Assert.IsFalse(svg.Contains("font-family", StringComparison.Ordinal));
+        Assert.IsFalse(svg.Contains("<text", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void GroupedSvgRejectsAggregateDenseGlyphPathsBeforeUnboundedOutput()
+    {
+        var compatibility = new PresentationCompatibilityDescriptor(800, 600, new string('D', 64), new string('E', 64));
+        var source = new PresentationProductReference(Guid.NewGuid(), new string('A', 64), "image/png", compatibility);
+        using var options = JsonDocument.Parse("{}");
+        var layer = LayeredPresentationJson.CreateLayer("labels", source, new string('C', 64),
+            PresentationCoordinateSpace.ScenePixels, GroupedSvgPresentationRenderer.RendererVersion, "style-v1",
+            0, PresentationBlendMode.Normal, 1_000_000, true, options.RootElement);
+        var manifest = LayeredPresentationJson.CreateManifest(source, new string('C', 64), [layer]);
+        var block = new PresentationTextBlockV1(PresentationTextAnchor.TopLeft, default,
+            Enumerable.Repeat(new string('W', 64), 8).ToArray(), 16, 0, 0, new(255, 255, 255));
+        var payload = PresentationLayerPayloadJson.Create(new string('C', 64), 800, 600,
+            textBlocks: Enumerable.Repeat(block, PresentationLayerPayloadV1.MaximumTextBlocks));
+
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            GroupedSvgPresentationRenderer.Render(manifest, [payload], new string('F', 64)));
     }
 
     [TestMethod]

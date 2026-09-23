@@ -95,7 +95,7 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v2";
+    public const string SceneProducerVersion = "projected-scene-presentation-v3";
     public const string MetadataProducerVersion = "metadata-corner-presentation-v1";
     public const string CloudProducerVersion = "cloud-presentation-v1";
 
@@ -169,12 +169,39 @@ public static class PresentationLayerProducers
         var segments = includeConstellations ? scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
             style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase))
             .Select(item => new PresentationSegmentV1(item.FromPixel, item.ToPixel, style.SegmentThickness, segmentColor)) : [];
-        var starTexts = includeLabels && style.MaximumLabelCharacters > 0
-            ? annotatedObjects.Select(item => new PresentationTextBlockV1(PresentationTextAnchor.Point,
-                new PixelPoint(item.Pixel.X + style.MarkerRadius + 2, item.Pixel.Y - 3 * style.LabelScale),
-                new ReadOnlyCollection<string>([item.DisplayName[..Math.Min(item.DisplayName.Length, style.MaximumLabelCharacters)]]),
-                style.LabelScale, 0, 0, labelColor)).ToList()
-            : [];
+        var starTexts = new List<PresentationTextBlockV1>();
+        if (includeLabels && style.MaximumLabelCharacters > 0)
+        {
+            var width = scene.ImageTransform.OutputWidthPixels;
+            var height = scene.ImageTransform.OutputHeightPixels;
+            var scale = Math.Clamp(Math.Max(style.LabelScale, (int)Math.Round(Math.Min(width, height) * 0.019 / 7,
+                MidpointRounding.AwayFromZero)), 1, 16);
+            var occupied = new List<(double X, double Y, double Right, double Bottom)>();
+            foreach (var item in annotatedObjects.OrderBy(static item => item.Magnitude)
+                .ThenBy(static item => item.Id, StringComparer.Ordinal)
+                .ThenBy(static item => item.DisplayName, StringComparer.Ordinal)
+                .ThenBy(static item => item.Pixel.X).ThenBy(static item => item.Pixel.Y))
+            {
+                if (starTexts.Count == PresentationLayerPayloadV1.MaximumTextBlocks) break;
+                var name = item.DisplayName[..Math.Min(item.DisplayName.Length, style.MaximumLabelCharacters)];
+                var x = Math.Round(item.Pixel.X + style.MarkerRadius + 2 * scale, MidpointRounding.AwayFromZero);
+                var y = Math.Round(item.Pixel.Y - 3 * scale, MidpointRounding.AwayFromZero);
+                var right = x + (name.Length * 6 - 1) * scale;
+                var bottom = y + 7 * scale;
+                var halo = scale > 2 ? Math.Max(1, scale / 4) : 0;
+                var padding = scale;
+                var left = x - halo;
+                var top = y - halo;
+                right += halo;
+                bottom += halo;
+                if (left < padding || top < padding || right + padding > width || bottom + padding > height ||
+                    occupied.Any(box => left < box.Right + padding && right + padding > box.X &&
+                        top < box.Bottom + padding && bottom + padding > box.Y)) continue;
+                starTexts.Add(new(PresentationTextAnchor.Point, new PixelPoint(x, y),
+                    new ReadOnlyCollection<string>([name]), scale, 0, 0, labelColor));
+                occupied.Add((left, top, right, bottom));
+            }
+        }
         var ellipses = new List<PresentationEllipseV1>();
         var cardinalTexts = new List<PresentationTextBlockV1>();
         PixelPoint? cardinalCenter = null;

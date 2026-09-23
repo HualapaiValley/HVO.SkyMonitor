@@ -35,7 +35,21 @@
     }
 
     <section class="current-sky-hero" aria-label="Current sky presentation">
-        <div class="current-sky-visual">
+        <div class="current-sky-visual" @ref="_layerRoot">
+            @if (ShowLayeredHero)
+            {
+                <div class="sky-layer-workspace" aria-label="Current sky layers" @key="_layers!.CaptureId" data-presentation-identity="@_layers!.PresentationIdentitySha256">
+                    <div class="sky-layer-canvas @(_layerInteractive ? "sky-layer-canvas--verified" : "")" style="aspect-ratio: @_layers.WidthPixels / @_layers.HeightPixels; width: min(100%, calc(70vh * @LayerAspectRatio))">
+                        <img @key="_layerPreviewAttempt" src="@($"/api/v1/operations/artifacts/{_layers.BaseArtifactId:D}/preview?attempt={_layerPreviewAttempt}")" alt="@ImageAlt" />
+                        <div class="sky-layer-overlay" aria-hidden="true">@LayerSvg</div>
+                        <div class="sky-layer-actions">
+                            <a class="btn btn-overlay btn-sm image-action" href="@DetailUrl">Open capture details</a>
+                        </div>
+                    </div>
+                </div>
+            }
+            else
+            {
             <CaptureImage Loading="@(_initialLoading && _presentation is null)"
                           Source="@SelectedSlot?.PreviewUrl"
                           RetryObservedUtc="@_presentation?.ObservedUtc"
@@ -56,6 +70,7 @@
                 }
                 </ChildContent>
             </CaptureImage>
+            }
 
             @if (_presentation is not null && _presentation.Stages.Count > 0)
             {
@@ -63,6 +78,29 @@
                                     SelectedStage="@_selectedStage"
                                     SelectedStageChanged="SelectStage" />
                 <p class="stage-status" aria-live="polite">@StageStatus</p>
+                @if (ShowLayeredHero)
+                {
+                    <p class="stage-status">Large image view is unavailable for the layered stack; use the capture details to inspect retained artifacts.</p>
+                }
+            }
+            @if (_layers is not null && _presentation?.DisplayCapture?.CaptureId == _layers.CaptureId)
+            {
+                <div class="sky-layer-controls-wrap" @key="_layers.PresentationIdentitySha256">
+                    <fieldset class="sky-layer-controls" disabled="@(!ShowLayeredHero || !_layerInteractive)">
+                        <legend>Presentation layers</legend>
+                        @foreach (var layer in _layers.Layers)
+                        {
+                            <label><input type="checkbox" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span>@LayerLabel(layer.Kind)</span><small>z @layer.ZOrder / @layer.StyleVersion</small></label>
+                        }
+                    </fieldset>
+                    <div class="sky-layer-save"><button type="button" class="btn btn-primary" disabled="@(_saving || !ShowLayeredHero || !_layerInteractive)" @onclick="SaveSelectedStackAsync">@(_saving ? "Saving stack..." : "Save selected stack")</button><small>Creates one immutable flattened derivative without rerunning analysis.</small></div>
+                    @if (_saveMessage is not null) { <p role="status" class="sky-layer-result">@_saveMessage <a href="@SavedArtifactUrl">Open saved artifact</a></p> }
+                    @if (_saveError is not null) { <p role="alert" class="sky-layer-result sky-layer-result--error">@_saveError</p> }
+                </div>
+            }
+            @if (_layerMessage is not null && _presentation?.DisplayCapture is not null)
+            {
+                <p class="sky-layer-unavailable" role="status">@_layerMessage</p>
             }
         </div>
 
@@ -80,7 +118,7 @@
                 <dl>
                     <div><dt>Captured</dt><dd><time datetime="@capture.ExposureStartedUtc.ToString("O")">@capture.ExposureStartedUtc.ToLocalTime().ToString("g")</time></dd></div>
                     <div><dt>Image age</dt><dd>@FormatDuration(capture.AgeSeconds)</dd></div>
-                    <div><dt>Stage</dt><dd>@(SelectedSlot?.Label ?? "Unavailable")</dd></div>
+                    <div><dt>Stage</dt><dd>@(ShowLayeredHero ? "Processed base + selected overlays" : SelectedSlot?.Label ?? "Unavailable")</dd></div>
                     <div><dt>Evidence</dt><dd>@EvidenceLabel(capture.EvidenceOrigin)</dd></div>
                     <div><dt>Observing night</dt><dd>@ObservingNightLabel</dd></div>
                     @if (_facts is { } facts)

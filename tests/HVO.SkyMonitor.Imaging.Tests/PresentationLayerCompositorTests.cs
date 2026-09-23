@@ -66,6 +66,56 @@ public sealed class PresentationLayerCompositorTests
     }
 
     [TestMethod]
+    public async Task CompositeCancelsDuringDenseScale16TextHalo()
+    {
+        const int width = 4096;
+        const int height = 128;
+        var layout = new ImageLayout(width, height, CameraPixelFormat.Rgb24, width * 3);
+        var text = Payload(width, height, text: Enumerable.Repeat(
+            new PresentationTextBlockV1(PresentationTextAnchor.TopLeft, default,
+                Enumerable.Repeat(new string('W', 64), 8).ToArray(), 16, 0, 0, new(255, 255, 255)), 64).ToArray());
+        using var cancellation = new CancellationTokenSource();
+        var render = Task.Run(() => PresentationLayerCompositor.Composite(layout, new byte[layout.RequiredByteLength],
+            [new(text, true, PresentationRasterBlendMode.Normal, 1_000_000)], cancellation.Token));
+        await Task.Delay(50).ConfigureAwait(false);
+        Assert.IsFalse(render.IsCompleted, "Dense text should still be rendering when cancellation is requested.");
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () => await render.ConfigureAwait(false))
+            .ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public void ScalableTextRendersAtFullFrameSizeWithoutChangingSmallBitmapText()
+    {
+        const int width = 800;
+        const int height = 600;
+        var layout = new ImageLayout(width, height, CameraPixelFormat.Rgb24, width * 3);
+        var large = Payload(width, height, text: [new(PresentationTextAnchor.Point, new(30, 30), ["NORTH"],
+            8, 0, 0, new(255, 255, 255))]);
+        var small = Payload(width, height, text: [new(PresentationTextAnchor.Point, new(30, 30), ["NORTH"],
+            1, 0, 0, new(255, 255, 255))]);
+        var source = new byte[layout.RequiredByteLength];
+        var rendered = PresentationLayerCompositor.Composite(layout, source,
+            [new(large, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        var repeat = PresentationLayerCompositor.Composite(layout, source,
+            [new(large, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        var smallRendered = PresentationLayerCompositor.Composite(layout, source,
+            [new(small, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+
+        CollectionAssert.AreEqual(rendered, repeat);
+        var largeExtent = Enumerable.Range(0, width * height)
+            .Where(index => rendered[index * 3] != 0).Max(index => index % width);
+        var smallExtent = Enumerable.Range(0, width * height)
+            .Where(index => smallRendered[index * 3] != 0).Max(index => index % width);
+        Assert.IsGreaterThan(smallExtent + 20, largeExtent);
+        CollectionAssert.AreEqual(new byte[layout.RequiredByteLength], source);
+        Assert.AreEqual((byte)255, rendered[(30 * width + 30) * 3]);
+        Assert.AreEqual((byte)0, rendered[(30 * width + 29) * 3]);
+        Assert.AreEqual((byte)0, rendered[(30 * width + 27) * 3]);
+        Assert.AreEqual((byte)0, rendered[(30 * width + 30 + (5 * 6 - 1) * 8 + 3) * 3]);
+    }
+
+    [TestMethod]
     public void LightenIsChannelMaximumAndCancellationIsObservedWithinPrimitiveLoops()
     {
         var basePixels = Enumerable.Repeat((byte)100, 16 * 12 * 3).ToArray();

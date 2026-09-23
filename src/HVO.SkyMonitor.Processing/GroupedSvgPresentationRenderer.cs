@@ -28,7 +28,7 @@ public static class GroupedSvgPresentationRenderer
 {
     public const int MaximumSvgBytes = 2 * 1024 * 1024;
     public const int MaximumSvgElements = 20_000;
-    public const string RendererVersion = "cameraagent-grouped-svg-v1";
+    public const string RendererVersion = "cameraagent-grouped-svg-v2";
 
     public static GroupedSvgPresentation Render(
         OverlayManifestV1 manifest,
@@ -55,7 +55,8 @@ public static class GroupedSvgPresentationRenderer
 
         var identity = ComputeIdentity(manifest, baseChecksumSha256);
         var buffer = new StringBuilder(Math.Min(MaximumSvgBytes, 4096 + elementCount * 64));
-        using (var writer = XmlWriter.Create(buffer, new XmlWriterSettings
+        using (var output = new BoundedSvgWriter(buffer))
+        using (var writer = XmlWriter.Create(output, new XmlWriterSettings
         {
             OmitXmlDeclaration = true,
             ConformanceLevel = ConformanceLevel.Document,
@@ -181,17 +182,49 @@ public static class GroupedSvgPresentationRenderer
         }
         foreach (var block in payload.TextBlocks)
         {
-            var (x, y, anchor) = TextOrigin(block, payload.WidthPixels, payload.HeightPixels);
             for (var lineIndex = 0; lineIndex < block.Lines.Count; lineIndex++)
             {
-                writer.WriteStartElement("text");
-                writer.WriteAttributeString("x", Number(x));
-                writer.WriteAttributeString("y", Number(y + lineIndex * (7 * block.Scale + block.LineSpacing)));
+                var line = block.Lines[lineIndex];
+                var scale = block.Scale;
+                var lineHeight = 7 * scale;
+                var blockHeight = block.Lines.Count * lineHeight + (block.Lines.Count - 1) * block.LineSpacing;
+                var width = (line.Length * 6 - 1) * scale;
+                var x = block.Anchor switch
+                {
+                    PresentationTextAnchor.TopRight or PresentationTextAnchor.BottomRight => payload.WidthPixels - block.Inset - width,
+                    PresentationTextAnchor.Point => Math.Round(block.Point.X, MidpointRounding.AwayFromZero),
+                    _ => block.Inset
+                };
+                var y = block.Anchor switch
+                {
+                    PresentationTextAnchor.BottomLeft or PresentationTextAnchor.BottomRight => payload.HeightPixels - block.Inset - blockHeight,
+                    PresentationTextAnchor.Point => Math.Round(block.Point.Y, MidpointRounding.AwayFromZero),
+                    _ => block.Inset
+                } + lineIndex * (lineHeight + block.LineSpacing);
+                var path = new StringBuilder();
+                for (var character = 0; character < line.Length; character++)
+                {
+                    var rows = PresentationLayerCompositor.Glyph(line[character]);
+                    for (var row = 0; row < 7; row++)
+                        for (var column = 0; column < 5; column++)
+                            if ((rows[row] & 1 << (4 - column)) != 0)
+                                path.Append('M').Append(Number(x + (character * 6 + column) * scale))
+                                    .Append(' ').Append(Number(y + row * scale))
+                                    .Append('h').Append(scale).Append('v').Append(scale)
+                                    .Append('h').Append(-scale).Append('z');
+                    if (path.Length > MaximumSvgBytes)
+                        throw new InvalidDataException("Text SVG exceeds its payload bound.");
+                }
+                writer.WriteStartElement("path");
+                writer.WriteAttributeString("d", path.ToString());
                 writer.WriteAttributeString("fill", Color(block.Color));
-                writer.WriteAttributeString("font-size", (7 * block.Scale).ToString(CultureInfo.InvariantCulture));
-                writer.WriteAttributeString("font-family", "monospace");
-                writer.WriteAttributeString("text-anchor", anchor);
-                writer.WriteString(block.Lines[lineIndex]);
+                if (block.Scale > 2)
+                {
+                    writer.WriteAttributeString("stroke", "#000000");
+                    writer.WriteAttributeString("stroke-width", Number(2 * Math.Max(1, block.Scale / 4)));
+                    writer.WriteAttributeString("stroke-linejoin", "round");
+                    writer.WriteAttributeString("paint-order", "stroke fill");
+                }
                 writer.WriteEndElement();
             }
         }
@@ -206,18 +239,6 @@ public static class GroupedSvgPresentationRenderer
         }
         writer.WriteEndElement();
     }
-
-    private static (double X, double Y, string Anchor) TextOrigin(
-        PresentationTextBlockV1 block,
-        int width,
-        int height) => block.Anchor switch
-        {
-            PresentationTextAnchor.TopRight => (width - block.Inset, block.Inset + 7 * block.Scale, "end"),
-            PresentationTextAnchor.BottomLeft => (block.Inset, height - block.Inset, "start"),
-            PresentationTextAnchor.BottomRight => (width - block.Inset, height - block.Inset, "end"),
-            PresentationTextAnchor.Point => (block.Point.X, block.Point.Y + 7 * block.Scale, "start"),
-            _ => (block.Inset, block.Inset + 7 * block.Scale, "start")
-        };
 
     private static string TileMaskPath(PresentationTileMaskV1 mask, int width, int height)
     {
@@ -268,4 +289,38 @@ public static class GroupedSvgPresentationRenderer
     };
 
     private static string DomGroupId(int index) => FormattableString.Invariant($"hvo-layer-{index}");
+
+    private sealed class BoundedSvgWriter(StringBuilder buffer) : StringWriter(buffer, CultureInfo.InvariantCulture)
+    {
+        private void Check(int length)
+        {
+            // UTF-8 uses at least as many bytes as UTF-16 code units for valid XML text.
+            if (length > MaximumSvgBytes - GetStringBuilder().Length)
+                throw new InvalidDataException("The grouped presentation exceeds its payload bound.");
+        }
+
+        public override void Write(char value)
+        {
+            Check(1);
+            base.Write(value);
+        }
+
+        public override void Write(string? value)
+        {
+            Check(value?.Length ?? 0);
+            base.Write(value);
+        }
+
+        public override void Write(char[] buffer, int index, int count)
+        {
+            Check(count);
+            base.Write(buffer, index, count);
+        }
+
+        public override void Write(ReadOnlySpan<char> value)
+        {
+            Check(value.Length);
+            base.Write(value);
+        }
+    }
 }

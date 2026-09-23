@@ -1,6 +1,8 @@
+using System.Text;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
@@ -14,6 +16,24 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private Task? _pollTask;
     private CameraAgentCurrentImagePresentation? _presentation;
     private CameraAgentCurrentSkyFacts? _facts;
+    private CameraAgentLayeredPresentation? _layers;
+    private CancellationTokenSource? _layerCancellation;
+    private IJSObjectReference? _layerModule;
+    private ElementReference _layerRoot;
+    private string? _layerMessage;
+    private string? _saveMessage;
+    private string? _saveError;
+    private string? _savedArtifactUrl;
+    private HashSet<string> _selectedLayers = new(StringComparer.Ordinal);
+    private bool _layerInteractive;
+    private bool _layerImageFailed;
+    private int _layerPreviewAttempt;
+    private bool _layerLoading;
+    private bool _accessDenied;
+    private long _layerGeneration;
+    private long _bindGeneration;
+    private bool _bindLayers;
+    private bool _saving;
     private string? _factsUnavailableReason;
     private CameraAgentPresentationStage? _selectedStage;
     private string? _errorMessage;
@@ -28,6 +48,47 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
+    [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_bindLayers || !ShowLayeredHero) return;
+        _bindLayers = false;
+        var generation = _layerGeneration;
+        var bindGeneration = _bindGeneration;
+        var captureId = _layers!.CaptureId;
+        try
+        {
+            var module = _layerModule ?? await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
+            if (!IsCurrentBind(generation, bindGeneration, captureId)) return;
+            _layerModule = module;
+            var verification = await module.InvokeAsync<string>("bindLayerToggles", _layerRoot, _layers.WidthPixels, _layers.HeightPixels);
+            if (!IsCurrentBind(generation, bindGeneration, captureId)) return;
+            if (verification == "valid")
+            {
+                _layerInteractive = true;
+                _layerMessage = null;
+            }
+            else
+            {
+                LayerImageFailed(verification == "mismatch"
+                    ? "The layered preview dimensions do not match the overlay. Showing the standard image instead. Refresh image to retry."
+                    : "The layered preview could not be verified. Showing the standard image instead. Refresh image to retry.");
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or OperationCanceledException)
+        {
+            if (!IsCurrentBind(generation, bindGeneration, captureId)) return;
+            LayerImageFailed("The layered preview could not be verified. Showing the standard image instead. Refresh image to retry.");
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private bool IsCurrentBind(long generation, long bindGeneration, Guid captureId) =>
+        generation == _layerGeneration && bindGeneration == _bindGeneration &&
+        _disposeStarted == 0 && _layers?.CaptureId == captureId &&
+        _layerCancellation?.IsCancellationRequested == false && ShowLayeredHero;
 
     protected override async Task OnInitializedAsync()
     {
@@ -53,11 +114,12 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private async Task RequestRefreshAsync(CancellationToken cancellationToken)
     {
+        if (_accessDenied || _disposeStarted != 0) return;
         Interlocked.Exchange(ref _refreshRequested, 1);
         await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            while (Interlocked.Exchange(ref _refreshRequested, 0) != 0)
+            while (!_accessDenied && Interlocked.Exchange(ref _refreshRequested, 0) != 0)
             {
                 await RefreshCoreAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -78,6 +140,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             var result = await OperatorService.GetCurrentSkyViewAsync(timeout.Token).ConfigureAwait(false);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
+                _accessDenied = true;
                 await InvokeAsync(() => NavigationManager.NavigateTo("/Account/AccessDenied")).ConfigureAwait(false);
                 return;
             }
@@ -92,13 +155,15 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                     {
                         _liveExecutionId = null;
                         _runCaptureId = displayCaptureId;
+                        ResetLayers(displayCaptureId, cancellationToken);
                     }
                     _factsUnavailableReason = result.Value.FactsUnavailableReason;
                     _selectedStage = ResolveSelection(result.Value.Presentation, _selectedStage);
-                    if (_selectedStage is null)
+                    if (_selectedStage is null || ShowLayeredHero)
                     {
                         _viewerOpen = false;
                     }
+                    TryLoadLayers(displayCaptureId);
                     _errorMessage = null;
                 }
                 else
@@ -130,6 +195,188 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private Guid? _runCaptureId;
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "The optional read only uses the captured cancellation token; its generation guard discards late results.")]
+    private void ResetLayers(Guid? captureId, CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _layerGeneration);
+        _bindGeneration++;
+        var previous = _layerCancellation;
+        _layerCancellation = null;
+        if (previous is not null)
+        {
+            previous.Cancel();
+            previous.Dispose();
+        }
+        _layers = null;
+        _layerMessage = null;
+        _saveMessage = null;
+        _saveError = null;
+        _savedArtifactUrl = null;
+        _selectedLayers = new(StringComparer.Ordinal);
+        _layerInteractive = false;
+        _layerImageFailed = false;
+        _layerPreviewAttempt = 0;
+        _layerLoading = false;
+        _saving = false;
+        _bindLayers = false;
+        if (captureId is { } id)
+        {
+            var next = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _layerCancellation = next;
+        }
+    }
+
+    private void TryLoadLayers(Guid? captureId)
+    {
+        if (captureId is not { } id || _layers is not null || _layerLoading || _accessDenied ||
+            _layerCancellation is not { IsCancellationRequested: false } cancellation) return;
+        _layerLoading = true;
+        _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token);
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
+    private async Task LoadLayersAsync(Guid captureId, long generation, CancellationToken cancellation)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            var result = await OperatorService.GetLayeredPresentationAsync(captureId, timeout.Token).ConfigureAwait(false);
+            await InvokeAsync(() =>
+            {
+                if (generation != Volatile.Read(ref _layerGeneration) || _runCaptureId != captureId || cancellation.IsCancellationRequested || _accessDenied) return;
+                if (result.Kind == OperatorUiResultKind.Unauthorized)
+                {
+                    _accessDenied = true;
+                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                }
+                else if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
+                {
+                    _layers = value;
+                    _layerMessage = null;
+                    _selectedLayers = value.Layers.Where(static layer => layer.EnabledByDefault)
+                        .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
+                    _viewerOpen = false;
+                    _bindLayers = true;
+                    StateHasChanged();
+                }
+                else
+                {
+                    _layerMessage = result.Message ?? "Structured layers are unavailable for this capture.";
+                    StateHasChanged();
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer capture, disposal, or the optional deadline superseded this read.
+        }
+        catch (Exception)
+        {
+            await InvokeAsync(() =>
+            {
+                if (generation != Volatile.Read(ref _layerGeneration) || cancellation.IsCancellationRequested || _accessDenied) return;
+                _layerMessage = "Structured layers are temporarily unavailable.";
+                StateHasChanged();
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            await InvokeAsync(() =>
+            {
+                if (generation != Volatile.Read(ref _layerGeneration) || cancellation.IsCancellationRequested) return;
+                _layerLoading = false;
+            }).ConfigureAwait(false);
+        }
+    }
+
+    private MarkupString LayerSvg => new(_layers is null ? string.Empty : Encoding.UTF8.GetString(_layers.Svg.Span));
+
+    private string LayerAspectRatio => ((double)_layers!.WidthPixels / _layers.HeightPixels)
+        .ToString("0.########", System.Globalization.CultureInfo.InvariantCulture);
+
+    private bool ShowLayeredHero => !_layerImageFailed && _selectedStage == CameraAgentPresentationStage.Annotated &&
+        _layers is not null && _presentation?.DisplayCapture?.CaptureId == _layers.CaptureId &&
+        SelectedSlot is not null;
+
+    private string? SavedArtifactUrl => _savedArtifactUrl;
+
+    private void LayerImageFailed(string message)
+    {
+        _layerInteractive = false;
+        _layerImageFailed = true;
+        _layerMessage = message;
+    }
+
+    private void SelectLayer(string identity, bool enabled)
+    {
+        if (enabled) _selectedLayers.Add(identity);
+        else _selectedLayers.Remove(identity);
+    }
+
+    private static string LayerLabel(string kind) => kind switch
+    {
+        "scene-annotation" or "star-annotations" => "Star annotations",
+        "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
+        "scene-image-circle" or "image-circle" => "Image circle",
+        "scene-constellations" or "constellations" => "Constellations",
+        "environment" or "corner-annotations" => "Corner annotations",
+        _ => OperationsPage.SplitWords(kind)
+    };
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Service errors must be sanitized for the optional save UI.")]
+    private async Task SaveSelectedStackAsync()
+    {
+        if (!ShowLayeredHero || !_layerInteractive || _layers is null || _saving || _layerCancellation is not { } cancellation) return;
+        var generation = Volatile.Read(ref _layerGeneration);
+        var captureId = _layers.CaptureId;
+        _saving = true;
+        _saveError = null;
+        _saveMessage = null;
+        _savedArtifactUrl = null;
+        try
+        {
+            var selected = _layers.Layers.Where(layer => _selectedLayers.Contains(layer.IdentitySha256))
+                .Select(static layer => layer.IdentitySha256).ToArray();
+            if (!IsCurrentLayer(generation, captureId, cancellation)) return;
+            var result = await OperatorService.SaveLayeredPresentationAsync(captureId, selected, cancellation.Token);
+            if (!IsCurrentLayer(generation, captureId, cancellation)) return;
+            if (result.Kind == OperatorUiResultKind.Unauthorized)
+            {
+                _accessDenied = true;
+                NavigationManager.NavigateTo("/Account/AccessDenied");
+            }
+            else if (result.IsSuccess && result.Value is { } receipt)
+            {
+                _saveMessage = receipt.Replayed ? "This exact flattened stack was already saved." : "Flattened stack saved as a new immutable artifact.";
+                _savedArtifactUrl = $"/api/v1/operations/artifacts/{receipt.ArtifactId:D}/content";
+            }
+            else
+                _saveError = result.Message ?? "The presentation stack could not be saved.";
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+            if (IsCurrentLayer(generation, captureId, cancellation))
+                _saveError = "The presentation stack could not be saved. Please try again.";
+        }
+        catch (Exception)
+        {
+            if (IsCurrentLayer(generation, captureId, cancellation))
+                _saveError = "The presentation stack could not be saved. Please try again.";
+        }
+        finally
+        {
+            if (IsCurrentLayer(generation, captureId, cancellation)) _saving = false;
+        }
+    }
+
+    private bool IsCurrentLayer(long generation, Guid captureId, CancellationTokenSource cancellation) =>
+        generation == Volatile.Read(ref _layerGeneration) && _runCaptureId == captureId &&
+        ReferenceEquals(cancellation, _layerCancellation) && !cancellation.IsCancellationRequested;
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "This optional link read must not fail the current sky image.")]
     private async Task LoadLiveRunLinkAsync(Guid captureId, CancellationToken cancellationToken)
     {
@@ -157,6 +404,17 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         if (_lifetime is not null)
         {
             await RequestRefreshAsync(_lifetime.Token);
+            await InvokeAsync(() =>
+            {
+                if (!_layerImageFailed || _errorMessage is not null || _accessDenied || _layers?.CaptureId != _runCaptureId) return;
+                _layerPreviewAttempt++;
+                _bindGeneration++;
+                _layerImageFailed = false;
+                _layerInteractive = false;
+                _layerMessage = null;
+                _bindLayers = true;
+                StateHasChanged();
+            });
         }
     }
 
@@ -167,10 +425,13 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         {
             _selectedStage = stage;
             _viewerOpen = false;
+            _bindGeneration++;
+            _layerInteractive = false;
+            if (stage == CameraAgentPresentationStage.Annotated && _layers is not null) _bindLayers = true;
         }
     }
 
-    private void OpenViewer() => _viewerOpen = SelectedSlot is not null;
+    private void OpenViewer() => _viewerOpen = SelectedSlot is not null && !ShowLayeredHero;
 
     private CameraAgentPresentationSlot? SelectedSlot => _presentation?.Stages.SingleOrDefault(slot =>
         slot.Stage == _selectedStage && slot.Availability == CameraAgentPresentationSlotAvailability.Available);
@@ -250,7 +511,9 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 ? "A newer capture exists, but this is the latest retained capture that can be displayed safely."
                 : _presentation.System.Message;
 
-    private string StageStatus => SelectedSlot is { } selected
+    private string StageStatus => ShowLayeredHero
+        ? "Showing processed base image with selected presentation overlays; not the separate processed artifact."
+        : SelectedSlot is { } selected
         ? $"Showing {selected.Label}."
         : "No image stage is currently displayable.";
 
@@ -317,6 +580,13 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             return;
         }
         await _lifetime.CancelAsync().ConfigureAwait(false);
+        Interlocked.Increment(ref _layerGeneration);
+        if (_layerCancellation is not null)
+        {
+            await _layerCancellation.CancelAsync().ConfigureAwait(false);
+            _layerCancellation.Dispose();
+            _layerCancellation = null;
+        }
         _timer?.Dispose();
         if (_pollTask is not null)
         {
@@ -332,5 +602,10 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _refreshGate.Release();
         _lifetime.Dispose();
         _refreshGate.Dispose();
+        if (_layerModule is not null)
+        {
+            try { await _layerModule.DisposeAsync().ConfigureAwait(false); }
+            catch (JSDisconnectedException) { }
+        }
     }
 }

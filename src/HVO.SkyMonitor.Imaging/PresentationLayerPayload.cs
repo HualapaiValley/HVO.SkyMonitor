@@ -17,7 +17,7 @@ public sealed record PresentationMarkerV1(PixelPoint Center, int Radius, Present
 public sealed record PresentationSegmentV1(PixelPoint From, PixelPoint To, int Thickness, PresentationColor Color);
 /// <summary>An ellipse in continuous top-left image pixels with positive finite radii.</summary>
 public sealed record PresentationEllipseV1(PixelPoint Center, double RadiusX, double RadiusY, PresentationColor Color);
-/// <summary>A bounded 5x7-glyph text block with scale 1 through 8 and pixel inset/spacing.</summary>
+/// <summary>A bounded text block with scale 1 through 16 and pixel inset/spacing.</summary>
 public sealed record PresentationTextBlockV1(
     PresentationTextAnchor Anchor,
     PixelPoint Point,
@@ -74,7 +74,7 @@ public sealed record PresentationLayerPayloadV1(
             Ellipses.Any(static value => value is null || !Finite(value.Center) || !double.IsFinite(value.RadiusX) ||
                 !double.IsFinite(value.RadiusY) || value.RadiusX <= 0 || value.RadiusY <= 0) ||
             TextBlocks.Any(static value => value is null || !Enum.IsDefined(value.Anchor) || !Finite(value.Point) ||
-                value.Scale is < 1 or > 8 || value.Inset is < 0 or > 64 || value.LineSpacing is < 0 or > 16 ||
+                value.Scale is < 1 or > 16 || value.Inset is < 0 or > 64 || value.LineSpacing is < 0 or > 16 ||
                 value.Lines is null || value.Lines.Count > MaximumLinesPerBlock || value.Lines.Any(static line =>
                     string.IsNullOrWhiteSpace(line) || line.Length > MaximumLineCharacters || line.Any(char.IsControl))))
             throw new ArgumentException("Presentation layer primitive is invalid.", nameof(PresentationLayerPayloadV1));
@@ -117,7 +117,7 @@ public sealed record PresentationCompositorLayer(
 /// <summary>Rasterizes ordered typed layers into exactly one owned packed output buffer.</summary>
 public static class PresentationLayerCompositor
 {
-    public const string AlgorithmVersion = "typed-presentation-compositor-v1";
+    public const string AlgorithmVersion = "typed-presentation-compositor-v2";
 
     /// <summary>
     /// Clones the borrowed immutable packed base exactly once and rasterizes ordered enabled layers into that owned
@@ -160,7 +160,7 @@ public static class PresentationLayerCompositor
             foreach (var text in payload.TextBlocks)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                DrawTextBlock(output, layout, text, layer);
+                DrawTextBlock(output, layout, text, layer, cancellationToken);
             }
             if (payload.TileMask is { } mask) DrawTileMask(output, layout, mask, layer, cancellationToken);
         }
@@ -225,12 +225,15 @@ public static class PresentationLayerCompositor
         }
     }
 
-    private static void DrawTextBlock(byte[] pixels, ImageLayout layout, PresentationTextBlockV1 value, PresentationCompositorLayer layer)
+    private static void DrawTextBlock(byte[] pixels, ImageLayout layout, PresentationTextBlockV1 value,
+        PresentationCompositorLayer layer, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var lineHeight = 7 * value.Scale;
         var blockHeight = value.Lines.Count == 0 ? 0 : value.Lines.Count * lineHeight + (value.Lines.Count - 1) * value.LineSpacing;
         for (var index = 0; index < value.Lines.Count; index++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var line = value.Lines[index];
             var width = Math.Max(0, line.Length * 6 * value.Scale - value.Scale);
             var x = value.Anchor switch
@@ -245,7 +248,18 @@ public static class PresentationLayerCompositor
                 PresentationTextAnchor.Point => Round(value.Point.Y) + index * (lineHeight + value.LineSpacing),
                 _ => value.Inset + index * (lineHeight + value.LineSpacing)
             };
-            DrawText(pixels, layout, x, y, line, value.Scale, value.Color, layer);
+            if (value.Scale > 2)
+            {
+                var halo = Math.Max(1, value.Scale / 4);
+                for (var dy = -halo; dy <= halo; dy++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    for (var dx = -halo; dx <= halo; dx++)
+                        if (dx * dx + dy * dy <= halo * halo)
+                            DrawText(pixels, layout, x + dx, y + dy, line, value.Scale, new(0, 0, 0), layer, cancellationToken);
+                }
+            }
+            DrawText(pixels, layout, x, y, line, value.Scale, value.Color, layer, cancellationToken);
         }
     }
 
@@ -271,19 +285,25 @@ public static class PresentationLayerCompositor
     }
 
     private static void DrawText(byte[] pixels, ImageLayout layout, int x, int y, string text, int scale,
-        PresentationColor color, PresentationCompositorLayer layer)
+        PresentationColor color, PresentationCompositorLayer layer, CancellationToken cancellationToken)
     {
         for (var character = 0; character < text.Length; character++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var rows = Glyph(char.ToUpperInvariant(text[character]));
-            for (var row = 0; row < 7; row++) for (var column = 0; column < 5; column++)
-                if ((rows[row] & 1 << (4 - column)) != 0)
-                    for (var sy = 0; sy < scale; sy++) for (var sx = 0; sx < scale; sx++)
-                        Set(pixels, layout, x + character * 6 * scale + column * scale + sx, y + row * scale + sy, color, layer);
+            for (var row = 0; row < 7; row++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                for (var column = 0; column < 5; column++)
+                    if ((rows[row] & 1 << (4 - column)) != 0)
+                        for (var sy = 0; sy < scale; sy++) for (var sx = 0; sx < scale; sx++)
+                            Set(pixels, layout, x + character * 6 * scale + column * scale + sx, y + row * scale + sy, color, layer);
+            }
         }
     }
 
-    private static ReadOnlySpan<byte> Glyph(char value) => value switch
+    /// <summary>Returns the fixed five-column bitmap rows used by raster and vector presentation text.</summary>
+    public static ReadOnlySpan<byte> Glyph(char value) => char.ToUpperInvariant(value) switch
     {
         'A' => [14, 17, 17, 31, 17, 17, 17],
         'B' => [30, 17, 17, 30, 17, 17, 30],
