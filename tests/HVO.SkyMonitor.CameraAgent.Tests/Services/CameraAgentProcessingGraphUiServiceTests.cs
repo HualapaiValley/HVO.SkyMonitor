@@ -49,7 +49,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
             new ProcessingGraphExecutionNodeState("preview", true, new string('P', 64), "Completed", "/var/lib/secret failed", 1, Now, Now,
                 [], [new ProcessingGraphNodeAttemptState(1, "runner-host-secret-7", Now, Now, "Completed", HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(1),
                     HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingNodeExecutionRoute.InProcess)],
-                [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Missing", "/var/lib/secret failed", false)])
+                 [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Missing", "/var/lib/secret failed", false)])
+             { Dependencies = [new HVO.SkyMonitor.Processing.ProcessingGraphDependencyDefinition("$raw")] }
         ]);
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
         operations.Setup(value => value.ReadExecutionDetailAsync(executionId, It.IsAny<CancellationToken>())).ReturnsAsync(detail);
@@ -67,8 +68,30 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         Assert.AreEqual(CameraAgentReplayUiService.Sanitize("/var/lib/secret failed"), found.Value.Nodes[0].Outputs[0].AvailabilityReason);
         Assert.IsFalse(serialized.Contains("LeaseOwner", StringComparison.Ordinal));
         Assert.AreEqual("Produced", found.Value!.Nodes[0].Attempts[0].Outcome);
+        Assert.AreEqual("$raw", found.Value.Nodes[0].Dependencies.Single().ProducerId);
         Assert.AreEqual(OperatorUiResultKind.NotFound, missing.Kind);
         Assert.AreEqual("The execution was not found.", missing.Message);
+    }
+
+    [TestMethod]
+    public async Task GetLiveExecutionId_UsesExactCaptureIdentityAndReportsMissingAsync()
+    {
+        var captureId = Guid.NewGuid();
+        var executionId = Guid.NewGuid();
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.ReadLiveExecutionIdAsync(captureId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(executionId);
+        operations.Setup(value => value.ReadLiveExecutionIdAsync(It.Is<Guid>(id => id != captureId), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid?)null);
+        var service = CreateService(operations.Object, authorized: true);
+
+        var found = await service.GetLiveExecutionIdAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+        var missing = await service.GetLiveExecutionIdAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(found.IsSuccess);
+        Assert.AreEqual(executionId, found.Value!.ExecutionId);
+        Assert.AreEqual(OperatorUiResultKind.NotFound, missing.Kind);
+        operations.Verify(value => value.ReadExecutionsAsync(It.IsAny<ProcessingGraphExecutionClass?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]

@@ -14,6 +14,10 @@
             <p class="eyebrow">Authenticated local observatory</p>
             <h1 id="current-sky-heading" tabindex="-1">Current sky</h1>
             <p>The latest useful durable image leads. Image age and CameraAgent state are reported independently.</p>
+            @if (_liveExecutionId is { } liveRun)
+            {
+                <a href="/operations/pipeline/executions/@liveRun">View pipeline run</a>
+            }
         </div>
         <button type="button" class="btn btn-outline-secondary btn-sm refresh-link" disabled="@_refreshing" @onclick="RefreshNowAsync">Refresh image</button>
     </header>

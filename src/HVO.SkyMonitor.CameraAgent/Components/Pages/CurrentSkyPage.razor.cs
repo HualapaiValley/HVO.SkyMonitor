@@ -20,10 +20,12 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private bool _initialLoading = true;
     private bool _refreshing;
     private bool _viewerOpen;
+    private Guid? _liveExecutionId;
     private int _refreshRequested;
     private int _disposeStarted;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
+    [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
 
@@ -79,12 +81,18 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 await InvokeAsync(() => NavigationManager.NavigateTo("/Account/AccessDenied")).ConfigureAwait(false);
                 return;
             }
+            var displayCaptureId = result.IsSuccess ? result.Value?.Presentation.DisplayCapture?.CaptureId : null;
             await InvokeAsync(() =>
             {
                 if (result.IsSuccess && result.Value is not null)
                 {
                     _presentation = result.Value.Presentation;
                     _facts = result.Value.Facts;
+                    if (_runCaptureId != displayCaptureId)
+                    {
+                        _liveExecutionId = null;
+                        _runCaptureId = displayCaptureId;
+                    }
                     _factsUnavailableReason = result.Value.FactsUnavailableReason;
                     _selectedStage = ResolveSelection(result.Value.Presentation, _selectedStage);
                     if (_selectedStage is null)
@@ -101,6 +109,12 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 _refreshing = false;
                 StateHasChanged();
             }).ConfigureAwait(false);
+            if (displayCaptureId is { } captureId)
+            {
+                // The image is already visible. A slow optional run-link lookup cannot make
+                // the five-second current-sky refresh appear to have failed.
+                _ = LoadLiveRunLinkAsync(captureId, cancellationToken);
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -111,6 +125,30 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 _refreshing = false;
                 StateHasChanged();
             }).ConfigureAwait(false);
+        }
+    }
+
+    private Guid? _runCaptureId;
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "This optional link read must not fail the current sky image.")]
+    private async Task LoadLiveRunLinkAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(2));
+            var run = await GraphService.GetLiveExecutionIdAsync(captureId, timeout.Token).ConfigureAwait(false);
+            if (run.IsSuccess && _runCaptureId == captureId)
+            {
+                await InvokeAsync(() => { _liveExecutionId = run.Value?.ExecutionId; StateHasChanged(); }).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception)
+        {
+            // Keep the previously rendered image even when the graph journal is unavailable.
         }
     }
 

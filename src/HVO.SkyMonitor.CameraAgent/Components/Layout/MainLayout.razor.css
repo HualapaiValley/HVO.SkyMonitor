@@ -33,6 +33,14 @@
     padding: 2rem clamp(1rem, 3vw, 2.5rem) 0;
 }
 
+/* The pipeline run uses the prototype's full-height rail and graph canvas, not
+   the centered/padded content frame used by ordinary operator pages. */
+.content-container:has(.execution-page) {
+    width: 100%;
+    max-width: none;
+    padding: 0;
+}
+
 #blazor-error-ui {
     color-scheme: light only;
     background: lightyellow;
